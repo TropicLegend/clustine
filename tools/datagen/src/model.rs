@@ -102,7 +102,21 @@ pub struct ItemComponents {
     pub max_damage: Option<u16>,
     /// The damage type tag of `minecraft:damage_resistant`, without its `#`.
     pub damage_resistant: Option<String>,
+    /// `minecraft:equippable`: the slot it is worn in, as the ordinal of the game's
+    /// `EquipmentSlot`, and the sound putting it on plays, by its name.
+    pub equippable: Option<(u8, String)>,
 }
+
+/// The game's `EquipmentSlot`s by their serialised names, in the order of their
+/// ordinals.
+const EQUIPMENT_SLOTS: [&str; 8] = [
+    "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
+];
+
+/// The sound `Equippable`'s codec gives an item whose component names none
+/// (**Inferred**: `Equippable` is not in the dump; the reports leave the sound out for
+/// heads, pumpkins and the shield, as a codec with a default does).
+const DEFAULT_EQUIP_SOUND: &str = "minecraft:item.armor.equip_generic";
 
 /// Reads the default components of an item from the report of its components.
 pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
@@ -155,10 +169,32 @@ pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
             Some(tag.to_owned())
         }
     };
+    let equippable = match components.get("minecraft:equippable") {
+        None => None,
+        Some(value) => {
+            let slot = value
+                .get("slot")
+                .and_then(Value::as_str)
+                .context("an equippable component without a slot")?;
+            let slot = EQUIPMENT_SLOTS
+                .iter()
+                .position(|name| *name == slot)
+                .with_context(|| format!("an equipment slot {slot}"))?;
+            let sound = match value.get("equip_sound") {
+                None => DEFAULT_EQUIP_SOUND.to_owned(),
+                Some(sound) => sound
+                    .as_str()
+                    .context("an equip sound other than a sound event's name")?
+                    .to_owned(),
+            };
+            Some((slot as u8, sound))
+        }
+    };
     Ok(ItemComponents {
         max_stack_size: max_stack_size as u8,
         max_damage,
         damage_resistant,
+        equippable,
     })
 }
 

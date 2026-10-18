@@ -1043,7 +1043,7 @@ fn item_components(data: &GameData) -> Result<String> {
         data.items.len()
     );
     let mut out = String::new();
-    writeln!(out, "use crate::ItemComponents;\n")?;
+    writeln!(out, "use crate::{{Equippable, ItemComponents}};\n")?;
     writeln!(out, "/// By item id.")?;
     writeln!(
         out,
@@ -1059,9 +1059,20 @@ fn item_components(data: &GameData) -> Result<String> {
             Some(tag) => format!("Some({tag:?})"),
             None => "None".to_owned(),
         };
+        let equippable = match &components.equippable {
+            Some((slot, sound)) => {
+                let sound = data
+                    .sound_events
+                    .iter()
+                    .position(|name| name == sound)
+                    .with_context(|| format!("the equip sound {sound} is no sound event"))?;
+                format!("Some(Equippable {{ slot: {slot}, sound: {sound} }})")
+            }
+            None => "None".to_owned(),
+        };
         writeln!(
             out,
-            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant} }}, // {}",
+            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable} }}, // {}",
             components.max_stack_size,
             item.name.strip_prefix("minecraft:").unwrap_or(&item.name)
         )?;

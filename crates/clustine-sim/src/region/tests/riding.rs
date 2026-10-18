@@ -91,6 +91,8 @@ fn stand(n: u64, position: [f64; 3]) -> Entity {
             equipment: Vec::new(),
             health: Float(20.0),
             last_hit: None,
+            air: 300,
+            frozen: 0,
         },
     )
 }

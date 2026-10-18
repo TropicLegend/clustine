@@ -51,6 +51,9 @@ impl Region {
         if let Some(bounds) = self.attached_box(entity) {
             return bounds;
         }
+        if let Some((width, height)) = super::stands::own_size(entity) {
+            return Aabb::of_entity(entity.position, width, height);
+        }
         let info = EntityTypeInfo::of(i32::from(entity.kind));
         Aabb::of_entity(entity.position, info.width, info.height)
     }

@@ -783,6 +783,11 @@ pub(crate) fn move_guarded_as<R: Region + ?Sized>(
 ) {
     let before = body.position;
     body.move_as(world, no_physics, vector, piston);
+    hold_back(body, world, before);
+}
+
+/// The region's guard after a move that began at `before` ([`move_guarded`]).
+pub(crate) fn hold_back<R: Region + ?Sized>(body: &mut Body, world: &R, before: Vec3) {
     let after = body.position;
     if ChunkPos::containing(after[0], before[2]) != ChunkPos::containing(before[0], before[2])
         && !world.may_hold(ChunkPos::containing(after[0], before[2]))

@@ -430,6 +430,8 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             equipment,
             health,
             last_hit,
+            air,
+            frozen,
         } => {
             out.push(DATA_ARMOR_STAND);
             out.push(*flags);
@@ -448,6 +450,8 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
                     out.extend_from_slice(&age.to_be_bytes());
                 }
             }
+            out.extend_from_slice(&air.to_be_bytes());
+            out.extend_from_slice(&frozen.to_be_bytes());
         }
         EntityData::ItemFrame {
             attached,
@@ -576,6 +580,8 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
             } else {
                 None
             };
+            let air = input.i16()?;
+            let frozen = input.u16()?;
             Ok(EntityData::ArmorStand {
                 flags,
                 disabled_slots,
@@ -583,6 +589,8 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 equipment,
                 health,
                 last_hit,
+                air,
+                frozen,
             })
         }
         DATA_ITEM_FRAME => {
@@ -1195,10 +1203,15 @@ pub(crate) mod tests {
                 any::<(u8, i32)>(),
                 any::<[[f32; 3]; 6]>(),
                 contents(),
-                any::<(f32, Option<u32>)>(),
+                any::<(f32, Option<u32>, i16, u16)>(),
             )
                 .prop_map(
-                    |((flags, disabled_slots), pose, equipment, (health, last_hit))| {
+                    |(
+                        (flags, disabled_slots),
+                        pose,
+                        equipment,
+                        (health, last_hit, air, frozen),
+                    )| {
                         EntityData::ArmorStand {
                             flags,
                             disabled_slots,
@@ -1206,6 +1219,8 @@ pub(crate) mod tests {
                             equipment,
                             health: Float(health),
                             last_hit,
+                            air,
+                            frozen,
                         }
                     }
                 ),

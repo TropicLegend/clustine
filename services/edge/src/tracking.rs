@@ -24,7 +24,8 @@ use clustine_protocol::packets::{
     self, Packet,
     play::{
         EntityDataValue, MoveEntityPos, MoveEntityPosRot, MoveEntityRot, PositionPath,
-        SetEntityData, SetEntityMotion, SyncEntityPosition, VecDelta, entity_data, pack_degrees,
+        SetEntityData, SetEntityMotion, SetEquipment, SyncEntityPosition, VecDelta, entity_data,
+        pack_degrees,
     },
 };
 use clustine_sim::api::Tracked;
@@ -94,6 +95,111 @@ fn tracking_position(data: &EntityData, position: [f64; 3]) -> [f64; 3] {
     }
 }
 
+/// Values of a living entity's data beyond the shared flags, which
+/// [`Tracker::dirty_values`] names by index.
+const DIRTY_VALUES: u8 = 32;
+/// What a living entity wears (`detectEquipmentUpdates`).
+const DIRTY_EQUIPMENT: u8 = 64;
+
+/// The parts of an armour stand's pose in the order of their indices, from
+/// `entity_data::ARMOR_STAND_POSES`, and their defaults (`ArmorStand`'s static block).
+const DEFAULT_STAND_POSE: [[f32; 3]; 6] = [
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [-10.0, 0.0, -10.0],
+    [-15.0, 0.0, 10.0],
+    [-1.0, 0.0, -1.0],
+    [1.0, 0.0, 1.0],
+];
+
+/// An armour stand's flags as the record keeps them: the client's own (small, arms, no
+/// base plate, marker) and the stand's field of being invisible, which it shows as the
+/// shared flag.
+const STAND_CLIENT_FLAGS: u8 = 1 | 4 | 8 | 16;
+const STAND_INVISIBLE: u8 = 32;
+
+/// The values of an armour stand's data beyond the shared flags (`LivingEntity`'s and
+/// `ArmorStand`'s, the brief's section 5.6), each with whether it is the default a
+/// client makes its entity with (`defineSynchedData`): the air (300) and freezing (0) of
+/// every entity, the health (1, which the stand's constructor sets to its most, so that
+/// it is always sent), the stand's flags and its six rotations. Anything else's are
+/// none.
+pub(crate) fn living_values(data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
+    let EntityData::ArmorStand {
+        flags,
+        pose,
+        health,
+        air,
+        frozen,
+        ..
+    } = data
+    else {
+        return Vec::new();
+    };
+    let mut values = vec![
+        (
+            entity_data::AIR_SUPPLY,
+            EntityDataValue::Int(i32::from(*air)),
+            *air == 300,
+        ),
+        (
+            entity_data::TICKS_FROZEN,
+            EntityDataValue::Int(i32::from(*frozen)),
+            *frozen == 0,
+        ),
+        (
+            entity_data::HEALTH,
+            EntityDataValue::Float(health.0),
+            health.0.to_bits() == 1.0_f32.to_bits(),
+        ),
+        (
+            entity_data::ARMOR_STAND_FLAGS,
+            EntityDataValue::Byte(flags & STAND_CLIENT_FLAGS),
+            flags & STAND_CLIENT_FLAGS == 0,
+        ),
+    ];
+    for (part, (angles, default)) in pose.iter().zip(DEFAULT_STAND_POSE).enumerate() {
+        let angles = angles.map(|angle| angle.0);
+        let index = entity_data::ARMOR_STAND_POSES + u8::try_from(part).expect("six parts");
+        values.push((
+            index,
+            EntityDataValue::Rotations(angles),
+            angles.map(f32::to_bits) == default.map(f32::to_bits),
+        ));
+    }
+    values
+}
+
+/// The shared flags of what an entity's data says beyond its burning: an armour
+/// stand's invisibility.
+fn shared_flags_of(data: &EntityData) -> u8 {
+    match data {
+        EntityData::ArmorStand { flags, .. } if flags & STAND_INVISIBLE != 0 => {
+            entity_data::INVISIBLE
+        }
+        _ => 0,
+    }
+}
+
+/// What a living entity wears, by slot, as the wire has it; nothing for anything else.
+pub(crate) fn equipment_of(data: &EntityData) -> Vec<(u8, WireStack)> {
+    match data {
+        EntityData::ArmorStand { equipment, .. } => equipment
+            .iter()
+            .map(|(slot, stack)| {
+                (
+                    *slot,
+                    WireStack {
+                        item: stack.item,
+                        count: stack.count,
+                    },
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// One of the packets a tracker sends, to everyone shown the entity.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Sent {
@@ -103,6 +209,7 @@ pub(crate) enum Sent {
     Rot(MoveEntityRot),
     Sync(SyncEntityPosition),
     Data(SetEntityData),
+    Equipment(SetEquipment),
 }
 
 impl Sent {
@@ -117,6 +224,7 @@ impl Sent {
             Self::Rot(packet) => bytes(packet),
             Self::Sync(packet) => bytes(packet),
             Self::Data(packet) => bytes(packet),
+            Self::Equipment(packet) => bytes(packet),
         }
     }
 
@@ -160,6 +268,9 @@ pub(crate) struct Pairing {
     /// The values of its data that are not the type's defaults, as sent last
     /// (`getNonDefaultValues`); none, and no packet, if there are none.
     pub(crate) values: Vec<(u8, EntityDataValue)>,
+    /// What a living entity wears, as sent last: every slot that is not empty, and no
+    /// packet if none is (`sendPairingData`'s `SetEquipment`).
+    pub(crate) equipment: Vec<(u8, WireStack)>,
 }
 
 /// The game's `ServerEntity` of one entity other than a player, and the entity as it
@@ -193,6 +304,11 @@ pub(crate) struct Tracker {
     sent_on_ground: std::cell::Cell<bool>,
     /// The values of its data that differ from the type's defaults, as sent last.
     pairing: Vec<(u8, EntityDataValue)>,
+    /// What a living entity wears, as sent last.
+    worn: Vec<(u8, WireStack)>,
+    /// The indices of a living entity's data beyond the shared flags that changed since
+    /// they were sent, a bit each.
+    dirty_values: u32,
     /// Where a falling block started (`DATA_START_POS`): the block it was in when this
     /// edge first heard of it.
     start: Option<Position>,
@@ -253,6 +369,8 @@ impl Tracker {
             // The clients it is first shown to are spawned with it, off the ground.
             sent_on_ground: std::cell::Cell::new(false),
             pairing: Vec::new(),
+            worn: equipment_of(data),
+            dirty_values: 0,
             start,
             position: at,
             motion: seen.motion,
@@ -290,6 +408,28 @@ impl Tracker {
         }
         if let Some(new) = &tracked.data {
             self.dirty |= hanging_changes(data, new);
+            self.data_changed(data, new);
+        }
+    }
+
+    /// Marks what a living entity's data `new` changed of `old` beyond the shared flags:
+    /// each value whose index's value differs, and what it wears.
+    fn data_changed(&mut self, old: &EntityData, new: &EntityData) {
+        let before = living_values(old);
+        for (index, value, _) in living_values(new) {
+            let same = before
+                .iter()
+                .any(|(was, earlier, _)| *was == index && *earlier == value);
+            if !same {
+                self.dirty |= DIRTY_VALUES;
+                self.dirty_values |= 1 << index;
+            }
+        }
+        if shared_flags_of(old) != shared_flags_of(new) {
+            self.dirty |= DIRTY_FLAGS;
+        }
+        if equipment_of(old) != equipment_of(new) {
+            self.dirty |= DIRTY_EQUIPMENT;
         }
     }
 
@@ -322,11 +462,19 @@ impl Tracker {
                 ..
             }
         );
-        let flags =
-            if burning { entity_data::ON_FIRE } else { 0 } | if invisible { INVISIBLE } else { 0 };
-        if (pairing && flags != 0) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
-            values.push((entity_data::SHARED_FLAGS, EntityDataValue::Byte(flags)));
+        let shared = if burning { entity_data::ON_FIRE } else { 0 }
+            | if invisible { INVISIBLE } else { 0 }
+            | shared_flags_of(data);
+        if (pairing && shared != 0) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
+            values.push((entity_data::SHARED_FLAGS, EntityDataValue::Byte(shared)));
         }
+        for (index, value, default) in living_values(data) {
+            let changed = self.dirty & DIRTY_VALUES != 0 && self.dirty_values & (1 << index) != 0;
+            if (pairing && !default) || (!pairing && changed) {
+                values.push((index, value));
+            }
+        }
+        values.sort_by_key(|(index, _)| *index);
         match data {
             EntityData::Item { stack, .. } => {
                 if pairing || self.dirty & DIRTY_STACK != 0 {
@@ -382,7 +530,8 @@ impl Tracker {
                     ));
                 }
             }
-            // The other kinds of N5 have their data from the steps that bring them.
+            // An armour stand's values are its living data's, above; the other kinds of
+            // N5 bring theirs with their steps.
             _ => {}
         }
         values
@@ -413,6 +562,7 @@ impl Tracker {
             yaw: self.last_yaw as u8,
             pitch: self.last_pitch as u8,
             values: self.pairing.clone(),
+            equipment: self.worn.clone(),
         }
     }
 
@@ -423,12 +573,41 @@ impl Tracker {
             return;
         }
         let values = self.values(data, false);
+        let equipment = self.dirty & DIRTY_EQUIPMENT != 0;
         self.dirty = 0;
+        self.dirty_values = 0;
         self.pairing = self.values(data, true);
-        out.push(Sent::Data(SetEntityData {
-            entity_id: id,
-            values,
-        }));
+        if !values.is_empty() {
+            out.push(Sent::Data(SetEntityData {
+                entity_id: id,
+                values,
+            }));
+        }
+        if equipment {
+            // `detectEquipmentUpdates`: each slot whose stack is not what was sent, in
+            // the order of `EquipmentSlot.VALUES`, an emptied one as empty. A main hand
+            // and an off hand that only changed places, which the game shows by entity
+            // event 55, never come of a stand's use, and are sent as the two slots.
+            let now = equipment_of(data);
+            let stack_in = |worn: &[(u8, WireStack)], slot: u8| {
+                worn.iter()
+                    .find(|(at, _)| *at == slot)
+                    .map(|(_, stack)| *stack)
+            };
+            let slots: Vec<(u8, Option<WireStack>)> = (0..8)
+                .filter_map(|slot| {
+                    let new = stack_in(&now, slot);
+                    (new != stack_in(&self.worn, slot)).then_some((slot, new))
+                })
+                .collect();
+            self.worn = now;
+            if !slots.is_empty() {
+                out.push(Sent::Equipment(SetEquipment {
+                    entity_id: id,
+                    slots,
+                }));
+            }
+        }
     }
 
     /// One tick's update, the game's `ServerEntity.sendChanges` for an entity that is no
@@ -468,7 +647,7 @@ impl Tracker {
                     Sent::Pos(_) => (true, false),
                     Sent::PosRot(_) | Sent::Sync(_) => (true, true),
                     Sent::Rot(_) => (false, true),
-                    Sent::Motion(_) | Sent::Data(_) => (false, false),
+                    Sent::Motion(_) | Sent::Data(_) | Sent::Equipment(_) => (false, false),
                 };
                 if let Sent::Pos(MoveEntityPos { on_ground, .. })
                 | Sent::PosRot(MoveEntityPosRot { on_ground, .. })
@@ -767,6 +946,94 @@ mod tests {
             entity_id: ID,
             motion,
         })
+    }
+
+    fn stand(equipment: Vec<(u8, ItemStack)>, air: i16) -> EntityData {
+        EntityData::ArmorStand {
+            flags: 0,
+            disabled_slots: 0,
+            pose: Box::new(DEFAULT_STAND_POSE.map(|part| part.map(clustine_world::Float))),
+            equipment,
+            health: clustine_world::Float(20.0),
+            last_hit: None,
+            air,
+            frozen: 0,
+        }
+    }
+
+    const HELMET: ItemStack = ItemStack {
+        item: 1100,
+        count: 1,
+    };
+
+    #[test]
+    fn a_stand_is_paired_with_its_health_alone_and_what_it_wears_is_sent_as_it_changes() {
+        let seen = Seen {
+            kind: entity_types::ARMOR_STAND as u16,
+            position: [3.5, -60.0, 3.5],
+            motion: [0.0, -0.0784, 0.0],
+            yaw: 200.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        let bare = stand(Vec::new(), 300);
+        // What is sent of its data and of what it wears, its moves left aside.
+        let worn_and_data = |sent: Vec<Sent>| -> Vec<Sent> {
+            sent.into_iter()
+                .filter(|sent| matches!(sent, Sent::Data(_) | Sent::Equipment(_)))
+                .collect()
+        };
+        let mut tracker = Tracker::new(seen, &bare, 0);
+        let pairing = tracker.pairing();
+        // Its health of 20 differs from the 1 a client starts with; its air, freezing,
+        // flags and pose are the defaults.
+        assert_eq!(
+            pairing.values,
+            [(entity_data::HEALTH, EntityDataValue::Float(20.0))]
+        );
+        assert!(pairing.equipment.is_empty());
+        // A helmet put on: at the next update, the head's slot alone, and no data.
+        let worn = stand(vec![(5, HELMET)], 300);
+        let mut report = tick([3.5, -60.0, 3.5], [0.0, -0.0784, 0.0], true, 0);
+        report.data = Some(worn.clone());
+        tracker.report(&report, &bare);
+        let helmet = WireStack {
+            item: HELMET.item,
+            count: 1,
+        };
+        assert_eq!(
+            worn_and_data(tracker.send_changes(ID, &worn)),
+            [Sent::Equipment(SetEquipment {
+                entity_id: ID,
+                slots: vec![(5, Some(helmet))],
+            })]
+        );
+        assert_eq!(tracker.pairing().equipment, [(5, helmet)]);
+        // Taken off again under water: the slot emptied, and the air that changed.
+        let wet = stand(Vec::new(), 299);
+        report.data = Some(wet.clone());
+        tracker.report(&report, &worn);
+        assert_eq!(
+            worn_and_data(tracker.send_changes(ID, &wet)),
+            [
+                Sent::Data(SetEntityData {
+                    entity_id: ID,
+                    values: vec![(entity_data::AIR_SUPPLY, EntityDataValue::Int(299))],
+                }),
+                Sent::Equipment(SetEquipment {
+                    entity_id: ID,
+                    slots: vec![(5, None)],
+                }),
+            ]
+        );
+        assert!(tracker.pairing().equipment.is_empty());
+        assert_eq!(
+            tracker.pairing().values,
+            [
+                (entity_data::AIR_SUPPLY, EntityDataValue::Int(299)),
+                (entity_data::HEALTH, EntityDataValue::Float(20.0)),
+            ]
+        );
     }
 
     /// Runs `ticks` updates of `tracker` with nothing reported, each tick's packets in

@@ -2882,6 +2882,7 @@ mod tests {
     mod redstone_ground;
     mod riding;
     mod scheduled_ticks;
+    mod stands;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 

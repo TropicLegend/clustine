@@ -2525,6 +2525,19 @@ pub mod entity_data {
     pub const ITEM_STACK: u8 = 8;
     /// `FallingBlockEntity.DATA_START_POS`, where a falling block began to fall.
     pub const START_POSITION: u8 = 8;
+    /// The shared flag of an invisible entity (`Entity.FLAG_INVISIBLE`, bit 5).
+    pub const INVISIBLE: u8 = 0x20;
+    /// `Entity.DATA_AIR_SUPPLY_ID`, the air left under water, an int.
+    pub const AIR_SUPPLY: u8 = 1;
+    /// `Entity.DATA_TICKS_FROZEN`, the ticks spent in powder snow, an int.
+    pub const TICKS_FROZEN: u8 = 7;
+    /// `LivingEntity.DATA_HEALTH_ID`, a float.
+    pub const HEALTH: u8 = 9;
+    /// `ArmorStand.DATA_CLIENT_FLAGS`: small, arms, no base plate, marker.
+    pub const ARMOR_STAND_FLAGS: u8 = 15;
+    /// `ArmorStand.DATA_HEAD_POSE`, the first of the six rotations of its parts (head,
+    /// body, left arm, right arm, left leg, right leg), one index each.
+    pub const ARMOR_STAND_POSES: u8 = 16;
 }
 
 /// The byte that ends a list of entity data values.
@@ -2652,6 +2665,58 @@ impl Decode for SetEntityData {
             values.push((index, value));
         }
         Ok(Self { entity_id, values })
+    }
+}
+
+/// What a living entity wears and holds (`ClientboundSetEquipmentPacket`): each slot
+/// named by the ordinal of the game's `EquipmentSlot` (0 the main hand, 1 the off
+/// hand, 2 the feet, 3 the legs, 4 the chest, 5 the head), with its stack, empty to
+/// clear it.
+///
+/// **Inferred**: the packet's class is not in the dump. It is written as the reference
+/// servers write it, and as the game has written it since slots came in one packet: a
+/// byte of the slot's ordinal, its high bit set where another slot follows, then the
+/// stack as a slot (`ItemStack.OPTIONAL_STREAM_CODEC`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetEquipment {
+    pub entity_id: i32,
+    pub slots: Vec<(u8, Option<ItemStack>)>,
+}
+
+impl Packet for SetEquipment {
+    const ID: i32 = clientbound::SET_EQUIPMENT;
+}
+
+/// The bit of a slot's byte in [`SetEquipment`] that says another slot follows.
+const MORE_EQUIPMENT: u8 = 0x80;
+
+impl Encode for SetEquipment {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        for (at, (slot, stack)) in self.slots.iter().enumerate() {
+            let more = if at + 1 < self.slots.len() {
+                MORE_EQUIPMENT
+            } else {
+                0
+            };
+            w.put_u8((slot & !MORE_EQUIPMENT) | more);
+            w.put_item_stack(*stack);
+        }
+    }
+}
+
+impl Decode for SetEquipment {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let mut slots = Vec::new();
+        loop {
+            let byte = r.u8()?;
+            slots.push((byte & !MORE_EQUIPMENT, r.item_stack()?));
+            if byte & MORE_EQUIPMENT == 0 {
+                break;
+            }
+        }
+        Ok(Self { entity_id, slots })
     }
 }
 
@@ -2936,6 +3001,7 @@ packet_set! {
         SetHeldSlot,
         SetPlayerInventory,
         SetEntityData,
+        SetEquipment,
         Animate,
         MoveEntityPos,
         MoveEntityPosRot,
@@ -2957,6 +3023,21 @@ mod tests {
 
     use super::*;
     use crate::packets::testing::assert_round_trip;
+
+    #[test]
+    fn equipment_is_written_slot_by_slot_with_the_high_bit_on_all_but_the_last() {
+        let worn = SetEquipment {
+            entity_id: 3,
+            slots: vec![(5, Some(ItemStack { item: 7, count: 1 })), (0, None)],
+        };
+        // The head with one of item 7 and no components changed, then an empty hand.
+        assert_eq!(
+            crate::packets::encode(&worn),
+            [SetEquipment::ID as u8, 3, 0x85, 1, 7, 0, 0, 0x00, 0]
+        );
+        assert_eq!(SetEquipment::ID, 104);
+        assert_round_trip(worn, ClientboundPlay::decode, ClientboundPlay::SetEquipment);
+    }
 
     #[test]
     fn a_section_blocks_update_round_trips_far_out_and_below_zero() {

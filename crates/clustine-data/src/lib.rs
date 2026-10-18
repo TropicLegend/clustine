@@ -310,6 +310,20 @@ pub struct ItemComponents {
     /// `minecraft:is_fire` for netherite: an item entity of the item is not hurt by
     /// them.
     pub damage_resistant: Option<&'static str>,
+    /// `minecraft:equippable`, for an item that is worn or held in a slot of its own: an
+    /// armour stand puts it there (`getEquipmentSlotForItem`).
+    pub equippable: Option<Equippable>,
+}
+
+/// An item's `minecraft:equippable`, as far as Clustine reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Equippable {
+    /// The slot it is worn in, as the ordinal of the game's `EquipmentSlot`: 0 the main
+    /// hand, 1 the off hand, 2 the feet, 3 the legs, 4 the chest, 5 the head, 6 an
+    /// animal's body, 7 a saddle.
+    pub slot: u8,
+    /// The sound putting it on plays, by its id in [`SOUND_EVENTS`].
+    pub sound: i32,
 }
 
 impl ItemComponents {

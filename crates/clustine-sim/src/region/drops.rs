@@ -89,6 +89,23 @@ impl Region {
         self.block_streams.insert(pos, random);
     }
 
+    /// `Block.popResource(level, pos, stack)` by an entity's rule (an armour stand's
+    /// break): the level's draws from the stream of the block's drops, as a block's own
+    /// drops at `pos` in this tick draw.
+    pub(crate) fn pop_resource_at(
+        &mut self,
+        pos: BlockPos,
+        stack: ItemStack,
+        output: &mut TickOutput,
+    ) {
+        let mut random = self
+            .block_streams
+            .remove(&pos)
+            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, DROPS));
+        self.pop_resource(pos, stack, &mut random, output);
+        self.block_streams.insert(pos, random);
+    }
+
     /// `Block.popResource(level, pos, stack)`: three draws put the item within a
     /// quarter of a block of the block's centre each way, its feet half its height
     /// below, and drawn for an empty stack too; then the item, if there is one.

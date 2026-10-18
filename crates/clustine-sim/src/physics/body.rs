@@ -19,6 +19,27 @@ pub(crate) const AIR_DRAG: f32 = 0.98;
 /// The gravity of items and falling blocks (`getDefaultGravity`).
 pub(crate) const GRAVITY: f64 = 0.04;
 
+/// What a move's bounce reads of the entity beside its body: its gravity
+/// (`getEffectiveGravity`), its air drag (`getAirDrag`), its own bounciness
+/// (`getEntityBounciness`), and whether it is living, which takes a block's bounce whole
+/// where anything else takes four fifths of it (`getBlockBounciness`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Bounce {
+    pub(crate) gravity: f64,
+    pub(crate) air_drag: f32,
+    pub(crate) own: f64,
+    pub(crate) living: bool,
+}
+
+/// The bounce of items and falling blocks, which are not living and bounce of
+/// themselves not at all.
+pub(crate) const NOT_LIVING: Bounce = Bounce {
+    gravity: GRAVITY,
+    air_drag: AIR_DRAG,
+    own: 0.0,
+    living: false,
+};
+
 /// One move of the tick (`Entity.Movement`): where from and to, and, for a move the
 /// entity made itself, the move it asked for, whose axes the walk through the blocks
 /// takes one at a time.
@@ -162,6 +183,21 @@ impl Body {
         vector: Vec3,
         piston: Option<&mut [f64; 3]>,
     ) {
+        self.move_with(world, no_physics, vector, piston, NOT_LIVING, &mut |_| {});
+    }
+
+    /// [`Body::move_as`] for an entity that bounces as `bounce` says, and that does
+    /// `before_fall` to itself before its fall is counted (`checkFallDamage`'s own part
+    /// of a kind: a living entity's update of the fluids it is in).
+    pub(crate) fn move_with<W: World + ?Sized>(
+        &mut self,
+        world: &W,
+        no_physics: bool,
+        vector: Vec3,
+        piston: Option<&mut [f64; 3]>,
+        bounce: Bounce,
+        before_fall: &mut dyn FnMut(&mut Body),
+    ) {
         if no_physics {
             self.position = super::add(self.position, vector);
             self.horizontal_collision = false;
@@ -219,9 +255,10 @@ impl Body {
         self.check_supporting_block(world, Some(out));
         let on = self.on_pos_legacy(world);
         let below = world.state(on);
+        before_fall(self);
         self.check_fall_damage(out[1], on);
         if (moved_y && self.vertical_collision) || self.horizontal_collision {
-            self.restitute(below, x_collision, z_collision, out);
+            self.restitute(below, x_collision, z_collision, out, bounce);
         }
         let factor = f64::from(self.speed_factor(world));
         self.motion = [
@@ -282,8 +319,15 @@ impl Body {
 
     /// `restituteMovementAfterCollisions`: what a collision leaves of the motion, a
     /// bouncy block below giving part of a fall back.
-    fn restitute(&mut self, below: BlockState, x_collision: bool, z_collision: bool, out: Vec3) {
-        let mut bounciness = 0.0_f64;
+    fn restitute(
+        &mut self,
+        below: BlockState,
+        x_collision: bool,
+        z_collision: bool,
+        out: Vec3,
+        bounce: Bounce,
+    ) {
+        let mut bounciness = bounce.own;
         let motion = self.motion;
         let mut after = motion;
         if x_collision {
@@ -295,16 +339,19 @@ impl Body {
         let mut bounced = bounciness > 0.0 && (x_collision || z_collision);
         if self.vertical_collision {
             if self.vertical_collision_below {
-                bounciness = if -motion[1] <= GRAVITY || SUPPRESSES_BOUNCE.contains(below) {
+                bounciness = if -motion[1] <= bounce.gravity || SUPPRESSES_BOUNCE.contains(below) {
                     0.0
                 } else {
-                    bounciness.max(block_bounciness(below))
+                    bounciness.max(block_bounciness(below, bounce.living))
                 };
             }
             let (a, b) = if bounciness > 0.0 {
                 let ratio = out[1] / motion[1];
                 bounced = true;
-                (ratio * GRAVITY, lerp(ratio, 1.0, f64::from(AIR_DRAG)))
+                (
+                    ratio * bounce.gravity,
+                    lerp(ratio, 1.0, f64::from(bounce.air_drag)),
+                )
             } else {
                 (0.0, 1.0)
             };
@@ -344,11 +391,15 @@ pub(crate) fn physics_of(state: BlockState) -> Option<&'static clustine_data::Bl
     state.physics()
 }
 
-/// `getBlockBounciness` for an entity that is not living: four fifths of the block's,
-/// as floats.
-fn block_bounciness(state: BlockState) -> f64 {
+/// `getBlockBounciness`: the block's own for a living entity, four fifths of it, as
+/// floats, for anything else.
+fn block_bounciness(state: BlockState, living: bool) -> f64 {
     let restitution = physics_of(state).map_or(0.0, |physics| physics.bounce_restitution);
-    f64::from(restitution * 0.8)
+    if living {
+        f64::from(restitution)
+    } else {
+        f64::from(restitution * 0.8)
+    }
 }
 
 /// Whether `Level.clip(ClipContext(from, to, FALLDAMAGE_RESETTING, WATER))` hits

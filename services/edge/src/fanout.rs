@@ -26,10 +26,10 @@ use clustine_protocol::packets::play::{
     ChunkBatchFinished, ChunkBatchStart, Disconnect, EntityDataValue, GameEvent, LevelEvent, Login,
     PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
     RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetHeadRotation, SetHeldSlot, SetPassengers,
-    SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
-    TakeItemEntity, UnloadChunk, abilities, angle, animation, entity_data, game_event, game_mode,
-    inventory as protocol_inventory, level_event, player_info,
+    SetDefaultSpawnPosition, SetEntityData, SetEquipment, SetHeadRotation, SetHeldSlot,
+    SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
+    SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle, animation,
+    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -5380,6 +5380,12 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
+        // A living entity's head is sent as it turns (`getYHeadRot`): an armour stand's
+        // always faces its yaw.
+        let head_yaw = match data {
+            EntityData::ArmorStand { .. } => pairing.yaw,
+            _ => 0,
+        };
         let mut packets = vec![encoded(&SpawnEntity {
             entity_id: id,
             uuid: *uuid,
@@ -5390,13 +5396,27 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
             velocity: pairing.motion,
             pitch: pairing.pitch,
             yaw: pairing.yaw,
-            head_yaw: 0,
+            head_yaw,
             data: block,
         })];
         if !pairing.values.is_empty() {
             packets.push(encoded(&SetEntityData {
                 entity_id: id,
                 values: pairing.values.clone(),
+            }));
+        }
+        // A living entity's pairing goes on with what it wears, every slot that is not
+        // empty (`sendPairingData`). Its attributes (`UpdateAttributes`) are left out: a
+        // stand's are the defaults a client gives it, which no stack Clustine has
+        // changes.
+        if !pairing.equipment.is_empty() {
+            packets.push(encoded(&SetEquipment {
+                entity_id: id,
+                slots: pairing
+                    .equipment
+                    .iter()
+                    .map(|(slot, stack)| (*slot, Some(*stack)))
+                    .collect(),
             }));
         }
         return packets;
@@ -5444,9 +5464,18 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
 }
 
 /// The data of an entity other than a player that a client is told with its spawn:
-/// for an item, its stack (`ItemEntity.DATA_ITEM`).
+/// for an item, its stack (`ItemEntity.DATA_ITEM`); for an armour stand, the values of
+/// its data that are not the defaults.
 fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
     match data {
+        EntityData::ArmorStand { .. } => SetEntityData {
+            entity_id: id,
+            values: crate::tracking::living_values(data)
+                .into_iter()
+                .filter(|(_, _, default)| !default)
+                .map(|(index, value, _)| (index, value))
+                .collect(),
+        },
         EntityData::Item { stack, .. } => SetEntityData {
             entity_id: id,
             values: vec![(
@@ -20183,5 +20212,107 @@ mod scenarios {
         assert!(!asked.is_empty());
         assert_eq!(edge.at(WEST).chunks(Role::Viewer), view_area(HOME, SHORT));
         edge.end().await;
+    }
+
+    /// An armour stand wearing a helmet, posed in the head, at rest on the ground.
+    fn dressed_stand() -> EntityData {
+        let mut pose = [[clustine_world::Float(0.0); 3]; 6];
+        pose[0] = [
+            clustine_world::Float(10.0),
+            clustine_world::Float(0.0),
+            clustine_world::Float(0.0),
+        ];
+        for (part, default) in [
+            [-10.0, 0.0, -10.0],
+            [-15.0, 0.0, 10.0],
+            [-1.0, 0.0, -1.0],
+            [1.0, 0.0, 1.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            pose[part + 2] = default.map(clustine_world::Float);
+        }
+        EntityData::ArmorStand {
+            flags: 4,
+            disabled_slots: 0,
+            pose: Box::new(pose),
+            equipment: vec![(
+                5,
+                clustine_world::ItemStack {
+                    item: 1100,
+                    count: 1,
+                },
+            )],
+            health: clustine_world::Float(20.0),
+            last_hit: None,
+            air: 300,
+            frozen: 0,
+        }
+    }
+
+    #[test]
+    fn a_stand_is_spawned_facing_its_way_with_its_data_and_then_what_it_wears() {
+        let data = dressed_stand();
+        let state = EntityState {
+            entity: EntityId(9),
+            kind: EntityKind::Other {
+                kind: entity_types::ARMOR_STAND as u16,
+                uuid: Uuid::from_u128(9),
+                motion: [0.0, -0.0784, 0.0],
+                hops: 0,
+                data: data.clone(),
+            },
+            pose: Pose {
+                position: Vec3::new(3.5, -60.0, 3.5),
+                yaw: -180.0,
+                pitch: 0.0,
+                on_ground: true,
+            },
+        };
+        let seen = Seen {
+            kind: entity_types::ARMOR_STAND as u16,
+            position: [3.5, -60.0, 3.5],
+            motion: [0.0, -0.0784, 0.0],
+            yaw: -180.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        let pairing = Tracker::new(seen, &data, 0).pairing();
+        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing))
+            .iter()
+            .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
+            .collect();
+        let [
+            ClientboundPlay::SpawnEntity(spawn),
+            ClientboundPlay::SetEntityData(values),
+            ClientboundPlay::SetEquipment(worn),
+        ] = &packets[..]
+        else {
+            panic!("{packets:?}");
+        };
+        // Its head faces as it does: -180 degrees is half a turn, 128 of 256.
+        assert_eq!((spawn.yaw, spawn.head_yaw), (128, 128));
+        // The health its constructor sets, its arms, and the head's pose: what is not a
+        // default, in the order of their indices.
+        assert_eq!(
+            values.values,
+            [
+                (9, EntityDataValue::Float(20.0)),
+                (15, EntityDataValue::Byte(4)),
+                (16, EntityDataValue::Rotations([10.0, 0.0, 0.0])),
+            ]
+        );
+        assert_eq!(worn.entity_id, 4);
+        assert_eq!(
+            worn.slots,
+            [(
+                5,
+                Some(protocol::ItemStack {
+                    item: 1100,
+                    count: 1
+                })
+            )]
+        );
     }
 }

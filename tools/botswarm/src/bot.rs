@@ -1610,6 +1610,8 @@ impl Bot {
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
             | ClientboundPlay::SetEntityData(_)
+            // What an armour stand wears is nothing a bot keeps.
+            | ClientboundPlay::SetEquipment(_)
             | ClientboundPlay::Animate(_)
             // The bots neither ride nor lead anything yet, so what is said about riding,
             // leads and swings is not theirs to keep.

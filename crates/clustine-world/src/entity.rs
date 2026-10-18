@@ -273,6 +273,12 @@ pub enum EntityData {
         health: Float,
         /// The age at its last hit, for the game's two hits within five ticks.
         last_hit: Option<u32>,
+        /// `DATA_AIR_SUPPLY_ID`: the ticks of air it has left under water, 300 when
+        /// full, down to -20.
+        air: i16,
+        /// `DATA_TICKS_FROZEN`: the ticks it has stood in powder snow, which a client
+        /// shows as a shiver once it reaches 140.
+        frozen: u16,
     },
     /// An item frame or a glow item frame.
     ItemFrame {
