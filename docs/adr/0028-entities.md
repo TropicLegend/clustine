@@ -466,8 +466,7 @@ monsters; N7's animals spawn with their chunk.
 - A durable write lost with its machine (the write-back cache) can leave an entity shown
   from a receiver whose taking was lost, at the higher `hops`, until the edge's viewers
   move away: rare, and only without the cache's safety.
-- Named differences: a player whose vehicle arrives after them rides nothing until it
-  does (section 5); spawning's counts a few ticks late (section 8); the three uses of HotSpot's `Math.sin`/`Math.cos` (the Q
+- Named differences: spawning's counts a few ticks late (section 8); the three uses of HotSpot's `Math.sin`/`Math.cos` (the Q
   throw, elytra flight, TNT's priming) ported with `StrictMath` (the plan, 3.6).
 
 ## Steps
@@ -579,3 +578,30 @@ grant of a chunk with arrivals filed sends them (G4); a rider whose vehicle goes
 land their region does not know (Q1); `Claimed` as a reply in the group, the lender's
 order behind `PinnedBack`, a commit checked before its grant, the fold's chunks (Q2).
 The record is accepted with these.
+
+## Amended with step N5 (2026-10-18)
+
+Step N5 built section 5's "Vehicles and riders" as its plan's sections 7 and 8 have it
+(`docs/groundwork/n5-plan.md`), which amend this record:
+
+- A player on their way to their unit keeps their seat in it, by its place in the
+  passengers, which every rule of the game but positioning counts; the vehicle's report
+  of its passengers names them, and the edge takes it from the region whose word of the
+  vehicle counts by `hops`. So a rider is shown riding throughout a crossing, and the
+  named difference of one who rides nothing until their vehicle comes is gone.
+- The moves of their vehicle the player's client sends while they wait are kept, at
+  most twenty, not only the latest, and each is checked as one client tick from where
+  the vehicle is when they are seated; the vehicle stands still meanwhile.
+- A seat kept counts down with its vehicle's ticks and a waiting player with their own;
+  both are let go after 100 ticks, a seat also when its player's edge goes. A unit sent
+  on while a seat is kept leaves a forwarding entry, in memory only, so that the player
+  follows it; a region restored, merged or split within those ticks has none (named).
+- A unit with a player in it is held back at a line only where its region knows
+  nothing of the land beyond; anywhere else it goes, and its riders go to the region
+  that holds the land in the same commit.
+- A player who leaves while riding gets off, and the vehicle stays where it was: the
+  game's taking of a vehicle away with a lone rider is a named difference until ridden
+  animals (N7) bring a note of their own to ADR-0020.
+- Effects on entities (section 7) come with N5 for a player's hits and uses of an
+  entity across a line; a mount there is the player's hand-over, and an armour stand's
+  take does nothing across a line (named).

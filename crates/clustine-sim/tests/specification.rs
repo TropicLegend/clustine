@@ -960,6 +960,9 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 

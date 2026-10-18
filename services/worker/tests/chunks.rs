@@ -1305,6 +1305,9 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 

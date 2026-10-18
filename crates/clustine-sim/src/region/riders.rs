@@ -10,7 +10,7 @@
 //! it is held back at the line, and so is its rider with it.
 
 use clustine_data::entity_types;
-use clustine_world::{Entity, EntityData, EntityField, EntityId, PlayerId, Seat};
+use clustine_world::{ChunkPos, Entity, EntityData, EntityField, EntityId, PlayerId, Seat};
 
 use super::riding::{DismountPose, STANDING_HEIGHTS, add_passenger, passenger_point};
 use super::{Player, Region};
@@ -153,6 +153,7 @@ impl Region {
             vehicle,
             chunk,
             check: Default::default(),
+            pending: None,
         });
         self.journal.players.insert(id);
         self.seat_player(id, output);
@@ -308,6 +309,11 @@ impl Region {
             })
             .collect();
         for (id, riding, entity, sneaking) in riding {
+            // One on their way to their unit is seated or given up on by
+            // `tick_waiting_riders`, and neither gets off nor is put anywhere meanwhile.
+            if riding.pending.is_some() {
+                continue;
+            }
             let seated = self
                 .find_entity(riding.vehicle)
                 .is_some_and(|(_, vehicle)| {
@@ -323,5 +329,320 @@ impl Region {
                 self.seat_player(id, output);
             }
         }
+    }
+}
+
+/// How long a seat is kept for a player on their way to it, and a player waits for
+/// their unit, in ticks (ADR-0028, section 5: "within 100 ticks").
+pub(crate) const PENDING_FOR: u16 = 100;
+
+impl Region {
+    /// Whether the riders of a unit sent into the chunk `to` can follow it: the region
+    /// knows who holds the chunk, another region or itself (a chunk of its own not
+    /// loaded, which its arrival comes back to). Into land it knows nothing of, or has
+    /// asked for, the unit is held back at the line until it knows.
+    pub(crate) fn riders_may_follow(&self, to: ChunkPos) -> bool {
+        matches!(
+            self.land.knowledge(to),
+            super::Knowledge::Foreign(_) | super::Knowledge::Held
+        )
+    }
+
+    /// Before the unit of the root `root` (as its tick leaves it) of the chunk `from` is
+    /// sent into the chunk `to`: each of the region's players seated in it is on their
+    /// way with it, their seat kept for them and their holding chunk the unit's new one,
+    /// so that the end of the tick hands them on to its holder in the commit that sends
+    /// the unit (`docs/groundwork/n5-plan.md`, section 4 and section 8 item 8); a seat
+    /// kept already for a player not come yet leaves a forwarding entry, so that they
+    /// follow when they come.
+    pub(crate) fn riders_follow(
+        &mut self,
+        from: ChunkPos,
+        root: &mut Entity,
+        to: ChunkPos,
+        output: &mut TickOutput,
+    ) {
+        let members = self.unit_records(from, root.clone());
+        for member in members {
+            if !member.riding.passengers.iter().any(|seat| seat.player) {
+                continue;
+            }
+            let mut riding = member.riding.clone();
+            for seat in &mut riding.passengers {
+                if !seat.player {
+                    continue;
+                }
+                if seat.pending.is_some() {
+                    self.forwarded.insert(member.key, (to, PENDING_FOR));
+                    continue;
+                }
+                let Some(id) = self.player_with_entity(seat.key) else {
+                    continue;
+                };
+                let player = self.players.get_mut(&id).expect("found above");
+                seat.pending = Some(clustine_world::Pending {
+                    left: PENDING_FOR,
+                    edge: player.edge,
+                });
+                if let Some(rides) = player.riding.as_mut() {
+                    rides.chunk = to;
+                    rides.pending = Some(PENDING_FOR);
+                }
+                self.journal.players.insert(id);
+            }
+            if member.key == root.key {
+                root.riding = riding;
+            } else {
+                self.commit_entity(from, member.key, vec![EntityField::Riding(riding)], output);
+            }
+        }
+    }
+
+    /// A player has come in on their way to their unit (`PlayerTransfer::riding`), or a
+    /// unit has come with a seat kept for a player who is here: seats them where the
+    /// unit is here and keeps their seat, gets them off at once where the unit is here
+    /// and has no seat for them, sends them on where the region sent the unit on, and
+    /// otherwise lets them wait.
+    pub(crate) fn rider_arrived(&mut self, id: PlayerId, output: &mut TickOutput) {
+        let Some(player) = self.players.get(&id) else {
+            return;
+        };
+        let Some(riding) = player.riding else {
+            return;
+        };
+        if riding.pending.is_none() {
+            return;
+        }
+        let entity = player.entity_id;
+        let Some((chunk, vehicle)) = self.find_entity(riding.vehicle) else {
+            if let Some((to, _)) = self.forwarded.get(&riding.vehicle).copied() {
+                // Sent on: the player's holding chunk is where it went, whose holder the
+                // end of the tick hands them on to.
+                let player = self.players.get_mut(&id).expect("found above");
+                if let Some(rides) = player.riding.as_mut() {
+                    rides.chunk = to;
+                }
+                self.journal.players.insert(id);
+            }
+            return;
+        };
+        let Some(index) = vehicle
+            .riding
+            .passengers
+            .iter()
+            .position(|seat| seat.key == entity)
+        else {
+            // Their seat is gone: they get off where they are, as one whose vehicle
+            // did not come.
+            self.give_up_waiting(id, output);
+            return;
+        };
+        let mut record = vehicle.clone();
+        if record.riding.passengers[index].pending.take().is_some() {
+            self.commit_entity(
+                chunk,
+                record.key,
+                vec![EntityField::Riding(record.riding.clone())],
+                output,
+            );
+        }
+        let player = self.players.get_mut(&id).expect("found above");
+        let kept = std::mem::take(&mut player.kept);
+        if let Some(rides) = player.riding.as_mut() {
+            rides.chunk = chunk;
+            rides.pending = None;
+        }
+        self.journal.players.insert(id);
+        self.seat_player(id, output);
+        // The moves their client sent meanwhile, each as one client tick, the check of
+        // the first counting from where the vehicle is now, as `tickPlayer` would seed it
+        // (`docs/groundwork/n5-plan.md`, section 7 item 4).
+        if !kept.is_empty() {
+            let root = self.root_of(riding.vehicle);
+            if let Some((_, root)) = self.find_entity(root) {
+                let position = root.position;
+                let player = self.players.get_mut(&id).expect("found above");
+                if let Some(rides) = player.riding.as_mut() {
+                    rides.check = crate::physics::vehicle_move::seeded(&rides.check, position);
+                }
+            }
+            for moved in kept {
+                self.move_vehicle(id, moved, output);
+            }
+        }
+    }
+
+    /// The player `id`, whose unit did not come in time or kept no seat for them, gets
+    /// off where they are and is never seated in it later; their client is told so.
+    fn give_up_waiting(&mut self, id: PlayerId, output: &mut TickOutput) {
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        player.riding = None;
+        player.kept.clear();
+        self.journal.players.insert(id);
+        let pose = player.pose;
+        output.player_events.push((
+            id,
+            PlayerEvent::Rides {
+                vehicle: None,
+                pose,
+            },
+        ));
+    }
+
+    /// A move of their vehicle by the client of a player who waits for it: kept, the
+    /// oldest let go beyond [`crate::state::KEPT_MOVES`].
+    pub(crate) fn keep_vehicle_move(&mut self, id: PlayerId, moved: crate::api::VehicleMove) {
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        if player.kept.len() >= crate::state::KEPT_MOVES {
+            player.kept.remove(0);
+        }
+        player.kept.push(moved);
+        self.journal.players.insert(id);
+    }
+
+    /// Counts down the seats of `vehicle` kept for players on their way, and lets go of
+    /// one whose time is up: its player gets off where they are, wherever they are.
+    pub(crate) fn count_pending_seats(&mut self, vehicle: EntityId, output: &mut TickOutput) {
+        let Some((chunk, record)) = self.find_entity(vehicle) else {
+            return;
+        };
+        if !record
+            .riding
+            .passengers
+            .iter()
+            .any(|seat| seat.pending.is_some())
+        {
+            return;
+        }
+        let mut record = record.clone();
+        for seat in &mut record.riding.passengers {
+            if let Some(pending) = seat.pending.as_mut() {
+                pending.left = pending.left.saturating_sub(1);
+            }
+        }
+        let before = record.riding.passengers.len();
+        record
+            .riding
+            .passengers
+            .retain(|seat| seat.pending.is_none_or(|pending| pending.left > 0));
+        let dropped = record.riding.passengers.len() != before;
+        self.commit_entity(
+            chunk,
+            vehicle,
+            vec![EntityField::Riding(record.riding.clone())],
+            output,
+        );
+        if dropped {
+            output.events.push(RegionEvent::Passengers {
+                vehicle,
+                chunk,
+                hops: record.hops,
+                passengers: record
+                    .riding
+                    .passengers
+                    .iter()
+                    .map(|seat| seat.key)
+                    .collect(),
+            });
+        }
+    }
+
+    /// Lets go of every seat kept for a player of the edge `edge`, which has gone: none
+    /// of them comes now (`docs/groundwork/n5-plan.md`, section 8 item 9).
+    pub(crate) fn drop_pending_seats_of(
+        &mut self,
+        edge: clustine_world::EdgeId,
+        output: &mut TickOutput,
+    ) {
+        let units: Vec<(EntityId, ChunkPos)> =
+            self.chunks
+                .iter()
+                .flat_map(|(position, chunk)| {
+                    chunk
+                        .entities()
+                        .iter()
+                        .filter(|entity| {
+                            entity.riding.passengers.iter().any(|seat| {
+                                seat.pending.is_some_and(|pending| pending.edge == edge)
+                            })
+                        })
+                        .map(|entity| (entity.key, *position))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        for (key, chunk) in units {
+            let Some(mut record) = self.entity_record(key, chunk).cloned() else {
+                continue;
+            };
+            record
+                .riding
+                .passengers
+                .retain(|seat| seat.pending.is_none_or(|pending| pending.edge != edge));
+            self.commit_entity(
+                chunk,
+                key,
+                vec![EntityField::Riding(record.riding.clone())],
+                output,
+            );
+            output.events.push(RegionEvent::Passengers {
+                vehicle: key,
+                chunk,
+                hops: record.hops,
+                passengers: record
+                    .riding
+                    .passengers
+                    .iter()
+                    .map(|seat| seat.key)
+                    .collect(),
+            });
+        }
+    }
+
+    /// The waiting players' and the forwarding entries' part of the tick: a player whose
+    /// unit has come is seated, one who has waited [`PENDING_FOR`] ticks gets off where
+    /// they are, and an entry whose time is up goes.
+    pub(crate) fn tick_waiting_riders(&mut self, output: &mut TickOutput) {
+        // One whose unit went to another region's land leaves at the end of the tick and
+        // waits there, not here.
+        let waiting: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, player)| {
+                player.riding.is_some_and(|riding| {
+                    riding.pending.is_some()
+                        && !matches!(
+                            self.land.knowledge(riding.chunk),
+                            super::Knowledge::Foreign(_)
+                        )
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in waiting {
+            self.rider_arrived(id, output);
+            let Some(player) = self.players.get_mut(&id) else {
+                continue;
+            };
+            let Some(rides) = player.riding.as_mut() else {
+                continue;
+            };
+            let Some(left) = rides.pending.as_mut() else {
+                continue;
+            };
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                self.give_up_waiting(id, output);
+            } else {
+                self.journal.players.insert(id);
+            }
+        }
+        self.forwarded.retain(|_, (_, left)| {
+            *left = left.saturating_sub(1);
+            *left > 0
+        });
     }
 }

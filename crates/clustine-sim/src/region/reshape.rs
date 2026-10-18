@@ -511,6 +511,7 @@ mod tests {
             attempt: attempt_of(entity),
             riding: None,
             keys: Default::default(),
+            kept: Vec::new(),
         }
     }
 
@@ -532,6 +533,9 @@ mod tests {
             hops: stay.hops,
             flying: stay.flying,
             attempt: stay.attempt,
+            riding: stay.riding,
+            keys: stay.keys,
+            kept: stay.kept,
         }
     }
 

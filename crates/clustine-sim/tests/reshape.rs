@@ -373,6 +373,9 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
@@ -389,6 +392,9 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hops: state.hops + 1,
         flying: state.flying,
         attempt: state.attempt,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
@@ -408,6 +414,7 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         attempt: transfer.attempt,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
@@ -2332,6 +2339,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 

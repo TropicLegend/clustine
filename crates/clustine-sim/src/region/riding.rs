@@ -378,7 +378,13 @@ impl Region {
         if to == from {
             return Relocated::Stays;
         }
-        if !self.chunks.contains_key(&to) && self.has_player_seat(from, after) {
+        // A unit with a player in it goes as any other, its riders after it (`riders.rs`):
+        // it is held back only where the riders cannot follow, into land the region
+        // knows nothing of and does not hold, until it learns who holds it.
+        if !self.chunks.contains_key(&to)
+            && self.has_player_seat(from, after)
+            && !self.riders_may_follow(to)
+        {
             let may = |chunk: ChunkPos| chunk == from || self.chunks.contains_key(&chunk);
             let x_side = ChunkPos::containing(after.position[0], before[2]);
             if x_side != ChunkPos::containing(before[0], before[2]) && !may(x_side) {
@@ -397,6 +403,7 @@ impl Region {
             }
         }
         if !self.chunks.contains_key(&to) {
+            self.riders_follow(from, after, to, output);
             self.send_entity(from, after.clone(), output);
             return Relocated::Sent;
         }
@@ -783,6 +790,8 @@ impl Region {
         if depth > DEEPEST {
             return;
         }
+        // The seats kept for players on their way count down with the vehicle's ticks.
+        self.count_pending_seats(vehicle, output);
         let Some((_, record)) = self.find_entity(vehicle) else {
             return;
         };

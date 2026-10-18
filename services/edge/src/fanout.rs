@@ -2938,11 +2938,20 @@ impl Fanout {
                 motion,
                 ..
             } => self.hand_on(from, entity, hops, position, motion).await,
+            // Whom a vehicle carries counts from the region whose word of the vehicle
+            // counts, as its moves do: across a line the region it went to says it
+            // with one change of holder more (`docs/groundwork/n5-plan.md`, section 8
+            // item 4).
             RegionEvent::Passengers {
                 vehicle,
+                hops,
                 passengers,
                 ..
-            } => self.show_passengers(vehicle, passengers).await,
+            } => {
+                if self.takes_word_of(from, vehicle, hops) {
+                    self.show_passengers(vehicle, passengers).await;
+                }
+            }
             RegionEvent::EntityEvent { entity, event, .. } => {
                 if self.is_of(entity, from) {
                     self.show_entity_event(entity, event).await;
@@ -6020,6 +6029,9 @@ mod tests {
             hops: 0,
             flying: false,
             attempt: None,
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         }
     }
 
@@ -8917,6 +8929,9 @@ mod scenarios {
             hops: 0,
             flying: false,
             attempt: None,
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         }
     }
 

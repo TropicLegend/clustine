@@ -760,27 +760,6 @@ fn a_root_that_moves_into_another_loaded_chunk_takes_its_passengers_with_it() {
 }
 
 #[test]
-fn a_unit_with_a_players_seat_is_held_back_at_the_line() {
-    let mut region = at_a_line(ChunkArea::EVERYWHERE, &[]);
-    let mut sliding = item(1, [15.95, -60.0, 8.5], [0.2, 0.0, 0.1], true);
-    sliding.riding.passengers.push(Seat {
-        key: EntityId(77),
-        player: true,
-        pending: None,
-    });
-    lay(&mut region, &sliding);
-    let output = idle(&mut region);
-    assert!(output.arrivals.is_empty(), "{:?}", output.arrivals);
-    let held = record(&region, sliding.key).unwrap();
-    assert_eq!(held.position[0], 15.95);
-    assert_eq!(held.motion[0], 0.0);
-    assert!(held.position[2] > 8.5, "it goes on along z: {held:?}");
-    assert_eq!(region.entity_chunks[&sliding.key], ORIGIN);
-}
-
-// Vehicles hit and broken.
-
-#[test]
 fn five_full_hits_break_a_cart_which_drops_itself_and_the_fourth_does_not() {
     let mut region = on_ticking_floor_with(&[]);
     let target = cart(1, [8.5, -60.0, 8.5]);
@@ -1465,4 +1444,219 @@ fn a_cushion_used_on_the_floor_is_laid_on_it_facing_the_player_s_way_and_sat_on(
     assert_eq!(count, 1);
     checked(&mut region, &use_entity(seat));
     assert!(region.players[&player(1)].riding.is_some());
+}
+
+/// Pinned east of the line at block x = 16, as [`super::arrivals::WEST_OF_THE_LINE`] is
+/// west of it.
+const EAST_OF_THE_LINE: ChunkArea = ChunkArea {
+    min_x: Some(1),
+    max_x: None,
+};
+
+/// Region A, west of the line, with player 1 seated on a cart its tick has left over the
+/// line at x = 16.2, and what A's next tick did.
+fn a_rider_crosses() -> (Region, Entity, TickOutput) {
+    let mut a = at_a_line(super::arrivals::WEST_OF_THE_LINE, &[]);
+    let mut carrier = cart(1, [16.2, -60.0, 8.5]);
+    carrier.riding.passengers.push(Seat {
+        key: EntityId(1),
+        player: true,
+        pending: None,
+    });
+    lay_in(&mut a, ORIGIN, &carrier);
+    let rider = a.players.get_mut(&player(1)).unwrap();
+    // Where the cart's seat puts them: 0.1875 up, less the player's 0.6.
+    rider.pose.position = Vec3::new(16.2, (-60.0 + 0.1875) - 0.6, 8.5);
+    rider.riding = Some(crate::state::PlayerRiding {
+        vehicle: carrier.key,
+        chunk: ORIGIN,
+        check: Default::default(),
+        pending: None,
+    });
+    let output = idle(&mut a);
+    (a, carrier, output)
+}
+
+/// The hand-over of player 1 a tick made.
+fn handed_over(output: &TickOutput) -> PlayerTransfer {
+    output
+        .durable
+        .iter()
+        .find_map(|(_, _, entry)| match entry {
+            Durable::Departed {
+                player: who,
+                transfer,
+                ..
+            } if *who == player(1) => Some(transfer.clone()),
+            _ => None,
+        })
+        .expect("the rider is handed over")
+}
+
+/// Region B, east of the line, with the chunks about the crossing loaded and ticking.
+fn the_far_side() -> Region {
+    let mut b = fresh(EAST_OF_THE_LINE, EntityIds::block(3).unwrap());
+    let ours: Vec<ChunkPos> = (1..=2)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .collect();
+    checked(&mut b, &tickets(ours.clone(), vec![]));
+    let copies = (-1..=1).map(|z| (ChunkPos::new(0, z), floor())).collect();
+    checked(
+        &mut b,
+        &TickInputs {
+            chunks_loaded: ours.iter().map(|position| (*position, floor())).collect(),
+            copy_bases: copies,
+            ..TickInputs::default()
+        },
+    );
+    assert!(b.ticks_chunk(EAST));
+    b
+}
+
+fn arrivals_of(output: &TickOutput) -> Vec<Arrival> {
+    output
+        .arrivals
+        .iter()
+        .enumerate()
+        .map(|(index, (chunk, entity))| Arrival {
+            id: EffectId {
+                sequence: 11,
+                index: index as u32,
+            },
+            chunk: *chunk,
+            entity: entity.clone(),
+            due: Due::FromTaking,
+        })
+        .collect()
+}
+
+#[test]
+fn a_cart_crossing_a_line_takes_its_rider_with_it_in_the_same_commit_their_seat_kept() {
+    let (a, carrier, output) = a_rider_crosses();
+    let [(to, sent)] = &output.arrivals[..] else {
+        panic!("{:?}", output.arrivals);
+    };
+    assert_eq!(*to, EAST);
+    let seat = &sent.riding.passengers[0];
+    assert_eq!(seat.key, EntityId(1));
+    assert_eq!(seat.pending.map(|pending| pending.left), Some(100));
+    let transfer = handed_over(&output);
+    let riding = transfer.riding.expect("on their way to their cart");
+    assert_eq!((riding.vehicle, riding.chunk), (carrier.key, EAST));
+    assert_eq!(riding.pending, Some(100));
+    assert!(!a.players.contains_key(&player(1)));
+}
+
+#[test]
+fn a_rider_who_comes_after_their_cart_is_seated_with_no_teleport() {
+    let (_, carrier, output) = a_rider_crosses();
+    let transfer = handed_over(&output);
+    let mut b = the_far_side();
+    checked(
+        &mut b,
+        &TickInputs {
+            arrivals: arrivals_of(&output),
+            ..TickInputs::default()
+        },
+    );
+    let kept = record(&b, carrier.key).unwrap();
+    assert!(
+        kept.riding.passengers[0].pending.is_some(),
+        "kept for the rider"
+    );
+    let came = checked(&mut b, &changes(vec![arrive(1, &transfer)]));
+    let riding = b.players[&player(1)].riding.expect("seated");
+    assert_eq!(riding.pending, None);
+    let seat = &record(&b, carrier.key).unwrap().riding.passengers[0];
+    assert_eq!((seat.key, seat.pending), (EntityId(1), None));
+    assert!(
+        !came
+            .player_events
+            .iter()
+            .any(|(_, event)| matches!(event, PlayerEvent::Rides { .. })),
+        "riding on is no teleport: {:?}",
+        came.player_events
+    );
+}
+
+#[test]
+fn a_rider_who_comes_before_their_cart_waits_and_is_seated_when_it_comes() {
+    let (_, carrier, output) = a_rider_crosses();
+    let transfer = handed_over(&output);
+    let mut b = the_far_side();
+    checked(&mut b, &changes(vec![arrive(1, &transfer)]));
+    assert_eq!(
+        b.players[&player(1)]
+            .riding
+            .and_then(|riding| riding.pending),
+        Some(99),
+        "waiting, a tick counted"
+    );
+    let came = checked(
+        &mut b,
+        &TickInputs {
+            arrivals: arrivals_of(&output),
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(b.players[&player(1)].riding.unwrap().pending, None);
+    assert_eq!(
+        record(&b, carrier.key).unwrap().riding.passengers[0].pending,
+        None
+    );
+    assert!(
+        !came
+            .player_events
+            .iter()
+            .any(|(_, event)| matches!(event, PlayerEvent::Rides { .. }))
+    );
+}
+
+#[test]
+fn a_rider_whose_cart_never_comes_gets_off_where_they_are_after_a_hundred_ticks() {
+    let (_, _, output) = a_rider_crosses();
+    let transfer = handed_over(&output);
+    let mut b = the_far_side();
+    checked(&mut b, &changes(vec![arrive(1, &transfer)]));
+    for tick in 0..98 {
+        let output = idle(&mut b);
+        assert!(
+            b.players
+                .get(&player(1))
+                .is_some_and(|player| player.riding.is_some()),
+            "tick {tick}: {:?} {:?}",
+            output.durable,
+            output.player_events
+        );
+    }
+    let off = idle(&mut b);
+    assert!(b.players[&player(1)].riding.is_none());
+    assert!(off.player_events.iter().any(|(id, event)| {
+        *id == player(1) && matches!(event, PlayerEvent::Rides { vehicle: None, .. })
+    }));
+}
+
+#[test]
+fn a_seat_kept_for_a_rider_who_never_comes_is_let_go_after_a_hundred_ticks() {
+    let (_, carrier, output) = a_rider_crosses();
+    let mut b = the_far_side();
+    checked(
+        &mut b,
+        &TickInputs {
+            arrivals: arrivals_of(&output),
+            ..TickInputs::default()
+        },
+    );
+    for _ in 0..98 {
+        idle(&mut b);
+    }
+    assert_eq!(record(&b, carrier.key).unwrap().riding.passengers.len(), 1);
+    idle(&mut b);
+    assert!(
+        record(&b, carrier.key)
+            .unwrap()
+            .riding
+            .passengers
+            .is_empty()
+    );
 }

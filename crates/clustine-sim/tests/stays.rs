@@ -268,6 +268,9 @@ fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -
         hops,
         flying: false,
         attempt,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
@@ -619,6 +622,9 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         hops: 1,
         flying: true,
         attempt: Some(ATTEMPT),
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -650,6 +656,9 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         hops: 1,
         flying: place.flying,
         attempt: Some(ATTEMPT),
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -921,6 +930,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     };
     other.players.insert(player(5), theirs.clone());
     let merged = region.absorb(OTHER, &other);
@@ -1368,6 +1378,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     };
     state.players.insert(player(1), earlier.clone());
     let holdings = Holdings {
@@ -1449,6 +1460,7 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     };
     for (ours, theirs) in [(1, 3), (3, 1), (2, 2)] {
         let survivor = home();
@@ -1599,6 +1611,7 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     };
     state.players.insert(player(1), earlier);
     let holdings = Holdings {

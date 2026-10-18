@@ -829,6 +829,9 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     };
     let before = region.state();
     let output = tick(

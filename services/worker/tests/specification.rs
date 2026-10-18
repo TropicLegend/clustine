@@ -5383,6 +5383,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 

@@ -263,6 +263,9 @@ mod tests {
             hops: 3,
             flying: true,
             attempt: Some(u64::MAX),
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         }
     }
 

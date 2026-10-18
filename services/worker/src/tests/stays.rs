@@ -736,6 +736,9 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         hops: 1,
         flying: false,
         attempt: Some(72),
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     };
     let let_go = Durable::Departed {
         player: player(),

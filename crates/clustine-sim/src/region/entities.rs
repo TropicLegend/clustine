@@ -328,7 +328,9 @@ impl Region {
                 .entity_changes
                 .push((position, EntityChange::Set(key, fields)));
         }
-        // The riding players after the vehicles they ride.
+        // The riding players after the vehicles they ride, those on their way to theirs
+        // first, whom a unit taken in this tick may seat.
+        self.tick_waiting_riders(output);
         self.tick_riding_players(output);
         output.entities_ageing.sort();
         output.entities_ageing.dedup();

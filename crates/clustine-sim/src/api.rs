@@ -150,6 +150,14 @@ pub struct PlayerTransfer {
     /// [`PlayerJoin::attempt`] of the join that began the stay, for as long as no
     /// input of the stay has been applied by any region.
     pub attempt: Option<u64>,
+    /// What the player rides, handed on with them when their unit crossed a line: the
+    /// unit's new chunk, which is their holding chunk, and that they are on their way
+    /// to it (`docs/groundwork/n5-plan.md`, section 4 and 7).
+    pub riding: Option<crate::state::PlayerRiding>,
+    /// The keys they hold, which their client says only when they change.
+    pub keys: Keys,
+    /// Moves of their vehicle kept for them; see [`crate::PlayerState::kept`].
+    pub kept: Vec<VehicleMove>,
 }
 
 /// A player entering or leaving the region. Each but `Discard` names the edge it came

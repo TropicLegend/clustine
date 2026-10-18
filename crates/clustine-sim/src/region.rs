@@ -260,9 +260,10 @@ struct Player {
     hops: u32,
     flying: bool,
     attempt: Option<u64>,
-    /// See [`PlayerState::riding`] and [`PlayerState::keys`].
+    /// See [`PlayerState::riding`], [`PlayerState::keys`] and [`PlayerState::kept`].
     riding: Option<PlayerRiding>,
     keys: Keys,
+    kept: Vec<crate::api::VehicleMove>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -393,6 +394,12 @@ pub struct Region {
     /// What the game keeps of an entity in memory and not in its record, by key
     /// (`items.rs`); forgotten at a take-in, so no part of the state.
     entity_memory: BTreeMap<EntityId, items::Memory>,
+    /// Units sent on with a seat kept in them for a player not come yet: where each
+    /// went and for how many ticks more the entry counts, so that the player follows
+    /// (`docs/groundwork/n5-plan.md`, section 8 item 5). Kept in memory only: a region
+    /// restored, merged or split within those ticks has none, and the player, not seated
+    /// in time, gets off where they are (a named difference).
+    forwarded: BTreeMap<EntityId, (ChunkPos, u16)>,
     /// How far pistons have moved each entity along each axis in this tick
     /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
     /// them at the first push of a tick.
@@ -506,6 +513,7 @@ impl Region {
             entity_draws: BTreeMap::new(),
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
+            forwarded: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
@@ -1057,6 +1065,8 @@ impl Region {
             }
             self.remove_player(player, output);
         }
+        // Seats kept for the edge's players on their way are kept for nobody now.
+        self.drop_pending_seats_of(id, output);
         // The stays of the edge that are entering go with its players. None of them
         // has an entity anyone was shown.
         let entering: Vec<_> = self
@@ -1275,7 +1285,11 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let position = transfer.pose.position;
-        let chunk = ChunkPos::containing(position.x, position.z);
+        // A rider belongs where their unit is (ADR-0028, section 5).
+        let chunk = transfer.riding.map_or_else(
+            || ChunkPos::containing(position.x, position.z),
+            |riding| riding.chunk,
+        );
         let arriving = transfer.entity_id;
         let present = self
             .players
@@ -1375,10 +1389,11 @@ impl Region {
             hops: transfer.hops,
             flying: transfer.flying,
             attempt: transfer.attempt,
-            // A hand-over of a rider comes with the riders' step; until then a unit with a
-            // player in it is held back at a line, and its rider with it.
-            riding: None,
-            keys: Keys::default(),
+            // A rider comes on their way to their unit, which is seated or waited for
+            // as the tick takes them in (`riders.rs`).
+            riding: transfer.riding,
+            keys: transfer.keys,
+            kept: transfer.kept.clone(),
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1386,6 +1401,7 @@ impl Region {
             .events
             .push(RegionEvent::EntitySpawned(player.entity_state(id)));
         self.players.insert(id, player);
+        self.rider_arrived(id, output);
         self.journal.players.insert(id);
     }
 
@@ -1457,6 +1473,9 @@ impl Region {
                         hops: 1,
                         flying: place.flying,
                         attempt: Some(attempt),
+                        riding: None,
+                        keys: Default::default(),
+                        kept: Vec::new(),
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -1488,6 +1507,7 @@ impl Region {
             attempt: Some(attempt),
             riding: None,
             keys: Keys::default(),
+            kept: Vec::new(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -1827,7 +1847,14 @@ impl Region {
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
             // A driven vehicle's moves and paddles (`boats.rs`).
-            PlayerInput::MoveVehicle(moved) => self.move_vehicle(id, *moved, output),
+            // A player on their way to their unit keeps its moves for when they come.
+            PlayerInput::MoveVehicle(moved) => {
+                if player.riding.is_some_and(|riding| riding.pending.is_some()) {
+                    self.keep_vehicle_move(id, *moved);
+                } else {
+                    self.move_vehicle(id, *moved, output);
+                }
+            }
             PlayerInput::PaddleBoat { left, right } => {
                 self.paddle_boat(id, *left, *right, output);
             }
@@ -2717,6 +2744,7 @@ impl Player {
             attempt: self.attempt,
             riding: self.riding,
             keys: self.keys,
+            kept: self.kept.clone(),
         }
     }
 
@@ -2737,6 +2765,7 @@ impl Player {
             attempt: state.attempt,
             riding: state.riding,
             keys: state.keys,
+            kept: state.kept,
         }
     }
 
@@ -2763,6 +2792,9 @@ impl Player {
             hops: self.hops + 1,
             flying: self.flying,
             attempt: self.attempt,
+            riding: self.riding,
+            keys: self.keys,
+            kept: self.kept,
         }
     }
 
@@ -4914,6 +4946,9 @@ mod tests {
             hops: 0,
             flying: false,
             attempt: None,
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         }
     }
 
@@ -5482,6 +5517,9 @@ mod tests {
                         hops: 1,
                         flying: false,
                         attempt: None,
+                        riding: None,
+                        keys: Default::default(),
+                        kept: Vec::new(),
                     }
                 ),
             ]
@@ -5787,6 +5825,9 @@ mod tests {
             hops: 1,
             flying: false,
             attempt: Some(attempt(1)),
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
         assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);

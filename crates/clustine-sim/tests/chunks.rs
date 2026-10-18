@@ -305,6 +305,9 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
@@ -321,6 +324,9 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         hops: state.hops + 1,
         flying: state.flying,
         attempt: state.attempt,
+        riding: None,
+        keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 

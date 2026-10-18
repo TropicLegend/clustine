@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Durable, Inventory, Keys, Pose};
+use crate::api::{Durable, Inventory, Keys, Pose, VehicleMove};
 
 /// Everything a region knows apart from its chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,7 +86,14 @@ pub struct PlayerState {
     pub riding: Option<PlayerRiding>,
     /// The keys the player holds, as their client last said.
     pub keys: Keys,
+    /// The moves of their vehicle the player's client sent while they waited for it,
+    /// oldest first, at most [`KEPT_MOVES`]: applied in order when they are seated
+    /// (`docs/groundwork/n5-plan.md`, section 7 item 4).
+    pub kept: Vec<VehicleMove>,
 }
+
+/// The most moves of a vehicle kept for a player who waits for it.
+pub const KEPT_MOVES: usize = 20;
 
 /// The vehicle a player sits on, and the chunk of its unit, which is the player's
 /// holding chunk while they ride: where they belong is judged by it, not by their own
@@ -98,6 +105,10 @@ pub struct PlayerRiding {
     /// What the game's connection keeps for the check of the moves of the vehicle the
     /// player drives (`docs/groundwork/n5-brief.md`, finding 12 and section 2.3).
     pub check: VehicleCheck,
+    /// For a player handed over to their unit's region before the unit came, the ticks
+    /// they wait for it still: seated, vehicle pending (ADR-0028, section 5;
+    /// `docs/groundwork/n5-plan.md`, sections 7 and 8). `None` once seated.
+    pub pending: Option<u16>,
 }
 
 /// The state the game's `ServerGamePacketListenerImpl` keeps for a vehicle's moves:

@@ -1165,6 +1165,9 @@ impl Script {
             hops: 0,
             flying: false,
             attempt: None,
+            riding: None,
+            keys: Default::default(),
+            kept: Vec::new(),
         };
         person.region = to;
         person.chunk = chunk;

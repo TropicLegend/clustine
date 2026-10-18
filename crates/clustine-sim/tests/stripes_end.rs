@@ -418,6 +418,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         attempt: None,
         riding: None,
         keys: Default::default(),
+        kept: Vec::new(),
     }
 }
 
