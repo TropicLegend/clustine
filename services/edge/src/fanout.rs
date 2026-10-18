@@ -7279,6 +7279,7 @@ mod scenarios {
     mod block_destroyed;
     mod items;
     mod items_specification;
+    mod physics_specification;
     mod redstone;
     mod tracking;
 
