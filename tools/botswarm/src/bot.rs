@@ -9,6 +9,7 @@ use clustine_data::{
 };
 use clustine_protocol::chunk::{PaletteKind, SectionData, decode_sections};
 use clustine_protocol::codec::{Position, Reader};
+use clustine_protocol::delta::VecDeltaCodec;
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids;
 use clustine_protocol::packets::configuration::{
@@ -25,8 +26,8 @@ use clustine_protocol::packets::play::{
     LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
     ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
     SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
-    SynchronizePlayerPosition, UseItemOn, face, inventory, movement_flags, player_action,
-    player_input,
+    SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
+    movement_flags, player_action, player_input,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -112,6 +113,21 @@ pub struct JoinInfo {
     /// Tags by registry and tag name, with members as numeric ids.
     pub tags: BTreeMap<String, BTreeMap<String, Vec<i32>>>,
     pub login: Login,
+}
+
+/// Where a relative move takes an entity from `position`, the base a client keeps for
+/// it: the end of the move's last step, each step being from the base.
+fn moved_by(position: (f64, f64, f64), delta: &VecDelta) -> (f64, f64, f64) {
+    let delta = match delta {
+        VecDelta::Linear(delta) => *delta,
+        VecDelta::Stepped(steps) => match steps.last() {
+            Some((_, delta)) => *delta,
+            None => return position,
+        },
+    };
+    let codec = VecDeltaCodec::new([position.0, position.1, position.2]);
+    let [x, y, z] = codec.decode(delta);
+    (x, y, z)
 }
 
 impl JoinInfo {
@@ -222,6 +238,13 @@ pub struct SeenEntity {
     pub head_yaw: u8,
     /// How many absolute positions the server has sent since the spawn.
     pub position_syncs: u32,
+    /// How many relative moves (`move_entity_pos`, `move_entity_pos_rot`) it has
+    /// sent; each is followed from the position before, as a client follows it.
+    pub relative_moves: u32,
+    /// The motion of the spawn or the latest `set_entity_motion`.
+    pub motion: [f64; 3],
+    /// Whether the latest move had it on the ground.
+    pub on_ground: bool,
 }
 
 impl Bot {
@@ -259,6 +282,11 @@ pub struct Bot {
     /// order they went. A scenario that judges whether an entity was right to vanish
     /// takes them from here.
     pub vanished: Vec<SeenEntity>,
+    /// Every item the server showed being picked up (`take_item_entity`), in order.
+    pub taken: Vec<TakeItemEntity>,
+    /// Every block the server showed for a moment where a falling block landed
+    /// (`add_transient_block`), with its state, in order.
+    pub transient_blocks: Vec<((i32, i32, i32), i32)>,
     /// The items in the hotbar as the server last told the bot, by slot from 0 to 8.
     pub hotbar: [Option<ItemStack>; 9],
     /// The hotbar slot the server last selected for the bot.
@@ -494,6 +522,8 @@ impl Bot {
             player_list: BTreeMap::new(),
             entities: BTreeMap::new(),
             vanished: Vec::new(),
+            taken: Vec::new(),
+            transient_blocks: Vec::new(),
             hotbar: [None; 9],
             selected_slot: 0,
             own_hotbar: [None; 9],
@@ -1366,6 +1396,9 @@ impl Bot {
                         yaw: f32::from(packet.yaw) * 360.0 / 256.0,
                         head_yaw: packet.head_yaw,
                         position_syncs: 0,
+                        relative_moves: 0,
+                        motion: packet.velocity,
+                        on_ground: false,
                     },
                 );
             }
@@ -1375,8 +1408,41 @@ impl Bot {
                         entity.position = position;
                     }
                     entity.yaw = packet.yaw;
+                    entity.on_ground = packet.on_ground;
                     entity.position_syncs += 1;
                 }
+            }
+            ClientboundPlay::MoveEntityPos(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    entity.position = moved_by(entity.position, &packet.delta);
+                    entity.on_ground = packet.on_ground;
+                    entity.relative_moves += 1;
+                }
+            }
+            ClientboundPlay::MoveEntityPosRot(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    entity.position = moved_by(entity.position, &packet.delta);
+                    entity.yaw = f32::from(packet.yaw) * 360.0 / 256.0;
+                    entity.on_ground = packet.on_ground;
+                    entity.relative_moves += 1;
+                }
+            }
+            ClientboundPlay::MoveEntityRot(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    entity.yaw = f32::from(packet.yaw) * 360.0 / 256.0;
+                    entity.on_ground = packet.on_ground;
+                }
+            }
+            ClientboundPlay::SetEntityMotion(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    entity.motion = packet.motion;
+                }
+            }
+            ClientboundPlay::TakeItemEntity(packet) => self.taken.push(packet),
+            ClientboundPlay::AddTransientBlock(packet) => {
+                let at = packet.position;
+                self.transient_blocks
+                    .push(((at.x, at.y, at.z), packet.state));
             }
             ClientboundPlay::SetHeadRotation(packet) => {
                 if let Some(entity) = self.entities.get_mut(&packet.entity_id) {

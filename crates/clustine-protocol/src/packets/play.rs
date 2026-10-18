@@ -1296,6 +1296,301 @@ impl Decode for SyncEntityPosition {
     }
 }
 
+/// An angle in degrees as the game packs it into a byte (`Mth.packDegrees`): the floor
+/// of its 256ths of a turn, kept to the low eight bits. The movement packets compare
+/// and send angles so.
+pub fn pack_degrees(degrees: f32) -> i8 {
+    // `Mth.floor` of a float, as an int, of which the byte keeps the low bits.
+    (degrees * 256.0 / 360.0).floor() as i32 as i8
+}
+
+/// How far a relative move takes an entity (the game's `VecDelta`), in 4096ths of a
+/// block from the base both ends keep (`crate::delta::VecDeltaCodec`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VecDelta {
+    /// Straight there (`VecDelta.Linear`).
+    Linear([i16; 3]),
+    /// Through intermediate steps, each with the ticks it takes (`VecDelta.Stepped`).
+    Stepped(Vec<(i32, [i16; 3])>),
+}
+
+impl VecDelta {
+    /// The steps the move has: none for a straight one, which is how the packet's
+    /// properties tell the two apart.
+    fn step_count(&self) -> i32 {
+        match self {
+            Self::Linear(_) => 0,
+            Self::Stepped(steps) => i32::try_from(steps.len()).expect("a move has few steps"),
+        }
+    }
+
+    fn write(&self, w: &mut Writer) {
+        match self {
+            Self::Linear(delta) => {
+                for axis in delta {
+                    w.put_i16(*axis);
+                }
+            }
+            Self::Stepped(steps) => {
+                for (ticks, delta) in steps {
+                    w.put_var_int(*ticks);
+                    for axis in delta {
+                        w.put_i16(*axis);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads a delta of `steps` steps (`VecDelta.read`), refusing more steps than the
+    /// bytes left could hold, as the game does.
+    fn read(r: &mut Reader<'_>, steps: i32) -> Result<Self, DecodeError> {
+        let shorts = |r: &mut Reader<'_>| Ok::<_, DecodeError>([r.i16()?, r.i16()?, r.i16()?]);
+        if steps <= 0 {
+            return Ok(Self::Linear(shorts(r)?));
+        }
+        let fits = r.remaining() / 7;
+        let count = usize::try_from(steps).expect("positive");
+        if count > fits {
+            return Err(DecodeError::InvalidValue {
+                what: "steps of a move",
+                value: i64::from(steps),
+            });
+        }
+        let mut read = Vec::with_capacity(count);
+        for _ in 0..count {
+            let ticks = r.var_int()?;
+            read.push((ticks, shorts(r)?));
+        }
+        Ok(Self::Stepped(read))
+    }
+
+    /// Whether the move goes along x at all (`hasDeltaX`), in any step.
+    pub fn has_x(&self) -> bool {
+        match self {
+            Self::Linear(delta) => delta[0] != 0,
+            Self::Stepped(steps) => steps.iter().any(|(_, delta)| delta[0] != 0),
+        }
+    }
+
+    /// Whether the move goes along z at all (`hasDeltaZ`), in any step.
+    pub fn has_z(&self) -> bool {
+        match self {
+            Self::Linear(delta) => delta[2] != 0,
+            Self::Stepped(steps) => steps.iter().any(|(_, delta)| delta[2] != 0),
+        }
+    }
+}
+
+/// The on-ground flag and the step count of a move in one VarInt
+/// (`ClientboundMoveEntityPacket.packProperties`): the flag in the low bit.
+fn move_properties(on_ground: bool, delta: &VecDelta) -> i32 {
+    i32::from(on_ground) | delta.step_count() << 1
+}
+
+/// Reads [`move_properties`]: the flag and the delta that follows.
+fn read_move(r: &mut Reader<'_>) -> Result<(bool, VecDelta), DecodeError> {
+    let properties = r.var_int()?;
+    let steps = ((properties as u32) >> 1) as i32;
+    Ok((properties & 1 != 0, VecDelta::read(r, steps)?))
+}
+
+/// Moves an entity relative to where the client last put it
+/// (`ClientboundMoveEntityPacket.Pos`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveEntityPos {
+    pub entity_id: i32,
+    pub delta: VecDelta,
+    pub on_ground: bool,
+}
+
+impl Packet for MoveEntityPos {
+    const ID: i32 = clientbound::MOVE_ENTITY_POS;
+}
+
+impl Encode for MoveEntityPos {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(move_properties(self.on_ground, &self.delta));
+        self.delta.write(w);
+    }
+}
+
+impl Decode for MoveEntityPos {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let (on_ground, delta) = read_move(r)?;
+        Ok(Self {
+            entity_id,
+            delta,
+            on_ground,
+        })
+    }
+}
+
+/// Moves and turns an entity (`ClientboundMoveEntityPacket.PosRot`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveEntityPosRot {
+    pub entity_id: i32,
+    pub delta: VecDelta,
+    /// Packed as [`pack_degrees`] does.
+    pub yaw: i8,
+    pub pitch: i8,
+    pub on_ground: bool,
+}
+
+impl Packet for MoveEntityPosRot {
+    const ID: i32 = clientbound::MOVE_ENTITY_POS_ROT;
+}
+
+impl Encode for MoveEntityPosRot {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(move_properties(self.on_ground, &self.delta));
+        self.delta.write(w);
+        w.put_i8(self.yaw);
+        w.put_i8(self.pitch);
+    }
+}
+
+impl Decode for MoveEntityPosRot {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let (on_ground, delta) = read_move(r)?;
+        Ok(Self {
+            entity_id,
+            delta,
+            yaw: r.i8()?,
+            pitch: r.i8()?,
+            on_ground,
+        })
+    }
+}
+
+/// Turns an entity where it is (`ClientboundMoveEntityPacket.Rot`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveEntityRot {
+    pub entity_id: i32,
+    /// Packed as [`pack_degrees`] does.
+    pub yaw: i8,
+    pub pitch: i8,
+    pub on_ground: bool,
+}
+
+impl Packet for MoveEntityRot {
+    const ID: i32 = clientbound::MOVE_ENTITY_ROT;
+}
+
+impl Encode for MoveEntityRot {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_bool(self.on_ground);
+        w.put_i8(self.yaw);
+        w.put_i8(self.pitch);
+    }
+}
+
+impl Decode for MoveEntityRot {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let on_ground = r.bool()?;
+        Ok(Self {
+            entity_id,
+            yaw: r.i8()?,
+            pitch: r.i8()?,
+            on_ground,
+        })
+    }
+}
+
+/// Sets an entity's motion (`ClientboundSetEntityMotionPacket`), in the compact form of
+/// [`Writer::put_velocity`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetEntityMotion {
+    pub entity_id: i32,
+    pub motion: [f64; 3],
+}
+
+impl Packet for SetEntityMotion {
+    const ID: i32 = clientbound::SET_ENTITY_MOTION;
+}
+
+impl Encode for SetEntityMotion {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_velocity(self.motion);
+    }
+}
+
+impl Decode for SetEntityMotion {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            motion: r.velocity()?,
+        })
+    }
+}
+
+/// Shows an item flying to whoever picked `count` of it up
+/// (`ClientboundTakeItemEntityPacket`); the client plays the sound itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TakeItemEntity {
+    pub item_id: i32,
+    pub collector_id: i32,
+    pub count: i32,
+}
+
+impl Packet for TakeItemEntity {
+    const ID: i32 = clientbound::TAKE_ITEM_ENTITY;
+}
+
+impl Encode for TakeItemEntity {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.item_id);
+        w.put_var_int(self.collector_id);
+        w.put_var_int(self.count);
+    }
+}
+
+impl Decode for TakeItemEntity {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            item_id: r.var_int()?,
+            collector_id: r.var_int()?,
+            count: r.var_int()?,
+        })
+    }
+}
+
+/// A block the client shows for a moment where a falling block landed, until the
+/// change of the block itself reaches it (`ClientboundAddTransientBlockPacket`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddTransientBlock {
+    pub position: Position,
+    /// Id in the block state registry.
+    pub state: i32,
+}
+
+impl Packet for AddTransientBlock {
+    const ID: i32 = clientbound::ADD_TRANSIENT_BLOCK;
+}
+
+impl Encode for AddTransientBlock {
+    fn encode(&self, w: &mut Writer) {
+        w.put_position(self.position);
+        w.put_var_int(self.state);
+    }
+}
+
+impl Decode for AddTransientBlock {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            position: r.position()?,
+            state: r.var_int()?,
+        })
+    }
+}
+
 /// Turns an entity's head, which the position packets do not do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetHeadRotation {
@@ -1888,21 +2183,33 @@ packet_set! {
 /// serializer that writes it. Only those Clustine sends so far.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntityDataValue {
+    /// `EntityDataSerializers.BYTE`: the shared flags of every entity, at index 0.
+    Byte(u8),
     /// `EntityDataSerializers.ITEM_STACK`: a slot, empty or not.
     ItemStack(Option<ItemStack>),
+    /// `EntityDataSerializers.BLOCK_POS`: a falling block's start, as a long.
+    BlockPos(Position),
 }
 
 /// The serializer ids of the game's `EntityDataSerializers`, in the order it registers
 /// them.
 pub mod entity_data_serializer {
+    pub const BYTE: i32 = 0;
     pub const ITEM_STACK: i32 = 7;
+    pub const BLOCK_POS: i32 = 10;
 }
 
 /// The indices of entity data fields, as the game's classes define them one after the
 /// other from `Entity`'s eight.
 pub mod entity_data {
+    /// `Entity.DATA_SHARED_FLAGS_ID`, a byte of flags: on fire in its lowest bit.
+    pub const SHARED_FLAGS: u8 = 0;
+    /// The shared flag of an entity on fire (`Entity.FLAG_ONFIRE`, bit 0).
+    pub const ON_FIRE: u8 = 1;
     /// `ItemEntity.DATA_ITEM`, the stack an item entity is.
     pub const ITEM_STACK: u8 = 8;
+    /// `FallingBlockEntity.DATA_START_POS`, where a falling block began to fall.
+    pub const START_POSITION: u8 = 8;
 }
 
 /// The byte that ends a list of entity data values.
@@ -1927,9 +2234,17 @@ impl Encode for SetEntityData {
         for (index, value) in &self.values {
             w.put_u8(*index);
             match value {
+                EntityDataValue::Byte(byte) => {
+                    w.put_var_int(entity_data_serializer::BYTE);
+                    w.put_u8(*byte);
+                }
                 EntityDataValue::ItemStack(stack) => {
                     w.put_var_int(entity_data_serializer::ITEM_STACK);
                     w.put_item_stack(*stack);
+                }
+                EntityDataValue::BlockPos(position) => {
+                    w.put_var_int(entity_data_serializer::BLOCK_POS);
+                    w.put_position(*position);
                 }
             }
         }
@@ -1947,7 +2262,9 @@ impl Decode for SetEntityData {
                 break;
             }
             let value = match r.var_int()? {
+                entity_data_serializer::BYTE => EntityDataValue::Byte(r.u8()?),
                 entity_data_serializer::ITEM_STACK => EntityDataValue::ItemStack(r.item_stack()?),
+                entity_data_serializer::BLOCK_POS => EntityDataValue::BlockPos(r.position()?),
                 other => {
                     return Err(DecodeError::InvalidValue {
                         what: "entity data serializer",
@@ -2029,6 +2346,12 @@ packet_set! {
         SetPlayerInventory,
         SetEntityData,
         Animate,
+        MoveEntityPos,
+        MoveEntityPosRot,
+        MoveEntityRot,
+        SetEntityMotion,
+        TakeItemEntity,
+        AddTransientBlock,
     }
 }
 
@@ -2864,5 +3187,210 @@ mod tests {
             [0, 0, 0, 20, 0xFF, 0xFF, 0xFF, 0xFC, 0, 0, 0, 8]
         );
         assert_eq!(bytes.len(), 3 + 12 + 4 + 4 + 8);
+    }
+
+    /// The bytes of the moves of an entity as the game writes them
+    /// (`ClientboundMoveEntityPacket.Pos`, `PosRot` and `Rot`): the id, then for a move
+    /// the on-ground flag and the count of steps in one VarInt and the shorts of the
+    /// delta, a step's ticks before its shorts; the angles a byte each.
+    #[test]
+    fn an_entity_s_moves_are_written_as_the_game_writes_them() {
+        let linear = MoveEntityPos {
+            entity_id: 300,
+            delta: VecDelta::Linear([1, -2, 32767]),
+            on_ground: true,
+        };
+        assert_eq!(
+            crate::packets::encode(&linear),
+            [0x36, 0xAC, 0x02, 0x01, 0x00, 0x01, 0xFF, 0xFE, 0x7F, 0xFF]
+        );
+        let turned = MoveEntityPosRot {
+            entity_id: 5,
+            delta: VecDelta::Linear([0, 4096, -1]),
+            yaw: pack_degrees(200.0),
+            pitch: pack_degrees(-90.0),
+            on_ground: false,
+        };
+        assert_eq!(
+            crate::packets::encode(&turned),
+            [0x37, 5, 0, 0, 0, 0x10, 0, 0xFF, 0xFF, 0x8E, 0xC0]
+        );
+        let stepped = MoveEntityPos {
+            entity_id: 1,
+            delta: VecDelta::Stepped(vec![(2, [1, 2, 3]), (3, [0, 0, -1])]),
+            on_ground: true,
+        };
+        assert_eq!(
+            crate::packets::encode(&stepped),
+            [0x36, 1, 5, 2, 0, 1, 0, 2, 0, 3, 3, 0, 0, 0, 0, 0xFF, 0xFF]
+        );
+        let rot = MoveEntityRot {
+            entity_id: 1,
+            yaw: 64,
+            pitch: 0,
+            on_ground: true,
+        };
+        assert_eq!(crate::packets::encode(&rot), [0x39, 1, 1, 64, 0]);
+        // The ids are the game's.
+        assert_eq!(
+            [
+                MoveEntityPos::ID,
+                MoveEntityPosRot::ID,
+                MoveEntityRot::ID,
+                SetEntityMotion::ID,
+                TakeItemEntity::ID,
+                AddTransientBlock::ID
+            ],
+            [54, 55, 57, 103, 127, 37]
+        );
+        // More steps than the bytes left could hold are refused.
+        assert!(ClientboundPlay::decode(&[0x36, 1, 0x0B, 2, 0, 1, 0, 2, 0, 3]).is_err());
+    }
+
+    #[test]
+    fn an_angle_is_packed_as_the_floor_of_its_256ths_in_a_byte() {
+        assert_eq!(pack_degrees(0.0), 0);
+        assert_eq!(pack_degrees(200.0), -114);
+        assert_eq!(pack_degrees(359.0), -1);
+        assert_eq!(pack_degrees(360.0), 0);
+        assert_eq!(pack_degrees(-1.0), -1);
+        assert_eq!(pack_degrees(-90.0), -64);
+        assert_eq!(pack_degrees(720.5), 0);
+    }
+
+    /// `ClientboundSetEntityMotionPacket`, `ClientboundTakeItemEntityPacket` and
+    /// `ClientboundAddTransientBlockPacket`, and the byte of shared flags and the start
+    /// of a falling block in an entity's data, byte for byte.
+    #[test]
+    fn motion_pick_up_a_transient_block_and_the_new_data_are_written_as_the_game_writes_them() {
+        let still = SetEntityMotion {
+            entity_id: 1,
+            motion: [0.0; 3],
+        };
+        assert_eq!(crate::packets::encode(&still), [0x67, 1, 0]);
+        let taken = TakeItemEntity {
+            item_id: 7,
+            collector_id: 300,
+            count: 2,
+        };
+        assert_eq!(crate::packets::encode(&taken), [0x7F, 7, 0xAC, 0x02, 2]);
+        let at = Position { x: 1, y: -60, z: 2 };
+        let long = [0, 0, 0, 0x40, 0, 0, 0x2F, 0xC4];
+        let transient = AddTransientBlock {
+            position: at,
+            state: 300,
+        };
+        let mut expected = vec![0x25];
+        expected.extend(long);
+        expected.extend([0xAC, 0x02]);
+        assert_eq!(crate::packets::encode(&transient), expected);
+        let burning = SetEntityData {
+            entity_id: 1,
+            values: vec![(
+                entity_data::SHARED_FLAGS,
+                EntityDataValue::Byte(entity_data::ON_FIRE),
+            )],
+        };
+        assert_eq!(crate::packets::encode(&burning), [0x65, 1, 0, 0, 1, 0xFF]);
+        let start = SetEntityData {
+            entity_id: 1,
+            values: vec![(entity_data::START_POSITION, EntityDataValue::BlockPos(at))],
+        };
+        let mut expected = vec![0x65, 1, 8, 10];
+        expected.extend(long);
+        expected.push(0xFF);
+        assert_eq!(crate::packets::encode(&start), expected);
+    }
+
+    #[test]
+    fn the_packets_of_an_entity_s_tracking_round_trip() {
+        use ClientboundPlay as Set;
+        assert_round_trip(
+            MoveEntityPos {
+                entity_id: 9,
+                delta: VecDelta::Linear([-32768, 0, 12]),
+                on_ground: false,
+            },
+            Set::decode,
+            Set::MoveEntityPos,
+        );
+        assert_round_trip(
+            MoveEntityPos {
+                entity_id: 9,
+                delta: VecDelta::Stepped(vec![(1, [5, 6, 7])]),
+                on_ground: true,
+            },
+            Set::decode,
+            Set::MoveEntityPos,
+        );
+        assert_round_trip(
+            MoveEntityPosRot {
+                entity_id: 9,
+                delta: VecDelta::Linear([1, 2, 3]),
+                yaw: -5,
+                pitch: 7,
+                on_ground: true,
+            },
+            Set::decode,
+            Set::MoveEntityPosRot,
+        );
+        assert_round_trip(
+            MoveEntityRot {
+                entity_id: 9,
+                yaw: 100,
+                pitch: -100,
+                on_ground: false,
+            },
+            Set::decode,
+            Set::MoveEntityRot,
+        );
+        // At the protocol's steps, which read back as written.
+        assert_round_trip(
+            SetEntityMotion {
+                entity_id: 9,
+                motion: [1.0, 0.0, -1.0],
+            },
+            Set::decode,
+            Set::SetEntityMotion,
+        );
+        assert_round_trip(
+            TakeItemEntity {
+                item_id: 9,
+                collector_id: 10,
+                count: 64,
+            },
+            Set::decode,
+            Set::TakeItemEntity,
+        );
+        assert_round_trip(
+            AddTransientBlock {
+                position: Position {
+                    x: -30_000_000,
+                    y: 319,
+                    z: 29_999_999,
+                },
+                state: 27_000,
+            },
+            Set::decode,
+            Set::AddTransientBlock,
+        );
+        assert_round_trip(
+            SetEntityData {
+                entity_id: 9,
+                values: vec![
+                    (entity_data::SHARED_FLAGS, EntityDataValue::Byte(0)),
+                    (
+                        entity_data::START_POSITION,
+                        EntityDataValue::BlockPos(Position {
+                            x: -1,
+                            y: -64,
+                            z: 5,
+                        }),
+                    ),
+                ],
+            },
+            Set::decode,
+            Set::SetEntityData,
+        );
     }
 }

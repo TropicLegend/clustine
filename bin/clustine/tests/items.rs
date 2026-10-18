@@ -241,9 +241,9 @@ impl Thrower {
                     if data.entity_id != spawn.entity_id {
                         continue;
                     }
-                    let stack = data.values.iter().find_map(|(index, value)| {
-                        let EntityDataValue::ItemStack(stack) = value;
-                        (*index == 8).then_some(*stack)
+                    let stack = data.values.iter().find_map(|(index, value)| match value {
+                        EntityDataValue::ItemStack(stack) if *index == 8 => Some(*stack),
+                        _ => None,
                     });
                     return Ok(Some(ShownToTheThrower {
                         spawn: spawn.clone(),
