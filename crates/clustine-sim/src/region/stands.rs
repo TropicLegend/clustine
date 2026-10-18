@@ -9,6 +9,17 @@ use super::Region;
 use crate::api::TickOutput;
 
 impl Region {
+    /// `ArmorStandItem.useOn` (N5d). Filled by its step; until then it does nothing.
+    pub(crate) fn place_armor_stand(
+        &mut self,
+        click: &crate::placement::Click,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (click, player, output);
+        false
+    }
+
     /// `LivingEntity.tick()` of the stand `entity`: N5d's, but `baseTick`'s riding.
     pub(crate) fn tick_armor_stand(
         &mut self,

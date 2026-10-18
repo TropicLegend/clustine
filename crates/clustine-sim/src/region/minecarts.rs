@@ -10,6 +10,17 @@ use super::Region;
 use crate::api::TickOutput;
 
 impl Region {
+    /// `MinecartItem.useOn`: a cart placed on the clicked rail (N5e). Filled by its step; until then it does nothing.
+    pub(crate) fn place_minecart(
+        &mut self,
+        click: &crate::placement::Click,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (click, player, output);
+        false
+    }
+
     /// `AbstractMinecart.tick()` of `entity`, in the loaded chunk `position`: N5e's
     /// beyond its first lines. The cart never calls `baseTick`.
     pub(crate) fn tick_minecart(

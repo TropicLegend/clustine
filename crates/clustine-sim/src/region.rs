@@ -37,6 +37,7 @@ mod knots;
 mod lends;
 mod minecarts;
 mod pistons;
+mod placing;
 mod pressed;
 mod pushed;
 mod rails;
@@ -1805,6 +1806,12 @@ impl Region {
                     inventory: player.inventory.clone(),
                 };
                 let sequence = *sequence;
+                if self.entity_item_used(&item_use, id, output) {
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.acknowledge(sequence);
+                    }
+                    return;
+                }
                 let bodies = self.bodies(Some(id));
                 let used = placement::use_item(&item_use, &Readable(self), &bodies);
                 if let Some(used) = used
@@ -1920,7 +1927,11 @@ impl Region {
                     matches!(action.step, RemoteStep::OffHandOn { .. }),
                     &Readable(self),
                 ) {
-                    Clicked::Nothing => return None,
+                    Clicked::Nothing => {
+                        // The block did nothing: the item may make an entity there.
+                        self.entity_item_used_on(click, action.player, output);
+                        return None;
+                    }
                     Clicked::Used { changes, flags } => {
                         self.use_block(&changes, flags, action.player, output);
                         return None;

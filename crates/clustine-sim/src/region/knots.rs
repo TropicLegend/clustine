@@ -10,6 +10,17 @@ use super::attached::Breaker;
 use crate::api::TickOutput;
 
 impl Region {
+    /// `LeadItem.useOn`: the player's leashed boats tied to the clicked fence (N5g). Filled by its step; until then it does nothing.
+    pub(crate) fn lead_used_on(
+        &mut self,
+        click: &crate::placement::Click,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (click, player, output);
+        false
+    }
+
     /// `LeashFenceKnotEntity.survives()`, a fence at its block: N5g's.
     pub(crate) fn knot_survives(&self, entity: &Entity, position: ChunkPos) -> bool {
         let _ = (entity, position);

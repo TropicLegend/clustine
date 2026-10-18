@@ -10,6 +10,17 @@ use super::Region;
 use crate::api::TickOutput;
 
 impl Region {
+    /// `BoatItem.use`: a boat placed where the player's ray meets water or a block (N5f). Filled by its step; until then it does nothing.
+    pub(crate) fn place_boat(
+        &mut self,
+        used: &crate::placement::ItemUse,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (used, player, output);
+        false
+    }
+
     /// `AbstractBoat.tick()` of `entity`, in the loaded chunk `position`: N5f's beyond
     /// its fourth step, the wobble's fall, and its `baseTick`'s riding.
     pub(crate) fn tick_boat(

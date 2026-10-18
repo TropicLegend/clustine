@@ -43,6 +43,17 @@ fn is_suffocating(state: clustine_data::BlockState) -> bool {
 }
 
 impl Region {
+    /// `CushionItem.useOn`: a cushion laid on the clicked top (the riders' step). Filled by its step; until then it does nothing.
+    pub(crate) fn place_cushion(
+        &mut self,
+        click: &crate::placement::Click,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (click, player, output);
+        false
+    }
+
     /// `Cushion.survives()` = `wouldSurviveAt(level, box)`: something under it to rest
     /// on, and not all it lies in suffocating.
     pub(crate) fn cushion_survives(&self, entity: &Entity, position: ChunkPos) -> bool {

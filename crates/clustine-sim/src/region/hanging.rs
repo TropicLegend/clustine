@@ -13,6 +13,17 @@ use crate::api::TickOutput;
 use crate::physics::aabb::Aabb;
 
 impl Region {
+    /// `ItemFrameItem` and `HangingEntityItem.useOn`: a frame or a painting hung on the clicked face (N5c). Filled by its step; until then it does nothing.
+    pub(crate) fn place_hanging(
+        &mut self,
+        click: &crate::placement::Click,
+        player: clustine_world::PlayerId,
+        output: &mut crate::api::TickOutput,
+    ) -> bool {
+        let _ = (click, player, output);
+        false
+    }
+
     /// `HangingEntity.survives()` (a painting's, and `ItemFrame`'s own): N5c's.
     pub(crate) fn hanging_survives(&self, entity: &Entity, position: ChunkPos) -> bool {
         let _ = (entity, position);
