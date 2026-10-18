@@ -936,3 +936,57 @@ fn a_player_standing_in_a_cart_pushes_it_away() {
     let dx = (0.5 - 1.2) / d * 1.0 * 0.100_000_001_490_116_12 * 0.5;
     assert_eq!(pushed.motion[0].to_bits(), (0.0 + -dx).to_bits());
 }
+
+#[test]
+fn a_player_who_uses_a_cart_rides_it_and_walking_forwards_starts_it_on_its_way() {
+    let rails: Vec<(BlockPos, BlockState)> = (2..12)
+        .map(|x| (BlockPos::new(x, -60, 4), rail("east_west")))
+        .collect();
+    let mut region = ticking_with(&rails);
+    let ridden = cart(1, [3.5, FLAT, 4.5], [0.0; 3]);
+    lay(&mut region, &ridden);
+    let used = moves(vec![numbered(
+        1,
+        PlayerInput::Interact {
+            entity: ridden.key,
+            location: [0.0, 0.3, 0.0],
+            sneaking: false,
+        },
+    )]);
+    checked(&mut region, &used);
+    let seated = region.players[&player(1)].pose.position;
+    let on = record(&region, ridden.key).unwrap();
+    // The cart's passenger point is 0.1875 up, the player's vehicle point 0.6.
+    assert_eq!(
+        [seated.x, seated.y, seated.z].map(f64::to_bits),
+        [
+            on.position[0],
+            (on.position[1] + 0.1875) - 0.6,
+            on.position[2]
+        ]
+        .map(f64::to_bits)
+    );
+    // Facing east (yaw -90) and holding forward: the rider's push, the keys' intent
+    // times 0.001 while the cart is slower than 0.1 a tick.
+    let walk = moves(vec![
+        numbered(
+            1,
+            PlayerInput::Move {
+                position: None,
+                rotation: Some((-90.0, 0.0)),
+                on_ground: true,
+            },
+        ),
+        numbered(
+            1,
+            PlayerInput::Keys(crate::api::Keys {
+                forward: true,
+                ..Default::default()
+            }),
+        ),
+    ]);
+    checked(&mut region, &walk);
+    let moving = record(&region, ridden.key).unwrap();
+    assert!(moving.motion[0] > 0.0, "{:?}", moving.motion);
+    assert!(moving.position[0] > on.position[0]);
+}

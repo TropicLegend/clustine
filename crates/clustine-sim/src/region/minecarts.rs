@@ -436,15 +436,23 @@ impl Region {
     }
 
     /// The move intent of the rider in the cart `key`'s first seat, where that is a
-    /// player (`ServerPlayer.getLastClientMoveIntent`, [`rail::move_intent`]): `None`
-    /// where the first passenger is no player or there is none. The region keeps no
-    /// player's keys before the riders' step (N5h), which gives them here through
-    /// [`rail::move_intent`]: until then a seated player's intent is none, and pushes
-    /// nothing.
+    /// player (`ServerPlayer.getLastClientMoveIntent`, [`rail::move_intent`]) from the
+    /// keys they hold and their yaw: `None` where the first passenger is no player or
+    /// there is none.
     pub(crate) fn rider_intent(&self, key: EntityId) -> Option<Vec3> {
         let (_, record) = self.find_entity(key)?;
         let first = record.riding.passengers.first()?;
-        first.player.then_some([0.0; 3])
+        if !first.player {
+            return None;
+        }
+        // A seat kept for a player on their way pushes nothing until they come.
+        let Some(player) = self
+            .player_with_entity(first.key)
+            .and_then(|id| self.players.get(&id))
+        else {
+            return Some([0.0; 3]);
+        };
+        Some(rail::move_intent(&player.keys, player.pose.yaw))
     }
 
     /// `AbstractMinecart.tick()` of `entity`, in the loaded chunk `position`: the hurt
@@ -1315,7 +1323,18 @@ impl Region {
             } => {
                 self.hurt_vehicle(entity.key, damage.0, creative, output);
             }
-            EntityUse::Interact { held, from, .. } => {
+            EntityUse::Interact {
+                player,
+                held,
+                from,
+                sneaking,
+                ..
+            } => {
+                // `Minecart.interact`: the plain cart is ridden, by a player who does not
+                // sneak, where nobody rides it.
+                if i32::from(entity.kind) == entity_types::MINECART && !sneaking {
+                    self.mount_player(player, entity.key, output);
+                }
                 if i32::from(entity.kind) == entity_types::FURNACE_MINECART {
                     let from = from.map(|component| component.0);
                     self.add_fuel(entity, position, held, from, output);
