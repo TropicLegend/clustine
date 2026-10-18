@@ -130,7 +130,24 @@ with the owner's answers on 2026-10-17: keys, items, crossing, physics, vehicles
 animals and the structures' entities (N1 to N7); then light in the simulation (N8,
 brought forward); then monsters and natural spawning (N9) and the villagers' brain and
 trading (N10); then the Nether and the End. Survival mode later, with the rest of parity
-by the matrix's tiers. Its record, ADR-0028, comes first. S3 beside them. The judge of features, over 204 areas of two seeds with
+by the matrix's tiers. Its record, ADR-0028, is accepted (2026-10-18, after five
+reviews). **Done:** N1, keys of 64 bits for entities, a fresh block of them at every
+hello, and wire ids of each edge's own (a world made before it is refused and made
+again); N2a, the whole inventory (36 slots, armour, the off hand), F and the off hand's
+use; N2b and N2c, entities kept in their chunks and in every commit, saved apart from
+the blocks, replayed, copied and folded, and the item thrown by Q, ctrl+Q and the
+creative screen, shown to every client in view.
+
+**What a player meets until N4** (physics and pick-up): a thrown item falls on the
+thrower's screen, since the client moves items itself, while the server keeps it where
+it was thrown, so a client that comes into view later sees it in the air; items are not
+picked up and do not despawn. Named differences to mend with N4: entities tick where a
+chunk's 3x3 is loaded or copied, not its 5x5 (ADR-0028, section 2); an entity's `hops`
+rises at a merge too, which the edge takes as it should; an entity moving into another
+chunk must be committed as gone from one and whole in the other, since a chunk's file
+refuses an entity outside it.
+
+S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
