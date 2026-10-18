@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-17)
+## Where the work stands (2026-10-18)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -43,8 +43,8 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: animals, monsters and
-items lying in the world (entities, below); what needs light, crops and saplings
+**What a player will miss within minutes**, all of it planned: animals, monsters,
+boats, minecarts and TNT (entities, below); what needs light, crops and saplings
 growing, grass spreading, ice and snow melting (light in the simulation); the
 redstone that waits for entities (TNT, dispensers, droppers, hoppers, crafters, sculk,
 detector rails, arrows, plates pressed by mobs or items, pistons pushing anything but
@@ -151,9 +151,27 @@ a creative player's own break nothing; pistons push items and falling blocks, sl
 launches them, honey carries them; clients are sent what the game's `ServerEntity` sends.
 A resting entity's age reaches the store at every checkpoint and stop (which N2 missed).
 
-**What a player meets until N3** (crossing): an entity stops at every line between
-regions, also between regions that follow players, and is neither lost nor doubled
-there; an item cannot be picked up across a line. Named differences: entities tick where
+**N3, crossing between regions** (2026-10-18, [plan](groundwork/n3-plan.md), reviewed
+twice): an item or a falling block that moves over a line, is washed or pushed across
+it or is thrown into land the region does not tick is sent across whole and taken in
+by whoever holds the chunk there, in the same tick where the two regions are coupled;
+the world store keeps what was sent for the holder, never drops it untaken, hands it
+again at every change of holder, owner, merge, split, lend and return, and grants land
+nobody holds to the sender; a holder that does not have the chunk loaded loads it for a
+hundred ticks. Each client goes on seeing the one entity under one id across the line.
+Where regions follow players, an item sent across a line counts as work at it and the
+two merge at once. Tests written from the record and the plan by someone who did not
+write the code (88 of them, every process killed at every step of a crossing) found
+four defects, mended: a region moved to another worker was never coupled again with
+its neighbours (since phase E: the chunks beside the line stopped ticking, and an item
+sent across hung in mid-air; effects at the line waited too), an item taken in out of
+an edge's sight stayed shown where it was, and an arrival into a chunk that could not
+be read was kept back or, at a change of division, lost. Named differences: items
+either side of a line do not merge; an item crossing a line between regions that are
+not coupled waits one to three ticks; a falling block that would land in the tick it
+crosses lands a tick later, where it went.
+
+**What a player meets now:** Named differences of phase N so far: entities tick where
 a chunk's 3x3 is loaded or copied, not its 5x5 (ADR-0028, section 2); `hops` rises at a
 merge too; a client may be left about 0.003 of a block from where a resting item lies
 (the game corrects it every 60 ticks; the edge sends nothing once it stops being
@@ -164,9 +182,36 @@ restored while a piston moves pushes a tick behind the one that ran, as the game
 after a reload; draws are the game's in distribution, not in value; no entity damage
 from anvils or stalactites; container contents, experience and silverfish are not
 dropped; containers, banners, heads and hives drop the plain item (stacks carry no
-components yet). Found by the tests written from the plan of N2 (`n2-spec`, 36, no
-ordering or durability fault): a Q pressed right after crossing a pinned line is
-refused and the slot put back (N3 mends it); `Restored::issued` is left from before N1.
+components yet); `Restored::issued` is left from before N1.
+
+**Next in phase N:** N5, vehicles (boats and minecarts, a rider crossing a line with
+its vehicle), then N6 (TNT and the redstone that waits for entities) and N7 (animals
+and the structures' entities).
+
+**What to try with a real client, phase N so far** (`cargo run --release -p clustine --
+--seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
+`cargo run --release -p clustine -- --seed 3` for regions that follow players):
+
+1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
+   bounces, and after two seconds you pick it up again. A second player sees it too.
+2. Throw items into water, onto ice, slime and a bed, into lava and fire (netherite
+   floats on lava unburnt), and two of a kind near each other: they float and drift,
+   slide, bounce, burn, and merge. One left alone is gone after five minutes.
+3. Break the block under sand, gravel or an anvil: it falls as an entity and lands.
+   Break a torch's block, or let water wash a flower away: they drop as items.
+4. Push items and falling sand with a piston, and launch them with slime.
+5. With pins: stand at x = 62 facing east and throw items across x = 64; walk over and
+   throw from x = 66 back west; let water carry an item over; push one over with a
+   piston. Each is seen once, on the side it went to, by you and a player on the far
+   side, without a flicker; it is still there after you leave and come back, and after
+   the server is stopped and started.
+6. With pins: walk over the line and press Q at once: it throws every time.
+7. Without pins: two players far apart, one walks away until the region splits; throw
+   an item across the line the split left: the coordinator merges the two regions at
+   once (its log says "for a circuit at the line").
+
+What to say if it is not so: which step, what was seen, and the log of the world
+store, the coordinator and the workers.
 
 S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
