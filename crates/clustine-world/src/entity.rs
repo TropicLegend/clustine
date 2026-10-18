@@ -41,7 +41,7 @@ pub struct Entity {
     /// `fallDistance`, a `double`).
     pub fall_distance: f64,
     /// The ticks it has left to burn, below 0 the ticks it is safe from fire for (the
-    /// game's `remainingFireTicks`, -1 for an entity that has never burned).
+    /// game's `remainingFireTicks`, 0 for an entity that has never burned).
     pub fire_ticks: i32,
     pub data: EntityData,
 }
