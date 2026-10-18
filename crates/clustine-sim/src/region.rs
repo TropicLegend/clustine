@@ -5,8 +5,8 @@ use std::mem;
 
 use clustine_data::{BlockState, ITEMS, blocks};
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EntityId, EntityIds, PlayerId, RegionId,
-    Vec3,
+    BlockPos, Chunk, ChunkArea, ChunkPos, Double, EdgeId, Effect, EntityId, EntityIds, EntityUse,
+    Float, PlayerId, RegionId, Vec3,
 };
 
 use crate::api::{
@@ -47,6 +47,7 @@ mod riding;
 mod stands;
 mod ticks;
 mod updates;
+mod uses;
 mod vehicles;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
@@ -1640,7 +1641,9 @@ impl Region {
             && (held.is_none()
                 || !matches!(
                     input,
-                    PlayerInput::UseItemOn { .. } | PlayerInput::UseItem { .. }
+                    PlayerInput::UseItemOn { .. }
+                        | PlayerInput::UseItem { .. }
+                        | PlayerInput::Interact { .. }
                 ))
         {
             // An empty off hand does nothing, and nothing but a use is made with a hand.
@@ -1727,11 +1730,54 @@ impl Region {
             }
             // N5's inputs, answered by the steps that bring what they use
             // (`docs/groundwork/n5-plan.md`); until then passed over.
-            PlayerInput::Keys(_)
-            | PlayerInput::Interact { .. }
-            | PlayerInput::Attack { .. }
-            | PlayerInput::MoveVehicle(_)
-            | PlayerInput::PaddleBoat { .. } => {}
+            PlayerInput::Attack { entity } => {
+                let user = uses::User {
+                    feet: [
+                        player.pose.position.x,
+                        player.pose.position.y,
+                        player.pose.position.z,
+                    ],
+                    sneaking: false,
+                };
+                // Every player is a creative one, whose hit breaks what N5 brings at
+                // once; the damage is a bare hand's at full strength, as the game's
+                // attack strength is not kept yet.
+                let by = EntityUse::Attack {
+                    attacker: player.entity_id,
+                    creative: true,
+                    sprinting: false,
+                    damage: Float(1.0),
+                    from: user.from(),
+                };
+                self.player_used_entity(user, *entity, by, output);
+            }
+            PlayerInput::Interact {
+                entity,
+                location,
+                sneaking,
+            } => {
+                let user = uses::User {
+                    feet: [
+                        player.pose.position.x,
+                        player.pose.position.y,
+                        player.pose.position.z,
+                    ],
+                    sneaking: *sneaking,
+                };
+                let by = EntityUse::Interact {
+                    player: player.entity_id,
+                    creative: true,
+                    held,
+                    location: location.map(Double),
+                    sneaking: *sneaking,
+                    from: user.from(),
+                };
+                self.player_used_entity(user, *entity, by, output);
+            }
+            // Riding's inputs, answered by the steps that bring riding by players
+            // (`docs/groundwork/n5-plan.md`); until then passed over.
+            PlayerInput::Keys(_) | PlayerInput::MoveVehicle(_) | PlayerInput::PaddleBoat { .. } => {
+            }
             PlayerInput::Throw { stack } => {
                 // Out of the creative inventory: nothing is taken from the player's,
                 // and a throw refused leaves nothing to put back.

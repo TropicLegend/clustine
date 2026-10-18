@@ -17,9 +17,9 @@ use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
     ClientboundKeepAlive, Disconnect, LevelChunkWithLight, LightUpdate, PlayerAction,
     ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags, player_action,
-    player_input,
+    player_command, player_input,
 };
-use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput};
+use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, Keys, PlayerInput, VehicleMove};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -27,7 +27,7 @@ use tracing::warn;
 
 use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
-use crate::fanout::{Command, NO_TELEPORT, SessionId};
+use crate::fanout::{Command, NO_TELEPORT, OnEntity, SessionId};
 use crate::figures::{self, FIGURES};
 use crate::login::Profile;
 
@@ -96,6 +96,9 @@ async fn pump(
     // region: sneaking with a block in hand places it against a door rather than
     // opening the door.
     let mut sneaking = false;
+    // The keys the region was last told the player holds: `player_input` says them on
+    // every change, and sprinting comes by `player_command` as well.
+    let mut keys = Keys::default();
     // The client only understands keep-alives once it has been put into the world.
     let mut in_world = false;
     let mut drops = DropThrottler::new(Instant::now());
@@ -165,6 +168,74 @@ async fn pump(
                     }
                     ServerboundPlay::ServerboundPlayerInput(packet) => {
                         sneaking = packet.flags & player_input::SHIFT != 0;
+                        let held = |flag| packet.flags & flag != 0;
+                        let now = Keys {
+                            forward: held(player_input::FORWARD),
+                            backward: held(player_input::BACKWARD),
+                            left: held(player_input::LEFT),
+                            right: held(player_input::RIGHT),
+                            jump: held(player_input::JUMP),
+                            sneak: sneaking,
+                            sprint: keys.sprint,
+                        };
+                        keys_changed(shared, client, &mut keys, now).await?;
+                    }
+                    ServerboundPlay::PlayerCommand(packet) => {
+                        // Sprinting is what N5 reads of these; the rest are for what
+                        // later steps bring (a horse's jump, a chest boat's inventory).
+                        let sprint = match packet.action {
+                            player_command::START_SPRINTING => true,
+                            player_command::STOP_SPRINTING => false,
+                            _ => keys.sprint,
+                        };
+                        let now = Keys { sprint, ..keys };
+                        keys_changed(shared, client, &mut keys, now).await?;
+                    }
+                    ServerboundPlay::Attack(packet) => {
+                        on_entity(shared, client, packet.entity_id, OnEntity::Attack).await?;
+                    }
+                    ServerboundPlay::Interact(packet) => {
+                        if !packet.location.iter().all(|value| value.is_finite()) {
+                            return Err(ConnectionError::Protocol("a click that is not a number"));
+                        }
+                        let used = OnEntity::Interact {
+                            location: packet.location,
+                            sneaking: packet.using_secondary_action,
+                            off_hand: packet.hand == 1,
+                        };
+                        on_entity(shared, client, packet.entity_id, used).await?;
+                    }
+                    ServerboundPlay::ServerboundMoveVehicle(packet) => {
+                        let numbers = [
+                            packet.x,
+                            packet.y,
+                            packet.z,
+                            f64::from(packet.yaw),
+                            f64::from(packet.pitch),
+                        ];
+                        if !numbers.iter().all(|value| value.is_finite()) {
+                            return Err(ConnectionError::Protocol(
+                                "a vehicle's move that is not a number",
+                            ));
+                        }
+                        // As a player's moves: from before a teleport the client has
+                        // not confirmed they are out of date.
+                        if client.awaiting_teleport.load(Ordering::Relaxed) == NO_TELEPORT {
+                            let input = PlayerInput::MoveVehicle(VehicleMove {
+                                position: Vec3::new(packet.x, packet.y, packet.z),
+                                yaw: packet.yaw,
+                                pitch: packet.pitch,
+                                on_ground: packet.on_ground,
+                            });
+                            send_input(shared, client, input).await?;
+                        }
+                    }
+                    ServerboundPlay::PaddleBoat(packet) => {
+                        let input = PlayerInput::PaddleBoat {
+                            left: packet.left,
+                            right: packet.right,
+                        };
+                        send_input(shared, client, input).await?;
                     }
                     ServerboundPlay::UseItemOn(packet) => {
                         used_item_on(shared, client, packet, sneaking).await?;
@@ -200,14 +271,8 @@ async fn pump(
                     }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
-                    // Decoded now, but not yet acted on: they were `Unhandled` before,
-                    // and what riding and using entities do with them is N5's.
-                    | ServerboundPlay::Attack(_)
-                    | ServerboundPlay::Interact(_)
-                    | ServerboundPlay::ServerboundMoveVehicle(_)
-                    | ServerboundPlay::PaddleBoat(_)
+                    // Picking an entity's item comes with the hanging entities (N5c).
                     | ServerboundPlay::PickItemFromEntity(_)
-                    | ServerboundPlay::PlayerCommand(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
             }
@@ -328,6 +393,42 @@ async fn acted(
         // Using items over time does not exist yet.
         _ => Ok(()),
     }
+}
+
+/// Tells the region of the keys the player holds, if they are not what it was last
+/// told.
+async fn keys_changed(
+    shared: &Shared,
+    client: &Client,
+    keys: &mut Keys,
+    now: Keys,
+) -> Result<(), ConnectionError> {
+    if *keys == now {
+        return Ok(());
+    }
+    *keys = now;
+    send_input(shared, client, PlayerInput::Keys(now)).await
+}
+
+/// Tells the region what the player did to the entity their client knows by `id`, which
+/// the fan-out task, which gave the id, turns into the entity's key.
+async fn on_entity(
+    shared: &Shared,
+    client: &Client,
+    id: i32,
+    what: OnEntity,
+) -> Result<(), ConnectionError> {
+    let command = Command::OnEntity {
+        session: client.session,
+        player: client.player,
+        id,
+        what,
+    };
+    shared
+        .fanout
+        .send(command)
+        .await
+        .map_err(|_| ConnectionError::ShuttingDown)
 }
 
 async fn send_input(

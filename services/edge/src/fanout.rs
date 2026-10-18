@@ -86,6 +86,19 @@ pub(crate) const NO_TELEPORT: i32 = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionId(pub(crate) u64);
 
+/// What a player did to an entity their client named.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum OnEntity {
+    /// `attack`.
+    Attack,
+    /// `interact`: where on the entity, the packet's own sneak flag, and the hand.
+    Interact {
+        location: [f64; 3],
+        sneaking: bool,
+        off_hand: bool,
+    },
+}
+
 /// What a connection tells the fan-out task.
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -122,6 +135,13 @@ pub(crate) enum Command {
         session: SessionId,
         player: PlayerId,
         input: PlayerInput,
+    },
+    /// The player hit or used the entity their client knows by `id`.
+    OnEntity {
+        session: SessionId,
+        player: PlayerId,
+        id: i32,
+        what: OnEntity,
     },
     /// The player did something to blocks that no region needs to hear of, and their
     /// client waits to be told that it was handled.
@@ -844,6 +864,8 @@ const GONE_FOR: u64 = 600;
 #[derive(Debug, Default)]
 struct WireIds {
     of: BTreeMap<EntityId, i32>,
+    /// The other way round, for what a client says of an entity.
+    by_id: BTreeMap<i32, EntityId>,
     last: i32,
     #[cfg(test)]
     ledger: WireLedger,
@@ -860,6 +882,7 @@ impl WireIds {
             .checked_add(1)
             .expect("an edge shows fewer than 2^31 entities in its life");
         self.of.insert(key, self.last);
+        self.by_id.insert(self.last, key);
         #[cfg(test)]
         self.ledger
             .lock()
@@ -869,7 +892,16 @@ impl WireIds {
     }
 
     fn forget(&mut self, key: EntityId) {
-        self.of.remove(&key);
+        if let Some(id) = self.of.remove(&key) {
+            self.by_id.remove(&id);
+        }
+    }
+
+    /// The entity clients know by `id` now, if any: one the edge no longer shows is no
+    /// longer known by it, and what a client says of it is passed over, as the game
+    /// passes over a use of an entity it does not find.
+    fn key_of(&self, id: i32) -> Option<EntityId> {
+        self.by_id.get(&id).copied()
     }
 }
 
@@ -1524,39 +1556,41 @@ impl Fanout {
                 self.send_to_region(self.spawn_region, EdgeToWorker::PlayerJoin(join))
                     .await;
             }
+            Command::OnEntity {
+                session,
+                player,
+                id,
+                what,
+            } => {
+                let Some(entity) = self.wire.key_of(id) else {
+                    return;
+                };
+                let input = match what {
+                    OnEntity::Attack => PlayerInput::Attack { entity },
+                    OnEntity::Interact {
+                        location,
+                        sneaking,
+                        off_hand,
+                    } => {
+                        let used = PlayerInput::Interact {
+                            entity,
+                            location,
+                            sneaking,
+                        };
+                        if off_hand {
+                            PlayerInput::WithOffHand(Box::new(used))
+                        } else {
+                            used
+                        }
+                    }
+                };
+                self.player_input(session, player, input).await;
+            }
             Command::Input {
                 session,
                 player,
                 input,
-            } => {
-                if !self.session_matches(player, session) {
-                    return;
-                }
-                let view = self.players.get_mut(&player).expect("session matched");
-                // An input names the stay it is of by its entity. Of a player who has
-                // not been placed in the world the edge knows none, and their client,
-                // which has not been put into the world, has nothing to say of what a
-                // player does there.
-                let Some(entity) = view.entity else {
-                    debug!(
-                        name = %view.name,
-                        "dropping an input of a player who has not been placed in the world"
-                    );
-                    return;
-                };
-                view.inputs_sent += 1;
-                let number = view.inputs_sent;
-                view.kept_inputs
-                    .push_back((number, Instant::now(), input.clone()));
-                let region = view.region;
-                let message = EdgeToWorker::Input {
-                    player,
-                    entity,
-                    number,
-                    input,
-                };
-                self.send_to_region(region, message).await;
-            }
+            } => self.player_input(session, player, input).await,
             Command::Handled {
                 session,
                 player,
@@ -2904,6 +2938,38 @@ impl Fanout {
                 }
             }
         }
+    }
+
+    /// Passes an input of the player on to the region they are in, numbered, and keeps it
+    /// until the region has applied it.
+    async fn player_input(&mut self, session: SessionId, player: PlayerId, input: PlayerInput) {
+        if !self.session_matches(player, session) {
+            return;
+        }
+        let view = self.players.get_mut(&player).expect("session matched");
+        // An input names the stay it is of by its entity. Of a player who has
+        // not been placed in the world the edge knows none, and their client,
+        // which has not been put into the world, has nothing to say of what a
+        // player does there.
+        let Some(entity) = view.entity else {
+            debug!(
+                name = %view.name,
+                "dropping an input of a player who has not been placed in the world"
+            );
+            return;
+        };
+        view.inputs_sent += 1;
+        let number = view.inputs_sent;
+        view.kept_inputs
+            .push_back((number, Instant::now(), input.clone()));
+        let region = view.region;
+        let message = EdgeToWorker::Input {
+            player,
+            entity,
+            number,
+            input,
+        };
+        self.send_to_region(region, message).await;
     }
 
     /// Whether what the region `from` says of `entity` counts: the entity is one that
@@ -5389,6 +5455,21 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use uuid::Uuid;
+
+    #[test]
+    fn a_client_s_entity_id_names_the_entity_it_was_given_for_until_the_edge_forgets_it() {
+        let mut wire = WireIds::default();
+        let (first, second) = (EntityId(5 << 32), EntityId(3));
+        let (one, two) = (wire.of(first), wire.of(second));
+        assert_eq!(
+            (wire.key_of(one), wire.key_of(two), wire.key_of(two + 1)),
+            (Some(first), Some(second), None)
+        );
+        wire.forget(first);
+        assert_eq!(wire.key_of(one), None);
+        // An id is not given again: the entity shown anew has another.
+        assert_ne!(wire.of(first), one);
+    }
 
     use super::*;
     use crate::Relinks;

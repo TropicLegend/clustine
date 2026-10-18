@@ -134,7 +134,7 @@ pub(super) fn at_a_line(area: ChunkArea, blocks: &[(BlockPos, BlockState)]) -> R
 }
 
 /// Pinned west of chunk x = 1.
-const WEST_OF_THE_LINE: ChunkArea = ChunkArea {
+pub(super) const WEST_OF_THE_LINE: ChunkArea = ChunkArea {
     min_x: None,
     max_x: Some(1),
 };

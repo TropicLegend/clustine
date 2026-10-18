@@ -1188,3 +1188,69 @@ fn a_push_breaks_a_block_attached_entity_and_moves_anything_else() {
         [0.05, 0.0, -0.05]
     );
 }
+
+/// The player's hit on `target` as their client sends it.
+fn attack(target: &Entity) -> TickInputs {
+    moves(vec![numbered(
+        1,
+        PlayerInput::Attack { entity: target.key },
+    )])
+}
+
+#[test]
+fn a_players_hit_within_reach_breaks_a_cushion_and_one_out_of_reach_does_nothing() {
+    let mut region = on_ticking_floor_with(&[]);
+    // The player's eyes are at (0.5, -58.38, 0.5); a creative player reaches 8 from them
+    // to the nearest point of a box.
+    let near = cushion(1, [7.5, -60.0, 0.5], 0);
+    let far = cushion(2, [9.5, -60.0, 0.5], 0);
+    lay(&mut region, &near);
+    lay(&mut region, &far);
+    checked(&mut region, &attack(&far));
+    assert!(
+        record(&region, far.key).is_some(),
+        "8.6 from the eyes: out of reach"
+    );
+    checked(&mut region, &attack(&near));
+    assert!(
+        record(&region, near.key).is_none(),
+        "6.6 from the eyes: in reach"
+    );
+    assert!(
+        items_lying(&region).is_empty(),
+        "a creative player's break drops nothing"
+    );
+}
+
+#[test]
+fn a_players_hit_on_an_entity_in_another_regions_copy_is_an_effect_on_it() {
+    // The region holds the land west of x = 16; the chunks east of it are copies.
+    let mut region = at_a_line(super::arrivals::WEST_OF_THE_LINE, &[]);
+    let seat = cushion(9, [17.5, -60.0, 0.5], 0);
+    region
+        .copies
+        .get_mut(&EAST)
+        .unwrap()
+        .apply_entity(&EntityChange::Whole(seat.clone()));
+    // 16.4 from the player at the spawn: within reach once they stand at x = 12.
+    let walked = moves(vec![numbered(
+        1,
+        PlayerInput::Move {
+            position: Some(Vec3::new(12.5, -60.0, 0.5)),
+            rotation: None,
+            on_ground: true,
+        },
+    )]);
+    checked(&mut region, &walked);
+    let output = region.tick(&attack(&seat));
+    assert_eq!(output.effects.len(), 1, "{:?}", output.effects);
+    let made = output.effects[0];
+    assert_eq!(made.at, BlockPos::new(17, -60, 0));
+    assert!(matches!(
+        made.what,
+        Effected::OnEntity {
+            key,
+            by: EntityUse::Attack { creative: true, .. },
+        } if key == seat.key
+    ));
+}
