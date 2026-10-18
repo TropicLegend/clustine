@@ -5,13 +5,15 @@
 //! (`docs/groundwork/n5-plan.md`, section 8 item 7), so a pick across a line is at most
 //! a tick behind what the entity holds.
 //!
-//! The kinds whose pick is built are the frames and paintings (`hanging.rs`); the other
-//! kinds' items come with their own steps and pick nothing until then.
+//! The kinds whose pick is built are the frames and paintings (`hanging.rs`) and the
+//! knots (`knots.rs`); the other kinds' items come with their own steps and pick
+//! nothing until then.
 
 use clustine_world::{EntityId, HOTBAR_SLOTS, ItemStack, MAIN_START, PlayerId};
 
 use super::Region;
 use super::hanging::hanging_pick;
+use super::knots::knot_pick;
 use super::uses::{CREATIVE_ENTITY_REACH, User, distance_to_sqr};
 use crate::api::{PlayerEvent, TickOutput};
 
@@ -43,7 +45,7 @@ impl Region {
         if distance_to_sqr(self.entity_box(&entity), user.eyes()) >= reach {
             return;
         }
-        let Some(picked) = hanging_pick(&entity) else {
+        let Some(picked) = hanging_pick(&entity).or_else(|| knot_pick(&entity)) else {
             return;
         };
         let Some(state) = self.players.get_mut(&player) else {

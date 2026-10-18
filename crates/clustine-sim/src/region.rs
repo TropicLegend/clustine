@@ -36,6 +36,7 @@ mod hanging;
 mod instruments;
 mod items;
 mod knots;
+mod leashes;
 mod lends;
 mod minecarts;
 mod picks;
@@ -415,6 +416,10 @@ pub struct Region {
     /// region they went to where the region knows it, each with the last tick one was
     /// (`arrivals.rs`); no part of the state.
     lines_crossed: BTreeMap<(ChunkPos, Option<RegionId>), u64>,
+    /// What each player's last move of the tick moved them by, the game's
+    /// `lastKnownClientMovement`, which a leash's pull reads (`leashes.rs`); none for
+    /// one who made none, as `handleClientTickEnd` clears it. No part of the state.
+    known_movements: BTreeMap<PlayerId, [f64; 3]>,
 }
 
 impl Region {
@@ -518,6 +523,7 @@ impl Region {
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
             lines_crossed: BTreeMap::new(),
+            known_movements: BTreeMap::new(),
         }
     }
 
@@ -980,6 +986,7 @@ impl Region {
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
         self.entity_draws.clear();
+        self.known_movements.clear();
         self.piston_deltas.clear();
         self.block_streams.clear();
         output.delta = self.take_delta();
@@ -1713,7 +1720,13 @@ impl Region {
                 } else {
                     *position
                 };
+                let from = player.pose.position;
                 player.move_to(position, *rotation, *on_ground);
+                if position.is_some() {
+                    let to = player.pose.position;
+                    self.known_movements
+                        .insert(id, [to.x - from.x, to.y - from.y, to.z - from.z]);
+                }
             }
             PlayerInput::SelectSlot { slot } => {
                 if usize::from(*slot) < HOTBAR_SLOTS {
@@ -1998,6 +2011,11 @@ impl Region {
         let bodies = self.bodies(Some(action.player));
         if let RemoteStep::UseOn { click } = &action.step {
             self.redstone_ore_clicked(click, output);
+            // A fence used with the main hand binds the player's leashed boats before
+            // anything in hand is used on it (`knots.rs`).
+            if self.fence_used(click, action.player, output) {
+                return None;
+            }
         }
         let (click, target, replace_clicked, clicked) = match &action.step {
             RemoteStep::UseOn { click } | RemoteStep::OffHandOn { click } => {
@@ -2916,6 +2934,7 @@ mod tests {
     mod hanging;
     mod instruments;
     mod item_physics;
+    mod leashes;
     mod lends;
     mod lends_by_the_record;
     mod minecarts;

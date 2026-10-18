@@ -69,6 +69,9 @@ pub(crate) struct BoatMemory {
     pub(crate) paddle_positions: [f32; 2],
     pub(crate) vertical_collision_below: bool,
     pub(crate) recorded: Vec<Movement>,
+    /// Whether its leash has found its holder since the take-in, and its ticks since
+    /// while it has not (`leashes.rs`).
+    pub(crate) leash: super::leashes::LeashMemory,
 }
 
 /// What the game keeps of a minecart in memory and does not save: whether its box was

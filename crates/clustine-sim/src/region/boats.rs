@@ -32,7 +32,8 @@
 //! - A boat meets and pushes only the entities of the region's own chunks.
 //! - Nothing living is picked up before N7: an armour stand is never pushable, and the
 //!   game's rule for the living is kept for N7's mobs.
-//! - A boat's lead, its custom name and the item's entity data are N5g's or later.
+//! - A boat's custom name and the item's entity data are for later; its leash is
+//!   `leashes.rs`'s.
 //! - `isPickable` of the kinds a boat's ray may be stopped by is taken as true for all
 //!   but items (**Inferred**: `Entity::isPickable` is the target of
 //!   `EntitySelector.CAN_BE_PICKED`, which `javap -c` does not show).
@@ -44,13 +45,14 @@ use clustine_blocks::data::{entity_in_tag, flag, has_lava, has_water, is_class};
 use clustine_data::{BlockClass, BlockState, ENTITY_TYPES, EntityTypeInfo, ITEMS, sounds};
 use clustine_noise::trig;
 use clustine_world::{
-    BlockPos, ChunkPos, Entity, EntityChange, EntityData, EntityField, EntityId, EntityUse, Float,
-    Hurt, PlayerId,
+    BlockPos, ChunkPos, Double, Entity, EntityChange, EntityData, EntityField, EntityId, EntityUse,
+    Float, Hurt, PlayerId,
 };
 
 use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{BoatMemory, Memory, View, tracked};
+use super::leashes;
 use super::random_ticks::Random;
 use super::riding::Relocated;
 use crate::api::{PlayerEvent, RegionEvent, TickOutput, Tracked, VehicleMove};
@@ -622,6 +624,11 @@ impl Region {
             self.remove_destroyed(key, output);
             return;
         }
+        // `Leashable.tickLeash`, the end of `baseTick`.
+        self.boat_tick_leash(&mut boat, chunk, output);
+        if boat.removed {
+            return;
+        }
         if self.is_driven(key) {
             boat.body.motion = [0.0; 3];
             boat.parts.turning = 0.0;
@@ -649,6 +656,106 @@ impl Region {
             return;
         }
         self.write_boat(&entity, boat, output);
+    }
+
+    /// `Leashable.tickLeash(level, boat)` of the boat in its tick, in the chunk
+    /// `chunk`: a saved leash looked for (`restoreLeashFromSave`); then, where it holds,
+    /// its holder gone or out of reach drops it with a lead; beyond the snap distance it
+    /// breaks with the sound of it; and otherwise it pulls; the boat turns by its swing
+    /// either way, which then slows by the friction of what it stands on, of the liquid
+    /// it is in, or of the air. The swing is kept in the record in place, as counters are,
+    /// and committed with the boat's other fields.
+    fn boat_tick_leash(&mut self, boat: &mut Tick, chunk: ChunkPos, output: &mut TickOutput) {
+        let key = boat.key;
+        let Some(leash) = self
+            .find_entity(key)
+            .and_then(|(_, record)| record.riding.leash.as_deref().copied())
+        else {
+            return;
+        };
+        if !boat.memory.leash.found {
+            boat.memory.leash.ticks = boat.memory.leash.ticks.saturating_add(1);
+            let ticks = boat.memory.leash.ticks;
+            if !self.restore_leash(key, leash.holder, ticks, output) {
+                return;
+            }
+            boat.memory.leash.found = true;
+            // Leashed, it got off what it rode.
+            let Some((_, record)) = self.find_entity(key) else {
+                boat.removed = true;
+                return;
+            };
+            boat.body.position = record.position;
+        }
+        let Some(held) = self.leash_holder(leash.holder) else {
+            self.drop_leash(key, true, output);
+            return;
+        };
+        let info = EntityTypeInfo::of(i32::from(boat.kind));
+        let movement = match self.find_entity(key) {
+            Some((_, record)) if self.is_driven(key) => {
+                let mut now = record.clone();
+                now.motion = boat.body.motion;
+                self.record_movement(&now)
+            }
+            _ => boat.body.motion,
+        };
+        let leashee = leashes::End {
+            position: boat.body.position,
+            yaw: boat.yaw,
+            width: info.width,
+            height: info.height,
+            movement,
+        };
+        let friction = self.angular_friction(boat, chunk);
+        let mut momentum = leash.angular_momentum.0;
+        let snapped = leashes::leash_tick(
+            &leashee,
+            &held.end,
+            &mut boat.body.motion,
+            &mut boat.body.fall_distance,
+            &mut boat.yaw,
+            &mut momentum,
+            friction,
+        );
+        if snapped {
+            let [x, y, z] = held.end.position;
+            output.events.push(RegionEvent::Sound {
+                sound: sounds::ITEM_LEAD_BREAK,
+                source: SOUND_SOURCE_NEUTRAL,
+                position: clustine_world::Vec3::new(x, y, z),
+                volume: 1.0,
+                pitch: 1.0,
+                except: None,
+            });
+            self.drop_leash(key, true, output);
+            return;
+        }
+        if let Some((chunk, record)) = self.find_entity(key) {
+            let mut riding = record.riding.clone();
+            if let Some(kept) = riding.leash.as_deref_mut() {
+                kept.angular_momentum = Double(momentum);
+            }
+            self.age_entity(chunk, key, vec![EntityField::Riding(riding)], output);
+        }
+    }
+
+    /// `Leashable.angularFriction(boat)`: on the ground the friction of the block below
+    /// that affects its movement, times 0.91; in a liquid 0.8; in the air 0.91.
+    fn angular_friction(&self, boat: &Tick, chunk: ChunkPos) -> f32 {
+        if boat.body.on_ground {
+            let view = View {
+                region: self,
+                home: chunk,
+            };
+            let below = view.state(boat.body.below_for_movement(&view));
+            return below.physics().map_or(0.6, |physics| physics.friction) * 0.91;
+        }
+        if boat.body.in_water || boat.in_lava {
+            0.8
+        } else {
+            0.91
+        }
     }
 
     /// `floatBoat()` and `move(SELF, motion)` of a boat nobody drives.
@@ -1252,6 +1359,10 @@ impl Region {
                 if state_changed {
                     fields.push(EntityField::Data(after.data.clone()));
                 }
+                // A leash's swing, kept in place as the tick went, goes with the rest.
+                if after.riding != before.riding {
+                    fields.push(EntityField::Riding(after.riding.clone()));
+                }
                 output
                     .entity_changes
                     .push((chunk, EntityChange::Set(key, fields)));
@@ -1311,6 +1422,10 @@ impl Region {
             EntityUse::Interact {
                 player, sneaking, ..
             } => {
+                // `Entity.interact`'s leash comes first (`VehicleEntity` keeps it).
+                if self.leash_used(entity, by, output) {
+                    return;
+                }
                 let out_of_control =
                     parts_of(&entity.data).map_or(0.0, |parts| parts.out_of_control);
                 if !sneaking && out_of_control < OUT_OF_CONTROL {
@@ -1423,6 +1538,10 @@ impl Region {
             }
             return;
         }
+        // `handlePlayerKnownMovement`: what the move moved the root by is the
+        // driver's known movement, which a leash's pull reads.
+        self.known_movements
+            .insert(id, physics::sub(checked.body.position, root.position));
         let mut memory = self.entity_memory.remove(&root.key).unwrap_or_default();
         memory.supporting = checked.body.supporting;
         memory.on_ground_no_blocks = checked.body.on_ground_no_blocks;

@@ -26,10 +26,11 @@ use clustine_protocol::packets::play::{
     ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue,
     EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
     PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEquipment, SetHeadRotation,
-    SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
-    SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle, animation,
-    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
+    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
+    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity,
+    SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle,
+    animation, entity_data, game_event, game_mode, inventory as protocol_inventory, level_event,
+    player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -814,6 +815,9 @@ pub(crate) struct Fanout {
     /// the other way round (`docs/groundwork/n5-plan.md`).
     passengers: BTreeMap<EntityId, Vec<EntityId>>,
     vehicle_of: BTreeMap<EntityId, EntityId>,
+    /// Who holds each leashed entity's leash, by the leashee's region's word
+    /// (`set_entity_link`, `docs/groundwork/n5-brief.md`, section 7.5).
+    leashes: BTreeMap<EntityId, EntityId>,
     /// The ids this edge's clients know entities by.
     wire: WireIds,
     /// The regions that are no more, each with the region it went into, as far as this
@@ -987,6 +991,7 @@ impl Fanout {
             entities: BTreeMap::new(),
             passengers: BTreeMap::new(),
             vehicle_of: BTreeMap::new(),
+            leashes: BTreeMap::new(),
             wire,
             stands_for: BTreeMap::new(),
             carried: BTreeMap::new(),
@@ -2957,10 +2962,9 @@ impl Fanout {
                     self.show_entity_event(entity, event).await;
                 }
             }
+            RegionEvent::Leashed { entity, holder, .. } => self.show_leash(entity, holder).await,
             // Shown from the steps of N5 that make them.
-            RegionEvent::Leashed { .. }
-            | RegionEvent::DataChanged { .. }
-            | RegionEvent::EntitySound { .. } => {}
+            RegionEvent::DataChanged { .. } | RegionEvent::EntitySound { .. } => {}
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
@@ -3489,7 +3493,8 @@ impl Fanout {
             if moved && rides.is_some() && visible && !newly {
                 packets.push(head_rotation(state, self.wire.of(entity)));
             }
-            // Who rides it, and what it rides, go with it to a client newly shown it.
+            // Who rides it, and what it rides, go with it to a client newly shown it,
+            // and then who holds its leash (`ServerEntity.sendPairingData`).
             if newly && visible {
                 let mut vehicles = vec![entity];
                 vehicles.extend(rides);
@@ -3500,6 +3505,9 @@ impl Fanout {
                     {
                         packets.push(packet);
                     }
+                }
+                if let Some(holder) = self.leashes.get(&entity) {
+                    packets.push(link_packet(entity, Some(*holder), &mut self.wire));
                 }
             }
             if !packets.is_empty() {
@@ -3541,6 +3549,30 @@ impl Fanout {
         }
         for (player, packet) in outgoing {
             self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Takes in who holds the leash of `entity` now, by its region's word, and tells
+    /// each client that shows it (`ClientboundSetEntityLinkPacket`, which the game sends
+    /// the leashee's trackers on every change). A client looks the holder up by its id
+    /// whenever it draws the leash, so one it is not shown yet is named all the same.
+    async fn show_leash(&mut self, entity: EntityId, holder: Option<EntityId>) {
+        match holder {
+            Some(holder) => self.leashes.insert(entity, holder),
+            None => self.leashes.remove(&entity),
+        };
+        let watching: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .map(|(player, _)| *player)
+            .collect();
+        if watching.is_empty() {
+            return;
+        }
+        let packet = link_packet(entity, holder, &mut self.wire);
+        for player in watching {
+            self.send_to_player(player, [packet.clone()]).await;
         }
     }
 
@@ -3626,6 +3658,7 @@ impl Fanout {
     /// Forgets an entity that no longer exists and hides it from everyone who saw it.
     async fn remove_entity(&mut self, entity: EntityId) {
         self.entities.remove(&entity);
+        self.leashes.remove(&entity);
         // A vehicle that is gone carries nobody, and a rider that is gone rides nothing.
         if let Some(riders) = self.passengers.remove(&entity) {
             for rider in riders {
@@ -3947,6 +3980,12 @@ impl Fanout {
                 && let Some(packet) = passengers_packet(view, *vehicle, riders, &mut self.wire)
             {
                 packets.push(packet);
+            }
+        }
+        // And who holds the leashes of those that appeared.
+        for (leashee, holder) in &self.leashes {
+            if view.visible.contains_key(leashee) && !shown_before.contains(leashee) {
+                packets.push(link_packet(*leashee, Some(*holder), &mut self.wire));
             }
         }
         // Who waits for what has changed, and how near they are: that moves entries
@@ -5454,6 +5493,16 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
                 ];
                 i32::from(attached.direction)
             }
+            // A knot's is its fence's corner and no data (`ClientboundAddEntityPacket(this,
+            // 0, getPos())`); the client puts it at the block's middle itself.
+            EntityData::LeashKnot { attached } => {
+                [x, y, z] = [
+                    f64::from(attached.block.x),
+                    f64::from(attached.block.y),
+                    f64::from(attached.block.z),
+                ];
+                0
+            }
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
@@ -5619,6 +5668,14 @@ fn passengers_packet(
         vehicle_id: wire.of(vehicle),
         passengers,
     }))
+}
+
+/// `set_entity_link` of the leashee `entity` to `holder`, 0 for none.
+fn link_packet(entity: EntityId, holder: Option<EntityId>, wire: &mut WireIds) -> Bytes {
+    encoded(&SetEntityLink {
+        leashed_id: wire.of(entity),
+        holder_id: holder.map_or(0, |holder| wire.of(holder)),
+    })
 }
 
 /// The head of a player looks where the player looks; the position packets only turn
@@ -7770,6 +7827,7 @@ mod scenarios {
     mod hanging;
     mod items;
     mod items_specification;
+    mod leashes;
     mod physics_specification;
     mod redstone;
     mod riding;
@@ -8552,6 +8610,8 @@ mod scenarios {
         swings: Vec<Animate>,
         /// Every list of a vehicle's passengers and every teleport it was sent, in order.
         passengers: Vec<SetPassengers>,
+        /// Every leash it was told of, in order.
+        links: Vec<SetEntityLink>,
         teleports: Vec<SynchronizePlayerPosition>,
         /// Every packet it was sent of an entity's tracking (its moves, relative and
         /// whole, its motion, its being picked up) and every transient block, in order.
@@ -8627,6 +8687,7 @@ mod scenarios {
                 entity_data: Vec::new(),
                 swings: Vec::new(),
                 passengers: Vec::new(),
+                links: Vec::new(),
                 teleports: Vec::new(),
                 tracking: Vec::new(),
                 ids: Vec::new(),
@@ -8789,6 +8850,7 @@ mod scenarios {
                 }
                 ClientboundPlay::AddTransientBlock(_) => self.tracking.push(decoded),
                 ClientboundPlay::SetPassengers(passengers) => self.passengers.push(passengers),
+                ClientboundPlay::SetEntityLink(link) => self.links.push(link),
                 ClientboundPlay::SynchronizePlayerPosition(teleport) => {
                     self.teleports.push(teleport);
                 }

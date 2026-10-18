@@ -230,6 +230,10 @@ impl Region {
             let contents = contents_of(&record.data).cloned().unwrap_or_default();
             self.drop_contents(record.position, &contents, size, output);
         }
+        // `AbstractBoat.remove`: a boat destroyed lets its leash go with a lead.
+        if crate::physics::entities::is_boat(record.kind) {
+            self.drop_leash(key, true, output);
+        }
         // Both reasons destroy (`RemovalReason.shouldDestroy`).
         self.unride_removed(key, true, output);
         let Some((chunk, record)) = self.find_entity(key) else {

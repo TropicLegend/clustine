@@ -129,6 +129,11 @@ impl Region {
                 .push(RegionEvent::EntitySpawned(state_of(&entity)));
             self.entity_chunks.insert(key, chunk);
             self.entity_memory.remove(&key);
+            // An arrival is no load: its leash holds by what it held by, found or not
+            // where it comes (`leashes.rs`).
+            if entity.riding.leash.is_some() {
+                self.note_leash_found(key);
+            }
             let whole = EntityChange::Whole(entity);
             if let Some(loaded) = self.chunks.get_mut(&chunk) {
                 loaded.apply_entity(&whole);
@@ -216,8 +221,13 @@ impl Region {
     /// Where entities were sent across a line in the last half a minute, for merging
     /// regions that follow players (the plan, section 5, G8): the chunks within four
     /// blocks of where each was sent, each with the region it went to where the region
-    /// knows it, ascending. Reported by the worker beside circuits at work (step N3f).
+    /// knows it; and where a leash is held near a line, the other regions' chunks
+    /// within its reach, each with its region (`docs/groundwork/n5-plan.md`, section 7
+    /// item 3); ascending. Reported by the worker beside circuits at work (step N3f).
     pub fn entities_at_line(&self) -> Vec<(ChunkPos, Option<RegionId>)> {
-        self.lines_crossed.keys().copied().collect()
+        let mut at: BTreeSet<(ChunkPos, Option<RegionId>)> =
+            self.lines_crossed.keys().copied().collect();
+        at.extend(self.leashes_at_line());
+        at.into_iter().collect()
     }
 }
