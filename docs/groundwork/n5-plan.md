@@ -1,6 +1,7 @@
 # Step N5: vehicles, riding and what a creative player places, planned
 
-Draft of 2026-10-18, to be reviewed before it is built. Step N5 of
+Draft of 2026-10-18, revised the same day after an independent review (section 7,
+which overrides what it amends above it); to be reviewed again before it is built. Step N5 of
 [ADR-0028](../adr/0028-entities.md) (sections 2, 5, 6 and 7 as accepted) and of the
 [phase plan](n-plan.md): "minecarts on rails, boats driven by the client, riding, armour
 stands, item frames, paintings and the other hanging entities, leashes". The rules of
@@ -18,8 +19,8 @@ cites it by section (brief 3.6, brief 0.12) and decides what the brief leaves op
   other and stop against players.
 - A boat or a raft placed on water or land is driven by the client of the player in its
   front seat, as in the game, with paddles shown to others; a second player sits behind.
-  A boat nobody drives floats, drifts with currents, rises and sinks in bubble columns,
-  and picks up a mannequin (later, animals) it runs into. Players stand on boats; items
+  A boat nobody drives floats, drifts with currents, and rises and sinks in bubble
+  columns (it picks up animals from N7 on). Players stand on boats; items
   land on them.
 - An armour stand is placed, takes and gives the items a player puts on it, falls,
   floats, and breaks at once to a creative player's hit.
@@ -32,8 +33,9 @@ cites it by section (brief 3.6, brief 0.12) and decides what the brief leaves op
 - Every one of these crosses a line between regions as an item does (N3), and a player
   riding a boat or a cart across a line goes on riding, with their vehicle and anyone
   else in it, without a jump back, a flicker or a dismount.
-- A player who leaves while sitting alone in a boat takes the boat with them and comes
-  back in it, as in the game (brief 0.10).
+- A player who leaves while sitting in a boat or a cart gets off as they leave, the
+  vehicle staying where it was; they come back beside it (section 7, item 1: the game
+  takes a vehicle away with a lone rider, a named difference for now).
 
 ## 2. Decisions the brief leaves open (taken here; the owner can overrule)
 
@@ -61,15 +63,15 @@ cites it by section (brief 3.6, brief 0.12) and decides what the brief leaves op
    hits are handled by the stand's holder, and `lastHit` is not saved in the game
    either. A stand crossing a line between the two hits needs two more: a named
    difference.
-7. **A vehicle with exactly one player in it leaves with the player** (brief 0.10): the
-   unit goes into the player's stay in the world store (ADR-0020) at logout and comes
-   back with them, as the game's `RootVehicle`. With none or two or more players it
-   stays in its chunk.
+7. **Withdrawn by the review** (section 7, item 1): a leaving player is dismounted in
+   the commit of their leave and the vehicle stays in its chunk, as the game does with
+   two riders; the game's taking of a vehicle away with a lone rider is a named
+   difference.
 8. **Containers' contents in a record** are the stacks as N2 encodes them; a chest
    boat's 27 stacks fit one record (N2's large entity split covers them anyway).
-9. **Unsaved state a player would notice at a line travels with the entity** (brief
-   10.5): `Entity` gains a field of runtime state that commits and arrivals carry and
-   chunk saves leave out, as the game leaves it out of NBT. A vehicle's damage, hurt time
+9. **Amended by the review** (section 7, item 7): the state below is saved like any
+   other field, in each kind's data, the common ones on `Entity`. Unsaved state a player
+   would notice at a line travels with the entity (brief 10.5). A vehicle's damage, hurt time
    and direction, a passenger's boarding cooldown, a boat's out-of-control ticks, paddle
    phases, turning and status, a leash's angular momentum. Hanging entities' check
    counter starts again at a take-in, as at the game's load.
@@ -262,3 +264,102 @@ crashes of each process at each step of a rider's crossing.
 3. Effects on entities (decision 10) were planned by the record for N7: is bringing them
    to N5 sound, and does any N5 use need its answer back in the same tick (a mount does:
    it is a hand-over, so it waits a tick)?
+
+## 7. The first review, and what it changed
+
+An independent review (2026-10-18) found these; each change overrides the text above.
+
+1. **Decision 7 lost a boat at a quick reconnect.** The leave's commit takes the unit out
+   of its chunk unconditionally, while a stay note below the store's floor is dropped
+   (ADR-0020, section 3; `lanes.rs`'s commit arm), so a leave racing the new stay's
+   `Entering` left the unit in no durable state. ADR-0020 also writes no note at a leave.
+   Withdrawn: a leaving player, and one who dies, ends or is reset by their edge, is
+   dismounted in the commit that removes them, and the vehicle stays in its chunk. The
+   game's lone-rider rule is a named difference, to be built with a note kind of its
+   own and an amendment of ADR-0020 when animals that are ridden (N7) raise it again.
+2. **A rider was shown dismounted at every crossing.** The unit reaches the new region
+   before the player, and its first report would list only seated passengers, so the
+   rider's own client would see the boat without them. So:
+   - a pending player keeps their seat: their index in `passengers`, and every rule of
+     the game but positioning (`canAddPassenger`, `isVehicle`, the controller rule, the
+     cart's pick-up) counts them;
+   - the edge shows a player as riding from the player's own region's word (their state
+     says "rides K at index i"); a vehicle's report supplies only its non-player
+     passengers. So a player is never drawn in two vehicles, whichever region speaks
+     first;
+   - reports of passengers obey the edge's `hops` rule, as moves do.
+3. **Players are not in copies**, so nothing in one region sees another region's
+   players: a leash held across a line cannot hold, and carts and boats pass through
+   players over a line. Following ADR-0028 (section 5): a leash whose holder is in
+   another region snaps, as one held beyond reach does, and where regions follow players
+   a held leash at a line counts as entities working at it, so the two merge; a cart or
+   a boat passes through a player beyond a pinned line. Named differences. Publishing
+   players into copies is left for a later step.
+4. **Kept `MoveVehicle`s were checked as one tick.** A hand-over takes one to three
+   ticks, and every move sent meanwhile reaches the new region together. So: while the
+   controlling seat is pending the new region keeps the boat still, as for a driven
+   boat; at seating it seeds the move check from the root's position, as `tickPlayer`
+   would; the kept moves are a sequence (at most 20, the older dropped), each checked
+   as one client tick against the last; the hand-over carries only the floating counter
+   and `vehiclePositionLastResetAt`.
+5. **"Seated, vehicle pending" made precise.** A pending entry keeps its index (the
+   `addPassenger` rule is for new mounts only). While pending, sneaking, interacting and
+   mounting elsewhere are refused; an ejection drops the pending entry, and the player is
+   dismounted when they come. A player who comes to a present unit that has dropped
+   their seat is dismounted at once. A unit sent on to a third region while a seat is
+   pending leaves a forwarding entry (key to chunk) for 100 ticks, so that the player
+   follows. The deadline and the kept moves are in the player's saved state, not
+   runtime state. A take-in from the store (a restore after a checkpoint, a fold) drops
+   player passengers the region does not have.
+6. **Phantom seats from the other removal paths.** `remove_player`, `end_player`,
+   `apply_dead`, `apply_arrival`'s replacing branches and the edge's reset each take the
+   player out of their vehicle's `passengers` in the same commit and report it.
+7. **Runtime state left out of saves contradicted the checkpoint** (`messages.rs`: every
+   change committed up to the checkpoint's tick is in a chunk saved before), and merges
+   and splits reload warm chunks. There is no such category: the state of decision 9 is
+   saved, and per-tick counters (the hanging entities' 101-tick check, decaying hurt
+   times) follow N2's rule of counting, relative to their record, committed when they
+   matter, not every tick.
+8. **The contracts lacked:**
+   - `PlayerInput::Keys { forward, backward, left, right, jump, sneak, sprint }` from
+     `player_input` (the edge keeps sneaking alone today), kept in the player's state and
+     carried by the transfer, since the client sends it only on change: a cart crossing
+     a line must keep the rider's held key; `START_SPRINTING`/`STOP_SPRINTING` from
+     `player_command` (nothing keeps the sprint flag yet);
+   - the player's state: the vehicle's key and index, the move check's state, the
+     pending deadline and kept moves, a mount intent;
+   - arrivals addressed by the root's chunk for every member (an arrival is filed by
+     `entity.chunk()` today);
+   - a `RemoteStep` for an entity's item used on another region's block (a cart placed
+     on a rail across the line);
+   - the 160-tick floating kick;
+   - `VehicleCorrected`, `Mounted` and `Dismounted` as `PlayerEvent`s, to one player.
+9. **Uses that need an answer back.** A mount is not an effect: it is the player's
+   hand-over to the unit's region with a mount intent, which runs `startRiding`'s checks
+   there and hands the player back if refused. An armour stand's take and swap give the
+   player an item: across a line they do nothing in N5 (named), hits on it work. Effects
+   on entities in N5 are hits (a creative break), knots, item frames (put an item,
+   turn it) and pick-item, done in the next tick's seams, a tick after a local use.
+10. **Shared code no part owned.** `VehicleEntity`, `ContainerEntity`,
+    `BlockAttachedEntity`, the comparator's reading of entities in `diodes.rs`, the
+    dispatch of items used on entities and blocks, the remote-action path and the
+    edge's entity data per kind go into N5b, which is mine, before anything is
+    delegated. N5g waits for N5c as well as N5f; the cart's pick-up of boats comes in
+    N5f, after N5e; the stand's push of carts in N5e, after N5d.
+11. **Smaller points:**
+    - a rider departs where the store says the chunk is another's (`region.rs`'s
+      departures), not "where the region does not tick"; a crossing within a packet
+      stops the old region applying that player's later inputs, and sets their last
+      input at the crossing packet;
+    - a click without sneaking on a chest boat seats the player (decision 3 keeps it);
+    - the rider's push speeds a cart only under 0.1 a tick (brief 0.3);
+    - decision 6 never arises on a creative-only server, where a hit breaks the stand;
+    - a moving empty cart nudges a player (`LivingEntity.push`), which the player's
+      client must be sent as a motion;
+    - whether `paddle_boat` comes every tick or on change is checked with a real
+      client; the region keeps the last it was told either way;
+    - wire ids are never reused (N1), so the record's quarantine of ids is not needed;
+    - `MoveVehicle` is held back by the edge's `awaiting_teleport`, as moves are;
+    - the oracle's cart comparison reads the official server's cart by its position
+      sent to a client from a known tick of placing, as the redstone comparisons read
+      blocks.
