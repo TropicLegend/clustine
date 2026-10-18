@@ -43,8 +43,8 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: animals, monsters,
-boats, minecarts and TNT (entities, below); what needs light, crops and saplings
+**What a player will miss within minutes**, all of it planned: animals, monsters and
+TNT (entities, below); chests and other containers that open; what needs light, crops and saplings
 growing, grass spreading, ice and snow melting (light in the simulation); the
 redstone that waits for entities (TNT, dispensers, droppers, hoppers, crafters, sculk,
 detector rails, arrows, plates pressed by mobs or items, pistons pushing anything but
@@ -184,8 +184,38 @@ from anvils or stalactites; container contents, experience and silverfish are no
 dropped; containers, banners, heads and hives drop the plain item (stacks carry no
 components yet); `Restored::issued` is left from before N1.
 
-**Next in phase N:** N5, vehicles (boats and minecarts, a rider crossing a line with
-its vehicle), then N6 (TNT and the redstone that waits for entities) and N7 (animals
+**N5, vehicles and what a creative player places** (2026-10-18,
+[plan](groundwork/n5-plan.md), reviewed twice; [brief](groundwork/n5-brief.md) read from
+the jar):
+- minecarts on every rail shape, powered, activator and detector rails, carts pushing
+  carts, the furnace cart, chest carts (TNT and hopper carts placed, inert until N6);
+- boats and rafts, driven by the client's moves through the game's checks, floating,
+  currents and bubble columns, paddles, chest boats;
+- riding: getting on by a use, the seats at the game's points, getting off by sneaking
+  where the game lets a player off, a riding player's moves turning only their head;
+- armour stands on a reduced living body N7 will build on; item frames, glow item frames
+  and paintings (the painting's variant drawn as the game draws it, a comparator reading a
+  frame); cushions; leads tying boats to players, fences and other boats;
+- collisions between entities (boats are solid, carts and boats push what they meet);
+- a rider crossing a line with their vehicle: their seat kept, handed on in the same
+  commit, seated in whichever order unit and player come, no teleport, no flicker;
+- hits and uses of an entity across a line, as effects on it.
+
+Compared with the official server: a cart kicked by a powered rail sends the same packets
+on the same ticks. Tests from the record and the plan by someone who built none of it
+(N5j, 127) found ten defects, mended: seats kept for players whose hand-over was
+discarded, who came riding nothing or gave up; seats of absent players kept at a take-in;
+a waiting player getting on another vehicle; kept moves checked as one tick; a leaving
+rider's place; and the edge taking a vehicle's word over the rider's own region's.
+Named differences: a player who leaves while riding gets off, the vehicle staying (the
+game takes a vehicle away with a lone rider); getting on a vehicle across a line does
+nothing (cross first); a lead held across a pinned line snaps, and a cart or boat passes
+through a player beyond a pinned line (players are not in copies); an armour stand's take
+across a line does nothing; containers do not open; a unit sent on to a third region
+while a seat is kept loses its forwarding entry if that region crashes, merges or splits
+within those ticks.
+
+**Next in phase N:** N6 (TNT and the redstone that waits for entities), then N7 (animals
 and the structures' entities).
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
@@ -209,6 +239,21 @@ and the structures' entities).
 7. Without pins: two players far apart, one walks away until the region splits; throw
    an item across the line the split left: the coordinator merges the two regions at
    once (its log says "for a circuit at the line").
+
+8. Place rails down a slope and round a curve, a minecart on them (right click the rail
+   with the cart), and get in: it rolls, takes the curve, and holding W speeds it a little
+   from rest. Sneak to get out beside it. Powered rails on a redstone block push it.
+9. Place a boat on water (right click the water) and get in: drive it with W, A and D,
+   the paddles move for others; a second player sits behind. Get out by sneaking. A boat
+   left alone floats up and drifts with a current; one over a bubble column of soul sand
+   rises.
+10. Place an armour stand and put a helmet on it by clicking its head; hit it once: it
+    breaks. Hang item frames and paintings; put an item in a frame and turn it by clicks;
+    a comparator behind the frame's wall gives the rotation.
+11. Lay a cushion on a block and sit on it. Tie a boat to yourself with a lead, and to a
+    fence.
+12. With pins: drive a boat or ride a cart across x = 64 and on: you go on riding, with no
+    jump, no getting out and no flicker; a player on the far side sees you arrive seated.
 
 What to say if it is not so: which step, what was seen, and the log of the world
 store, the coordinator and the workers.
