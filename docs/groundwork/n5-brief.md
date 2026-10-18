@@ -12,19 +12,30 @@ J=target/datagen/26.3/versions/26.3/server-26.3.jar
 $HOME/.local/jdk/bin/javap -p -c -constants -cp $J net.minecraft.world.entity.Entity
 ```
 
-The 72 classes read are `Entity` (and its nested classes), `ServerEntity`,
-`ServerGamePacketListenerImpl`, `InteractionResult`, `VehicleEntity`, `DismountHelper`,
-`ContainerEntity`, every minecart and both minecart behaviours, `AbstractBoat`, `Boat`,
-`ChestBoat`, `Raft`, `ChestRaft`, `AbstractChestBoat`, `ArmorStand`, `BlockAttachedEntity`,
-`HangingEntity`, `ItemFrame`, `GlowItemFrame`, `Painting`, `PaintingVariant(s)`,
-`LeashFenceKnotEntity`, `Leashable` (and `LeashData`, `Wrench`), `Mannequin`, `Cushion`,
-the rail blocks, `RailState`, `RailShape`, and the items `MinecartItem`, `BoatItem`,
-`ArmorStandItem`, `HangingEntityItem`, `ItemFrameItem`, `LeadItem`. What else a rule
-depends on is named in section 11 ("Not read"). `invokedynamic` targets (lambdas and
-method references) are not shown by `javap -c`; where a rule depends on which method one
-is, it is marked **Inferred**. Where SteelMC's 26.3 extraction is quoted (attachment
-points, `LivingEntity`'s data ids, serializer ids), it is for orientation only and says
-so.
+The classes read are, first, the 72 of the step's own: `Entity` (and its nested classes),
+`ServerEntity`, `ServerGamePacketListenerImpl`, `InteractionResult`, `VehicleEntity`,
+`DismountHelper`, `ContainerEntity`, every minecart and both minecart behaviours,
+`AbstractBoat`, `Boat`, `ChestBoat`, `Raft`, `ChestRaft`, `AbstractChestBoat`, `ArmorStand`,
+`BlockAttachedEntity`, `HangingEntity`, `ItemFrame`, `GlowItemFrame`, `Painting`,
+`PaintingVariant(s)`, `LeashFenceKnotEntity`, `Leashable` (and `LeashData`, `Wrench`),
+`Mannequin`, `Cushion`, the rail blocks, `RailState`, `RailShape`, and the items
+`MinecartItem`, `BoatItem`, `ArmorStandItem`, `HangingEntityItem`, `ItemFrameItem`,
+`LeadItem`; then the 60 they call into: `LivingEntity`, `Player`, `ServerPlayer`, `Avatar`,
+`Mob`, `PlayerList`, `ServerLevel`, `Level`, `ChunkMap` (and `$TrackedEntity`),
+`ServerChunkCache`, `EntityType`, `EntityAttachments`, `EntityAttachment`,
+`EntityDataSerializers`, the packets of section 2.11, `ServerGamePacketListenerImpl$1`
+and its `javap -v`, `InteractionResult$Success`/`$SwingSource`/`$ItemContext`,
+`UpdateInterval`, the interpolation handlers and `InterpolationTracker`,
+`CollisionGetter`, `EntityGetter`, `BlockGetter`, `EntitySelector`, `Vec3`, `AABB`, `Mth`,
+`Item`, `BlockPlaceContext`, `Containers`, `AbstractContainerMenu`, `ContainerHelper`,
+`ItemStack`, `ServerPlayerGameMode`, `DamageSource`, `EquipmentSlot`, `VariantUtils`,
+`Util`, `ComparatorBlock`, `BubbleColumnBlock`, `FenceBlock`, `CushionItem` and the
+`BlockMatcher` classes. What a rule still depends on and nobody has read is in section
+11. `invokedynamic` targets (lambdas and method references) are not shown by `javap -c`;
+where a rule depends on which method one is and no `javap -v` was read, it is marked
+**Inferred**. SteelMC's 26.3 extraction is quoted only for the per-type attachment
+points, which 26.3 registers in a class not read (`EntityTypes`), and says so where it
+is.
 
 Conventions throughout (as in `docs/groundwork/n4-brief.md`): `double` is `f64`, `float`
 is `f32`; a `float` constant used in `double` arithmetic is widened (`f2d`) *after* any
@@ -49,45 +60,54 @@ gathers those that change what the plan and ADR-0028 assume, with pointers.
    `minecart_improvements` gives (`generated/data/minecraft/datapacks/`). A new world
    uses the old behaviour. The new one moves up to `max_minecart_speed`/20 blocks a tick
    along rails many blocks ahead and needs its own packet (`move_minecart_along_track`,
-   56): **Inferred** recommendation, refuse or ignore the experiment in N5 (3.0 items 1,
-   6; 3.9).
+   56). Recommendation: refuse or ignore the experiment in N5 (3.0 items 1, 6; 3.9).
 2. **Boats are still driven by the client.** A boat's controlling passenger is its first
-   passenger if that is a `Player`, else none. While a player controls it the server
-   zeroes its motion and turning every tick and neither floats, steers nor moves it; the
-   client sends `move_vehicle` (serverbound 34: position, rotations and, new, `onGround`)
-   and `paddle_boat` (35) every tick, and the server answers with `move_vehicle`
-   (clientbound 58) only when it refuses a move. `AbstractBoat.setInput` is called by
-   nothing on the server: the keys never reach it. A boat with no player in front (empty,
-   or a mob in front) is the server's to simulate: floating, gravity, currents, bubble
-   columns, its move and picking up entities; a boat just left starts from zero motion
-   (2.0 item 1; 4.0 items 1, 2).
+   passenger if that is a `Player` (`Player.isClientAuthoritative()` is true), else none.
+   While a player controls it the server zeroes its motion and turning every tick and
+   neither floats, steers nor moves it; the client sends `move_vehicle` (serverbound 34:
+   position, rotations and, new, `onGround`) and `paddle_boat` (35) every tick, and the
+   server answers with `move_vehicle` (clientbound 58) only when it refuses a move.
+   `AbstractBoat.setInput` is called by nothing on the server: the keys never reach it.
+   A boat with no player in front (empty, or a mob in front) is the server's to
+   simulate: floating, gravity, currents, bubble columns, its move and picking up
+   entities; a boat just left starts from zero motion (2.0 item 1; 4.0 items 1, 2).
 3. **Minecarts have no controlling passenger**: the server moves them. A rider's keys
-   reach a cart only through `player_input` → `ServerPlayer.setLastClientInput` →
-   `getLastClientMoveIntent()`, which the cart adds, unnormalised, × 0.001, only while it
-   moves under 0.1 a tick (also cancelling an unpowered powered rail's brake)
-   (2.0 item 1; 3.6 step 10).
-4. **The use-entity packet is split.** `attack` (serverbound 1: the entity id) and
-   `interact` (26: id, hand, the hit location, `usingSecondaryAction`); there is no
-   `interactAt` and no handler object. `Entity.interact(player, hand, location)` takes the
-   location (the armour stand's slot by height). `handleInteract` sets the player's sneak
-   flag from the packet before anything else, so `canRide` and `isSecondaryUseActive`
-   see the packet's flag, not the last `player_input` (the edge keeps sneaking from
-   `PlayerInput` only today) (2.0 items 2, 3).
+   reach a cart only through `player_input` → `ServerPlayer.getLastClientMoveIntent()`:
+   the keys as `(strafe, 0, forward)`, each −1, 0 or 1, normalised when longer than 1 and
+   turned by the rider's yaw, so of length 0 or 1. The cart adds it × 0.001 only while it
+   moves under 0.1 a tick, which also cancels an unpowered powered rail's brake (2.4;
+   3.6 step 10). (The first reading had it unnormalised: wrong.)
+4. **The use-entity packet is split.** `attack` (serverbound 1: varint id) and `interact`
+   (26: varint id, hand, the hit location as `LpVec3`, `usingSecondaryAction`); there is
+   no `interactAt` and no handler object. `Entity.interact(player, hand, location)` takes
+   the location (the armour stand's slot by height). `handleInteract` sets the player's
+   sneak flag from the packet before anything else, so `canRide` and
+   `isSecondaryUseActive` see the packet's flag, not the last `player_input` (the edge
+   keeps sneaking from `PlayerInput` only today). `Player.interactOn`'s order: a
+   spectator opens the entity's menu; `interact`; a creative player's count is restored;
+   `interactLivingEntity` (2.0 items 2, 3; 2.7; 2.11).
 5. **`Cushion` is new in 26.3, stable, and belongs in N5.** A `BlockAttachedEntity` lying
    on a block (1.0 × 0.25), sixteen dyed items (`minecraft:<colour>_cushion`, stack 16,
-   in no experimental pack), sat on by a right click (`startRiding`, one rider) and left
-   by sneaking; one hit breaks it, a creative breaker gets nothing; it goes when nothing
-   under it holds it (checked every 101 ticks). It never moves: the simplest vehicle.
-   Its placing item's class is not read (5.0 item 1; 5.8).
+   in no experimental pack), placed by `CushionItem` on a block's top face at the
+   click's height, facing the player's cardinal direction, refused where another
+   cushion is; sat on by a right click (`startRiding`, one rider) and left by sneaking;
+   one hit breaks it, a creative breaker gets nothing; it goes when nothing under it
+   holds it (checked every 101 ticks). It never moves: the simplest vehicle (5.0 item 1;
+   5.8).
 6. **`Mannequin` is a player-shaped `LivingEntity`** (`extends Avatar`) with no item and
    no spawn egg (summoned only). It needs all of `LivingEntity`: **not N5**; keep one
    met in a world as an entity of unknown behaviour (its NBT kept) until N7 (5.0 item 2;
    5.9).
-7. **An armour stand is a `LivingEntity`.** Its gravity, drag, fluids, fire, health,
-   equipment (`SetEquipment`) and attributes (`UpdateAttributes` at pairing) are
-   `LivingEntity`'s, which is not read. The plan must choose between porting
-   `LivingEntity`'s movement now (N7 needs it anyway) and a reduced stand (5.0 item 3;
-   5.5).
+7. **An armour stand is a `LivingEntity`, and a reduced one is enough.** Its tick
+   (`LivingEntity.tick` → `baseTick` → `aiStep` → `travel`, now read, 5.5) needs
+   `travelInAir`/`travelInWater`/`travelInLava` with the gravity, friction and drag, the
+   zeroing of motion under 0.003, the fall check (sounds and particles, no damage), air
+   supply under water, freezing, equipment change detection (`SetEquipment`, the equip
+   sound) and `pushEntities`; AI, effects, `LivingEntity`'s damage path, death, sleeping,
+   items in use and riding control can be left out. A stand at rest holds `y = −0.0784`
+   every tick (gravity, then the collision, then `0.98f`) and so commits nothing after
+   its first tick. The attribute defaults (gravity 0.08, health 20, …) are in
+   `Attributes`, not read (5.0 item 3; 5.5).
 8. **Only boats are leashable among N5's entities** (`AbstractBoat implements
    Leashable`; minecarts, stands, mannequins, cushions and hanging entities are not).
    Any entity can hold a leash, so N5 meets a boat held by a player, tied to a fence (a
@@ -100,136 +120,195 @@ gathers those that change what the plan and ADR-0028 assume, with pointers.
 9. **The order of passengers is the state, not a seat number.** On the server
    `addPassenger` puts a player at index 0 when the first passenger is not a player, and
    appends anyone else; the boat steers by index 0 if it is a player, and seats by index
-   (front 0.2, back -0.6 along the boat). A `PlayerTransfer`'s "seat" must be this order,
-   and seating a pending player follows this rule (1.0 item 1; 4.6).
-10. **A vehicle whose indirect passengers include exactly one player is not saved with
-    its chunk** (`shouldBeSaved`): in the game it is saved with that player and leaves
-    with them at logout (`UNLOADED_WITH_PLAYER`). With none or two or more players it is
-    saved with its chunk, passengers nested in its `Passengers` list (a passenger is
-    never saved on its own; its `Pos` is written as the vehicle's x and z with its own y).
-    A decision for the plan: follow the game (a boat goes with the player who logs out in
-    it) or name the difference (1.0 items 2, 3; 1.9).
-11. **A rider is sent no position.** `ServerEntity` sends a passenger only `MoveEntity.Rot`
-    on update ticks, rebases its position codec each update and sets `wasRiding`, so the
-    first move after dismounting is a whole `entity_position_sync`; the client places
-    riders. `SetPassengers` goes on any change of the list (by the vehicle's tracker) and
-    at pairing both for the entity's own passengers and for its vehicle's. The edge's
-    `Tracker` needs a "riding" flag (1.0 items 4, 5; 1.11).
+   (front 0.2, back −0.6 along the boat). Saved passengers reload in list order
+   (`EntityType.loadEntityRecursive`, `startRiding(parent, true, false)`). A
+   `PlayerTransfer`'s "seat" must be this order, and seating a pending player follows
+   this rule (1.0 item 1; 4.6).
+10. **A vehicle whose indirect passengers include exactly one player is saved with that
+    player, not with its chunk** (`shouldBeSaved`; `ServerPlayer.saveParentVehicle`:
+    `RootVehicle` in the player's data, `Attach` the UUID of the player's direct vehicle,
+    `Entity` the whole unit), removed from the world with the player at logout
+    (`UNLOADED_WITH_PLAYER` for the whole unit, after a dismount, `PlayerList.remove`), and
+    rebuilt where it was saved at login with the player seated again. With none or two
+    or more players it is saved with its chunk, passengers nested in its `Passengers`
+    list (a passenger is never saved on its own; its `Pos` is written as the vehicle's x
+    and z with its own y). A decision for the plan: follow the game (the boat goes with
+    the player who logs out in it) or name the difference (1.0 items 2, 3; 1.9).
+11. **A rider is sent no position.** `ServerEntity` sends a passenger only
+    `MoveEntity.Rot` on update ticks, rebases its position codec each update and sets
+    `wasRiding`, so the first move after dismounting is a whole `entity_position_sync`;
+    the client places riders. `SetPassengers` goes on any change of the list (by the
+    vehicle's tracker) and at pairing both for the entity's own passengers and for its
+    vehicle's; the riding player is also sent its own `player_position` and
+    `set_passengers` when it mounts and dismounts. The edge's `Tracker` needs a "riding"
+    flag. `ChunkMap.tick` runs an entity's `sendChanges` only in a tick when it changed
+    section, has `needsSync`, or stands in an entity-ticking chunk, and who sees it is
+    judged on horizontal distance and re-judged only when it or the player changes
+    section (1.0 items 4, 5; 1.11; 8.3).
 12. **The check of a vehicle's move keeps state on the connection**, not the entity:
     `lastVehicle`, `vehicleFirstGood`, `vehicleLastGood`, `clientVehicleIsFloating`,
     `aboveGroundVehicleTickCount`, `vehiclePositionLastResetAt`. `handleMoveVehicle`
     takes the driver's branch only if the root `== lastVehicle`, which `tickPlayer` sets
-    at the end of the player's tick: a `MoveVehicle` before that is answered with a
-    correction. **Inferred**: the region that seats a crossing rider must seed these as
+    at the end of the player's tick. In the game mounting is a teleport
+    (`ServerPlayer.startRiding` places the player and sends `player_position`), and every
+    `move_vehicle` is dropped until the client confirms it, by which time `lastVehicle`
+    is set: the game never corrects a driver's first move. A crossing sends no teleport:
+    **Inferred**, the region that seats a crossing rider must seed this state as
     `tickPlayer` would before it applies the kept `MoveVehicle`, or the boat jumps back
     (2.0 item 6; 2.2; 2.3).
 13. **What a vehicle's move check is.** "Too quickly": the move from `vehicleFirstGood`,
     squared, exceeds the motion's squared length by more than 100 (about 10 blocks).
     "Moved wrongly": only the horizontal error counts (`if (dy > -0.5 || dy < 0.5) dy =
     0` zeroes every finite `dy`), wrong above 0.0625 squared, refused only if the old box
-    was clear or the new place collides anew. An accepted move puts the vehicle at the
-    **client's** position, not the collided one; a refused one sends it back with the
-    client's rotations. There is no per-tick limit on `MoveVehicle` packets. A vehicle
-    held in the air by its client kicks its driver after `ceil(80·max(0.08/g, 1))` = 160
-    ticks unless the server allows flight (2.0 items 4, 7; 2.3).
+    was clear or the new place collides anew (`getPreMoveCollisions`: block and entity
+    collisions). An accepted move puts the vehicle at the **client's** position, not the
+    collided one; a refused one sends it back with the client's rotations. There is no
+    per-tick limit on `MoveVehicle` packets. A vehicle held in the air by its client
+    (`noBlocksAround`: every block in the box is air) kicks its driver after
+    `ceil(80·max(0.08/g, 1))` = 160 ticks unless the server allows flight (2.0 items 4,
+    7; 2.3).
 14. **A riding player's own move packets move nothing**: only their rotation is taken
-    (2.5). The player's position is the vehicle's `positionRider`.
-15. **Vehicles carry vehicles.** A moving empty rideable minecart (0.1 a tick or more)
+    (2.5). The rider is put in place by the level's `tickPassenger` → `rideTick` →
+    `positionRider`, a tick after an accepted `MoveVehicle`.
+15. **A riding player is ticked twice**: in the level's entity phase through its vehicle
+    (`ServerLevel.tickPassenger` → `ServerPlayer.rideTick` → `Player.rideTick`: with the
+    sneak flag set it `stopRiding`s and that ride tick ends; then `positionRider`), and in
+    its connection's `tickPlayer` (`doTick`, the living tick). The shift dismount uses
+    the sneak flag of the latest `player_input` or `interact`. A dismount is a teleport
+    too (`dismountTo` → `ServerPlayer.teleportTo`, motion and look kept), placed by
+    `LivingEntity.dismountVehicle` from the vehicle's `getDismountLocationForPassenger`
+    (a player tries standing, crouching, swimming) (1.4, 1.7; 2.4).
+16. **Vehicles carry vehicles.** A moving empty rideable minecart (0.1 a tick or more)
     makes any pushable entity it touches that is not a player, an iron golem or a cart
-    ride it: a **boat** among them, so a cart can be the root of a boat. A boat with no
-    player in front picks up `LivingEntity`s narrower than itself not in
-    `#minecraft:cannot_be_pushed_onto_boats`: in N5 a mannequin (**Inferred**), never an
-    armour stand (not pushable) (3.0 item 3; 4.0 item 10).
-16. **`setLeashedTo` dismounts the leashee**: a leashed entity cannot ride (7.5).
+    ride it: a **boat** among them, so a cart can be the root of a boat, and a mannequin.
+    A boat with no player in front picks up `LivingEntity`s narrower than itself not in
+    `#minecraft:cannot_be_pushed_onto_boats`: in N5 a mannequin (unless it stands on a
+    climbable block). An armour stand is never pushable and never picked up (3.0 item 3;
+    4.0 item 10).
+17. **`setLeashedTo` dismounts the leashee**: a leashed entity cannot ride (7.5).
 
 **What the repo's physics lacks**
 
-17. **Entity colliders.** A boat is solid to every entity (`canBeCollidedWith` true), and
+18. **Entity colliders.** A boat is solid to every entity (`canBeCollidedWith` true), and
     boats and carts collide with every entity that is a collider or pushable
-    (`canVehicleCollide`). Items and falling blocks land on boats, a drifting boat or a
-    rolling cart stops against a player's box (the client's, ADR-0005), a player stands
-    on a boat. N4's collision has block shapes only (3.0 item 4; 4.0 item 4).
-    Boats and carts also set `blocksBuilding` (no block placed into their box,
-    **Inferred**).
-18. **Ticks that skip `baseTick`.** `AbstractMinecart.tick` never calls it (no fire
-    countdown, no freezing); hanging entities, knots and cushions never call
-    `Entity.tick` at all (no gravity, no fluids). Boats call it (fluid pushing, the leash)
-    (3.0 item 2; 6.0 item 2).
-19. **Block effects applied twice a tick**: a boat calls `applyEffectsFromBlocks()` twice
+    (`canVehicleCollide`), through `EntityGetter.getEntityCollisions` (the non-spectator
+    entities in the box inflated by 1e-7 that the mover `canCollideWith`, as their
+    boxes). Items and falling blocks land on boats, a drifting boat or a rolling cart
+    stops against a player's box (the client's, ADR-0005), a player stands on a boat.
+    N4's collision has block shapes only. Boats and carts also set `blocksBuilding`,
+    which `EntityGetter.isUnobstructed` reads: no block is placed into their box (the
+    last link from `BlockItem.canPlace` is **Inferred**) (3.0 item 4; 4.0 items 4, 6).
+19. **Ticks that skip `baseTick`.** `AbstractMinecart.tick` never calls it (no fire
+    countdown, no on-fire flag, no freezing); hanging entities, knots and cushions never
+    call `Entity.tick` at all (no gravity, no fluids). Boats and armour stands call it
+    (fluid pushing, the leash) (3.0 item 2; 6.0 item 2).
+20. **Block effects applied twice a tick**: a boat calls `applyEffectsFromBlocks()` twice
     in a row, a moving cart after its move and again in its behaviour's tick (a bubble
     column's draw twice) (3.4 step 5; 4.0 item 8).
-20. **Detector rails' entity half is missing** (`entityInside`, the scheduled check, own
+21. **Detector rails' entity half is missing** (`entityInside`, the scheduled check, own
     and direct signals, the comparator output from a container cart), and so is a
-    comparator's reading of an item frame (`diode.rs` leaves it to entities) (3.0 item 7;
-    3.8; 6.0 item 11; 6.6).
+    comparator's reading of an item frame (`diode.rs` leaves it to entities); 6.6 now
+    has the comparator's exact rule (3.0 item 7; 3.8; 6.0 item 11; 6.6).
 
 **Breaking, drops and unsaved state**
 
-21. **A creative hit discards a vehicle** (no item, no `ENTITY_DIE`); damage is still
+22. **A creative hit discards a vehicle** (no item, no `ENTITY_DIE`); damage is still
     added and sent first. The test reads the causing entity, so a creative player's arrow
     breaks a cart too. **A container vehicle spills its contents on any destroying
     removal**, creative included and whatever `doEntityDrops` says; the rule holds back
-    only the vehicle's own item (3.0 items 9, 10; 4.10).
-22. **Vehicles' `damage`, hurt time and direction are synched data, never saved**, and
-    decay by one a tick. A survival player breaks a cart or boat with several hits
-    (damage above 40, ten per point of attack); an arrival should carry the three, or a
-    cart hit just before a line is whole after it. The same holds for other unsaved
-    state a player could meet: `boardingCooldown` (60 ticks after dismounting, no
-    remount), a boat's `outOfControlTicks` (ejection after 60 under water) and paddle
-    phases, a stand's `lastHit`, a leash's angular momentum, the hanging entities' check
-    counter (3.0 item 11; section 10).
-23. **An armour stand breaks on two hits within 5 ticks of the world's game time**
-    (`lastHit`, not saved): Clustine needs one game time all regions agree on. A creative
-    player breaks it at once and **nothing drops, not even what it wears**; a survival
-    break drops the stand and its equipment (5.0 item 4; 5.4).
-24. **An item frame with an item takes two hits**: the first drops (creative: deletes)
+    only the vehicle's own item. Every slot, empty or not, draws three level-random
+    `nextDouble` when the contents are spilled, and a survival break spills twice (the
+    second finds the slots empty and only draws) (3.0 items 9, 10; 3.18; 4.10).
+23. **A player's hit** deals `base·(0.2 + s²·0.8)` (`s` the attack strength), × 1.5 on a
+    critical, plus the enchantments' part; a vehicle takes ten times that as damage and
+    breaks above 40: five full-strength bare-hand punches, about twenty-five when the
+    player clicks fast. A sprinting hit also pushes a vehicle that survives it. The
+    player's region keeps the player's `attackStrengthTicker` (2.8; 3.14).
+24. **Vehicles' `damage`, hurt time and direction are synched data, never saved**, and
+    decay by one a tick; an arrival should carry them, or a cart hit just before a line
+    is whole after it. The same holds for other unsaved state a player could meet:
+    `boardingCooldown` (60 ticks without remounting, for **non-player** passengers only:
+    `Player.removeVehicle` resets a player's to 0), a boat's `outOfControlTicks`
+    (ejection after 60 under water) and paddle phases, a stand's `lastHit`, a leash's
+    angular momentum, the hanging entities' check counter (3.0 item 11; section 10).
+25. **An armour stand breaks on two hits within 5 ticks of `ServerLevel.getGameTime()`**,
+    the world's game time (`lastHit`, not saved): Clustine needs one game time all
+    regions agree on. A creative player breaks it at once and **nothing drops, not even
+    what it wears**; a survival break drops the stand and its equipment. Any
+    non-spectator entity in the way, a dropped item included, stops a stand being placed
+    (5.0 item 4; 5.1; 5.4).
+26. **An item frame with an item takes two hits**: the first drops (creative: deletes)
     the item, the second breaks the frame; the frame drops before its item, and one
     `nextFloat` is drawn against `dropChance` (6.0 items 7, 8).
-25. **Boats no longer break when they fall**, nor hurt their riders (**Inferred** for the
-    riders) (4.0 item 3).
-26. **Container carts roll according to their contents** (`0.98f + (15 − comparator
-    signal)·0.001f`): the sim needs their items as items (3.0 item 12).
-27. **TNT and hopper minecarts can be placed by their items**: explode or suck in items on
+27. **Boats no longer break when they fall**, nor hurt their riders: no path calls
+    `causeFallDamage` on a rider (4.0 item 3).
+28. **Container carts roll according to their contents** (`0.98f + (15 − comparator
+    signal)·0.001f`, the signal `lerpDiscrete(Σ count/max / size, 0, 15)`): the sim needs
+    their items as items (3.0 item 12; 3.18).
+29. **TNT and hopper minecarts can be placed by their items**: explode or suck in items on
     their own. The plan chooses: unplaceable until N6, or placed inert with the
     difference named (3.0 item 13; 3.19).
-28. **A powered activator rail ejects a plain cart's riders every tick** and sets its
+30. **A powered activator rail ejects a plain cart's riders every tick** and sets its
     damage to 50 every ten ticks; the furnace cart draws `nextInt(4)` every fuelled tick,
     its push is as long as the player's distance, and it takes coal and charcoal
     (`#furnace_minecart_fuel`), 3600 ticks each, up to 32000 (3.0 items 14, 15; 3.17).
+31. **A creative player keeps every N5 item it places or uses**: `ServerPlayerGameMode.
+    useItemOn` restores the count around `useOn` (carts, stands, frames, paintings,
+    cushions, leads on fences), `ItemStack.consume` skips infinite materials (boats,
+    frame items, coal), and `Player.interactOn` restores it after `interact` (a lead on a
+    boat) (2.9; 3.1; 4.1; 6.3; 7.4).
 
 **Hanging entities and leashes**
 
-29. **The direction is synched data** (index 8, `DIRECTION`); the add-entity packet
+32. **The direction is synched data** (index 8, `DIRECTION`); the add-entity packet
     carries the block's corner and the direction's 3D value; a painting's position codec
-    is based on the block's corner (`trackingPosition`) (6.0 item 1; 6.8).
-30. **Survival is checked every 101 ticks** (`ticksSinceLastCheck++ >= 100`, not saved),
+    is based on the block's corner (`trackingPosition`). Hanging entities, knots and
+    cushions have `UpdateInterval.NEVER`: they are sent again only on `needsSync` or a
+    data change (6.0 item 1; 6.8; 8.3).
+33. **Survival is checked every 101 ticks** (`ticksSinceLastCheck++ >= 100`, not saved),
     for frames, paintings, knots and cushions; **any non-zero move or push breaks** a
     hanging entity (a piston pops a painting) (6.0 items 3, 4).
-31. **The painting variant is one `nextInt(n)` from the new painting's own random**,
-    after its UUID's two `nextLong`, over the placeable variants of the largest area that
-    fit, in `#minecraft:placeable`'s order; drawn even when the item names a variant
-    (applied afterwards); nothing is placed if none fits (6.0 item 6; 6.4).
-32. **A painting's entity chunk can differ from its block's**: its position is its box's
+34. **The painting variant is one `nextInt(n)` from the new painting's own random**
+    (`Util.getRandomSafe`), after its UUID's two `nextLong`, over the placeable variants
+    of the largest area that fit, in `#minecraft:placeable`'s order; drawn even when `n`
+    is 1 and when the item names a variant (applied afterwards); nothing is placed if
+    none fits. The default variant (`VariantUtils.getAny`) draws nothing (6.0 item 6;
+    6.4).
+35. **A painting's entity chunk can differ from its block's**: its position is its box's
     centre, half a block off `block_pos` for even widths (6.0 item 9).
-33. **A saved leash restores by UUID, or by a fence position for which a knot is found or
+36. **A saved leash restores by UUID, or by a fence position for which a knot is found or
     created**, every tick for 100 ticks from the leashee's load, then drops a lead. A knot
     saves nothing but its block, discards itself when its last leashee goes, and a broken
     knot's leashees each drop a lead on their next tick, even when a creative player broke
-    it (7.0 items 3 to 5).
+    it. Using a fence binds the player's leashed boats with any item in the main hand or
+    none (`FenceBlock.useWithoutItem`); with a lead in hand where nothing can be tied, two
+    knots are made, sent and discarded (7.0 items 3 to 5; 7.6).
 
 **The protocol and the edge**
 
-34. The protocol crate decodes none of `interact`, `attack`, `move_vehicle`,
+37. The protocol crate decodes none of `interact`, `attack`, `move_vehicle`,
     `paddle_boat`, `player_command`, `pick_item_from_entity`, and encodes none of
-    `set_passengers` (109), `set_entity_link` (102), clientbound `move_vehicle` (58),
-    `sound_entity`, `open_screen`; the edge drops those incoming packets silently today
-    (2.10). `set_entity_data` needs the serializers of section 8.
-35. **A vehicle with a player in it is tracked at the player's range** (**Inferred**,
-    `ChunkMap` not read): the edge must not shrink its view to 10 or 8 chunks (1.0;
-    section 8).
-36. **No random draw** is made by riding, dismounting, `DismountHelper`, saving
+    `set_passengers` (109: varint id, varint array), `set_entity_link` (102: two 4-byte
+    ints, holder 0 for none), clientbound `move_vehicle` (58), `sound_entity`,
+    `open_screen`, `swing_animation` (123); the edge drops those incoming packets
+    silently today (2.10, 2.11). `player_command`'s actions are the enum's ordinals
+    (`STOP_SLEEPING` 0 … `OPEN_INVENTORY` 5, `START_FALL_FLYING` 6). An interaction's
+    swing is `swing_animation`, not `animate` (to trackers, and to the player when the
+    client did not predict it): the repo's relay of a player's own arm swing with
+    `animate` is worth checking against 26.3. `set_entity_data` needs the serializers of
+    8.2.
+38. **A vehicle with a player in it is tracked at the player's range**
+    (`ChunkMap$TrackedEntity.getEffectiveRange`: the largest `clientTrackingRange × 16`
+    among the entity and its indirect passengers, scaled by the server's entity-broadcast
+    setting and capped by each viewer's view distance): the edge must widen a vehicle's
+    view to 32 chunks while a player rides it, and narrow it when the last player leaves
+    (1.11; 8.1).
+39. **Random draws.** None is made by riding, dismounting, `DismountHelper`, saving
     passengers, `ServerEntity`, the packet listener, `OldMinecartBehavior` or the leash's
-    physics; the draws of N5 are in section 9.
+    physics. Sounds draw their seeds from the level's own `soundSeedGenerator`, not from
+    `level.random` (the equip sound from the stand's own random). Placing a stand throws
+    away two draws (the entity's own in `LivingEntity`'s constructor, the level's in
+    `EntityType.create`), a cushion one. The rest are in section 9.
 
 ---------------------------------------------------------------------------------------
 
@@ -250,10 +329,14 @@ gathers those that change what the plan and ADR-0028 assume, with pointers.
    `Entity.shouldBeSaved` (lines 11340–11368) is false for a passenger, and false for a
    vehicle whose indirect passengers include exactly one `Player`
    (`hasExactlyOnePlayerPassenger`, lines 10255–10274, counts over all indirect
-   passengers). In the game such a vehicle is saved with the player (**Inferred**:
-   `ServerPlayer`/`PlayerList` write it as the player's root vehicle; not read) and goes
-   with them when they leave (`RemovalReason.UNLOADED_WITH_PLAYER`, neither destroy nor
-   save). ADR-0028 has the unit belong to the root's chunk always; with one player aboard
+   passengers). Such a vehicle is saved with the player: `ServerPlayer.saveParentVehicle`
+   (ServerPlayer.txt 550–583) writes `RootVehicle: {Attach: <uuid of the player's own
+   vehicle>, Entity: <the root, saved with its Passengers>}` when the player rides and
+   the root `hasExactlyOnePlayerPassenger`; at logout `PlayerList.remove` (PlayerList.txt
+   575–680) saves the player, then `stopRiding()`s and `setRemoved(UNLOADED_WITH_PLAYER)`
+   every entity of the unit (neither destroy nor save); at login
+   `loadAndSpawnParentVehicle` (ServerPlayer.txt 584–680) rebuilds the unit where it was
+   saved and seats the player again (1.9). ADR-0028 has the unit belong to the root's chunk always; with one player aboard
    the game instead takes the boat away with a player who logs out and brings it back
    when they log in. A decision for the plan: follow the game (the vehicle leaves the
    chunk with a player who leaves) or name the difference (the boat stays in the world).
@@ -276,27 +359,54 @@ gathers those that change what the plan and ADR-0028 assume, with pointers.
 6. **`boardingCooldown`**: dismounting sets the passenger's `boardingCooldown = 60`
    (`removePassenger`, line 7177); `baseTick` counts it down (lines 985–992); while it
    is above 0, or the entity is sneaking, `canRide` is false, so it cannot remount
-   (unless `force`). It is not saved (`saveWithoutId` writes no such key), so in the game
-   it is lost on unload. A crossing in Clustine should carry it (it is a "seconds-long"
-   effect a player could notice only if a mob were made to remount; low stakes).
-7. **Most of dismounting a player is not in these classes.** `Entity.stopRiding` is only
-   `removeVehicle` (lines 7082–7086); the placing of a dismounted living entity is
-   `LivingEntity.removeVehicle`/`dismountVehicle` (not read), which asks the vehicle's
-   `getDismountLocationForPassenger` (the minecart's and the boat's overrides are read;
-   below) and calls `dismountTo`. Needed before porting (Not read list).
+   (unless `force`). **A player is exempt**: `Player.removeVehicle` (Player.txt
+   1910–1918) sets it back to 0 after `Entity.removeVehicle`, so a player can remount at
+   once (only sneaking stops them). It is not saved; it matters only for non-player
+   passengers (mannequins, N7's mobs), and an arrival may carry it.
+7. **Mounting and dismounting a player each send the player a teleport.**
+   `ServerPlayer.startRiding` (ServerPlayer.txt 5282–5329), after a successful mount,
+   seats the player at once (`vehicle.positionRider(this)`), sends a `player_position`
+   with the seat as an absolute position, zero motion and relative (unchanged)
+   rotation, and sends `set_passengers` of the vehicle to the player. Dismounting
+   (`LivingEntity.stopRiding` → `dismountVehicle` → `dismountTo` →
+   `ServerPlayer.teleportTo`) sends a `player_position` with the dismount point,
+   relative motion and rotation, after a `set_passengers` of the old vehicle to the
+   player (1.4, 1.7). Each teleport sets `awaitingPositionFromClient`, so until the
+   client confirms it **every `move_vehicle` and `move_player` is dropped** (section
+   2.3 step 2): the first moves after mounting are not answered with a correction but
+   ignored, and the check's `lastVehicle` is set by the next `tickPlayer` meanwhile.
 8. **Who simulates a ridden vehicle.** No class here overrides
    `getMoveSimulationType` (all `AUTHORITATIVE_SIDE`); `isLocalInstanceAuthoritative` on
    the server is `!isClientAuthoritative()`, which is true only when
    `getControllingPassenger()` is non-null and that passenger `isClientAuthoritative()`
-   (`LivingEntity`, not read; **Inferred**: true for a player). So a boat with a player in
+   (`Player.isClientAuthoritative` is `true`, Player.txt 3114–3117; `LivingEntity` does not
+   override `Entity`'s). So a boat with a player in
    front is the client's; a boat with only a mob, any minecart, a cushion are the
    server's. `Entity.getControllingPassenger` returns null; only `AbstractBoat` overrides
    it among the N5 classes.
 9. **On the server nothing can ride a player**: `startRiding` refuses a vehicle whose
    type `!canSerialize()` (lines 6912–6994, at 19–40), and **Inferred** the player type
-   is not serialisable (`EntityType.PLAYER` is built with `noSave()`; not read).
-10. **No random draw** is made anywhere in riding, dismounting, saving passengers or
-    `ServerEntity` (section 9).
+   is not serialisable (`EntityType.PLAYER` is built with `noSave()`: the builders are not
+   in `EntityType`'s 26.3 static initialiser, still not read). Mobs override
+   `startRiding` (Mob.txt 3088; N7).
+10. **The passenger tick order is confirmed** (`ServerLevel`, 1.5): the level's loop
+    skips any entity whose vehicle still holds it; a root ticks (`commonTick`, `tick`),
+    then each passenger in list order (`commonTick`, `rideTick`), depth first. A **riding
+    player is ticked twice a tick**: by the level (`rideTick`: the shift dismount, then
+    `ServerPlayer.tick`, then `positionRider`) and by its connection's `tickPlayer`
+    (`doTick` → `Player.tick`, its own living tick).
+11. **The effective tracking range of a vehicle is the largest of its own and its
+    indirect passengers'** (`ChunkMap$TrackedEntity.getEffectiveRange`, 306–339, each
+    `clientTrackingRange × 16` blocks, scaled by the server's percentage), compared
+    horizontally with `min(range, viewDistance × 16)` (1.11.5): a boat with a player in
+    it is shown as far as the player is (32 chunks' worth, within the view distance).
+12. **Frames, paintings, knots and cushions use `UpdateInterval.NEVER`**, not
+    `periodic(Integer.MAX_VALUE)` (`ChunkMap.addEntity`, 2671–, by
+    `EntityType.hasUpdateInterval`, EntityType.txt 905–918).
+13. **No random draw** is made anywhere in riding, dismounting, saving passengers or
+    `ServerEntity` (section 9). `EntityType.create` with a position draws a yaw
+    (`level.random.nextFloat() * 360`, EntityType.txt 221–316) only on the paths that
+    spawn with a position (the armour stand's, section 5.1).
 
 ### 1.1 State
 
@@ -367,9 +477,18 @@ in order:
 10. → true.
 
 The position of the rider is not set here; it is set by the vehicle's next
-`positionRider` (1.5). **Inferred** (not read): `ServerPlayer.startRiding` overrides this
-to position the player at once and send them a teleport keeping their rotation; read
-before porting a player's mount (Not read list).
+`positionRider` (1.5), except for a player: `ServerPlayer.startRiding(v, force, send)`
+(ServerPlayer.txt 5282–5329) calls `Player.startRiding` (= `Entity`'s; neither `Player`,
+`Avatar` nor `LivingEntity` overrides it) and, if it took:
+1. `v.positionRider(this)` (the player is seated now);
+2. `connection.teleport(PositionMoveRotation(position(), Vec3.ZERO, 0f, 0f),
+   Relative.ROTATION)`: a `player_position` with the seat as absolute position, motion
+   set to zero, rotation relative by 0 (unchanged); this sets `awaitingPositionFromClient`
+   (section 2.6);
+3. if `v` is a `LivingEntity`, its active effects to the player (`sendActiveEffects`;
+   not N5's);
+4. `connection.send(SetPassengers(v))` to the player itself (the vehicle's tracker also
+   sends it to every tracker, the player included, at its next `sendChanges`).
 
 Who calls it among the classes read: `Minecart.interact` (Minecart.txt lines 12–51:
 not sneaking (`isSecondaryUseActive`), not already a vehicle; server: `player.startRiding
@@ -400,8 +519,18 @@ cushion is not removed, `playSound(CUSHION_GET_UP, 1, 1)`.
 
 ### 1.4 `stopRiding`, `removeVehicle`, `ejectPassengers`, `unRide`, removal
 
-- `stopRiding()` = `removeVehicle()` (7082–7086). (`LivingEntity` and `Player` override
-  it, not read; see finding 7.)
+- `stopRiding()` = `removeVehicle()` (7082–7086).
+- `LivingEntity.stopRiding()` (LivingEntity.txt 8919–8939): `old = getVehicle()`;
+  `Entity.stopRiding()`; if `old != null && old != getVehicle()` and on the server:
+  `dismountVehicle(old)` (1.7).
+- `Player.removeVehicle()` (Player.txt 1910–1918): `Entity.removeVehicle()`, then
+  `boardingCooldown = 0`. `ServerPlayer.removeVehicle()` (ServerPlayer.txt 5330–5375):
+  `old = getVehicle()`; `Player.removeVehicle()`; if `old` is a `LivingEntity`, a
+  `RemoveMobEffect` for each of its effects to the player; if `old != null`,
+  `connection.send(SetPassengers(old))` to the player. So a player's `stopRiding` runs:
+  `vehicle = null`, `old.removePassenger` (cooldown 60, the cushion's sound), the
+  `ENTITY_DISMOUNT` game event, cooldown 0, `set_passengers` to self, then the dismount
+  and its teleport.
 - `removeVehicle()` (7051–7080): if `vehicle != null`: `old = vehicle; vehicle = null;
   old.removePassenger(this)`; then if `getRemovalReason() == null ||
   getRemovalReason().shouldDestroy()`: `level.gameEvent(this, ENTITY_DISMOUNT,
@@ -424,8 +553,9 @@ cushion is not removed, `playSound(CUSHION_GET_UP, 1, 1)`.
   `DISCARDED` (destroy, not save), `UNLOADED_TO_CHUNK` (not destroy, save),
   `UNLOADED_WITH_PLAYER` (neither), `CHANGED_DIMENSION` (neither).
 
-So a vehicle broken (killed or discarded) drops its passengers, which keep their
-positions (**Inferred**: then `LivingEntity` places them, finding 7); a passenger killed
+So a vehicle broken (killed or discarded) drops its passengers; a living passenger is
+then placed by `dismountVehicle`, which for a removed vehicle searches a free position
+(1.7); a passenger killed
 leaves its vehicle; the `ENTITY_DISMOUNT` game event is emitted by a passenger that is
 not removed or is destroyed. A vehicle unloaded with its chunk also loses its passengers
 in memory (after it was saved with them), which matters only to the game's own unload.
@@ -460,14 +590,36 @@ this.yRot)`.
 `getVehicleAttachmentPoint(vehicle)` (6849–6858) = `getAttachments().get(
 EntityAttachment.VEHICLE, 0, this.yRot)` (the passenger's own type's attachment).
 
-`EntityAttachments.get/getClamped` and the per-type points live in `EntityType` and
-`EntityAttachments` (not read). **Inferred** from the game's design: `getClamped` clamps
-the index to the list; `get` throws on a missing index; the point is rotated about Y by
-the entity's `yRot` (`Vec3.yRot(-yRot·π/180)`); a type that declares none gets
-`PASSENGER = (0, height, 0)` and `VEHICLE = (0, 0, 0)`; the player's vehicle attachment
-is `(0, 0.6, 0)`... none of this can be ported from what is read: dump `EntityType`
-(builder calls in its static initialiser), `EntityAttachments`, `EntityAttachment` and
-`Player` (Not read list).
+`EntityAttachments` (EntityAttachments.txt):
+- `getNullable(a, i, yRot)` (43–66): the list for `a`; `null` if `i < 0 || i >= size`;
+  else `transformPoint(list[i], yRot)`. `get(a, i, yRot)` (67–87): `getNullable`, and an
+  `IllegalStateException` if null.
+- `getClamped(a, i, yRot)` (133–166): an `IllegalStateException` if the list is empty;
+  else `transformPoint(list[Mth.clamp(i, 0, size - 1)], yRot)`. So a third passenger
+  of a two-point vehicle sits at the second point.
+- `transformPoint(p, yRot)` (167–176) = `p.yRot(-yRot * 0.017453292f)` (the float
+  product, then `Vec3.yRot(float)`, Vec3.txt 856–900: `c = Mth.cos((double) a)`, `s =
+  Mth.sin((double) a)` as floats; `x' = x * (double) c + z * (double) s`, `y' = y`,
+  `z' = z * (double) c - x * (double) s`).
+- `EntityAttachment` (EntityAttachment.txt 70–105): `PASSENGER` (fallback `AT_HEIGHT`),
+  `VEHICLE` (`AT_FEET`), `NAME_TAG` (`AT_HEIGHT`), `WARDEN_CHEST` (`AT_CENTER`). A type
+  that declares no point for an attachment gets its fallback, **Inferred** `(0, height,
+  0)`, `(0, 0, 0)`, `(0, height / 2, 0)` (the `EntityAttachment$Fallback` lambdas are not
+  dumped).
+- **The player's vehicle attachment is `(0, 0.6, 0)`** (`Avatar.DEFAULT_VEHICLE_ATTACHMENT`,
+  Avatar.txt static init 98–160, attached to the standing (0.6 × 1.8, eye 1.62) and
+  crouching (0.6 × 1.5, eye 1.27) dimensions; swimming, fall-flying and spin-attack are
+  0.6 × 0.6, eye 0.4, with the fallback; sleeping is separate, dying 0.2 × 0.2 fixed).
+  Rotating `(0, 0.6, 0)` about Y leaves it as it is.
+- **The N5 types' passenger points are still not read**: 26.3's `EntityType` static
+  initialiser holds only the codecs (EntityType.txt 1057–1068); the builders that
+  register the types are in another class. For orientation, SteelMC's extraction:
+  `(0, 0.1875, 0)` for every minecart, `(0, 0.5625, 0)` for boats and rafts (unused:
+  the boat overrides the point, 4.6), `(0, 1.975, 0)` for the armour stand, `(0, 0.25,
+  0)` for the cushion. A player in a plain cart therefore stands at the cart's `y +
+  0.1875 - 0.6`.
+- A `LivingEntity` vehicle (an armour stand) uses `getPassengerRidingPosition` of
+  LivingEntity.txt 11043–: its pose's dimensions and `getScale() * getAgeScale()`.
 
 Overrides among the N5 classes:
 - `AbstractMinecart.getPassengerAttachmentPoint` (AbstractMinecart.txt 180–201): a
@@ -482,22 +634,44 @@ Overrides among the N5 classes:
   +0.2 for an `Animal`, turning the rider with the boat).
 - `onPassengerTurned(p)` = nothing in `Entity` (6845–6847).
 
-**The tick order of passengers is in `ServerLevel`** (`tickNonPassenger`,
-`tickPassenger`; not read). **Inferred** from the game: after a root ticks
-(`commonTick` + `tick`), each of its passengers, in list order, is ticked by
-`tickPassenger(vehicle, passenger)`: if the passenger is removed or no longer rides that
-vehicle it `stopRiding()`s; else (if it is a `Player` or in the tick list) it
-`commonTick()`s and `rideTick()`s, then its own passengers recursively. A passenger is
-never ticked as a root. A player's `rideTick` on the server comes from `ServerPlayer`
-(not read). Read `ServerLevel` before porting the order (Not read list).
+**The tick order of passengers** (ServerLevel.txt):
+- The level's entity loop (`lambda$tick$0`, 4788–): skip a removed or frozen entity;
+  `checkDespawn()`; skip a non-player outside entity-ticking range; if `e.getVehicle()
+  != null`: if the vehicle is not removed and `vehicle.hasPassenger(e)` → skip (it ticks
+  with its vehicle), else `e.stopRiding()` and go on; then `tickNonPassenger(e)`.
+- `tickNonPassenger(e)` (1698–1736): `e.commonTick()`; `e.tick()`; for each passenger in
+  `e.getPassengers()` order: `tickPassenger(e, p)`.
+- `tickPassenger(v, p)` (1737–1795): if `p.isRemoved() || p.getVehicle() != v`:
+  `p.stopRiding()`, return. If `p` is not a `Player` and not in the level's tick list:
+  return (its own passengers are not ticked either). Else `p.commonTick()`;
+  `p.rideTick()`; then for each of `p`'s passengers, `tickPassenger(p, q)`.
+- **A riding player**: `ServerPlayer.rideTick()` (ServerPlayer.txt 3420–3445) keeps the
+  position, runs `Player.rideTick()` and `checkRidingStatistics(dx, dy, dz)`
+  (statistics). `Player.rideTick()` (Player.txt 753–771): on the server, if
+  `wantsToStopRiding()` (`isShiftKeyDown()`, Player.txt 472–476) and `isPassenger()`:
+  **`stopRiding()` and return** (no positioning that tick); else `LivingEntity.rideTick()`
+  (LivingEntity.txt 8941–8947) = `Entity.rideTick()` (motion zero, `tick()`,
+  `positionRider`) then `resetFallDistance()`. Here `tick()` is `ServerPlayer.tick()`
+  (918–), which runs the game mode, menus, the camera and advancement triggers but no
+  physics; the player's living tick (`Player.tick`) runs from its connection's
+  `tickPlayer` → `ServerPlayer.doTick` (1074–), after the level's tick (section 2.2).
+  So the shift dismount happens in the entity phase, by the sneak flag the last
+  `player_input` (or `interact`) set.
+- **The rider's move intent** (what a minecart reads, section 3.6):
+  `ServerPlayer.getLastClientMoveIntent()` (5509–5555): `strafe = left == right ? 0 :
+  left ? 1f : -1f`, `forward = forward == backward ? 0 : forward ? 1f : -1f` from
+  `lastClientInput`; `Entity.getInputVector((strafe, 0, forward), 1.0f, getYRot())`
+  (Entity.txt 4768–): zero if `lengthSqr < 1.0E-7`; normalised if `lengthSqr > 1`;
+  scaled by 1.0; `s = Mth.sin((double)(yRot * 0.017453292f))`, `c = Mth.cos(...)`;
+  `(x * c - z * s, y, z * c + x * s)` (each float widened before its multiply).
 
 ### 1.6 Authority: who moves a ridden vehicle
 
 (Entity.txt 10322–10408)
 - `isLocalInstanceAuthoritative()` (final): on the server `!isClientAuthoritative()`.
 - `isClientAuthoritative()` = `getControllingPassenger() != null &&
-  getControllingPassenger().isClientAuthoritative()` (the `LivingEntity` method, not
-  read).
+  getControllingPassenger().isClientAuthoritative()`; `Player.isClientAuthoritative()`
+  is `true` (Player.txt 3114–3117), `LivingEntity` does not override `Entity`'s.
 - `getMoveSimulationType()` = `AUTHORITATIVE_SIDE` (no override in the classes read).
 - `canSimulateMovement()` (final): `SERVER_AND_CLIENT` → true; `AUTHORITATIVE_SIDE` →
   `isLocalInstanceAuthoritative()`; `AUTHORITATIVE_SIDE_AND_SERVER` → true on the server
@@ -524,8 +698,9 @@ override it.
    Entity.txt 9947–9953). If `dir.getAxis() == Y` (cannot happen with `fromYRot`) →
    `super`.
 2. `offsets = DismountHelper.offsetsForDirection(dir)`; `base = blockPosition()`.
-3. For each pose in `living.getDismountPoses()` (`LivingEntity`, not read; **Inferred**
-   `[STANDING, CROUCHING, SWIMMING]` for a player... check): `dims =
+3. For each pose in `living.getDismountPoses()` (`LivingEntity`: `[STANDING]`,
+   LivingEntity.txt 10290–10295; `Player`: `[STANDING, CROUCHING, SWIMMING]`, Player.txt
+   4480–4492): `dims =
    living.getDimensions(pose)`; `half = Math.min(dims.width(), 1.0f) / 2.0f` (float);
    for each `dy` in `POSE_DISMOUNT_HEIGHTS[pose]` (`STANDING: [0, 1, -1]`, `CROUCHING:
    [0, 1, -1]`, `SWIMMING: [0, 1]`, static init 1534–1565): for each `[ox, oz]` in
@@ -576,15 +751,52 @@ The boat's (AbstractBoat.txt 1790–…) is in section 4.6.
   the world border → null; else `at`. (Used by `LivingEntity`'s and the boat's
   dismounts.)
 
-`BlockGetter.getBlockFloorHeight(shape, below)` is not in these classes. **Inferred**:
-`shape.isEmpty() ? (b = below.get().max(Y)) >= 1.0 ? b - 1.0 : -∞ : shape.max(Y)`;
-dump `BlockGetter` (Not read list). `EntityType.isBlockDangerous` likewise.
+`BlockGetter.getBlockFloorHeight(shape, below)` (BlockGetter.txt 113–138): `shape` not
+empty → `shape.max(Y)`; else `b = below.get().max(Y)`; `b >= 1.0` → `b - 1.0`, else
+`-∞`. `getBlockFloorHeight(pos)` (139–155) is the same with the collision shapes at
+`pos` and `pos.below()`.
+
+`EntityType.isBlockDangerous(state)` (EntityType.txt 629–667): false if the state is in
+the type's `immuneTo` tag; true if the type is not fire immune and
+`NodeEvaluator.isBurningBlock(state)` (not read: fire, lava, magma, lit campfires and
+the like); true for `wither_rose`, `sweet_berry_bush`, `cactus`, `powder_snow`; else
+false.
+
+`LivingEntity.getLocalBoundsForPose(pose)` (LivingEntity.txt 10296–10332): `d =
+getDimensions(pose)`; `AABB((double)(-d.width / 2f), 0, (double)(-d.width / 2f),
+(double)(d.width / 2f), (double) d.height, (double)(d.width / 2f))`.
+
+**`LivingEntity.dismountVehicle(v)`** (private, LivingEntity.txt 5981–6093), called by
+`stopRiding` on the server:
+1. if this entity is removed: `at = position()`;
+2. else if `v` is not removed and the block at `v.blockPosition()` is not in
+   `#minecraft:portals`: `at = v.getDismountLocationForPassenger(this)` (the vehicle's
+   rule: `Entity`'s top of the box, the minecart's, the boat's);
+3. else (the vehicle was removed: broken, discarded, unloaded; or it is in a portal):
+   `y = max(getY(), v.getY())`; `at = (getX(), y, getZ())`; if `getBbWidth() <= 4f &&
+   getBbHeight() <= 4f`: `h = (double) getBbHeight() / 2.0`; `c = at + (0, h, 0)`;
+   `level.findFreePosition(this, Shapes.create(AABB.ofSize(c, (double) w, (double) h_,
+   (double) w)), c, w, h_, w)` (`w`, `h_` the box's width and height widened), mapped to
+   `p + (0, -h, 0)` (lambda 11449–11457), else `at`;
+4. `dismountTo(at.x, at.y, at.z)`.
+
+`CollisionGetter.findFreePosition(e, shape, target, w, h, w)` (CollisionGetter.txt
+395–442, lambdas 443–470): empty shape → none; the block collisions of `e` in
+`shape.bounds().inflate(w, h, w)`, those within the world border, as boxes, each
+inflated by `(w / 2, h / 2, w / 2)`, joined (`Shapes.or`); `Shapes.join(shape, that,
+ONLY_FIRST).closestPointTo(target)`: the point of the search box nearest the target that
+the inflated obstacles do not cover. (`VoxelShape.closestPointTo` is not read.)
 
 `dismountTo(x, y, z)` (9645–9651) = `teleportTo(x, y, z)` (9653–…: on a `ServerLevel`,
 `snapTo(x, y, z, yRot, xRot)` then `teleportPassengers()`, which repositions every
 indirect passenger through `positionRider` with **Inferred** `Entity::snapTo`-like
-`MoveFunction` (indy #26, lambda 11689–11707)). `ServerPlayer` overrides `dismountTo`
-and `teleportTo` (not read; **Inferred** it sends the player a teleport).
+`MoveFunction` (indy #26, lambda 11689–11707)). Nothing overrides `dismountTo`.
+**`ServerPlayer.teleportTo(x, y, z)`** (ServerPlayer.txt 4280–4309) instead sends
+`connection.teleport(PositionMoveRotation((x, y, z), Vec3.ZERO, 0f, 0f), DELTA ∪
+ROTATION)`: a `player_position` with the dismount point absolute and motion and rotation
+relative (kept); `teleport` sets the player's position (`teleportSetPosition`) and
+`awaitingPositionFromClient` (section 2.6). The player's own passengers are not
+repositioned by this path (a player carries none in N5).
 
 ### 1.8 Pushing between riders
 
@@ -617,10 +829,35 @@ fall rule).
   per direct passenger in order, each `saveAsPassenger(child)`, a child that returns
   false discarded (`discardLast`), the list discarded if it ends empty. Not saved:
   `boardingCooldown`, the vehicle's key (a passenger is known by being in the list).
-- Loading passengers (the recursion that rebuilds the unit and calls
-  `startRiding(vehicle, true, …)`) is `EntityType.loadEntityRecursive` (not read).
-  **Inferred**: each child is loaded and made to ride its parent with `force = true`, in
-  list order, so `addPassenger`'s player-first rule does not reorder non-players.
+- Loading: `EntityType.loadEntityRecursive(input, level, request, processor)`
+  (EntityType.txt 767–790): `loadStaticEntity` (the entity from its `id`), then the
+  processor (for a chunk's or the player's load, adding it to the level), then
+  `loadPassengersRecursive` (814–846): for each child of `Passengers` in order, load it
+  recursively and `child.startRiding(parent, true, false)` (forced, no game event). So
+  the order is kept (no players are among saved passengers, so the player-first rule
+  never applies).
+- **A player's root vehicle.** `ServerPlayer.addAdditionalSaveData` calls
+  `saveParentVehicle` (ServerPlayer.txt 485, 550–583): if `getVehicle() != null`, `root
+  = getRootVehicle() != this` and `root.hasExactlyOnePlayerPassenger()`: child
+  `RootVehicle` with `Attach` = the UUID of the player's **direct** vehicle and `Entity`
+  = `root.save(...)` (the whole unit; the player's own entry drops out of `Passengers`
+  because its `saveAsPassenger` has no id, **Inferred** from finding 9).
+  `loadAndSpawnParentVehicle(input)` (584–680; its caller, the join path, is not in the
+  classes read): if `RootVehicle` is present: `e = loadEntityRecursive(Entity, level,
+  LOAD, x -> level.addWithUUID(x) ? x : null)` (lambda 5922–5931); none → return;
+  `attach = Attach` or null; if `e`'s UUID is `attach` → `startRiding(e, true, false)`;
+  else the first of `e.getIndirectPassengers()` with that UUID → `startRiding(it, true,
+  false)`; if the player still rides nothing: log "Couldn't reattach entity to player",
+  `discard()` `e` and every indirect passenger. Because `startRiding` here is
+  `ServerPlayer`'s, the player is seated and sent the teleport and `set_passengers` of
+  1.2.
+- **At logout** (`PlayerList.remove`, PlayerList.txt 575–680): `save(player)`; if the
+  player `isPassenger()` and its root `hasExactlyOnePlayerPassenger()`: `stopRiding()`
+  (the dismount, to a player who is leaving), then every entity of the root's
+  `getPassengersAndSelf()` → `setRemoved(UNLOADED_WITH_PLAYER)` (lambda 2282–2288); then
+  `unRide()`; ender pearls removed likewise; `removePlayerImmediately(player,
+  UNLOADED_WITH_PLAYER)`. With two players aboard the unit stays in the world and only
+  the leaving player gets off.
 - `shouldBeSaved()` (11340–11368): false if removed with a reason that does not save;
   false if a passenger; false if a vehicle with exactly one player among its indirect
   passengers; else true (finding 2).
@@ -681,8 +918,12 @@ Notes:
 - `createMovePacket` (560–653) sends the whole `EntityPositionSync` when `wasRiding`: the
   first update after dismounting is absolute. It also sends it when `teleportDelay >
   400`, on a change of `onGround`, or when `getRequiresPrecisePosition()`.
-- The gate is the type's `updateInterval` (n4: `test(t) = t % n == 0`; **Inferred**
-  for `UpdateInterval` with `n = Integer.MAX_VALUE`: true only at `t == 0`), so a passenger's
+- The gate is the tracked entity's `UpdateInterval` (`ChunkMap.addEntity`, ChunkMap.txt
+  2671–: `type.hasUpdateInterval()` (`updateInterval != Integer.MAX_VALUE`, EntityType.txt
+  905–918) ? `UpdateInterval.periodic(updateInterval)` : `UpdateInterval.NEVER`;
+  n4: periodic's `test(t) = t % n == 0`). Frames, paintings, knots and cushions get
+  `NEVER` (**Inferred**: its `test` is always false; `UpdateInterval$1` is not dumped),
+  so they are sent only on `needsSync` or dirty data. A passenger's
   rotation goes out on update ticks only (every 3 ticks for minecarts and boats, 2 for
   players and mannequins), or when its data is dirty or `needsSync` is set.
 - The vehicle under a client's control is sent to every tracker by the same code as any
@@ -717,9 +958,9 @@ Notes:
    before its vehicle is told again when it meets the vehicle, and the other way round);
 8. a `Leashable` that `isLeashed()`: `SetEntityLink(entity, getLeashHolder())`.
 
-Wire (generated `packets.json`, play, clientbound): `set_passengers` 109 (varint
-vehicle id, varint array of direct passenger ids in list order; **Inferred** from the
-packet's constructor taking the entity), `set_entity_link` 102, `entity_position_sync`
+Wire (generated `packets.json`, play, clientbound): `set_passengers` 109
+(`ClientboundSetPassengersPacket`, 9–71: varint vehicle id, then `writeVarIntArray`:
+varint count and a varint per direct passenger id, in list order), `set_entity_link` 102, `entity_position_sync`
 35, `move_minecart_along_track` 56 (experimental only), `set_entity_motion` 103.
 
 #### 1.11.3 `handleMinecartPosRot` (712–818): experimental behaviour only
@@ -737,9 +978,34 @@ them; then the last-sent rotations and the codec base are set. Not needed while
 `NO_OP` under the experimental behaviour, else `LinearInterpolationHandler.create(this)`;
 `AbstractBoat`'s (355–361) is `LinearInterpolationHandler.create(this, 3)`. What the
 server-side `interpolationTracker()` of a `LinearInterpolationHandler` gives
-`getPositionPath` (a linear path, or steps that change the `VecDelta`'s step count) is
-not in these classes: dump `LinearInterpolationHandler` and `InterpolationTracker`
-(Not read list). The client's `commonTick` interpolates (Entity.txt 935–961; **Client**).
+`getPositionPath` is settled: `LinearInterpolationHandler.create(e, n)`
+(LinearInterpolationHandler.txt 20–41) returns `InterpolationHandler.NO_OP` on the server
+(a handler only on the client, of 3 steps for both), and `InterpolationHandler`'s default
+`interpolationTracker()` is `InterpolationTracker.NO_OP` (InterpolationHandler.txt 5–8):
+**boats and old-behaviour carts are sent a linear one-step path**, as items are (n4
+section 9). `LivingEntity` uses `SteppedInterpolationHandler` (LivingEntity.txt 8949–;
+not dumped): what an armour stand's tracker gives is still unread. The client's
+`commonTick` interpolates (Entity.txt 935–961; **Client**).
+
+#### 1.11.5 Who is sent an entity: `ChunkMap`
+
+- `ChunkMap.addEntity(e)` (ChunkMap.txt 2671–): `range = clientTrackingRange × 16`
+  blocks; 0 → never tracked; a `TrackedEntity` with that range, the interval of 1.11.1
+  and `trackDeltas`; `updatePlayers(level.players())` at once (so an entity added in a
+  tick is paired with its viewers in that same call, before the tick goes on: a leash
+  knot made and discarded in one `bindPlayerMobs` is sent and removed); a player
+  added also has every other tracked entity `updatePlayer`'d for it.
+- `TrackedEntity.updatePlayer(p)` (ChunkMap$TrackedEntity.txt 189–295): never the entity
+  itself; `d = p.position() - e.position()`; `r = (double) min(getEffectiveRange(),
+  viewDistance(p) × 16)`; seen iff `d.x² + d.z² <= r²` (horizontal only) and
+  `e.broadcastToPlayer(p)` and the chunk of `e` is tracked by `p`
+  (`isChunkTracked`); newly seen → `addPairing` (1.11.2); no longer seen →
+  `removePlayer` → `removePairing` (`remove_entities`).
+- `getEffectiveRange()` (306–339): the largest of `range` and each indirect passenger's
+  `clientTrackingRange × 16`, then `scaledRange` (`MinecraftServer.
+  getScaledTrackingDistance`, the `entity-broadcast-range-percentage` setting; not read).
+  A boat or cart with a player in it is tracked at the player's 512 blocks, capped by
+  each viewer's view distance.
 
 ---------------------------------------------------------------------------------------
 
@@ -755,21 +1021,23 @@ class is named. Packet ids are 26.3's (`generated/reports/packets.json`, play st
    `VehicleEntity`'s (none); `Entity.isLocalInstanceAuthoritative` on the server is
    `!isClientAuthoritative()`, true unless the controlling passenger is a client-driven
    living entity (Entity.txt 10322–10353). The controlling client sends
-   `ServerboundMoveVehiclePacket` (`move_vehicle`, serverbound 34: position as three
-   doubles, `yRot`, `xRot` floats, **`onGround` boolean**, new against 1.21.1) and
+   `ServerboundMoveVehiclePacket` (`move_vehicle`, serverbound 34: a
+   `PositionAndRotation` then an **`onGround` boolean**) and
    `ServerboundPaddleBoatPacket` (`paddle_boat`, 35: two booleans, left and right); the
    server checks the move (2.3) and answers only with `ClientboundMoveVehiclePacket`
-   (`move_vehicle`, clientbound 58: position, `yRot`, `xRot`) when it refuses it.
+   (`move_vehicle`, clientbound 58: the vehicle's `PositionAndRotation`) when it
+   refuses it (codecs in 2.11).
    **Minecarts have no controlling passenger** (no override of
    `Entity.getControllingPassenger`, Entity.txt 10152–10155, which returns null): the
    server moves them; a rider's keys reach a cart only through
    `ServerboundPlayerInputPacket` → `ServerPlayer.setLastClientInput` →
    `ServerPlayer.getLastClientMoveIntent()`, which `OldMinecartBehavior` reads
-   (OldMinecartBehavior.txt 450–456, section 3.6).
+   (OldMinecartBehavior.txt 450–456, section 3.6). The intent is the keys turned by the
+   **rider's** yaw, of length 0 or 1 (2.4).
 2. **26.3 split the old use-entity packet in two.** `ServerboundAttackPacket` (`attack`,
    serverbound 1: the entity id) is handled by `handleAttack` (5460–5565), and
-   `ServerboundInteractPacket` (`interact`, 26: entity id, hand, location,
-   `usingSecondaryAction`) by `handleInteract` (5566–5679). There is no
+   `ServerboundInteractPacket` (`interact`, 26: varint entity id, hand, location as an
+   `LpVec3`, boolean `usingSecondaryAction`) by `handleInteract` (5566–5679). There is no
    `ServerboundInteractPacket.Handler`, no `onInteraction`/`onAttack`, and **no
    `interactAt`**: `Entity.interact(Player, InteractionHand, Vec3 location)` takes the
    hit location itself (Entity.txt 6475; overridden by `ArmorStand` 367, `ItemFrame`
@@ -789,17 +1057,21 @@ class is named. Packet ids are 26.3's (`generated/reports/packets.json`, play st
    above `0.0625`, makes a move "wrong".
 5. **A riding player's own move packets move nothing.** `handlePlayerPositionChange`
    (3019–) for a passenger keeps the player's position and takes only the rotations
-   (2.5). The rider's position is the vehicle's to set (`positionRider`, Entity part).
-6. **The first `MoveVehicle` after mounting (or after a hand-over) is answered with a
-   correction** unless the per-connection state is carried: `handleMoveVehicle` takes
-   the controlling branch only if the root vehicle `== lastVehicle`, which
-   `tickPlayer` sets at the end of the player's tick (2.2). A move that arrives before
-   that falls into the "not controlling" branch, and since `vehiclePositionLastResetAt`
-   is far behind `tickCount`, a `ClientboundMoveVehiclePacket` is sent at once (**Inferred**
-   from the order; to confirm with a real client). For Clustine this matters at every
-   crossing: a region that seats a rider must seed `lastVehicle` and
-   `vehicleFirst/LastGood` (section 10), or the boat jumps back, which is what ADR-0028
-   section 5's kept `MoveVehicle` is meant to prevent.
+   (2.5). The rider's position is the vehicle's to set (`positionRider`, section 1.5),
+   in the level's entity phase (`ServerLevel.tickPassenger`), never by the listener.
+6. **Mounting is a teleport; a hand-over is not.** `ServerPlayer.startRiding`
+   (ServerPlayer.txt 5282–5329) places the player at once (`vehicle.positionRider`),
+   sends a `player_position` teleport (absolute position, motion zero, rotation
+   relative: the player keeps their look) and `SetPassengers` of the vehicle to the
+   player itself. While that teleport is awaited every `MoveVehicle` is dropped (2.3
+   step 2), and by the time the client confirms it `tickPlayer` has set `lastVehicle`
+   (2.2), so in the game the first move a driver sends is checked in the controlling
+   branch. A move that arrives while the root is not `lastVehicle` falls into the "not
+   controlling" branch, and since `vehiclePositionLastResetAt` is far behind
+   `tickCount`, a `ClientboundMoveVehiclePacket` is sent at once. For Clustine this
+   matters at every crossing, where no teleport is sent: **Inferred**, a region that
+   seats a crossing rider must seed `lastVehicle` and `vehicleFirst/LastGood` (section
+   10) before it applies the kept `MoveVehicle`, or the boat jumps back.
 7. **A vehicle floated by its client kicks the player** after
    `getMaximumFlyingTicks(vehicle)` = `ceil(80 * max(0.08 / gravity, 1))` ticks (boats
    and minecarts, gravity `0.04`: 160 ticks), unless `server.allowFlight()`, the
@@ -810,18 +1082,46 @@ class is named. Packet ids are 26.3's (`generated/reports/packets.json`, play st
    `PlayerInput`, `AcceptTeleportation`, the four player moves, `UseItemOn`, `UseItem`
    and `ClientTickEnd` (`crates/clustine-protocol/src/packets/play.rs:2161-2181`), and
    encodes none of `move_vehicle`, `set_passengers`, `set_entity_link`, `sound_entity`,
-   `open_screen` (table in 2.10).
+   `open_screen`, `swing_animation` (table in 2.10, codecs in 2.11).
+9. **Shift dismounts in the level's tick, and a player can remount at once.** The
+   shift key reaches the server by `player_input` (or an `interact`'s flag); the
+   dismount itself is `Player.rideTick` (Player.txt 753–768), run from
+   `ServerLevel.tickPassenger` in the entity phase: on the server, shift down and a
+   passenger → `stopRiding()`, and nothing else of the ride that tick. `Player.removeVehicle`
+   (Player.txt 1910–1916) sets the player's own `boardingCooldown` back to **0** after
+   `Entity`'s set it to 60: the 60-tick wait does not apply to players.
+   `ServerPlayer.removeVehicle` (ServerPlayer.txt 5330–5384) sends the player
+   `SetPassengers` of the vehicle it left (and removes a living vehicle's effects from
+   its screen). The dismount's placing ends in `Entity.dismountTo` → `teleportTo(x, y,
+   z)`, which `ServerPlayer` overrides (ServerPlayer.txt 4280–4329) to send a
+   `player_position` teleport: absolute position, motion and rotation relative
+   (`Relative.DELTA ∪ ROTATION`), so the player keeps their motion and look.
+10. **A player's hit on a vehicle is not a fixed amount.** `Player.attack` (Player.txt
+    2159–2420) deals `base · (0.2 + s²·0.8)` (× 1.5 on a critical hit) plus
+    `s · (enchanted − base)`, with `base` the `attack_damage` attribute (1.0 for a bare
+    hand) and `s` the attack strength (`clamp((ticker + 0.5)/delay, 0, 1)`): a vehicle
+    adds ten times that (section 3.14), so five full-strength punches break a cart or
+    boat, and quick clicks (`s` near 0, 0.2 a hit) about twenty-five.
+11. **Interaction swings are `swing_animation` (123)**, not `animate` (2):
+    `LivingEntity.swing` (LivingEntity.txt 5139–5181) sends
+    `ClientboundSwingAnimationPacket` to the trackers, and to the player as well when
+    the client did not predict it. (Outside this section: the repo relays a player's
+    own arm swing with `animate`, `play.rs:2283-2290`; check that path against 26.3.)
 
 ### 2.1 Packets and the order things happen in
 
 Packets are run on the server thread (`PacketUtils.ensureRunningOnSameThread` at the
 top of every handler), between ticks (**Inferred**: `MinecraftServer` runs queued tasks
-while it waits for the next tick; not in the classes read). Then the levels tick (the
-vehicle's own `tick`), then each connection's `tick()` (199–268) runs `tickPlayer`
-(270–462) (N4 brief, finding 7). So in one server tick: the client's moves of the
-previous client tick are applied and checked against the positions at the end of the
-last `tickPlayer`; then the vehicle ticks; then `tickPlayer` records the new "good"
-positions.
+while it waits for the next tick; `MinecraftServer` not read). Then the levels tick:
+the root vehicle's own `tick`, then each of its passengers through
+`ServerLevel.tickPassenger` (ServerLevel.txt 1738–1795: a passenger that is removed or
+no longer rides that vehicle `stopRiding()`s; else, if it is a `Player` or in the tick
+list, `commonTick()` and `rideTick()`, then its own passengers in turn), where a
+riding player's shift dismount happens (2.4); then each connection's `tick()`
+(199–268) runs `tickPlayer` (270–462) (N4 brief, finding 7). So in one server tick:
+the client's moves of the previous client tick are applied and checked against the
+positions at the end of the last `tickPlayer`; then the vehicle ticks and places its
+riders; then `tickPlayer` records the new "good" positions.
 
 The client (**Client**, from the game's client code as known, not read here; confirm
 with a real client): a riding player sends each client tick
@@ -838,8 +1138,9 @@ that returns true (kicked) return; then keep-alive, throttlers, idle kick.
 
 `tickPlayer()` (270–462), in order:
 1. `resetPosition()` (496–): `firstGood = lastGood = player position`.
-2. `player.xo/yo/zo = position`; `player.doTick()` (the player's own tick, where a
-   rider's `rideTick` and the shift-dismount live: `ServerPlayer`/`Player`, not read).
+2. `player.xo/yo/zo = position`; `player.doTick()` (ServerPlayer.txt: the player's
+   full `Player.tick`, inventory, food and statistics; a rider's `rideTick` and the
+   shift dismount are not here but in the level's `tickPassenger`, 2.1).
 3. `player.absSnapTo(firstGoodX, firstGoodY, firstGoodZ, yRot, xRot)`.
 4. `tickCount++`; `knownMovePacketCount = receivedMovePacketCount`.
 5. The player's own floating kick: if `clientIsFloating && !isSleeping() &&
@@ -901,16 +1202,24 @@ where it was not: one move on the ground resets it.
       client's rotations**), `send(ClientboundMoveVehiclePacket.fromEntity(root))`,
       `root.removeLatestMovementRecording()` (the movement the check's `move` recorded
       is taken back, so its blocks are not applied), return. `noCollision(entity, box)`
-      is the level's (blocks, the world border, and entities that `canCollideWith`:
-      boats and minecarts collide with boats; not read here, `CollisionGetter`): a
-      vehicle stuck in a block before the move is let through even when "wrong".
+      is `CollisionGetter`'s (CollisionGetter.txt 45–168): no non-empty block collision
+      shape in the box (`getBlockCollisions` with the entity's collision context), **and**
+      no entity collision (`EntityGetter.getEntityCollisions`, EntityGetter.txt 83–141:
+      nothing if the box's size is under `1e-7`; else the boxes of the entities in the
+      box inflated by `1e-7` that are not spectators and that the vehicle
+      `canCollideWith`, **Inferred** the method reference of its `invokedynamic`), **and**
+      no collision with the world border (checked only for a non-null entity): a
+      vehicle stuck in a block or another boat before the move is let through even when
+      "wrong".
    7. **Accept** (lines ~975–1090): `root.absSnapTo(x, y, z, yRot, xRot)`: **the
       client's position, not the collided one**; `absSnapTo(DDD)` clamps x and z to
       `±3.0E7`, sets `xo/yo/zo` to the new position as well, then `setPos`;
       `absSnapRotationTo` sets `yRot = yRot % 360f`, `xRot = clamp(xRot, -90, 90) %
       360f` and the old rotations to the same (Entity.txt 4856–4925).
-      `chunkSource.move(player)` (the player's own position is unchanged here: the
-      rider is placed by the vehicle's next `positionRider`, **Inferred**).
+      `chunkSource.move(player)`. The player's own position is unchanged here:
+      `handleMoveVehicle` never calls `positionRider` or `teleportPassengers`, so the
+      rider is placed by `tickPassenger` → `rideTick` → `positionRider` in the next
+      level tick.
       `moved = root position - (x0, y0, z0)`; `handlePlayerKnownMovement(moved)`
       (6731–6762: if `moved.lengthSqr() > 9.999999747378752E-6`
       `player.resetLastActionTime()`; `player.setKnownMovement(moved)`;
@@ -922,9 +1231,13 @@ where it was not: one move on the ground resets it.
       !server.allowFlight() && !root.isFlyingVehicle() && !root.isNoGravity() &&
       noBlocksAround(root)` (lines 1030–1061). `noBlocksAround(e)` (1110–1129):
       `box = e.getBoundingBox().inflate(0.0625).expandTowards(0, -0.55, 0)`;
-      `level.findBlocksIn(box).filterState(<predicate>).allMatched()`. The predicate is
-      an `invokedynamic` whose target the dump does not show; **Inferred**: the game's
-      `BlockStateBase::isAir`, so "no blocks" means every state in the box is air.
+      `level.findBlocksIn(box).filterState(BlockStateBase::isAir).allMatched()` (the
+      predicate is bootstrap method 4 of the class, ServerGamePacketListenerImpl.verbose.txt
+      lines 6149–6185 and 15766–), and `BlockMatcher.allMatched()` is
+      `!anyMatched(state -> !predicate.test(state))` (BlockMatcher.txt 73–100): "no
+      blocks" means every state in the box is air. Which positions `findBlocksIn` visits
+      for a box is `LevelReader`'s (not read; **Inferred**: `floor(min)` to
+      `floor(max)` on each axis).
    9. `vehicleLastGood = root position`.
 4. **Not controlling** (lines 1063–1109): if `root != player &&
    root.getControllingPassenger() != player` (a passenger who is not the driver, or a
@@ -940,45 +1253,69 @@ check's move, shifted to the client's position); `shapes = level.getPreMoveColli
 newBox.deflate(9.999999747378752E-6), oldBox.getBottomCenter())`; `old =
 Shapes.create(oldBox.deflate(9.999999747378752E-6))`; true if any shape `s` has
 `!Shapes.joinIsNotEmpty(s, old, BooleanOp.AND)`: a collision at the new place that the
-old box did not already overlap. `getPreMoveCollisions` is `CollisionGetter`'s, not
-read.
+old box did not already overlap. `getPreMoveCollisions(e, box, oldBottom)`
+(CollisionGetter.txt 193–217) is the entity collisions of the box followed by the block
+collisions with `CollisionContext.withPosition(e, oldBottom.y)` (the context judges
+"above" by the old feet: scaffolding, powder snow and the like).
 
 There is **no per-tick limit on `MoveVehicle`** (unlike the player's
 `receivedPositionThisTick`, 2.5): several in one tick are each checked against the
 same `vehicleFirstGood`, so a vehicle can move at most about `sqrt(100 + |v|²)` from
 where it was at the end of the last `tickPlayer`.
 
-`ClientboundMoveVehiclePacket.fromEntity(e)`: the entity's position and rotations
-(**Inferred**; the packet class is not in the dump; SteelMC's codec, for orientation:
-`DVec3`, `y_rot`, `x_rot`).
+`ClientboundMoveVehiclePacket.fromEntity(e)` (ClientboundMoveVehiclePacket.txt 16–23)
+is `new ClientboundMoveVehiclePacket(e.storePositionAndRotation())`: the entity's
+position, `yRot` and `xRot` (Entity.txt 11232–11242). Its codec is 2.11's.
 
 ### 2.4 `handlePaddleBoat` (4469–4489) and `handlePlayerInput` (604–630)
 
-`handlePaddleBoat`: `v = player.getControlledVehicle()` (the vehicle the player
-controls, not the root; `Entity`/`Player`, not read); if `v instanceof AbstractBoat`:
+`handlePaddleBoat`: `v = player.getControlledVehicle()` (Entity.txt 10485–: the
+player's vehicle if that vehicle's controlling passenger is the player, else null; no
+override in `Player` or `ServerPlayer`); if `v instanceof AbstractBoat`:
 `boat.setPaddleState(packet.getLeft(), packet.getRight())`. No other check, no reply.
 The paddle state is the boat's synched data (section 4.8), so the server
 only relays it to other viewers.
 
 `handlePlayerInput`: `player.setLastClientInput(packet.input())` always; then, if
 `hasClientLoaded()`: `resetLastActionTime()` and `player.setShiftKeyDown(input.shift())`.
-The listener does not dismount: **sneaking to dismount is the player's tick**
-(`Player.rideTick`/`ServerPlayer`, where `wantsToStopRiding()` (shift down) and
-`isPassenger()` lead to `stopRiding()`; **Inferred** from the game's known shape, the
-classes are not in the dump). `Input` carries forward, backward, left, right, jump,
-shift, sprint (the protocol crate's `player_input` flags); a minecart reads them as
-`getLastClientMoveIntent()` (finding 1).
+The listener does not dismount: **sneaking to dismount is the ride's tick**, in the
+level's entity phase. `ServerLevel.tickPassenger` → `ServerPlayer.rideTick`
+(ServerPlayer.txt 3420–3448: `Player.rideTick`, then riding statistics from the
+position change) → `Player.rideTick` (Player.txt 753–768): on the server, if
+`wantsToStopRiding()` (`isShiftKeyDown()`, Player.txt 472–476) and `isPassenger()`:
+`stopRiding()` and return; else `LivingEntity.rideTick` (`Entity.rideTick`: motion
+zero, `tick()`, the vehicle's `positionRider`; then `resetFallDistance()`,
+LivingEntity.txt 8940–8948). So a shift pressed in a client tick dismounts in the next
+server tick's entity phase. `Player.removeVehicle` sets `boardingCooldown = 0`
+(finding 9). `Input` carries forward, backward, left, right, jump, shift, sprint (the
+protocol crate's `player_input` flags).
 
-`handlePlayerCommand` (5213–~5300), as it bears on vehicles: action 4
-`START_RIDING_JUMP` and 5 `STOP_RIDING_JUMP` go to `getControlledVehicle()` if it is
-`PlayerRideableJumping` (horses, camels: N7); action 6 `OPEN_INVENTORY`: if
-`player.getVehicle() instanceof HasCustomInventoryScreen` →
-`openCustomInventoryScreen(player)`. Of N5's entities only `AbstractChestBoat`
-implements it (AbstractChestBoat.txt line 2): pressing the inventory key in a chest
-boat opens the boat's chest. (The action numbering is the ordinal through
-`ServerGamePacketListenerImpl$1`'s switch map, not dumped; the order START_SPRINTING,
-STOP_SPRINTING, STOP_SLEEPING, START_RIDING_JUMP, STOP_RIDING_JUMP, OPEN_INVENTORY,
-START_FALL_FLYING matches the cases' bodies.) `player_command` is serverbound 42.
+**`ServerPlayer.getLastClientMoveIntent()`** (ServerPlayer.txt 5509–5545), what a
+minecart reads (section 3.6 step 10):
+```
+strafe  = left == right       ? 0f : (left    ? 1f : -1f)
+forward = forward == backward ? 0f : (forward ? 1f : -1f)
+return Entity.getInputVector(Vec3((double)strafe, 0.0, (double)forward), 1.0f, getYRot())
+```
+`Entity.getInputVector(v, speed, yaw)` (Entity.txt): `l = v.lengthSqr()`; `l < 1.0E-7` →
+`Vec3.ZERO`; `w = (l > 1.0 ? v.normalize() : v).scale((double)speed)`; `s =
+Mth.sin((double)(yaw * 0.017453292f))`, `c = Mth.cos(…)` (floats, the angle multiplied
+in `float`); result `(w.x·c − w.z·s, w.y, w.z·c + w.x·s)` with `c`, `s` widened. A
+diagonal is normalised, so the intent has length 0 or 1 and points where the rider
+looks.
+
+`handlePlayerCommand` (5213–~5300), as it bears on vehicles: `START_RIDING_JUMP` and
+`STOP_RIDING_JUMP` go to `getControlledVehicle()` if it is `PlayerRideableJumping`
+(horses, camels: N7); `OPEN_INVENTORY`: if `player.getVehicle() instanceof
+HasCustomInventoryScreen` → `openCustomInventoryScreen(player)`. Of N5's entities only
+`AbstractChestBoat` implements it (AbstractChestBoat.txt line 2): pressing the inventory
+key in a chest boat opens the boat's chest. On the wire the action is the enum's
+ordinal (`readEnum`), which `ServerboundPlayerCommandPacket$Action`'s static
+initialiser fixes: **`STOP_SLEEPING` 0, `START_SPRINTING` 1, `STOP_SPRINTING` 2,
+`START_RIDING_JUMP` 3, `STOP_RIDING_JUMP` 4, `OPEN_INVENTORY` 5, `START_FALL_FLYING` 6**.
+(The earlier reading of 4, 5, 6 for the riding jump and the inventory was the
+`ServerGamePacketListenerImpl$1` switch map's case labels, which start at 1 and follow
+another order, not the wire's.) `player_command` is serverbound 42.
 
 ### 2.5 A riding player's own moves: `handleMovePlayer` (2913–3018) and `handlePlayerPositionChange` (3019–3574)
 
@@ -1013,10 +1350,28 @@ passenger, takes only the rotations). Ids that do not match are ignored.
 send `ClientboundPlayerPositionPacket` (`player_position`, clientbound 73). For
 vehicles: **while a teleport is awaited every `MoveVehicle` is dropped** (2.3 step 2),
 and the teleport is sent again each 20 ticks. A dismount places the player with
-`dismountTo` (Entity.txt 9645) and `ServerPlayer`'s override, which **Inferred** sends
-a teleport (not read): until the client confirms, its moves are dropped.
+`Entity.dismountTo` (Entity.txt 9645), which calls `teleportTo(x, y, z)`, and
+`ServerPlayer`'s `teleportTo` sends a teleport (below): until the client confirms it,
+its moves are dropped.
 `STOP_SLEEPING` sets `awaitingPositionFromClient` without sending a teleport (5213+,
 offsets 103–132).
+
+What a player's riding sends them, from `ServerPlayer`:
+- **Mounting** (`startRiding(v, force, events)`, ServerPlayer.txt 5282–5329): if
+  `Player`'s (= `Entity`'s, section 1.2) succeeds: `v.positionRider(this)` at once;
+  `connection.teleport(PositionMoveRotation(position, Vec3.ZERO, 0f, 0f),
+  Relative.ROTATION)` (absolute position, rotation unchanged); if `v` is a
+  `LivingEntity`, its active effects (`PlayerList.sendActiveEffects`); then
+  `SetPassengers(v)` to the player itself (its trackers get theirs from `ServerEntity`).
+- **Dismounting**: `ServerPlayer.removeVehicle` (5330–5384): `Player.removeVehicle`
+  (`Entity.removeVehicle`, then `boardingCooldown = 0`); if the old vehicle is a
+  `LivingEntity`, a `remove_mob_effect` (79) per active effect; then `SetPassengers(old
+  vehicle)` to the player. Where the player is put is `LivingEntity.dismountVehicle`
+  (section 1.7), ending in `Entity.dismountTo(x, y, z)` → `teleportTo(x, y, z)`,
+  overridden by `ServerPlayer.teleportTo(DDD)` (4280–4329): `connection.teleport(
+  PositionMoveRotation((x, y, z), Vec3.ZERO, 0f, 0f), Relative.union(DELTA,
+  ROTATION))`: the position absolute, the motion and the look kept. Until the client
+  confirms it, its moves are dropped (above).
 
 ### 2.7 `handleInteract(ServerboundInteractPacket)` (5566–5679)
 
@@ -1025,38 +1380,58 @@ offsets 103–132).
    **`player.setShiftKeyDown(packet.usingSecondaryAction())`** (finding 3).
 3. `e == null` or `!worldBorder.isWithinBounds(e.blockPosition())` → return.
 4. `!player.isWithinEntityInteractionRange(e.getBoundingBox(), 3.0)` → return
-   (`Player`, not read; **Inferred**: the box's squared distance from the eyes below
-   `(entity_interaction_range + 3.0)²`, the range being 3, plus 2 in creative). No
-   reply is sent when refused.
+   (Player.txt 4849–4871: `d = entityInteractionRange() + 3.0`; in range iff
+   `box.distanceToSqr(getEyePosition()) < d * d`). `entityInteractionRange()` is the
+   `entity_interaction_range` attribute: `DEFAULT_ENTITY_INTERACTION_RANGE` 3.0, with
+   `CREATIVE_ENTITY_INTERACTION_RANGE_MODIFIER` (+2.0, `ServerPlayer`) in creative; so
+   the box must be within 6 of the eyes (8 in creative). No reply is sent when
+   refused.
 5. `hand = packet.hand()`, `location = packet.location()`, `stack =
    player.getItemInHand(hand)`; `!stack.isItemEnabled(features)` → return.
-6. `before = stack.copy()`; `r = player.interactOn(e, hand, location)` (`Player`, not
-   read; **Inferred** order, from the game's known shape: spectators open the
-   spectator screen and pass; `e.interact(player, hand, location)`; if that does not
-   consume the action and the stack is not empty and `e` is a `LivingEntity`,
-   `stack.interactLivingEntity(player, living, hand)` (not N5's, except leads on mobs);
-   creative keeps the count of a stack it used).
+6. `before = stack.copy()`; `r = player.interactOn(e, hand, location)`
+   (Player.txt 1812–1908):
+   1. a spectator: if `e` is a `MenuProvider` (a chest boat or a chest or hopper
+      minecart), `openMenu(e)`; return `PASS`;
+   2. `held = getItemInHand(hand)`, `copy = held.copy()`; `r = e.interact(this, hand,
+      location)`; if `r.consumesAction()`: a player with infinite materials whose hand
+      still holds that same stack object, now with fewer items, gets `held.setCount(
+      copy.getCount())` back (creative keeps a lead, coal, an item put in a frame);
+      return `r`;
+   3. else, if `held` is not empty and `e` is a `LivingEntity` (an armour stand among
+      N5's): with infinite materials `held = copy`; `r2 =
+      held.interactLivingEntity(this, e, hand)`; if it consumes the action: game event
+      `ENTITY_INTERACT` at `e`, and if `held` is now empty and the player is not
+      creative, `setItemInHand(hand, EMPTY)`; return `r2`;
+   4. `PASS`.
 7. If `r instanceof InteractionResult.Success s`: the advancement trigger
    `PLAYER_INTERACTED_WITH_ENTITY` with `s.wasItemInteraction() ? before : EMPTY`
    (nothing for Clustine); if `s.shouldSwing()`: `player.swingAndResetAttackStrength(
    hand, before.getInteractAnimation(), s.swingSource() != SwingSource.PREDICTED)`:
-   the swing is sent to others, and to the player itself only when the client did not
-   predict it (`SUCCESS_SERVER`; the boolean, **Inferred**; `LivingEntity.swing` not
-   read). `PASS`, `FAIL` and `TRY_WITH_EMPTY_HAND` do nothing here.
+   `ServerPlayer.swingAndResetAttackStrength` (ServerPlayer.txt 5679–5689) →
+   `LivingEntity.swing(hand, animation, toSelf)` (LivingEntity.txt 5139–5181): if the
+   swing can start (`swingState.startIfAble`), `ClientboundSwingAnimationPacket(entity,
+   hand, animation)` (`swing_animation`, 123) goes to the trackers, and also to the
+   player when `toSelf` (the source is not `PREDICTED`: `SUCCESS_SERVER`); then the
+   attack strength ticker is reset. `PASS`, `FAIL`, `TRY_WITH_EMPTY_HAND` and
+   `CONSUME` (whose swing source is `NONE`) swing nothing.
 
 `InteractionResult` (InteractionResult.txt): `SUCCESS` = `Success(PREDICTED,
 DEFAULT)`, `SUCCESS_SERVER` = `Success(SERVER_ONLY, DEFAULT)`, `CONSUME` =
 `Success(NONE, DEFAULT)`, `FAIL`, `PASS`, `TRY_WITH_EMPTY_HAND`; `consumesAction()`
-default false (true for `Success`, **Inferred**: `$Success` not dumped). What each
+default false, true for every `Success` (InteractionResult$Success.txt). `shouldSwing()`
+is `swingSource != NONE`; `wasItemInteraction()` is the item context's flag:
+`ItemContext.DEFAULT` = `(true, null)`, `ItemContext.NONE` = `(false, null)`, and
+`withoutItem()` gives the same swing source with `NONE`; `heldItemTransformedTo(stack)`
+gives `(true, stack)`, which `ServerPlayerGameMode` puts in the hand. What each
 N5 entity returns is in its own section; mounting a boat or a cart is
 `player.startRiding(this)` inside the entity's `interact` (sections 3.12, 4.6, 5.8).
 `Entity.interact`'s default (Entity.txt 6475–6680) is the leash logic (section 7.4):
 sneaking with mobs leashed to the player moves them onto this entity if it is
 `Leashable`; shears cut its leashes; a lead on a leashable entity ties it.
 
-The packet (**Inferred** from SteelMC's 26.3 codec, for orientation; the class is not
-in the dump): varint entity id, varint hand, `location` as `LpVec3` (the hit point
-relative to the entity's position, **Client**), boolean `usingSecondaryAction`.
+The packet's codec is 2.11's. `location` is the hit point relative to the entity's
+position (**Client**: the client sends `hit − entity.position()`; the server uses it as
+given).
 
 ### 2.8 `handleAttack(ServerboundAttackPacket)` (5460–5565): breaking N5's entities
 
@@ -1069,10 +1444,30 @@ relative to the entity's position, **Client**), boolean `usingSecondaryAction`.
    `multiplayer.disconnect.invalid_entity_attacked`.
 5. Main hand not enabled → return; `player.cannotAttackWithItem(mainHand, 5)` →
    return.
-6. `player.attack(e)` (`Player`, not read): for N5's entities this leads to
-   `skipAttackInteraction`/`hurtOrSimulate` and their `hurtServer` (the two hits of an
-   armour stand, a creative player's instant break of a vehicle, a hanging entity
-   dropped: each entity's section).
+6. `player.attack(e)` (Player.txt 2159–2420):
+   1. `cannotAttack(e)` = `!e.isAttackable() || e.skipAttackInteraction(this)` → return.
+      Hanging entities, knots and cushions answer `skipAttackInteraction` themselves
+      (section 6.1: `hurtOrSimulate(playerAttack, 0)` and true), so the rest never runs
+      for them; an armour stand's is true for a player who may not interact at its
+      block.
+   2. `base = (float) attack_damage` (1.0 for a player with nothing in hand, Player.txt
+      225–230; the auto-spin attack's own damage instead while riptiding); `source =
+      createAttackSource(weapon)` (`weapon.getDamageSource(this)`, else
+      `playerAttack(this)`, **Inferred**: `ItemStack.getDamageSource`'s default not
+      followed); `s = getAttackStrengthScale(0.5f)` = `clamp(((float)attackStrengthTicker
+      + 0.5f) / getCurrentItemAttackStrengthDelay(), 0f, 1f)` (Player.txt 4375–4389);
+      `ench = s * (getEnchantedDamage(e, base, source) − base)` (no enchantment: 0);
+      `base *= 0.2f + s * s * 0.8f` (`baseDamageScaleFactor`, 2924–2937); `onAttack()`;
+      a redirectable projectile is deflected instead (not N5).
+   3. If `base > 0 || ench > 0`: `strong = s > 0.9f`; a sprinting knock-back sound;
+      `base += weapon.getItem().getAttackDamageBonus(e, base, source)`; a critical hit
+      (`strong && canCriticalAttack(e)`, falling and not on the ground or climbing,
+      **Inferred**: `canCriticalAttack` not followed) multiplies `base` by `1.5f`;
+      `amount = base + ench`; `e.hurtOrSimulate(source, amount)` → the entity's
+      `hurtServer`; if it took: knock-back, the sweep, the visual effects and statistics
+      (none of which reach N5's entities but as sounds and particles); else the
+      `player.attack.nodamage` sound. All in `float`.
+   For a vehicle that is `damage += amount * 10f` (section 3.14).
 
 ### 2.9 `handleUseItemOn` (4022–4316), `handleUseItem` (4317–4417), pick-item
 
@@ -1086,6 +1481,19 @@ height; spawn protection; `awaitingPositionFromClient == null` and
 (those sections). `handleUseItem` (rotations from the packet; `ServerPlayerGameMode.
 useItem` → `Item.use`) → `BoatItem.use` (the ray of section 4.1). Both send
 `BlockUpdate` of the clicked block and its neighbour on the face when refused.
+
+`ServerPlayerGameMode.useItemOn(player, level, stack, hand, hit)`
+(ServerPlayerGameMode.txt 1029–1188), as it bears on placing: a block disabled by
+features → `FAIL`; a spectator opens the block's menu or passes. The block is used
+first (`BlockState.useItemOn`, then with the main hand `useWithoutItem`) **unless**
+the player is sneaking (`isSecondaryUseActive`) and either hand holds an item. Then, if
+the stack is not empty and not on cooldown: `ctx = UseOnContext(player, hand, hit)`;
+**with infinite materials the count is saved, `stack.useOn(ctx)` run, and the count put
+back** (`setCount`), so a creative player keeps a placed cart, stand, frame or painting;
+else `useOn`, and a `heldItemTransformedTo` result replaces the hand's stack.
+`ServerPlayerGameMode.useItem` (931–1028), the boat's path, restores nothing: the boat
+item is kept in creative only because `BoatItem` uses `ItemStack.consume(1, player)`,
+which does not shrink for a player with infinite materials (ItemStack.txt).
 `ServerboundPickItemFromEntityPacket` (`pick_item_from_entity`, 37; 1708–1762): within
 interaction range 3.0 → `e.getPickResult()` → `tryPickItem` (1763–1814: find the stack
 in the inventory, select it, or in creative `addAndPickItem`; `SetHeldSlot` and the
@@ -1118,11 +1526,45 @@ stand, frame or painting gives its item. Not yet decoded by the protocol crate.
 | `set_entity_motion` | C | 103 | yes |
 | `set_passengers` | C | 109 | no |
 | `sound_entity` | C | 118 | no |
-| `swing_animation` | C | 123 | no (whether a swing is `animate` or this one in 26.3 is in `LivingEntity.swing`, not read) |
+| `remove_mob_effect` | C | 79 | no (only for living vehicles: N7) |
+| `swing_animation` | C | 123 | no (the swing of an interaction, 2.7) |
 
 The edge today: `services/edge/src/play.rs:109-203` handles the packets marked yes and
 passes `Unhandled` over, so `Interact`, `Attack`, `MoveVehicle`, `PaddleBoat` and
 `PlayerCommand` are dropped silently now.
+
+### 2.11 Codecs, field by field
+
+From each packet class's `STREAM_CODEC`, constructor and `write` (all in
+`net.minecraft.network.protocol.game`). "varint" is `writeVarInt`; `int` is a 4-byte
+big-endian `writeInt`; `double` 8 bytes, `float` 4, `byte` 1, `bool` 1 (0 or 1);
+`writeUUID` two longs, most significant first (`FriendlyByteBuf`'s primitives, as the
+repo already writes them).
+
+| Packet (id) | Fields, in order |
+|---|---|
+| `ServerboundAttackPacket` (S 1) | entity id: varint (`ByteBufCodecs.VAR_INT`) |
+| `ServerboundInteractPacket` (S 26) | entity id: varint; hand: `InteractionHand.STREAM_CODEC` (**Inferred** varint of the id, main 0, off 1: the enum's codec not read); location: `Vec3.LP_STREAM_CODEC` (the `LpVec3` the repo writes for `set_entity_motion`; **Inferred** from the method references of `Vec3`'s static initialiser, Vec3.txt 1318–1325); `usingSecondaryAction`: bool |
+| `ServerboundMoveVehiclePacket` (S 34) | `movingTo`: `PositionAndRotation.STREAM_CODEC`; `onGround`: bool (ServerboundMoveVehiclePacket.txt 83–91). **Inferred** (`PositionAndRotation` not read): position as three doubles (x, y, z), then `yRot`, `xRot` floats |
+| `ClientboundMoveVehiclePacket` (C 58) | `movingTo`: `PositionAndRotation.STREAM_CODEC` (mapped onto the record, ClientboundMoveVehiclePacket.txt 70–76); filled from `storePositionAndRotation()`: position, `yRot`, `xRot` |
+| `ServerboundPaddleBoatPacket` (S 35) | left: bool; right: bool (`writeBoolean` twice) |
+| `ServerboundPlayerCommandPacket` (S 42) | entity id: varint (the player's own); action: `writeEnum`, a varint of the ordinal (0 `STOP_SLEEPING` … 6 `START_FALL_FLYING`, 2.4); data: varint (**Inferred**: the jump's charge for `START_RIDING_JUMP`, else 0) |
+| `ClientboundSetPassengersPacket` (C 109) | vehicle id: varint; passengers: `writeVarIntArray` (**Inferred**, `FriendlyByteBuf` not read: a varint count, then each id as a varint), the vehicle's **direct** passengers in list order (ClientboundSetPassengersPacket.txt 9–70) |
+| `ClientboundSetEntityLinkPacket` (C 102) | source (the leashee) id: `int`; destination (the holder) id: `int`, **0 when there is no holder** (ClientboundSetEntityLinkPacket.txt 9–53) |
+| `ClientboundAddEntityPacket` (C 1) | id: varint; uuid: two longs (`writeUUID`); type: `ByteBufCodecs.registry(ENTITY_TYPE)` (a varint of the type id); x, y, z: doubles; movement: `Vec3.LP_STREAM_CODEC`; xRot, yRot, yHeadRot: bytes (`Mth.packDegrees`); data: varint (ClientboundAddEntityPacket.txt 141–260) |
+
+`ClientboundAddEntityPacket`'s constructors (lines 27–140):
+- `(Entity, ServerEntity)` = `(Entity, ServerEntity, 0)`;
+- `(Entity, ServerEntity, data)`: the **tracker's** position base, last sent `xRot`,
+  `yRot`, last sent motion and last sent head rotation (the entity's `Entity.
+  getAddEntityPacket` default: carts, boats, stands, cushions);
+- `(Entity, data, BlockPos pos)`: `(double) pos.x, y, z` (the block's corner), the
+  **entity's** own `xRot`, `yRot`, its current `getDeltaMovement()` (zero for a
+  hanging entity, which never moves) and `yHeadRot`: item frames, glow frames and
+  paintings (data = the direction's 3D value) and leash knots (data 0), sections 6.8
+  and 7.6;
+- the rotations are packed by `Mth.packDegrees` in that order (x then y), the head
+  rotation from a `double` narrowed back to `float`.
 
 ---------------------------------------------------------------------------------------
 
@@ -1153,29 +1595,44 @@ damage and breaking (shared with boats), the containers and the kinds of cart (a
    while it runs, so one answer per world is enough.
 2. **`AbstractMinecart.tick` does not call `super.tick()`, so no `Entity.baseTick`**
    (lines 486–536): no fire-tick countdown and no on-fire flag, no freezing, no eyes in
-   fluid. It runs its own short list (3.3). **Inferred**: a cart in lava is set on
-   fire (`lavaIgnite`) but its remaining fire ticks never count down and the on-fire
-   shared flag is never set by it; what is shown is the client's.
+   fluid. It runs its own short list (3.3). A cart in lava is set on fire
+   (`lavaIgnite`), but its remaining fire ticks never count down and the server never
+   sets its on-fire shared flag: `setSharedFlagOnFire` is called only from `baseTick`
+   (Entity.txt line 1082).
 3. **A rideable cart moving at 0.1 a tick or more picks up any pushable entity that is
    not a player, an iron golem or a minecart** (`OldMinecartBehavior.
    pushAndPickupEntities`, lines 1347–1451): `e.startRiding(cart)`. Among N5's
-   entities that is a **boat** (boats are pushable: the game's boat-in-a-minecart) and
-   any other pushable N5 entity (**Inferred**: armour stands are not pushable when
-   markers; to check in their section). Mobs are N7. The plan needs a rule for a
+   entities that is a **boat** (boats are pushable: the game's boat-in-a-minecart) and a
+   **mannequin** (a `LivingEntity`, pushable while alive, not a spectator and not on a
+   climbable block, LivingEntity.txt 9141–9176; an `Avatar`, not a `Player`). Never an
+   armour stand: `ArmorStand.isPushable()` is false always (ArmorStand.txt 326–329), and
+   `pushableBy` requires `isPushable()` (3.10). Mobs are N7. The plan needs a rule for a
    vehicle (a boat) riding a vehicle (the cart): ADR-0028's unit of root and
    passengers covers it, the root being the cart.
 4. **A cart's own move collides with other entities' boxes**: `canCollideWith(e)` is
    `AbstractBoat.canVehicleCollide(this, e)` (line 159), `(e.canBeCollidedWith(this) ||
    e.isPushable()) && !isPassengerOfSameVehicle(e)`, so in `Entity.collide` the cart is
-   stopped by players, boats, other carts and pushable mobs as by blocks (**Inferred**
-   from `CollisionGetter.getEntityCollisions`, not read). N4's collision reads only
+   stopped by players, boats, other carts and pushable mobs as by blocks.
+   `EntityGetter.getEntityCollisions(e, box)` (EntityGetter.txt 83–141): nothing if
+   `box.getSize() < 1.0E-7`; else the entities in `box.inflate(1.0E-7)` passing
+   `NO_SPECTATORS` and a predicate bound to `e` (a method reference whose target `javap
+   -c` does not show; **Inferred** `e::canCollideWith`), each as `Shapes.create(its
+   box)`. N4's collision reads only
    blocks; N5 needs entity colliders for carts and boats, and they read **players'
    boxes**, which are the client's (ADR-0005), so a cart's path depends on where the
    edge says a player stands in the tick.
 5. **The rider's input reaches the cart through `ServerPlayer.getLastClientMoveIntent()`**
    (moveAlongTrack, OldMinecartBehavior.txt lines 449–500), not through
    `ServerboundPlayerInputPacket` directly; `handlePlayerInput` only stores the input
-   (`setLastClientInput`). How the intent is derived is in `ServerPlayer` (not read).
+   (`setLastClientInput`). `ServerPlayer.getLastClientMoveIntent()` (ServerPlayer.txt,
+   the method of that name): `s = left == right ? 0f : left ? 1f : -1f`, `f = forward ==
+   backward ? 0f : forward ? 1f : -1f`; `Entity.getInputVector((s, 0, f), 1.0f, yRot)`
+   (Entity.txt 4768–): `ZERO` if the squared length is under `1.0E-7`, normalised if over
+   1 (a diagonal), scaled by `1.0f`, then turned by the player's yaw: `sin =
+   Mth.sin(yRot * 0.017453292f)`, `cos = Mth.cos(…)` (float product widened, table
+   lookups), `(x·cos − z·sin, y, z·cos + x·sin)` with the floats widened. So the intent
+   has length 1 (or 0) in the direction the player's keys point, by the player's yaw
+   as the server last took it.
 6. **Under the old behaviour a cart moves at most 0.4 a tick on each horizontal axis**
    (on rails, off rails, in water 0.2) plus the snap to its rail: it never crosses more
    than one block a tick, so never two chunks (section 10). Under the new behaviour
@@ -1197,9 +1654,10 @@ damage and breaking (shared with boats), the containers and the kinds of cart (a
    the contents still fall out. A survival break `kill()`s it first (`remove(KILLED)`
    drops the contents), and only then reads `ENTITY_DROPS` for the vehicle's own item;
    `chestVehicleDestroyed` reads the rule a second time and calls `dropContents` again on
-   what is by then an empty container (**Inferred**: `Containers.dropContents` empties the
-   stacks it drops, by `split`; not read). So the game rule keeps only the vehicle's item
-   back.
+   what is by then an empty container: `Containers.dropItemStack` splits each stack down
+   to empty (3.18), but it **still draws three `nextDouble` from the level's random for
+   every slot, empty or not**, so the second call costs 81 draws for a chest cart and no
+   item. So the game rule keeps only the vehicle's item back.
 10. **A creative player's hit discards; it does not kill.** No item, no `ENTITY_DIE`
     game event; the damage is still added and sent first. The one way past this is
     `shouldSourceDestroy`, true only for a TNT minecart hit by fire, an explosion or a
@@ -1215,7 +1673,7 @@ damage and breaking (shared with boats), the containers and the kinds of cart (a
     (lines 129–162) replaces the behaviour's factor by `0.98f + (15 − comparator
     signal) · 0.001f`. A full chest cart stops sooner than an empty one. N5's sim needs
     the contents as items, with their maximum stack sizes, not only as bytes, and
-    `AbstractContainerMenu.getRedstoneSignalFromContainer` (not read).
+    `AbstractContainerMenu.getRedstoneSignalFromContainer` (3.18).
 13. **A TNT minecart explodes on its own** (a horizontal collision at
     `horizontalDistanceSqr ≥ 0.01`, a fall of 3 or more, a powered activator rail, being
     broken while moving), and a **hopper minecart takes in items** around it every tick.
@@ -1257,8 +1715,9 @@ damage and breaking (shared with boats), the containers and the kinds of cart (a
 7. On the server: `addFreshEntity(cart)`; `gameEvent(ENTITY_PLACE, clickedPos,
    Context.of(player, level.getBlockState(clickedPos.below())))`.
 8. `stack.shrink(1)` (on both sides), `SUCCESS`. In creative the stack is given its
-   count back by the caller (`ServerPlayerGameMode.useItemOn` keeps the count of an
-   infinite-materials player: **Inferred**, not read here).
+   count back by the caller: `ServerPlayerGameMode.useItemOn` (ServerPlayerGameMode.txt,
+   offsets 351–374) saves `stack.getCount()` when `player.hasInfiniteMaterials()`, calls
+   `stack.useOn(ctx)` and sets the count back.
 
 The dispenser's minecart behaviour (`MinecartDispenseItemBehavior`) is N6.
 
@@ -1269,10 +1728,16 @@ The dispenser's minecart behaviour (`MinecartDispenseItemBehavior`) is N6.
 - `createMinecart(level, x, y, z, type, reason, stack, player)`: `cart =
   type.create(level, reason)`; if non-null: `setInitialPos(x, y, z)` (`setPos`, then
   `xo/yo/zo` = the same); `EntityType.createDefaultStackConfig(level, stack,
-  player).apply(cart)` (the stack's custom name and entity data components: **Not
-  read**); only with the experiment, `adjustToRails(getCurrentBlockPosOrRailBelow(),
-  its state, true)`. No rotation is set: a placed cart has `yRot = 0` (**Inferred**:
-  the constructor's default) whichever way the player faces.
+  player).apply(cart)` (EntityType.txt 135–200, 350–, 1041–1056): first
+  `cart.applyComponentsFromItemStack(stack)` → `applyImplicitComponents` (Entity's:
+  `minecraft:custom_name` → `setCustomName`, `minecraft:custom_data`; no cart class
+  overrides it); then, if the stack has `minecraft:entity_data` of this entity type,
+  `updateCustomEntityTag` loads it into the cart (`TypedEntityData.loadInto`), unless
+  the type is `onlyOpCanSetNbt` and the player is not an operator. Only with the
+  experiment, `adjustToRails(getCurrentBlockPosOrRailBelow(), its state, true)`. No
+  rotation is set: `EntityType.create(level, reason)` only checks `canSpawn` and calls
+  the factory (EntityType.txt, `create(Level, EntitySpawnRequest)`), draws nothing and
+  sets no yaw, so a placed cart has `yRot = 0` whichever way the player faces.
 - `getMovementEmission()` = `EVENTS` (game events, no step sounds). The rolling sound is
   the client's (**Client**).
 - `getDefaultGravity()` (lines 476–485) = `isInWater() ? 0.005 : 0.04`.
@@ -1294,7 +1759,7 @@ The dispenser's minecart behaviour (`MinecartDispenseItemBehavior`) is N6.
    `discard()` (Entity.txt 1144–1158).
 4. `computeSpeed()`: `lastKnownSpeed = position - lastKnownPosition` (first time:
    `lastKnownPosition = position`), then `lastKnownPosition = position` (Entity.txt
-   1107–1127). (Read by `getKnownMovement`, below.)
+   1107–1127). (Read by `getKnownSpeed`; not by `getKnownMovement`, 3.5.)
 5. `handlePortal()`: nether portals; none in N5 (name it).
 6. `behavior.tick()` (3.4).
 7. `updateFluidInteraction()` (n4-brief section 4: `EntityFluidInteraction.update` and
@@ -1386,10 +1851,13 @@ the same rule inline (3.6 step 13). **`isRedstoneConductor(pos)`** (947–958):
 `level.getBlockState(pos).isRedstoneConductor(level, pos)` (the repo's
 `clustine_blocks::connect` conductor rule).
 
-**`getKnownMovement()`** (650–658 → OldMinecartBehavior.txt 1470–1501): `Entity`'s known
-movement (`lastKnownSpeed` for non-players, **Inferred**) with any NaN → `ZERO`, else
-`(clamp(x, -0.4, 0.4), y, clamp(z, -0.4, 0.4))`. Read by others (for example a
-rider's or a projectile's inheritance; **Not read** who).
+**`getKnownMovement()`** (650–658 → OldMinecartBehavior.txt 1470–1501): `Entity`'s
+`getKnownMovement()` (Entity.txt 11467–11486: the controlling passenger's if it is a
+`Player`, which a cart never has, else **`getDeltaMovement()`**, the motion; *not*
+`lastKnownSpeed`, which is `getKnownSpeed()`), with any NaN → `ZERO`, else
+`(clamp(x, -0.4, 0.4), y, clamp(z, -0.4, 0.4))`. Read by the leash's pull (section
+7.3, a holder's or leashee's movement) among others. (Corrected: the first brief had
+`lastKnownSpeed`.)
 
 **`exits(shape)`** (lines 461–468; the table built in `lambda$static$0`, lines
 1435–1502). With `W = (-1,0,0)`, `E = (1,0,0)`, `N = (0,0,-1)`, `S = (0,0,1)` and `X↓` =
@@ -1446,8 +1914,10 @@ tick's).
     read twice); if `p instanceof Player` and `intent.lengthSqr() > 0`: `n =
     intent.normalize()` (only its `lengthSqr() > 0` is tested, it is not used
     otherwise); if `n.lengthSqr() > 0` and `motion.horizontalDistanceSqr() < 0.01`:
-    `motion = motion + (intent.x * 0.001, 0, intent.z * 0.001)` (the **unnormalised**
-    intent) and `braking = false`. So a rider can start a cart that moves at under 0.1
+    `motion = motion + (intent.x * 0.001, 0, intent.z * 0.001)` (`intent` itself, which
+    `getLastClientMoveIntent` has already made of length 1 or 0, 3.0 item 5) and
+    `braking = false`. So the push is 0.001 a tick in the direction of the rider's keys
+    turned by the rider's yaw. So a rider can start a cart that moves at under 0.1
     a tick, even on an unpowered powered rail, and cannot speed up a faster one.
 11. **Braking** (an unpowered powered rail, no rider's push): `h =
     motion.horizontalDistance()`; if `h < 0.03`: `motion = ZERO`; else `motion =
@@ -1553,10 +2023,12 @@ effects run (3.4 step 5). The block's rules, for the porter of the rail's half:
 - `getAnalogOutputSignal` (298–341): 0 unless `POWERED`; else the first
   `MinecartCommandBlock` in the search box gives its success count; else the first
   cart in the box matching `EntitySelector.CONTAINER_ENTITY_SELECTOR` (a container
-  cart) gives `AbstractContainerMenu.getRedstoneSignalFromContainer(cart)` (**Not
-  read**: the comparator formula over the cart's slots; the repo has it for block
-  containers, `block_entities.rs`); else 0. The first in `getEntitiesOfClass` order
-  (**Inferred**: section then insertion order) when several carts are there.
+  cart; `CONTAINER_ENTITY_SELECTOR` is `e instanceof Container && e.isAlive()`,
+  EntitySelector.txt 206–218) gives `AbstractContainerMenu.getRedstoneSignalFromContainer(
+  cart)` (3.18: the same formula the repo has for block containers, `block_entities.rs`);
+  else 0. The first in `getEntitiesOfClass` order when several carts are there
+  (**Inferred**: section, then insertion order; `LevelEntityGetter` and its section
+  storage are not read).
 - Property `SHAPE` is `RAIL_SHAPE_STRAIGHT`, plus `POWERED`, `WATERLOGGED` (465–471).
 
 **What `rails.rs` covers** (crates/clustine-sim/src/region/rails.rs): placing and
@@ -1601,7 +2073,7 @@ For the plan to decide; nothing of it is in a default 26.3 world.
   interpolation handler on the client (`NO_OP`).
 - `MinecartItem` refuses a cart into another cart's box.
 
-**Recommendation (Inferred)**: refuse or ignore the `minecart_improvements` experiment
+**Recommendation**: refuse or ignore the `minecart_improvements` experiment
 in N5; its speed reads rails many blocks ahead in one tick and its client packet is
 another codec.
 
@@ -1613,8 +2085,13 @@ server tick:
   (`0.2f` widened).
 - If `cart.isRideable()` (the plain `Minecart`) and `motion.horizontalDistanceSqr() >=
   0.01`: `list = level.getEntities(cart, box, EntitySelector.pushableBy(cart))`
-  (**Not read**: `pushableBy`; **Inferred**: not spectators, `isPushable()`, and the
-  team collision rule). For each `e`, in the list's order: if `e` is a `Player`, an
+  (EntitySelector.txt 38–62, 85–141): if the cart's team's collision rule is `NEVER`,
+  nothing; else `NO_SPECTATORS` and: `e.isPushable()`; `e`'s team rule not `NEVER`;
+  with `allied` = the cart has a team and it is allied to `e`'s: not (either rule is
+  `PUSH_OWN_TEAM` and `allied`), not (either rule is `PUSH_OTHER_TEAMS` and not
+  `allied`). (A client-side clause for non-local players does not apply on the
+  server.) With no teams: not a spectator and pushable. For each `e`, in the list's
+  order: if `e` is a `Player`, an
   `IronGolem` or an `AbstractMinecart`, or the cart already has a passenger
   (`isVehicle()`), or `e.isPassenger()`: `e.push(cart)`; else `e.startRiding(cart)`
   (finding 3).
@@ -1624,8 +2101,9 @@ server tick:
 - Returns false.
 
 `e.push(cart)` runs `e`'s `push(Entity)`: for another cart, `AbstractMinecart.push`
-(below); for a player or a boat, `Entity.push(Entity)` (Entity.txt 5187–5282, unless
-overridden: `LivingEntity` and `AbstractBoat` are **Not read** here for it):
+(below); for a boat, `AbstractBoat.push` (section 4.9: `Entity.push` when the boxes'
+heights allow); for a player or a mannequin, `LivingEntity.push(e)` (LivingEntity.txt
+5971–5979), which is `Entity.push(e)` unless the living entity is sleeping:
 return if `isPassengerOfSameVehicle(other)`, or either has `noPhysics`; `dx = other.x -
 x`, `dz = other.z - z`; `d = Mth.absMax(dx, dz)`; if `d >= 0.009999999776482582`
 (`0.01f`): `d = sqrt(d)`; `dx /= d`, `dz /= d`; `k = min(1.0, 1.0/d)`; `dx *= k`, `dz
@@ -1635,7 +2113,7 @@ isPushable()`: `this.push(-dx, 0, -dz)`; if `!other.isVehicle() && other.isPusha
 (x, y, z)` and `needsSync = true`.
 
 **`AbstractMinecart.push(other)`** (lines 1040–1156), called when another entity pushes
-into the cart (a player's `pushEntities`: **Not read**, `LivingEntity`) or a cart's
+into the cart (a player's `pushEntities`, below) or a cart's
 `pushAndPickupEntities` reaches it: return on the client, if either has `noPhysics`,
 or if `hasPassenger(other)`. `dx = other.x - x`, `dz = other.z - z`; `d2 = dx*dx +
 dz*dz`; if `d2 >= 9.999999747378752E-5` (`1.0E-4f`): `d = sqrt(d2)`; `dx /= d`; `dz /=
@@ -1644,12 +2122,24 @@ d`; `k = 1.0/d`, capped at 1.0; `dx *= k`; `dz *= k`; `dx *= 0.10000000149011612
 `pushOtherMinecart(other, dx, dz)`; else `this.push(-dx, 0, -dz)`; `other.push(dx /
 4.0, 0, dz / 4.0)`.
 
+**A player pushes a cart** from its own tick (`LivingEntity.aiStep` → `pushEntities`,
+LivingEntity.txt 8733–8891; `ServerPlayer.pushEntities` only skips it while the tick
+rate is frozen): `list = level.getPushableEntities(player, player.getBoundingBox())` =
+`getEntities(player, box, EntitySelector.pushableBy(player))` (Level.txt 1374–1384, the
+player's own box, not inflated); if the `maxEntityCramming` rule is positive and the
+list has more than `rule − 1` entries, the **player's random** draws `nextInt(4)` (and
+on 0 counts non-passengers for cramming damage); then for each `e`: `e.push(player)`,
+which for a cart is `AbstractMinecart.push(player)` above. So the cart is pushed in the
+player's tick, which runs after the entities' (n4 brief finding 7).
+
 **`pushOtherMinecart(other, dx, dz)`** (lines 1158–1345), old behaviour:
 1. `rx = other.x - x`, `rz = other.z - z`; `a = (rx, 0, rz).normalize()`; `b =
    ((double) Mth.cos((double)(yRot * 0.017453292f)), 0, (double) Mth.sin(…)).normalize()`
    (the angle is multiplied in `float`, widened, and `Mth.cos:(D)F` / `Mth.sin:(D)F`
-   return a `float`, widened again; lines 1193–1212; the game's `Mth.sin` is a table
-   lookup, **Not read**). `dot = Math.abs(a.dot(b))`; if `dot < 0.800000011920929`
+   return a `float`, widened again; lines 1193–1212; `Mth.sin(d)` is
+   `SIN[(int)((long)(d * 10430.378350470453) & 65535)]` and `Mth.cos(d)` the same with
+   `+ 16384.0` before the cast, a 65536-entry table, Mth.txt 61–87, which the repo's
+   `clustine_noise::trig` matches). `dot = Math.abs(a.dot(b))`; if `dot < 0.800000011920929`
    (`0.8f`): return (old behaviour only). Carts push each other only nearly end to end
    along this cart's yaw.
 2. `v = motion`, `w = other.motion`.
@@ -1675,8 +2165,9 @@ distribution.
    yaw) → `VehicleEntity`'s (section 1).
 2. `offsets = DismountHelper.offsetsForDirection(dir)` (section 1); `base =
    blockPosition()`.
-3. For each `pose` of `passenger.getDismountPoses()` (**Not read**, `LivingEntity`;
-   **Inferred** for a player: standing, crouching, swimming): `dims =
+3. For each `pose` of `passenger.getDismountPoses()` (a player's: `STANDING`,
+   `CROUCHING`, `SWIMMING`, Player.txt 4480–4486; any other living entity's: `STANDING`,
+   LivingEntity.txt 10290–10294): `dims =
    passenger.getDimensions(pose)`; `half = Math.min(dims.width(), 1.0f) / 2.0f`
    (float); for each `dy` of `POSE_DISMOUNT_HEIGHTS[pose]` (`STANDING: [0, 1, -1]`,
    `CROUCHING: [0, 1, -1]`, `SWIMMING: [0, 1]`, static init lines 1542–1565): for each
@@ -1727,8 +2218,8 @@ Saved (`addAdditionalSaveData`, lines 1010–1039; read 981–1009): `DisplaySta
 `firstTick`**, read back into `firstTick` with default false: the name is the
 opposite of the value but it round-trips, and a cart read from a save without it
 counts as having ticked. Only the new behaviour reads `firstTick`. `onRails` is not
-saved (it is set every tick before use). VehicleEntity's hurt data are not saved
-(**Inferred**: no save methods in VehicleEntity.txt).
+saved (it is set every tick before use). VehicleEntity's hurt data are not saved:
+`VehicleEntity` has no save methods at all.
 
 The client: updateInterval 3, tracking range 8 chunks, `trackDeltas` true (the
 repo's `ENTITY_TYPE_INFO`; width `0.98f`, height `0.7f`, eye `0.595f`, the same for all
@@ -1779,16 +2270,34 @@ return true
 - `isInvulnerableToBase(source)` (Entity.txt 8588–8621): true if removed; or if
   `isInvulnerable()` (the `Invulnerable` tag) and the source is neither in
   `#minecraft:bypasses_invulnerability` nor a creative player
-  (`DamageSource.isCreativePlayer`, not read); or a fire source (`#is_fire`) on a
+  (`DamageSource.isCreativePlayer`: `getEntity()` is a `Player` whose
+  `abilities.instabuild` is set, DamageSource.txt 276–292); or a fire source (`#is_fire`) on a
   fire-immune type (no vehicle is); or a fall source (`#is_fall`) on a type in
   `#minecraft:fall_damage_immune`. So an `Invulnerable` cart is still broken by a creative
   player.
-- **Who calls it**: a player's attack (the `Attack` packet, section 2.8 → 
-  `Player.attack` → `hurtOrSimulate`; not read here), projectiles,
-  explosions, lava (`AbstractMinecart.tick` → `lavaHurt`). The amount from a player's
-  attack is the attack damage scaled by the attack strength (`Player.attack`, not read):
-  a fist's `1.0` adds 10, so five quick fist hits break a cart in survival, minus the
-  decay of one a tick.
+- **Who calls it**: a player's attack (the `Attack` packet, section 2.8 →
+  `Player.attack` → `hurtOrSimulate`), projectiles, explosions, lava
+  (`AbstractMinecart.tick` → `lavaHurt`).
+- **A player's hit** (`Player.attack`, Player.txt 2159–2352): nothing if
+  `!e.isAttackable()` or `e.skipAttackInteraction(player)` (`cannotAttack`). `base =
+  attack_damage` (the attribute, 1.0 for a bare hand, Player's `createAttributes`);
+  `s = getAttackStrengthScale(0.5f)` = `clamp((attackStrengthTicker + 0.5f) /
+  attackStrengthDelay, 0, 1)`; `ench = s * (getEnchantedDamage(e, base, source) −
+  base)`; `base *= 0.2f + s·s·0.8f`; then (if `base > 0` or `ench > 0`) `base +=
+  item.getAttackDamageBonus(…)`; a critical hit (`s > 0.9f` and `canCriticalAttack`:
+  falling, not on the ground and so on, in Player) multiplies `base` by `1.5f`; `amount =
+  base + ench` (all `float`); `e.hurtOrSimulate(source, amount)`. So a full bare-hand
+  hit adds `10` damage to a vehicle (five break it), a critical one `15` (three), and
+  hits clicked faster than the attack delay add `10·(0.2 + 0.8 s²)`. The
+  `attackStrengthTicker` is the server's own count for the player (reset by a swing):
+  the region that holds the player must keep it.
+- **A sprinting hit pushes a vehicle** that survives it: after a successful
+  `hurtOrSimulate`, `k = getKnockback(e, source) + (sprint-knockback ? 0.5f : 0)`;
+  `causeExtraKnockback` (Player.txt, that method): if `k > 0` and `e` is not a
+  `LivingEntity`, `e.push((double)(-Mth.sin(yRot·0.017453292f)·k), 0.1,
+  (double)(Mth.cos(yRot·0.017453292f)·k))` (the products in `float`, widened), then the
+  player's own motion `× (0.6, 1, 0.6)` and sprinting off. A walking hit (`k = 0`)
+  pushes nothing.
 
 `shouldSourceDestroy(source)` (lines 98–101): false. Overridden only by `MinecartTNT`.
 
@@ -1821,9 +2330,10 @@ server. `getDimensionChangingDelay()` is 10 (portals; later).
 the hurt time, direction and damage, and, from `markHurt`'s `syncVelocity`, a
 `SetEntityMotion` to the trackers (n4-brief section 9, end of `sendChanges`). The client
 rocks the cart or boat from hurt time, damage and direction. No hurt-animation packet is
-sent for vehicles (**Inferred**: `ClientboundHurtAnimationPacket` comes from
-`LivingEntity`; `AbstractMinecart.animateHurt`, lines 430–449, is the client's
-handling of one and repeats the server's three changes, `damage + damage * 10`).
+sent for vehicles: neither `VehicleEntity` nor `AbstractMinecart` calls
+`broadcastDamageEvent` (only `LivingEntity` does, LivingEntity.txt line 2969).
+`AbstractMinecart.animateHurt`, lines 430–449, is the client's handling of one and
+repeats the server's three changes, `damage + damage * 10`.
 
 **Decay**: `AbstractMinecart.tick` (lines 486–536) begins `if hurtTime > 0: hurtTime -=
 1; if damage > 0.0f: damage -= 1.0f` (float), so a cart left alone is whole again
@@ -1948,7 +2458,7 @@ if !clientSide:
     if fuel <= 0: push = Vec3.ZERO
     setHasFuel(fuel > 0)
 if hasFuel() && random.nextInt(4) == 0:       // the ENTITY's random, on the server too
-    level.addParticle(LARGE_SMOKE, x, y + 0.8, z, 0, 0, 0)   // nothing on a ServerLevel (**Inferred**)
+    level.addParticle(LARGE_SMOKE, x, y + 0.8, z, 0, 0, 0)   // nothing on a server: Level.addParticle is empty (Level.txt 850–852)
 ```
 
 The draw is made on the server every tick the flag is set (read after `setHasFuel`, so
@@ -1960,7 +2470,7 @@ draw it, or draw it; it is unobservable.
 
 ```
 stack = player.getItemInHand(hand)
-if addFuel(player.position(), stack): stack.consume(1, player)   // creative: not shrunk (**Inferred**, ItemStack.consume not read)
+if addFuel(player.position(), stack): stack.consume(1, player)   // shrink(1) unless player.hasInfiniteMaterials() (ItemStack.consume)
 return SUCCESS                                                   // always, with any item or none
 ```
 
@@ -2002,7 +2512,9 @@ return push
 ```
 
 So the push keeps its length and turns to lie along the cart's motion (with the sign of
-their dot product: `projectedOn` is `v · (push·v / v·v)`, **Inferred**, `Vec3` not read),
+their dot product: `push.projectedOn(v)` is `v.lengthSqr() == 0 ? v :
+v.scale(push.dot(v)).scale(1.0 / v.lengthSqr())`, two scales in that order, Vec3.txt;
+`horizontal()` is `(x, 0, z)`),
 which is how it follows curves. A cart standing still keeps the push as it was given
 (from the player), and the motion becomes `push` (`0.8 · 0 + push`), which the
 behaviour then limits to the maximum speed. `isFurnace()` is true (lines 31–34): no
@@ -2037,12 +2549,18 @@ write: if lootTable != null:
            putString("LootTable", lootTable.identifier().toString())
            if lootTableSeed != 0: putLong("LootTableSeed", lootTableSeed)
        else:
-           ContainerHelper.saveAllItems(out, itemStacks)        // "Items": slots, by index (not read)
+           ContainerHelper.saveAllItems(out, itemStacks)        // "Items": a list of ItemStackWithSlot, the non-empty slots in order, written even when empty
 read:  clearItemStacks()                                       // a new list of getContainerSize() empties
        lootTable = read("LootTable", LootTable.KEY_CODEC) or null
        lootTableSeed = getLongOr("LootTableSeed", 0)
-       if lootTable == null: ContainerHelper.loadAllItems(in, itemStacks)
+       if lootTable == null: ContainerHelper.loadAllItems(in, itemStacks)   // each entry whose slot is within the size
 ```
+
+`ContainerHelper` (ContainerHelper.txt 54–131): `saveAllItems(out, list)` passes
+`alwaysPutTag = true`, so a container cart always writes `Items` (an empty list when
+empty); each entry is an `ItemStackWithSlot` (its codec, **Inferred**: a `Slot` byte
+beside the stack's own fields; the class is not read); loading sets each entry whose
+`isValidInContainer(size)` holds.
 
 So a container with a loot table saves no items. A creative player's chest minecart or
 chest boat has none (made from the item; a loot table comes from structures or
@@ -2055,6 +2573,32 @@ it with `ORIGIN` = position (and luck and `THIS_ENTITY` for a player), set `CHES
 read or write of a slot (`getChestVehicleItem`, `setChestVehicleItem`,
 `removeChestVehicleItem…`, `clearChestVehicleContent`) unpacks first with a null player.
 Not needed in N5 (no loot-table carts are placed); name it.
+
+**`Containers.dropContents(level, entity, container)`** (Containers.txt 25–152): at the
+entity's `(x, y, z)`, for **every** slot `0..size` in order, `dropItemStack(level, x, y,
+z, container.getItem(i))`:
+
+```
+w = (double) ITEM.getWidth()                  // 0.25f widened
+r = level.getRandom()
+px = Math.floor(x) + r.nextDouble() * (1.0 - w) + w / 2.0
+py = Math.floor(y) + r.nextDouble() * (1.0 - w)          // no half
+pz = Math.floor(z) + r.nextDouble() * (1.0 - w) + w / 2.0
+while !stack.isEmpty():
+    part = stack.split(r.nextInt(21) + 10)   // drawn before the ItemEntity is built
+    item = new ItemEntity(level, px, py, pz, part)        // its own constructor draws (n4 8.4)
+    item.setDeltaMovement(r.triangle(0.0, 0.11485000171139836),
+                          r.triangle(0.2, 0.11485000171139836),
+                          r.triangle(0.0, 0.11485000171139836))
+    level.addFreshEntity(item)
+```
+
+The three position draws are made **for every slot, even an empty one**; the stack in
+the container is split down to empty in place (`split` shrinks it), so the container is
+empty afterwards. `triangle(a, b)` is `RandomSource`'s (**Inferred**: `a + b ·
+(nextDouble() − nextDouble())`; `RandomSource` is not read). No `setDefaultPickUpDelay`
+is called (unlike `spawnAtLocation`): the item keeps its constructor's delay (n4 8.4). Getting a slot of a container cart first unpacks its loot
+table, if any (`getChestVehicleItem`).
 
 **Destroyed** (`chestVehicleDestroyed(source, level, entity)`, lines 87–114):
 
@@ -2098,9 +2642,12 @@ the menu if the step takes containers.
   ```
 
   An empty chest cart rolls with `0.98f + 0.015f` (as floats, then widened), a full one
-  with `0.98f`. `getRedstoneSignalFromContainer` is the comparator's reading of a
-  container (not read; **Inferred**: the sum over slots of `count / maxStackSize`, over
-  the size, mapped to 0–15 with 1 for anything not empty).
+  with `0.98f`. `AbstractContainerMenu.getRedstoneSignalFromContainer(c)`
+  (AbstractContainerMenu.txt 2237–2275): 0 for null; `f = 0f`; for each slot not empty,
+  `f += (float)count / (float)c.getMaxStackSize(stack)`; `f /= (float)size`; then
+  `Mth.lerpDiscrete(f, 0, 15)` = `Mth.floor(f * 14f) + (f > 0f ? 1 : 0)` (Mth.txt). All
+  `float`. `Container.getMaxStackSize(stack)` is the interface's default (**Inferred**:
+  `min(getMaxStackSize() = 99, stack's max)`; `Container` is not read).
 - `createMenu` (lines 180–198): null for a spectator when a loot table is set; else
   unpacks the loot table and makes the kind's menu.
 
@@ -2210,8 +2757,9 @@ ranges are of those files.
    player ever controls a boat, and only from the first seat. `Entity.isClientAuthoritative()`
    (Entity.txt 10354–10368) is `controller != null && controller.isClientAuthoritative()`,
    and `isLocalInstanceAuthoritative()` (10322–10337) is, on the server,
-   `!isClientAuthoritative()`. (**Inferred**: `Player.isClientAuthoritative()` is true;
-   `LivingEntity`/`Player` not read.) So with a player in front the server's `tick`
+   `!isClientAuthoritative()`. `Player.isClientAuthoritative()` is `true` (Player.txt
+   3114–3117; neither `ServerPlayer` nor `LivingEntity` overrides it), and a mob in front
+   is not a controller (`getControllingPassenger` wants a `Player`). So with a player in front the server's `tick`
    sets the motion to zero and `deltaRotation` to 0 and does not float, steer or move
    the boat (4.2 step 6). The client runs `floatBoat`, `controlBoat` and `move`, and
    sends, every client tick, `ServerboundPaddleBoatPacket(left, right)` (lines
@@ -2232,8 +2780,11 @@ ranges are of those files.
    `fallDistance`; otherwise, if the fluid below `blockPosition()` is not water and
    `movedY < 0`, `fallDistance -= (double)(float)movedY`. Nothing reads that
    `fallDistance` to damage anything. (The planks-and-sticks drop of old versions is
-   gone.) **Inferred**: a player riding a boat that falls takes no fall damage, as a
-   passenger does not `move` itself.
+   gone.) Nothing hurts a player riding a falling boat either: the boat never calls
+   `causeFallDamage` (the only path to `propagateFallToPassengers`, Entity.txt
+   4067–4086), `handleMoveVehicle` passes the driven boat's move to the boat's own
+   `doCheckFallDamage` (section 2.3), and a passenger's own move packets are ignored
+   (2.5).
 4. **A boat is a solid collider for every other entity** (`canBeCollidedWith` true,
    lines 150–154), and collides with any entity that is a collider or pushable
    (`canVehicleCollide`, lines 132–149). `Entity.collide` gathers
@@ -2249,13 +2800,25 @@ ranges are of those files.
    meet boats in N5 without any mob. A boat destroyed (removal that `shouldDestroy`)
    drops its leash (`remove`, lines 2058–2076).
 6. **A boat blocks building**: the constructor sets `blocksBuilding = true` (lines
-   59–76). **Inferred** (the level's obstruction check not read): a block cannot be
-   placed into a boat's box. The repo's placement must count boats as obstructions.
+   59–76), and `blocksBuilding` is read by `EntityGetter.isUnobstructed(except, shape)`
+   (EntityGetter.txt 28–73): the shape is obstructed if any entity in its bounds that is
+   not removed, has `blocksBuilding`, is not a passenger of the same vehicle as `except`,
+   and whose box `joinIsNotEmpty(AND)` the shape. `CollisionGetter.isUnobstructed(state,
+   pos, ctx)` (CollisionGetter.txt 12–34) calls it with `except = null` and the state's
+   collision shape moved to `pos`. **Inferred** (`BlockItem.canPlace` and `LevelReader`,
+   which resolves the two interfaces' defaults, are not in the dump): block placing goes
+   through it, so a block with a collision shape cannot be placed into a boat's box
+   (blocks with an empty collision shape can). The repo's placement must count boats
+   (and carts) as obstructions.
 7. **Paddle sounds are the server's.** The server's `tick` plays
    `entity.boat.paddle_water`/`paddle_land` with `level.playSound(null, …)` while a
-   player paddles (4.2 step 9), from the paddle flags the client sent. (**Client**,
-   **Inferred**: the client's own call passes a null player and so plays nothing
-   locally.) Each sound draws the boat's random.
+   player paddles (4.2 step 9), from the paddle flags the client sent: `Level.playSound`
+   (Level.txt 746–762) draws a seed from the level's **`soundSeedGenerator`** (its own
+   `RandomSource.createThreadSafe()`, Level.txt 94–97, not `level.random`) and
+   `ServerLevel.playSeededSound` (ServerLevel.txt 2222–2260) broadcasts a
+   `ClientboundSoundPacket` to every player within `sound.getRange(volume)`, excluding
+   none (the player argument is null). (**Client**: what the client's own call does.)
+   Each sound also draws the boat's random for its pitch.
 8. **`applyEffectsFromBlocks()` runs twice in a row in every boat tick** (lines
    473–476). The first consumes the tick's movements; the second, with none recorded,
    runs over `Movement(oldPosition(), position())` (the N4 brief, section 1.9). So
@@ -2268,37 +2831,64 @@ ranges are of those files.
     pick-up of 4.6 takes any `LivingEntity` narrower than the boat that is not in
     `#minecraft:cannot_be_pushed_onto_boats` (which holds `player`). `ArmorStand.isPushable()`
     is false (ArmorStand.txt 326–329), so the pushable-entity selector leaves it out;
-    `Mannequin` extends `Avatar` and does not override it (**Inferred**:
-    `LivingEntity.isPushable` and `EntitySelector.pushableBy` not read), so a mannequin
-    (0.6 wide) touched by a boat with no player in front is made to ride it.
+    `Mannequin` and `Avatar` do not override it, and `LivingEntity.isPushable()`
+    (LivingEntity.txt 9141–9176) is true for one alive, not a spectator, not on a
+    climbable block, and (on a server) standing where entities tick
+    (`ServerLevel.isPositionEntityTicking`, unless `isAlwaysTicking`).
+    `EntitySelector.pushableBy(boat)` (EntitySelector.txt 38–62, 85–141) is
+    `NO_SPECTATORS` and `isPushable()` and the scoreboard teams' collision rules (none
+    by default: `ALWAYS`). So a mannequin (0.6 wide) touched by a boat with no player in
+    front is made to ride it, unless it stands on a ladder or vines.
 
 ### 4.1 Placing: `BoatItem.use(level, player, hand)` (BoatItem.txt lines 15–134)
 
 1. `stack = player.getItemInHand(hand)`.
-2. `hit = Item.getPlayerPOVHitResult(level, player, ClipContext.Fluid.ANY)` (not read:
-   the reach is the player's block interaction range; `Fluid.ANY` so the ray stops at
-   any fluid's surface, flowing water included). `MISS` → `PASS`.
+2. `hit = Item.getPlayerPOVHitResult(level, player, ClipContext.Fluid.ANY)` (Item.txt
+   547–574): from `eye = player.getEyePosition()` to `eye + calculateViewVector(xRot,
+   yRot).scale(player.blockInteractionRange())`, `level.clip(ClipContext(eye, end,
+   ClipContext.Block.OUTLINE, Fluid.ANY, player))`: block **outline** shapes (not
+   collision shapes) and any fluid's surface, flowing water included. The range is the
+   `block_interaction_range` attribute (Player.txt 4821–4827): 4.5
+   (`DEFAULT_BLOCK_INTERACTION_RANGE`), plus 0.5 in creative
+   (`ServerPlayer.CREATIVE_BLOCK_INTERACTION_RANGE_MODIFIER`, `ADD_VALUE`, ServerPlayer.txt
+   5960–5973): 5.0. `MISS` → `PASS`.
 3. **Entities in the way**: `view = player.getViewVector(1.0f)`; `list =
    level.getEntities(player, player.getBoundingBox().expandTowards(view.scale(5.0))
-   .inflate(1.0), EntitySelector.CAN_BE_PICKED)`. If not empty: `eye =
+   .inflate(1.0), EntitySelector.CAN_BE_PICKED)` (`CAN_BE_PICKED` is a method reference
+   assigned in EntitySelector's static block, EntitySelector.txt 248–, offsets 64–69; **Inferred** `Entity::isPickable`,
+   the target not shown by `javap -c`; `getEntities` leaves out the player itself,
+   Level.txt 2127–2139). If not empty: `eye =
    player.getEyePosition()`; for each `e`: if `e.getBoundingBox().inflate((double)
    e.getPickRadius()).contains(eye)` → `PASS`. (Only an entity whose box holds the
    player's eyes refuses the use; the 5.0 is fixed, not the reach.)
 4. If `hit` is a `BLOCK` hit (the only other kind `getPlayerPOVHitResult` gives):
    - `boat = getBoat(level, hit, stack, player)` (lines 135–171):
-     `entityType.create(level, EntitySpawnReason.SPAWN_ITEM_USE)`; if not null:
+     `entityType.create(level, EntitySpawnReason.SPAWN_ITEM_USE)` (EntityType.txt
+     515–544: null if the type's feature flags are not enabled, or in peaceful for a
+     type not allowed there; else the factory, no draw beyond `Entity.<init>`'s); if not
+     null:
      `setInitialPos(hit.location.x, y, z)` (lines 77–94: `setPos` and `xo/yo/zo`
      the same, so the first tick's movement is from that point); on a server level
-     `EntityType.createDefaultStackConfig(level, stack, player).apply(boat)` (not read:
-     the stack's custom name and entity data components). `null` → `FAIL`.
+     `EntityType.createDefaultStackConfig(level, stack, player).apply(boat)`
+     (EntityType.txt 135–181, 1041–1056): first `boat.applyComponentsFromItemStack(stack)`
+     → `applyImplicitComponents`, which for a boat (no override) takes
+     `minecraft:custom_name` and `minecraft:custom_data` (Entity.txt 11535–…); then, if the
+     stack has `minecraft:entity_data` of the boat's type, `updateCustomEntityTag`
+     (EntityType.txt 350–390) loads it into the boat, unless the type is
+     `onlyOpCanSetNbt` and the player is not an operator. `null` → `FAIL`.
    - `boat.setYRot(player.getYRot())`: the player's yaw exactly, not snapped.
-   - if `!level.noCollision(boat, boat.getBoundingBox())` → `FAIL` (blocks, entity
-     colliders and the world border, **Inferred**: `CollisionGetter.noCollision` not
-     read). The boat is centred on the hit point: on a block's top face or a fluid's
+   - if `!level.noCollision(boat, boat.getBoundingBox())` → `FAIL`.
+     `CollisionGetter.noCollision(e, box)` (CollisionGetter.txt 62–93) is
+     `noBlockCollision(e, box, false)` (every `getBlockCollisions(e, box)` shape empty,
+     with the boat's collision context) and `noEntityCollision` (`getEntityCollisions(e,
+     box)` empty: EntityGetter.txt 83–141, below in 4.9) and `noBorderCollision` (the world
+     border's shape does not meet the box). So a boat cannot be placed overlapping a
+     player, another boat or a minecart, nor into a block's collision shape. The boat is centred on the hit point: on a block's top face or a fluid's
      surface it stands on it; on a side face its box overlaps the block, so it fails.
    - on the server: `level.addFreshEntity(boat)`; `level.gameEvent(player,
-     GameEvent.ENTITY_PLACE, hit.location)`; `stack.consume(1, player)` (**Inferred**,
-     `ItemStack.consume` not read: a player with infinite materials keeps it).
+     GameEvent.ENTITY_PLACE, hit.location)`; `stack.consume(1, player)` (ItemStack.txt
+     2486–2496: `shrink(1)` unless the player `hasInfiniteMaterials()`: a creative player
+     keeps it).
    - `player.awardStat(Stats.ITEM_USED.get(this))`; `SUCCESS`.
 5. Otherwise `PASS`.
 
@@ -2487,12 +3077,17 @@ inputUp, (inputLeft && !inputRight) || inputUp)`. The client then sends
   (Boat.txt, Raft.txt lines 11–18). (So the "x" is along the boat's length, the
   vector's z before the turn.) `Entity.positionRider` (Entity.txt 6815–6850) puts the
   passenger at `position() + that - passenger.getVehicleAttachmentPoint(this)`
-  (section 1; the player's vehicle attachment is in `EntityType`, not read).
+  (section 1). The player's vehicle attachment is `Avatar.DEFAULT_VEHICLE_ATTACHMENT` =
+  `(0, 0.6, 0)` for its standing and crouching sizes (Avatar.txt 100–157), so a
+  player sits at `boat.y + 0.1875 − 0.6 = boat.y − 0.4125` in a boat, `boat.y + 0.5 −
+  0.6` on a raft. `EntityAttachments.get` rotates a point by `yRot(-yRot·0.017453292f)`
+  (EntityAttachments.txt 67–87, 167–176), which leaves `(0, y, 0)` as it is.
 - `positionRider(e, move)` (lines 1756–1789): `Entity.positionRider`; then, unless `e`
   is in `#minecraft:can_turn_in_boats` (`breeze` only): if
   `e.isLocalInstanceAuthoritative()`: `e.setYRot(e.getYRot() + deltaRotation)`,
   `e.setYHeadRot(e.getYHeadRot() + deltaRotation)` (for a player on the server
-  `isLocalInstanceAuthoritative` is false, **Inferred** as in finding 1); then
+  `isLocalInstanceAuthoritative` is false, since `Player.isClientAuthoritative()` is
+  true, finding 1); then
   `clampRotation(e)`.
 - `clampRotation(e)` (lines 1915–1966): `body = calculatePassengerBodyYRot(e)` (lines
   1967–1993: an `Animal` in a full boat faces `getYRot() + (e.getId() % 2 == 0 ? 90.0f :
@@ -2510,8 +3105,12 @@ inputUp, (inputLeft && !inputRight) || inputUp)`. The client then sends
   (double)m)`); `x = getX() + v.x`, `z = getZ() + v.z`; `at = BlockPos.containing(x,
   getBoundingBox().maxY, z)`, `below = at.below()`. If `!level.isWaterAt(below)`:
   candidates, in order, `(x, at.y + h, z)` if `DismountHelper.isBlockFloorValid(h =
-  level.getBlockFloorHeight(at))`, then `(x, below.y + h2, z)` likewise for `below`;
-  for each pose of `p.getDismountPoses()`, for each candidate: if
+  level.getBlockFloorHeight(at))` (BlockGetter.txt 113–155: the collision shape's top if
+  not empty, else the top of the block below's minus 1 if that is at least 1, else
+  `-∞`), then `(x, below.y + h2, z)` likewise for `below`;
+  for each pose of `p.getDismountPoses()` (a player's: `STANDING`, `CROUCHING`,
+  `SWIMMING`, Player.txt 4480–4485; any other living entity's: `STANDING`,
+  LivingEntity.txt), for each candidate: if
   `DismountHelper.canDismountTo(level, candidate, p, pose)`: `p.setPose(pose)`, return
   it. Otherwise (water below, or nothing fits) `Entity`'s: `(getX(),
   getBoundingBox().maxY, getZ())` (section 1, DismountHelper).
@@ -2528,15 +3127,19 @@ inputUp, (inputLeft && !inputRight) || inputUp)`. The client then sends
 ### 4.7 Bubble columns
 
 **`onAboveBubbleColumn(down, pos)`** (lines 217–296; called from the bubble column
-block's `entityInside`, **Inferred**: `BubbleColumnBlock` not read, when the block
-above the column is not water): on a server level: `isAboveBubbleColumn = true`,
+block's `entityInside`, BubbleColumnBlock.txt 25–68: when its last argument (the
+entity's box really meets the block, from `Entity.checkInsideBlocks`) is true, and the
+block **above the column** has an empty collision shape **and** an empty fluid state;
+otherwise, with the same argument, it calls `Entity.onInsideBubbleColumn(down)`): on a server level: `isAboveBubbleColumn = true`,
 `bubbleColumnDirectionIsDown = down`, and if `getBubbleTime() == 0`: `setBubbleTime(60)`.
 Then, on both sides: if `!isUnderWater()` and `random.nextInt(100) == 0`:
 `level.playLocalSound(x, y, z, getSwimSplashSound(), source, 1.0f, 0.8f + 0.4f *
 random.nextFloat(), false)` and `level.addParticle(SPLASH, x + random.nextFloat(), y +
-0.7, z + random.nextFloat(), 0, 0, 0)` (both nothing on a server level, **Inferred**,
+0.7, z + random.nextFloat(), 0, 0, 0)` (both nothing on a server level,
 but **the draws happen**: the argument expressions are evaluated), then
-`gameEvent(GameEvent.SPLASH, getControllingPassenger())`. It does not call
+`gameEvent(GameEvent.SPLASH, getControllingPassenger())`. (`playLocalSound` and
+`addParticle` are empty in `Level`, Level.txt 842–860, and `ServerLevel` does not
+override them.) It does not call
 `Entity.onAboveBubbleColumn`. `onInsideBubbleColumn` is `Entity`'s (Entity.txt
 8135–8166: only where `canSimulateMovement()`; `y = down ? max(-0.3, v.y - 0.03) :
 min(0.7, v.y + 0.06)`; `resetFallDistance`).
@@ -2589,8 +3192,9 @@ Numbers: gravity 0.04 (`getDefaultGravity`); the drags of 4.4; air drag 1.0f (un
 `isPickable()` `!isRemoved()`; `isPushable()` true; `getMotionDirection()` the facing
 turned clockwise; the client interpolates over 3 ticks (`LinearInterpolationHandler`,
 lines 355–361; **Client**). `getPickResult` and the drop are `new ItemStack(dropItem)`,
-the boat's item (supplied per type at registration; **Inferred**: the item of the same
-name, `EntityType`/`Items` not read). `getLeashOffset()` (lines 880–897): `Vec3(0.0,
+the boat's item (a `Supplier<Item>` given to the constructor at registration;
+**Inferred**: the item of the same name; the registrations are in `EntityTypes`,
+which is not in the dump). `getLeashOffset()` (lines 880–897): `Vec3(0.0,
 (double)(0.88f * getBbHeight()), (double)(0.64f * getBbWidth()))` = (0, 0.495000004…,
 0.879999995…); quad offsets `Leashable.createQuadLeashOffsets(this, 0.0, 0.64, 0.382,
 0.88)` (section 7). `modifyPassengerFluidInteractionBox(box)` (lines 2256–2295): a
@@ -2602,7 +3206,13 @@ in a floating boat is not "in water".
 
 - `canCollideWith(e)` = `canVehicleCollide(this, e)` (lines 125–149):
   `(e.canBeCollidedWith(this) || e.isPushable()) && !isPassengerOfSameVehicle(e)`.
-  Minecarts use the same static (3.2).
+  Minecarts use the same static (3.2). `EntityGetter.getEntityCollisions(e, box)`
+  (EntityGetter.txt 83–141), what `Entity.collide` and `noCollision` use: none if
+  `box.getSize() < 1e-7`; else the entities in `box.inflate(1e-7)` (not `e` itself) that
+  are not spectators and that `e.canCollideWith` (the bound method reference after
+  `Objects.requireNonNull(e)`; with `e == null`, `CAN_BE_COLLIDED_WITH`: not a spectator
+  and `canBeCollidedWith(null)`), each as `Shapes.create(its box)`, in the order
+  `getEntities` gives.
 - `canBeCollidedWith(e)` true; `isPushable()` true.
 - `push(e)` (lines 297–326): if `e` is a boat, `VehicleEntity.push(e)` (= `Entity.push`)
   only if `e.box.minY < this.box.maxY`; any other entity only if `e.box.minY <=
@@ -2630,7 +3240,14 @@ and, with `entityDrops`, the boat item named as the boat). The boat's own part: 
 `dropLeash()`. **Chest boats** (AbstractChestBoat.txt 55–87): `destroy` also calls
 `chestVehicleDestroyed`; `remove` with `shouldDestroy` calls `Containers.dropContents(
 level, this, this)` before `AbstractBoat.remove`: **a creative player's discard of a
-chest boat spills its contents** (no boat item).
+chest boat spills its contents** (no boat item). `Containers.dropContents(level, entity, container)` (Containers.txt 25–57,
+67–152) spills each non-empty slot in order from the boat's position: per slot three
+`level.random.nextDouble()` for the place (`floor(x) + r·(1 − w) + w/2`, `floor(y) +
+r·(1 − w)`, `floor(z) + r·(1 − w) + w/2`, `w` the item entity's width 0.25 widened),
+then while the stack lasts a piece of `nextInt(21) + 10` (drawn before the new item's own
+constructor draws) with motion `(triangle(0, 0.11485000171139836), triangle(0.2, …),
+triangle(0, …))` (each `triangle` two `nextDouble`, **Inferred**: `RandomSource` not in
+the dump).
 
 ### 4.11 Rafts and chest boats
 
@@ -2643,7 +3260,10 @@ drops (named; `ContainerEntity` is 3.18). Same size, data and tick as boats.
 ## 5. Armour stands (and the two other things a player can stand or sit by: `Mannequin`, `Cushion`)
 
 Line ranges are of `ArmorStand.txt`, `ArmorStandItem.txt`, `Cushion.txt`,
-`BlockAttachedEntity.txt` and `Mannequin.txt` in the javap dump. Damage-type tags are
+`BlockAttachedEntity.txt` and `Mannequin.txt` in the javap dump, and, where named, of
+`LivingEntity.txt`, `EntityType.txt`, `CushionItem.txt`, `EquipmentSlot.txt`,
+`BlockPlaceContext.txt`, `CollisionGetter.txt`, `EntityGetter.txt`, `Player.txt`,
+`ServerPlayerGameMode.txt` and `Avatar.txt`. Damage-type tags are
 from `generated/data/minecraft/tags/damage_type/`.
 
 ### 5.0 Findings of this section
@@ -2659,7 +3279,9 @@ from `generated/data/minecraft/tags/damage_type/`.
    under it goes (checked every 101 ticks). A creative player meets it at once in the
    inventory and will try sitting on it: **it belongs in N5**, as the simplest vehicle
    there is (it never moves) and as a second user of `BlockAttachedEntity` beside the
-   hanging entities. Its placing item's class is not in the dump (see "Not read").
+   hanging entities. Its item is `CushionItem`: placed on the top face of a block, at
+   the click's height, facing the player's cardinal direction, one cushion per place
+   (5.8).
 2. **`Mannequin` is a player-shaped `LivingEntity`** (`extends Avatar`, a class shared
    with players): a skin (`ResolvableProfile`), hidden model layers, a main hand, a
    pose among standing/crouching/swimming/fall flying/sleeping, an `immovable` flag and
@@ -2669,67 +3291,112 @@ from `generated/data/minecraft/tags/damage_type/`.
    equipment and attributes. **It does not belong in N5**; it belongs with living
    entities (N7), and until then a world that has one keeps it as an entity of unknown
    behaviour (its NBT kept, ADR-0028 section 2), shown to clients with its data.
-3. **An armour stand is a `LivingEntity`.** Its gravity, drag, fall, water and lava,
-   health, fire and equipment are LivingEntity's, which is not in the dump. N5 needs
-   at least `LivingEntity.tick`/`aiStep`/`travel` (the plain non-flying, non-swimming
-   travel with gravity 0.08 and `0.91`-style friction **Inferred**), `hurt` bookkeeping,
-   equipment and its `SetEquipment` packets, attributes and their pairing packet
-   (`UpdateAttributes`), `dropAllDeathLoot`. That is a large read for one entity; the
-   plan should decide whether N5 ports LivingEntity's movement now (it is N7's anyway)
-   or gives armour stands a reduced form. ServerEntity sends a LivingEntity three
-   pairing packets beyond `AddEntity`/`SetEntityData`: `UpdateAttributes` (if any
-   syncable attribute), `SetEquipment` (if any slot is not empty), then the passenger
-   packets (ServerEntity.txt lines 869–1000).
+3. **An armour stand is a `LivingEntity`, but a reduced one is enough.** Its tick is
+   `LivingEntity.tick` → `baseTick` → `aiStep` → `travel`, all read now (5.5): a stand
+   has no AI, no input, no effects of its own and never takes `LivingEntity`'s damage
+   path, so what it needs is `travelInAir` (gravity, block friction, `0.91f`/`0.98f`
+   drag, each modified by an attribute), `travelInWater` and `travelInLava`, the
+   `0.003` zeroing of small motion, the fall check (sounds and landing particles, no
+   damage), air supply under water (data 1 changes, entity event 67, a drowning hit
+   the stand ignores), the equipment change detection that sends `SetEquipment` and
+   plays the equip sound, freezing in powder snow, `pushEntities` (rideable carts only)
+   and the attribute values it reads. The attribute defaults themselves are in
+   `Attributes` (not read). ServerEntity sends a LivingEntity two more pairing packets
+   beyond `AddEntity`/`SetEntityData`: `UpdateAttributes` (if any syncable attribute)
+   and `SetEquipment` (if any slot is not empty), then the passenger packets
+   (ServerEntity.txt lines 869–1000). The plan can port this subset as "a living body
+   without a mind" now and grow it into N7's `LivingEntity`.
 4. **Armour stands break on two hits within 5 ticks of *game time***
    (`ServerLevel.getGameTime() - lastHit > 5` makes a hit a first hit). `lastHit` is
-   not saved and is compared with the world's game time, so Clustine needs one world
-   game time that every region agrees on (it has one for the day cycle **Inferred**),
-   not a region's own tick count.
+   not saved and is compared with the world's game time (`ServerLevel.getGameTime`,
+   the level data's, one for the world), so Clustine needs one world game time that
+   every region agrees on, not a region's own tick count (whether the repo's day cycle
+   gives one is for the plan to check).
 5. **The interact path in 26.3 is one method, `interact(Player, InteractionHand,
    Vec3 location)`**; the old `interactAt` is gone. The armour stand reads the click's
-   height from `location` (relative to the entity's feet **Inferred**: the server's
-   packet handler computes it, section 2).
-6. **Placing an armour stand makes a level random draw that is then thrown away**
-   (**Inferred**: `EntityType.create` sets a random yaw, `snapTo` then overwrites it with
-   the snapped one). Not reproducible in Clustine and not visible; name it and draw
-   nothing.
+   height from `location`, which is the packet's own `Vec3` (`LP_STREAM_CODEC`) passed
+   through unchanged (ServerboundInteractPacket.txt line 100; section 2.7): it is
+   relative to the entity's feet because the client makes it so (**Client**).
+6. **Placing an armour stand makes two random draws that are then thrown away**:
+   `LivingEntity`'s constructor sets `yRot = random.nextFloat() * 6.2831855f` from the
+   **new entity's own** random (after its UUID; LivingEntity.txt lines 251–358, at
+   178–186), and `EntityType.create` then snaps it to `Mth.wrapDegrees(level.getRandom()
+   .nextFloat() * 360.0f)` from the **level's** random (EntityType.txt lines 221–316, at
+   99–115); `ArmorStandItem` overwrites both with the snapped yaw. Neither is visible;
+   name them and draw nothing. (The earlier reading had only the level's draw.)
+7. **A creative player keeps the placed item**: `ServerPlayerGameMode.useItemOn` saves
+   the count before `ItemStack.useOn` and sets it back when the player
+   `hasInfiniteMaterials()` (ServerPlayerGameMode.txt lines 1029–1245, at 351–374); the
+   same holds for every N5 placing item that goes through `useOn` (carts, stands,
+   frames, paintings, cushions, leads).
+8. **An item lying in the way stops an armour stand being placed**: `ArmorStandItem`
+   refuses when `level.getEntities(null, box)` (every entity but spectators,
+   `EntitySelector.NO_SPECTATORS`) is not empty, so a dropped item, a cart or another
+   stand in the 0.5 × 1.975 box refuses it (5.1).
+9. **A stand at rest still changes its motion's `y` once, then holds it**: on the
+   ground each tick ends with `y = (0 − 0.08) · 0.98 = −0.0784` (gravity, then the
+   move's collision sets `y` to 0 before the next tick's gravity), and `x`, `z` are
+   zeroed below 0.003: from the second tick on nothing changes, so a resting stand
+   commits nothing (5.5; the 0.08 is the `gravity` attribute's default, from
+   `Attributes`, not read).
 
 ### 5.1 Placing: `ArmorStandItem.useOn(UseOnContext)` (ArmorStandItem.txt lines 10–135)
 
 1. `face = ctx.getClickedFace()`; if `face == DOWN` → `FAIL` (nothing else read).
 2. `place = new BlockPlaceContext(ctx)`; `pos = place.getClickedPos()` (the clicked
-   block if it is replaceable by this placing, else the block beside the clicked face:
-   **Inferred** from `BlockPlaceContext`, which the repo's block placing already
-   follows).
+   block if its state `canBeReplaced(context)`, else `clickedPos.relative(face)`:
+   BlockPlaceContext.txt lines 35–63, 121–132, as the repo's block placing already
+   does).
 3. `bottom = Vec3.atBottomCenterOf(pos)` = `(pos.x + 0.5, pos.y, pos.z + 0.5)`;
    `box = ARMOR_STAND.getDimensions().makeBoundingBox(bottom)`: width 0.5, height
    1.975 (`0x3ffccccd` widened), so `x ± 0.25`, `y .. y + 1.975`, `z ± 0.25`.
-4. If `!level.noCollision(null, box)` (block collisions and the world border, and
-   entities that collide like blocks: boats, shulkers, minecarts are not among them
-   **Inferred**, `Level.noCollision` not read) or `!level.getEntities(null,
-   box).isEmpty()` (any entity whose box intersects, with the default predicate, which
-   leaves out spectators **Inferred**) → `FAIL`.
+4. If `!level.noCollision(null, box)` or `!level.getEntities(null, box).isEmpty()` →
+   `FAIL`. `noCollision(null, box)` = `noCollision(null, box, false)` = no block
+   collision shape in the box (`getBlockCollisions`, non-empty shapes), no entity
+   collision and the box inside the world border (CollisionGetter.txt lines 62–93);
+   its entity collisions for a null entity are the boxes of entities that
+   `EntitySelector.CAN_BE_COLLIDED_WITH` (`NO_SPECTATORS` and `canBeCollidedWith(null)`:
+   boats among N5's) within the box inflated by `1.0E-7`, none at all when the box's
+   size is under `1.0E-7` (EntityGetter.txt lines 83–141). `getEntities(null, box)` is
+   `getEntities(null, box, NO_SPECTATORS)` (EntityGetter.txt lines 19–27): **any**
+   non-spectator entity whose box meets the stand's, an item on the ground included.
 5. Server only (lines 106–259):
-   - `config = EntityType.createDefaultStackConfig(level, stack, player)`: applies the
-     item's `entity_data` and custom name to the entity (**Inferred**, not read).
-   - `stand = ARMOR_STAND.create(level, config, pos, SPAWN_ITEM_USE, true, true)`; null
-     → `FAIL`. With `(true, true)` the position is `pos`'s bottom centre raised by
-     `EntityType.getYOffset` (the collision under the box, looking up to two blocks
-     down, so a stand placed on a slab or a carpet stands on it) and **a random yaw is
-     drawn**, `Mth.wrapDegrees(level.random.nextFloat() * 360.0f)` (both
-     **Inferred**: `EntityType.create` is not in the dump).
+   - `config = EntityType.createDefaultStackConfig(level, stack, player)`
+     (EntityType.txt lines 135–181): `PostSpawnProcessor.nop()` then
+     `entity.applyComponentsFromItemStack(stack)` (the stack's components the entity
+     takes: its custom name among them), then, if the stack has `minecraft:entity_data`,
+     `updateCustomEntityTag(level, player, entity, data)`: nothing without a server or
+     data, or when the data's type is not the entity's type; on the server, refused when
+     the type `onlyOpCanSetNbt()` and the player is not an operator; else
+     `data.loadInto(entity)`. (Whether `armor_stand` is "only op" is in `EntityTypes`,
+     not read; SteelMC's extraction says not.)
+   - `stand = ARMOR_STAND.create(level, config, pos, SPAWN_ITEM_USE, true, true)`
+     (EntityType.txt lines 221–316); null → `FAIL`. In order: `create(level, reason)`
+     (the constructor: UUID, then `LivingEntity`'s yaw draw from the entity's own
+     random, finding 6); with the first flag: `setPos(pos.x + 0.5, pos.y + 1, pos.z +
+     0.5)` and `d = getYOffset(level, pos, true, box)`; then `snapTo(pos.x + 0.5,
+     pos.y + d, pos.z + 0.5, Mth.wrapDegrees(level.getRandom().nextFloat() * 360.0f),
+     0.0f)` (the level's draw); not a `Mob`, so no `finalizeSpawn`; then `config.apply`.
+     **`getYOffset(level, pos, more, box)`** (lines 317–330): `area = new AABB(pos)`,
+     with `more` expanded by `(0, -1, 0)` (so the block and the one below);
+     `collisions = level.getCollisions(null, area)` (blocks and collidable entities);
+     return `1.0 + Shapes.collide(Y, box, collisions, more ? -2.0 : -1.0)`. The box is
+     the stand's at `pos.y + 1`, moved down by at most 2: the stand lands on the top of
+     whatever collides in `pos` or the block below, `d` between −1 and 1 (on a full
+     block below, `d = 0`; on a bottom slab below, `−0.5`; on a carpet, `−0.9375`).
    - `yaw = (float) Mth.floor((Mth.wrapDegrees(ctx.getRotation() - 180.0f) + 22.5f) /
      45.0f) * 45.0f`, all in `float` (`Mth.floor(float)`, then `i2f`, then `* 45f`):
      the player's yaw turned to face them, snapped to the nearest 45°.
-     `ctx.getRotation()` is the player's `yRot` (**Inferred**).
+     `ctx.getRotation()` is the player's `yRot` (**Inferred**: `UseOnContext` is not in
+     the dump).
    - `stand.snapTo(stand.getX(), stand.getY(), stand.getZ(), yaw, 0.0f)` (position
      kept, rotation set; `snapTo` also sets the old position and rotations).
    - `level.addFreshEntityWithPassengers(stand)`.
    - `level.playSound(null, x, y, z, ARMOR_STAND_PLACE, BLOCKS, 0.75f, 0.8f)` (no
      player excluded: the placer hears it from the server too).
    - `stand.gameEvent(ENTITY_PLACE, player)`.
-6. `stack.shrink(1)` (both sides; a creative player's count is put back by
-   `ServerPlayerGameMode.useItemOn`, **Inferred**, as for blocks) → `SUCCESS`.
+6. `stack.shrink(1)` (both sides) → `SUCCESS`. A creative player's count is put back
+   by `ServerPlayerGameMode.useItemOn` (finding 7).
 
 The body, head and yaw: `setYBodyRot(f)` and `setYHeadRot(f)` both set `yRotO`,
 `yBodyRotO`, `yHeadRot` and `yHeadRotO` to `f` (lines 1104–1135), and
@@ -2787,7 +3454,7 @@ stack = player.getItemInHand(hand)
 if isMarker() || stack.is(NAME_TAG): return LivingEntity.interact(player, hand, location)
 if player.isSpectator(): return SUCCESS
 (client: SUCCESS_SERVER)
-forItem = getEquipmentSlotForItem(stack)          // LivingEntity: the equippable component's slot, else MAINHAND (Inferred)
+forItem = getEquipmentSlotForItem(stack)          // the `equippable` component's slot if canUseSlot(it), else MAINHAND
 if stack.isEmpty():
     clicked = getClickedSlot(location)
     slot = isDisabled(clicked) ? forItem : clicked
@@ -2799,10 +3466,24 @@ else:
 return LivingEntity.interact(player, hand, location)
 ```
 
+`LivingEntity.getEquipmentSlotForItem` (LivingEntity.txt lines 10735–10754): the stack's
+`minecraft:equippable` component's slot when `canUseSlot` allows it (the stand's
+`canUseSlot` is false for BODY, SADDLE and disabled slots), else MAINHAND. The name tag
+and marker branch returns `super.interact`, which is `Entity.interact` (no override in
+`LivingEntity`: `PASS` for a stand, which is not leashable); `Player.interactOn`
+(Player.txt) then tries `stack.interactLivingEntity(player, stand, hand)`, which is how
+a name tag names a stand (with a copy of the stack for a creative player); when the
+entity's `interact` consumed the action and the player has infinite materials and the
+hand still holds the same stack object, `interactOn` sets its count back to the count
+before (so a creative player's stack is never shrunk by an entity's interaction).
+
 **`getClickedSlot(location)`** (lines 461–572): `small = isSmall()`; `y = location.y /
 (double)(getScale() * getAgeScale())` (the `float` product widened, then a `double`
-divide; `getAgeScale()` is 0.5 for a baby, so 0.5 for a small stand, **Inferred**;
-`getScale()` is the `scale` attribute, 1.0 by default **Inferred**). Then, first match
+divide; `getAgeScale()` is `isBaby() ? 0.5f : 1.0f` (LivingEntity.txt lines
+1092–1101) and the stand's `isBaby()` is `isSmall()`, so 0.5 for a small stand;
+`getScale()` is the `scale` attribute's value through `sanitizeScale` (identity), 1.0
+when the attribute map is not yet made (lines 1102–1123); the attribute's default is
+`Attributes`', not read, 1.0 in the game). Then, first match
 wins, each also needing the slot to hold an item:
 
 | Slot | Condition on `y` (all `double`; the sums computed at run time) |
@@ -2822,8 +3503,9 @@ small stand's thresholds are not halved; the click height is doubled instead.
 saved as `DisabledSlots`: bit `filterBit + 0` disables the slot outright, bit
 `filterBit + 8` (`DISABLE_TAKING_OFFSET`) forbids taking from it, bit `filterBit +
 16` (`DISABLE_PUTTING_OFFSET`) forbids putting into it. `EquipmentSlot.getFilterBit(o)
-= o + filterFlag`, with filter flags MAINHAND 0, FEET 1, LEGS 2, CHEST 3, HEAD 4,
-OFFHAND 5, BODY 6, SADDLE 7 (**Inferred**, `EquipmentSlot` not read).
+= id + o`, with ids MAINHAND 0, FEET 1, LEGS 2, CHEST 3, HEAD 4, OFFHAND 5, BODY 6,
+SADDLE 7 (EquipmentSlot.txt lines 131–137 and the static block: each constant is
+`(type, index, countLimit, id, name)`).
 `canUseSlot(slot)` (lines 201–217) is false for BODY, SADDLE and disabled slots.
 
 **`swapItem(player, slot, inHand, hand)`** (lines 596–677):
@@ -2841,8 +3523,16 @@ OFFHAND 5, BODY 6, SADDLE 7 (**Inferred**, `EquipmentSlot` not read).
    off a stand gets it into their hand this way, and the stand's slot takes what they
    held (empty, or the one item).
 
-`setItemSlot` goes through LivingEntity (equip sound, `SetEquipment` to viewers:
-**Inferred**, not read).
+`setItemSlot(slot, stack)` (LivingEntity.txt lines 5854–5866) is
+`onEquipItem(slot, equipment.set(slot, stack), stack)`; **`onEquipItem(slot, old,
+new)`** (lines 1385–1450), server only and not for a spectator: nothing if `old` and
+`new` are the same item with the same components, or in the entity's first tick
+(`firstTick`); else, if not silent and `new` has an `equippable` component whose slot
+is this slot: `level.playSeededSound(null, x, y, z, equippable.equipSound(),
+getSoundSource(), 1.0f, 1.0f, random.nextLong())` (**the entity's own random**: one
+`nextLong`); then (always, `doesEmitEquipEvent` true) the game event `EQUIP` if `new`
+has that component, else `UNEQUIP`. Viewers learn of it in the stand's next tick, from
+`detectEquipmentUpdates` (5.5), as `SetEquipment`.
 
 ### 5.4 Being hit: `hurtServer(level, source, amount)` (lines 678–852)
 
@@ -2885,8 +3575,11 @@ LivingEntity's damage path: no knockback, no hurt time, no health loss from a hi
 
 **`causeDamage(level, source, amount)`** (lines 963–995): `h = getHealth() - amount`
 (`float`); `h <= 0.5f` → `brokenByAnything`, `kill`; else `setHealth(h)`,
-`gameEvent(ENTITY_DAMAGE, attacker)`. (Health starts at the max-health attribute's
-default, 20, **Inferred**; LivingEntity not read.)
+`gameEvent(ENTITY_DAMAGE, attacker)`. Health starts at `getMaxHealth()`: the
+constructor calls `setHealth(getMaxHealth())` (LivingEntity.txt lines 251–358, at
+150–153), so data 9 holds the `max_health` attribute's default (20 in the game;
+`Attributes` not read) and differs from the accessor's default 1.0: it is sent at
+pairing.
 
 **`brokenByPlayer(level, source)`** (lines 996–1020): `stack = new
 ItemStack(ARMOR_STAND)` with `CUSTOM_NAME` set to the stand's custom name (null
@@ -2897,9 +3590,13 @@ three level random draws for its offset, and the item's own motion draws); then
 **`brokenByAnything(level, source)`** (lines 1021–1061): `playBrokenSound()`;
 `dropAllDeathLoot(level, source)` (LivingEntity: the loot table
 `entities/armor_stand` is empty, `{"type":"minecraft:entity","random_sequence":
-"minecraft:entities/armor_stand"}`, and it may draw nothing; not read); then for each
-slot in `EquipmentSlot.VALUES` order (MAINHAND, OFFHAND, FEET, LEGS, CHEST, HEAD,
-BODY, SADDLE **Inferred**): `old = equipment.set(slot, EMPTY)`; if not empty and it
+"minecraft:entities/armor_stand"}`); `dropAllDeathLoot` (LivingEntity.txt lines
+3792–3824): if `shouldDropLoot` (`!isBaby() && gamerule mobDrops`, so never for a small
+stand) the loot table (empty: no pools, no draws) and `dropCustomDeathLoot`, then
+`dropEquipment` (empty in `LivingEntity`), then `dropExperience` (nothing: no player
+ever hurt it, `lastHurtByPlayerMemoryTime` stays 0); then for each slot in
+`EquipmentSlot.VALUES` order (`List.of(values())`: MAINHAND, OFFHAND, FEET, LEGS,
+CHEST, HEAD, BODY, SADDLE): `old = equipment.set(slot, EMPTY)`; if not empty and it
 does not have `prevent_equipment_drop` (curse of vanishing) →
 `Block.popResource(level, blockPosition().above(), old)`.
 
@@ -2919,52 +3616,227 @@ at its block (`level.mayInteract`, spawn protection), so their hit does nothing;
 `isAffectedByPotions()` false; `getPickResult()` an armour stand item; hurt and death
 sounds `armor_stand.hit`/`armor_stand.break`, fall sounds `armor_stand.fall` (both).
 
-The packet path for a hit (`Attack` → `player.attack(stand)`)
-is section 2.8's. **Inferred**: a creative player's attack reaches `hurtServer` through
-`Player.attack` with a `player_attack` source for which `isCreativePlayer()` is true.
+The packet path for a hit (`Attack` → `player.attack(stand)`) is section 2.8's.
+`Player.attack` first returns if `cannotAttack(target)`: `!target.isAttackable()` or
+`target.skipAttackInteraction(player)` (the stand's spawn-protection test); otherwise
+it builds the source with `createAttackSource(weapon)` (`player_attack`, or the
+weapon's own: a spear's, a mace's) and calls `target.hurtOrSimulate(source, damage)`
+(Player.txt, `attack`). `DamageSource.isCreativePlayer()` is "the causing entity is a
+`Player` whose `abilities.instabuild`" (DamageSource.txt): confirmed.
 
-### 5.5 Physics
+### 5.5 Physics: `LivingEntity` as an armour stand meets it
 
-All of it is LivingEntity's (`tick` → `aiStep` → `travel`), with these overrides:
+**The stand's own overrides** (ArmorStand.txt):
 
 - **`hasPhysics()`** = `!isMarker() && !isNoGravity()` (lines 132–144).
-- **`travel(v)`** returns at once without physics (lines 1093–1103): a marker or a
-  no-gravity stand never moves by itself (not even by its motion).
-- **`isEffectiveAi()`** = LivingEntity's and `hasPhysics()` (lines 145–157).
+- **`isEffectiveAi()`** = `LivingEntity`'s (`isLocalInstanceAuthoritative`, true on the
+  server) and `hasPhysics()` (lines 145–157). Since `aiStep` calls `travel` only when
+  `isEffectiveAi()`, a marker or no-gravity stand never travels; `travel(v)` itself
+  also returns at once without physics (lines 1093–1103).
 - **`readAdditionalSaveData` sets `noPhysics = !hasPhysics()`** (lines 268–325, at
   83–96), and only there: a stand loaded as a marker or with `NoGravity` does not
-  collide; one made a marker later (a command changing the flags) keeps colliding
-  until reloaded.
-- **Attributes**: LivingEntity's, with `step_height` 0 (`createAttributes`, lines
-  104–111).
-- **Pushing**: `isPushable()` false (no entity pushes it), `doPush` empty (lines
-  326–334). **`pushEntities()`** (lines 335–366, called from LivingEntity's `aiStep`
-  **Inferred**): every entity in its box that is an `AbstractMinecart` with
-  `isRideable()` and `distanceToSqr(stand) <= 0.2` is pushed by the stand
-  (`cart.push(stand)`, Entity's push between two entities, section 1/3). So a stand
-  standing on a rail pushes a rideable cart that runs into it; nothing else.
-- **Piston**: marker → `IGNORE_ENTITY`, else LivingEntity's (`NORMAL`) (lines
-  1186–1196).
-- **Block triggers**: a marker ignores them (`isIgnoringBlockTriggers`, lines
-  1197–1202: pressure plates, tripwires).
-- A stand **falls, floats in water, burns in lava and fire and takes fall damage** by
-  LivingEntity's rules (fire through 5.4's rules 6 and 7; a fall's damage source is
-  not in any of the tags of 5.4, so falls do nothing, **Inferred**).
+  collide; one made a marker later keeps colliding until reloaded.
+- **Attributes**: `createLivingAttributes()` with `step_height` 0 (lines 104–111).
+  `createLivingAttributes` (LivingEntity.txt lines 435–491) adds, with their defaults,
+  `max_health`, `knockback_resistance`, `movement_speed`, `armor`, `armor_toughness`,
+  `max_absorption`, `step_height`, `scale`, `gravity`, `safe_fall_distance`,
+  `fall_damage_multiplier`, `jump_strength`, `entity_interaction_range`,
+  `oxygen_bonus`, `burning_time`, `explosion_knockback_resistance`,
+  `water_movement_efficiency`, `movement_efficiency`, `attack_knockback`,
+  `camera_distance`, `waypoint_transmit_range`, `bounciness`, `air_drag_modifier`,
+  `friction_modifier`, `name_tag_distance`, `below_name_distance`. The default values
+  and which attributes sync are `Attributes`' (not read; in the game: gravity 0.08,
+  max health 20, scale 1, safe fall distance 3, fall damage multiplier 1, air drag and
+  friction modifiers 1, water movement and movement efficiency 0). Worn items change
+  them through their attribute modifiers (`collectEquipmentChanges`, below).
+- **Pushing**: `isPushable()` false, `doPush` empty (lines 326–334); its
+  **`pushEntities()`** (lines 335–366, called by `aiStep`) pushes each entity of
+  `level.getEntities(this, getBoundingBox(), <lambda$static$0>)` (the predicate: a
+  rideable `AbstractMinecart`, lines 1718–) with `distanceToSqr(this) <= 0.2`:
+  `cart.push(stand)` (section 3.10).
+- **Head and body**: `tickHeadTurn(f)` ignores `f` and sets `yBodyRotO = yRotO`,
+  `yBodyRot = getYRot()` (lines 1081–1092); `setYBodyRot`/`setYHeadRot` set all four of
+  `yRotO`, `yBodyRotO`, `yHeadRot`, `yHeadRotO` (lines 1104–1135).
+- **Piston**: a marker `IGNORE_ENTITY`, else `NORMAL` (lines 1186–1196). **Block
+  triggers**: a marker ignores them (lines 1197–1202).
 
-**Inferred** for the plan: LivingEntity's gravity is the `gravity` attribute, 0.08;
-air drag `0.98f` on y; horizontal friction `blockFriction * 0.91f`; on ground a stand
-does not slide. An armour stand at rest makes no change each tick once it is on the
-ground (unlike an item, N4 brief finding 5), but this must be read in LivingEntity.
+**A stand's tick, in the game's order.** `ServerLevel` calls `commonTick()` then
+`tick()` (N4 brief 1.1). `LivingEntity.tick()` (LivingEntity.txt lines 7418–7815):
+
+1. `Entity.tick()` = `baseTick()`, which is **`LivingEntity.baseTick()`** (lines
+   679–995):
+   1. `swingState.tick()` (no swing for a stand); on the first tick, a sleeping
+      position's bed state (none).
+   2. `EnchantmentHelper.tickEffects(level, this)`: the tick effects of enchantments on
+      worn items (not read; vanilla's soul speed and frost walker act elsewhere).
+   3. **`Entity.baseTick()`** (N4 brief 3.2): fire, fluids and their push, portals,
+      freezing data, and so on.
+   4. If alive, on the server:
+      - `isInWall()` → `hurtServer(inWall, 1.0f)`, which the stand refuses (5.4: the
+        source is in none of its tags). (The world border's damage is for players
+        only.)
+      - **Air**: if the eyes are in water and the block at the eyes is not a bubble
+        column, and the type cannot breathe under water (`#can_breathe_under_water`)
+        and has no water breathing: `setAirSupply(decreaseAirSupply(air))` (one less;
+        with an `oxygen_bonus` above 0, a respiration helmet, one `nextDouble` from the
+        entity's random decides whether it stays, **Inferred** form of the comparison);
+        at `air <= -20`: air set to 0, entity event 67 (bubbles), and
+        `hurtServer(drown, 2.0f)`, which the stand refuses. A passenger whose vehicle
+        `dismountsUnderwater()` gets off. Out of water: `increaseAirSupply` (+4, capped
+        at 300). So a submerged stand changes data 1 every tick, and is sent it.
+      - `onChangedBlock(level, pos)` when `blockPosition()` changed (location-changed
+        enchantment effects of worn items: frost walker boots on a stand).
+   5. `hurtTime` and `damageCooldownTime` count down (never set for a stand); if dead
+      or dying, `tickDeath` (a stand is removed before it can be); the "last hurt by"
+      bookkeeping (empty).
+   6. **`tickEffects()`** (lines 1867–2013): on the server, ticks active effects (a
+      stand has none: `isAffectedByPotions` false); the client's particles are the
+      client's; then, while `effectsDirty` (true from the constructor, so on the first
+      tick), `updateInvisibilityStatus()` (the stand's: invisibility from its own
+      field) and `updateGlowingStatus()`, and the effect-particle data.
+   7. `yHeadRotO = yHeadRot`, `yBodyRotO = yBodyRot`.
+2. `updatingUsingItem()`, `updateSwimAmount()` (nothing for a stand).
+3. On the server: the arrow and stinger counts (data 12, 13) decay (none: arrows break
+   stands); **`detectEquipmentUpdates()`** (lines 7932–8162): for each slot in
+   `EquipmentSlot.VALUES` whose item no longer `matches` the last seen, remove the old
+   item's attribute modifiers (and its location-based enchantment effects) and add the
+   new one's, and run the new one's location-changed enchantment effects; a main-hand
+   and off-hand exchange alone is sent as entity event 55; every other change goes to
+   the trackers as one **`SetEquipment(id, [(slot, stack.copy()), …])`**
+   (`ClientboundSetEquipmentPacket`), and the last seen is updated. Then the combat
+   tracker every 20 ticks (no combat) and sleeping (none).
+4. If not removed, **`aiStep()`** (lines 8214–8624):
+   1. `noJumpDelay` counts down; (client interpolation); `equipment.tick(this)`
+      (`EntityEquipment`, not read: the items' own ticking).
+   2. **Small motion is zeroed**: for a type other than the player, each of `x`, `y`,
+      `z` with `Math.abs(v) < 0.003` becomes 0.0.
+   3. `applyInput()` (`xxa`, `zza` × 0.98f: zero for a stand); not immobile, so if
+      `isEffectiveAi()` and on the server `serverAiStep()` (empty in `LivingEntity`).
+      No jumping (`jumping` is never set).
+   4. No fall flying. Slow falling or levitation would reset the fall distance (no
+      effects).
+   5. No controlling passenger, so if `canSimulateMovement() && isEffectiveAi()`:
+      **`travel(Vec3(xxa, yya, zza))`** = `travel(ZERO)` for a stand with physics
+      (below).
+   6. On the server, **`applyEffectsFromBlocks()`** (the blocks touched, N4 brief
+      1.9), whether or not the stand travelled.
+   7. On the server: powder snow freezing: if in powder snow and `canFreeze()`,
+      `ticksFrozen` grows by 1 up to the needed count, else it falls by 2 to 0;
+      `removeFrost()`/`tryAddFrost()` adjust the movement speed modifier; every 40
+      ticks a fully frozen entity takes `hurtServer(freeze, 1.0f)`, refused by the
+      stand. (Data 7 changes while it freezes or thaws.)
+   8. `autoSpinAttackTicks` (none); **`pushEntities()`** (the stand's own, above);
+      `isSensitiveToWater()` is false.
+5. Rotation bookkeeping: the body yaw computed from the move is passed to
+   `tickHeadTurn`, which the stand ignores (above); `yRotO`, `yBodyRotO`, `xRotO`,
+   `yHeadRotO` are brought within 180 of their current values by ±360.
+6. `fallFlyTicks` (0); `refreshDirtyAttributes()`; the elytra animation;
+   `currentImpulseContextResetGraceTime` counts down.
+
+**`travel(v)`** (lines 6266–6296): if `shouldTravelInFluid(level.getFluidState(
+blockPosition()))` (`isInLiquid() && isAffectedByFluids() && !canStandOnFluid(fs)`;
+the last two are true and false in `LivingEntity`) → `travelInFluid(v)`; else (no fall
+flying) `travelInAir(v)`.
+
+**`travelInAir(v)`** (lines 6381–6526), with `v = ZERO`:
+```
+below = getBlockPosBelowThatAffectsMyMovement()                  // Entity's (N4 brief 1.8)
+f = onGround() ? computeModifiedFriction(level.getBlockState(below).getBlock().getFriction(),
+                                         (float) friction_modifier) : 1.0f
+mv = handleRelativeFrictionAndCalculateMovement(v, f)
+y = mv.y
+(levitation: none)
+if !level.isClientSide() || level.hasChunkAt(below): y -= getEffectiveGravity()
+                                                   // getGravity(): 0 with NoGravity, else the gravity attribute;
+                                                   // slow falling caps it at 0.01 when falling (no effects)
+(else if getY() > minY: y = -0.1, else 0: client only)
+if shouldDiscardFriction(): motion = (mv.x, y, mv.z)               // false for a stand
+else:
+    a  = (float) air_drag_modifier
+    h  = computeModifiedFriction(0.91f, a)
+    fh = f * h                                                    // float
+    fv = omnidirectionalAirMover() ? h : computeModifiedFriction(0.98f, a)   // false: 0.98f
+    motion = (mv.x * (double) fh, y * (double) fv, mv.z * (double) fh)
+```
+`computeModifiedFriction(f, m)` (lines 1008–1021) = `Mth.clamp(1.0f - (1.0f - f) * m,
+0.0f, 1.0f)` in `float`: with the modifiers at 1, `f` itself.
+**`handleRelativeFrictionAndCalculateMovement(v, f)`** (lines 7154–7202):
+`moveRelative(getFrictionInfluencedSpeed(f), v)` (adds nothing for a zero `v`;
+`getFrictionInfluencedSpeed`: on the ground `f > 0.6 ? speed * (0.21600002f / (f*f*f))
+: speed`, in the air `getFlyingSpeed()` = 0.02f); `motion = handleOnClimbable(motion)`
+(on a `#climbable` block or an open trapdoor above a ladder: fall distance reset,
+`x`, `z` clamped to ±0.15000000596046448, `y = max(y, -0.15000000596046448)`);
+**`move(SELF, motion)`** (N4 brief 1.2, with the stand's step height 0); then, if
+`(horizontalCollision || jumping)` and on a climbable (or in walkable powder snow),
+`y = 0.2`. It returns the motion after the move.
+
+`checkFallDamage` is `LivingEntity`'s (lines 492–678), called by `move`: if not in
+water, `updateFluidInteraction()` (another fluid update); on the server, when it lands
+(`onGround`) with `fallDistance > 0`: `onChangedBlock`; `p = max(0, floor(fallDistance
++ 1.0E-6 - safe_fall_distance))`; if `p > 0` and the block below is not air: block
+particles `sendParticles(BLOCK state, x', y, z', n, 0, 0, 0, 0.15)` with `n = (int)(150
+* min(0.2 + p / 15.0, 2.5))` and `x'`, `z'` pulled towards the block's centre when the
+entity's block differs from the landing block; then `Entity.checkFallDamage` →
+`causeFallDamage(fallDistance, 1.0f, fall)` (lines 4469–4534): `Entity`'s (passengers'
+falls), then `d = calculateFallDamage(fallDistance, 1.0f)` (0 for
+`#fall_damage_immune`, else `floor(power * 1.0 * fall_damage_multiplier)`, power as
+above); if `d > 0`: `playSound(getFallDamageSound(d), 1, 1)` (the stand's
+`armor_stand.fall` for both, lines 1509–1517), `playBlockFallSound()` (the block's fall
+sound at `floor(y - 0.2)`, volume × 0.5, pitch × 0.75, unless silent) and `hurt(fall,
+d)`, which the stand refuses. **A stand that falls more than 3 blocks plays two sounds
+and shows particles, and takes no damage.**
+
+**`travelInFluid(v)`** (lines 6527–6565): `falling = motion.y <= 0`; `y0 = getY()`;
+`g = getEffectiveGravity()`; in water `travelInWater`, else `travelInLava`; then
+`floatInLiquidWhileRidden` (only for a ridden `#can_float_while_ridden`).
+- **`travelInWater(v, g, falling, y0)`** (lines 6566–6663): `slow = 0.8f`
+  (`getWaterSlowDown`; 0.9f when sprinting), `speed = 0.02f`, `e = (float)
+  water_movement_efficiency`, halved off the ground; if `e > 0`: `slow += (0.54600006f
+  - slow) * e`, `speed += (getSpeed() - speed) * e`; dolphin's grace: `slow = 0.96f`;
+  `moveRelative(speed, v)`; `move(SELF, motion)`; `m = motion`; if `horizontalCollision
+  && onClimbable()`: `m = (m.x, 0.2, m.z)`; `m = m.multiply(slow, 0.800000011920929,
+  slow)`; **`motion = getFluidFallingAdjustedMovement(g, falling, m)`** (lines
+  7203–7241: if `g != 0` and not sprinting: `y' = (falling && |m.y - 0.005| >= 0.003 &&
+  |m.y - g/16| < 0.003) ? -0.003 : m.y - g/16`); `jumpOutOfFluid(y0)` (lines
+  6738–6770: if `horizontalCollision` and `isFree(m.x, m.y + 0.6000000238418579 -
+  getY() + y0, m.z)`: `y = 0.30000001192092896`).
+- **`travelInLava(v, g, falling, y0)`** (lines 6678–6737): `moveRelative(0.02f, v)`;
+  `move(SELF, motion)`; if `isInShallowFluid(lava)` (lava height `<=
+  getFluidJumpThreshold()`, which is 0.4, or 0 when the eye height is under 0.4):
+  `motion = getFluidFallingAdjustedMovement(g, falling, motion.multiply(0.5,
+  0.800000011920929, 0.5))`; else `motion *= 0.5`; if `g != 0`: `motion.y += -g /
+  4.0`; `jumpOutOfFluid(y0)`.
+
+**At rest.** On the ground, step 4.2 leaves `y` (−0.0784 from the last tick) alone;
+in `travelInAir` the `move` with `y = −0.0784` collides and sets `y` to 0 (N4 brief
+1.7) without moving the stand, then `y = (0 − 0.08) · 0.98f = −0.0784` again. The
+stored motion is the same every tick and the position does not move: a resting stand
+changes nothing after its first tick (5.0 item 9). Horizontal motion decays by
+`friction · 0.91` a tick and is zeroed under 0.003.
+
+**What a reduced port can leave out**, because a stand cannot meet it: AI and the brain,
+input and jumping, effects (`isAffectedByPotions` false), the damage path of
+`LivingEntity.hurtServer` (the stand's overrides it, 5.4), knockback, death animation
+and `tickDeath`, sleeping, using items, swimming pose, fall flying, riding control
+(`travelRidden`), arrows and stingers stuck in it, the combat tracker, experience.
+What it must keep: the attribute map (gravity, friction and drag modifiers, safe fall
+distance, scale, max health; changed by worn items' modifiers), `travelInAir`,
+`travelInWater`, `travelInLava`, the zeroing, the fall check's sounds and particles, the
+air supply (data 1, entity event 67), freezing (data 7), `detectEquipmentUpdates` and
+`onEquipItem`, and `pushEntities`.
 
 ### 5.6 Synched data, in order
 
-Entity's (0–7, section 8), LivingEntity's (8–14, **not read**; ids and serializers as
-SteelMC's extraction lists them, for orientation only: 8 `DATA_LIVING_ENTITY_FLAGS`
-byte, 9 `DATA_HEALTH_ID` float (1.0 until the max health is set), 10
-`DATA_EFFECT_PARTICLES` particles list, 11 `DATA_EFFECT_AMBIENCE_ID` boolean, 12
-`DATA_ARROW_COUNT_ID` int, 13 `DATA_STINGER_COUNT_ID` int, 14 `SLEEPING_POS_ID`
-optional block pos), then ArmorStand's own, defined in this order in the static block
-(lines 1789–1816) and `defineSynchedData` (lines 158–200):
+Entity's (0–7, section 8), then `LivingEntity`'s, by `defineId` order in its static
+block (LivingEntity.txt lines 11633–11687; defaults from `defineSynchedData`, lines
+391–434): 8 `DATA_LIVING_ENTITY_FLAGS` `BYTE` 0, 9 `DATA_HEALTH_ID` `FLOAT` 1.0 (set to
+the max health by the constructor, so sent), 10 `DATA_EFFECT_PARTICLES` `PARTICLES`
+empty list, 11 `DATA_EFFECT_AMBIENCE_ID` `BOOLEAN` false, 12 `DATA_ARROW_COUNT_ID` `INT`
+0, 13 `DATA_STINGER_COUNT_ID` `INT` 0, 14 `SLEEPING_POS_ID` `OPTIONAL_BLOCK_POS` empty
+(SteelMC's list agreed). Wire ids of these serializers (EntityDataSerializers.txt,
+registration order): `BYTE` 0, `INT` 1, `FLOAT` 3, `BOOLEAN` 8, `ROTATIONS` 9,
+`OPTIONAL_BLOCK_POS` 11, `PARTICLES` 17. Then ArmorStand's own, defined in this order in
+the static block (lines 1789–1816) and `defineSynchedData` (lines 158–200):
 
 | Id | Accessor | Serializer | Default |
 |---|---|---|---|
@@ -2976,8 +3848,7 @@ optional block pos), then ArmorStand's own, defined in this order in the static 
 | 20 | `DATA_LEFT_LEG_POSE` | `ROTATIONS` | (-1, 0, -1) |
 | 21 | `DATA_RIGHT_LEG_POSE` | `ROTATIONS` | (1, 0, 1) |
 
-(The ids 15–21 follow from LivingEntity's seven; that count is SteelMC's, to confirm
-in `LivingEntity`.) `ROTATIONS` writes three `float`s. Entity type `armor_stand`, id
+(15–21 follow `LivingEntity`'s seven, now read.) `ROTATIONS` writes three `float`s. Entity type `armor_stand`, id
 5; 0.5 × 1.975, eye 1.7775; tracking range 10 chunks, update interval 3, deltas
 tracked (`entity_types.rs`). Pairing (ServerEntity.txt lines 869–1000): `AddEntity`
 (data 0), `SetEntityData` of the non-default values, `UpdateAttributes` if any
@@ -2999,8 +3870,42 @@ read flags.
 **What it is**: a seat lying on a block. Type `cushion`, id 33, 1.0 × 0.25, eye 0.2125;
 tracking range 10, update interval `Integer.MAX_VALUE`, deltas not tracked
 (`entity_types.rs`): its position is sent once, at pairing. Passenger attachment
-`(0, 0.25, 0)` (SteelMC's extraction of `EntityType`, orientation; read in
-`EntityType` with the riding of section 1).
+`(0, 0.25, 0)` (SteelMC's extraction; the per-type points are set in `EntityTypes`'
+builder calls, which are not in the dump: `EntityType`, `EntityAttachments` and
+`EntityAttachment` are, section 1).
+
+**Placing: `CushionItem.useOn(ctx)`** (CushionItem.txt, whole class):
+1. `ctx' = recalculateContextForSpecialCollisionShapes(ctx)`: with no player, `ctx`;
+   if the clicked block is not in `#minecraft:cushion_uses_collision_shape`
+   (`#minecraft:cauldrons`, `hopper`, `composter`), `ctx`; else `eye =
+   player.getEyePosition()`, `end = click + (click - eye).normalize().scale(0.001)`,
+   `hit = state.getCollisionShape(level, pos).clip(eye, end, pos)`; null → `ctx`, else
+   a new `UseOnContext(player, hand, hit)`. (So on those blocks the click is taken on
+   their collision shape, which differs from their outline, when the ray meets it
+   within 0.001 past the outline.)
+2. If `ctx'.getClickedFace() != UP` → `FAIL`: only the top of a block.
+3. `place = new BlockPlaceContext(ctx')`; `pos = place.getClickedPos()` (the clicked
+   block if replaceable, else the one above); `at = Vec3.atCenterOfWithY(pos,
+   ctx'.getClickLocation().y)` = `(pos.x + 0.5, click.y, pos.z + 0.5)`; `box =
+   CUSHION.getSpawnAABB(at)` (EntityType.txt lines 575–600: `w = spawnDimensionsScale *
+   width / 2`, `h = spawnDimensionsScale * height`, floats; `(x - w, y, z - w, x + w,
+   y + h, z + w)`; the scale is 1.0 unless the type's builder set it, **Inferred**,
+   `EntityTypes` not read): `x ± 0.5`, `y .. y + 0.25`.
+4. `!Cushion.canBePlacedAt(level, box)` → `FAIL` (below: anchored, not covered by
+   suffocating blocks, the anchor not buried).
+5. On the server: any `Cushion` among `getEntitiesOfClass(Cushion, box)` → `FAIL` (one
+   cushion per place; other entities do not block it). `config =
+   createDefaultStackConfig(level, stack, player)` (5.1); `c = CUSHION.create(level,
+   config, pos, SPAWN_ITEM_USE, true, true)` (5.1: position by `getYOffset`, and the
+   level's random yaw draw, both thrown away next); null → `FAIL`. `c.snapTo(at,
+   Direction.fromYRot((double) place.getRotation()).toYRot(), 0.0f)`: the position is
+   `at` (the click's height, not `getYOffset`'s) and the yaw the player's facing
+   snapped to a cardinal direction. `level.addFreshEntity(c)`;
+   `c.destroyIfInFire(level)` (placed in fire, it is hit at once and breaks);
+   `level.playSound(null, c.x, c.y, c.z, CUSHION_PLACE, BLOCKS, 0.75f, 0.8f)`;
+   `c.gameEvent(ENTITY_PLACE, player)`; `stack.consume(1, player)` (no shrink with
+   infinite materials: ItemStack.txt lines 2486–2500).
+6. `SUCCESS` (the client too, after step 4).
 
 **Position and box.** Unlike the other block-attached entities its position is free:
 `setPos(x, y, z)` (lines 288–300) sets the raw position first, then
@@ -3038,8 +3943,11 @@ found: `hurtServer(level, damageSources().inFire(), 1.0f)` and stop.
   .expandTowards(0, -0.125, 0)` (so `minY - 0.140625 .. minY`); for each block in
   `level.findBlocksIn(probe)`: `shape = state.getShape(level, pos)` (the **outline**
   shape, not the collision shape); if not empty and `shape.bounds().move(pos)
-  .intersects(probe)` → anchored (stop). The result is whether one was found
-  (**Inferred**: `BlockMatcher.forEachUntil` returns true on `ABORT`). So a cushion
+  .intersects(probe)` → anchored (stop). The result is whether one was found:
+  `forEachUntil` returns what `BlockScanUtils.findBlocks` returns, which is true when a
+  consumer aborted (the same call is `anyMatched`, whose consumer always aborts at the
+  first match: BoxBlockMatcher.txt). The visiting order is `BlockScanUtils`' (not read)
+  and does not change the result here. So a cushion
   is held by any block whose outline's bounding box reaches up to within 0.140625 of
   its underside: a full block, a slab, a carpet, a fence; not air or a block with an
   empty outline.
@@ -3101,21 +4009,23 @@ is made (`applyImplicitComponent`, lines 565–594), and `get(CUSHION_COLOR)` re
 `repositionEntityAfterLoad()` false (BlockAttachedEntity line 320): its loaded position
 is kept as saved. Pick result: the cushion item of its colour.
 
-**What the client is sent**: `AddEntity` with the cushion's position (**Inferred**: it
-does not override `getAddEntityPacket`, so Entity's with data 0, unlike hanging
-entities, section 6), `SetEntityData` with the colour if not white, `SetPassengers`
-when someone sits.
+**What the client is sent**: `AddEntity` with the cushion's position: neither
+`Cushion` nor `BlockAttachedEntity` overrides `getAddEntityPacket`, so it is `Entity`'s,
+`ClientboundAddEntityPacket(entity, serverEntity)` with data 0 (unlike hanging
+entities, section 6); `SetEntityData` with the colour (`DYE_COLOR`, wire id 43) if not
+white; `SetPassengers` when someone sits.
 
 ### 5.9 `Mannequin` (Mannequin.txt), for the plan's decision only
 
-`extends Avatar` (a LivingEntity shared with players; not read). Type `mannequin`, id
+`extends Avatar` (a `LivingEntity` shared with players). Type `mannequin`, id
 84, 0.6 × 1.8, eye 1.62; tracking range 32, update interval 2, deltas tracked.
 Constructor sets `DATA_PLAYER_MODE_CUSTOMISATION` to `ALL_LAYERS` (the OR of every
 `PlayerModelPart` mask) (lines 41–59).
 
-Data (Entity's 0–7, LivingEntity's 8–14, Avatar's 15–16 **not read**: SteelMC lists 15
-`DATA_PLAYER_MAIN_HAND` `HUMANOID_ARM`, 16 `DATA_PLAYER_MODE_CUSTOMISATION` byte), then
-its own, in the static block's order (lines 454–467):
+Data: Entity's 0–7, LivingEntity's 8–14 (5.6), `Avatar`'s 15 `DATA_PLAYER_MAIN_HAND`
+`HUMANOID_ARM` (wire id 42) and 16 `DATA_PLAYER_MODE_CUSTOMISATION` `BYTE` (Avatar.txt
+static block, lines 169–177), then its own, in the static block's order (lines
+454–467):
 
 | Id | Accessor | Serializer | Default |
 |---|---|---|---|
@@ -3226,9 +4136,12 @@ Fields: `pos` (`BlockPos`, the block the entity is in, not the block it hangs on
 - **`skipAttackInteraction(attacker)`** (lines 86–112): for a player attacker: if
   `!level.mayInteract(player, pos)` return true (the attack is swallowed); else return
   `hurtOrSimulate(damageSources().playerAttack(player), 0.0f)`. For anything else
-  false. **Inferred**: `Player.attack` asks this first and goes no further when it
-  returns true, so the player's attack on a hanging entity is exactly this call with
-  zero damage (Not read: `Player.attack`).
+  false. `Player.attack` (Player.txt 2159–) begins with `cannotAttack(e)` (2378–2388:
+  `!e.isAttackable() || e.skipAttackInteraction(this)`) and returns when it is true;
+  `isAttackable()` is `Entity`'s `true` (Entity.txt 8468–8471) for every hanging
+  entity, so the player's attack on a hanging entity (or a knot or a cushion) is
+  exactly this call with zero damage, and none of `Player.attack`'s damage, knockback,
+  sweep or durability follows.
 - **`hurtServer(level, source, amount)`** (lines 154–191):
   ```
   if isInvulnerableToBase(source): return false     // Entity.txt 8588–8640
@@ -3283,17 +4196,22 @@ Fields: `pos` (`BlockPos`, the block the entity is in, not the block it hangs on
   - `calculateSupportBox()` (lines 168–180): `getBoundingBox().move(direction.step()
     * -0.5f).deflate(1.0E-7)`: the box moved half a block into the wall (the step is a
     `Vector3f`; `±1 * -0.5f` is exactly `∓0.5`), shrunk by `1e-7` on every side, so
-    that it covers exactly the blocks behind the painting. **Inferred** (Not read:
-    `BlockMatcher`): `findBlocksIn` visits every block from `floor(min)` to `floor(max)`
-    per axis and `allMatched` is true when every one passes.
+    that it covers exactly the blocks behind the painting. `BlockMatcher.allMatched()`
+    (BlockMatcher.txt) is `!anyMatched(s -> !predicate(s))`: true when no visited block
+    fails, so true for an empty box. **Inferred** (Not read: `LevelReader.findBlocksIn`
+    and `BlockScanUtils.findBlocks`, which make the `BoxBlockMatcher` and walk it): it
+    visits every block from `floor(min)` to `floor(max)` per axis.
   - `canCoexist(sameDirectionOnly)` (lines 182–200, predicate lines 347–379):
     `!level.hasEntities(EntityTypeTest.forClass(HangingEntity.class), getPopBox(),
     other -> other != this && ((!sameDirectionOnly && other.getType() == getType()) ||
     other.getDirection() == getDirection()))`. For a painting (`false`): any other
     painting overlapping it in any direction, or any hanging entity (an item frame) of
-    the same direction overlapping it. The test is box intersection (strict, as
-    `AABB.intersects`; **Inferred**, Not read: `Level.hasEntities`), so paintings that
-    only touch edge to edge coexist. Leash knots and cushions are `BlockAttachedEntity`,
+    the same direction overlapping it. `Level.hasEntities` (Level.txt 1352–1367,
+    lambda 2013–) runs the level's entity lookup over the box with the type test and
+    stops at the first entity the predicate accepts (an ender dragon's parts are tested
+    too). **Inferred** (Not read: `LevelEntityGetter`/`EntitySectionStorage`): the box
+    test is `AABB.intersects`, strict, so paintings that only touch edge to edge
+    coexist. Leash knots and cushions are `BlockAttachedEntity`,
     not `HangingEntity`, and never block a painting.
 - **`getPopBox()`** (lines 222–226): `getBoundingBox()`.
 - **`spawnAtLocation(level, stack, yOffset)`** (lines 230–272), the drop of every
@@ -3345,19 +4263,27 @@ return CONSUME
 - **`mayPlace` of a frame** (`ItemFrameItem`, ItemFrameItem.txt lines 11–28):
   `level.isInsideBuildHeight(pos) && player.mayUseItemAt(pos, face, stack)`: all six
   faces (on a floor a frame faces `UP`, on a ceiling `DOWN`).
-- `mayUseItemAt` is the player's build check (`Player.mayUseItemAt`; adventure mode's
-  `can_place_on`; Not read). Note the painting's `mayPlace` does not check build height;
+- `Player.mayUseItemAt(pos, face, stack)` is true when `abilities.mayBuild` (survival
+  and creative); otherwise (adventure) the stack's `can_place_on` must accept the block
+  at `pos.relative(face.getOpposite())`, the clicked block. Note the painting's `mayPlace` does not check build height;
   survival does in effect (no block below the world to hang on).
-- **Creative**: `shrink(1)` is unconditional here. **Inferred** (Not read:
-  `ServerPlayerGameMode.useItemOn`): the server keeps a creative player's count by
-  saving and restoring it around `useOn` (as for blocks), so the stack is not used up.
-  The repo's creative placement should already do so for blocks.
-- **Inferred** (Not read: `EntityType.createDefaultStackConfig`): it applies
-  `minecraft:custom_name` (setting the entity's name), `minecraft:entity_data` (NBT
-  merged into the entity) and the entity's implicit components; for a painting
-  `Painting.applyImplicitComponents` takes `minecraft:painting_variant`
-  (Painting.txt lines 76–105) and calls `setVariant`, which remakes its box
-  (`onSyncedDataUpdated`, lines 30–41).
+- **Creative**: `shrink(1)` is unconditional here, but `ServerPlayerGameMode.useItemOn`
+  saves the stack's count before `ItemStack.useOn` and sets it back after when the
+  player `hasInfiniteMaterials()` (ServerPlayerGameMode.txt, `useItemOn` offsets
+  350–377), so a creative player's stack is never used up. The repo's creative
+  placement does the same for blocks. (The clicked block's `useItemOn`, and its
+  `useWithoutItem` for the main hand, run first and can take the click; they are
+  skipped when the player sneaks holding anything in either hand: offsets 165–264.)
+- `EntityType.createDefaultStackConfig(level, stack, player)` (EntityType.txt 135–170)
+  is two steps, in order: `entity.applyComponentsFromItemStack(stack)` (Entity.txt
+  11535–: `applyImplicitComponents` of the stack's components: `Entity`'s takes
+  `minecraft:custom_name` and `minecraft:custom_data`, 11521–; a painting's override also
+  `minecraft:painting_variant`, Painting.txt lines 76–105, calling `setVariant`, which
+  remakes its box, lines 30–41); then, if the stack has `minecraft:entity_data`,
+  `updateCustomEntityTag` (350–375): nothing without a server or when the data's type is
+  not the entity's; on the server, nothing when the type `onlyOpCanSetNbt()` (in
+  `EntityTypes.OP_ONLY_CUSTOM_DATA`, not read) and the player is not an operator; else
+  `TypedEntityData.loadInto(entity)` (the NBT merged into the entity).
 - Sound: `playPlacementSound()` → `playSound(ITEM_FRAME_PLACE /
   GLOW_ITEM_FRAME_PLACE / PAINTING_PLACE, 1.0f, 1.0f)` at the entity's position, source
   `NEUTRAL` (`Entity.getSoundSource`, Entity.txt lines 10506–10509), to everyone near,
@@ -3375,7 +4301,7 @@ list.removeIf(v -> { p.setVariant(v); return !p.survives(); })   // lambda lines
 if list.isEmpty(): return empty
 max = list.stream().mapToInt(v -> v.value().area()).max().orElse(0)   // area = width * height
 list.removeIf(v -> area(v) < max)                  // lambda lines 436–445
-v = Util.getRandomSafe(list, p.random)             // Inferred: list.get(p.random.nextInt(list.size()))
+v = Util.getRandomSafe(list, p.random)             // empty list: empty; else list.get(p.random.nextInt(list.size()))
 if v.isEmpty(): return empty                       // cannot happen: the list is not empty
 p.setVariant(v.get()); p.setDirection(face)
 return Optional.of(p)
@@ -3383,8 +4309,9 @@ return Optional.of(p)
 - Each `survives()` in the filter is a full painting survival (6.2) with that
   variant's box: block collisions, the blocks behind, and other hanging entities.
 - The draw is **one `nextInt(n)` from the new painting's own random** (after its
-  UUID's two `nextLong`), even when `n` is 1 (**Inferred** from `Util.getRandomSafe`,
-  Not read), and even when the item's component will replace the result.
+  UUID's two `nextLong`), even when `n` is 1 (`Util.getRandomSafe` → `getRandom`,
+  Util.txt 1373–1386, always calls `nextInt(size)`), and even when the item's component
+  will replace the result.
 - The order of the list is the tag file's order
   (`generated/data/minecraft/tags/painting_variant/placeable.json`; the repo's
   `tags.rs` keeps it: ids `24, 1, 0, 2, 5, 32, 47, 35, 12, 37, 42, 13, 46, 22, 26, 8,
@@ -3402,10 +4329,11 @@ c = c.relative(d.getCounterClockWise(), ow).relative(UP, oh)
 sx = (d.axis == X) ? 0.0625 : (double)w
 sy = (double)h
 sz = (d.axis == Z) ? 0.0625 : (double)w
-box = AABB.ofSize(c, sx, sy, sz)                   // c ± s/2 on each axis (Not read; Inferred)
+box = AABB.ofSize(c, sx, sy, sz)                   // (c - s/2.0, c + s/2.0) per axis: a divide by 2.0
 ```
-`Vec3.relative(dir, k)` adds `step * k` per axis (**Inferred**, the step an int widened
-to double). `0.46875` and `0.0625` are exact. `getCounterClockWise` (about Y): north →
+`Vec3.relative(dir, k)` (Vec3.txt 1157–1180) is `(x + k·(double)step.x, y + k·(double)
+step.y, z + k·(double)step.z)`, the step `Direction.getUnitVec3i()`'s ints widened, and
+`Vec3.atCenterOf(p)` is `(p.x + 0.5, p.y + 0.5, p.z + 0.5)`. `0.46875` and `0.0625` are exact. `getCounterClockWise` (about Y): north →
 west, west → south, south → east, east → north. So the painting extends from `pos` to
 the counter-clockwise side and upwards for even sizes, centred on `pos` for odd sizes:
 a 2×1 facing south at `(x, y, z)` covers `x..x+2`, `y..y+1`, `z..z+0.0625`; a 4×3
@@ -3415,8 +4343,11 @@ neighbour, and `y-1..y+2`. Its position is the centre: for a 1×1 facing south,
 
 **Data**: `DATA_PAINTING_VARIANT_ID` (index 9, `EntityDataSerializers.PAINTING_VARIANT`,
 a `Holder<PaintingVariant>`; lines 3, 15–28, 460–466). Default: `VariantUtils.getAny(
-registryAccess, PAINTING_VARIANT)` (**Inferred**: the registry's first entry,
-`minecraft:alban`, id 0; Not read: `VariantUtils`). A change remakes the box
+registryAccess, PAINTING_VARIANT)` (VariantUtils.txt 31–40) =
+`registry.getAny().orElseThrow()`: **no random draw**. **Inferred** (Not read:
+`MappedRegistry.getAny`): the registry's first entry, `minecraft:alban`, id 0; the
+default is replaced before the painting is placed, so it is seen only by a painting
+loaded with no `variant` key. A change remakes the box
 (`onSyncedDataUpdated`, lines 30–41). `get(PAINTING_VARIANT)` answers the variant (pick
 block, lines 61–74).
 
@@ -3439,8 +4370,10 @@ block, lines 61–74).
   path for `Leashable`, which a painting is not) gives `PASS`.
 - **Saved** (lines 215–254): `facing` (`Direction.LEGACY_ID_CODEC_2D`, a byte of the 2D
   value: S 0, W 1, N 2, E 3) written *before* the super's `block_pos`; the variant by
-  `VariantUtils.writeVariant` (**Inferred**: key `variant`, the registry key as a
-  string). Read: `facing` (default `SOUTH`), super, `setDirection`, then the variant if
+  `VariantUtils.writeVariant` (VariantUtils.txt 41–49, lambda 94–): key `variant`, the
+  holder's registry key as an identifier string (nothing written for an inline holder
+  with no key); read by `readVariant` (50–) with the same key, looked up in the
+  registry. Read: `facing` (default `SOUTH`), super, `setDirection`, then the variant if
   present.
 
 **Variants** (`generated/data/minecraft/painting_variant/*.json`, 51; the network id is
@@ -3594,7 +4527,7 @@ if !hasItem:
         if map != null && map.isTrackedCountOverLimit(256): return FAIL      // maps: later
         setItem(held)                                    // one of it, the add sound, comparators
         gameEvent(BLOCK_CHANGE, player)
-        held.consume(1, player)                          // Inferred: not used up by a creative player
+        held.consume(1, player)                          // ItemStack.consume: no shrink if hasInfiniteMaterials (creative)
         return SUCCESS
     return PASS
 playSound(getRotateItemSound(), 1, 1)                    // ITEM_FRAME_ROTATE_ITEM / glow
@@ -3627,19 +4560,36 @@ are the client's. The glow item frame overrides only the five sounds and its ite
 
 - **What tells comparators**: `setItem(…, true)` and `setRotation(…, true)` call
   `level.updateNeighbourForOutputSignal(pos, Blocks.AIR)` at the **frame's own block**
-  (the air in front of the wall). **Inferred** (Not read:
-  `Level.updateNeighbourForOutputSignal`): it tells a comparator in each horizontal
-  neighbour of `pos`, and through a conductor neighbour the comparator beyond it, as the
-  repo does for block entities (`crates/clustine-sim/src/region/updates.rs` around
-  lines 243 and 459). The removal of the item when the frame breaks goes through
+  (the air in front of the wall). `Level.updateNeighbourForOutputSignal(pos, block)`
+  (Level.txt 1719–1771): for each horizontal direction in `Direction$Plane.HORIZONTAL`'s
+  order, `n = pos.relative(d)`; if `hasChunkAt(n)`: a comparator there gets
+  `neighborChanged(state, n, block, null, false)`; else, if `n` is a redstone
+  conductor, `n2 = n.relative(d)` (no loaded check) and a comparator there gets the
+  same. This is what the repo does for block entities
+  (`crates/clustine-sim/src/region/updates.rs` around lines 243 and 459). The removal of the item when the frame breaks goes through
   `setItem(EMPTY)` (6.5), so it tells them too; `kill`/`discard` alone does not.
-- **What a comparator reads**: (Not read: `ComparatorBlock.getInputSignal`,
-  `getItemFrame`; **Inferred**, consistent with SteelMC's port): behind a conductor that
-  is not powered whole, at the block beyond it, the item frames whose box intersects
-  that block's unit box and whose direction equals the comparator's facing; if exactly
-  one, its `getAnalogOutput()`; the reading is the larger of that and the block's analog
-  output where both exist. A frame on the far side of the wall, facing away from the
-  comparator, is read.
+- **What a comparator reads** (`ComparatorBlock.getInputSignal`, ComparatorBlock.txt
+  151–231; `getItemFrame`, 232–278, predicate 540–553):
+  ```
+  i = DiodeBlock.getInputSignal(level, pos, state)          // the plain diode input
+  f = state.FACING; p = pos.relative(f); s = level.getBlockState(p)
+  if s.hasAnalogOutputSignal(): i = s.getAnalogOutputSignal(level, p, f.getOpposite())
+  else if i < 15 && s.isRedstoneConductor(level, p):
+      p = p.relative(f); s = level.getBlockState(p)
+      frames = level.getEntitiesOfClass(ItemFrame, AABB(p.x, p.y, p.z, p.x+1, p.y+1, p.z+1),
+                                        fr -> fr.getDirection() == f)
+      a = frames.size() == 1 ? frames[0].getAnalogOutput() : Integer.MIN_VALUE
+      b = s.hasAnalogOutputSignal() ? s.getAnalogOutputSignal(level, p, f.getOpposite())
+                                    : Integer.MIN_VALUE
+      m = max(a, b); if m != Integer.MIN_VALUE: i = m
+  return i
+  ```
+  So a frame is read only through a conductor (never one directly behind the
+  comparator), only while the plain input is below 15, only when it is the one frame of
+  the comparator's facing whose box meets the unit box of the block beyond, and the
+  larger of it and that block's own analog output wins. Two frames of that facing in
+  the box leave the frame's part unread (`MIN_VALUE`). The frame hangs on the far side of the
+  wall, facing the same way as the comparator.
 - The repo's `clustine_blocks::diode::input_signal` (lines 85–107) takes only a
   `BlockView`; N5 needs a view of entities (frames by block and direction) in it, from
   the region and its copies.
@@ -3660,10 +4610,15 @@ The repo's `EntityData` (`crates/clustine-world/src/entity.rs` lines 81–102) h
 
 - **Add**: `getAddEntityPacket(serverEntity)` (ItemFrame.txt lines 940–951,
   Painting.txt lines 403–414): `new ClientboundAddEntityPacket(this,
-  getDirection().get3DDataValue(), getPos())`. **Inferred** (Not read: that
-  constructor): the position written is the block's corner `(pos.x, pos.y, pos.z)` as
-  doubles, the rotations the entity's, the data the direction's 3D value (D 0, U 1, N 2,
-  S 3, W 4, E 5), the motion zero. The client rebuilds the entity from these
+  getDirection().get3DDataValue(), getPos())`. That constructor
+  (ClientboundAddEntityPacket.txt 67–97) gives the entity's id and UUID, the block's
+  corner `(pos.x, pos.y, pos.z)` as doubles, the entity's `xRot` and `yRot`, its type,
+  the data (the direction's 3D value: D 0, U 1, N 2, S 3, W 4, E 5), its motion
+  (`getDeltaMovement()`, zero for an entity that never moves) and its `getYHeadRot()`
+  (`Entity`'s `0.0f`, Entity.txt 8455–8458). On the wire (`write`, 196–254): varint id,
+  UUID (two longs), entity type (registry varint), x, y, z (doubles), motion
+  (`Vec3.LP_STREAM_CODEC`), `xRot`, `yRot`, `yHeadRot` (each `Mth.packDegrees`, a byte),
+  data (varint). The client rebuilds the entity from these
   (`recreateFromPacket`, ItemFrame.txt lines 953–963, Painting.txt lines 416–426:
   `Entity.recreateFromPacket` then `setDirection(Direction.from3DDataValue(data))`; its
   `snapTo` → `setPos` → `pos = BlockPos.containing(corner)` and the box), so the
@@ -3673,10 +4628,14 @@ The repo's `EntityData` (`crates/clustine-world/src/entity.rs` lines 81–102) h
   a frame's index 9 item and index 10 rotation if set; index 0's invisible bit
   (`0x20`) for an invisible frame.
 - **Afterwards**: entity types `painting`, `item_frame`, `glow_item_frame` have
-  `updateInterval = Integer.MAX_VALUE` and `trackDeltas = false` (8 below), so
-  `ServerEntity.sendChanges` enters its update branch only on `needsSync` (set by
-  `setPos`), a dirty data value (the item put in or taken out, a rotation), or its first
-  tick (`tickCount % MAX_VALUE == 0` at 0; **Inferred** for `UpdateInterval`, Not read).
+  `updateInterval = Integer.MAX_VALUE` and `trackDeltas = false` (8 below). For such a
+  type `EntityType.hasUpdateInterval()` is false (EntityType.txt 905–915) and
+  `ChunkMap.addEntity` gives its tracker `UpdateInterval.NEVER` instead of
+  `periodic(n)` (ChunkMap.txt `addEntity` offsets 59–79), so `ServerEntity.sendChanges`
+  enters its update branch only on `needsSync` (set by `setPos`) or a dirty data value
+  (the item put in or taken out, a rotation). (**Wrong before**: the brief had it also
+  at the first tick, `tickCount % MAX_VALUE == 0`. **Inferred**, `UpdateInterval$1` not
+  dumped: `NEVER.test` is always false.)
   For an item frame, every tick whose `tickCount % 10 == 0` also sends its map's updates
   to every player and then `sendDirtyEntityData()` (ServerEntity.txt lines 53–201; maps
   later). The base of a painting's position codec is `trackingPosition()`, the block's
@@ -3684,8 +4643,12 @@ The repo's `EntityData` (`crates/clustine-world/src/entity.rs` lines 81–102) h
   centre. The repo's `services/edge/src/tracking.rs` `Tracker` plays this with the
   type's interval and must take the corner as a painting's base.
 - **Removal**: the usual `RemoveEntities`. The break and place sounds are
-  `ClientboundSoundPacket`s from `level.playSound(null, …)` (**Inferred**: each draws
-  its seed from the level's random; Not read: `ServerLevel.playSeededSound`).
+  `ClientboundSoundPacket`s from `level.playSound(null, …)`: each draws one `nextLong`
+  for its seed from the level's **`soundSeedGenerator`** (Level.txt 746–779; a
+  thread-safe random of its own, made beside `level.random` in Level's constructor,
+  lines 90–97), not from `level.random`; `ServerLevel.playSeededSound` (2222–2260)
+  sends it to every player in the dimension within `sound.getRange(volume)`, the
+  excepted player (`null` here) left out.
 
 ---------------------------------------------------------------------------------------
 
@@ -3701,7 +4664,9 @@ Read from `Leashable.txt`, `Leashable$LeashData.txt`, `Leashable$Wrench.txt`,
    `AbstractBoat` implements `Leashable` (AbstractBoat.txt line 2): every boat, chest
    boat, raft and chest raft. Minecarts (`AbstractMinecart extends VehicleEntity`),
    armour stands (`LivingEntity`), the mannequin (`Avatar`), cushions and the hanging
-   entities do not. Every mob that can be leashed is a `Mob` (N7; `Mob` not read).
+   entities do not. Every mob that can be leashed is a `Mob` (N7; `Mob`'s leash overrides,
+   `leashTooFarBehaviour`, `onLeashRemoved`, `canBeLeashed` and its own leash data,
+   Mob.txt 3035–3090, apply to mobs only).
    So N5's leashes are: a boat held by a player, a boat tied to a fence (a knot), and a
    boat held by **another boat** (any entity can be a holder: section 7.4, the first
    branch of `Entity.interact`). A boat tied to a boat is reachable with no mob at all:
@@ -3796,8 +4761,8 @@ if h != null && h.level() == e.level():
   its momentum (harmless; port as is).
 - `leashSnapDistance()` 12.0, `leashElasticDistance()` 6.0 by default (lines 416–424);
   `AbstractBoat` does not override them. Constants in the interface: `LEASH_TOO_FAR_DIST`
-  12.0, `LEASH_ELASTIC_DIST` 6.0, `MAXIMUM_ALLOWED_LEASHED_DIST` 16.0 (not used in the
-  interface's code; **Inferred**: by `Mob`), `SPRING_DAMPENING` 0.7f (not used here),
+  12.0, `LEASH_ELASTIC_DIST` 6.0, `MAXIMUM_ALLOWED_LEASHED_DIST` 16.0 (a compile-time
+  constant, so inlined wherever used; no N5 class uses it), `SPRING_DAMPENING` 0.7f (not used here),
   `TORSIONAL_ELASTICITY` 10.0, `STIFFNESS` 0.11 (lines 1–23).
 - `onElasticLeashPull()` (lines 407–414) → `checkFallDistanceAccumulation()` (Entity.txt
   lines 8188–8204): if `motion.y > -0.5 && fallDistance > 1.0`: `fallDistance = 1.0`.
@@ -3842,7 +4807,10 @@ initialiser, lines 1009–1060). `addDeltaMovement(v)` = `setDeltaMovement(motio
 `getHolderMovement(x)` (lines 537–552): `Vec3.ZERO` for a `Mob` with `NoAI`, else
 `x.getKnownMovement()`. `Entity.getKnownMovement()` (Entity.txt lines 11467–11486): if
 the controlling passenger is a `Player` and the entity is alive, the **player's**
-`getKnownMovement()` (`Player` not read), else `getDeltaMovement()`. So a rowed boat's
+`getKnownMovement()`, else `getDeltaMovement()`. `ServerPlayer.getKnownMovement()`
+(ServerPlayer.txt) is, for a player riding a vehicle it does not control, the vehicle's
+`getKnownMovement()`, else `lastKnownClientMovement` (what the last move packet moved
+the player by, set by `setKnownMovement` in the packet listener, section 2.3). So a rowed boat's
 movement here is its rower's, and a player holder's is the player's known movement.
 
 `computeElasticInteraction(e, h, ePts, hPts)` (lines 554–654):
@@ -3862,10 +4830,14 @@ for i in 0 .. ePts.size():                           // one pair for single poin
     computeDampenedSpringInteraction(ph, pe, el, mv, oe).ifPresent(list::add)
 ```
 
-Note `e.position()` (the feet), not the box centre. `Vec3.yRot(float a)`: **Inferred**
-(`Vec3` not read) `c = Mth.cos(a), s = Mth.sin(a)` (the table, the repo's
-`clustine_noise::trig`, with the float angle widened); `x' = x*c + z*s`, `y' = y`,
-`z' = z*c - x*s`, each float widened to double before its multiply.
+Note `e.position()` (the feet), not the box centre. `Vec3.yRot(float a)` (Vec3.txt
+856–890): `c = Mth.cos((double)a)`, `s = Mth.sin((double)a)` (floats: the 65536-entry
+table, index `(long)(a·10430.378350470453) & 65535`, plus 16384 for the cosine,
+Mth.txt; the repo's `clustine_noise::trig`); `x' = x·(double)c + z·(double)s`, `y' = y`,
+`z' = z·(double)c − x·(double)s`. `Vec3.normalize()` gives `ZERO` when the length is
+below `9.999999747378752E-6` (`1.0E-5f` widened), else each component divided by the
+length; `distanceTo` is `sqrt(dx·dx + dy·dy + dz·dz)` summed in that order (Vec3.txt
+173–, 371–).
 
 `computeDampenedSpringInteraction(ph, pe, el, mv, oe)` (lines 656–703):
 
@@ -3905,10 +4877,13 @@ with `w = width`, `z0 = a*w`, `zs = b*w`, `xs = c*w`, `y = d*height`: `(-xs, y, 
 first, which is `Entity.interact` (VehicleEntity does not override it); only a `PASS`
 from it lets the boat be boarded (not sneaking, `outOfControlTicks < 60f`:
 `startRiding`). The packet path is `ServerGamePacketListenerImpl.handleInteract` →
-`Player.interactOn` (not read; section 2), which calls `entity.interact` first.
-**Inferred** (from the game as known; `Player.interactOn` not read): a player with
-infinite materials gets back the count an `interact` took, so a creative player keeps
-the lead.
+`Player.interactOn` (section 2.7). `interactOn` (Player.txt): a spectator opens the
+entity's menu if it is a `MenuProvider` and gets `PASS`; otherwise `copy =
+stack.copy()`; `r = e.interact(this, hand, location)`; if `r.consumesAction()`: if the
+player `hasInfiniteMaterials()`, the stack in hand is still the same object and its
+count fell below `copy`'s, the count is set back; return `r`. (Only if `interact` did
+not consume and the stack is not empty and `e` is a `LivingEntity` does
+`interactLivingEntity` follow: not for boats.) So a creative player keeps the lead.
 
 `Entity.interact(player, hand, location)`, in order, with `e = this`:
 
@@ -3981,8 +4956,8 @@ dimension (Entity.txt lines 9228–9242).
 
 **`ClientboundSetEntityLinkPacket`** (play, clientbound, id **102**, `minecraft:
 set_entity_link` in `generated/reports/packets.json`): the leashee's id and the holder's
-id, 0 for none. **Inferred** (the packet class not read): two `int`s written with
-`writeInt` (not varints), source then destination. Sent:
+id, 0 for none: two `int`s written with `writeInt` (not varints), source (the
+leashee) then destination (ClientboundSetEntityLinkPacket.txt 9–55). Sent:
 - on a change: by `setLeashedTo` (with the holder) and `dropLeash`/`removeLeash` (with
   none), to the players tracking the leashee (`sendToTrackingPlayers`, not the leashee);
 - at pairing: `ServerEntity.sendPairingData` (ServerEntity.txt lines 1001–1022), after
@@ -3998,8 +4973,15 @@ the holder appears; the edge need not order the holder's spawn first.
 `#minecraft:fences` (`#minecraft:wooden_fences` and `nether_brick_fence`; the repo's
 `clustine_blocks::data::FENCES`), on the server with a player:
 `bindPlayerMobs(player, level, pos)`; else `PASS`. The lead in hand is never consumed:
-the leashees move from the player to the knot. (**Inferred**: using a fence with any item or none
-also binds; `FenceBlock` not read.)
+the leashees move from the player to the knot. **Using a fence binds with any item or
+none**: `FenceBlock.useWithoutItem` (FenceBlock.txt 134–146) returns
+`LeadItem.bindPlayerMobs(player, level, pos)` on the server (`PASS` on the client).
+`ServerPlayerGameMode.useItemOn` calls it for the main hand when the block's
+`useItemOn` answers `TRY_WITH_EMPTY_HAND` (**Inferred**, `BlockBehaviour.useItemOn`'s
+default; `FenceBlock` does not override it) and the player is not sneaking with
+something in either hand. With a lead in the main hand the block's binding runs first;
+only if it does not consume (nothing bound) does `LeadItem.useOn` run, and binds
+nothing again.
 
 **`bindPlayerMobs(player, level, pos)`** (lines 42–108):
 ```
@@ -4014,9 +4996,12 @@ if found.isEmpty(): knot.discard()
 return PASS
 ```
 The search box is ±16 around the fence's centre; each must be within 12 (box centres)
-of the knot. **Inferred** (`ChunkMap` not read): a knot made and discarded in the same
-call may still reach clients as a spawn and a removal, since adding an entity pairs it
-with viewers at once.
+of the knot. A knot made and discarded in the same call does reach clients as a spawn
+and a removal: `ChunkMap.addEntity` (ChunkMap.txt) makes the entity's tracker and
+calls `updatePlayers(level.players())` at once, pairing it with every player in range;
+`removeEntity` then sends the removal. (When no knot was there and nothing can be tied,
+which happens only if every leashee is beyond 12 of the knot, a lead in the main hand
+makes the path above run `bindPlayerMobs` twice: two knots made, sent and discarded.)
 
 **`LeashFenceKnotEntity`** (LeashFenceKnotEntity.txt lines 1–393; a
 `BlockAttachedEntity`, section 6 has the base):
@@ -4044,9 +5029,10 @@ with viewers at once.
 - **Interaction** (128–234), on the server:
   1. if the hand holds shears: `r = Entity.interact(...)` (7.4: only the shears branch
      applies; it drops every leash the knot holds, each with a lead, `SHEARS_SNIP`,
-     damages the shears); if `r` is a `Success` that `wasItemInteraction()`, return it
-     (**Inferred**: `SUCCESS` counts as an item interaction; `InteractionResult$Success`
-     not read).
+     damages the shears); if `r` is a `Success` that `wasItemInteraction()`, return it:
+     `SUCCESS` is `Success(PREDICTED, ItemContext.DEFAULT)` and `DEFAULT` is
+     `ItemContext(true, null)`, so it counts (`withoutItem()` gives `NONE`, `(false,
+     null)`; InteractionResult$Success.txt 49–64, $ItemContext.txt 55–70).
   2. every leashable the **player** holds (`leashableLeashedTo(player)`, ±16 around the
      player) that `canHaveALeashAttachedTo(knot)` moves to the knot;
   3. if none moved and the player is **not** sneaking: every leashable the knot holds
@@ -4072,14 +5058,13 @@ with viewers at once.
   kills it and plays the sound (215–278). A lightning strike does nothing (346–348).
 - **Pick result** (379–385): a lead (creative pick-block).
 - **Add-entity** (357–366): `ClientboundAddEntityPacket(this, 0, getPos())`: data 0 and
-  the block position. **Inferred** (the packet class not read): that constructor sends
-  the block's integer corner as the position (the client places the knot itself at
-  `+0.5, +0.375, +0.5`), with zero motion and the entity's rotations.
+  the block position. That constructor sends the block's integer corner as the position
+  (the client places the knot itself at `+0.5, +0.375, +0.5`), the knot's motion (zero),
+  its rotations and a head rotation of 0 (6.8 has the fields).
 - Tracking: range 10 chunks, update interval `Integer.MAX_VALUE`, `trackDeltas` false
   (generated `entity_types.rs`, type id 77).
 - `repositionEntityAfterLoad()` is false (BlockAttachedEntity.txt lines 320–323).
 - `shouldRenderAtSqrDistance` < 1024 (**Client**).
-
 
 ---------------------------------------------------------------------------------------
 
@@ -4087,11 +5072,13 @@ with viewers at once.
 
 ### 8.1 Types, sizes and tracking
 
-From `crates/clustine-data/src/generated/entity_types.rs` (the extracted `EntityType`
-data; its index is the protocol id, checked equal to `generated/reports/registries.json`
-for all 161 types). "Range" is `clientTrackingRange` in chunks, "interval" `updateInterval`
-in ticks (`ServerEntity`'s gate, `test(t) = t % n == 0`; `i32::MAX` means, **Inferred**
-(`UpdateInterval` not read), only at the first tick and on `needsSync` or dirty data).
+From `crates/clustine-data/src/generated/entity_types.rs` (extracted from the jar's
+`EntityType` fields: `dimensions`, `clientTrackingRange`, `updateInterval`, `trackDeltas`,
+`fireImmune`, EntityType.txt 3–48; its index is the protocol id, checked equal to
+`generated/reports/registries.json` for all 161 types). In 26.3 the builder calls that set
+these are no longer in `EntityType` (its `<clinit>`, lines 1057–1068, holds only the
+logger and the codecs), so the extraction is the source for the numbers. "Range" is
+`clientTrackingRange` in chunks; "interval" `updateInterval` in ticks.
 
 | type | id | width × height | eye | range | interval | deltas | gravity (default) |
 |---|---|---|---|---|---|---|---|
@@ -4104,27 +5091,88 @@ in ticks (`ServerEntity`'s gate, `test(t) = t % n == 0`; `i32::MAX` means, **Inf
 | `command_block_minecart` | 29 | same | same | 8 | 3 | true | same |
 | boats: `acacia` 0, `birch` 12, `cherry` 23, `dark_oak` 34, `jungle` 75, `mangrove` 82, `oak` 90, `pale_oak` 95, `poplar` 106, `spruce` 128 (`_boat`); `bamboo_raft` 9 | | 1.375 × 0.5625 | 0.5625 | 10 | 3 | true | 0.04 (4.4) |
 | chest boats: the same woods' `_chest_boat` 1, 13, 24, 35, 76, 83, 91, 96, 107, 129; `bamboo_chest_raft` 8 | | 1.375 × 0.5625 | 0.5625 | 10 | 3 | true | 0.04 |
-| `armor_stand` | 5 | 0.5 × 1.975 (small 0.25 × 0.9875; marker 0 × 0) | 1.7775 | 10 | 3 | true | `LivingEntity`'s (not read) |
-| `item_frame` | 74 | 0.5 × 0.5 (the box is the frame's own, 6.5) | 0 | 10 | `i32::MAX` | false | none (never moves) |
-| `glow_item_frame` | 61 | same | 0 | 10 | `i32::MAX` | false | none |
-| `painting` | 94 | 0.5 × 0.5 (the box is the variant's, 6.4) | 0.425 | 10 | `i32::MAX` | false | none |
-| `leash_knot` | 77 | 0.375 × 0.5 | 0.0625 | 10 | `i32::MAX` | false | none |
-| `cushion` | 33 | 1.0 × 0.25 | 0.2125 | 10 | `i32::MAX` | false | none |
+| `armor_stand` | 5 | 0.5 × 1.975 (small 0.25 × 0.9875; marker 0 × 0) | 1.7775 | 10 | 3 | true | `LivingEntity`'s (section 5) |
+| `item_frame` | 74 | 0.5 × 0.5 (the box is the frame's own, 6.5) | 0 | 10 | never | false | none (never moves) |
+| `glow_item_frame` | 61 | same | 0 | 10 | never | false | none |
+| `painting` | 94 | 0.5 × 0.5 (the box is the variant's, 6.4) | 0.425 | 10 | never | false | none |
+| `leash_knot` | 77 | 0.375 × 0.5 | 0.0625 | 10 | never | false | none |
+| `cushion` | 33 | 1.0 × 0.25 | 0.2125 | 10 | never | false | none |
 | `mannequin` (N7) | 84 | 0.6 × 1.8 | 1.62 | 32 | 2 | true | `LivingEntity`'s |
 | `player` (as a rider) | 159 | 0.6 × 1.8 | 1.62 | 32 | 2 | false | |
 
-None of these is fire immune. The boats' item ids are in 8.4. **Inferred** (`ChunkMap$TrackedEntity` not
-read): an entity's effective tracking range is the largest of its own and its indirect
-passengers', so a boat or cart with a player in it is tracked at 32 chunks' range
-capped by the view distance.
+None of these is fire immune. The boats' item ids are in 8.4.
 
-Attachment points are in `EntityType` (not read). For orientation only, SteelMC's
-extraction gives: passenger `(0, 0.1875, 0)` for every minecart, `(0, 0.5625, 0)` for the
-boats (unused: `AbstractBoat` overrides `getPassengerAttachmentPoint`, 4.6), `(0, 1.975,
-0)` for the armour stand, `(0, 0.25, 0)` for the cushion; the player's **vehicle**
-attachment `(0, 0.6, 0)`, every N5 type's `(0, 0, 0)`. A rider's position is
-`vehicle.position + passengerPoint(index, rotated by the vehicle's yaw) −
-rider.vehicleAttachmentPoint` (1.5).
+**"Never"**: `updateInterval` `Integer.MAX_VALUE` (`EntityType.NO_UPDATE_INTERVAL`).
+`EntityType.hasUpdateInterval()` is `updateInterval != 2147483647` (EntityType.txt
+905–915), and `ChunkMap.addEntity` gives a type without one `UpdateInterval.NEVER`, any
+other `UpdateInterval.periodic(n)` (ChunkMap.txt 2671–2763, at offsets 60–76).
+**Inferred** (`UpdateInterval$1` not dumped): `NEVER.test` is always false, so such an
+entity's `sendChanges` sends only on `needsSync` or dirty data. `periodic(n)`:
+`test(t) = t % n == 0`, `nextInterval(t) = (t / n) * n + n` (n4-brief section 9;
+`UpdateInterval$2` not dumped here).
+
+**Tracking** (`ChunkMap$TrackedEntity`, ChunkMap.txt):
+- `addEntity(entity)` (2671–2763): nothing for an ender dragon part or a type whose
+  `clientTrackingRange * 16` is 0; else a `TrackedEntity(entity, range =
+  clientTrackingRange * 16, interval, trackDeltas)` is made and **at once**
+  `updatePlayers(level.players())` pairs it with every player in range (so a knot made and
+  discarded in one call reaches viewers as a spawn and a removal); a player added also
+  gets every other tracked entity checked.
+- `getEffectiveRange()` (TrackedEntity.txt 306–339): `r = range`; for each indirect
+  passenger `p`: `r = max(r, p.getType().clientTrackingRange() * 16)`; then
+  `scaledRange(r)` = `server.getScaledTrackingDistance(r)` (the server's
+  entity-broadcast percentage; not read, **Inferred** 100 % by default). **A boat or
+  cart with a player in it is tracked at the player's 32 chunks**, and falls back to 10
+  (8 for carts) when the last player gets off.
+- `updatePlayer(player)` (189–295): never for the entity itself; `d = player.position −
+  entity.position`; `max = (double) min(getEffectiveRange(), viewDistance(player) * 16)`;
+  shown iff `d.x² + d.z² <= max²` (horizontal only: `y` does not count) **and**
+  `entity.broadcastToPlayer(player)` (true for every N5 type, Entity.txt 9977–9980)
+  **and** the player tracks the entity's chunk (`isChunkTracked(player, chunkX,
+  chunkZ)`). Newly shown → `serverEntity.addPairing(player)` (1.11.2); no longer shown →
+  `removePlayer` → `removePairing` (`RemoveEntities`).
+- `ChunkMap.tick()` (2805–2900): for each tracked entity, if its `SectionPos` changed
+  since the last tick: `updatePlayers(all players)`; then `sendChanges()` **only if** the
+  section changed, or `entity.needsSync`, or its chunk is in entity-ticking range
+  (`DistanceManager.inEntityTickingRange`). Players who changed section have every
+  tracked entity's `updatePlayer` run for them. So whether a viewer sees an entity is
+  re-judged only when the entity or the viewer changes section (or at add), and an
+  entity outside entity-ticking chunks gets no `sendChanges` (its `ServerEntity`
+  `tickCount` does not advance).
+
+**Interpolation on the server**: `ServerEntity` takes `entity.getInterpolation()
+.interpolationTracker()` (ServerEntity.txt 76–78), which is `InterpolationTracker.NO_OP`
+for every handler (`InterpolationHandler.interpolationTracker()` default,
+InterpolationHandler.txt 5–8; not overridden by `AbstractInterpolationHandler` or
+`LinearInterpolationHandler`). So boats and old-behaviour carts are sent a linear path
+(`PositionPath.of(position)`, one step) as items are; `LinearInterpolationHandler`
+(3 steps for boats) is the client's.
+
+**Attachment points** (`EntityAttachments`, `EntityAttachment`):
+- `getPassengerAttachmentPoint(p, dims, scale)` uses `getClamped(PASSENGER, index of p,
+  yRot)` (EntityAttachments.txt: throws if the list is empty; the index clamped to
+  `[0, size − 1]`); `getVehicleAttachmentPoint` uses `get(VEHICLE, 0, yRot)` (throws if
+  the index is out of range). Both rotate by `transformPoint(v, yRot)` =
+  `v.yRot(-yRot * 0.017453292f)` (the product a `float`, negated before the multiply).
+- `Vec3.yRot(a)` (Vec3.txt): `c = Mth.cos((double) a)`, `s = Mth.sin((double) a)` (both
+  `float`, the table); `x' = x·(double)c + z·(double)s`, `y' = y`, `z' = z·(double)c −
+  x·(double)s`.
+- A type that declares no points falls back (`EntityAttachment` static block):
+  `PASSENGER` and `NAME_TAG` `AT_HEIGHT`, `VEHICLE` `AT_FEET`, `WARDEN_CHEST`
+  `AT_CENTER`; **Inferred** from the names (`EntityAttachment$Fallback` not dumped): `(0,
+  height, 0)`, `(0, 0, 0)`, `(0, height / 2, 0)`. `scale(x, y, z)` multiplies each point
+  component-wise (a small armour stand's scaled dimensions).
+- The points each N5 type and the player declare are set where the types are registered
+  (not dumped). The extraction the repo has does not carry them; SteelMC's, still the
+  only source, gives passenger `(0, 0.1875, 0)` for every minecart, `(0, 0.5625, 0)` for
+  the boats (unused: `AbstractBoat` overrides `getPassengerAttachmentPoint`, 4.6),
+  `(0, 1.975, 0)` for the armour stand (the `AT_HEIGHT` fallback's value), `(0, 0.25, 0)`
+  for the cushion (also the fallback's), and the player's **vehicle** attachment `(0,
+  0.6, 0)`, every N5 type's `(0, 0, 0)` (the `AT_FEET` fallback). The minecart's 0.1875
+  and the player's 0.6 are declared values and must be extracted (datagen: read
+  `EntityType.getDimensions().attachments()` per type) before they are relied on.
+- A rider's position is `vehicle.position + passengerPoint − rider.vehicleAttachmentPoint`
+  (1.5): a player in a cart stands `0.1875 − 0.6 = −0.4125` below the cart's position.
 
 ### 8.2 Synched data
 
@@ -4158,48 +5206,99 @@ Then, per class (ids continue from the parent's):
 | `AbstractBoat` (all boats and rafts) | 11 | `DATA_ID_PADDLE_LEFT` | `BOOLEAN` | false | 4.8 |
 | | 12 | `DATA_ID_PADDLE_RIGHT` | `BOOLEAN` | false | |
 | | 13 | `DATA_ID_BUBBLE_TIME` | `INT` | 0 | |
-| `LivingEntity` (stand, mannequin; **not read**, SteelMC's list) | 8–14 | living flags `BYTE`, health `FLOAT`, effect particles `PARTICLES`, ambience `BOOLEAN`, arrows `INT`, stingers `INT`, sleeping pos `OPTIONAL_BLOCK_POS` | | | 5.6 |
+| `LivingEntity` (stand, mannequin; LivingEntity.txt static block and `defineSynchedData`) | 8 | `DATA_LIVING_ENTITY_FLAGS` | `BYTE` | 0 | 5.6 |
+| | 9 | `DATA_HEALTH_ID` | `FLOAT` | 1.0 (the constructor then sets the max health) | |
+| | 10 | `DATA_EFFECT_PARTICLES` | `PARTICLES` | empty list | |
+| | 11 | `DATA_EFFECT_AMBIENCE_ID` | `BOOLEAN` | false | |
+| | 12 | `DATA_ARROW_COUNT_ID` | `INT` | 0 | |
+| | 13 | `DATA_STINGER_COUNT_ID` | `INT` | 0 | |
+| | 14 | `SLEEPING_POS_ID` | `OPTIONAL_BLOCK_POS` | empty | |
 | `ArmorStand` | 15 | `DATA_CLIENT_FLAGS` | `BYTE` | 0 (1 small, 4 arms, 8 no base plate, 16 marker) | 5.2, 5.6 |
 | | 16–21 | head, body, left arm, right arm, left leg, right leg pose | `ROTATIONS` | (0,0,0), (0,0,0), (-10,0,-10), (-15,0,10), (-1,0,-1), (1,0,1) | |
-| `Avatar` (mannequin; **not read**) | 15, 16 | main hand `HUMANOID_ARM`, model parts `BYTE` | | | 5.9 |
+| `Avatar` (mannequin; Avatar.txt 21–23, 173–177) | 15 | `DATA_PLAYER_MAIN_HAND` | `HUMANOID_ARM` | | 5.9 |
+| | 16 | `DATA_PLAYER_MODE_CUSTOMISATION` | `BYTE` | | |
 | `Mannequin` | 17 | `DATA_PROFILE` | `RESOLVABLE_PROFILE` | empty static profile | 5.9 |
 | | 18 | `DATA_IMMOVABLE` | `BOOLEAN` | false | |
 | | 19 | `DATA_DESCRIPTION` | `OPTIONAL_COMPONENT` | "NPC" label | |
 | `HangingEntity` (frames, painting) | 8 | `DATA_DIRECTION` | `DIRECTION` | `SOUTH` | 6.2 |
 | `ItemFrame` (both frames) | 9 | `DATA_ITEM` | `ITEM_STACK` | empty | 6.5 |
 | | 10 | `DATA_ROTATION` | `INT` | 0 | |
-| `Painting` | 9 | `DATA_PAINTING_VARIANT_ID` | `PAINTING_VARIANT` | `VariantUtils.getAny` (**Inferred** `alban`) | 6.4 |
+| `Painting` | 9 | `DATA_PAINTING_VARIANT_ID` | `PAINTING_VARIANT` | 6.4 | 6.4 |
 | `Cushion` | 8 | `DATA_COLOR` | `DYE_COLOR` | `WHITE` | 5.8 |
 | `LeashFenceKnotEntity` | — | none of its own | | | 7.6 |
 
-`SetEntityData` writes the serializer's id from `EntityDataSerializers`' registration
-order (not read). The repo has `BYTE` 0, `ITEM_STACK` 7, `BLOCK_POS` 10. For
-orientation only, SteelMC's 26.3 list: `BYTE` 0, `INT` 1, `LONG` 2, `FLOAT` 3, `STRING`
-4, `COMPONENT` 5, `OPTIONAL_COMPONENT` 6, `ITEM_STACK` 7, `BOOLEAN` 8, `ROTATIONS` 9,
-`BLOCK_POS` 10, `OPTIONAL_BLOCK_POS` 11, `DIRECTION` 12, `OPTIONAL_LIVING_ENTITY_REFERENCE`
-13, `BLOCK_STATE` 14, `OPTIONAL_BLOCK_STATE` 15, `PARTICLE` 16, `PARTICLES` 17, `POSE` 20,
-`PAINTING_VARIANT` 34, `RESOLVABLE_PROFILE` 41, `HUMANOID_ARM` 42, `DYE_COLOR` 43. Each
-must be checked against the official server (the comparisons) before it is relied on.
+**Serializer wire ids.** `SetEntityData` writes, per value, the index (a byte), the
+serializer's id (a varint) and the value. The id is the order of
+`EntityDataSerializers.registerSerializer` in its `<clinit>` (EntityDataSerializers.txt
+281–368; `registerSerializer` adds to a `CrudeIncrementalIntIdentityHashBiMap`, lines
+97–103, which numbers from 0). The order of registration is not the order of the fields'
+declaration (the chicken and pig serializers and `OPTIONAL_GLOBAL_POS` move). The
+codecs are from the same `<clinit>` (lines 131–280):
+
+| id | serializer | codec |
+|---|---|---|
+| 0 | `BYTE` | `ByteBufCodecs.BYTE` (one byte) |
+| 1 | `INT` | `VAR_INT` |
+| 2 | `LONG` | `VAR_LONG` |
+| 3 | `FLOAT` | `FLOAT` (four bytes, big-endian) |
+| 4 | `STRING` | `STRING_UTF8` (varint length, UTF-8) |
+| 5 | `COMPONENT` | `ComponentSerialization.TRUSTED_STREAM_CODEC` |
+| 6 | `OPTIONAL_COMPONENT` | `ComponentSerialization.TRUSTED_OPTIONAL_STREAM_CODEC` |
+| 7 | `ITEM_STACK` | `EntityDataSerializers$1` (**Inferred** `ItemStack.OPTIONAL_STREAM_CODEC`, the repo's slot) |
+| 8 | `BOOLEAN` | `BOOL` (one byte) |
+| 9 | `ROTATIONS` | `Rotations.STREAM_CODEC` (**Inferred** three floats x, y, z) |
+| 10 | `BLOCK_POS` | `BlockPos.STREAM_CODEC` (a long) |
+| 11 | `OPTIONAL_BLOCK_POS` | `BlockPos.STREAM_CODEC` made optional (**Inferred** a boolean then the long) |
+| 12 | `DIRECTION` | `Direction.STREAM_CODEC` (**Inferred** a varint of the 3D value: D 0, U 1, N 2, S 3, W 4, E 5) |
+| 13 | `OPTIONAL_LIVING_ENTITY_REFERENCE` | `EntityReference.streamCodec()` made optional |
+| 14 | `BLOCK_STATE` | `ByteBufCodecs.idMapper(Block.BLOCK_STATE_REGISTRY)` (a varint state id) |
+| 15 | `OPTIONAL_BLOCK_STATE` | `EntityDataSerializers$2` (**Inferred** a varint, 0 for empty, else the state id) |
+| 16 | `PARTICLE` | `ParticleTypes.STREAM_CODEC` |
+| 17 | `PARTICLES` | `ParticleTypes.STREAM_CODEC` as a list (varint count, then each) |
+| 18 | `VILLAGER_DATA` | `VillagerData.STREAM_CODEC` |
+| 19 | `OPTIONAL_UNSIGNED_INT` | `EntityDataSerializers$3` |
+| 20 | `POSE` | `Pose.STREAM_CODEC` (**Inferred** a varint of the ordinal) |
+| 21–32 | cat, cat sound, cow, cow sound, wolf, wolf sound, frog, pig, pig sound, chicken, chicken sound, zombie nautilus variants | their `STREAM_CODEC`s (N7) |
+| 33 | `OPTIONAL_GLOBAL_POS` | `GlobalPos.STREAM_CODEC` made optional |
+| 34 | `PAINTING_VARIANT` | `PaintingVariant.STREAM_CODEC` = `ByteBufCodecs.holder(PAINTING_VARIANT, DIRECT_STREAM_CODEC)` (PaintingVariant.txt 157–162; **Inferred** a varint, registry id + 1, or 0 followed by the direct form: varint width, varint height, `Identifier` asset id, optional title, optional author, lines 138–154) |
+| 35 | `SNIFFER_STATE` | |
+| 36 | `ARMADILLO_STATE` | |
+| 37 | `COPPER_GOLEM_STATE` | |
+| 38 | `WEATHERING_COPPER_STATE` | |
+| 39 | `VECTOR3` | `VECTOR3F` |
+| 40 | `QUATERNION` | `QUATERNIONF` |
+| 41 | `RESOLVABLE_PROFILE` | `ResolvableProfile.STREAM_CODEC` |
+| 42 | `HUMANOID_ARM` | `HumanoidArm.STREAM_CODEC` |
+| 43 | `DYE_COLOR` | `DyeColor.STREAM_CODEC` (**Inferred** a varint of the dye's id) |
+
+The repo's `BYTE` 0, `ITEM_STACK` 7, `BLOCK_POS` 10
+(`crates/clustine-protocol/src/packets/play.rs`, `entity_data_serializer`) agree. The
+inner codecs marked **Inferred** are classes not dumped; the comparisons with the
+official server check them.
 
 ### 8.3 What `ServerEntity` does with each
 
 - **Carts and boats** (interval 3, deltas): the n4-brief section 9 path, every third
-  tick or on `needsSync`/dirty data; a boat a client drives is sent to the other
-  trackers the same way, from the position `handleMoveVehicle` set. Hit data (8–10)
-  makes the data dirty each tick it decays, so a shaking vehicle is sent every tick.
-  Their client interpolation is `LinearInterpolationHandler` (3 steps for boats,
-  **Client**); what its server-side tracker gives the `VecDelta`'s step count is not read.
+  tick or on `needsSync`/dirty data, with a linear position path (8.1, interpolation); a
+  boat a client drives is sent to the other trackers the same way, from the position
+  `handleMoveVehicle` set. Hit data (8–10) makes the data dirty each tick it decays, so
+  a shaking vehicle is sent every tick.
 - **A rider** of any of them: rotation only (1.11.1).
-- **Frames, paintings, knots, cushions** (interval `i32::MAX`, no deltas): sent at
+- **Frames, paintings, knots, cushions** (`UpdateInterval.NEVER`, no deltas): sent at
   pairing; again only on `needsSync` (set by `setPos`) or dirty data (an item put in, a
   rotation, a colour). An item frame also runs its map's updates every 10 ticks (maps:
   later). A painting's codec base is its block's corner.
 - **Armour stands** (interval 3, deltas): as carts, plus a `LivingEntity`'s
   `UpdateAttributes` and `SetEquipment` at pairing and on change (1.11.2).
+- **When `sendChanges` runs at all** (`ChunkMap.tick`, 8.1): only in a tick where the
+  entity changed section, has `needsSync`, or stands in an entity-ticking chunk. In
+  Clustine entities tick only where they may (ADR-0028), so the edge runs its `Tracker`
+  for the ticks the region ran, as now.
 - **Pairing order** (1.11.2): `AddEntity` (hanging entities and knots with their own
   data and the block's corner), `SetEntityData` (non-default values), `UpdateAttributes`,
   `SetEquipment`, `SetPassengers` (own), `SetPassengers` (its vehicle's), `SetEntityLink`
-  (if leashed), all in one bundle.
+  (if leashed), all in one bundle, sent as soon as the entity is added (8.1) or the viewer
+  comes within range at a change of section.
 
 ### 8.4 Boat items
 
@@ -4227,33 +5326,41 @@ Rafts differ from boats only in their ride height (0.5 against 0.1875, 4.6).
 ## 9. Random draws
 
 Who draws, from which random, and how much. "Entity's" is the entity's own
-`RandomSource` (`Entity.random`, made in `Entity.<init>`), "level's" the level's. In
-Clustine (ADR-0028 section 4) each becomes a named stream; the plan names them.
+`RandomSource` (`Entity.random`, made in `Entity.<init>`), "level's" the level's
+`random`. Sounds use a third: the level's `soundSeedGenerator`, a separate thread-safe
+`RandomSource` (Level.txt 94–97) that no rule reads. In Clustine (ADR-0028 section 4)
+each becomes a named stream; the plan names them.
 
 | where | random | draws | section |
 |---|---|---|---|
 | any new entity (`Entity.<init>`): a placed cart, boat, stand, frame, painting, knot, cushion, a dropped item | the new entity's | two `nextLong` (UUID) | n4 8.4 |
-| `Painting.create` | the new painting's | one `nextInt(n)` after its UUID, `n` the count of placeable variants of the largest fitting area (**Inferred** `Util.getRandomSafe`); drawn even when the item names a variant | 6.4 |
-| `ArmorStandItem.useOn` → `EntityType.create` | level's | one `nextFloat` for a yaw that `snapTo` overwrites (**Inferred**, `EntityType` not read): name it, draw nothing | 5.1 |
+| a new `LivingEntity` (an armour stand) | the new entity's | after the UUID, one `nextFloat` (`* 6.2831855f`, a yaw the placing overwrites) | 5.1 |
+| `EntityType.create` with a position (`ArmorStandItem`, `CushionItem`) | level's | one `nextFloat` (`wrapDegrees(nextFloat() * 360)`, a yaw `snapTo` overwrites): name it, draw nothing | 5.1, 5.8 |
+| `EntityType.create(level, reason)` (carts, boats) and `createDefaultStackConfig` | — | none | 3.2, 4.1 |
+| `Painting.create` | the new painting's | one `nextInt(n)` after its UUID (`Util.getRandomSafe`: `list.get(random.nextInt(size))`), `n` the count of placeable variants of the largest fitting area; drawn even when `n` is 1 and when the item names a variant. The default variant (`VariantUtils.getAny`) draws nothing | 6.4 |
 | a vehicle's own item dropped (`destroy` → `spawnAtLocation`), a lead dropped (`dropLeash`, the 100-tick restore), a cushion's item, a painting's or frame's item | the new `ItemEntity`'s | two `nextLong`, `nextFloat` (bob), `nextFloat` (yaw), two `nextDouble` (motion); no position draws | n4 8.4 |
 | a frame's held item dropped | the frame's | one `nextFloat` against `dropChance`, after the frame's own drop | 6.5 |
-| an armour stand broken by a player (`popResource` of the stand item) and each worn item (`popResource` at the block above) | level's | the offset draws of `popResource`, then the item's own | 5.4 |
-| `dropAllDeathLoot` of a stand | the `minecraft:entities/armor_stand` sequence | none expected (empty table; **Inferred**) | 5.4 |
-| container contents spilled (`Containers.dropContents`, not read) | level's | **Inferred**, per non-empty slot: three `nextDouble` for the position, then per split `nextInt(21) + 10` and three `triangle` (two `nextDouble` each) for the motion; then each item's own | 3.18 |
+| an armour stand broken by a player (`popResource` of the stand item) and each worn item (`popResource` at the block above, in `EquipmentSlot.VALUES` order) | level's | the offset draws of `popResource`, then the item's own | 5.4 |
+| `dropAllDeathLoot` of a stand | the `minecraft:entities/armor_stand` sequence | none (empty table; skipped for a small stand) | 5.4 |
+| container contents spilled (`Containers.dropContents`) | level's | per slot, empty or not, three `nextDouble` (x, y, z); per piece `nextInt(21) + 10` (before the new item's own draws), then three `triangle(·, 0.11485000171139836)` (**Inferred** two `nextDouble` each, `RandomSource.triangle` not read). A survival break of a container vehicle spills twice: the second finds the slots empty and draws three per slot only | 3.18, 4.10 |
 | `MinecartFurnace.tick` | entity's | `nextInt(4)` every fuelled tick, server too (an unsent particle) | 3.17 |
 | `Entity.lavaHurt` (a cart in lava) | entity's | `nextFloat` for the burn sound's pitch, when damage was taken | 3.3 |
-| boat paddle sound | boat's | `nextFloat` (pitch) per sound; ticks 1, 2, 17, 33, … of a stroke | 4.2 |
-| `AbstractBoat.onAboveBubbleColumn` | boat's | `nextInt(100)` per call (twice a tick, 4.0 item 8) when not under water; on 0, three `nextFloat` (pitch, particle x, z) | 4.7 |
-| `Entity.baseTick`'s water splash (boats) | entity's | as n4 | n4 |
-| every `level.playSound(null, …)` (placing, breaking, sitting, leads, shears, paddles, frame items) | level's | **Inferred** one `nextLong` for the sound packet's seed (`ServerLevel.playSeededSound` not read) | |
+| a player's `pushEntities` (pushing carts and boats) | the player's | `nextInt(4)` only when more than `maxEntityCramming − 1` pushable entities touch it | 3.10 |
+| boat paddle sound | boat's, and the sound seed's | `nextFloat` (pitch) per sound, ticks 1, 2, 17, 33, … of a stroke; one `nextLong` from `soundSeedGenerator` | 4.2 |
+| `AbstractBoat.onAboveBubbleColumn` | boat's | `nextInt(100)` per call (twice a tick, 4.0 item 8) when not under water; on 0, three `nextFloat` (pitch, particle x, z); the sound and particle themselves do nothing on the server | 4.7 |
+| `Entity.baseTick`'s water splash (boats, stands) | entity's | as n4 | n4 |
+| a submerged stand wearing a respiration helmet | stand's | one `nextDouble` per tick (`decreaseAirSupply`) | 5.5 |
+| a worn item put on a stand (`onEquipItem`'s sound) | stand's | one `nextLong` (the sound's seed, `playSeededSound`) | 5.5 |
+| every other `level.playSound(…)` and `Entity.playSound` (placing, breaking, sitting, leads, shears, frame items) | the level's `soundSeedGenerator` | one `nextLong` for the packet's seed (Level.txt 746–810): unobservable but for the client's choice of sound variant, so any seed will do | |
 | `MinecartTNT` (N6) | entity's | `nextInt(20)` twice (fuse), `nextDouble` (power) | 3.19 |
 | `ContainerEntity` loot tables (not in N5) | the seed's, or level's | the table's | 3.18 |
 
 None in: `startRiding`, passengers, `rideTick`, `positionRider`, dismounting,
 `DismountHelper`, `push`, saving, `ServerEntity`, `ServerGamePacketListenerImpl`'s paths
 of section 2, `MinecartItem`, `BoatItem`, `OldMinecartBehavior`, `DetectorRailBlock`,
-`VehicleEntity.hurtServer`, `tickLeash` and the wrench, `LeadItem`, the knot,
-`HangingEntityItem` (beyond the new entity's), item frame interaction.
+`VehicleEntity.hurtServer`, a stand's travel, fall check, freezing and equipment
+detection, `tickLeash` and the wrench, `LeadItem`, the knot, `HangingEntityItem` (beyond
+the new entity's), item frame interaction.
 
 ---------------------------------------------------------------------------------------
 
@@ -4263,7 +5370,7 @@ of section 2, `MinecartItem`, `BoatItem`, `OldMinecartBehavior`, `DetectorRailBl
 
 - **The unit** is the root vehicle and its indirect passengers (ADR-0028): references by
   identity in the game, keys inside one record in Clustine. The passengers' order is
-  state (0, item 9). A cart may be the root of a boat (0, item 15). `getRootVehicle`,
+  state (0, item 9). A cart may be the root of a boat (0, item 16). `getRootVehicle`,
   `isPassengerOfSameVehicle` (a unit never pushes itself) stay within a unit.
 - **Rider placement** reads only the vehicle. A rider's own `tick` (inside `rideTick`)
   reads blocks around the rider, within the copies of the root's chunk.
@@ -4275,14 +5382,17 @@ of section 2, `MinecartItem`, `BoatItem`, `OldMinecartBehavior`, `DetectorRailBl
   restore by UUID must look up by key across the copies and the players the region
   knows of, for 100 ticks; a restore by fence position that creates a knot in another
   region's chunk is a spawn across the line, and the leashee needs the knot's key at
-  once. Binding at a fence changes the holder of leashees in up to ±16, possibly in
+  once. Binding at a fence (a lead used on it, or the fence used with any item or
+  none) changes the holder of leashees in up to ±16, possibly in
   several regions' chunks; a knot discarding itself when its last leashee goes is a
   write to the holder.
 - **A player holding a leashed boat** crosses by their own hand-over while the boat
   stays: the leash must not drop at the hand-over.
-- **The comparator and the frame it reads** may be in different regions; the frame's
-  region tells the comparator's chunk of a change as a neighbour update across the line
-  (6.6).
+- **The comparator and the frame it reads** may be in different regions: a comparator
+  reads a frame only through a conductor, as the single frame of its facing in the block
+  beyond, two blocks away, and the frame's region tells the comparator's chunk of a
+  change (`updateNeighbourForOutputSignal`, with no check that the far block is loaded)
+  as a neighbour update across the line (6.6).
 
 ### 10.2 Riding across a line (ADR-0028 section 5)
 
@@ -4308,6 +5418,13 @@ of section 2, `MinecartItem`, `BoatItem`, `OldMinecartBehavior`, `DetectorRailBl
   column, `setLeashedTo`) dismounts in the vehicle's region; for a player it is a
   dismount the edge shows.
 - **Saving** (0, item 10): what a player's logout does to the boat they sit in.
+- **The edge's view of a vehicle**: its tracking range is its riders' largest (0, item
+  38), judged on horizontal distance and re-judged in the game only when the entity or
+  the viewer changes section; `sendChanges` runs only in ticks when the entity changed
+  section, has `needsSync` or is in an entity-ticking chunk (8.3).
+- **The attacker's state**: a player's hit on a vehicle across a line needs the
+  player's attack strength (`attackStrengthTicker`, kept by the player's region) and
+  whether it is a sprinting or critical hit (2.8).
 
 ### 10.3 Blocks read a tick away
 
@@ -4351,11 +5468,11 @@ of section 2, `MinecartItem`, `BoatItem`, `OldMinecartBehavior`, `DetectorRailBl
 ### 10.5 What an arrival must carry beyond the saved fields
 
 The game saves none of these, yet a player would notice their loss at a line within
-minutes or seconds: a vehicle's `damage`, hurt time and direction (3.0 item 11); the
-passenger's `boardingCooldown` (1.0 item 6); a boat's `outOfControlTicks`,
-`paddlePositions`, `deltaRotation`, status, bubble time and its flags; a cart's
-`lastKnownPosition` (for `getKnownMovement`); a leash's `angularMomentum`. A stand's `lastHit` is
-against game time (0, item 23); hanging entities' `ticksSinceLastCheck` may restart at 0
+minutes or seconds: a vehicle's `damage`, hurt time and direction (3.0 item 11); a
+non-player passenger's `boardingCooldown` (a player's is reset to 0 on dismount); a boat's `outOfControlTicks`,
+`paddlePositions`, `deltaRotation`, status, bubble time and its flags; a leash's
+`angularMomentum`. A stand's `lastHit` is
+against game time (0, item 25); hanging entities' `ticksSinceLastCheck` may restart at 0
 at a take-in, as at the game's load. Large arrivals: a chest cart or chest boat with 27
 stacks can exceed a log record (ADR-0028, "Large").
 
@@ -4363,132 +5480,95 @@ stacks can exceed a log record (ADR-0028, "Large").
 
 Drops are born at the entity's position: a vehicle's item at its exact position, a
 hanging entity's 0.15 out from the wall, the stand's at its block and the block above,
-container contents in the vehicle's block column (**Inferred**, `Containers`): all in the
-entity's own chunk, which for a painting can differ from its `block_pos`'s (0, item 32).
+container contents in the vehicle's block cell (`Containers`): all in the
+entity's own chunk, which for a painting can differ from its `block_pos`'s (0, item 35).
 A painting, frame, cart or boat is filed in the chunk of its position.
 
 ---------------------------------------------------------------------------------------
 
 ## 11. Not read
 
-Each is a class (or method) whose bytecode a rule above depends on; the sections that
-mark **Inferred** rest on these. Grouped by what they are needed for.
+What a rule above still depends on after the second dump (132 classes). Each **Inferred**
+left in the brief rests on one of these.
 
-**Riding and the player**
-- Not read: `net.minecraft.world.entity.LivingEntity`, needed for `stopRiding`/
-  `removeVehicle`/`dismountVehicle` (where a dismounted player or mob is put),
-  `getDismountPoses`, `getLocalBoundsForPose`, `isClientAuthoritative`, `rideTick`,
-  `canRide`, `pushEntities`/`doPush`/`isPushable`, `swing` (`animate` or
-  `swing_animation`), and all of the armour stand's tick, `aiStep`, `travel`, health,
-  equipment (`setItemSlot`, `getEquipmentSlotForItem`, `SetEquipment`), attributes,
-  `interact` (name tags), `dropAllDeathLoot`, `getScale`, `getAgeScale`,
-  `isInvulnerableTo`, its synched data ids 8–14.
-- Not read: `net.minecraft.world.entity.player.Player`, needed for `removeVehicle`,
-  `rideTick`, `wantsToStopRiding`, `canRide`, `DEFAULT_VEHICLE_ATTACHMENT`,
-  `isClientAuthoritative`, `interactOn` (the order of `interact` and
-  `interactLivingEntity`, a creative player's count kept), `attack` (the amount a hit
-  deals, the path to `hurtOrSimulate` and `skipAttackInteraction`),
-  `isWithinEntityInteractionRange`, `isWithinAttackRange`, `isSecondaryUseActive`,
-  `getKnownMovement`, `mayUseItemAt`.
-- Not read: `net.minecraft.server.level.ServerPlayer`, needed for `startRiding`,
-  `stopRiding`, `dismountTo`, `teleportTo` (what a player is sent on mounting and
-  dismounting), `doTick`/`rideTick` (the shift dismount), `setLastClientInput` and
-  `getLastClientMoveIntent` (the cart's input), `getControlledVehicle`,
-  `checkMovementStatistics`, `setKnownMovement`, saving the root vehicle with the
-  player, and how a server-side `push` on a player reaches its client.
-- Not read: `net.minecraft.world.entity.Avatar`, needed for the mannequin's data ids 15–16.
-- Not read: `net.minecraft.server.players.PlayerList`, needed for loading and saving a
-  player's root vehicle (`UNLOADED_WITH_PLAYER` at logout; 0, item 10).
-- Not read: `net.minecraft.server.level.ServerLevel`, needed for `tickNonPassenger` and
-  `tickPassenger` (the order passengers tick), `getEntity(UUID)`, `playSeededSound` and
-  `playSound` (the sound seed draw), `addParticle` (that server particles are dropped),
-  `getGameTime`.
-- Not read: `net.minecraft.server.level.ChunkMap` and `ChunkMap$TrackedEntity`, needed
-  for the effective tracking range of a vehicle with passengers and when a new entity
-  (a knot made and discarded in one call) is paired with viewers.
-- Not read: `net.minecraft.server.level.ServerChunkCache.move`, for completeness only.
+**Entity types and data**
+- Not read: the class that registers the entity types (26.3 moved the `EntityType.Builder`
+  calls out of `EntityType`, whose static initialiser now holds only `LOGGER`, `CODEC`
+  and `STREAM_CODEC`; probably `EntityTypes`), with `EntityType$Builder`,
+  `EntityAttachments$Builder` and `EntityAttachment$Fallback`, needed for every N5 type's
+  and the player type's declared passenger and vehicle points (SteelMC's still quoted,
+  8.1), `ridingOffset`, the player type's `noSave`/`canSerialize`, `onlyOpCanSetNbt`
+  (`OP_ONLY_CUSTOM_DATA`) and the boats' drop items. Better: have `cargo datagen` extract
+  the attachment points with the sizes it already extracts.
+- Not read: `net.minecraft.world.entity.ai.attributes.Attributes` (and `AttributeMap`,
+  `AttributeInstance`), needed for the armour stand's attribute defaults (gravity, max
+  health, safe fall distance, scale, movement efficiency) and which attributes are sent
+  (`UpdateAttributes`).
+- Not read: `EntityDataSerializers$1` and `$2` (the `ITEM_STACK` and
+  `OPTIONAL_BLOCK_STATE` codecs) and the inner codecs `Direction`, `Rotations`, `Pose`,
+  `DyeColor`, `HumanoidArm`, `ResolvableProfile`, `ParticleTypes`,
+  `ComponentSerialization.TRUSTED_(OPTIONAL_)STREAM_CODEC`, `ByteBufCodecs.holder` and
+  `optional`, needed for the bytes of those values in `set_entity_data` (8.2).
+- Not read: `SynchedEntityData.set`, needed for whether `onSyncedDataUpdated` runs on
+  the server (6.2).
+- Not read: `MappedRegistry.getAny`, needed for which painting variant is the default
+  (**Inferred** `alban`, 6.4).
+- Not read: `UpdateInterval$1` and `$2`, needed for `NEVER`'s and `periodic`'s `test` and
+  `nextInterval` (**Inferred**: `NEVER.test` is always false).
+- Not read: `SteppedInterpolationHandler`, needed for the position path `ServerEntity`
+  sends for an armour stand.
+- Not read: `MinecraftServer.getScaledTrackingDistance`, needed for the entity-broadcast
+  percentage's default (**Inferred** 100 %); and `MinecraftServer` for when queued
+  packets run between ticks.
 
-**Types, data and packets**
-- Not read: `net.minecraft.world.entity.EntityType` (its static initialiser's builder
-  calls), `EntityAttachments`, `EntityAttachment`, needed for the passenger and vehicle
-  attachment points of every N5 type and the player, the player type's
-  `canSerialize`/`noSave`, `isBlockDangerous`, `loadEntityRecursive` (how a saved unit is
-  rebuilt), `create(level, config, pos, reason, …)` and `getYOffset` (an armour stand's
-  spawn height and its discarded yaw draw), `createDefaultStackConfig` (what a placed
-  entity takes from its stack: custom name, `entity_data`, implicit components), and the
-  boats' drop items.
-- Not read: `net.minecraft.network.syncher.EntityDataSerializers`, needed for the wire
-  ids of every serializer in 8.2 and the encodings of `OPTIONAL_BLOCK_STATE`,
-  `DIRECTION`, `PAINTING_VARIANT`, `ROTATIONS`, `DYE_COLOR`.
-- Not read: the packet classes `ServerboundInteractPacket`, `ServerboundAttackPacket`,
-  `ServerboundMoveVehiclePacket`, `ClientboundMoveVehiclePacket`,
-  `ServerboundPaddleBoatPacket`, `ServerboundPlayerCommandPacket` (and its `Action`),
-  `ClientboundSetPassengersPacket`, `ClientboundSetEntityLinkPacket` (**Inferred** two
-  `int`s), and `ClientboundAddEntityPacket.<init>(Entity, int, BlockPos)` (the position
-  and motion a hanging entity or knot is added with), needed for their codecs.
-- Not read: `ServerGamePacketListenerImpl$1`, needed for the `player_command` action
-  ordinals; and a `javap -v` of `ServerGamePacketListenerImpl` for the `invokedynamic`
-  predicate of `noBlocksAround` (**Inferred** `isAir`).
-- Not read: `InteractionResult$Success`, `$SwingSource`, `$ItemContext`, needed for
-  `consumesAction`, `shouldSwing`, `wasItemInteraction`, `withoutItem`.
-- Not read: `net.minecraft.world.entity.UpdateInterval`, needed for `test` and
-  `nextInterval` with `Integer.MAX_VALUE`.
-- Not read: `net.minecraft.world.entity.LinearInterpolationHandler` and
-  `InterpolationTracker`, needed for the position paths (and step counts) `ServerEntity`
-  sends for boats and old-behaviour carts, and the client's interpolation.
+**Packets**
+- Not read: `PositionAndRotation` (its `STREAM_CODEC`) and `Vec3$1` (`Vec3.STREAM_CODEC`),
+  needed for the exact fields of `move_vehicle` in both directions.
+- Not read: `InteractionHand`'s codec, `LpVec3` (or a `javap -v` of `Vec3` for
+  `LP_STREAM_CODEC`), and `FriendlyByteBuf` (`writeVarIntArray`, `writeEnum`,
+  `writeUUID`), needed for `interact`'s hand and location and the varint array of
+  `set_passengers`.
 
-**World queries and shapes**
-- Not read: `net.minecraft.world.level.CollisionGetter` / `EntityGetter` / `Level`
-  (`noCollision(Entity, AABB)`, `getEntityCollisions`, `getPreMoveCollisions`,
-  `noBlockCollision`, `noBorderCollision`, `getEntities`, `hasEntities`, `findBlocksIn`),
-  needed for entity colliders, the refusal of a vehicle's move, the floating test, what
-  blocks a placing, and `canCoexist`'s box test.
-- Not read: `net.minecraft.world.level.BlockGetter.getBlockFloorHeight`, needed for every
-  dismount search.
-- Not read: `BlockMatcher` (`forEachUntil`, `allMatched`), needed for which blocks a
-  painting's support box, a cushion's anchor and fire searches visit, and their results.
-- Not read: `net.minecraft.world.entity.EntitySelector` (`pushableBy`, `CAN_BE_PICKED`,
-  `CONTAINER_ENTITY_SELECTOR`), needed for what a cart or boat pushes or picks up, what
-  blocks a boat's placing, which carts a detector rail counts.
-- Not read: `net.minecraft.world.phys.Vec3` (`yRot`, `projectedOn`, `horizontal`,
-  `relative`, `atCenterOf`, `multiply`, `normalize`, `distanceTo`) and `AABB.ofSize`,
-  needed for the seats' turn, the furnace's push, the hanging boxes and the leash's
-  attachment points bit for bit; `Mth.sin`/`Mth.cos` (the repo has the table: confirm
-  its argument type).
-- Not read: `Item.getPlayerPOVHitResult`, needed for the boat's ray (reach, clip mode).
-- Not read: `BlockPlaceContext`, needed for the armour stand's clicked position.
+**Players and attacks**
+- Not read: `AttackRange` (`isInRange`), needed for the attack reach.
+- Not read: `Player.canCriticalAttack`, `getKnockback` and `ItemStack.getDamageSource`,
+  needed for critical hits, the sprint push's strength and the attack's damage source.
+- Not read: `net.minecraft.world.item.context.UseOnContext`, needed for `getRotation`
+  (the player's yaw, used by the armour stand's and the cushion's placing).
+- Not read: `EntityEquipment` and `EnchantmentHelper`, needed for worn items' own tick on
+  a stand and enchanted items' location effects.
+- Not read: the caller of `ServerPlayer.loadAndSpawnParentVehicle` (the join path),
+  needed only to place the vehicle's rebuilding in the join order (1.9).
 
-**Items, drops and containers**
-- Not read: `net.minecraft.world.Containers`, needed for how contents are spilled
-  (positions, splits, motion, emptied stacks).
-- Not read: `AbstractContainerMenu.getRedstoneSignalFromContainer`, needed for a
-  container cart's slowdown and a detector rail's comparator output.
-- Not read: `ContainerHelper`, needed for the `Items` list's format.
-- Not read: `LootTable.fill`, needed for a container's loot-table seed (not in N5).
-- Not read: `ItemStack` (`consume`, `set` with a null component), and
-  `ServerPlayerGameMode.useItemOn`, needed for whether a creative player keeps a placed
-  cart, boat, stand, frame, painting or the coal and frame item, and a drop's name when
-  the entity has none.
-- Not read: `DamageSource` (`isCreativePlayer`, `getEntity`, `getDirectEntity`), needed
-  for the creative test of a hit and invulnerability.
-- Not read: the cushion's placing item (`Items.CUSHION`, a `ColorCollection`; probably
-  `CushionItem`), needed for where a cushion is placed, its use of `canBePlacedAt`, its
-  sound and consumption.
-- Not read: `EquipmentSlot`, needed for `DisabledSlots`' filter bits and the order worn
-  items drop.
-- Not read: `VariantUtils` and `Util.getRandomSafe`, needed for the painting's default
-  variant, its NBT key and the exact draw.
-- Not read: `GameRules` (`MAX_MINECART_SPEED`'s default), only if the experiment is kept.
+**World queries**
+- Not read: `LevelReader.findBlocksIn` and `net.minecraft.world.level.blockscan.
+  BlockScanUtils`, needed for which positions a box visits (a painting's support box,
+  the cushion's searches, `noBlocksAround`; the results do not depend on the order).
+- Not read: `LevelEntityGetter` / `EntitySectionStorage`, needed for the order of
+  `getEntities`/`getEntitiesOfClass` (who a cart picks up first, which cart a detector
+  rail reads) and whether `hasEntities`' box test is strict.
+- Not read: a `javap -v` of `EntityGetter` and of `EntitySelector`, needed for the method
+  references in `getEntityCollisions` (**Inferred** `canCollideWith`) and `CAN_BE_PICKED`
+  (**Inferred** `Entity::isPickable`).
+- Not read: `BlockItem.canPlace` and `LevelReader`, needed for the link from block
+  placing to `isUnobstructed` (blocks are not placed into boats and carts).
+- Not read: `VoxelShape.closestPointTo` and `Shapes.or`, needed for `findFreePosition`
+  (a dismount from a vehicle that has been removed).
+- Not read: `NodeEvaluator.isBurningBlock`, needed for `isBlockDangerous` (dismount
+  safety).
+- Not read: `BlockBehaviour.useItemOn`, needed for its default `TRY_WITH_EMPTY_HAND`
+  (the fence's binding with a lead in hand, 7.6).
 
-**Blocks**
-- Not read: `ComparatorBlock` (`getInputSignal`, `getItemFrame`) and
-  `Level.updateNeighbourForOutputSignal`, needed for how a comparator reads a frame and
-  which comparators a frame's change tells.
-- Not read: `BubbleColumnBlock`, needed for when a boat is told it is above or inside a
-  column.
-- Not read: `FenceBlock`, needed for binding leashes by using a fence without a lead.
+**Items, containers and randomness**
+- Not read: `RandomSource.triangle`, needed for how many draws each call makes (spilled
+  contents).
+- Not read: `Container.getMaxStackSize`, `ItemStackWithSlot`'s codec,
+  `PatchedDataComponentMap.set` with null, `TypedEntityData.loadInto`, needed for a
+  container's comparator signal, the `Items` entries, a drop's name when the vehicle has
+  none, and how `entity_data` is applied.
+- Not read: `GameRules`, needed only for `MAX_MINECART_SPEED`'s default if the
+  experiment is kept.
 
 **Mobs (N7)**
-- Not read: `Mob`, needed for the leash rules of mobs (`leashTooFarBehaviour`,
-  `closeRangeLeashBehaviour`, `canBeLeashed`, `onLeashRemoved`, the 16-block limit) and to
-  confirm no N5 class overrides them; `HappyGhast`, for the quad leash's holder.
+- Not read: `HappyGhast`, needed for the four-point leash's holder. (`Mob` is read: none
+  of its leash overrides applies to an N5 entity.)
