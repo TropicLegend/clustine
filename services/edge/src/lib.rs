@@ -18,6 +18,7 @@ mod light_policy;
 #[cfg(test)]
 mod light_times;
 mod login;
+mod menus;
 mod play;
 #[cfg(test)]
 mod script;

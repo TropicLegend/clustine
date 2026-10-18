@@ -27,7 +27,7 @@ use tracing::warn;
 
 use crate::Shared;
 use crate::connection::{Connection, ConnectionError};
-use crate::fanout::{Command, NO_TELEPORT, OnEntity, SessionId};
+use crate::fanout::{Command, MenuCommand, NO_TELEPORT, OnEntity, SessionId};
 use crate::figures::{self, FIGURES};
 use crate::login::Profile;
 
@@ -197,8 +197,14 @@ async fn pump(
                         keys_changed(shared, client, &mut keys, now).await?;
                     }
                     ServerboundPlay::PlayerCommand(packet) => {
+                        // A chest boat's or a chest cart's inventory is opened by the
+                        // region of the player who rides it.
+                        if packet.action == player_command::OPEN_INVENTORY {
+                            send_input(shared, client, PlayerInput::OpenVehicleInventory)
+                                .await?;
+                        }
                         // Sprinting is what N5 reads of these; the rest are for what
-                        // later steps bring (a horse's jump, a chest boat's inventory).
+                        // later steps bring (a horse's jump).
                         let sprint = match packet.action {
                             player_command::START_SPRINTING => true,
                             player_command::STOP_SPRINTING => false,
@@ -291,9 +297,15 @@ async fn pump(
                         // nothing N5 brings is.
                         on_entity(shared, client, packet.entity_id, OnEntity::Pick).await?;
                     }
-                    // Menus are step N6b's (`docs/groundwork/n6-plan.md`).
-                    ServerboundPlay::ContainerClick(_)
-                    | ServerboundPlay::ServerboundContainerClose(_) => {}
+                    // The fan-out lines a click up with the window shown and the
+                    // region's answer (`crate::menus`).
+                    ServerboundPlay::ContainerClick(packet) => {
+                        menu_command(shared, client, MenuCommand::Click(packet)).await?;
+                    }
+                    ServerboundPlay::ServerboundContainerClose(packet) => {
+                        let window = packet.window_id;
+                        menu_command(shared, client, MenuCommand::Close { window }).await?;
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}
@@ -467,6 +479,23 @@ async fn on_entity(
         session: client.session,
         player: client.player,
         id,
+        what,
+    };
+    shared
+        .fanout
+        .send(command)
+        .await
+        .map_err(|_| ConnectionError::ShuttingDown)
+}
+
+async fn menu_command(
+    shared: &Shared,
+    client: &Client,
+    what: MenuCommand,
+) -> Result<(), ConnectionError> {
+    let command = Command::Menu {
+        session: client.session,
+        player: client.player,
         what,
     };
     shared

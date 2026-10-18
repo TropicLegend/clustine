@@ -146,6 +146,13 @@ pub(crate) enum Command {
         id: i32,
         what: OnEntity,
     },
+    /// The player clicked in, or closed, the window of a menu
+    /// (`docs/groundwork/n6-plan.md`, sections 7 to 9).
+    Menu {
+        session: SessionId,
+        player: PlayerId,
+        what: MenuCommand,
+    },
     /// The player did something to blocks that no region needs to hear of, and their
     /// client waits to be told that it was handled.
     Handled {
@@ -153,6 +160,13 @@ pub(crate) enum Command {
         player: PlayerId,
         sequence: i32,
     },
+}
+
+/// What a player did in a menu's window.
+#[derive(Debug)]
+pub(crate) enum MenuCommand {
+    Click(clustine_protocol::packets::play::ContainerClick),
+    Close { window: i32 },
 }
 
 /// Settings of the fan-out task.
@@ -527,6 +541,8 @@ struct PlayerView {
     /// into, which needs the ones the old region had not got to when it let the player
     /// go.
     kept_inputs: VecDeque<(u64, Instant, PlayerInput)>,
+    /// The menu the client shows, and its clicks on their way (`crate::menus`).
+    menus: crate::menus::Menus,
     /// The highest sequence number of the player's actions on blocks that has been
     /// reported as handled.
     handled: Option<i32>,
@@ -1339,7 +1355,12 @@ impl Fanout {
                 error!(%from, "another edge has taken this one's name; stopping");
                 return Some(Stopped::Superseded);
             }
-            Welcome::Resumed { .. } => {}
+            Welcome::Resumed { .. } => {
+                // Player events are not sent again on a link that resumes, so what the
+                // region said of menus on the link that ended may be lost (section 7
+                // item 7).
+                self.resync_menus(from).await;
+            }
             Welcome::Unknown { since, .. } => {
                 // To an edge that has had nothing to do with the region this is how
                 // everything begins, and what it kept for the region is numbered as
@@ -1556,6 +1577,7 @@ impl Fanout {
                         joining_since: Some(Instant::now()),
                         inputs_sent: 0,
                         kept_inputs: VecDeque::new(),
+                        menus: Default::default(),
                         handled: None,
                         under_way: BTreeSet::new(),
                         acknowledged: None,
@@ -1615,6 +1637,24 @@ impl Fanout {
                 player,
                 input,
             } => self.player_input(session, player, input).await,
+            Command::Menu {
+                session,
+                player,
+                what,
+            } => {
+                if self.session_matches(player, session) {
+                    let view = self.players.get_mut(&player).expect("session matched");
+                    // The number `player_input` gives the input it is passed next.
+                    let number = view.inputs_sent + 1;
+                    let input = match what {
+                        MenuCommand::Click(packet) => view.menus.click(packet, number),
+                        MenuCommand::Close { window } => view.menus.close(window, number),
+                    };
+                    if let Some(input) = input {
+                        self.player_input(session, player, input).await;
+                    }
+                }
+            }
             Command::Handled {
                 session,
                 player,
@@ -1739,15 +1779,14 @@ impl Fanout {
                 player,
                 event: PlayerEvent::HeldSlot { slot },
             } => self.held_slot(player, slot).await,
-            // Menus are shown from step N6b (`docs/groundwork/n6-plan.md`).
             WorkerToEdge::ToPlayer {
+                player,
                 event:
-                    PlayerEvent::MenuOpened { .. }
+                    event @ (PlayerEvent::MenuOpened { .. }
                     | PlayerEvent::MenuChanged { .. }
                     | PlayerEvent::MenuClosed { .. }
-                    | PlayerEvent::NoMenu { .. },
-                ..
-            } => {}
+                    | PlayerEvent::NoMenu { .. }),
+            } => self.menu_event(from, player, event).await,
             // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
             WorkerToEdge::ToPlayer {
                 player,
@@ -2574,6 +2613,17 @@ impl Fanout {
             };
             self.send_to_region(to, message).await;
         }
+        // What the region the stay moved to says of the menu may have come before the
+        // edge knew it stood for the player's, and been passed over (section 9 item 3).
+        let shown = self
+            .players
+            .get(&player)
+            .filter(|view| view.menus.serial().is_some())
+            .map(|view| view.session);
+        if let Some(session) = shown {
+            self.player_input(session, player, PlayerInput::MenuResync)
+                .await;
+        }
     }
 
     /// The region `from` does not have `player`, whom the edge has under it. A join or
@@ -2662,6 +2712,9 @@ impl Fanout {
     /// region changed it. Only a client that has entered the world is told: one that
     /// has not is sent the whole inventory when it enters, as the region has it then.
     async fn inventory_slot(&mut self, player: PlayerId, slot: u8, stack: Option<ItemStack>) {
+        if let Some(view) = self.players.get_mut(&player) {
+            view.menus.inventory_slot(usize::from(slot), stack);
+        }
         let entered = self
             .players
             .get(&player)
@@ -2669,6 +2722,77 @@ impl Fanout {
         if entered {
             let packet = inventory_slot_packet(slot, stack);
             self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Shows the client of `player` what the region `from` says of their menu
+    /// (`crate::menus`). Only a region that stands for the player's own speaks of it: a
+    /// region that let them go speaks of a menu that is closed (section 9 item 3).
+    async fn menu_event(&mut self, from: RegionId, player: PlayerId, event: PlayerEvent) {
+        let living = self.living(from);
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        if view.entity.is_none()
+            || self
+                .stands_for
+                .get(&view.region)
+                .copied()
+                .unwrap_or(view.region)
+                != living
+        {
+            return;
+        }
+        let packets = match event {
+            PlayerEvent::MenuOpened {
+                serial,
+                applied,
+                kind,
+                title,
+                slots,
+                carried,
+            } => view
+                .menus
+                .opened(serial, applied, kind, &title, slots, carried),
+            PlayerEvent::MenuChanged {
+                serial,
+                applied,
+                slots,
+                carried,
+            } => view.menus.changed(serial, applied, &slots, carried),
+            PlayerEvent::MenuClosed { serial, applied } => view.menus.closed(serial, applied),
+            // The inventory whole, as a resume may have lost what a close sent of it.
+            PlayerEvent::NoMenu { applied, inventory } => match view.menus.none(applied) {
+                Some(mut packets) => {
+                    let [contents, _] = inventory_packets(&inventory, 0);
+                    packets.push(contents);
+                    packets
+                }
+                None => return,
+            },
+            _ => return,
+        };
+        self.send_to_player(player, packets).await;
+    }
+
+    /// Asks the region of each player in `region` whose client shows a menu for it whole
+    /// (`PlayerInput::MenuResync`): what it said of it may have been lost. A player who
+    /// shows none is not asked; what a close the client made sent of their inventory
+    /// is lost only if the link ends in the tick of the close.
+    async fn resync_menus(&mut self, region: RegionId) {
+        let players: Vec<(SessionId, PlayerId)> = self
+            .players
+            .iter()
+            .filter(|(_, view)| {
+                view.entity.is_some()
+                    && view.menus.serial().is_some()
+                    && self.living(view.region) == region
+            })
+            .map(|(player, view)| (view.session, *player))
+            .collect();
+        for (session, player) in players {
+            self.player_input(session, player, PlayerInput::MenuResync)
+                .await;
         }
     }
 
@@ -2795,6 +2919,9 @@ impl Fanout {
             view.kept_inputs.pop_front();
         }
         view.region = to;
+        // A hand-over always closes the menu, and the close the old region said may
+        // have been lost on a link that resumed (section 7 item 7).
+        let closed = view.menus.departed();
         let again: Vec<_> = view
             .kept_inputs
             .iter()
@@ -2818,6 +2945,7 @@ impl Fanout {
             self.flush_asking().await;
         }
 
+        self.send_to_player(player, closed).await;
         // The entity of the player's view, as was looked at above: the inputs sent
         // again are of the stay that is handed over.
         let entity = transfer.entity_id;
@@ -8000,6 +8128,7 @@ mod scenarios {
     mod items;
     mod items_specification;
     mod leashes;
+    mod menus;
     mod physics_specification;
     mod redstone;
     mod riding;
@@ -8463,6 +8592,16 @@ mod scenarios {
         }
 
         /// Something the player did.
+        /// The client clicks in, or closes, a menu's window.
+        async fn menu(&mut self, client: &Client, what: MenuCommand) {
+            let command = Command::Menu {
+                session: client.session,
+                player: client.player,
+                what,
+            };
+            self.commands.send(command).await.unwrap();
+        }
+
         async fn input(&mut self, client: &Client, input: PlayerInput) {
             let command = Command::Input {
                 session: client.session,
@@ -8791,6 +8930,9 @@ mod scenarios {
         tracking: Vec<ClientboundPlay>,
         /// The id of every packet it was sent, in order.
         ids: Vec<i32>,
+        /// Every packet of a menu's window it was sent, in order: openings, contents,
+        /// slots, the cursor and closes.
+        menus: Vec<ClientboundPlay>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -8863,6 +9005,7 @@ mod scenarios {
                 links: Vec::new(),
                 teleports: Vec::new(),
                 tracking: Vec::new(),
+                menus: Vec::new(),
                 ids: Vec::new(),
             }
         }
@@ -9022,6 +9165,15 @@ mod scenarios {
                     self.tracking.push(decoded);
                 }
                 ClientboundPlay::AddTransientBlock(_) => self.tracking.push(decoded),
+                ClientboundPlay::OpenScreen(_)
+                | ClientboundPlay::ContainerSetSlot(_)
+                | ClientboundPlay::SetCursorItem(_)
+                | ClientboundPlay::ClientboundContainerClose(_) => self.menus.push(decoded),
+                ClientboundPlay::SetContainerContent(ref content)
+                    if content.window_id != protocol_inventory::PLAYER_WINDOW =>
+                {
+                    self.menus.push(decoded);
+                }
                 ClientboundPlay::SetPassengers(passengers) => self.passengers.push(passengers),
                 ClientboundPlay::SetEntityLink(link) => self.links.push(link),
                 ClientboundPlay::SynchronizePlayerPosition(teleport) => {
