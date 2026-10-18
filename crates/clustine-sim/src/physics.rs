@@ -14,6 +14,7 @@ pub(crate) mod body;
 pub(crate) mod collide;
 pub(crate) mod fluids;
 pub(crate) mod item;
+pub(crate) mod piston;
 pub(crate) mod voxel;
 pub(crate) mod walk;
 
@@ -30,6 +31,13 @@ pub(crate) trait World {
     /// Whether the chunk is loaded or copied (`getChunk(x, z, FULL, false)` is not
     /// null).
     fn has_chunk(&self, chunk: ChunkPos) -> bool;
+
+    /// The block entity of the moving piston at `pos`, where the block there is one
+    /// and the world has it: what it collides with depends on how far its block has
+    /// gone. A world without block entities has none, and the moving piston is empty.
+    fn moving_block(&self, _pos: BlockPos) -> Option<piston::MovingBlock> {
+        None
+    }
 
     /// The block at `pos`, air where [`World::block`] has none.
     fn state(&self, pos: BlockPos) -> BlockState {

@@ -5,7 +5,7 @@
 //! ([`World::may_hold`]).
 
 use clustine_blocks::data::is_class;
-use clustine_data::{BlockClass, BlockState, EntityInsideShape, sounds};
+use clustine_data::{BlockClass, BlockState, EntityInsideShape, Face, sounds};
 use clustine_world::{BlockPos, ChunkPos, ItemStack};
 
 use super::aabb::Aabb;
@@ -407,8 +407,35 @@ impl Item {
         move_guarded(&mut self.body, world, self.no_physics, vector);
     }
 
+    /// `PistonMovingBlockEntity.moveEntityByPiston` of the item: `move(PISTON, vector)`
+    /// with the region's guard, given how far pistons have moved it in this tick and
+    /// the way the piston pushes (`NOCLIP`), then the effects of the blocks on its way
+    /// (`applyEffectsFromBlocks(from, to)`); the move is not kept among the tick's
+    /// (`removeLatestMovementRecording`).
+    pub(crate) fn pushed_by_piston<R: Region + ?Sized>(
+        &mut self,
+        world: &R,
+        draws: &mut dyn Draws,
+        noclip: Face,
+        vector: Vec3,
+        deltas: &mut [f64; 3],
+    ) {
+        self.body.noclip = Some(noclip);
+        let from = self.body.position;
+        move_guarded_as(&mut self.body, world, self.no_physics, vector, Some(deltas));
+        let movement = Movement {
+            from,
+            to: self.body.position,
+            asked: None,
+        };
+        self.apply_effects_from_blocks(world, draws, Some(vec![movement]));
+        self.body.movements.clear();
+        self.body.noclip = None;
+    }
+
     /// `applyEffectsFromBlocks`, of this tick's movements or, given `last`, of the last
-    /// tick's (`applyEffectsFromBlocksForLastMovements`).
+    /// tick's (`applyEffectsFromBlocksForLastMovements`), or of the one movement a
+    /// piston made.
     fn apply_effects_from_blocks<W: World + ?Sized>(
         &mut self,
         world: &W,
@@ -735,8 +762,20 @@ pub(crate) fn move_guarded<R: Region + ?Sized>(
     no_physics: bool,
     vector: Vec3,
 ) {
+    move_guarded_as(body, world, no_physics, vector, None);
+}
+
+/// `move(type, vector)`, by the entity itself or, given how far pistons have moved it
+/// in this tick, by a piston ([`Body::move_as`]), and the region's guard after it.
+pub(crate) fn move_guarded_as<R: Region + ?Sized>(
+    body: &mut Body,
+    world: &R,
+    no_physics: bool,
+    vector: Vec3,
+    piston: Option<&mut [f64; 3]>,
+) {
     let before = body.position;
-    body.move_self(world, no_physics, vector);
+    body.move_as(world, no_physics, vector, piston);
     let after = body.position;
     if ChunkPos::containing(after[0], before[2]) != ChunkPos::containing(before[0], before[2])
         && !world.may_hold(ChunkPos::containing(after[0], before[2]))

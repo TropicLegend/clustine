@@ -4,12 +4,15 @@
 //! whether a box is free (`noCollision`) (`docs/groundwork/n4-brief.md`, sections 1.3
 //! to 1.5).
 //!
+//! A moving piston's shape is its block entity's ([`World::moving_block`]): the block
+//! where its move has taken it, and a retracting piston's base.
+//!
 //! No entity collides with these entities yet (boats, minecarts and shulkers come
 //! later), and the world border's shape is left out: Clustine has none, and the game's
 //! default lies near 30 million blocks out.
 
 use clustine_blocks::data::is_class;
-use clustine_data::{BlockClass, BlockState, OffsetType, blocks};
+use clustine_data::{BlockClass, BlockState, Face, OffsetType, blocks};
 use clustine_world::BlockPos;
 
 use super::aabb::Aabb;
@@ -34,6 +37,9 @@ pub(crate) struct Context {
     pub(crate) fall_distance: f64,
     /// Whether the entity is a falling block, which powder snow holds up.
     pub(crate) falling_block: bool,
+    /// The way a piston is moving the entity, if one is (the game's `NOCLIP`): a
+    /// moving block going that way does not stop it.
+    pub(crate) noclip: Option<Face>,
 }
 
 impl Context {
@@ -156,6 +162,17 @@ pub(crate) fn block_collisions<W: World + ?Sized>(
                     continue;
                 }
                 if edges == 2 && !is_class(state, BlockClass::MovingPistonBlock) {
+                    continue;
+                }
+                if is_class(state, BlockClass::MovingPistonBlock) {
+                    // Its shape is its block entity's, never the full block's instance.
+                    if let Some(moving) = world.moving_block(pos) {
+                        for shape in moving.collision_shapes(pos, context.noclip) {
+                            if shape.overlaps_box(bounds) {
+                                found.push(Found { pos, shape });
+                            }
+                        }
+                    }
                     continue;
                 }
                 let Some((shape, is_block)) = collision_shape(state, pos, context) else {

@@ -91,6 +91,22 @@ impl Aabb {
         self.inflate([-by, -by, -by])
     }
 
+    /// `minmax`: the smallest box holding both.
+    pub(crate) fn minmax(self, other: Aabb) -> Self {
+        Self {
+            min: std::array::from_fn(|axis| self.min[axis].min(other.min[axis])),
+            max: std::array::from_fn(|axis| self.max[axis].max(other.max[axis])),
+        }
+    }
+
+    /// `intersect`: the part both hold, made as the game's constructor makes a box.
+    pub(crate) fn intersect(self, other: Aabb) -> Self {
+        Self::new(
+            std::array::from_fn(|axis| self.min[axis].max(other.min[axis])),
+            std::array::from_fn(|axis| self.max[axis].min(other.max[axis])),
+        )
+    }
+
     /// `intersects`: overlapping on all three axes, strictly.
     pub(crate) fn intersects(self, other: Aabb) -> bool {
         (0..3).all(|axis| self.min[axis] < other.max[axis] && self.max[axis] > other.min[axis])

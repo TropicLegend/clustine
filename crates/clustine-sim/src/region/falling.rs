@@ -34,7 +34,7 @@ use super::random_ticks::Random;
 use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT, fluid_block};
 use crate::api::{RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::Aabb;
-use crate::physics::body::{AIR_DRAG, Body, clips_shape};
+use crate::physics::body::{AIR_DRAG, Body, Movement, clips_shape};
 use crate::physics::item::{Inside, check_inside_blocks, move_guarded, tick_movements};
 use crate::physics::{self, World};
 
@@ -258,6 +258,80 @@ impl Region {
         }
     }
 
+    /// The body of the falling block `entity` in the loaded chunk `position`, as its
+    /// record and the region's memory of it have it.
+    pub(super) fn falling_body(&self, entity: &Entity, position: ChunkPos) -> Body {
+        let info = EntityTypeInfo::of(i32::from(entity.kind));
+        let memory = self.entity_memory.get(&entity.key);
+        let mut body = Body {
+            position: entity.position,
+            motion: entity.motion,
+            on_ground: entity.on_ground,
+            fall_distance: entity.fall_distance,
+            width: info.width,
+            height: info.height,
+            old_position: entity.position,
+            horizontal_collision: false,
+            vertical_collision: false,
+            vertical_collision_below: false,
+            supporting: memory.and_then(|memory| memory.supporting),
+            on_ground_no_blocks: memory.is_some_and(|memory| memory.on_ground_no_blocks),
+            stuck_speed: memory.map_or([0.0; 3], |memory| memory.stuck_speed),
+            movements: Vec::new(),
+            in_water: false,
+            sync_position: false,
+            falling_block: true,
+            item: false,
+            fell_on: None,
+            noclip: None,
+        };
+        if memory.is_none() && body.on_ground {
+            let view = View {
+                region: self,
+                home: position,
+            };
+            body.check_supporting_block(&view, None);
+        }
+        body
+    }
+
+    /// `applyEffectsFromBlocks` of a falling block whose moves were `movements`: slime
+    /// under it slows it, lit redstone ore under it lights, and a cobweb or powder snow
+    /// on its way holds it.
+    pub(super) fn falling_effects(
+        &mut self,
+        body: &mut Body,
+        movements: &[Movement],
+        position: ChunkPos,
+        output: &mut TickOutput,
+    ) {
+        let view = View {
+            region: self,
+            home: position,
+        };
+        let mut ore = None;
+        if body.on_ground {
+            let on = body.on_pos_legacy(&view);
+            let under = view.state(on);
+            if is_class(under, BlockClass::SlimeBlock) {
+                let up = body.motion[1].abs();
+                if up < 0.1 {
+                    let factor = 0.4 + up * 0.2;
+                    let [x, y, z] = body.motion;
+                    body.motion = [x * factor, y * 1.0, z * factor];
+                }
+            } else if is_class(under, BlockClass::RedStoneOreBlock) {
+                ore = Some(on);
+            }
+        }
+        check_inside_blocks(&view, &mut FallingInside { body }, movements);
+        if let Some(ore) = ore
+            && let Some(state) = self.own_block(ore)
+        {
+            self.light_redstone_ore(ore, state, output);
+        }
+    }
+
     /// The tick of the falling block `entity`, in the loaded chunk `position`
     /// (`FallingBlockEntity.tick`).
     pub(crate) fn tick_falling_block(
@@ -285,40 +359,11 @@ impl Region {
         let block = block_state;
         let time = time.wrapping_add(1);
         let mut cancel_drop = cancel_drop;
-        let info = EntityTypeInfo::of(i32::from(entity.kind));
-        let memory = self.entity_memory.get(&key).cloned();
-        let mut body = Body {
-            position: entity.position,
-            motion: entity.motion,
-            on_ground: entity.on_ground,
-            fall_distance: entity.fall_distance,
-            width: info.width,
-            height: info.height,
-            old_position: entity.position,
-            horizontal_collision: false,
-            vertical_collision: false,
-            vertical_collision_below: false,
-            supporting: memory.as_ref().and_then(|memory| memory.supporting),
-            on_ground_no_blocks: memory
-                .as_ref()
-                .is_some_and(|memory| memory.on_ground_no_blocks),
-            stuck_speed: memory
-                .as_ref()
-                .map_or([0.0; 3], |memory| memory.stuck_speed),
-            movements: Vec::new(),
-            in_water: false,
-            sync_position: false,
-            falling_block: true,
-            item: false,
-            fell_on: None,
-        };
+        let mut body = self.falling_body(&entity, position);
         let view = View {
             region: self,
             home: position,
         };
-        if memory.is_none() && body.on_ground {
-            body.check_supporting_block(&view, None);
-        }
         body.apply_gravity();
         let motion = body.motion;
         move_guarded(&mut body, &view, false, motion);
@@ -362,32 +407,8 @@ impl Region {
             *self.entity_draws.entry(key).or_default() += drawn;
         }
         // `applyEffectsFromBlocks`.
-        let view = View {
-            region: self,
-            home: position,
-        };
         let movements = tick_movements(&mut body);
-        let mut ore = None;
-        if body.on_ground {
-            let on = body.on_pos_legacy(&view);
-            let under = view.state(on);
-            if is_class(under, BlockClass::SlimeBlock) {
-                let up = body.motion[1].abs();
-                if up < 0.1 {
-                    let factor = 0.4 + up * 0.2;
-                    let [x, y, z] = body.motion;
-                    body.motion = [x * factor, y * 1.0, z * factor];
-                }
-            } else if is_class(under, BlockClass::RedStoneOreBlock) {
-                ore = Some(on);
-            }
-        }
-        check_inside_blocks(&view, &mut FallingInside { body: &mut body }, &movements);
-        if let Some(ore) = ore
-            && let Some(state) = self.own_block(ore)
-        {
-            self.light_redstone_ore(ore, state, output);
-        }
+        self.falling_effects(&mut body, &movements, position, output);
 
         let end = self.after_move(
             &entity,
@@ -425,6 +446,7 @@ impl Region {
                 on_ground_no_blocks: body.on_ground_no_blocks,
                 last_movements: Vec::new(),
                 stuck_speed: body.stuck_speed,
+                no_physics: false,
             },
         );
         let mut flags = 0;
@@ -618,7 +640,7 @@ impl Region {
     /// What the falling block's tick leaves: its record, its commit, the edges' report.
     /// Its motion and its time commit only with a change of its position, its being on
     /// the ground or its block; its chunk ages ([`TickOutput::entities_ageing`]).
-    fn write_falling_block(
+    pub(super) fn write_falling_block(
         &mut self,
         before: &Entity,
         after: Entity,

@@ -1,10 +1,11 @@
 //! An entity's body as it moves: its position, motion and box, the flags a move sets,
-//! and `Entity.move` for its own moves (`MoverType.SELF`), with the block it stands on,
+//! and `Entity.move` for its own moves (`MoverType.SELF`) and a piston's
+//! (`MoverType.PISTON`), with the block it stands on,
 //! its fall, its bounce and the speed of the block under it
 //! (`docs/groundwork/n4-brief.md`, sections 1.2 and 1.5 to 1.8).
 
 use clustine_blocks::data::{FALL_DAMAGE_RESETTING, FENCES, SUPPRESSES_BOUNCE, WALLS, is_class};
-use clustine_data::{BlockClass, BlockState, blocks};
+use clustine_data::{BlockClass, BlockState, Face, blocks};
 use clustine_world::BlockPos;
 
 use super::aabb::{Aabb, lerp};
@@ -62,6 +63,8 @@ pub(crate) struct Body {
     /// The fall the last move ended and the block it ended on (`Block.fallOn`), where
     /// it ended one.
     pub(crate) fell_on: Option<(f64, BlockPos)>,
+    /// The way a piston is moving it, while it does (the game's `NOCLIP`).
+    pub(crate) noclip: Option<Face>,
 }
 
 impl Body {
@@ -81,6 +84,7 @@ impl Body {
             bottom: self.position[1],
             fall_distance: self.fall_distance,
             falling_block: self.falling_block,
+            noclip: self.noclip,
         }
     }
 
@@ -143,13 +147,17 @@ impl Body {
         self.movements.push(movement);
     }
 
-    /// `Entity.move(MoverType.SELF, vector)` for an entity that is not ridden, does not
-    /// step up and makes no sound of its movement.
-    pub(crate) fn move_self<W: World + ?Sized>(
+    /// `Entity.move(type, vector)` for an entity that is not ridden, does not step up
+    /// and makes no sound of its movement: by the entity itself (`MoverType.SELF`), or,
+    /// given how far the pistons have moved it in this tick (`pistonDeltas`), by a
+    /// piston (`MoverType.PISTON`), which the limit of a tick cuts and a cobweb's hold
+    /// does not slow.
+    pub(crate) fn move_as<W: World + ?Sized>(
         &mut self,
         world: &W,
         no_physics: bool,
         vector: Vec3,
+        piston: Option<&mut [f64; 3]>,
     ) {
         if no_physics {
             self.position = super::add(self.position, vector);
@@ -158,13 +166,23 @@ impl Body {
             self.vertical_collision_below = false;
             return;
         }
+        let by_piston = piston.is_some();
         let mut vector = vector;
+        if let Some(deltas) = piston {
+            vector = super::piston::limit(vector, deltas);
+            // `vector.equals(Vec3.ZERO)`, which tells 0.0 from -0.0.
+            if vector.iter().all(|component| component.to_bits() == 0) {
+                return;
+            }
+        }
         if super::length_sqr(self.stuck_speed) > 1.0e-7 {
-            vector = [
-                vector[0] * self.stuck_speed[0],
-                vector[1] * self.stuck_speed[1],
-                vector[2] * self.stuck_speed[2],
-            ];
+            if !by_piston {
+                vector = [
+                    vector[0] * self.stuck_speed[0],
+                    vector[1] * self.stuck_speed[1],
+                    vector[2] * self.stuck_speed[2],
+                ];
+            }
             self.stuck_speed = [0.0; 3];
             self.motion = [0.0; 3];
         }

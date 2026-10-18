@@ -41,6 +41,9 @@ pub(crate) struct Memory {
     pub(crate) on_ground_no_blocks: bool,
     pub(crate) last_movements: Vec<Movement>,
     pub(crate) stuck_speed: [f64; 3],
+    /// `noPhysics` as its last tick left it, which a piston's push between its ticks
+    /// reads.
+    pub(crate) no_physics: bool,
 }
 
 /// The region as the physics of one entity read it: its loaded and copied chunks, and
@@ -54,6 +57,17 @@ pub(crate) struct View<'a> {
 impl World for View<'_> {
     fn block(&self, pos: BlockPos) -> Option<clustine_data::BlockState> {
         self.region.block(pos)
+    }
+
+    fn moving_block(&self, pos: BlockPos) -> Option<physics::piston::MovingBlock> {
+        let moving = self.region.moving_piston(pos)?;
+        Some(physics::piston::MovingBlock {
+            moved: moving.moved,
+            direction: moving.direction,
+            extending: moving.extending,
+            source: moving.source,
+            progress: f32::from(moving.progress) / 2.0,
+        })
     }
 
     fn has_chunk(&self, chunk: ChunkPos) -> bool {
@@ -81,9 +95,9 @@ impl item::Region for View<'_> {
 }
 
 /// The entity's own stream in this tick, on from what it has drawn already.
-struct Stream {
+pub(super) struct Stream {
     random: Random,
-    used: u64,
+    pub(super) used: u64,
 }
 
 impl Draws for Stream {
@@ -116,8 +130,18 @@ impl Region {
         Some(&entities[at])
     }
 
-    /// The item of `entity` as its tick starts.
-    fn item_of(&self, entity: &Entity, position: ChunkPos) -> Option<Item> {
+    /// The stream of the entity `key` in this tick, on from what it has drawn.
+    pub(super) fn entity_stream(&self, key: EntityId) -> Stream {
+        let drawn = self.entity_draws.get(&key).copied().unwrap_or(0);
+        let mut random = Random::of_entity(self.config.seed, key, self.tick);
+        for _ in 0..drawn {
+            random.next_u64();
+        }
+        Stream { random, used: 0 }
+    }
+
+    /// The item of `entity` as its tick starts, or as a piston finds it.
+    pub(super) fn item_of(&self, entity: &Entity, position: ChunkPos) -> Option<Item> {
         let EntityData::Item {
             stack,
             pick_up_delay,
@@ -149,6 +173,7 @@ impl Region {
             falling_block: false,
             item: true,
             fell_on: None,
+            noclip: None,
         };
         if memory.is_none() && body.on_ground {
             // As a move would have found it.
@@ -182,7 +207,7 @@ impl Region {
             tick_count: self.tick as i32,
             game_id: entity.key.game_id(),
             last_movements,
-            no_physics: false,
+            no_physics: memory.is_some_and(|memory| memory.no_physics),
             removed: false,
             needs_sync: false,
             sync_velocity: false,
@@ -205,12 +230,7 @@ impl Region {
             return;
         };
         let key = entity.key;
-        let drawn = self.entity_draws.get(&key).copied().unwrap_or(0);
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..drawn {
-            random.next_u64();
-        }
-        let mut stream = Stream { random, used: 0 };
+        let mut stream = self.entity_stream(key);
         let alive = item.tick_before_merge(
             &View {
                 region: self,
@@ -228,6 +248,13 @@ impl Region {
         if stream.used > 0 {
             *self.entity_draws.entry(key).or_default() += stream.used;
         }
+        self.item_side_effects(&mut item, output);
+        self.write_item(&entity, item, position, output);
+    }
+
+    /// What an item's tick or push leaves beyond its record: the redstone ore it stood
+    /// on lit, and its sounds.
+    pub(super) fn item_side_effects(&mut self, item: &mut Item, output: &mut TickOutput) {
         for ore in std::mem::take(&mut item.ore) {
             if let Some(state) = self.own_block(ore) {
                 self.light_redstone_ore(ore, state, output);
@@ -247,7 +274,6 @@ impl Region {
                 except: None,
             });
         }
-        self.write_item(&entity, item, position, output);
     }
 
     /// Removes the entity `key` from the chunk `position`, as the commit has it, and
@@ -273,8 +299,9 @@ impl Region {
         });
     }
 
-    /// What the item's tick leaves: its record, its commit, the edges' report.
-    fn write_item(
+    /// What the item's tick, or a piston's push, leaves: its record, its commit, the
+    /// edges' report.
+    pub(super) fn write_item(
         &mut self,
         before: &Entity,
         item: Item,
@@ -317,6 +344,7 @@ impl Region {
                 on_ground_no_blocks: item.body.on_ground_no_blocks,
                 last_movements: item.last_movements.clone(),
                 stuck_speed: item.body.stuck_speed,
+                no_physics: item.no_physics,
             },
         );
         let bits = |values: [f64; 3]| values.map(f64::to_bits);
@@ -501,7 +529,7 @@ impl Region {
 
     /// The entities of the region's own chunks whose boxes meet `bounds`, in the order
     /// of the game's lookups: by chunk, then by section, then by key.
-    fn entities_in(&self, bounds: &Aabb) -> Vec<(EntityId, ChunkPos)> {
+    pub(super) fn entities_in(&self, bounds: &Aabb) -> Vec<(EntityId, ChunkPos)> {
         let low = ChunkPos::containing(bounds.min[0] - 2.0, bounds.min[2] - 2.0);
         let high = ChunkPos::containing(bounds.max[0] + 2.0, bounds.max[2] + 2.0);
         let mut found = Vec::new();

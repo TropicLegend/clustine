@@ -30,6 +30,7 @@ mod items;
 mod lends;
 mod pistons;
 mod pressed;
+mod pushed;
 mod rails;
 mod random_ticks;
 mod redstone;
@@ -368,6 +369,10 @@ pub struct Region {
     /// What the game keeps of an entity in memory and not in its record, by key
     /// (`items.rs`); forgotten at a take-in, so no part of the state.
     entity_memory: BTreeMap<EntityId, items::Memory>,
+    /// How far pistons have moved each entity along each axis in this tick
+    /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
+    /// them at the first push of a tick.
+    piston_deltas: BTreeMap<EntityId, [f64; 3]>,
     /// The stream of each block that has dropped something in this tick, on from what
     /// it has drawn (`drops.rs`); empty between ticks.
     block_streams: BTreeMap<BlockPos, random_ticks::Random>,
@@ -468,6 +473,7 @@ impl Region {
             entity_chunks: BTreeMap::new(),
             entity_draws: BTreeMap::new(),
             entity_memory: BTreeMap::new(),
+            piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
         }
     }
@@ -907,6 +913,7 @@ impl Region {
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
         self.entity_draws.clear();
+        self.piston_deltas.clear();
         self.block_streams.clear();
         output.delta = self.take_delta();
         output
@@ -2699,6 +2706,7 @@ mod tests {
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;
+    mod pushed;
     mod r7;
     mod rails_and_bulbs;
     mod redstone;

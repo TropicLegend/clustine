@@ -15,8 +15,10 @@
 //! is refused is kept as a waiting piston, a seam entry tried again only when the
 //! region's land changes or a chunk starts ticking.
 //!
-//! Players are not moved by the region: a client pushes itself by its own moving
-//! piston, and its next move says where it is. Other entities wait for their phase.
+//! Each tick of a move pushes the items and falling blocks in the block's way, and a
+//! honey block carries what stands on it (`pushed.rs`). Players are not moved by the
+//! region: a client pushes itself by its own moving piston, and its next move says
+//! where it is.
 
 use clustine_blocks::data::{flag, is_block, is_class, set_flag};
 use clustine_blocks::piston::{self, Heights, Structure};
@@ -479,6 +481,8 @@ impl Region {
             self.finish_tick(pos, moving, output);
             return;
         }
+        // What the block meets on its way is pushed before its progress moves on.
+        self.push_entities(pos, &moving, output);
         moving.progress = (moving.progress + 1).min(DONE);
         self.set_moving_piston(pos, moving, output);
     }
