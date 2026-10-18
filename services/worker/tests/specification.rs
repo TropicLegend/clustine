@@ -5379,6 +5379,8 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     }
 }
 

@@ -416,6 +416,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     }
 }
 

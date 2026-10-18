@@ -509,6 +509,8 @@ mod tests {
             hops: entity as u32 % 4,
             flying: entity % 3 == 0,
             attempt: attempt_of(entity),
+            riding: None,
+            keys: Default::default(),
         }
     }
 

@@ -33,4 +33,6 @@ pub use api::{
     TickOutput, Ticket, VehicleMove,
 };
 pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
-pub use state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
+pub use state::{
+    EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
+};

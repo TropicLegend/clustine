@@ -406,6 +406,8 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         hops: transfer.hops,
         flying: transfer.flying,
         attempt: transfer.attempt,
+        riding: None,
+        keys: Default::default(),
     }
 }
 
@@ -2328,6 +2330,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     }
 }
 

@@ -108,8 +108,14 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let _ = position;
-        if let EntityUse::Attack { creative, .. } = by {
-            self.hurt_attached(entity.key, Breaker::Player { creative }, output);
+        match by {
+            EntityUse::Attack { creative, .. } => {
+                self.hurt_attached(entity.key, Breaker::Player { creative }, output);
+            }
+            // `Cushion.interact`: sat on, if nobody sits there.
+            EntityUse::Interact { player, .. } => {
+                self.mount_player(player, entity.key, output);
+            }
         }
     }
 

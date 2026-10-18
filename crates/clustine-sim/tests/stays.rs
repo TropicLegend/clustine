@@ -919,6 +919,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         hops: 3,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     };
     other.players.insert(player(5), theirs.clone());
     let merged = region.absorb(OTHER, &other);
@@ -1364,6 +1366,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         hops: 2,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     };
     state.players.insert(player(1), earlier.clone());
     let holdings = Holdings {
@@ -1443,6 +1447,8 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         hops,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     };
     for (ours, theirs) in [(1, 3), (3, 1), (2, 2)] {
         let survivor = home();
@@ -1591,6 +1597,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         hops: 0,
         flying: false,
         attempt: None,
+        riding: None,
+        keys: Default::default(),
     };
     state.players.insert(player(1), earlier);
     let holdings = Holdings {

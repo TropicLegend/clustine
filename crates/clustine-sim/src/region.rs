@@ -10,13 +10,15 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack,
+    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack, Keys,
     LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput,
     Ticket,
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
-use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
+use crate::state::{
+    EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
+};
 
 mod arrivals;
 mod attached;
@@ -44,6 +46,7 @@ mod rails;
 mod random_ticks;
 mod redstone;
 mod reshape;
+mod riders;
 mod riding;
 mod stands;
 mod ticks;
@@ -256,6 +259,9 @@ struct Player {
     hops: u32,
     flying: bool,
     attempt: Option<u64>,
+    /// See [`PlayerState::riding`] and [`PlayerState::keys`].
+    riding: Option<PlayerRiding>,
+    keys: Keys,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -922,6 +928,7 @@ impl Region {
         let mut let_go: Vec<(PlayerId, StayNote)> = Vec::new();
         let departing = departing.into_iter().filter_map(|(id, to)| {
             let player = self.players.remove(&id)?;
+            self.unseat_leaving(&player, &mut output);
             self.journal.players.insert(id);
             let edge = player.edge;
             Some((edge, id, player.into_transfer(), to))
@@ -1093,6 +1100,7 @@ impl Region {
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
         if let Some(player) = self.players.remove(&id) {
+            self.unseat_leaving(&player, output);
             self.journal.players.insert(id);
             output.events.push(RegionEvent::EntityRemoved {
                 entity: player.entity_id,
@@ -1108,6 +1116,7 @@ impl Region {
         let Some(player) = self.players.remove(&id) else {
             return;
         };
+        self.unseat_leaving(&player, output);
         self.journal.players.insert(id);
         output.events.push(RegionEvent::EntityRemoved {
             entity: player.entity_id,
@@ -1307,7 +1316,9 @@ impl Region {
                 if hops >= transfer.hops {
                     return;
                 }
-                self.players.remove(&id);
+                if let Some(player) = self.players.remove(&id) {
+                    self.unseat_leaving(&player, output);
+                }
                 self.journal.players.insert(id);
             }
             // The stay that is here has ended, though the leave that said so went
@@ -1356,6 +1367,10 @@ impl Region {
             hops: transfer.hops,
             flying: transfer.flying,
             attempt: transfer.attempt,
+            // A hand-over of a rider comes with the riders' step; until then a unit with a
+            // player in it is held back at a line, and its rider with it.
+            riding: None,
+            keys: Keys::default(),
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1463,6 +1478,8 @@ impl Region {
             hops: 0,
             flying,
             attempt: Some(attempt),
+            riding: None,
+            keys: Keys::default(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -1660,7 +1677,16 @@ impl Region {
                 position,
                 rotation,
                 on_ground,
-            } => player.move_to(*position, *rotation, *on_ground),
+            } => {
+                // A riding player's own moves move nothing: their vehicle puts them at
+                // their seat, and only their head is theirs (`handleMovePlayer`).
+                let position = if player.riding.is_some() {
+                    None
+                } else {
+                    *position
+                };
+                player.move_to(position, *rotation, *on_ground);
+            }
             PlayerInput::SelectSlot { slot } => {
                 if usize::from(*slot) < HOTBAR_SLOTS {
                     player.selected_slot = *slot;
@@ -1775,10 +1801,11 @@ impl Region {
                 };
                 self.player_used_entity(user, *entity, by, output);
             }
-            // Riding's inputs, answered by the steps that bring riding by players
-            // (`docs/groundwork/n5-plan.md`); until then passed over.
-            PlayerInput::Keys(_) | PlayerInput::MoveVehicle(_) | PlayerInput::PaddleBoat { .. } => {
-            }
+            // Kept for the shift dismount, which the player's ride tick reads, and a
+            // minecart's rider.
+            PlayerInput::Keys(keys) => player.keys = *keys,
+            // A driven vehicle's moves and paddles come with boats (N5f).
+            PlayerInput::MoveVehicle(_) | PlayerInput::PaddleBoat { .. } => {}
             PlayerInput::Throw { stack } => {
                 // Out of the creative inventory: nothing is taken from the player's,
                 // and a throw refused leaves nothing to put back.
@@ -2640,8 +2667,13 @@ fn occupies(feet: Vec3, position: BlockPos) -> bool {
 
 impl Player {
     /// The chunk the player stands in.
+    /// The player's holding chunk: where they stand, or while they ride their unit's,
+    /// which every judgement of where a player belongs goes by (ADR-0028, section 5).
     fn chunk(&self) -> ChunkPos {
-        ChunkPos::containing(self.pose.position.x, self.pose.position.z)
+        match self.riding {
+            Some(riding) => riding.chunk,
+            None => ChunkPos::containing(self.pose.position.x, self.pose.position.z),
+        }
     }
 
     /// The player as of the end of a tick.
@@ -2658,6 +2690,8 @@ impl Player {
             hops: self.hops,
             flying: self.flying,
             attempt: self.attempt,
+            riding: self.riding,
+            keys: self.keys,
         }
     }
 
@@ -2676,6 +2710,8 @@ impl Player {
             hops: state.hops,
             flying: state.flying,
             attempt: state.attempt,
+            riding: state.riding,
+            keys: state.keys,
         }
     }
 

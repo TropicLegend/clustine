@@ -328,6 +328,8 @@ impl Region {
                 .entity_changes
                 .push((position, EntityChange::Set(key, fields)));
         }
+        // The riding players after the vehicles they ride.
+        self.tick_riding_players(output);
         output.entities_ageing.sort();
         output.entities_ageing.dedup();
     }

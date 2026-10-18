@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Durable, Inventory, Pose};
+use crate::api::{Durable, Inventory, Keys, Pose};
 
 /// Everything a region knows apart from its chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,6 +82,19 @@ pub struct PlayerState {
     ///
     /// [`PlayerTransfer::attempt`]: crate::PlayerTransfer::attempt
     pub attempt: Option<u64>,
+    /// What the player rides (`docs/groundwork/n5-plan.md`).
+    pub riding: Option<PlayerRiding>,
+    /// The keys the player holds, as their client last said.
+    pub keys: Keys,
+}
+
+/// The vehicle a player sits on, and the chunk of its unit, which is the player's
+/// holding chunk while they ride: where they belong is judged by it, not by their own
+/// position (ADR-0028, section 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerRiding {
+    pub vehicle: EntityId,
+    pub chunk: ChunkPos,
 }
 
 /// What a region keeps for an edge.

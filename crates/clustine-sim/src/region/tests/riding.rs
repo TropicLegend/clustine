@@ -1254,3 +1254,120 @@ fn a_players_hit_on_an_entity_in_another_regions_copy_is_an_effect_on_it() {
         } if key == seat.key
     ));
 }
+
+/// The player's use of `target`, as their client sends it, not sneaking.
+fn use_entity(target: &Entity) -> TickInputs {
+    moves(vec![numbered(
+        1,
+        PlayerInput::Interact {
+            entity: target.key,
+            location: [0.0, 0.1, 0.0],
+            sneaking: false,
+        },
+    )])
+}
+
+fn keys(sneak: bool) -> TickInputs {
+    moves(vec![numbered(
+        1,
+        PlayerInput::Keys(crate::api::Keys {
+            sneak,
+            ..Default::default()
+        }),
+    )])
+}
+
+/// Where the region has player 1.
+fn feet(region: &Region) -> [f64; 3] {
+    let position = region.players[&player(1)].pose.position;
+    [position.x, position.y, position.z]
+}
+
+#[test]
+fn a_player_who_uses_a_cushion_sits_on_it_at_its_seat_less_their_own_vehicle_point() {
+    let mut region = on_ticking_floor_with(&[]);
+    let seat = cushion(1, [2.5, -60.0, 0.5], 0);
+    lay(&mut region, &seat);
+    let output = checked(&mut region, &use_entity(&seat));
+    // The cushion's passenger point is 0.25 up, the player's vehicle point 0.6.
+    assert_eq!(bits(feet(&region)), bits([2.5, (-60.0 + 0.25) - 0.6, 0.5]));
+    let riding = record(&region, seat.key).unwrap().riding.passengers;
+    assert_eq!(riding.len(), 1);
+    assert!(riding[0].player && riding[0].key == EntityId(1));
+    assert!(output.player_events.iter().any(|(id, event)| {
+        *id == player(1)
+            && matches!(event, PlayerEvent::Rides { vehicle: Some(vehicle), .. } if *vehicle == seat.key)
+    }));
+    assert!(output.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::Passengers { vehicle, passengers, .. }
+            if *vehicle == seat.key && passengers == &[EntityId(1)]
+    )));
+}
+
+#[test]
+fn a_riding_player_s_moves_turn_their_head_and_move_them_nowhere() {
+    let mut region = on_ticking_floor_with(&[]);
+    let seat = cushion(1, [2.5, -60.0, 0.5], 0);
+    lay(&mut region, &seat);
+    checked(&mut region, &use_entity(&seat));
+    let sat = feet(&region);
+    let walked = moves(vec![numbered(
+        1,
+        PlayerInput::Move {
+            position: Some(Vec3::new(9.5, -60.0, 9.5)),
+            rotation: Some((45.0, 10.0)),
+            on_ground: true,
+        },
+    )]);
+    checked(&mut region, &walked);
+    assert_eq!(bits(feet(&region)), bits(sat));
+    assert_eq!(region.players[&player(1)].pose.yaw, 45.0);
+}
+
+#[test]
+fn a_player_who_sneaks_gets_off_beside_the_cushion_and_its_seat_is_free_again() {
+    let mut region = on_ticking_floor_with(&[]);
+    let seat = cushion(1, [2.5, -60.0, 0.5], 0);
+    lay(&mut region, &seat);
+    checked(&mut region, &use_entity(&seat));
+    let output = checked(&mut region, &keys(true));
+    assert!(region.players[&player(1)].riding.is_none());
+    assert!(
+        record(&region, seat.key)
+            .unwrap()
+            .riding
+            .passengers
+            .is_empty()
+    );
+    // On top of the cushion's box, as `Entity.getDismountLocationForPassenger` lets off.
+    assert_eq!(bits(feet(&region)), bits([2.5, -60.0 + 0.25, 0.5]));
+    assert!(output.player_events.iter().any(|(id, event)| {
+        *id == player(1) && matches!(event, PlayerEvent::Rides { vehicle: None, .. })
+    }));
+    // A player who sneaks does not get on.
+    checked(&mut region, &use_entity(&seat));
+    assert!(region.players[&player(1)].riding.is_none());
+}
+
+#[test]
+fn a_player_who_leaves_while_seated_leaves_the_seat_free() {
+    let mut region = on_ticking_floor_with(&[]);
+    let seat = cushion(1, [2.5, -60.0, 0.5], 0);
+    lay(&mut region, &seat);
+    checked(&mut region, &use_entity(&seat));
+    checked(
+        &mut region,
+        &TickInputs {
+            player_changes: vec![leave_as(1, 1)],
+            ..TickInputs::default()
+        },
+    );
+    assert!(
+        record(&region, seat.key)
+            .unwrap()
+            .riding
+            .passengers
+            .is_empty()
+    );
+}

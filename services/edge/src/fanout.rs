@@ -26,9 +26,9 @@ use clustine_protocol::packets::play::{
     ChunkBatchFinished, ChunkBatchStart, Disconnect, EntityDataValue, GameEvent, LevelEvent, Login,
     PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
     RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetHeadRotation, SetHeldSlot, SetPlayerInventory,
-    Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk,
-    abilities, angle, animation, entity_data, game_event, game_mode,
+    SetDefaultSpawnPosition, SetEntityData, SetHeadRotation, SetHeldSlot, SetPassengers,
+    SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition,
+    TakeItemEntity, UnloadChunk, abilities, angle, animation, entity_data, game_event, game_mode,
     inventory as protocol_inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
@@ -503,6 +503,9 @@ struct PlayerView {
     name: String,
     outbound: mpsc::Sender<Bytes>,
     awaiting_teleport: Arc<AtomicI32>,
+    /// The id of the last teleport the client was sent: the login's 1, then one more for
+    /// each getting on or off a vehicle, which the game does as teleports.
+    teleports: i32,
     /// The player's entity, once a region has placed the player.
     entity: Option<EntityId>,
     /// The region the player is in, as far as this task has been told. The region itself
@@ -805,6 +808,10 @@ pub(crate) struct Fanout {
     lit: Option<mpsc::UnboundedReceiver<FromThread>>,
     /// The entities in the chunks of the replica.
     entities: BTreeMap<EntityId, Shown>,
+    /// Who rides what: each vehicle's passengers in order, by the vehicle's word, and
+    /// the other way round (`docs/groundwork/n5-plan.md`).
+    passengers: BTreeMap<EntityId, Vec<EntityId>>,
+    vehicle_of: BTreeMap<EntityId, EntityId>,
     /// The ids this edge's clients know entities by.
     wire: WireIds,
     /// The regions that are no more, each with the region it went into, as far as this
@@ -976,6 +983,8 @@ impl Fanout {
             lighting,
             lit: Some(lit),
             entities: BTreeMap::new(),
+            passengers: BTreeMap::new(),
+            vehicle_of: BTreeMap::new(),
             wire,
             stands_for: BTreeMap::new(),
             carried: BTreeMap::new(),
@@ -1527,6 +1536,7 @@ impl Fanout {
                         name: profile.name.clone(),
                         outbound,
                         awaiting_teleport,
+                        teleports: 0,
                         entity: None,
                         region: self.spawn_region,
                         passed_on: 0,
@@ -1713,10 +1723,11 @@ impl Fanout {
             } => self.inventory_slot(player, slot, stack).await,
             // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
             WorkerToEdge::ToPlayer {
-                event:
-                    PlayerEvent::VehicleCorrected { .. }
-                    | PlayerEvent::Rides { .. }
-                    | PlayerEvent::Kicked { .. },
+                player,
+                event: PlayerEvent::Rides { pose, .. },
+            } => self.rides(player, pose).await,
+            WorkerToEdge::ToPlayer {
+                event: PlayerEvent::VehicleCorrected { .. } | PlayerEvent::Kicked { .. },
                 ..
             } => {}
             WorkerToEdge::Outbox { number, entry } => self.outbox(from, number, entry).await,
@@ -2898,9 +2909,13 @@ impl Fanout {
                 motion,
                 ..
             } => self.hand_on(from, entity, hops, position, motion).await,
+            RegionEvent::Passengers {
+                vehicle,
+                passengers,
+                ..
+            } => self.show_passengers(vehicle, passengers).await,
             // Shown from the steps of N5 that make them.
-            RegionEvent::Passengers { .. }
-            | RegionEvent::Leashed { .. }
+            RegionEvent::Leashed { .. }
             | RegionEvent::DataChanged { .. }
             | RegionEvent::EntitySound { .. } => {}
             RegionEvent::TransientBlock { position, state } => {
@@ -3419,9 +3434,31 @@ impl Fanout {
             return;
         };
         let state = &shown.state;
+        // A rider is placed by each client on its vehicle: it is sent no position, only
+        // which way it looks (`ServerEntity`'s passengers).
+        let rides = self.vehicle_of.get(&entity).copied();
         let mut outgoing = Vec::new();
         for (player, view) in &mut self.players {
-            let packets = view.update_visibility(*player, &shown, moved, &mut self.wire);
+            let newly = !view.visible.contains_key(&entity);
+            let mut packets =
+                view.update_visibility(*player, &shown, moved && rides.is_none(), &mut self.wire);
+            let visible = view.visible.contains_key(&entity);
+            if moved && rides.is_some() && visible && !newly {
+                packets.push(head_rotation(state, self.wire.of(entity)));
+            }
+            // Who rides it, and what it rides, go with it to a client newly shown it.
+            if newly && visible {
+                let mut vehicles = vec![entity];
+                vehicles.extend(rides);
+                for vehicle in vehicles {
+                    if let Some(riders) = self.passengers.get(&vehicle)
+                        && let Some(packet) =
+                            passengers_packet(view, vehicle, riders, &mut self.wire)
+                    {
+                        packets.push(packet);
+                    }
+                }
+            }
             if !packets.is_empty() {
                 outgoing.push((*player, packets));
             }
@@ -3436,9 +3473,75 @@ impl Fanout {
         }
     }
 
+    /// Takes in who rides the vehicle `vehicle` now, by the vehicle's word, and tells each
+    /// client that shows it or rides it (`ClientboundSetPassengersPacket`, which the
+    /// game sends the vehicle's trackers on any change of its list).
+    async fn show_passengers(&mut self, vehicle: EntityId, passengers: Vec<EntityId>) {
+        if let Some(before) = self.passengers.remove(&vehicle) {
+            for rider in before {
+                if self.vehicle_of.get(&rider) == Some(&vehicle) {
+                    self.vehicle_of.remove(&rider);
+                }
+            }
+        }
+        for rider in &passengers {
+            self.vehicle_of.insert(*rider, vehicle);
+        }
+        let mut outgoing = Vec::new();
+        for (player, view) in &self.players {
+            if let Some(packet) = passengers_packet(view, vehicle, &passengers, &mut self.wire) {
+                outgoing.push((*player, packet));
+            }
+        }
+        if !passengers.is_empty() {
+            self.passengers.insert(vehicle, passengers);
+        }
+        for (player, packet) in outgoing {
+            self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// The player got on or off a vehicle, which the game does as a teleport: their
+    /// client is told where they are now (`player_position`), and its moves are passed
+    /// over until it confirms it.
+    async fn rides(&mut self, player: PlayerId, pose: Pose) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        view.teleports += 1;
+        let teleport_id = view.teleports;
+        view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
+        let packet = encoded(&SynchronizePlayerPosition {
+            teleport_id,
+            x: pose.position.x,
+            y: pose.position.y,
+            z: pose.position.z,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            velocity_z: 0.0,
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+            relative_flags: 0,
+        });
+        self.send_to_player(player, [packet]).await;
+    }
+
     /// Forgets an entity that no longer exists and hides it from everyone who saw it.
     async fn remove_entity(&mut self, entity: EntityId) {
         self.entities.remove(&entity);
+        // A vehicle that is gone carries nobody, and a rider that is gone rides nothing.
+        if let Some(riders) = self.passengers.remove(&entity) {
+            for rider in riders {
+                if self.vehicle_of.get(&rider) == Some(&entity) {
+                    self.vehicle_of.remove(&rider);
+                }
+            }
+        }
+        if let Some(vehicle) = self.vehicle_of.remove(&entity)
+            && let Some(riders) = self.passengers.get_mut(&vehicle)
+        {
+            riders.retain(|rider| *rider != entity);
+        }
         let viewers: Vec<_> = self
             .players
             .iter_mut()
@@ -3571,6 +3674,7 @@ impl Fanout {
         };
         // Placing the player is the first teleport the client has to confirm.
         let teleport_id = 1;
+        view.teleports = teleport_id;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
         let flags = if flying {
             CREATIVE_ABILITIES | abilities::FLYING
@@ -3734,8 +3838,19 @@ impl Fanout {
         view.center = center;
         view.wanted = wanted;
         // Entities in chunks that came into view appear, those left behind disappear.
+        let shown_before: BTreeSet<EntityId> = view.visible.keys().copied().collect();
         for shown in self.entities.values() {
             packets.extend(view.update_visibility(player, shown, false, &mut self.wire));
+        }
+        // And who rides those that appeared, or what those that appeared ride.
+        for (vehicle, riders) in &self.passengers {
+            let appeared =
+                |key: &EntityId| view.visible.contains_key(key) && !shown_before.contains(key);
+            if (appeared(vehicle) || riders.iter().any(appeared))
+                && let Some(packet) = passengers_packet(view, *vehicle, riders, &mut self.wire)
+            {
+                packets.push(packet);
+            }
         }
         // Who waits for what has changed, and how near they are: that moves entries
         // between the sets of light and sends or dispatches nothing.
@@ -5337,6 +5452,29 @@ fn move_packets(state: &EntityState, id: i32) -> Vec<Bytes> {
         packets.push(head_rotation(state, id));
     }
     packets
+}
+
+/// `set_passengers` of `vehicle` for the client of `view`, if it shows the vehicle or is
+/// among its riders: the riders it shows, in order, its own player among them.
+fn passengers_packet(
+    view: &PlayerView,
+    vehicle: EntityId,
+    riders: &[EntityId],
+    wire: &mut WireIds,
+) -> Option<Bytes> {
+    let own = |rider: &EntityId| view.entity == Some(*rider);
+    if !view.visible.contains_key(&vehicle) && !riders.iter().any(own) {
+        return None;
+    }
+    let passengers = riders
+        .iter()
+        .filter(|rider| own(rider) || view.visible.contains_key(rider))
+        .map(|rider| wire.of(*rider))
+        .collect();
+    Some(encoded(&SetPassengers {
+        vehicle_id: wire.of(vehicle),
+        passengers,
+    }))
 }
 
 /// The head of a player looks where the player looks; the position packets only turn
@@ -7486,6 +7624,7 @@ mod scenarios {
     mod items_specification;
     mod physics_specification;
     mod redstone;
+    mod riding;
     mod tracking;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
@@ -8263,6 +8402,9 @@ mod scenarios {
         spawns: Vec<SpawnEntity>,
         entity_data: Vec<SetEntityData>,
         swings: Vec<Animate>,
+        /// Every list of a vehicle's passengers and every teleport it was sent, in order.
+        passengers: Vec<SetPassengers>,
+        teleports: Vec<SynchronizePlayerPosition>,
         /// Every packet it was sent of an entity's tracking (its moves, relative and
         /// whole, its motion, its being picked up) and every transient block, in order.
         tracking: Vec<ClientboundPlay>,
@@ -8336,6 +8478,8 @@ mod scenarios {
                 spawns: Vec::new(),
                 entity_data: Vec::new(),
                 swings: Vec::new(),
+                passengers: Vec::new(),
+                teleports: Vec::new(),
                 tracking: Vec::new(),
                 ids: Vec::new(),
             }
@@ -8348,6 +8492,19 @@ mod scenarios {
                 .lock()
                 .expect("nothing panics holding the ledger");
             ledger.get(&id).expect("the edge gave the id").0
+        }
+
+        /// The wire id the edge gave the key `key`.
+        fn ledger_id(&self, key: u64) -> i32 {
+            let ledger = self
+                .ledger
+                .lock()
+                .expect("nothing panics holding the ledger");
+            *ledger
+                .iter()
+                .find(|(_, of)| of.0 == key)
+                .expect("the edge gave the key an id")
+                .0
         }
 
         /// The wire id its login gave its own entity.
@@ -8483,6 +8640,10 @@ mod scenarios {
                     self.tracking.push(decoded);
                 }
                 ClientboundPlay::AddTransientBlock(_) => self.tracking.push(decoded),
+                ClientboundPlay::SetPassengers(passengers) => self.passengers.push(passengers),
+                ClientboundPlay::SynchronizePlayerPosition(teleport) => {
+                    self.teleports.push(teleport);
+                }
                 ClientboundPlay::SetHeadRotation(head) => {
                     self.named.push((Naming::HeadRotation, head.entity_id));
                 }
