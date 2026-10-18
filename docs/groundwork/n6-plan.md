@@ -1,7 +1,8 @@
 # Step N6: TNT, explosions, containers that open, and the redstone that waits for entities, planned
 
 Draft of 2026-10-18, revised the same day after independent reviews (sections 6, 7 and
-8, each overriding what it amends above it and the sections before it); a third review of section 7 is answered in section 8, which overrides both. Step N6 of the
+8, each overriding what it amends above it and the sections before it); a third review of section 7 is answered in section 8, and a fourth review of section 8 in
+section 9, which withdraws the lend at the moment of use. Step N6 of the
 [phase plan](n-plan.md): "TNT and explosions, and the redstone of ADR-0026 section 11
 that waits for entities (dispensers, droppers, hoppers, detector rails, pressure plates
 that count entities, tripwire)". The game's rules are in the [porting brief](n6-brief.md),
@@ -417,3 +418,54 @@ item 4 not ready. Each change below overrides what it amends above it.
     pinned line waits for its lend, up to 40 ticks; a container the lender's player has
     open, or a hopper of the other side has borrowed, does not open from the other side;
     a menu closes at a line; leaving drops the carried stack where the game does too.
+
+## 9. The fourth review, and what it changed
+
+A fourth independent review (2026-10-18) read section 8. It found items 7 and 8 sound,
+and three serious defects in the lend at the moment of use, each in ordinary play at a
+pinned line: asked only once, a use failed whenever the lender answered "wait" (one of
+its players standing anywhere in the chunk); given back at every close, a chunk on its
+way back refused a quick second click and made ADR-0027's unmended gap routine, with a
+whole lend (a save, an unload, neighbours stopping, every viewer served again) for each
+open and close; and a short lend for one chest fixed the way of its stretch, so that the
+other side's circuit asked once and was refused for a minute. Its mending would have
+added a grace period, a mended gap in the store, a third kind of answer and a list of
+asks of their own. Four reviews of that mechanism have each found deeper defects than
+the last, so it is withdrawn, and with it the owner keeps ADR-0027 as they chose it.
+
+1. **Containers are lent at build time, as circuits are** (withdrawing section 7 items 4
+   and 8 and section 8 items 1 to 5). A chest, a trapped chest, a barrel, a shulker box
+   and an ender chest join the circuit's parts of ADR-0027 section 2 beside the
+   dispensers, droppers and hoppers of section 6 item 4, with the reach of a container
+   (its own block, and a double chest's other half). So a container placed by a player
+   near a pinned line asks for the land it reaches into, and lives in the builder's
+   region, which runs its menus as anywhere else; it is kept while it stands, as any
+   part is. No use asks for a lend, no use is kept, and the worker holds nothing new.
+2. **A menu opens only where the player's region holds every chunk of its container**, as
+   decision 10 has it. A container across a pinned line that its user's region does not
+   hold does not open (named): one the other side built, one placed where the lend was
+   refused, one of the lender's that a hopper of the other side borrowed. The ender chest
+   is any other container (section 7 item 8 stands).
+3. **What stays of sections 7 and 8**: every item but those withdrawn above, with these
+   changes from the fourth review:
+   - a menu click is held by the worker (section 8 item 6) only while the link waits for
+     a subscription of the menu container's chunk, or the chunk is lent and not loaded;
+     otherwise it goes through, and a region whose container is not loaded refuses it and
+     reports the menu whole when the chunk loads, so a held click never freezes a link
+     whose chunk is not coming;
+   - the edge takes a menu event from a region that stands for the player's region
+     (`living(from) == living(view.region)`), not only from `view.region`, and sends a
+     `MenuResync` after it moves a stay (`move_stay`), so the report that heals after a
+     merge is never dropped;
+   - the lender's wait before lending (ADR-0027 section 3 step 2) also covers a chunk in
+     which one of its players' menus shows a container, block or vehicle, so that a lend
+     for a circuit never closes a menu open on the lender's side.
+4. **Section 4 gains**: a container across a pinned line opens only on the side that
+   holds it; a menu closes at a line; leaving drops the carried stack, as the game does.
+   And what to try with `--pin 4 --reshape by-hand`: a chest placed at the line opens for
+   its builder; a hopper line across the line feeds a chest; a chest the other side
+   placed does not open from this side.
+
+**For the owner**, replacing the proposal of section 7: containers follow your "lending
+at build time" of ADR-0027 as circuits do. The difference you would meet is that a
+container across a pinned line opens only for players on the side that holds it.
