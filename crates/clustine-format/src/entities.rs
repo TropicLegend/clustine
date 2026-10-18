@@ -27,8 +27,10 @@
 //! state u16, the ticks it has fallen i32, and flags u8 (bit 0 it drops as an item where
 //! it cannot land, bit 1 its drop is called off; the others 0). Tags 3 to 9 are N5's
 //! kinds (`docs/groundwork/n5-plan.md`): 3 a minecart, 4 a boat, 5 an armour stand, 6 an
-//! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, each written by `put_data` in
-//! the order of its fields; a block-attached entity's attachment is its block (3 × i32)
+//! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, and tag 10 is N6's primed
+//! TNT (`docs/groundwork/n6-plan.md`), each written by `put_data` in the order of its
+//! fields (a minecart's TNT fuse i32 and a hopper cart's switch u8 after its push; the
+//! TNT's fuse i16, block u16, power f32 and owner as an item's thrower); a block-attached entity's attachment is its block (3 × i32)
 //! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
 //! u8, item i32 and count i32, ascending by slot. Counters are kept relative to the record they are in
 //! (section 11 of the plan): regions count their ticks each from their own start.
@@ -87,6 +89,7 @@ const DATA_ITEM_FRAME: u8 = 6;
 const DATA_PAINTING: u8 = 7;
 const DATA_CUSHION: u8 = 8;
 const DATA_LEASH_KNOT: u8 = 9;
+const DATA_PRIMED_TNT: u8 = 10;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -381,6 +384,8 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             contents,
             fuel,
             push,
+            fuse,
+            enabled,
         } => {
             out.push(DATA_MINECART);
             put_hurt(out, *hurt);
@@ -404,6 +409,8 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             for part in push {
                 out.extend_from_slice(&part.0.to_be_bytes());
             }
+            out.extend_from_slice(&fuse.to_be_bytes());
+            out.push(u8::from(*enabled));
         }
         EntityData::Boat {
             hurt,
@@ -489,6 +496,24 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             out.push(DATA_LEASH_KNOT);
             put_attached(out, *attached);
         }
+        EntityData::PrimedTnt {
+            fuse,
+            block,
+            power,
+            owner,
+        } => {
+            out.push(DATA_PRIMED_TNT);
+            out.extend_from_slice(&fuse.to_be_bytes());
+            out.extend_from_slice(&block.to_be_bytes());
+            out.extend_from_slice(&power.0.to_be_bytes());
+            match owner {
+                None => out.push(0),
+                Some(owner) => {
+                    out.push(1);
+                    out.extend_from_slice(&owner.as_u128().to_be_bytes());
+                }
+            }
+        }
     }
 }
 
@@ -546,6 +571,8 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 contents: take_contents(input)?,
                 fuel: input.i32()?,
                 push: [Double(input.f64()?), Double(input.f64()?)],
+                fuse: input.i32()?,
+                enabled: take_flag(input, "a hopper cart's switch")?,
             })
         }
         DATA_BOAT => {
@@ -624,6 +651,16 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
         }),
         DATA_LEASH_KNOT => Ok(EntityData::LeashKnot {
             attached: take_attached(input)?,
+        }),
+        DATA_PRIMED_TNT => Ok(EntityData::PrimedTnt {
+            fuse: input.i16()?,
+            block: input.u16()?,
+            power: Float(input.f32()?),
+            owner: if take_flag(input, "a primed TNT's owner flag")? {
+                Some(Uuid::from_u128(input.u128()?))
+            } else {
+                None
+            },
         }),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
@@ -1167,9 +1204,17 @@ pub(crate) mod tests {
                 contents(),
                 any::<i32>(),
                 any::<[f64; 2]>(),
+                any::<(i32, bool)>(),
             )
                 .prop_map(
-                    |(hurt, (display, display_offset, flipped), contents, fuel, push)| {
+                    |(
+                        hurt,
+                        (display, display_offset, flipped),
+                        contents,
+                        fuel,
+                        push,
+                        (fuse, enabled),
+                    )| {
                         EntityData::Minecart {
                             hurt,
                             display,
@@ -1178,6 +1223,8 @@ pub(crate) mod tests {
                             contents,
                             fuel,
                             push: push.map(Double),
+                            fuse,
+                            enabled,
                         }
                     }
                 ),
@@ -1247,6 +1294,14 @@ pub(crate) mod tests {
             (attachments(), any::<u8>())
                 .prop_map(|(attached, colour)| EntityData::Cushion { attached, colour }),
             attachments().prop_map(|attached| EntityData::LeashKnot { attached }),
+            any::<(i16, u16, f32, Option<u128>)>().prop_map(|(fuse, block, power, owner)| {
+                EntityData::PrimedTnt {
+                    fuse,
+                    block,
+                    power: Float(power),
+                    owner: owner.map(Uuid::from_u128),
+                }
+            }),
         ]
     }
 

@@ -152,7 +152,20 @@ pub(crate) struct Item {
     pub(crate) start_motion: Vec3,
     /// Redstone ore it stood on, to light.
     pub(crate) ore: Vec<BlockPos>,
+    /// The blocks its walk met whose `entityInside` the region runs itself, because it
+    /// reads the region's entities or containers: plates, tripwire, hoppers and sculk
+    /// sensors, in the order they were met (`docs/groundwork/n6-plan.md`, decision 11).
+    pub(crate) inside: Vec<BlockPos>,
     pub(crate) sounds: Vec<Sound>,
+}
+
+/// Whether the region runs the `entityInside` of `state` for an item itself
+/// ([`Item::inside`]).
+pub(crate) fn handed_back(state: BlockState) -> bool {
+    is_class(state, BlockClass::BasePressurePlateBlock)
+        || is_class(state, BlockClass::TripWireBlock)
+        || is_class(state, BlockClass::HopperBlock)
+        || is_class(state, BlockClass::SculkSensorBlock)
 }
 
 /// What draws the item's random numbers (`Entity.random`).
@@ -638,10 +651,13 @@ impl Inside for ItemInside<'_> {
         self.item.removed
     }
 
-    fn met(&mut self, state: BlockState, _pos: BlockPos, step: i32, block: bool, fluid: bool) {
+    fn met(&mut self, state: BlockState, pos: BlockPos, step: i32, block: bool, fluid: bool) {
         if block {
             self.collector.advance_step(step);
             self.item.entity_inside(state, self.collector);
+            if handed_back(state) {
+                self.item.inside.push(pos);
+            }
         }
         if fluid {
             self.collector.advance_step(step);

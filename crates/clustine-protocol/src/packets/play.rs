@@ -2804,6 +2804,128 @@ impl Decode for SetCursorItem {
     }
 }
 
+/// The particles an explosion shows, by their ids in the `minecraft:particle_type`
+/// registry; none of them has options.
+pub mod particle {
+    pub const EXPLOSION_EMITTER: i32 = 29;
+    pub const EXPLOSION: i32 = 30;
+    pub const POOF: i32 = 69;
+    pub const SMOKE: i32 = 72;
+}
+
+/// One of the particles an explosion scatters over the blocks it broke
+/// (`ExplosionParticleInfo` with its weight in a `WeightedList`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExplosionParticle {
+    /// One of [`particle`], a type without options.
+    pub particle: i32,
+    pub scaling: f32,
+    pub speed: f32,
+    pub weight: i32,
+}
+
+/// The block particles of every explosion the game makes (`ServerExplosion`'s default):
+/// poof and smoke, equally likely.
+pub const EXPLOSION_BLOCK_PARTICLES: [ExplosionParticle; 2] = [
+    ExplosionParticle {
+        particle: particle::POOF,
+        scaling: 0.5,
+        speed: 1.0,
+        weight: 1,
+    },
+    ExplosionParticle {
+        particle: particle::SMOKE,
+        scaling: 1.0,
+        speed: 1.0,
+        weight: 1,
+    },
+];
+
+/// An explosion (`explode`, `docs/groundwork/n6-brief.md`, section 9.1): where, how far,
+/// how many positions its rays reached, the push to the receiving player, the particle
+/// at the centre, the sound by its id, the particles over the blocks and whether the
+/// sound plays. The layouts of the block particles' entries are inferred, and checked by
+/// the comparison with the official server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explode {
+    pub centre: [f64; 3],
+    pub radius: f32,
+    pub block_count: i32,
+    pub knockback: Option<[f64; 3]>,
+    /// One of [`particle`]'s two explosions.
+    pub particle: i32,
+    /// An id of the `minecraft:sound_event` registry.
+    pub sound: i32,
+    pub block_particles: Vec<ExplosionParticle>,
+    pub play_sound: bool,
+}
+
+impl Packet for Explode {
+    const ID: i32 = clientbound::EXPLODE;
+}
+
+impl Encode for Explode {
+    fn encode(&self, w: &mut Writer) {
+        for coordinate in self.centre {
+            w.put_f64(coordinate);
+        }
+        w.put_f32(self.radius);
+        w.put_i32(self.block_count);
+        w.put_option(self.knockback.as_ref(), |w, push| {
+            for part in push {
+                w.put_f64(*part);
+            }
+        });
+        w.put_var_int(self.particle);
+        // A holder of the registry: its id plus one, 0 being a sound sent whole.
+        w.put_var_int(self.sound + 1);
+        w.put_array(&self.block_particles, |w, entry| {
+            w.put_var_int(entry.particle);
+            w.put_f32(entry.scaling);
+            w.put_f32(entry.speed);
+            w.put_var_int(entry.weight);
+        });
+        w.put_bool(self.play_sound);
+    }
+}
+
+impl Decode for Explode {
+    /// Reads what [`Explode::encode`] writes: particles without options and a sound of
+    /// the registry, as every explosion of the game's has them.
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let centre = [r.f64()?, r.f64()?, r.f64()?];
+        let radius = r.f32()?;
+        let block_count = r.i32()?;
+        let knockback = r.option(|r| Ok([r.f64()?, r.f64()?, r.f64()?]))?;
+        let particle = r.var_int()?;
+        let sound = r.var_int()? - 1;
+        if sound < 0 {
+            return Err(DecodeError::InvalidValue {
+                what: "sound of the registry",
+                value: i64::from(sound),
+            });
+        }
+        let block_particles = r.array(|r| {
+            Ok(ExplosionParticle {
+                particle: r.var_int()?,
+                scaling: r.f32()?,
+                speed: r.f32()?,
+                weight: r.var_int()?,
+            })
+        })?;
+        Ok(Self {
+            centre,
+            radius,
+            block_count,
+            knockback,
+            particle,
+            sound,
+            block_particles,
+            play_sound: r.bool()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -3396,6 +3518,7 @@ packet_set! {
         ContainerSetData,
         SetCursorItem,
         ClientboundContainerClose,
+        Explode,
         SetHeldSlot,
         SetPlayerInventory,
         SetEntityData,
@@ -3736,6 +3859,26 @@ mod tests {
             Client::decode,
             Client::ClientboundContainerClose,
         );
+    }
+
+    #[test]
+    fn an_explosion_round_trips_with_a_push_and_without() {
+        for knockback in [None, Some([0.5, 0.25, -1.0])] {
+            assert_round_trip(
+                Explode {
+                    centre: [0.5, -59.0, 16.5],
+                    radius: 4.0,
+                    block_count: 1061,
+                    knockback,
+                    particle: particle::EXPLOSION_EMITTER,
+                    sound: 703,
+                    block_particles: EXPLOSION_BLOCK_PARTICLES.to_vec(),
+                    play_sound: true,
+                },
+                ClientboundPlay::decode,
+                ClientboundPlay::Explode,
+            );
+        }
     }
 
     #[test]

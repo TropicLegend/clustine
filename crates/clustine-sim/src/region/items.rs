@@ -259,6 +259,7 @@ impl Region {
             fluids: Default::default(),
             start_motion: entity.motion,
             ore: Vec::new(),
+            inside: Vec::new(),
             sounds: Vec::new(),
         })
     }
@@ -296,12 +297,31 @@ impl Region {
         self.write_item(&entity, item, position, output);
     }
 
+    /// `entityInside` of the block `state` at `pos`, which the item `item`'s walk met and
+    /// handed back ([`crate::physics::item::handed_back`]): a plate's or a tripwire's
+    /// check, a hopper's pull, a sculk sensor's step. Steps N6e and N6f fill it in
+    /// (`docs/groundwork/n6-plan.md`, decision 11); until then it does nothing.
+    pub(super) fn item_inside(
+        &mut self,
+        pos: BlockPos,
+        state: clustine_data::BlockState,
+        item: &Item,
+        output: &mut TickOutput,
+    ) {
+        let _ = (pos, state, item, output);
+    }
+
     /// What an item's tick or push leaves beyond its record: the redstone ore it stood
-    /// on lit, and its sounds.
+    /// on lit, the blocks it was inside answered, and its sounds.
     pub(super) fn item_side_effects(&mut self, item: &mut Item, output: &mut TickOutput) {
         for ore in std::mem::take(&mut item.ore) {
             if let Some(state) = self.own_block(ore) {
                 self.light_redstone_ore(ore, state, output);
+            }
+        }
+        for pos in std::mem::take(&mut item.inside) {
+            if let Some(state) = self.own_block(pos) {
+                self.item_inside(pos, state, item, output);
             }
         }
         for sound in std::mem::take(&mut item.sounds) {

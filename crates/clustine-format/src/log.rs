@@ -1377,9 +1377,10 @@ mod tests {
 
     #[test]
     fn a_record_that_checks_out_but_makes_no_sense_is_an_error() {
+        let later = FORMAT_VERSION + 1;
         assert_eq!(
-            read_log(&frame(&[9, 1])),
-            Err(FormatError::UnsupportedVersion(9))
+            read_log(&frame(&[later, 1])),
+            Err(FormatError::UnsupportedVersion(later))
         );
         assert!(read_log(&frame(&[1, 7])).is_err());
         assert!(read_log(&frame(&[])).is_err());

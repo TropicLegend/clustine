@@ -56,6 +56,8 @@ fn cart_data(contents: Vec<(u8, ItemStack)>) -> EntityData {
         contents,
         fuel: 0,
         push: [Double(0.0); 2],
+        fuse: -1,
+        enabled: true,
     }
 }
 

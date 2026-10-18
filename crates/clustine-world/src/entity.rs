@@ -240,6 +240,10 @@ pub enum EntityData {
         fuel: i32,
         /// A furnace cart's push, x and z.
         push: [Double; 2],
+        /// A TNT cart's fuse, in ticks, -1 while it is not primed (`TNTFuse`).
+        fuse: i32,
+        /// Whether a hopper cart pulls, which an activator rail turns off (`Enabled`).
+        enabled: bool,
     },
     /// A boat or a raft of any wood, with a chest or not, the kind its entity type
     /// (`AbstractBoat`).
@@ -296,12 +300,28 @@ pub enum EntityData {
     Cushion { attached: Attached, colour: u8 },
     /// The knot of a leash tied to a fence.
     LeashKnot { attached: Attached },
+    /// Primed TNT (`PrimedTnt`, `docs/groundwork/n6-brief.md`, section 1.7).
+    PrimedTnt {
+        /// The ticks before it explodes (`fuse`, saved as a short).
+        fuse: i16,
+        /// The block it shows, a state id (`block_state`).
+        block: u16,
+        /// Its explosion's power, 4 unless summoned otherwise (`explosion_power`).
+        power: Float,
+        /// Who primed it (`owner`), if anyone did.
+        owner: Option<Uuid>,
+    },
 }
 
 /// What a tick did to an entity of a chunk. Applied in the order a tick made them, after
 /// the tick's block changes, and idempotent from any state at or after the last
 /// checkpoint, as block changes are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a whole entity is the change of every entity made or taken in, and boxing it \
+              would allocate once for each"
+)]
 pub enum EntityChange {
     /// The entity as it is after the tick, new to the chunk or taken in again.
     Whole(Entity),

@@ -729,6 +729,8 @@ impl Region {
                 };
                 self.interact_armor_stand(entity.key, used, output);
             }
+            // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).
+            EntityUse::Blasted { .. } => {}
         }
     }
 

@@ -20,7 +20,9 @@ pub use chunk::{
     MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked,
     light_tells_apart,
 };
-pub use effects::{Arrival, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect};
+pub use effects::{
+    Arrival, Blast, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
+};
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,
     EntityData, EntityField, Float, HOTBAR_SLOTS, Hurt, INVENTORY_SLOTS, Inventory, ItemStack,

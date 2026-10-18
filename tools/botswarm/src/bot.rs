@@ -360,6 +360,8 @@ pub struct Bot {
     pub cursor: Option<ItemStack>,
     /// The windows the server closed (`container_close`), in order.
     pub menus_closed: Vec<i32>,
+    /// Every explosion the server showed, in order.
+    pub explosions: Vec<clustine_protocol::packets::play::Explode>,
 }
 
 /// A menu's window as a client shows it: what `open_screen` said, then the slots and the
@@ -577,6 +579,7 @@ impl Bot {
             menu: None,
             cursor: None,
             menus_closed: Vec::new(),
+            explosions: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1683,6 +1686,7 @@ impl Bot {
             }
             // No menu of N6 has data slots but the crafter's.
             ClientboundPlay::ContainerSetData(_) => {}
+            ClientboundPlay::Explode(packet) => self.explosions.push(packet),
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

@@ -1108,6 +1108,8 @@ mod tests {
             contents: Vec::new(),
             fuel,
             push: [clustine_world::Double(0.0); 2],
+            fuse: -1,
+            enabled: true,
         }
     }
 

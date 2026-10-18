@@ -2993,6 +2993,8 @@ impl Fanout {
             RegionEvent::Leashed { entity, holder, .. } => self.show_leash(entity, holder).await,
             // Shown from the steps of N5 that make them.
             RegionEvent::DataChanged { .. } | RegionEvent::EntitySound { .. } => {}
+            // Fanned out from step N6c (`docs/groundwork/n6-plan.md`, section 3).
+            RegionEvent::Explosion { .. } => {}
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }

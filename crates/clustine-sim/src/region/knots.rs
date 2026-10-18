@@ -91,6 +91,8 @@ impl Region {
                 self.hurt_attached(entity.key, Breaker::Player { creative }, output);
             }
             EntityUse::Interact { .. } => self.knot_interact(entity, by, output),
+            // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).
+            EntityUse::Blasted { .. } => {}
         }
     }
 }

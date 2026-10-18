@@ -848,6 +848,8 @@ fn a_cart_carrying_a_rider_pushes_a_boat_it_meets_along() {
             contents: Vec::new(),
             fuel: 0,
             push: [Double(0.0); 2],
+            fuse: -1,
+            enabled: true,
         },
         ..boat(1, [3.5, -60.0 + 0.0625, 8.5])
     };

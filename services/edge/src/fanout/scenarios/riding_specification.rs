@@ -96,6 +96,8 @@ fn cart(position: [f64; 3], hops: u32, passengers: Vec<Seat>) -> EntityState {
                 contents: Vec::new(),
                 fuel: 0,
                 push: [Double(0.0), Double(0.0)],
+                fuse: -1,
+                enabled: true,
             },
             riding: riding_of(None, passengers),
         },

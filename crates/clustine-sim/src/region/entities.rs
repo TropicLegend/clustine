@@ -235,7 +235,9 @@ impl Region {
             }
             EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
             EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
-            EntityData::Item { .. } | EntityData::FallingBlock { .. } => {}
+            EntityData::Item { .. }
+            | EntityData::FallingBlock { .. }
+            | EntityData::PrimedTnt { .. } => {}
         }
     }
 
@@ -260,6 +262,8 @@ impl Region {
             | EntityData::Painting { .. }
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
+            // Primed TNT ticks from step N6c (`docs/groundwork/n6-plan.md`).
+            EntityData::PrimedTnt { .. } => {}
         }
     }
 

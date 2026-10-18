@@ -329,6 +329,8 @@ impl Region {
                 contents: Vec::new(),
                 fuel: 0,
                 push: [Double(0.0); 2],
+                fuse: -1,
+                enabled: true,
             },
         };
         // A new cart has never been in water: its first tick reads it so.
@@ -1353,6 +1355,8 @@ impl Region {
                     self.add_fuel(entity, position, held, from, output);
                 }
             }
+            // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).
+            EntityUse::Blasted { .. } => {}
         }
     }
 

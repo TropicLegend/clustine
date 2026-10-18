@@ -1173,6 +1173,8 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
         contents: Vec::new(),
         fuel: 0,
         push: [clustine_world::Double(0.0); 2],
+        fuse: -1,
+        enabled: true,
     };
     cart.on_ground = false;
     cart.motion = [0.4, 0.0, 0.0];
@@ -1583,6 +1585,8 @@ fn cart(n: u32, position: [f64; 3]) -> Entity {
         contents: Vec::new(),
         fuel: 0,
         push: [clustine_world::Double(0.0); 2],
+        fuse: -1,
+        enabled: true,
     };
     cart
 }

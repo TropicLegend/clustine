@@ -10,16 +10,25 @@
 //! | 2, a scheduled tick | 1 and a block u16, or 2 and a fluid u16; delay i32, priority i8 |
 //! | 3, a spread | direction u8 (0 to 5), the source's block u16 |
 //! | 4, a set if still | the block expected u16, the block to set u16, flags u32 |
-//! | 5, on an entity | its key u64, then 1, an attack: the attacker's key u64, flags u8 (bit 0 creative, bit 1 sprinting), the damage f32, where they stand 3 × f64; or 2, a use: the player's key u64, flags u8 (bit 0 creative, bit 1 sneaking), u8 0 or 1 and the stack held (item i32, count i32), where the click landed 3 × f64, where they stand 3 × f64 |
+//! | 5, on an entity | its key u64, then 1, an attack: the attacker's key u64, flags u8 (bit 0 creative, bit 1 sprinting), the damage f32, where they stand 3 × f64; or 2, a use: the player's key u64, flags u8 (bit 0 creative, bit 1 sneaking), u8 0 or 1 and the stack held (item i32, count i32), where the click landed 3 × f64, where they stand 3 × f64; or 3, an explosion's hit: the damage f32, the push 3 × f64, the blast |
+//! | 6, exploded | the block expected u16, the blast |
+//! | 7, burnt | the block expected u16 |
+//! | 8, a player inside | the box's lower corner 3 × f64 and its upper corner 3 × f64 |
+//!
+//! A blast (`clustine_world::Blast`) is the exploding entity's key u64, the tick u64, the
+//! centre 3 × f64, the radius f32, flags u8 (bit 0 its drops decay, bit 1 it has a direct
+//! source, bit 2 it has an owner, bit 3 the owner is a creative player; the others 0) and,
+//! with an owner, the owner's UUID u128.
 //!
 //! When it is due is a u8, 0 for counted from its taking or 1 followed by the holder's
 //! tick u64. An effect's number is its sequence u64 and its index u32.
 
 use clustine_data::{BLOCK_STATE_COUNT, BlockState};
 use clustine_world::{
-    BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect, Float,
-    ItemStack, SeamKind, Ticked,
+    Blast, BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect,
+    Float, ItemStack, SeamKind, Ticked,
 };
+use uuid::Uuid;
 
 use crate::FormatError;
 use crate::bytes::Input;
@@ -29,9 +38,18 @@ const TICK: u8 = 2;
 const SPREAD: u8 = 3;
 const SET_IF: u8 = 4;
 const ON_ENTITY: u8 = 5;
+const EXPLODED: u8 = 6;
+const BURNT: u8 = 7;
+const PLAYER_INSIDE: u8 = 8;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
+const USE_BLASTED: u8 = 3;
+
+const BLAST_DECAY: u8 = 1;
+const BLAST_DIRECT: u8 = 2;
+const BLAST_OWNED: u8 = 4;
+const BLAST_BY_CREATIVE: u8 = 8;
 
 /// Bytes an effect takes at the least: its block and its kind.
 const EFFECT_LENGTH: usize = 13;
@@ -127,9 +145,83 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     put_doubles(out, location);
                     put_doubles(out, from);
                 }
+                EntityUse::Blasted {
+                    damage,
+                    push,
+                    blast,
+                } => {
+                    out.push(USE_BLASTED);
+                    out.extend_from_slice(&damage.0.to_be_bytes());
+                    put_doubles(out, push);
+                    put_blast(out, &blast);
+                }
             }
         }
+        Effected::Exploded { expected, blast } => {
+            out.push(EXPLODED);
+            out.extend_from_slice(&expected.0.to_be_bytes());
+            put_blast(out, &blast);
+        }
+        Effected::Burnt { expected } => {
+            out.push(BURNT);
+            out.extend_from_slice(&expected.0.to_be_bytes());
+        }
+        Effected::PlayerInside { min, max } => {
+            out.push(PLAYER_INSIDE);
+            put_doubles(out, min);
+            put_doubles(out, max);
+        }
     }
+}
+
+fn put_blast(out: &mut Vec<u8>, blast: &Blast) {
+    out.extend_from_slice(&blast.source.0.to_be_bytes());
+    out.extend_from_slice(&blast.tick.to_be_bytes());
+    put_doubles(out, blast.centre);
+    out.extend_from_slice(&blast.radius.0.to_be_bytes());
+    let mut flags = 0;
+    if blast.decay {
+        flags |= BLAST_DECAY;
+    }
+    if blast.direct {
+        flags |= BLAST_DIRECT;
+    }
+    if blast.owner.is_some() {
+        flags |= BLAST_OWNED;
+    }
+    if blast.owner_creative {
+        flags |= BLAST_BY_CREATIVE;
+    }
+    out.push(flags);
+    if let Some(owner) = blast.owner {
+        out.extend_from_slice(&owner.as_u128().to_be_bytes());
+    }
+}
+
+fn take_blast(input: &mut Input<'_>) -> Result<Blast, FormatError> {
+    let source = EntityId(input.u64()?);
+    let tick = input.u64()?;
+    let centre = take_doubles(input)?;
+    let radius = Float(input.f32()?);
+    let flags = input.u8()?;
+    if flags & !(BLAST_DECAY | BLAST_DIRECT | BLAST_OWNED | BLAST_BY_CREATIVE) != 0 {
+        return Err(FormatError::Corrupt("a blast's flags"));
+    }
+    let owner = if flags & BLAST_OWNED != 0 {
+        Some(Uuid::from_u128(input.u128()?))
+    } else {
+        None
+    };
+    Ok(Blast {
+        source,
+        tick,
+        centre,
+        radius,
+        decay: flags & BLAST_DECAY != 0,
+        direct: flags & BLAST_DIRECT != 0,
+        owner,
+        owner_creative: flags & BLAST_BY_CREATIVE != 0,
+    })
 }
 
 fn put_doubles(out: &mut Vec<u8>, values: [Double; 3]) {
@@ -229,10 +321,26 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         from: take_doubles(input)?,
                     }
                 }
+                USE_BLASTED => EntityUse::Blasted {
+                    damage: Float(input.f32()?),
+                    push: take_doubles(input)?,
+                    blast: take_blast(input)?,
+                },
                 _ => return Err(FormatError::Corrupt("an entity use's kind")),
             };
             Effected::OnEntity { key, by }
         }
+        EXPLODED => Effected::Exploded {
+            expected: take_block(input)?,
+            blast: take_blast(input)?,
+        },
+        BURNT => Effected::Burnt {
+            expected: take_block(input)?,
+        },
+        PLAYER_INSIDE => Effected::PlayerInside {
+            min: take_doubles(input)?,
+            max: take_doubles(input)?,
+        },
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };
     Ok(Effect { at, what })
@@ -529,6 +637,80 @@ mod entity_uses {
         // The flags follow the block (12), the kind (1), the key (8), the use's kind (1)
         // and the attacker (8).
         out[30] = 4;
+        assert!(take_effect(&mut Input(&out)).is_err());
+    }
+
+    fn blast(owner: Option<u128>) -> Blast {
+        Blast {
+            source: EntityId(u64::MAX - 3),
+            tick: 1 << 40,
+            centre: [Double(0.5), Double(-58.0), Double(-1024.5)],
+            radius: Float(4.0),
+            decay: false,
+            direct: true,
+            owner: owner.map(Uuid::from_u128),
+            owner_creative: owner.is_some(),
+        }
+    }
+
+    #[test]
+    fn an_explosions_effects_are_read_back_as_written() {
+        let at = BlockPos::new(15, -60, 2);
+        for owner in [None, Some(0x0123_4567_89AB_CDEF_0123_4567_89AB_CDEF)] {
+            round_trip(Effect {
+                at,
+                what: Effected::Exploded {
+                    expected: clustine_data::blocks::TNT,
+                    blast: blast(owner),
+                },
+            });
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by: EntityUse::Blasted {
+                        damage: Float(56.5),
+                        push: [Double(0.25), Double(1.0), Double(-0.5)],
+                        blast: Blast {
+                            decay: true,
+                            direct: false,
+                            ..blast(owner)
+                        },
+                    },
+                },
+            });
+        }
+        round_trip(Effect {
+            at,
+            what: Effected::Burnt {
+                expected: clustine_data::blocks::TNT,
+            },
+        });
+        round_trip(Effect {
+            at,
+            what: Effected::PlayerInside {
+                min: [Double(15.2), Double(-60.0), Double(2.2)],
+                max: [Double(15.8), Double(-58.2), Double(2.8)],
+            },
+        });
+    }
+
+    #[test]
+    fn a_blast_with_flags_out_of_range_is_refused() {
+        let mut out = Vec::new();
+        put_effect(
+            &mut out,
+            &Effect {
+                at: BlockPos::new(0, 0, 0),
+                what: Effected::Exploded {
+                    expected: clustine_data::blocks::AIR,
+                    blast: blast(None),
+                },
+            },
+        );
+        // The flags follow the block (12), the kind (1), the block expected (2), the
+        // source (8), the tick (8), the centre (24) and the radius (4).
+        out[59] |= 16;
         assert!(take_effect(&mut Input(&out)).is_err());
     }
 }

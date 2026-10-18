@@ -368,6 +368,8 @@ fn cart_data() -> EntityData {
         contents: Vec::new(),
         fuel: 0,
         push: [Double(0.0), Double(0.0)],
+        fuse: -1,
+        enabled: true,
     }
 }
 

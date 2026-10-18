@@ -4,6 +4,7 @@
 
 use clustine_data::BlockState;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{BlockPos, ChunkPos, Double, Entity, EntityId, Float, ItemStack, SeamKind, Ticked};
 
@@ -56,6 +57,43 @@ pub enum Effected {
     /// it is addressed to is the entity's as the player's region last knew it; one gone
     /// by the time it is done does nothing.
     OnEntity { key: EntityId, by: EntityUse },
+    /// A block an explosion broke, if it is still `expected`: the holder breaks it with
+    /// its updates, spills a container, primes TNT, and lays the drops of all the blocks
+    /// of one explosion taken in the tick together, merged within that explosion alone
+    /// (`docs/groundwork/n6-plan.md`, decision 10, section 6 item 9 and section 7 item
+    /// 11).
+    Exploded { expected: BlockState, blast: Blast },
+    /// Fire burnt the block, if it is still `expected`: TNT is primed (`onCaughtFire`),
+    /// and the block is removed as a set with flags 3 would remove it (section 6 item 9).
+    Burnt { expected: BlockState },
+    /// A player of another region stands in the box `min` to `max` in this tick, which a
+    /// plate or a tripwire of the block counts as an entity of its own for the tick it is
+    /// due (players are not in copies; section 7 item 12 and section 8 item 10).
+    PlayerInside { min: [Double; 3], max: [Double; 3] },
+}
+
+/// What an explosion's effects carry of the explosion, for the holder of a block or an
+/// entity across a line to do the game's part of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Blast {
+    /// Which explosion it is: the key of the entity that exploded and the tick of its
+    /// region it exploded in, unique across regions, so that two explosions' drops are
+    /// never merged.
+    pub source: EntityId,
+    pub tick: u64,
+    /// Where it exploded, and how far it reached (`radius`).
+    pub centre: [Double; 3],
+    pub radius: Float,
+    /// Whether its drops decay, one in `radius` kept (`DESTROY_WITH_DECAY`): TNT's do
+    /// not (`tnt_explosion_drop_decay` is false).
+    pub decay: bool,
+    /// Whether it has a direct source, the TNT itself, which the loot sees as
+    /// `this_entity`.
+    pub direct: bool,
+    /// Who primed it, if anyone did, and whether they are a creative player, which a
+    /// vehicle and a hanging thing read of it.
+    pub owner: Option<Uuid>,
+    pub owner_creative: bool,
 }
 
 /// What a player did to an entity in another region's land, with what the game reads of
@@ -82,6 +120,14 @@ pub enum EntityUse {
         sneaking: bool,
         from: [Double; 3],
     },
+    /// An explosion's hit (`hurtEntities`), as the exploding region worked it out from
+    /// its copy: the damage, the push, and of the explosion what the entity reads of
+    /// its source (`docs/groundwork/n6-plan.md`, decision 10).
+    Blasted {
+        damage: Float,
+        push: [Double; 3],
+        blast: Blast,
+    },
 }
 
 impl Effect {
@@ -96,7 +142,11 @@ impl Effect {
             } => Some(EffectKey::Update(self.at, direction, kind)),
             Effected::Tick { of, .. } => Some(EffectKey::Tick(self.at, of)),
             Effected::Spread { direction, .. } => Some(EffectKey::Spread(self.at, direction)),
-            Effected::SetIf { .. } | Effected::OnEntity { .. } => None,
+            Effected::SetIf { .. }
+            | Effected::OnEntity { .. }
+            | Effected::Exploded { .. }
+            | Effected::Burnt { .. }
+            | Effected::PlayerInside { .. } => None,
         }
     }
 }

@@ -1140,6 +1140,21 @@ pub enum RegionEvent {
         pitch: f32,
         seed: i64,
     },
+    /// An explosion (`ServerLevel.explode`), which every edge sends to each of its
+    /// players within 64 blocks of `centre`, whatever region they are in, with the push
+    /// `knockback` names for them, if any (`docs/groundwork/n6-brief.md`, finding 2.9 and
+    /// section 9.1). `blocks` is how many positions the rays reached, air among them;
+    /// `large` whether it shows the large particle (a radius of 2 or more that breaks
+    /// blocks); `sound` whether it plays its sound (its source is not silent). The
+    /// blocks it broke come as changes of their own.
+    Explosion {
+        centre: [f64; 3],
+        radius: f32,
+        blocks: i32,
+        knockback: Vec<(EntityId, [f64; 3])>,
+        large: bool,
+        sound: bool,
+    },
 }
 
 /// What an edge is told of an entity other than a player in a tick that changed it.
@@ -1200,6 +1215,9 @@ impl RegionEvent {
             | Self::BlockDestroyed { position, .. }
             | Self::Fizzed { position } => [position.chunk(); 2],
             Self::Sound { position, .. } => [ChunkPos::containing(position.x, position.z); 2],
+            // The chunk of its centre: a player within 64 blocks of it has the chunk in
+            // view unless their view reaches less than four chunks.
+            Self::Explosion { centre, .. } => [ChunkPos::containing(centre[0], centre[2]); 2],
             // No place: see the variant.
             Self::BlockEventsBegin => [ChunkPos::new(0, 0); 2],
             Self::EntityMoved {
