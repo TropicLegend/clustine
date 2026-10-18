@@ -883,7 +883,11 @@ impl Region {
         // (`minecarts.rs`, `items.rs`): `LivingEntity.aiStep` pushes before the
         // player's own `aiStep` touches items.
         self.players_push_minecarts(&mut output);
+        self.players_push_boats(&mut output);
         self.pick_up_items(&mut output);
+        // The end of each riding player's tick: the checks of a driver's next moves
+        // count from where their boat is now (`boats.rs`).
+        self.tick_drivers(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
         // entities: a piston's move finishing) with the next tick's
@@ -1787,6 +1791,9 @@ impl Region {
                 location,
                 sneaking,
             } => {
+                // `handleInteract` sets the player's shift key from the packet before
+                // anything else, so that what the use reads of it is the packet's.
+                player.keys.sneak = *sneaking;
                 let user = uses::User {
                     feet: [
                         player.pose.position.x,
@@ -1819,8 +1826,11 @@ impl Region {
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
-            // A driven vehicle's moves and paddles come with boats (N5f).
-            PlayerInput::MoveVehicle(_) | PlayerInput::PaddleBoat { .. } => {}
+            // A driven vehicle's moves and paddles (`boats.rs`).
+            PlayerInput::MoveVehicle(moved) => self.move_vehicle(id, *moved, output),
+            PlayerInput::PaddleBoat { left, right } => {
+                self.paddle_boat(id, *left, *right, output);
+            }
             PlayerInput::Throw { stack } => {
                 // Out of the creative inventory: nothing is taken from the player's,
                 // and a throw refused leaves nothing to put back.
@@ -2865,6 +2875,7 @@ mod tests {
 
     mod arrivals;
     mod block_updates;
+    mod boats;
     mod diodes;
     mod effects;
     mod entities;

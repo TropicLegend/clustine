@@ -10,6 +10,7 @@
 //! but the blocks a [`World`] gives, so that a move is a function of them.
 
 pub(crate) mod aabb;
+pub(crate) mod boat;
 pub(crate) mod body;
 pub(crate) mod collide;
 pub(crate) mod entities;
@@ -17,6 +18,7 @@ pub(crate) mod fluids;
 pub(crate) mod item;
 pub(crate) mod minecart;
 pub(crate) mod piston;
+pub(crate) mod vehicle_move;
 pub(crate) mod voxel;
 pub(crate) mod walk;
 

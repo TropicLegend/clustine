@@ -565,6 +565,13 @@ pub fn use_item(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) ->
     bucket::use_item(item_use, blocks, bodies)
 }
 
+/// Where the ray of a boat's use meets a block's outline or a fluid's surface
+/// (`BoatItem.use`): `Ok(None)` for nothing within reach, `Err` for a block the caller
+/// cannot see first.
+pub(crate) fn boat_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<[f64; 3]>, ()> {
+    bucket::boat_hit(item_use, blocks)
+}
+
 /// The box of a player whose feet are at `feet`: 0.6 wide, 1.8 high, or 1.5 while
 /// sneaking (section 4.3).
 pub fn body(feet: Vec3, sneaking: bool) -> [f64; 6] {

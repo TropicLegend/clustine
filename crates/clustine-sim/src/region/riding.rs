@@ -509,13 +509,6 @@ impl Region {
     /// cooldown runs or the vehicle has no room. A rider that rides something else gets
     /// off it first. It takes its seat by `addPassenger`'s rule, and it and its own
     /// passengers join the vehicle's unit, in the root's chunk.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "for the pick-up of carts and boats and the mounts of the riders' step"
-        )
-    )]
     pub(crate) fn start_riding(
         &mut self,
         rider: EntityId,
@@ -698,13 +691,6 @@ impl Region {
     }
 
     /// `ejectPassengers()` of `vehicle`: each passenger gets off, the last first.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "for activator rails and a sunken boat, N5e and N5f"
-        )
-    )]
     pub(crate) fn eject_passengers(&mut self, vehicle: EntityId, output: &mut TickOutput) {
         for _ in 0..DEEPEST {
             let Some((chunk, record)) = self.find_entity(vehicle) else {

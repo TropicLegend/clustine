@@ -149,7 +149,11 @@ impl Region {
                 .collect(),
         });
         let player = self.players.get_mut(&id).expect("found above");
-        player.riding = Some(PlayerRiding { vehicle, chunk });
+        player.riding = Some(PlayerRiding {
+            vehicle,
+            chunk,
+            check: Default::default(),
+        });
         self.journal.players.insert(id);
         self.seat_player(id, output);
         let pose = self.players[&id].pose;
@@ -190,10 +194,7 @@ impl Region {
         let at: [f64; 3] =
             std::array::from_fn(|axis| (vehicle.position[axis] + point[axis]) - attach[axis]);
         let player = self.players.get_mut(&id).expect("found above");
-        player.riding = Some(PlayerRiding {
-            vehicle: riding.vehicle,
-            chunk,
-        });
+        player.riding = Some(PlayerRiding { chunk, ..riding });
         let position = clustine_world::Vec3::new(at[0], at[1], at[2]);
         if position != player.pose.position {
             let from = player.chunk();

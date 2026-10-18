@@ -370,6 +370,7 @@ impl Region {
                         no_physics: false,
                         ticks_since_check: 0,
                         cart: Default::default(),
+                        boat: Default::default(),
                     },
                 );
                 let mut flags = 0;

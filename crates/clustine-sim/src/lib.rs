@@ -36,4 +36,5 @@ pub use api::{
 pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
 pub use state::{
     EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
+    VehicleCheck,
 };

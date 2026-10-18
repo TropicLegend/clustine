@@ -33,6 +33,12 @@ pub fn item_in_tag(item: i32, name: &str) -> bool {
     tag("minecraft:item", name).is_some_and(|entries| entries.contains(&item))
 }
 
+/// Whether the entity type `kind` (its id) is in the entity type tag `name`, such as
+/// `minecraft:cannot_be_pushed_onto_boats`.
+pub fn entity_in_tag(kind: i32, name: &str) -> bool {
+    tag("minecraft:entity_type", name).is_some_and(|entries| entries.contains(&kind))
+}
+
 /// A block tag the rules ask often, looked up once.
 pub struct Tag {
     name: &'static str,

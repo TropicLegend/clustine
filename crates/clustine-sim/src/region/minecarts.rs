@@ -43,9 +43,9 @@
 //!   yaw, and every player is a creative one, whose hit breaks the cart at once.
 //! - The rider's keys reach a cart through [`Region::rider_intent`], which knows no
 //!   player's keys until the riders' step (N5h) keeps them.
-//! - A boat a cart meets is picked up (`startRiding`); a boat pushed by a cart, or by
-//!   one that carries something, is the boats' step's (`AbstractBoat.push`, N5f), and
-//!   is not pushed yet ([`Region::pushed_by_cart`]).
+//! - A boat a cart meets is picked up (`startRiding`); a boat pushed by a cart that
+//!   carries something, or one that rides something, is pushed as `AbstractBoat.push`
+//!   pushes it (`boats.rs`).
 //! - `isInWater` after a take-in is what the cart's box is in then, where the game's
 //!   load would read false until the cart's first fluid update.
 
@@ -1052,9 +1052,9 @@ impl Region {
     }
 
     /// `e.push(cart)` of the entity `other` of the chunk `at`, met by `cart`: another
-    /// cart pushes and is pushed (`AbstractMinecart.push`, `pushOtherMinecart`). The
-    /// hook a boat answers when the boats' step brings `AbstractBoat.push` (N5f): until
-    /// then a boat is not pushed by a cart.
+    /// cart pushes and is pushed (`AbstractMinecart.push`, `pushOtherMinecart`); a boat
+    /// is pushed as `AbstractBoat.push` pushes it, and pushes the cart back where the
+    /// cart carries nobody (`boats.rs`).
     fn pushed_by_cart(
         &mut self,
         cart: &mut Cart,
@@ -1062,6 +1062,19 @@ impl Region {
         at: ChunkPos,
         output: &mut TickOutput,
     ) {
+        if crate::physics::entities::is_boat(other.kind) {
+            self.sync_cart(cart, at_of(self, cart.key).unwrap_or(at));
+            let bounds = cart.body.bounds();
+            if let Some(back) =
+                self.boat_pushed_by_cart(other, at, cart.key, cart.body.position, &bounds, output)
+            {
+                let mut pushing = cart.pushing();
+                pushing.motion = physics::add(pushing.motion, back);
+                pushing.needs_sync = true;
+                cart.pushed(pushing);
+            }
+            return;
+        }
         if !is_minecart(other.kind) {
             return;
         }
@@ -1446,6 +1459,11 @@ impl Region {
         }
         found
     }
+}
+
+/// The chunk the entity `key` is in, where a loaded chunk has it.
+fn at_of(region: &Region, key: EntityId) -> Option<ChunkPos> {
+    region.find_entity(key).map(|(chunk, _)| chunk)
 }
 
 /// `DetectorRailBlock.getSearchBB(pos)`: the middle of the block, a fifth in from its

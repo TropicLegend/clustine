@@ -23,11 +23,11 @@ use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, BlockEvent, BlockUpdate,
-    ChunkBatchFinished, ChunkBatchStart, Disconnect, EntityDataValue, GameEvent, LevelEvent, Login,
-    PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
-    RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetEquipment, SetHeadRotation, SetHeldSlot,
-    SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
+    ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue,
+    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
+    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEquipment, SetHeadRotation,
+    SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
     SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle, animation,
     entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
 };
@@ -1734,9 +1734,18 @@ impl Fanout {
                 event: PlayerEvent::Rides { pose, .. },
             } => self.rides(player, pose).await,
             WorkerToEdge::ToPlayer {
-                event: PlayerEvent::VehicleCorrected { .. } | PlayerEvent::Kicked { .. },
-                ..
-            } => {}
+                player,
+                event:
+                    PlayerEvent::VehicleCorrected {
+                        position,
+                        yaw,
+                        pitch,
+                    },
+            } => self.vehicle_corrected(player, position, yaw, pitch).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Kicked { reason },
+            } => self.kick(player, reason).await,
             WorkerToEdge::Outbox { number, entry } => self.outbox(from, number, entry).await,
             WorkerToEdge::Presence { player, answer } => {
                 self.presence(from, player, answer).await;
@@ -3544,6 +3553,38 @@ impl Fanout {
             relative_flags: 0,
         });
         self.send_to_player(player, [packet]).await;
+    }
+
+    /// Puts the vehicle the player drives back where their region has it, as the game
+    /// answers a move it refused (the clientbound `move_vehicle`).
+    async fn vehicle_corrected(
+        &mut self,
+        player: PlayerId,
+        position: clustine_world::Vec3,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        let packet = encoded(&ClientboundMoveVehicle {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+            yaw,
+            pitch,
+        });
+        self.send_to_player(player, [packet]).await;
+    }
+
+    /// Puts the player out for `reason`, a sentence of the game's that their client
+    /// shows in its own language (`multiplayer.disconnect.flying`), as the region asked;
+    /// their region is told they left.
+    async fn kick(&mut self, player: PlayerId, reason: String) {
+        let Some(view) = self.players.get(&player) else {
+            return;
+        };
+        let _ = view
+            .outbound
+            .try_send(encoded(&Disconnect::from(Text::Translatable(reason))));
+        self.remove_player(player).await;
     }
 
     /// Forgets an entity that no longer exists and hides it from everyone who saw it.
@@ -5486,6 +5527,10 @@ fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
         EntityData::Minecart { .. } => SetEntityData {
             entity_id: id,
             values: crate::tracking::minecart_values(data),
+        },
+        EntityData::Boat { .. } => SetEntityData {
+            entity_id: id,
+            values: crate::tracking::boat_values(data),
         },
         // A falling block's start, its index 8, comes with step N4d; N5's other kinds'
         // data with the steps that bring them.
@@ -10613,6 +10658,75 @@ mod scenarios {
             };
             assert_eq!(told, expected);
         }
+        edge.end().await;
+    }
+
+    /// A move of the driver's boat the region refused reaches the driver as the
+    /// clientbound `move_vehicle`, with where the region has the boat and how it turns.
+    #[tokio::test]
+    async fn a_refused_vehicle_move_reaches_the_driver_as_the_clientbound_move_vehicle() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        let event = PlayerEvent::VehicleCorrected {
+            position: clustine_world::Vec3::new(8.5, -60.0, 3.25),
+            yaw: 45.0,
+            pitch: -10.0,
+        };
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event,
+            },
+        );
+        let told = loop {
+            let packet = edge.packet(&mut client).await;
+            let packet = packet.expect("the edge ended the connection");
+            if let Ok(ClientboundPlay::ClientboundMoveVehicle(told)) =
+                ClientboundPlay::decode(&packet)
+            {
+                break told;
+            }
+            client.take(packet);
+        };
+        let expected = ClientboundMoveVehicle {
+            x: 8.5,
+            y: -60.0,
+            z: 3.25,
+            yaw: 45.0,
+            pitch: -10.0,
+        };
+        assert_eq!(told, expected);
+        edge.end().await;
+    }
+
+    /// A player the region puts out for holding a vehicle in the air is sent the game's
+    /// sentence for it and disconnected, and their region is told they left.
+    #[tokio::test]
+    async fn a_player_put_out_for_flying_a_vehicle_is_disconnected_with_the_games_sentence() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event: PlayerEvent::Kicked {
+                    reason: "multiplayer.disconnect.flying".to_owned(),
+                },
+            },
+        );
+        let reason = loop {
+            let packet = edge.packet(&mut client).await;
+            let packet = packet.expect("the edge ended the connection before saying why");
+            if let Ok(ClientboundPlay::Disconnect(disconnect)) = ClientboundPlay::decode(&packet) {
+                break format!("{:?}", disconnect.reason);
+            }
+            client.take(packet);
+        };
+        assert!(reason.contains("multiplayer.disconnect.flying"), "{reason}");
+        assert!(edge.packet(&mut client).await.is_none());
         edge.end().await;
     }
 

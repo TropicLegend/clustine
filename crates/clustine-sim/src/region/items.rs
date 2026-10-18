@@ -52,6 +52,23 @@ pub(crate) struct Memory {
     pub(crate) ticks_since_check: u32,
     /// What a minecart keeps beyond its record (`minecarts.rs`).
     pub(crate) cart: CartMemory,
+    /// What a boat keeps beyond its record (`boats.rs`).
+    pub(crate) boat: BoatMemory,
+}
+
+/// What the game keeps of a boat in memory and does not save: the motion's height at
+/// its last fall check (`lastYd`), which a landing on water reads; where its paddles
+/// are in their strokes (`paddlePositions`), which time their sounds; whether its last
+/// move ended on something (`verticalCollisionBelow`), which a driver's next move
+/// reads; and the moves a driver's client made of it since its last tick, which that
+/// tick walks for the blocks it went through. After a take-in all start again, as at
+/// the game's load.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct BoatMemory {
+    pub(crate) last_yd: f64,
+    pub(crate) paddle_positions: [f32; 2],
+    pub(crate) vertical_collision_below: bool,
+    pub(crate) recorded: Vec<Movement>,
 }
 
 /// What the game keeps of a minecart in memory and does not save: whether its box was
@@ -371,6 +388,7 @@ impl Region {
                 no_physics: item.no_physics,
                 ticks_since_check: 0,
                 cart: CartMemory::default(),
+                boat: BoatMemory::default(),
             },
         );
         let mut after = after;

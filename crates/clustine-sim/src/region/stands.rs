@@ -589,6 +589,7 @@ impl Region {
                 no_physics: living.no_physics,
                 ticks_since_check: 0,
                 cart: Default::default(),
+                boat: Default::default(),
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {

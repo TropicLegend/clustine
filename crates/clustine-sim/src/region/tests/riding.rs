@@ -1347,8 +1347,17 @@ fn a_player_who_sneaks_gets_off_beside_the_cushion_and_its_seat_is_free_again() 
     assert!(output.player_events.iter().any(|(id, event)| {
         *id == player(1) && matches!(event, PlayerEvent::Rides { vehicle: None, .. })
     }));
-    // A player who sneaks does not get on.
-    checked(&mut region, &use_entity(&seat));
+    // A player who sneaks does not get on: the use says so, as `handleInteract` takes
+    // the shift key from the packet.
+    let sneaking_use = moves(vec![numbered(
+        1,
+        PlayerInput::Interact {
+            entity: seat.key,
+            location: [0.0, 0.1, 0.0],
+            sneaking: true,
+        },
+    )]);
+    checked(&mut region, &sneaking_use);
     assert!(region.players[&player(1)].riding.is_none());
 }
 

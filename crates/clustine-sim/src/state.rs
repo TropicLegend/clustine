@@ -95,6 +95,45 @@ pub struct PlayerState {
 pub struct PlayerRiding {
     pub vehicle: EntityId,
     pub chunk: ChunkPos,
+    /// What the game's connection keeps for the check of the moves of the vehicle the
+    /// player drives (`docs/groundwork/n5-brief.md`, finding 12 and section 2.3).
+    pub check: VehicleCheck,
+}
+
+/// The state the game's `ServerGamePacketListenerImpl` keeps for a vehicle's moves:
+/// where the root was at the end of the player's last tick, if the player drove it then
+/// (`lastVehicle`, `vehicleFirstGood`, and `vehicleLastGood`, which each accepted move
+/// carries on), whether the client's last move held it in the air and for how many
+/// ticks it has done so, and how long ago a passenger who does not drive was last put
+/// back (`vehiclePositionLastResetAt`, as an age: regions number their ticks apart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VehicleCheck {
+    /// `vehicleFirstGood` and `vehicleLastGood`, set while the player drives their root
+    /// (`lastVehicle` is the root): `None` while they do not.
+    pub good: Option<[[clustine_world::Double; 3]; 2]>,
+    /// `clientVehicleIsFloating`.
+    pub floating: bool,
+    /// `aboveGroundVehicleTickCount`.
+    pub floating_ticks: u32,
+    /// The player's ticks since a passenger's move was last put back, counted up to
+    /// [`VehicleCheck::LONG_AGO`] and no further, so that the record stops changing.
+    pub since_reset: u8,
+}
+
+impl VehicleCheck {
+    /// More ticks since the last reset than the check asks about (`> 20`).
+    pub const LONG_AGO: u8 = 21;
+}
+
+impl Default for VehicleCheck {
+    fn default() -> Self {
+        Self {
+            good: None,
+            floating: false,
+            floating_ticks: 0,
+            since_reset: Self::LONG_AGO,
+        }
+    }
 }
 
 /// What a region keeps for an edge.

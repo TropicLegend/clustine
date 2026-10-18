@@ -517,7 +517,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 9;
+pub const STATE_FORMAT: u8 = 10;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -8018,17 +8018,19 @@ mod tests {
     /// player's whole inventory, 41 slots with their count in front, where it kept the
     /// nine of the hotbar (`docs/groundwork/n2-plan.md`, section 2). Format 9 keeps what
     /// a player rides and the keys they hold, eight bytes more a player, none of them set
-    /// here (`docs/groundwork/n5-plan.md`).
+    /// here (`docs/groundwork/n5-plan.md`). Format 10 keeps, in what a player rides, the
+    /// state of the check of their vehicle's moves (`VehicleCheck`, step N5f); nobody
+    /// rides here, so only the number differs.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 9);
+        assert_eq!(STATE_FORMAT, 10);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "000902018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "000a02018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "00000000000000000000000000000000000000000000000000000000000002000700000000000000",
                 "000000000107030102060601040010000000000000000000000000000000034d054e6f7463680000",
@@ -8045,7 +8047,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00090200021000000000000000000000000000000001001000000000000000000000000000000002",
+                "000a0200021000000000000000000000000000000001001000000000000000000000000000000002",
                 "010204416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
                 "29000000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "00000002000700000000000000000000000107010301020600000601040010000000000000000000",

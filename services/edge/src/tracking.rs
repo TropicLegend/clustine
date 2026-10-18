@@ -56,10 +56,100 @@ const LASTING: u8 = Tracked::HORIZONTAL_COLLISION
 const ONCE: u8 = Tracked::NEEDS_SYNC | Tracked::SYNC_POSITION | Tracked::SYNC_VELOCITY;
 
 /// Values of [`Tracker::dirty`]: which of the entity's data changed since it was sent.
-const DIRTY_FLAGS: u8 = 1;
-const DIRTY_STACK: u8 = 2;
+const DIRTY_FLAGS: u16 = 1;
+const DIRTY_STACK: u16 = 2;
 /// A minecart's own values (`VehicleEntity`'s, `AbstractMinecart`'s, a furnace cart's).
-const DIRTY_MINECART: u8 = 128;
+const DIRTY_MINECART: u16 = 128;
+/// A boat's own values (`VehicleEntity`'s and `AbstractBoat`'s).
+const DIRTY_BOAT: u16 = 256;
+
+/// The indices of a boat's data, after `Entity`'s eight (the brief's section 4.8): the
+/// hurt time, its direction and the damage (`VehicleEntity`), then the left and right
+/// paddles and the bubble time (`AbstractBoat`).
+mod boat_data {
+    pub(super) const HURT: u8 = 8;
+    pub(super) const HURT_DIRECTION: u8 = 9;
+    pub(super) const DAMAGE: u8 = 10;
+    pub(super) const PADDLE_LEFT: u8 = 11;
+    pub(super) const PADDLE_RIGHT: u8 = 12;
+    pub(super) const BUBBLE_TIME: u8 = 13;
+}
+
+/// The values of a boat's data that are not their defaults: the hurt data while it
+/// wobbles or is damaged, a paddle while its driver turns it, and the bubble time
+/// while a column counts under it.
+pub(crate) fn boat_values(data: &EntityData) -> Vec<(u8, EntityDataValue)> {
+    let EntityData::Boat {
+        hurt,
+        paddles,
+        bubble_time,
+        ..
+    } = data
+    else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    if hurt.time != 0 {
+        values.push((boat_data::HURT, EntityDataValue::Int(hurt.time)));
+    }
+    if hurt.direction != 1 {
+        values.push((
+            boat_data::HURT_DIRECTION,
+            EntityDataValue::Int(hurt.direction),
+        ));
+    }
+    if hurt.damage.0.to_bits() != 0.0_f32.to_bits() {
+        values.push((boat_data::DAMAGE, EntityDataValue::Float(hurt.damage.0)));
+    }
+    if paddles[0] {
+        values.push((boat_data::PADDLE_LEFT, EntityDataValue::Boolean(true)));
+    }
+    if paddles[1] {
+        values.push((boat_data::PADDLE_RIGHT, EntityDataValue::Boolean(true)));
+    }
+    if *bubble_time != 0 {
+        values.push((boat_data::BUBBLE_TIME, EntityDataValue::Int(*bubble_time)));
+    }
+    values
+}
+
+/// The default of the boat's value at `index`, as a change back to it is sent.
+fn boat_default(index: u8) -> Option<EntityDataValue> {
+    match index {
+        boat_data::HURT | boat_data::BUBBLE_TIME => Some(EntityDataValue::Int(0)),
+        boat_data::HURT_DIRECTION => Some(EntityDataValue::Int(1)),
+        boat_data::DAMAGE => Some(EntityDataValue::Float(0.0)),
+        boat_data::PADDLE_LEFT | boat_data::PADDLE_RIGHT => Some(EntityDataValue::Boolean(false)),
+        _ => None,
+    }
+}
+
+/// The values of `now` that differ from `sent`, the values last sent, among the indices
+/// `indices`, each as it is now or, where it went back, as its default (`default`): what
+/// the game sends of the values it marked dirty.
+fn changed_values(
+    now: &[(u8, EntityDataValue)],
+    sent: &[(u8, EntityDataValue)],
+    indices: std::ops::RangeInclusive<u8>,
+    default: fn(u8) -> Option<EntityDataValue>,
+) -> Vec<(u8, EntityDataValue)> {
+    let find = |list: &[(u8, EntityDataValue)], index: u8| {
+        list.iter()
+            .find(|(at, _)| *at == index)
+            .map(|(_, value)| value.clone())
+    };
+    indices
+        .filter_map(|index| {
+            let current = find(now, index);
+            if current == find(sent, index) {
+                return None;
+            }
+            current
+                .or_else(|| default(index))
+                .map(|value| (index, value))
+        })
+        .collect()
+}
 
 /// The indices of a minecart's data, after `Entity`'s eight (the brief's section 3.13):
 /// the hurt time, its direction and the damage (`VehicleEntity`), the block shown and
@@ -134,9 +224,9 @@ fn minecart_default(index: u8) -> Option<EntityDataValue> {
     }
 }
 /// A hanging entity's direction, a frame's rotation, a painting's variant.
-const DIRTY_DIRECTION: u8 = 4;
-const DIRTY_ROTATION: u8 = 8;
-const DIRTY_VARIANT: u8 = 16;
+const DIRTY_DIRECTION: u16 = 4;
+const DIRTY_ROTATION: u16 = 8;
+const DIRTY_VARIANT: u16 = 16;
 
 /// The indices of the data of hanging entities (`HangingEntity.DATA_DIRECTION`, then
 /// `ItemFrame.DATA_ITEM` and `DATA_ROTATION`, or `Painting.DATA_PAINTING_VARIANT_ID`;
@@ -172,9 +262,9 @@ fn tracking_position(data: &EntityData, position: [f64; 3]) -> [f64; 3] {
 
 /// Values of a living entity's data beyond the shared flags, which
 /// [`Tracker::dirty_values`] names by index.
-const DIRTY_VALUES: u8 = 32;
+const DIRTY_VALUES: u16 = 32;
 /// What a living entity wears (`detectEquipmentUpdates`).
-const DIRTY_EQUIPMENT: u8 = 64;
+const DIRTY_EQUIPMENT: u16 = 64;
 
 /// The parts of an armour stand's pose in the order of their indices, from
 /// `entity_data::ARMOR_STAND_POSES`, and their defaults (`ArmorStand`'s static block).
@@ -396,7 +486,7 @@ pub(crate) struct Tracker {
     /// The [`LASTING`] flags of the last report, and the [`ONCE`] flags not yet taken.
     lasting: u8,
     once: u8,
-    dirty: u8,
+    dirty: u16,
     /// The region's tick whose update ran last.
     pub(crate) ran: u64,
 }
@@ -486,6 +576,12 @@ impl Tracker {
             && minecart_values(new) != minecart_values(data)
         {
             self.dirty |= DIRTY_MINECART;
+        }
+        if let (Some(new @ EntityData::Boat { .. }), EntityData::Boat { .. }) =
+            (&tracked.data, data)
+            && boat_values(new) != boat_values(data)
+        {
+            self.dirty |= DIRTY_BOAT;
         }
         if let Some(new) = &tracked.data {
             self.dirty |= hanging_changes(data, new);
@@ -618,20 +714,25 @@ impl Tracker {
                 } else if self.dirty & DIRTY_MINECART != 0 {
                     // What differs from what the clients were sent last, as the game
                     // sends the values it marked dirty.
-                    let find = |list: &[(u8, EntityDataValue)], index: u8| {
-                        list.iter()
-                            .find(|(at, _)| *at == index)
-                            .map(|(_, value)| value.clone())
-                    };
-                    for index in cart_data::HURT..=cart_data::FUEL {
-                        let current = find(&now, index);
-                        if current == find(&self.pairing, index) {
-                            continue;
-                        }
-                        if let Some(value) = current.or_else(|| minecart_default(index)) {
-                            values.push((index, value));
-                        }
-                    }
+                    values.extend(changed_values(
+                        &now,
+                        &self.pairing,
+                        cart_data::HURT..=cart_data::FUEL,
+                        minecart_default,
+                    ));
+                }
+            }
+            EntityData::Boat { .. } => {
+                let now = boat_values(data);
+                if pairing {
+                    values.extend(now);
+                } else if self.dirty & DIRTY_BOAT != 0 {
+                    values.extend(changed_values(
+                        &now,
+                        &self.pairing,
+                        boat_data::HURT..=boat_data::BUBBLE_TIME,
+                        boat_default,
+                    ));
                 }
             }
             // An armour stand's values are its living data's, above; the other kinds of
@@ -911,7 +1012,7 @@ impl Tracker {
 
 /// Which of a hanging entity's values differ between its data `old` and `new`, as dirty
 /// marks.
-fn hanging_changes(old: &EntityData, new: &EntityData) -> u8 {
+fn hanging_changes(old: &EntityData, new: &EntityData) -> u16 {
     let mut dirty = 0;
     match (old, new) {
         (
@@ -1099,6 +1200,100 @@ mod tests {
             [
                 (8, EntityDataValue::Int(0)),
                 (10, EntityDataValue::Float(0.0)),
+            ]
+        );
+    }
+
+    fn boat(hurt: clustine_world::Hurt, paddles: [bool; 2], bubble_time: i32) -> EntityData {
+        EntityData::Boat {
+            hurt,
+            paddles,
+            bubble_time,
+            out_of_control: clustine_world::Float(0.0),
+            turning: clustine_world::Float(0.0),
+            status: [0; 2],
+            contents: Vec::new(),
+        }
+    }
+
+    /// A newly shown client is sent a boat's hurt data, paddles and bubble time where
+    /// they are not their defaults, by the indices of `VehicleEntity` and
+    /// `AbstractBoat` (8 to 13); a boat at rest has nothing of its own to send.
+    #[test]
+    fn a_boats_hurt_data_paddles_and_bubble_time_are_sent_at_pairing() {
+        let seen = Seen {
+            kind: entity_types::OAK_BOAT as u16,
+            position: [0.5, 64.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let tracker = Tracker::new(seen, &boat(hurt(4, -1, 30.0), [true, false], 59), 0);
+        assert_eq!(
+            tracker.pairing().values,
+            [
+                (8, EntityDataValue::Int(4)),
+                (9, EntityDataValue::Int(-1)),
+                (10, EntityDataValue::Float(30.0)),
+                (11, EntityDataValue::Boolean(true)),
+                (13, EntityDataValue::Int(59)),
+            ]
+        );
+        let still = Tracker::new(seen, &boat(hurt(0, 1, 0.0), [false; 2], 0), 0);
+        assert!(still.pairing().values.is_empty());
+    }
+
+    /// The paddles a driver turns are sent as they change, and a paddle let go, or a
+    /// bubble time run out, is sent as its default.
+    #[test]
+    fn a_boats_paddles_and_bubble_time_are_sent_as_they_change() {
+        let seen = Seen {
+            kind: entity_types::BAMBOO_RAFT as u16,
+            position: [0.5, 64.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let rest = boat(hurt(0, 1, 0.0), [false; 2], 0);
+        let mut tracker = Tracker::new(seen, &rest, 0);
+        tracker.send_changes(ID, &rest);
+        let report = |tracker: &mut Tracker, before: &EntityData, after: EntityData| {
+            let mut tracked = tick([0.5, 64.0, 0.5], [0.0; 3], false, 0);
+            tracked.data = Some(after.clone());
+            tracker.report(&tracked, before);
+            tracker
+                .send_changes(ID, &after)
+                .iter()
+                .filter_map(|sent| match sent {
+                    Sent::Data(data) => Some(data.values.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>()
+        };
+        let rowing = boat(hurt(0, 1, 0.0), [true, true], 0);
+        assert_eq!(
+            report(&mut tracker, &rest, rowing.clone()),
+            [
+                (11, EntityDataValue::Boolean(true)),
+                (12, EntityDataValue::Boolean(true)),
+            ]
+        );
+        let turning = boat(hurt(0, 1, 0.0), [false, true], 60);
+        assert_eq!(
+            report(&mut tracker, &rowing, turning.clone()),
+            [
+                (11, EntityDataValue::Boolean(false)),
+                (13, EntityDataValue::Int(60)),
+            ]
+        );
+        assert_eq!(
+            report(&mut tracker, &turning, rest),
+            [
+                (12, EntityDataValue::Boolean(false)),
+                (13, EntityDataValue::Int(0)),
             ]
         );
     }

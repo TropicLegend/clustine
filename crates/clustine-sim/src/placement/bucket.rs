@@ -49,7 +49,7 @@ pub(crate) fn use_item(
 /// An empty bucket takes the source it is aimed at, the water of a waterlogged block,
 /// or powder snow.
 fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
-    let hit = ray(item_use, blocks, true).ok()??;
+    let hit = ray(item_use, blocks, Fluids::Sources).ok()??;
     let state = blocks.block(hit.pos)?;
     let (taken, filled) = if state.props().is_liquid() {
         let fluid = state.props().fluid()?;
@@ -106,7 +106,7 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
 /// A water or lava bucket empties into the block before the one it is aimed at, or
 /// into that block itself if it can hold water. In creative mode it stays full.
 fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> Option<UsedItem> {
-    let hit = ray(item_use, blocks, false).ok()??;
+    let hit = ray(item_use, blocks, Fluids::None).ok()??;
     let water = fluid == blocks::WATER;
     let hit_state = blocks.block(hit.pos)?;
     let beyond = hit.face.relative(hit.pos);
@@ -173,7 +173,7 @@ fn empty_into(
 /// A lily pad or frogspawn goes onto the block above what the ray hits, through
 /// fluids to a source, as a block placed by a click on that block's top.
 fn on_water(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) -> Option<UsedItem> {
-    let hit = ray(item_use, blocks, true).ok()??;
+    let hit = ray(item_use, blocks, Fluids::Sources).ok()??;
     let position = Dir::Up.relative(hit.pos);
     let clicked = blocks.block(position)?;
     let cursor = [
@@ -199,11 +199,27 @@ fn on_water(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) -> Opt
     })
 }
 
+/// Which fluids a ray meets beside the blocks' outlines (`ClipContext.Fluid`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fluids {
+    None,
+    Sources,
+    Any,
+}
+
+/// Where a ray from the player's eyes along their view first meets a block's outline
+/// or any fluid's surface within reach, as `BoatItem.use` aims
+/// (`Item.getPlayerPOVHitResult` with `ClipContext.Fluid.ANY`): `Ok(None)` when it
+/// meets nothing, `Err` when it reaches a block the caller cannot see first.
+pub(crate) fn boat_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<[f64; 3]>, ()> {
+    Ok(ray(item_use, blocks, Fluids::Any)?.map(|hit| hit.location))
+}
+
 /// The first block a ray from the player's eyes along their view meets within reach,
-/// by the blocks' outline shapes and, with `sources`, the shapes of fluid sources.
+/// by the blocks' outline shapes and the shapes of the fluids `fluids` names.
 /// `Ok(None)` when it meets nothing, `Err` when it reaches a block the caller cannot
 /// see first. Vanilla's `BlockGetter.traverseBlocks` and `Level.clip`.
-fn ray(item_use: &ItemUse, blocks: &dyn Blocks, sources: bool) -> Result<Option<Hit>, ()> {
+fn ray(item_use: &ItemUse, blocks: &dyn Blocks, sources: Fluids) -> Result<Option<Hit>, ()> {
     let from = eyes(item_use.feet, item_use.sneaking);
     let view = view_vector(item_use.yaw, item_use.pitch);
     let to = [
@@ -268,19 +284,24 @@ fn block_pos([x, y, z]: [i32; 3]) -> BlockPos {
     BlockPos::new(x, y, z)
 }
 
-/// Where the ray meets the block at `pos`: the nearer of its outline and, with
-/// `sources`, the shape of a fluid source in it.
+/// Where the ray meets the block at `pos`: the nearer of its outline and the shape of
+/// the fluid in it, where `sources` names that fluid.
 fn clip_block(
     pos: BlockPos,
     from: [f64; 3],
     to: [f64; 3],
     blocks: &dyn Blocks,
-    sources: bool,
+    sources: Fluids,
 ) -> Result<Option<Hit>, ()> {
     let state = blocks.block(pos).ok_or(())?;
     let outline = geometry::moved(state.props().outline_shape(), pos);
     let mut best = geometry::clip_boxes(&outline, from, to);
-    if sources && state.props().fluid().is_some_and(|fluid| fluid.source) {
+    let picked = state.props().fluid().is_some_and(|fluid| match sources {
+        Fluids::None => false,
+        Fluids::Sources => fluid.source,
+        Fluids::Any => true,
+    });
+    if picked {
         let fluid_boxes = fluid_shape(state, pos, blocks);
         if let Some(fluid_hit) = geometry::clip_boxes(&fluid_boxes, from, to)
             && best.is_none_or(|(t, _)| fluid_hit.0 < t)
