@@ -43,15 +43,100 @@ fn is_suffocating(state: clustine_data::BlockState) -> bool {
 }
 
 impl Region {
-    /// `CushionItem.useOn`: a cushion laid on the clicked top (the riders' step). Filled by its step; until then it does nothing.
+    /// `CushionItem.useOn` (`docs/groundwork/n5-brief.md`, section 5.8): a cushion of the
+    /// held item's colour laid on the clicked top, in the clicked block if it gives way
+    /// and above it if not, at the click's height, facing the player's way snapped to a
+    /// side; refused where it would not rest, where it would be buried or where another
+    /// cushion is. A creative player keeps the item. Whether it took the click.
+    ///
+    /// Not built: the click taken again on the collision shape of a cauldron, a hopper
+    /// or a composter (`#cushion_uses_collision_shape`), whose outline the click is on.
     pub(crate) fn place_cushion(
         &mut self,
         click: &crate::placement::Click,
         player: clustine_world::PlayerId,
-        output: &mut crate::api::TickOutput,
+        output: &mut TickOutput,
     ) -> bool {
-        let _ = (click, player, output);
-        false
+        let _ = player;
+        let Some(item) = click.held else {
+            return false;
+        };
+        let first = clustine_data::items::WHITE_CUSHION;
+        if !(first..=clustine_data::items::BLACK_CUSHION).contains(&item) {
+            return false;
+        }
+        if click.face != crate::api::Face::Top {
+            return false;
+        }
+        let Some(clicked) = self.own_block(click.position) else {
+            return false;
+        };
+        let (target, _) = crate::placement::target_of(click, clicked, &super::Readable(self));
+        let at = [
+            f64::from(target.x) + 0.5,
+            f64::from(click.position.y) + f64::from(click.cursor[1]),
+            f64::from(target.z) + 0.5,
+        ];
+        let chunk = ChunkPos::containing(at[0], at[2]);
+        if !self.ticks_chunk(chunk) {
+            return false;
+        }
+        let bounds = Aabb::of_entity(at, 1.0, 0.25);
+        let view = View {
+            region: self,
+            home: chunk,
+        };
+        if !has_anchor_below(&view, &bounds)
+            || covered_by_suffocating(&view, &bounds)
+            || anchor_buried(&view, &bounds)
+        {
+            return false;
+        }
+        let cushion = clustine_data::entity_types::CUSHION as u16;
+        let taken = self.colliders_in(&bounds).into_iter().any(|found| {
+            self.find_entity(found.key)
+                .is_some_and(|(_, entity)| entity.kind == cushion)
+        });
+        if taken {
+            return false;
+        }
+        let Some(key) = self.take_entity_key(chunk) else {
+            return false;
+        };
+        let mut own = super::random_ticks::Random::of_entity(self.config.seed, key, self.tick);
+        let uuid = super::entities::insecure_uuid(own.next_u64(), own.next_u64());
+        // `EntityType.create` draws the level's random for a yaw that `snapTo` replaces.
+        let yaw = match super::riding::direction_from_yaw(click.yaw) {
+            clustine_data::Face::South => 0.0,
+            clustine_data::Face::West => 90.0,
+            clustine_data::Face::North => 180.0,
+            _ => 270.0,
+        };
+        let colour = u8::try_from(item - first).expect("sixteen colours");
+        let entity = Entity {
+            key,
+            kind: clustine_data::entity_types::CUSHION as u16,
+            uuid,
+            position: at,
+            motion: [0.0; 3],
+            yaw,
+            pitch: 0.0,
+            on_ground: false,
+            hops: 0,
+            age: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: EntityData::Cushion {
+                attached: clustine_world::Attached {
+                    block: physics::containing(at),
+                    direction: 0,
+                },
+                colour,
+            },
+        };
+        self.add_fresh_entity(entity, output);
+        true
     }
 
     /// `Cushion.survives()` = `wouldSurviveAt(level, box)`: something under it to rest
@@ -164,6 +249,41 @@ fn has_anchor_below<W: World + ?Sized>(world: &W, bounds: &Aabb) -> bool {
                 }
                 let placed = shape_bounds.moved([f64::from(x), f64::from(y), f64::from(z)]);
                 if placed.intersects(probe) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// `Cushion.isAnchorBuried(level, box)`: one block's collision covers the whole slab a
+/// sixty-fourth thick at the box's floor. **Inferred**: `Shapes.join` is taken as a box
+/// of the shape that holds the slab.
+fn anchor_buried<W: World + ?Sized>(world: &W, bounds: &Aabb) -> bool {
+    let slab = next_deflated(Aabb::new(
+        bounds.min,
+        [bounds.max[0], bounds.min[1] + 0.015_625, bounds.max[2]],
+    ));
+    let low = physics::containing(slab.min);
+    let high = physics::containing(slab.max);
+    for x in low.x..=high.x {
+        for y in low.y..=high.y {
+            for z in low.z..=high.z {
+                let pos = BlockPos::new(x, y, z);
+                let origin = [f64::from(x), f64::from(y), f64::from(z)];
+                let covers = world
+                    .state(pos)
+                    .props()
+                    .collision_shape()
+                    .boxes()
+                    .any(|part| {
+                        (0..3).all(|axis| {
+                            part[axis] + origin[axis] <= slab.min[axis]
+                                && part[axis + 3] + origin[axis] >= slab.max[axis]
+                        })
+                    });
+                if covers {
                     return true;
                 }
             }

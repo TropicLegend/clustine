@@ -135,7 +135,11 @@ pub fn click_with(click: &Click, off_hand: bool, blocks: &dyn Blocks) -> Clicked
 /// Where a click puts a block, `T`, and whether that is the clicked block itself:
 /// vanilla's `BlockPlaceContext.replaceClicked` (section 4.1). Whether the block at `T`
 /// gives way when it is not the clicked one is for [`place`] to judge.
-fn target_of(click: &Click, clicked: BlockState, blocks: &dyn Blocks) -> (BlockPos, bool) {
+pub(crate) fn target_of(
+    click: &Click,
+    clicked: BlockState,
+    blocks: &dyn Blocks,
+) -> (BlockPos, bool) {
     let context = context(click, click.position, true, clicked, blocks);
     if replace::can_be_replaced(clicked, &context) {
         (click.position, true)

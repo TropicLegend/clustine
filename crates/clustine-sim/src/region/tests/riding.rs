@@ -1371,3 +1371,87 @@ fn a_player_who_leaves_while_seated_leaves_the_seat_free() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_cushion_used_on_the_floor_is_laid_on_it_facing_the_player_s_way_and_sat_on() {
+    let mut region = on_ticking_floor_with(&[]);
+    let held = ItemStack {
+        item: clustine_data::items::RED_CUSHION,
+        count: 1,
+    };
+    checked(
+        &mut region,
+        &moves(vec![numbered(
+            1,
+            PlayerInput::SetInventorySlot {
+                slot: 0,
+                stack: Some(held),
+            },
+        )]),
+    );
+    // The top of the floor block at (2, -61, 0), clicked at its middle by a player who
+    // faces west.
+    let laid = checked(
+        &mut region,
+        &moves(vec![
+            numbered(
+                1,
+                PlayerInput::Move {
+                    position: None,
+                    rotation: Some((90.0, 30.0)),
+                    on_ground: true,
+                },
+            ),
+            numbered(
+                1,
+                PlayerInput::UseItemOn {
+                    position: BlockPos::new(2, -61, 0),
+                    face: Face::Top,
+                    cursor: [0.5, 1.0, 0.5],
+                    sneaking: false,
+                    sequence: 3,
+                },
+            ),
+        ]),
+    );
+    let cushions: Vec<Entity> = region
+        .chunk(ORIGIN)
+        .unwrap()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == entity_types::CUSHION as u16)
+        .cloned()
+        .collect();
+    let [seat] = &cushions[..] else {
+        panic!("one cushion: {cushions:?} after {:?}", laid.events);
+    };
+    assert_eq!(bits(seat.position), bits([2.5, -60.0, 0.5]));
+    assert_eq!(seat.yaw, 90.0);
+    assert!(matches!(seat.data, EntityData::Cushion { colour: 14, .. }));
+    // A creative player keeps the item.
+    assert_eq!(region.players[&player(1)].inventory.0[0], Some(held));
+    // A second one on the same place is refused.
+    checked(
+        &mut region,
+        &moves(vec![numbered(
+            1,
+            PlayerInput::UseItemOn {
+                position: BlockPos::new(2, -61, 0),
+                face: Face::Top,
+                cursor: [0.5, 1.0, 0.5],
+                sneaking: false,
+                sequence: 4,
+            },
+        )]),
+    );
+    let count = region
+        .chunk(ORIGIN)
+        .unwrap()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == entity_types::CUSHION as u16)
+        .count();
+    assert_eq!(count, 1);
+    checked(&mut region, &use_entity(seat));
+    assert!(region.players[&player(1)].riding.is_some());
+}
