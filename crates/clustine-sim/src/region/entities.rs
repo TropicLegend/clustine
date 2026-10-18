@@ -147,22 +147,31 @@ impl Region {
         };
         // A seat of a player the region does not have and keeps for nobody is no
         // seat: they left, or are another region's (`docs/groundwork/n5-plan.md`,
-        // section 7 item 5 and section 8 item 1). Kept seats with time left stay.
-        let present: std::collections::BTreeSet<EntityId> = self
+        // section 7 item 5 and section 8 item 1). Nor is one of a player here who
+        // does not ride this entity: they were let off while it was out of reach.
+        // Kept seats with time left stay.
+        let riding: std::collections::BTreeMap<EntityId, Option<EntityId>> = self
             .players
             .values()
-            .map(|player| player.entity_id)
+            .map(|player| (player.entity_id, player.riding.map(|riding| riding.vehicle)))
             .collect();
-        let phantom = |seat: &clustine_world::Seat| {
-            seat.player && seat.pending.is_none() && !present.contains(&seat.key)
+        let phantom = |entity: EntityId, seat: &clustine_world::Seat| {
+            seat.player && seat.pending.is_none() && riding.get(&seat.key) != Some(&Some(entity))
         };
         let unseated: Vec<Entity> = chunk
             .entities()
             .iter()
-            .filter(|entity| entity.riding.passengers.iter().any(phantom))
+            .filter(|entity| {
+                entity
+                    .riding
+                    .passengers
+                    .iter()
+                    .any(|seat| phantom(entity.key, seat))
+            })
             .map(|entity| {
                 let mut entity = entity.clone();
-                entity.riding.passengers.retain(|seat| !phantom(seat));
+                let key = entity.key;
+                entity.riding.passengers.retain(|seat| !phantom(key, seat));
                 entity
             })
             .collect();

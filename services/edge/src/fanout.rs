@@ -2730,9 +2730,11 @@ impl Fanout {
     ) {
         // What the player rides as their old region let them go is their word until
         // their new one says otherwise.
-        let riding_word = transfer.riding.map(|riding| riding.vehicle);
-        if riding_word.is_some() || self.rides_word.contains_key(&transfer.entity_id) {
-            self.take_rides_word(transfer.entity_id, riding_word).await;
+        // A transfer that names nothing says nothing of getting off, which the player's
+        // region says with `Rides` itself.
+        if let Some(riding) = transfer.riding {
+            self.take_rides_word(transfer.entity_id, Some(riding.vehicle))
+                .await;
         }
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);

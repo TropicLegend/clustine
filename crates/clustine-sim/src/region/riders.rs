@@ -125,6 +125,9 @@ impl Region {
             return false;
         };
         let mut record = record.clone();
+        // A seat it still had for them, of a ride they were let off from while it was
+        // out of reach, is not a second one.
+        record.riding.passengers.retain(|seat| seat.key != rider);
         add_passenger(
             &mut record.riding.passengers,
             Seat {
@@ -343,6 +346,20 @@ impl Region {
             // One on their way to their unit is seated or given up on by
             // `tick_waiting_riders`, and neither gets off nor is put anywhere meanwhile.
             if riding.pending.is_some() {
+                continue;
+            }
+            // A unit in a chunk the region has not loaded yet (after a restore, a merge
+            // or a split, whose chunks come some ticks later, and whose holder a merged
+            // region learns only then) is waited for: the rider stays seated, and is
+            // neither put anywhere nor let off. Only in a chunk loaded here, or known to
+            // be another region's, is a unit not found gone.
+            if self.find_entity(riding.vehicle).is_none()
+                && !self.chunks.contains_key(&riding.chunk)
+                && !matches!(
+                    self.land.knowledge(riding.chunk),
+                    super::Knowledge::Foreign(_)
+                )
+            {
                 continue;
             }
             let seated = self
