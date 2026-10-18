@@ -13,6 +13,7 @@ pub mod data;
 pub mod diode;
 pub mod fluid;
 pub mod growth;
+pub mod loot;
 pub mod note;
 pub mod piston;
 pub mod shape;
