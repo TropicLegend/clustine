@@ -147,8 +147,9 @@ elsewhere, as the game leaves an entity in a chunk that is loaded but not tickin
 block events, **the entities**, then block entities. Arrivals (section 5) are taken
 before the entities tick, with the tick's effects. Entities tick in ascending key; a
 passenger ticks with its root vehicle (`Entity.rideTick`), not by its own key. An entity
-removed in the tick is not ticked after its removal; one spawned in the tick ticks
-first in the next. Lookups of entities in a box go by chunk, then section, then key, so
+removed in the tick is not ticked after its removal; one added before the entity phase
+(a throw, a drop, a block starting to fall) ticks in that tick, as the game's does, and
+one added during the entity phase in the next (amended by the plan of N4, section 2). Lookups of entities in a box go by chunk, then section, then key, so
 that what an entity finds is a function of the state.
 
 ### 3. Every tick's entity changes are in the commit
