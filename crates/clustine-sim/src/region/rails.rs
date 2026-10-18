@@ -232,8 +232,8 @@ impl Region {
     }
 
     /// `BaseRailBlock.neighborChanged`: a rail goes where nothing rigid holds it, or
-    /// where the block a slope rises onto went (`shouldBeRemoved`), as `removeBlock`
-    /// takes it, and otherwise follows power (`updateState`), told that `block`
+    /// where the block a slope rises onto went (`shouldBeRemoved`), with its drops, as
+    /// `removeBlock` takes it, and otherwise follows power (`updateState`), told that `block`
     /// changed beside it.
     pub(super) fn rail_neighbour_changed(
         &mut self,
@@ -248,6 +248,7 @@ impl Region {
             return;
         }
         if self.rail_should_be_removed(pos, state) {
+            self.drop_resources(state, pos, output);
             self.set_block(pos, super::updates::fluid_block(state), output);
             return;
         }

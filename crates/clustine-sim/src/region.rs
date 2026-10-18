@@ -21,7 +21,9 @@ use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState
 mod block_entities;
 mod block_events;
 mod diodes;
+mod drops;
 mod entities;
+mod falling;
 mod fluids;
 mod instruments;
 mod items;
@@ -366,6 +368,9 @@ pub struct Region {
     /// What the game keeps of an entity in memory and not in its record, by key
     /// (`items.rs`); forgotten at a take-in, so no part of the state.
     entity_memory: BTreeMap<EntityId, items::Memory>,
+    /// The stream of each block that has dropped something in this tick, on from what
+    /// it has drawn (`drops.rs`); empty between ticks.
+    block_streams: BTreeMap<BlockPos, random_ticks::Random>,
 }
 
 impl Region {
@@ -463,6 +468,7 @@ impl Region {
             entity_chunks: BTreeMap::new(),
             entity_draws: BTreeMap::new(),
             entity_memory: BTreeMap::new(),
+            block_streams: BTreeMap::new(),
         }
     }
 
@@ -901,6 +907,7 @@ impl Region {
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
         self.entity_draws.clear();
+        self.block_streams.clear();
         output.delta = self.take_delta();
         output
     }
@@ -2683,6 +2690,7 @@ mod tests {
     mod diodes;
     mod effects;
     mod entities;
+    mod falling_and_drops;
     mod fluids;
     mod instruments;
     mod item_physics;
@@ -3946,19 +3954,103 @@ mod tests {
     }
 
     /// The changes of blocks a tick reports, without what clients show of a block
-    /// breaking and without sounds, for the tests about what changed.
+    /// breaking, without sounds and without the items that blocks broken by a rule
+    /// drop, for the tests about what changed.
     fn block_changes(output: &TickOutput) -> Vec<RegionEvent> {
-        output
+        let mut changes: Vec<RegionEvent> = output
             .events
             .iter()
             .filter(|event| {
                 !matches!(
                     event,
                     RegionEvent::BlockDestroyed { .. } | RegionEvent::Sound { .. }
-                )
+                ) && !is_drop(event)
             })
             .cloned()
+            .collect();
+        without_a_mark_at_the_end(&mut changes);
+        changes
+    }
+
+    /// Takes off the mark of the block events where nothing but drops came after it.
+    fn without_a_mark_at_the_end(events: &mut Vec<RegionEvent>) {
+        if events.last() == Some(&RegionEvent::BlockEventsBegin) {
+            events.pop();
+        }
+    }
+
+    /// Whether `event` is of an item a block dropped: its spawn and its tick's report.
+    fn is_drop(event: &RegionEvent) -> bool {
+        match event {
+            RegionEvent::EntitySpawned(state) => matches!(
+                state.kind,
+                EntityKind::Other {
+                    data: clustine_world::EntityData::Item { thrower: None, .. },
+                    ..
+                }
+            ),
+            // Nothing else in these tests is tracked.
+            RegionEvent::EntityTracked(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Ticks `region` until no block falls in it any more, and returns what each tick
+    /// reported; a falling block lasts 600 ticks at most.
+    fn until_fallen(region: &mut Region) -> Vec<TickOutput> {
+        let mut outputs = Vec::new();
+        for _ in 0..700 {
+            let falling = region.entity_chunks.iter().any(|(key, chunk)| {
+                region.chunks.get(chunk).is_some_and(|loaded| {
+                    loaded.entities().iter().any(|entity| {
+                        entity.key == *key
+                            && matches!(
+                                entity.data,
+                                clustine_world::EntityData::FallingBlock { .. }
+                            )
+                    })
+                })
+            });
+            if !falling {
+                return outputs;
+            }
+            outputs.push(idle(region));
+        }
+        panic!("a block still falls after 700 ticks");
+    }
+
+    /// The items lying in `region`, as (position, stack), by key.
+    fn items_lying(region: &Region) -> Vec<([f64; 3], ItemStack)> {
+        region
+            .entity_chunks
+            .iter()
+            .filter_map(|(key, chunk)| {
+                let entity = region
+                    .chunks
+                    .get(chunk)?
+                    .entities()
+                    .iter()
+                    .find(|entity| entity.key == *key)?;
+                match entity.data {
+                    clustine_world::EntityData::Item { stack, .. } => {
+                        Some((entity.position, stack))
+                    }
+                    clustine_world::EntityData::FallingBlock { .. } => None,
+                }
+            })
             .collect()
+    }
+
+    /// The events of a tick without the items that blocks broken by a rule drop.
+    fn without_drops(output: &TickOutput) -> Vec<RegionEvent> {
+        let mut events: Vec<RegionEvent> = output
+            .events
+            .iter()
+            .filter(|event| !is_drop(event))
+            .cloned()
+            .collect();
+        without_a_mark_at_the_end(&mut events);
+        events
     }
 
     /// A region where player 1 stands on the floor of [`floor`] with `blocks` set on
@@ -4134,7 +4226,7 @@ mod tests {
     }
 
     #[test]
-    fn sand_whose_support_is_broken_falls_to_the_floor_two_game_ticks_later() {
+    fn sand_whose_support_is_broken_starts_to_fall_two_game_ticks_later_and_lands_on_the_floor() {
         let (sand, stone, under) = (
             BlockPos::new(2, -58, 3),
             BlockPos::new(2, -59, 3),
@@ -4148,6 +4240,7 @@ mod tests {
         assert_eq!(region.block(sand), Some(blocks::SAND));
         region.tick(&TickInputs::default());
         assert_eq!(region.block(sand), Some(blocks::AIR));
+        until_fallen(&mut region);
         assert_eq!(region.block(under), Some(blocks::SAND));
     }
 
@@ -4182,7 +4275,7 @@ mod tests {
     }
 
     #[test]
-    fn sand_that_falls_onto_a_torch_is_lost() {
+    fn sand_that_falls_onto_a_torch_drops_as_an_item() {
         let (sand, stone, torch) = (
             BlockPos::new(2, -58, 3),
             BlockPos::new(2, -59, 3),
@@ -4195,10 +4288,21 @@ mod tests {
         ]);
         region.tick(&moves(vec![dig(1, 2, -59, 3, 1)]));
         region.tick(&TickInputs::default());
-        region.tick(&TickInputs::default());
+        until_fallen(&mut region);
         assert_eq!(region.block(sand), Some(blocks::AIR));
         assert_eq!(region.block(stone), Some(blocks::AIR));
         assert_eq!(region.block(torch), Some(blocks::TORCH));
+        let sand_item = ItemStack {
+            item: items::SAND,
+            count: 1,
+        };
+        assert_eq!(
+            items_lying(&region)
+                .into_iter()
+                .map(|(_, stack)| stack)
+                .collect::<Vec<_>>(),
+            [sand_item]
+        );
     }
 
     #[test]

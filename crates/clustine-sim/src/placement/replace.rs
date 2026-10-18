@@ -106,6 +106,20 @@ pub(crate) fn can_be_replaced(state: BlockState, context: &Context) -> bool {
     }
 }
 
+/// `canBeReplaced` with an empty hand, as a falling block asks it where it lands
+/// (`DirectionalPlaceContext` with `ItemStack.EMPTY`): every rule of a class that asks
+/// whether the hand holds the block's own item takes the answer for an empty hand.
+pub(crate) fn can_be_replaced_empty_handed(state: BlockState) -> bool {
+    match replace_rule(state) {
+        None | Some(Replace::Additive | Replace::GrowingPlantBody) => {
+            state.props().can_be_replaced()
+        }
+        Some(Replace::Fluid | Replace::Multiface) => true,
+        Some(Replace::SnowLayer) => data::number(state, "layers").unwrap_or(1) == 1,
+        Some(Replace::Slab) => false,
+    }
+}
+
 /// Vanilla's default: the state's own `canBeReplaced()`, unless the item in hand is the
 /// block's own.
 fn default_rule(state: BlockState, context: &Context) -> bool {

@@ -93,7 +93,7 @@ fn breaking_a_block_under_a_torch_beside_a_fence_changes_them_in_the_games_order
         stone,
     );
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(stone, blocks::STONE, Some(1)),
             set(stone, blocks::AIR),
@@ -164,7 +164,7 @@ fn updates_run_depth_first_so_what_one_destroys_goes_before_its_siblings() {
         held,
     );
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(held, blocks::STONE, Some(1)),
             set(held, blocks::AIR),
@@ -243,7 +243,7 @@ fn a_block_goes_when_the_block_it_rests_on_is_broken() {
     for (position, resting_state) in resting() {
         let (region, output) = breaking(&[(held, blocks::STONE), (position, resting_state)], held);
         assert_eq!(
-            output.events,
+            without_drops(&output),
             [
                 destroyed(held, blocks::STONE, Some(1)),
                 set(held, blocks::AIR),
@@ -277,7 +277,7 @@ fn a_block_stays_when_a_block_it_does_not_rest_on_is_broken() {
             other,
         );
         assert_eq!(
-            output.events,
+            without_drops(&output),
             [
                 destroyed(other, blocks::STONE, Some(1)),
                 set(other, blocks::AIR),
@@ -308,7 +308,7 @@ fn a_lever_on_a_ceiling_goes_with_the_ceiling() {
     let hanging = state("minecraft:lever[face=ceiling,facing=north]");
     let (_, output) = breaking(&[(ceiling, blocks::STONE), (lever, hanging)], ceiling);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(ceiling, blocks::STONE, Some(1)),
             set(ceiling, blocks::AIR),
@@ -349,7 +349,7 @@ fn a_carpet_goes_with_the_block_it_lies_on() {
     let red = state("minecraft:red_carpet");
     let (_, output) = breaking(&[(block, blocks::STONE), (carpet, red)], block);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(block, blocks::STONE, Some(1)),
             set(block, blocks::AIR),
@@ -371,7 +371,7 @@ fn a_candle_stays_when_the_block_it_stands_on_is_broken() {
         let standing = state(text);
         let (region, output) = breaking(&[(block, blocks::STONE), (candle, standing)], block);
         assert_eq!(
-            output.events,
+            without_drops(&output),
             [
                 destroyed(block, blocks::STONE, Some(1)),
                 set(block, blocks::AIR),
@@ -400,7 +400,7 @@ fn rails_repeaters_comparators_and_wire_go_with_their_block_without_being_shown_
         let on_block = state(text);
         let (region, output) = breaking(&[(block, blocks::STONE), (above, on_block)], block);
         assert_eq!(
-            output.events,
+            without_drops(&output),
             [
                 destroyed(block, blocks::STONE, Some(1)),
                 set(block, blocks::AIR),
@@ -430,7 +430,7 @@ fn neighbours_are_told_before_their_shapes_are_asked_again() {
         block,
     );
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(block, blocks::STONE, Some(1)),
             set(block, blocks::AIR),
@@ -450,7 +450,7 @@ fn a_waterlogged_ladder_whose_wall_is_broken_leaves_water() {
     let wet = state("minecraft:ladder[facing=north,waterlogged=true]");
     let (region, output) = breaking(&[(wall, blocks::STONE), (ladder, wet)], wall);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(wall, blocks::STONE, Some(1)),
             set(wall, blocks::AIR),
@@ -469,7 +469,7 @@ fn a_waterlogged_block_a_player_breaks_leaves_water() {
     let wet = state("minecraft:oak_fence[waterlogged=true]");
     let (region, output) = breaking(&[(fence, wet)], fence);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [destroyed(fence, wet, Some(1)), set(fence, blocks::WATER)]
     );
     assert_eq!(block_at(&region, fence), Some(blocks::WATER));
@@ -487,7 +487,7 @@ fn a_door_whose_ground_is_broken_goes_lower_half_first() {
     let (lower, upper) = (at(2, -60, 3), at(2, -59, 3));
     let (region, output) = breaking(&[(lower, door("lower")), (upper, door("upper"))], ground);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(ground, blocks::STONE, Some(1)),
             set(ground, blocks::AIR),
@@ -507,7 +507,7 @@ fn a_door_broken_at_its_lower_half_loses_its_upper_half_to_an_update() {
     let (lower, upper) = (at(2, -60, 3), at(2, -59, 3));
     let (_, output) = breaking(&[(lower, door("lower")), (upper, door("upper"))], lower);
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(lower, door("lower"), Some(1)),
             set(lower, blocks::AIR),
@@ -563,7 +563,7 @@ fn a_tall_flower_whose_ground_is_broken_goes_whole() {
         ground,
     );
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(ground, state("minecraft:dirt"), Some(1)),
             set(ground, blocks::AIR),
@@ -588,7 +588,7 @@ fn a_tall_flower_broken_at_its_lower_half_loses_its_upper_half() {
         lower,
     );
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(lower, rose_bush("lower"), Some(1)),
             set(lower, blocks::AIR),
@@ -731,7 +731,7 @@ fn a_block_with_a_neighbour_in_a_chunk_that_is_not_loaded_is_not_updated() {
     let under_rim = at(0, -61, 3);
     let output = region.tick(&moves(vec![dig(1, 0, -61, 3, 1)]));
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(under_rim, blocks::STONE, Some(1)),
             set(under_rim, blocks::AIR),
@@ -742,7 +742,7 @@ fn a_block_with_a_neighbour_in_a_chunk_that_is_not_loaded_is_not_updated() {
     let under_inner = at(1, -61, 3);
     let output = region.tick(&moves(vec![dig(1, 1, -61, 3, 2)]));
     assert_eq!(
-        output.events,
+        without_drops(&output),
         [
             destroyed(under_inner, blocks::STONE, Some(1)),
             set(under_inner, blocks::AIR),

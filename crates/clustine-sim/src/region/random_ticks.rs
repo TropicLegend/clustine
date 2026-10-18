@@ -28,7 +28,7 @@ const RANDOM_TICK_SPEED: usize = 3;
 
 /// A stream of numbers for what the game draws from its random: SplitMix64, which is
 /// small, fast and good enough for chances that no player can count.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Random(u64);
 
 impl Random {
@@ -56,6 +56,23 @@ impl Random {
         random
     }
 
+    /// The stream of the block at `pos` in a tick of a world for the rule `purpose`
+    /// (`docs/groundwork/n4-plan.md`, section 7, "Drops"): what a block broken by a
+    /// rule drops, and where. Apart from the streams of sections and entities by a
+    /// mark of its own.
+    pub(crate) fn of_block(world: u64, pos: BlockPos, tick: u64, purpose: u64) -> Self {
+        /// Mixed in first, so that no block's stream is a section's or an entity's.
+        const BLOCKS: u64 = 0x626c_6f63_6b73;
+        let mut random = Self(world);
+        random.mix(BLOCKS);
+        random.mix(purpose);
+        random.mix(pos.x as u32 as u64);
+        random.mix(pos.y as u32 as u64);
+        random.mix(pos.z as u32 as u64);
+        random.mix(tick);
+        random
+    }
+
     fn mix(&mut self, value: u64) {
         self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
         self.next_u64();
@@ -75,7 +92,6 @@ impl Random {
     }
 
     /// `nextDouble`: from 0 up to 1.
-    #[allow(dead_code, reason = "the rules that draw a double use it")]
     pub(crate) fn next_double(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }

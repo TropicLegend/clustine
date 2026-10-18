@@ -205,11 +205,20 @@ impl Region {
         // A piston placed checks whether to move (`PistonBaseBlock.onPlace`).
         self.piston_on_place(pos, state, old, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
-        // ticks on whether it is held up (`FallingBlock.onPlace`, `BrushableBlock`'s).
-        if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock)
+        // ticks on whether it is held up, a dragon egg five (`FallingBlock.onPlace`,
+        // `BrushableBlock`'s), and scaffolding one on how far it is held
+        // (`ScaffoldingBlock.onPlace`).
+        if is_class(state, BlockClass::FallingBlock)
+            || is_class(state, BlockClass::BrushableBlock)
+            || is_class(state, BlockClass::ScaffoldingBlock)
         {
             let block = clustine_blocks::data::tick_id(state);
-            self.schedule_tick(pos, Ticked::Block(block), 2, 0);
+            let delay = if is_class(state, BlockClass::ScaffoldingBlock) {
+                1
+            } else {
+                super::falling::delay_after_place(state)
+            };
+            self.schedule_tick(pos, Ticked::Block(block), delay, 0);
         }
         // Fire's and coral's `onPlace` schedule their ticks, and fire that cannot stay
         // goes there and then.
@@ -638,18 +647,19 @@ impl Region {
         }
     }
 
-    /// `destroyBlock` of a block's own tick (a cactus or sugar cane that can no longer
-    /// stay).
+    /// `destroyBlock` of a block's own tick, with its drops (a cactus or sugar cane that
+    /// can no longer stay).
     pub(super) fn destroy_block_by_tick(&mut self, pos: BlockPos, output: &mut TickOutput) {
         self.destroy_block(pos, true, UPDATE_LIMIT, output);
     }
 
-    /// `Level.destroyBlock`: the block breaks where everyone sees it, and gives way to
-    /// its fluid, with every update.
+    /// `Level.destroyBlock`: the block breaks where everyone sees it, drops what it
+    /// drops where `drops` asks (`drops.rs`), and gives way to its fluid, with every
+    /// update.
     pub(crate) fn destroy_block(
         &mut self,
         pos: BlockPos,
-        _drops: bool,
+        drops: bool,
         depth: i32,
         output: &mut TickOutput,
     ) {
@@ -666,6 +676,9 @@ impl Region {
                 state,
                 breaker: None,
             });
+        }
+        if drops {
+            self.drop_resources(state, pos, output);
         }
         self.set_block_updated(pos, fluid_block(state), UPDATE_ALL, depth, output);
     }

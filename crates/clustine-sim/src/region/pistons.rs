@@ -322,7 +322,8 @@ impl Region {
         let mut to_update: Vec<BlockState> = Vec::new();
         for at in structure.to_destroy.iter().rev() {
             let state = self.own_block(*at).unwrap_or(blocks::AIR);
-            // Nothing drops in creative, where every player is.
+            // `dropResources`, whoever is about.
+            self.drop_resources(state, *at, output);
             self.set_block_updated(
                 *at,
                 blocks::AIR,

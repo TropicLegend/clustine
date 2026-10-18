@@ -869,9 +869,32 @@ fn check(log: &[WorkerToEdge], book: &mut Book) {
         book.own.insert(*entity);
     }
     if let WorkerToEdge::TickDelta { events, .. } = last {
-        assert!(!events.is_empty(), "a delta without events: {}", context());
+        // An empty delta follows one whose changes of blocks came after the mark of
+        // the block events, which an edge sends with the next tick's.
+        let carried = log[..index]
+            .iter()
+            .rev()
+            .find_map(|earlier| match earlier {
+                WorkerToEdge::TickDelta { events, .. } => Some(
+                    events
+                        .iter()
+                        .skip_while(|event| **event != RegionEvent::BlockEventsBegin)
+                        .any(|event| matches!(event, RegionEvent::BlockChanged { .. })),
+                ),
+                _ => None,
+            })
+            .unwrap_or(false);
+        assert!(
+            !events.is_empty() || carried,
+            "a delta without events: {}",
+            context()
+        );
         for event in events {
-            if matches!(event, RegionEvent::EntityRemoved { .. }) {
+            // The mark of the block events has no place, and every link is passed it.
+            if matches!(
+                event,
+                RegionEvent::EntityRemoved { .. } | RegionEvent::BlockEventsBegin
+            ) {
                 continue;
             }
             // Where its own player moved to, an edge is told wherever that is: it asks

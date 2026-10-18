@@ -61,6 +61,7 @@ impl Region {
             if clustine_blocks::can_survive(state, pos, &mut RegionView(self)) {
                 self.update_power_strength(pos, state, output);
             } else {
+                self.drop_resources(state, pos, output);
                 self.set_block(pos, fluid_block(state), output);
             }
             return true;

@@ -59,6 +59,9 @@ pub(crate) struct Body {
     /// Whether it is an item, whose friction and speed come from the block a whole
     /// block below it (`ItemEntity.getBlockPosBelowThatAffectsMyMovement`).
     pub(crate) item: bool,
+    /// The fall the last move ended and the block it ended on (`Block.fallOn`), where
+    /// it ended one.
+    pub(crate) fell_on: Option<(f64, BlockPos)>,
 }
 
 impl Body {
@@ -195,7 +198,7 @@ impl Body {
         self.check_supporting_block(world, Some(out));
         let on = self.on_pos_legacy(world);
         let below = world.state(on);
-        self.check_fall_damage(out[1]);
+        self.check_fall_damage(out[1], on);
         if (moved_y && self.vertical_collision) || self.horizontal_collision {
             self.restitute(below, x_collision, z_collision, out);
         }
@@ -241,12 +244,17 @@ impl Body {
 
     /// `checkFallDamage`: the fall counts while it falls out of water, and ends on the
     /// ground. What it lands on does nothing to an item or a falling block that the
-    /// game shows (a honey block's slide and its particles are left out).
-    fn check_fall_damage(&mut self, moved_y: f64) {
+    /// game shows (a honey block's slide and its particles are left out); the fall it
+    /// ends is kept for a falling anvil's chipping ([`Body::fell_on`]).
+    fn check_fall_damage(&mut self, moved_y: f64, on: BlockPos) {
+        self.fell_on = None;
         if !self.in_water && moved_y < 0.0 {
             self.fall_distance -= f64::from(moved_y as f32);
         }
         if self.on_ground {
+            if self.fall_distance > 0.0 {
+                self.fell_on = Some((self.fall_distance, on));
+            }
             self.fall_distance = 0.0;
         }
     }
@@ -347,7 +355,7 @@ fn clips_fall_resetting<W: World + ?Sized>(world: &W, from: Vec3, to: Vec3) -> b
 
 /// `VoxelShape.clip` of a shape of one box: a hit where the segment starts inside it, a
 /// thousandth of the way along, or enters it.
-fn clips_shape(shape: &Aabb, from: Vec3, to: Vec3) -> bool {
+pub(crate) fn clips_shape(shape: &Aabb, from: Vec3, to: Vec3) -> bool {
     let delta = super::sub(to, from);
     if super::length_sqr(delta) < 1.0e-7 {
         return false;

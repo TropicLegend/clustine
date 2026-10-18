@@ -108,7 +108,19 @@ pub fn update_shape<V: BlockView + ?Sized>(
     // changes (`FallingBlock.updateShape`, and suspicious sand and gravel's
     // `BrushableBlock.updateShape`), however it is held up now.
     if is_class(state, BlockClass::FallingBlock) || is_class(state, BlockClass::BrushableBlock) {
-        view.schedule_block_tick(pos, tick_id(state), 2);
+        // `getDelayAfterPlace`: the dragon egg's is five.
+        let delay = if is_class(state, BlockClass::DragonEggBlock) {
+            5
+        } else {
+            2
+        };
+        view.schedule_block_tick(pos, tick_id(state), delay);
+        return state;
+    }
+    // Scaffolding looks again a tick on how far it is held (`ScaffoldingBlock.
+    // updateShape`). Generation keeps the answers its judge compared.
+    if view.rules() == Rules::Placing && is_class(state, BlockClass::ScaffoldingBlock) {
+        view.schedule_block_tick(pos, tick_id(state), 1);
         return state;
     }
     if is_class(state, BlockClass::LeavesBlock) {

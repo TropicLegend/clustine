@@ -1043,7 +1043,7 @@ fn concrete_powder_told_of_water_beside_it_hardens() {
 fn falling_concrete_powder_stops_and_hardens_in_the_first_water_it_reaches() {
     let powder = at(8, -55, 8);
     let (surface, bottom) = (at(8, -59, 8), at(8, -60, 8));
-    let (region, _) = world_with(
+    let (mut region, _) = world_with(
         &[
             (powder, blocks::WHITE_CONCRETE_POWDER),
             (surface, blocks::WATER),
@@ -1052,11 +1052,12 @@ fn falling_concrete_powder_stops_and_hardens_in_the_first_water_it_reaches() {
         &[(powder, block_tick(powder, blocks::WHITE_CONCRETE_POWDER))],
     );
     assert_eq!(block_at(&region, powder), Some(blocks::AIR));
+    until_fallen(&mut region);
     assert_eq!(block_at(&region, surface), Some(blocks::WHITE_CONCRETE));
     assert_eq!(block_at(&region, bottom), Some(blocks::WATER));
 
     // Sand in the same place sinks through both.
-    let (region, _) = world_with(
+    let (mut region, _) = world_with(
         &[
             (powder, blocks::SAND),
             (surface, blocks::WATER),
@@ -1064,6 +1065,7 @@ fn falling_concrete_powder_stops_and_hardens_in_the_first_water_it_reaches() {
         ],
         &[(powder, block_tick(powder, blocks::SAND))],
     );
+    until_fallen(&mut region);
     assert_eq!(block_at(&region, bottom), Some(blocks::SAND));
 }
 

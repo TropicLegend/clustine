@@ -88,9 +88,10 @@ impl Region {
             self.check_tick_on_neighbour(pos, state);
             return true;
         }
-        // `DiodeBlock.neighborChanged` of a diode that cannot stay: it is removed
+        // `DiodeBlock.neighborChanged` of a diode that cannot stay: it drops, is removed
         // (`removeBlock`, with every update), and the neighbours of its neighbours are
         // told, in the order of `Direction.values()`.
+        self.drop_resources(state, pos, output);
         self.set_block(pos, fluid_block(state), output);
         for towards in Face::ALL {
             self.update_neighbours_at(relative(pos, towards), state, output);

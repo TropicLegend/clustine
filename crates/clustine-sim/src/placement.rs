@@ -12,6 +12,7 @@ mod context;
 mod data;
 mod geometry;
 mod replace;
+pub(crate) use replace::can_be_replaced_empty_handed;
 mod rules;
 mod survive;
 #[cfg(test)]

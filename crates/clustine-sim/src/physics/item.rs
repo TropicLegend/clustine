@@ -402,26 +402,9 @@ impl Item {
         self.body.motion = motion;
     }
 
-    /// `move(SELF, vector)`, and the region's guard after it: where the move would take
-    /// the item into a chunk the region may not hold it in, it keeps its coordinate along
-    /// that axis and loses its motion along it (`docs/groundwork/n4-plan.md`, section 7).
+    /// `move(SELF, vector)`, and the region's guard after it ([`move_guarded`]).
     fn move_guarded<R: Region + ?Sized>(&mut self, world: &R, vector: Vec3) {
-        let before = self.body.position;
-        self.body.move_self(world, self.no_physics, vector);
-        let after = self.body.position;
-        if ChunkPos::containing(after[0], before[2]) != ChunkPos::containing(before[0], before[2])
-            && !world.may_hold(ChunkPos::containing(after[0], before[2]))
-        {
-            self.body.position[0] = before[0];
-            self.body.motion[0] = 0.0;
-        }
-        let x = self.body.position[0];
-        if ChunkPos::containing(x, after[2]) != ChunkPos::containing(x, before[2])
-            && !world.may_hold(ChunkPos::containing(x, after[2]))
-        {
-            self.body.position[2] = before[2];
-            self.body.motion[2] = 0.0;
-        }
+        move_guarded(&mut self.body, world, self.no_physics, vector);
     }
 
     /// `applyEffectsFromBlocks`, of this tick's movements or, given `last`, of the last
@@ -440,25 +423,7 @@ impl Item {
                 asked: None,
             }],
             None => {
-                let mut movements = std::mem::take(&mut self.body.movements);
-                match movements.last() {
-                    None => movements.push(Movement {
-                        from: self.body.old_position,
-                        to: self.body.position,
-                        asked: None,
-                    }),
-                    Some(last) => {
-                        if super::distance_sqr(last.to, self.body.position)
-                            > 9.999_999_439_624_929e-11
-                        {
-                            movements.push(Movement {
-                                from: last.to,
-                                to: self.body.position,
-                                asked: None,
-                            });
-                        }
-                    }
-                }
+                let movements = tick_movements(&mut self.body);
                 self.last_movements = movements.clone();
                 movements
             }
@@ -474,7 +439,14 @@ impl Item {
         let was_on_fire = self.is_on_fire();
         let fire_before = self.fire_ticks;
         let mut collector = Collector::default();
-        self.check_inside_blocks(world, &movements, &mut collector);
+        check_inside_blocks(
+            world,
+            &mut ItemInside {
+                item: self,
+                collector: &mut collector,
+            },
+            &movements,
+        );
         // `applyAndClear`.
         collector.flush_step();
         for action in std::mem::take(&mut collector.queued) {
@@ -544,139 +516,6 @@ impl Item {
         }
     }
 
-    /// `checkInsideBlocks(movements, collector)`.
-    fn check_inside_blocks<W: World + ?Sized>(
-        &mut self,
-        world: &W,
-        movements: &[Movement],
-        collector: &mut Collector,
-    ) {
-        let mut visited: std::collections::BTreeSet<(i32, i32, i32)> = Default::default();
-        for movement in movements {
-            let mut from = movement.from;
-            let delta = super::sub(movement.to, movement.from);
-            let mut budget = 16;
-            match movement.asked {
-                Some(asked) if super::length_sqr(delta) > 0.0 => {
-                    for axis in collide::axis_step_order(asked) {
-                        let along = delta[axis];
-                        if along != 0.0 {
-                            let mut next = from;
-                            next[axis] += along;
-                            budget -= self.check_inside_between(
-                                world,
-                                from,
-                                next,
-                                collector,
-                                &mut visited,
-                                budget,
-                            );
-                            from = next;
-                        }
-                    }
-                }
-                _ => {
-                    budget -= self.check_inside_between(
-                        world,
-                        movement.from,
-                        movement.to,
-                        collector,
-                        &mut visited,
-                        16,
-                    );
-                }
-            }
-            if budget <= 0 {
-                self.check_inside_between(
-                    world,
-                    movement.to,
-                    movement.to,
-                    collector,
-                    &mut visited,
-                    1,
-                );
-            }
-        }
-    }
-
-    /// `checkInsideBlocks(from, to, collector, visited, maxSteps)`: the blocks the box
-    /// meets on its way and their effects; one more than the last step reached.
-    fn check_inside_between<W: World + ?Sized>(
-        &mut self,
-        world: &W,
-        from: Vec3,
-        to: Vec3,
-        collector: &mut Collector,
-        visited: &mut std::collections::BTreeSet<(i32, i32, i32)>,
-        max_steps: i32,
-    ) -> i32 {
-        let bounds = self.body.bounds_at(to).deflate(f64::from(1.0e-5_f32));
-        let reach = 0.999_990_000_000_252_6_f64;
-        let long = super::distance_sqr(from, to) > reach * reach;
-        let mut last = 0;
-        let moving = self.body.bounds_at(from);
-        walk::for_each_block_between(from, to, &bounds, |pos, step| {
-            if self.removed {
-                return false;
-            }
-            if step >= max_steps {
-                return false;
-            }
-            last = step;
-            let state = world.state(pos);
-            if state.props().is_air() {
-                return true;
-            }
-            let hit_block = match self.inside_shape(state, pos) {
-                None => true,
-                Some(boxes) => moving.collided_along_vector(super::sub(to, from), &boxes),
-            };
-            let hit_fluid = fluid_box(world, state, pos)
-                .is_some_and(|fluid| moving.collided_along_vector(super::sub(to, from), &[fluid]));
-            if (!hit_block && !hit_fluid) || !visited.insert((pos.x, pos.y, pos.z)) {
-                return true;
-            }
-            if hit_block {
-                collector.advance_step(step);
-                let _precise = long || bounds.intersects(Aabb::of_block(pos));
-                self.entity_inside(state, collector);
-            }
-            if hit_fluid {
-                collector.advance_step(step);
-                if clustine_blocks::data::has_water(state) {
-                    collector.apply(Effect::Extinguish);
-                } else if clustine_blocks::data::has_lava(state) {
-                    collector.apply(Effect::ClearFreeze);
-                    collector.apply(Effect::LavaIgnite);
-                    collector.run_after(Effect::LavaIgnite, Action::LavaHurt);
-                }
-            }
-            true
-        });
-        last + 1
-    }
-
-    /// The boxes of the entity-inside shape of `state` at `pos`, `None` for the whole
-    /// block (`Shapes.block()`, which the game takes as met without looking).
-    fn inside_shape(&self, state: BlockState, pos: BlockPos) -> Option<Vec<Aabb>> {
-        let at = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
-        let shape = match state.entity_inside_shape() {
-            EntityInsideShape::Shape(shape) if shape.is_block() => return None,
-            EntityInsideShape::Shape(shape) => Placed {
-                cells: Cells::Data(shape),
-                shift: None,
-                offset: at,
-            },
-            EntityInsideShape::CollisionOfTheEntity => {
-                match collide::collision_shape(state, pos, self.body.context()) {
-                    Some((shape, false)) => shape,
-                    _ => return None,
-                }
-            }
-        };
-        Some(shape.boxes())
-    }
-
     /// `BlockState.entityInside` of what an item meets.
     fn entity_inside(&mut self, state: BlockState, collector: &mut Collector) {
         if is_class(state, BlockClass::BaseFireBlock) {
@@ -710,6 +549,207 @@ impl Item {
     fn make_stuck(&mut self, multiplier: Vec3) {
         self.body.fall_distance = 0.0;
         self.body.stuck_speed = multiplier;
+    }
+}
+
+/// The movements of the tick that `applyEffectsFromBlocks` walks, taken from the body:
+/// those its moves made, closed with the way from the last of them to where it is, or
+/// the way from where it began the tick if it made none.
+pub(crate) fn tick_movements(body: &mut Body) -> Vec<Movement> {
+    let mut movements = std::mem::take(&mut body.movements);
+    match movements.last() {
+        None => movements.push(Movement {
+            from: body.old_position,
+            to: body.position,
+            asked: None,
+        }),
+        Some(last) => {
+            if super::distance_sqr(last.to, body.position) > 9.999_999_439_624_929e-11 {
+                movements.push(Movement {
+                    from: last.to,
+                    to: body.position,
+                    asked: None,
+                });
+            }
+        }
+    }
+    movements
+}
+
+/// What the walk through the blocks a move touches asks of the entity, and tells it
+/// of each block it meets (`Entity.checkInsideBlocks`).
+pub(crate) trait Inside {
+    /// The entity's body as it is now: the walk reads its box and its context.
+    fn body(&self) -> &Body;
+
+    /// Whether it is gone, which ends the walk.
+    fn removed(&self) -> bool;
+
+    /// It met the block `state` at `pos` in the walk's step `step`: its shape for
+    /// entities inside, its fluid, or both.
+    fn met(&mut self, state: BlockState, pos: BlockPos, step: i32, block: bool, fluid: bool);
+}
+
+/// An item's part in the walk: its effects of blocks go through its collector.
+struct ItemInside<'a> {
+    item: &'a mut Item,
+    collector: &'a mut Collector,
+}
+
+impl Inside for ItemInside<'_> {
+    fn body(&self) -> &Body {
+        &self.item.body
+    }
+
+    fn removed(&self) -> bool {
+        self.item.removed
+    }
+
+    fn met(&mut self, state: BlockState, _pos: BlockPos, step: i32, block: bool, fluid: bool) {
+        if block {
+            self.collector.advance_step(step);
+            self.item.entity_inside(state, self.collector);
+        }
+        if fluid {
+            self.collector.advance_step(step);
+            if clustine_blocks::data::has_water(state) {
+                self.collector.apply(Effect::Extinguish);
+            } else if clustine_blocks::data::has_lava(state) {
+                self.collector.apply(Effect::ClearFreeze);
+                self.collector.apply(Effect::LavaIgnite);
+                self.collector
+                    .run_after(Effect::LavaIgnite, Action::LavaHurt);
+            }
+        }
+    }
+}
+
+/// `checkInsideBlocks(movements, collector)`.
+pub(crate) fn check_inside_blocks<W: World + ?Sized, I: Inside + ?Sized>(
+    world: &W,
+    entity: &mut I,
+    movements: &[Movement],
+) {
+    let mut visited: std::collections::BTreeSet<(i32, i32, i32)> = Default::default();
+    for movement in movements {
+        let mut from = movement.from;
+        let delta = super::sub(movement.to, movement.from);
+        let mut budget = 16;
+        match movement.asked {
+            Some(asked) if super::length_sqr(delta) > 0.0 => {
+                for axis in collide::axis_step_order(asked) {
+                    let along = delta[axis];
+                    if along != 0.0 {
+                        let mut next = from;
+                        next[axis] += along;
+                        budget -=
+                            check_inside_between(world, entity, from, next, &mut visited, budget);
+                        from = next;
+                    }
+                }
+            }
+            _ => {
+                budget -= check_inside_between(
+                    world,
+                    entity,
+                    movement.from,
+                    movement.to,
+                    &mut visited,
+                    16,
+                );
+            }
+        }
+        if budget <= 0 {
+            check_inside_between(world, entity, movement.to, movement.to, &mut visited, 1);
+        }
+    }
+}
+
+/// `checkInsideBlocks(from, to, collector, visited, maxSteps)`: the blocks the box
+/// meets on its way, told to the entity; one more than the last step reached.
+fn check_inside_between<W: World + ?Sized, I: Inside + ?Sized>(
+    world: &W,
+    entity: &mut I,
+    from: Vec3,
+    to: Vec3,
+    visited: &mut std::collections::BTreeSet<(i32, i32, i32)>,
+    max_steps: i32,
+) -> i32 {
+    let bounds = entity.body().bounds_at(to).deflate(f64::from(1.0e-5_f32));
+    let mut last = 0;
+    let moving = entity.body().bounds_at(from);
+    walk::for_each_block_between(from, to, &bounds, |pos, step| {
+        if entity.removed() {
+            return false;
+        }
+        if step >= max_steps {
+            return false;
+        }
+        last = step;
+        let state = world.state(pos);
+        if state.props().is_air() {
+            return true;
+        }
+        let hit_block = match inside_shape(entity.body(), state, pos) {
+            None => true,
+            Some(boxes) => moving.collided_along_vector(super::sub(to, from), &boxes),
+        };
+        let hit_fluid = fluid_box(world, state, pos)
+            .is_some_and(|fluid| moving.collided_along_vector(super::sub(to, from), &[fluid]));
+        if (!hit_block && !hit_fluid) || !visited.insert((pos.x, pos.y, pos.z)) {
+            return true;
+        }
+        entity.met(state, pos, step, hit_block, hit_fluid);
+        true
+    });
+    last + 1
+}
+
+/// The boxes of the entity-inside shape of `state` at `pos`, `None` for the whole
+/// block (`Shapes.block()`, which the game takes as met without looking).
+fn inside_shape(body: &Body, state: BlockState, pos: BlockPos) -> Option<Vec<Aabb>> {
+    let at = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
+    let shape = match state.entity_inside_shape() {
+        EntityInsideShape::Shape(shape) if shape.is_block() => return None,
+        EntityInsideShape::Shape(shape) => Placed {
+            cells: Cells::Data(shape),
+            shift: None,
+            offset: at,
+        },
+        EntityInsideShape::CollisionOfTheEntity => {
+            match collide::collision_shape(state, pos, body.context()) {
+                Some((shape, false)) => shape,
+                _ => return None,
+            }
+        }
+    };
+    Some(shape.boxes())
+}
+
+/// `move(SELF, vector)`, and the region's guard after it: where the move would take
+/// the entity into a chunk the region may not hold it in, it keeps its coordinate along
+/// that axis and loses its motion along it (`docs/groundwork/n4-plan.md`, section 7).
+pub(crate) fn move_guarded<R: Region + ?Sized>(
+    body: &mut Body,
+    world: &R,
+    no_physics: bool,
+    vector: Vec3,
+) {
+    let before = body.position;
+    body.move_self(world, no_physics, vector);
+    let after = body.position;
+    if ChunkPos::containing(after[0], before[2]) != ChunkPos::containing(before[0], before[2])
+        && !world.may_hold(ChunkPos::containing(after[0], before[2]))
+    {
+        body.position[0] = before[0];
+        body.motion[0] = 0.0;
+    }
+    let x = body.position[0];
+    if ChunkPos::containing(x, after[2]) != ChunkPos::containing(x, before[2])
+        && !world.may_hold(ChunkPos::containing(x, after[2]))
+    {
+        body.position[2] = before[2];
+        body.motion[2] = 0.0;
     }
 }
 

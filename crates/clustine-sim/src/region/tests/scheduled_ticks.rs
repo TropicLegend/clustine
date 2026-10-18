@@ -162,7 +162,6 @@ fn a_kept_tick_runs_as_many_ticks_after_its_chunk_starts_ticking_as_its_delay() 
     }
     let output = idle_tick(&mut region);
     assert_eq!(block_at(&region, sand), Some(blocks::AIR));
-    assert_eq!(block_at(&region, at(5, -60, 5)), Some(blocks::SAND));
     assert_eq!(emptied(&output), [sand]);
 }
 
@@ -173,7 +172,6 @@ fn a_kept_tick_of_delay_zero_runs_in_the_tick_its_chunk_starts_ticking() {
     let sand = at(5, -55, 5);
     let (region, output) = ticking_with(&[(sand, blocks::SAND)], &[kept(sand, blocks::SAND, 0, 0)]);
     assert_eq!(block_at(&region, sand), Some(blocks::AIR));
-    assert_eq!(block_at(&region, at(5, -60, 5)), Some(blocks::SAND));
     assert_eq!(emptied(&output), [sand]);
 }
 
@@ -239,7 +237,6 @@ fn a_tick_kept_in_a_chunk_without_its_neighbours_waits_and_then_runs_with_its_de
     );
     let output = idle_tick(&mut region);
     assert_eq!(emptied(&output), [sand]);
-    assert_eq!(block_at(&region, at(5, -60, 5)), Some(blocks::SAND));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -609,7 +606,6 @@ fn a_tick_of_delay_zero_kept_with_a_chunk_does_not_let_a_tick_scheduled_in_its_r
     assert_eq!(block_at(&region, upper), Some(blocks::SAND));
     let output = idle_tick(&mut region);
     assert_eq!(emptied(&output), [upper]);
-    assert_eq!(block_at(&region, at(5, -59, 5)), Some(blocks::SAND));
 }
 
 /// A fluid tick runs only where its block still holds exactly that fluid
@@ -850,20 +846,39 @@ fn a_scheduled_tick_names_its_chunk() {
 // E. What a block tick does
 // ---------------------------------------------------------------------------------------
 
-/// The region after player 1 has broken `dug` under a falling block, a tick on, when
-/// the block's tick of 2 has run: the dig counts from the tick before its own, as the
-/// game handles a player's packet between ticks.
-fn after_a_fall(blocks: &[(BlockPos, BlockState)], dug: BlockPos) -> (Region, TickOutput) {
+/// The region after player 1 has broken `dug` under a falling block and the block has
+/// fallen: the block's tick of 2 runs a tick after the dig, which counts from the tick
+/// before its own as the game handles a player's packet between ticks; then the
+/// falling block's ticks, to its landing. With what each tick from the block's on
+/// reported.
+fn after_a_fall(blocks: &[(BlockPos, BlockState)], dug: BlockPos) -> (Region, Vec<TickOutput>) {
     let mut region = ticking_floor_with(blocks);
     checked(&mut region, &moves(vec![dig(1, dug.x, dug.y, dug.z, 1)]));
-    let output = idle_tick(&mut region);
-    (region, output)
+    let mut outputs = vec![idle_tick(&mut region)];
+    outputs.extend(until_fallen(&mut region));
+    (region, outputs)
+}
+
+/// The changes of blocks among what `outputs` reported, with the transient blocks of
+/// landings: what clients are shown of the blocks.
+fn blocks_shown(outputs: &[TickOutput]) -> Vec<RegionEvent> {
+    outputs
+        .iter()
+        .flat_map(|output| output.events.iter())
+        .filter(|event| {
+            matches!(
+                event,
+                RegionEvent::BlockChanged { .. } | RegionEvent::TransientBlock { .. }
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 #[test]
-fn sand_that_falls_onto_a_bottom_slab_is_lost() {
+fn sand_that_falls_onto_a_bottom_slab_drops_as_an_item() {
     let (sand, stone, slab) = (at(2, -58, 3), at(2, -59, 3), at(2, -60, 3));
-    let (region, output) = after_a_fall(
+    let (region, outputs) = after_a_fall(
         &[
             (slab, blocks::STONE_SLAB),
             (stone, blocks::STONE),
@@ -874,7 +889,18 @@ fn sand_that_falls_onto_a_bottom_slab_is_lost() {
     assert_eq!(block_at(&region, sand), Some(blocks::AIR));
     assert_eq!(block_at(&region, stone), Some(blocks::AIR));
     assert_eq!(block_at(&region, slab), Some(blocks::STONE_SLAB));
-    assert_eq!(block_changes(&output), [changed(2, -58, 3, blocks::AIR)]);
+    assert_eq!(blocks_shown(&outputs), [changed(2, -58, 3, blocks::AIR)]);
+    let lying: Vec<ItemStack> = items_lying(&region)
+        .into_iter()
+        .map(|(_, stack)| stack)
+        .collect();
+    assert_eq!(
+        lying,
+        [ItemStack {
+            item: clustine_data::items::SAND,
+            count: 1
+        }]
+    );
 }
 
 #[test]
@@ -923,24 +949,34 @@ fn sand_that_falls_onto_short_grass_takes_its_place() {
     assert_eq!(block_at(&region, grass), Some(blocks::SAND));
 }
 
-/// Gravel falls down a shaft through the floor in the one tick, thirteen blocks to the
-/// bottom of the world.
+/// Gravel falls down a shaft through the floor, thirteen blocks to the bottom of the
+/// world, as an entity, and lands there.
 #[test]
-fn gravel_falls_down_a_tall_shaft_at_once() {
+fn gravel_falls_down_a_tall_shaft_to_its_bottom() {
     let gravel = at(5, -50, 5);
     let mut blocks = vec![(gravel, blocks::GRAVEL)];
     for y in -63..=-61 {
         blocks.push((at(5, y, 5), blocks::AIR));
     }
     blocks.push((at(5, -64, 5), blocks::STONE));
-    let (region, output) = ticking_with(&blocks, &[kept(gravel, blocks::GRAVEL, 0, 0)]);
+    let (mut region, output) = ticking_with(&blocks, &[kept(gravel, blocks::GRAVEL, 0, 0)]);
     assert_eq!(block_at(&region, gravel), Some(blocks::AIR));
-    assert_eq!(block_at(&region, at(5, -63, 5)), Some(blocks::GRAVEL));
     assert_eq!(
-        block_changes(&output),
+        blocks_shown(std::slice::from_ref(&output)),
+        [changed(5, -50, 5, blocks::AIR)]
+    );
+    let outputs = until_fallen(&mut region);
+    assert_eq!(block_at(&region, at(5, -63, 5)), Some(blocks::GRAVEL));
+    // It lands as the game's does: the block, then the transient block for those who
+    // saw it fall.
+    assert_eq!(
+        blocks_shown(&outputs),
         [
-            changed(5, -50, 5, blocks::AIR),
-            changed(5, -63, 5, blocks::GRAVEL)
+            changed(5, -63, 5, blocks::GRAVEL),
+            RegionEvent::TransientBlock {
+                position: at(5, -63, 5),
+                state: blocks::GRAVEL.0,
+            },
         ]
     );
 }

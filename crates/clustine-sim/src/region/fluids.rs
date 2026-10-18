@@ -5,8 +5,7 @@
 //! stone. What a fluid reads to know where it goes is `clustine_blocks::fluid`, shared
 //! with generation.
 //!
-//! Named: a block a fluid washes away drops nothing (Clustine has no items lying in
-//! the world yet); lava's random ticks, which set fire, wait for step B7; a bubble column
+//! Named: lava's random ticks, which set fire, wait for step B7; a bubble column
 //! does not form in water over soul sand or magma.
 
 use clustine_blocks::BlockView;
@@ -223,8 +222,13 @@ impl Region {
             self.place_liquid(pos, state, new, output);
             return;
         }
-        if !state.props().is_air() && kind == Kind::Lava {
-            self.fizz(pos, output);
+        // `beforeDestroyingBlock`: water washes the block away with its drops, lava
+        // burns it with a hiss.
+        if !state.props().is_air() {
+            match kind {
+                Kind::Lava => self.fizz(pos, output),
+                Kind::Water => self.drop_resources(state, pos, output),
+            }
         }
         self.set_block(pos, new.legacy_block(), output);
     }

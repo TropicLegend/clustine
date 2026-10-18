@@ -37,10 +37,10 @@ use crate::physics::{self, World};
 /// What the region keeps of an item between ticks beyond its record.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Memory {
-    supporting: Option<BlockPos>,
-    on_ground_no_blocks: bool,
-    last_movements: Vec<Movement>,
-    stuck_speed: [f64; 3],
+    pub(crate) supporting: Option<BlockPos>,
+    pub(crate) on_ground_no_blocks: bool,
+    pub(crate) last_movements: Vec<Movement>,
+    pub(crate) stuck_speed: [f64; 3],
 }
 
 /// The region as the physics of one entity read it: its loaded and copied chunks, and
@@ -108,7 +108,7 @@ fn item_parts(data: &EntityData) -> Option<(ItemStack, i16)> {
 
 impl Region {
     /// The record of the entity `key` in the loaded chunk `position`.
-    fn entity_record(&self, key: EntityId, position: ChunkPos) -> Option<&Entity> {
+    pub(super) fn entity_record(&self, key: EntityId, position: ChunkPos) -> Option<&Entity> {
         let entities = self.chunks.get(&position)?.entities();
         let at = entities
             .binary_search_by_key(&key, |entity| entity.key)
@@ -148,6 +148,7 @@ impl Region {
             sync_position: false,
             falling_block: false,
             item: true,
+            fell_on: None,
         };
         if memory.is_none() && body.on_ground {
             // As a move would have found it.
@@ -251,7 +252,7 @@ impl Region {
 
     /// Removes the entity `key` from the chunk `position`, as the commit has it, and
     /// tells the edges it is gone.
-    fn remove_entity(
+    pub(super) fn remove_entity(
         &mut self,
         key: EntityId,
         hops: u32,
@@ -611,7 +612,7 @@ fn record_is_mergable(record: &Entity) -> bool {
 }
 
 /// The report of `entity` to the edges.
-fn tracked(entity: &Entity, flags: u8, with_data: bool) -> Tracked {
+pub(super) fn tracked(entity: &Entity, flags: u8, with_data: bool) -> Tracked {
     Tracked {
         entity: entity.key,
         chunk: entity.chunk(),

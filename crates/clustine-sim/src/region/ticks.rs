@@ -12,8 +12,9 @@
 //! within it, which grows as the game's sub-tick order grows and which a restored region
 //! gives the same, so that the region's durable state needs no counter.
 //!
-//! What runs in this step: falling blocks fall, at once (the owner's answer to the plan's
-//! question 2); leaves take their distance; a path or farmland under something solid
+//! What runs in this step: falling blocks start to fall as entities (`falling.rs`),
+//! scaffolding takes its distance and breaks or falls, and dripstone falls or breaks;
+//! leaves take their distance; a path or farmland under something solid
 //! becomes dirt; a cactus or sugar cane that can no longer stay breaks. A block tick of
 //! any other block runs as nothing. Fluid ticks wait in their queue for B5, which
 //! gives the fluids their rules.
@@ -23,10 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use clustine_blocks::data::is_class;
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BLOCKS, BlockClass, BlockState, Face, blocks};
-use clustine_world::{BlockPos, Chunk, ChunkPos, Effect, Effected, InChunk, ScheduledTick, Ticked};
+use clustine_world::{BlockPos, ChunkPos, Effect, Effected, InChunk, ScheduledTick, Ticked};
 
-use super::Region;
 use super::updates::RegionView;
+use super::{Region, falling};
 use crate::api::TickOutput;
 
 /// How many ticks of one kind run in a tick at most (`LevelTicks`' limit).
@@ -500,9 +501,18 @@ impl Region {
         if self.fire_block_tick(pos, state, output) {
             return;
         }
-        // Kelp, a vine that grows or a speleothem that its support left goes
-        // (`GrowingPlantBlock.tick`; a stalactite falls in the game, and is destroyed
-        // here, as falling blocks land at once and dripstone's fall is not ported).
+        // `SpeleothemBlock.tick`: a stalagmite that its support left goes, with its
+        // drops; a stalactite falls, from the block ticked down to its tip.
+        if is_class(state, BlockClass::SpeleothemBlock) {
+            if falling::is_stalagmite(state) && !can_survive(state, pos, &mut RegionView(self)) {
+                self.destroy_block_by_tick(pos, output);
+            } else {
+                self.fall_stalactite(pos, state, output);
+            }
+            return;
+        }
+        // Kelp or a vine that grows goes where its support left it
+        // (`GrowingPlantBlock.tick`), with its drops.
         if let Some(stays) =
             clustine_blocks::growth::grows_and_can_stay(&mut RegionView(self), state, pos)
         {
@@ -512,7 +522,19 @@ impl Region {
             return;
         }
         if is_class(state, BlockClass::FallingBlock) {
-            self.fall(pos, state, output);
+            // `FallingBlock.tick`; what an anvil's `falling` sets, its hurting of
+            // entities, `falling.rs` takes from the block.
+            if self.may_fall(pos) {
+                self.fall(pos, state, false, output);
+            }
+        } else if is_class(state, BlockClass::BrushableBlock) {
+            // `BrushableBlock.tick`: it falls and never lands (`disableDrop`); its block
+            // entity's `checkReset` is the brushing's, which is not ported.
+            if self.may_fall(pos) {
+                self.fall(pos, state, true, output);
+            }
+        } else if is_class(state, BlockClass::ScaffoldingBlock) {
+            self.scaffolding_tick(pos, state, output);
         } else if is_class(state, BlockClass::LeavesBlock) {
             let distance = self.leaf_distance(pos);
             let updated = state
@@ -530,6 +552,33 @@ impl Region {
             && !can_survive(state, pos, &mut RegionView(self))
         {
             self.destroy_block_by_tick(pos, output);
+        }
+    }
+
+    /// `ScaffoldingBlock.tick`: scaffolding takes its distance from what holds it and
+    /// whether it is a bottom; at seven it breaks, with its drops, or falls where it
+    /// was at seven already.
+    fn scaffolding_tick(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+        let distance = clustine_blocks::survive::scaffolding_distance(pos, &mut RegionView(self));
+        let below = self.block(relative(pos, Face::Down)).unwrap_or(blocks::AIR);
+        let bottom = distance > 0 && !clustine_blocks::data::same_block(below, state);
+        let updated = clustine_blocks::data::set_flag(
+            state
+                .with_property("distance", &distance.to_string())
+                .unwrap_or(state),
+            "bottom",
+            bottom,
+        );
+        if distance == clustine_blocks::survive::SCAFFOLDING_MAX_DISTANCE {
+            if clustine_blocks::data::number(state, "distance")
+                == Some(clustine_blocks::survive::SCAFFOLDING_MAX_DISTANCE)
+            {
+                self.fall(pos, updated, false, output);
+            } else {
+                self.destroy_block_by_tick(pos, output);
+            }
+        } else if updated != state {
+            self.set_block(pos, updated, output);
         }
     }
 
@@ -553,129 +602,6 @@ impl Region {
             }
         }
         u8::try_from(distance).unwrap_or(7)
-    }
-
-    /// `FallingBlock.tick` and the fall of its entity, at once: where the block below
-    /// is free (air, fire, a liquid, what can be replaced), the block leaves its place
-    /// and comes to rest where the game's falling block would, on the first block below
-    /// with something to stand on; inside a block whose top is lower than a whole block,
-    /// on top of one that fills its height. It is placed there where the block there can
-    /// be replaced; otherwise it is lost, as the game's entity drops as an item, which
-    /// Clustine has none of.
-    fn fall(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
-        let Some(min_y) = self.chunks.get(&pos.chunk()).map(Chunk::min_y) else {
-            return;
-        };
-        let below = relative(pos, Face::Down);
-        let Some(under) = self.block(below) else {
-            return;
-        };
-        if !is_free(under) || pos.y < min_y {
-            return;
-        }
-        self.set_block(pos, fluid_block(state), output);
-        let mut y = below.y;
-        // Concrete powder stops in the first water it falls into, where it hardens
-        // (`FallingBlockEntity.tick`, `ConcretePowderBlock.onLand`).
-        if let Some(concrete) = clustine_blocks::fluid::concrete_of(state) {
-            loop {
-                let at = BlockPos::new(pos.x, y, pos.z);
-                let Some(here) = self.block(at) else {
-                    return;
-                };
-                if clustine_blocks::data::has_water(here) {
-                    if here.props().can_be_replaced()
-                        && can_survive(state, at, &mut RegionView(self))
-                    {
-                        self.set_block(at, state, output);
-                        self.set_block(at, concrete, output);
-                    }
-                    return;
-                }
-                let next = BlockPos::new(pos.x, y - 1, pos.z);
-                if y <= min_y
-                    || !self
-                        .block(next)
-                        .is_some_and(|b| b.props().collision_is_empty())
-                {
-                    break;
-                }
-                y -= 1;
-            }
-            y = below.y;
-        }
-        // Down through what has nothing to stand on.
-        while y > min_y {
-            let at = BlockPos::new(pos.x, y - 1, pos.z);
-            let Some(here) = self.block(at) else {
-                return;
-            };
-            if !here.props().collision_is_empty() {
-                break;
-            }
-            y -= 1;
-        }
-        let support = BlockPos::new(pos.x, y - 1, pos.z);
-        let rests_inside = self
-            .block(support)
-            .is_some_and(|block| !block.props().collision_is_empty() && block_top(block) < 1.0);
-        let landing = if rests_inside {
-            support
-        } else {
-            BlockPos::new(pos.x, y, pos.z)
-        };
-        let Some(there) = self.block(landing) else {
-            return;
-        };
-        let beneath_free = self
-            .block(relative(landing, Face::Down))
-            .is_some_and(is_free);
-        if there.props().can_be_replaced()
-            && can_survive(state, landing, &mut RegionView(self))
-            && !beneath_free
-        {
-            self.set_block(landing, state, output);
-            if let Some(concrete) = clustine_blocks::fluid::concrete_of(state)
-                && clustine_blocks::fluid::powder_hardens(&mut RegionView(self), landing, there)
-            {
-                self.set_block(landing, concrete, output);
-            }
-        }
-    }
-}
-
-/// `FallingBlock.isFree`.
-fn is_free(state: BlockState) -> bool {
-    let props = state.props();
-    props.is_air()
-        || clustine_blocks::data::in_tag(state, "minecraft:fire")
-        || props.is_liquid()
-        || props.can_be_replaced()
-}
-
-/// The top of a block's collision, as a part of a whole block.
-fn block_top(state: BlockState) -> f64 {
-    if state.props().collision_is_full_block() {
-        return 1.0;
-    }
-    state
-        .props()
-        .collision_shape()
-        .boxes()
-        .map(|shape_box| shape_box[4])
-        .fold(0.0, f64::max)
-}
-
-/// What a block leaves when it goes: water where it held a water source, air otherwise.
-fn fluid_block(state: BlockState) -> BlockState {
-    match state.props().fluid() {
-        Some(fluid)
-            if fluid.source
-                && clustine_data::FLUIDS[usize::from(fluid.fluid)] == "minecraft:water" =>
-        {
-            blocks::WATER
-        }
-        _ => blocks::AIR,
     }
 }
 

@@ -16,7 +16,6 @@
 //!   its chance as the game does and then does nothing;
 //! - the chorus flower's sounds as it grows and dies (level events 1033 and 1034) have
 //!   no event in Clustine yet;
-//! - leaves drop nothing as they decay: the region has no items in the world.
 //!
 //! Two things that follow a growth are the shape updates' and not this file's, and
 //! `clustine_blocks::update_shape` does not make them yet: the head of kelp or of
@@ -139,10 +138,11 @@ impl Region {
     }
 
     /// `LeavesBlock.randomTick`: leaves that no log holds and that no player placed
-    /// go, and leave their water. The game drops what they drop first.
+    /// drop what their table gives, go, and leave their water.
     fn leaves_random_tick(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
         let decaying = !flag(state, "persistent") && number(state, "distance") == Some(7);
         if decaying {
+            self.drop_resources(state, pos, output);
             // `removeBlock`: every update.
             self.set_block(pos, fluid_block(state), output);
         }
@@ -738,6 +738,89 @@ mod tests {
         assert!(random_tick(&mut region, wet, 2));
         assert_eq!(read(&region, dry), blocks::AIR);
         assert_eq!(read(&region, wet), blocks::WATER);
+    }
+
+    /// Leaves that decay drop by oak's table broken without a tool (brief, section
+    /// 8.3): the sapling at 1 in 20 (`table_bonus` of 0.05 without fortune), sticks
+    /// at 1 in 50, one or two of them (`uniform` 1 to 2), the apple at 1 in 200; the
+    /// shears' and silk touch's branch never. Of 1,536 leaves, each with a stream of
+    /// its own block, about 77 saplings, 31 drops of sticks and 8 apples, within wide
+    /// margins; each item a quarter of a block or less from its leaf's centre, its
+    /// feet an eighth of a block lower (`popResource`), waiting ten ticks to be
+    /// picked up.
+    #[test]
+    fn decaying_leaves_drop_by_their_table() {
+        let leaf = state("minecraft:oak_leaves[distance=7,persistent=false,waterlogged=false]");
+        let mut placed = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in -60..-54 {
+                    placed.push((at(x, y, z), leaf));
+                }
+            }
+        }
+        let mut region = region_with(&placed);
+        let mut output = TickOutput::default();
+        for (pos, _) in &placed {
+            region.leaves_random_tick(*pos, leaf, &mut output);
+            assert_eq!(read(&region, *pos), blocks::AIR);
+        }
+        let mut counts = std::collections::BTreeMap::new();
+        for event in &output.events {
+            let crate::api::RegionEvent::EntitySpawned(spawned) = event else {
+                continue;
+            };
+            let crate::api::EntityKind::Other {
+                data:
+                    clustine_world::EntityData::Item {
+                        stack,
+                        pick_up_delay,
+                        ..
+                    },
+                motion,
+                ..
+            } = &spawned.kind
+            else {
+                panic!("{spawned:?}");
+            };
+            assert_eq!(*pick_up_delay, 10_u16);
+            let item = clustine_data::ITEMS[usize::try_from(stack.item).unwrap()].name;
+            let entry = counts.entry(item).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += stack.count;
+            if item == "minecraft:stick" {
+                assert!((1..=2).contains(&stack.count), "{stack:?}");
+            } else {
+                assert_eq!(stack.count, 1, "{item}");
+            }
+            let where_ = spawned.pose.position;
+            let block = at(where_.x.floor() as i32, 0, where_.z.floor() as i32);
+            let centre = [f64::from(block.x) + 0.5, f64::from(block.z) + 0.5];
+            assert!((where_.x - centre[0]).abs() <= 0.25, "{where_:?}");
+            assert!((where_.z - centre[1]).abs() <= 0.25, "{where_:?}");
+            // Feet within a quarter of the centre's height, less an eighth.
+            let up = where_.y + 0.125 - (where_.y + 0.125).floor() - 0.5;
+            assert!(up.abs() <= 0.25, "{where_:?}");
+            assert_eq!(motion[1], 0.2);
+            assert!(
+                motion[0].abs() <= 0.1 && motion[2].abs() <= 0.1,
+                "{motion:?}"
+            );
+        }
+        let (saplings, _) = counts
+            .get("minecraft:oak_sapling")
+            .copied()
+            .unwrap_or((0, 0));
+        let (sticks, stick_count) = counts.get("minecraft:stick").copied().unwrap_or((0, 0));
+        let (apples, _) = counts.get("minecraft:apple").copied().unwrap_or((0, 0));
+        assert!((40..=120).contains(&saplings), "{counts:?}");
+        assert!((12..=55).contains(&sticks), "{counts:?}");
+        assert!(
+            stick_count > sticks && stick_count < 2 * sticks,
+            "{counts:?}"
+        );
+        assert!(apples <= 25, "{counts:?}");
+        assert_eq!(counts.len(), 2 + usize::from(apples > 0), "{counts:?}");
     }
 
     #[test]

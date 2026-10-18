@@ -329,8 +329,8 @@ fn keep_berries(from: BlockState, to: BlockState) -> BlockState {
 
 /// `SpeleothemBlock.updateShape`, after its water: up and down it takes its thickness
 /// from those beside it, or looks two ticks on (one for a stalagmite) whether it is
-/// held. The game leaves a falling stalactite's tick alone (`hasScheduledTick`), which
-/// a view cannot ask; Clustine's dripstone does not fall.
+/// held. A stalactite whose tick is due keeps its shape until it falls
+/// (`hasScheduledTick`).
 fn speleothem_shape<V: BlockView + ?Sized>(
     view: &mut V,
     state: BlockState,
@@ -343,6 +343,9 @@ fn speleothem_shape<V: BlockView + ?Sized>(
     let Some(tip) = tip_direction(state) else {
         return state;
     };
+    if tip == Face::Down && view.has_scheduled_block_tick(pos, tick_id(state)) {
+        return state;
+    }
     if direction == opposite(tip) && !speleothem_can_survive(view, state, pos) {
         let delay = if tip == Face::Down { 2 } else { 1 };
         view.schedule_block_tick(pos, tick_id(state), delay);

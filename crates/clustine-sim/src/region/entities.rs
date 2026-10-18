@@ -15,7 +15,7 @@
 use clustine_data::{ITEMS, entity_types};
 use clustine_noise::trig;
 use clustine_world::{
-    ChunkPos, Entity, EntityChange, EntityData, EntityField, EntityId, MAX_CHUNK_ENTITIES, PlayerId,
+    ChunkPos, Entity, EntityChange, EntityData, EntityId, MAX_CHUNK_ENTITIES, PlayerId,
 };
 use uuid::Uuid;
 
@@ -64,7 +64,7 @@ pub(crate) fn throw_motion(yaw: f32, pitch: f32, draws: [f32; THROW_DRAWS]) -> [
 
 /// A UUID of version 4 from two draws, as the game's `Mth.createInsecureUUID` makes one
 /// of two longs.
-fn insecure_uuid(most: u64, least: u64) -> Uuid {
+pub(crate) fn insecure_uuid(most: u64, least: u64) -> Uuid {
     Uuid::from_u64_pair(
         most & !0xF000 | 0x4000,
         least & 0x3FFF_FFFF_FFFF_FFFF | 0x8000_0000_0000_0000,
@@ -72,7 +72,7 @@ fn insecure_uuid(most: u64, least: u64) -> Uuid {
 }
 
 /// The state an edge is shown of `entity`.
-fn state_of(entity: &Entity) -> EntityState {
+pub(crate) fn state_of(entity: &Entity) -> EntityState {
     EntityState {
         entity: entity.key,
         kind: EntityKind::Other {
@@ -201,7 +201,7 @@ impl Region {
     /// it): every entity whose chunk ticks, in ascending key, those added before the
     /// phase among them; one added in the phase waits for the next tick, as the game's
     /// list of entities being ticked takes no new ones. An item ticks as the game's
-    /// (`items.rs`); a falling block only ages until step N4c.
+    /// (`items.rs`), and so does a falling block (`falling.rs`).
     pub(crate) fn run_entities(&mut self, output: &mut TickOutput) {
         let ticking: Vec<EntityId> = self
             .entity_chunks
@@ -224,11 +224,8 @@ impl Region {
             let entity = entities[at].clone();
             match &entity.data {
                 EntityData::Item { .. } => self.tick_item(entity, position, output),
-                // Falling blocks fall from step N4c on.
                 EntityData::FallingBlock { .. } => {
-                    let fields = vec![EntityField::Age(entity.age.saturating_add(1))];
-                    chunk.apply_entity(&EntityChange::Set(key, fields));
-                    output.entities_ageing.push(position);
+                    self.tick_falling_block(entity, position, output);
                 }
             }
         }
@@ -246,6 +243,40 @@ impl Region {
         }
         *drawn += N as u64;
         std::array::from_fn(|_| random.next_float())
+    }
+
+    /// The region's next key for an entity that is to go into the loaded chunk
+    /// `chunk`, taken; `None`, and nothing taken, where the chunk is not loaded or is
+    /// full ([`MAX_CHUNK_ENTITIES`]), or the region has no key left (ADR-0028,
+    /// section 1).
+    pub(crate) fn take_entity_key(&mut self, chunk: ChunkPos) -> Option<EntityId> {
+        let room = self
+            .chunks
+            .get(&chunk)
+            .is_some_and(|loaded| loaded.entities().len() < MAX_CHUNK_ENTITIES);
+        let key = self.next_entity_id;
+        if !room || !self.entity_ids.contains(key) {
+            return None;
+        }
+        self.next_entity_id = EntityId(key.0 + 1);
+        self.journal.next_entity_id = true;
+        Some(key)
+    }
+
+    /// `Level.addFreshEntity`: `entity` goes into its loaded chunk, whole, and the
+    /// edges are told it is there. An entity added before the entities' phase ticks in
+    /// that phase; one added in it waits for the next tick ([`Region::run_entities`]).
+    pub(crate) fn add_fresh_entity(&mut self, entity: Entity, output: &mut TickOutput) {
+        let chunk = entity.chunk();
+        output
+            .events
+            .push(RegionEvent::EntitySpawned(state_of(&entity)));
+        self.entity_chunks.insert(entity.key, chunk);
+        let change = EntityChange::Whole(entity);
+        if let Some(loaded) = self.chunks.get_mut(&chunk) {
+            loaded.apply_entity(&change);
+        }
+        output.entity_changes.push((chunk, change));
     }
 
     /// A player throws `stack`, as the game's `LivingEntity.drop` and
@@ -286,16 +317,12 @@ impl Region {
             pose.position.z,
         ];
         let chunk = ChunkPos::containing(position[0], position[2]);
-        let room = self
-            .chunks
-            .get(&chunk)
-            .is_some_and(|loaded| loaded.entities().len() < MAX_CHUNK_ENTITIES);
-        let key = self.next_entity_id;
-        if !room || !self.ticks_chunk(chunk) || !self.entity_ids.contains(key) {
+        if !self.ticks_chunk(chunk) {
             return false;
         }
-        self.next_entity_id = EntityId(key.0 + 1);
-        self.journal.next_entity_id = true;
+        let Some(key) = self.take_entity_key(chunk) else {
+            return false;
+        };
 
         let motion = throw_motion(pose.yaw, pose.pitch, self.draw_floats(thrower_key));
         // The item's own draws at its birth: its UUID (the game's two longs), the bob
@@ -331,15 +358,7 @@ impl Region {
             entity: thrower_key,
             chunk: thrower_chunk,
         });
-        output
-            .events
-            .push(RegionEvent::EntitySpawned(state_of(&entity)));
-        let change = EntityChange::Whole(entity);
-        if let Some(loaded) = self.chunks.get_mut(&chunk) {
-            loaded.apply_entity(&change);
-        }
-        self.entity_chunks.insert(key, chunk);
-        output.entity_changes.push((chunk, change));
+        self.add_fresh_entity(entity, output);
         true
     }
 }
