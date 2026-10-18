@@ -102,6 +102,12 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
     assert_eq!(rider.teleports.len(), teleports_before + 1);
     assert_eq!(teleport.teleport_id, 2, "the login's was the first");
     assert_eq!((teleport.x, teleport.y, teleport.z), (0.5, -60.35, 0.5));
+    // As `ServerPlayer.startRiding`: the look relative by nothing, so that the client
+    // keeps its own, which it confirms with.
+    assert_eq!(
+        (teleport.yaw, teleport.pitch, teleport.relative_flags),
+        (0.0, 0.0, relative::ROTATION)
+    );
 
     // A rider's move is no position for others: they place a rider themselves.
     let moved_before = watcher.named.len();
@@ -146,7 +152,13 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
             .map(|told| told.passengers.clone()),
         Some(Vec::new())
     );
-    assert_eq!(rider.teleports.last().map(|told| told.teleport_id), Some(3));
+    assert_eq!(
+        rider
+            .teleports
+            .last()
+            .map(|told| (told.teleport_id, told.relative_flags)),
+        Some((3, relative::ROTATION))
+    );
 }
 
 #[tokio::test]

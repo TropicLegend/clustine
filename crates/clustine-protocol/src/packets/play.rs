@@ -231,8 +231,27 @@ pub struct SynchronizePlayerPosition {
     pub velocity_z: f64,
     pub yaw: f32,
     pub pitch: f32,
-    /// Marks components as relative to the current value; 0 means all are absolute.
+    /// Marks components as relative to the current value ([`relative`]); 0 means all
+    /// are absolute.
     pub relative_flags: i32,
+}
+
+/// The bits of a teleport's `relative_flags`, the game's `Relative` in the order of its
+/// ordinals: each marks a value of the packet as added to the client's own.
+pub mod relative {
+    pub const X: i32 = 1 << 0;
+    pub const Y: i32 = 1 << 1;
+    pub const Z: i32 = 1 << 2;
+    /// The yaw.
+    pub const Y_ROT: i32 = 1 << 3;
+    /// The pitch.
+    pub const X_ROT: i32 = 1 << 4;
+    pub const DELTA_X: i32 = 1 << 5;
+    pub const DELTA_Y: i32 = 1 << 6;
+    pub const DELTA_Z: i32 = 1 << 7;
+    pub const ROTATE_DELTA: i32 = 1 << 8;
+    /// `Relative.ROTATION`: the look left as it is.
+    pub const ROTATION: i32 = Y_ROT | X_ROT;
 }
 
 impl Packet for SynchronizePlayerPosition {
@@ -271,7 +290,10 @@ impl Decode for SynchronizePlayerPosition {
     }
 }
 
-/// Confirms a [`SynchronizePlayerPosition`] and reports where the client now is.
+/// Confirms a [`SynchronizePlayerPosition`] and reports where the client now is and
+/// how it looks: the teleport's values with its relative ones added to what the client
+/// had. The game takes them as a move of the player (`handleAcceptTeleportPacket` calls
+/// `handlePlayerPositionChange` with them), of a rider the look alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmTeleportation {
     pub teleport_id: i32,

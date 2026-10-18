@@ -30,7 +30,7 @@ use clustine_protocol::packets::play::{
     SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity,
     SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle,
     animation, entity_data, game_event, game_mode, inventory as protocol_inventory, level_event,
-    player_info,
+    player_info, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -3647,8 +3647,9 @@ impl Fanout {
     }
 
     /// The player got on or off a vehicle, which the game does as a teleport: their
-    /// client is told where they are now (`player_position`), and its moves are passed
-    /// over until it confirms it.
+    /// client is told where they are now (`player_position`), with its look left as it
+    /// is (`Relative.ROTATION`, by nothing), and its moves are passed over until it
+    /// confirms it. The look it confirms with is then the player's (`play.rs`).
     async fn rides(&mut self, player: PlayerId, pose: Pose) {
         let Some(view) = self.players.get_mut(&player) else {
             return;
@@ -3664,9 +3665,9 @@ impl Fanout {
             velocity_x: 0.0,
             velocity_y: 0.0,
             velocity_z: 0.0,
-            yaw: pose.yaw,
-            pitch: pose.pitch,
-            relative_flags: 0,
+            yaw: 0.0,
+            pitch: 0.0,
+            relative_flags: relative::ROTATION,
         });
         self.send_to_player(player, [packet]).await;
     }

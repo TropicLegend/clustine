@@ -1579,6 +1579,108 @@ mod tests {
         assert_eq!(whole, Some(400));
     }
 
+    /// A cart pushed in a tick (`needsSync`) is sent that tick, its motion and its move,
+    /// and once the pushes stop every third tick again: the official server's packets of
+    /// the slope in `minecarts_oracle.rs` (2026-10-18), whose cart a player's box met
+    /// from its second tick to its sixth, from the cart's places and motions there (the
+    /// sim's `a_cart_pushed_off_a_hovering_players_place_as_it_rolls_down_a_slope_is_
+    /// what_the_official_server_sent`). Not pushed, the same cart is sent at ticks 3 and
+    /// 6 alone.
+    #[test]
+    fn a_cart_pushed_each_tick_is_sent_each_tick_and_every_third_tick_after() {
+        let start = [20.5, -59.4375, 4.5];
+        let seen = Seen {
+            kind: entity_types::MINECART as u16,
+            position: start,
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let data = minecart(hurt(0, 1, 0.0), 0);
+        let rolled: [([f64; 3], [f64; 3], bool); 8] = [
+            (
+                [20.4921875, -59.4453125, 4.5],
+                [-0.007890625, 0.0, 0.0],
+                false,
+            ),
+            (
+                [20.476484375, -59.461015625, 4.5],
+                [-0.06586015699505815, 0.0, 0.0],
+                true,
+            ),
+            (
+                [20.40281171800494, -59.53468828199506, 4.5],
+                [-0.12440938431006676, 0.0, 0.0],
+                true,
+            ),
+            (
+                [20.270589833694874, -59.66691016630513, 4.5],
+                [-0.18354410389822565, 0.0, 0.0],
+                true,
+            ),
+            (
+                [20.07923322979665, -59.85826677020335, 4.5],
+                [-0.24327017068226575, 0.0, 0.0],
+                true,
+            ),
+            (
+                [19.828150559114384, -59.9375, 4.5],
+                [-0.29500102608986567, 0.0, 0.0],
+                true,
+            ),
+            (
+                [19.70547805355206, -59.9375, 4.794521946447942],
+                [-0.20025333696492828, 0.0, 0.20025333696492828],
+                false,
+            ),
+            (
+                [19.505224716587133, -59.9375, 4.994775283412869],
+                [-0.19224320348633112, 0.0, 0.19224320348633112],
+                false,
+            ),
+        ];
+        let run = |pushes: bool| {
+            let mut tracker = Tracker::new(seen, &data, 0);
+            // The spawn's tick: a move of nothing, as both servers sent.
+            assert_eq!(tracker.send_changes(ID, &data), [pos([0; 3], false)]);
+            let mut sent = Vec::new();
+            for (number, (position, motion, pushed)) in (1..).zip(rolled) {
+                let flags = if pushed && pushes {
+                    Tracked::NEEDS_SYNC
+                } else {
+                    0
+                };
+                let mut report = tick(position, motion, false, flags);
+                report.yaw = 0.0;
+                tracker.report(&report, &data);
+                let out = tracker.send_changes(ID, &data);
+                if !out.is_empty() {
+                    sent.push((number, out));
+                }
+            }
+            sent
+        };
+        let m = |tick: usize| motion(rolled[tick - 1].1);
+        assert_eq!(
+            run(true),
+            [
+                (2, vec![m(2), pos([-96, -96, 0], false)]),
+                (3, vec![m(3), pos([-302, -302, 0], false)]),
+                (4, vec![m(4), pos([-542, -542, 0], false)]),
+                (5, vec![m(5), pos([-783, -783, 0], false)]),
+                (6, vec![m(6), pos([-1029, -325, 0], false)]),
+            ]
+        );
+        assert_eq!(
+            run(false),
+            [
+                (3, vec![m(3), pos([-398, -398, 0], false)]),
+                (6, vec![m(6), pos([-2354, -1650, 0], false)]),
+            ]
+        );
+    }
+
     /// `syncPosition` (a bounce) moves the count of ticks on to the next multiple of 20
     /// (`nextInterval`), so that this tick is an update and the next is 20 on.
     #[test]

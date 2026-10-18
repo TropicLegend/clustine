@@ -15,9 +15,9 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, Disconnect, LevelChunkWithLight, LightUpdate, PlayerAction,
-    ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags, player_action,
-    player_command, player_input,
+    ClientboundKeepAlive, ConfirmTeleportation, Disconnect, LevelChunkWithLight, LightUpdate,
+    PlayerAction, ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags,
+    player_action, player_command, player_input,
 };
 use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, Keys, PlayerInput, VehicleMove};
 use clustine_world::{BlockPos, PlayerId, Vec3};
@@ -99,6 +99,9 @@ async fn pump(
     // The keys the region was last told the player holds: `player_input` says them on
     // every change, and sprinting comes by `player_command` as well.
     let mut keys = Keys::default();
+    // The flags of the client's last move (on the ground, against a wall), which a
+    // confirmed teleport's look is passed on with; none before its first move.
+    let mut flags = None;
     // The client only understands keep-alives once it has been put into the world.
     let mut in_world = false;
     let mut drops = DropThrottler::new(Instant::now());
@@ -140,27 +143,40 @@ async fn pump(
                     }
                     ServerboundPlay::ConfirmTeleportation(confirmation) => {
                         // Only the teleport sent last counts; an older id changes nothing.
-                        let _ = client.awaiting_teleport.compare_exchange(
-                            confirmation.teleport_id,
-                            NO_TELEPORT,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        );
+                        let confirmed = client
+                            .awaiting_teleport
+                            .compare_exchange(
+                                confirmation.teleport_id,
+                                NO_TELEPORT,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok();
+                        if confirmed {
+                            let rotation = confirmed_look(&confirmation)?;
+                            if let Some(flags) = flags {
+                                moved(shared, client, None, Some(rotation), flags).await?;
+                            }
+                        }
                     }
                     ServerboundPlay::SetPlayerPosition(packet) => {
+                        flags = Some(packet.flags);
                         let position = Vec3::new(packet.x, packet.y, packet.z);
                         moved(shared, client, Some(position), None, packet.flags).await?;
                     }
                     ServerboundPlay::SetPlayerPositionAndRotation(packet) => {
+                        flags = Some(packet.flags);
                         let position = Vec3::new(packet.x, packet.y, packet.z);
                         let rotation = (packet.yaw, packet.pitch);
                         moved(shared, client, Some(position), Some(rotation), packet.flags).await?;
                     }
                     ServerboundPlay::SetPlayerRotation(packet) => {
+                        flags = Some(packet.flags);
                         let rotation = (packet.yaw, packet.pitch);
                         moved(shared, client, None, Some(rotation), packet.flags).await?;
                     }
                     ServerboundPlay::SetPlayerMovementFlags(packet) => {
+                        flags = Some(packet.flags);
                         moved(shared, client, None, None, packet.flags).await?;
                     }
                     ServerboundPlay::PlayerAction(action) => {
@@ -362,6 +378,28 @@ async fn moved(
         on_ground: flags & movement_flags::ON_GROUND != 0,
     };
     send_input(shared, client, input).await
+}
+
+/// The look a client confirms a teleport with, which the game takes as the player's
+/// (`handleAcceptTeleportPacket` passes the packet's place and look to
+/// `handlePlayerPositionChange`, which for a rider takes the look alone): a client that
+/// says it looks one way after being seated drives its vehicle that way. Its place is
+/// where the teleport put it, which the region has already. Values that are not numbers
+/// cut the client off, as the game's `containsInvalidValues` does. (The game passes the
+/// move on as off the ground; here it goes with the flags of the client's last move,
+/// which its next move gives anyway, and not at all before the client's first move,
+/// whose look the region's teleport placing it gave it: the region is told nothing of
+/// the ground the client did not say.)
+fn confirmed_look(confirmation: &ConfirmTeleportation) -> Result<(f32, f32), ConnectionError> {
+    let numbers = [confirmation.x, confirmation.y, confirmation.z]
+        .into_iter()
+        .chain([confirmation.yaw, confirmation.pitch].map(f64::from));
+    if !numbers.into_iter().all(f64::is_finite) {
+        return Err(ConnectionError::Protocol(
+            "a teleport confirmed at no number",
+        ));
+    }
+    Ok((confirmation.yaw, confirmation.pitch))
 }
 
 /// Handles something the player did with their hands. `sneaking` is whether the sneak
@@ -653,6 +691,42 @@ mod tests {
     use clustine_data::items;
 
     use super::*;
+
+    fn confirmation(yaw: f32, pitch: f32, y: f64) -> ConfirmTeleportation {
+        ConfirmTeleportation {
+            teleport_id: 2,
+            x: 21.5,
+            y,
+            z: 4.5,
+            yaw,
+            pitch,
+        }
+    }
+
+    /// The look a client confirms a teleport with is the player's, as the official
+    /// server has it: a rider whose client says yaw 0 after being seated drives south
+    /// (`minecarts_oracle.rs`, 2026-10-18), and one that says 270 east.
+    #[test]
+    fn a_confirmed_teleports_look_is_the_players_and_one_at_no_number_cuts_the_client_off() {
+        assert_eq!(
+            confirmed_look(&confirmation(0.0, 0.0, -60.35)).unwrap(),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            confirmed_look(&confirmation(270.0, 12.5, -60.35)).unwrap(),
+            (270.0, 12.5)
+        );
+        for bad in [
+            confirmation(f32::NAN, 0.0, -60.35),
+            confirmation(0.0, f32::INFINITY, -60.35),
+            confirmation(0.0, 0.0, f64::NAN),
+        ] {
+            assert!(matches!(
+                confirmed_look(&bad),
+                Err(ConnectionError::Protocol(_))
+            ));
+        }
+    }
 
     /// The slot a creative client's setting of `container` asks the region to set,
     /// with a stone in it.

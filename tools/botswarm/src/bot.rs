@@ -28,7 +28,7 @@ use clustine_protocol::packets::play::{
     ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
     SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
     SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
-    movement_flags, player_action, player_input,
+    movement_flags, player_action, player_input, relative,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -83,9 +83,6 @@ const LIGHT_UPDATES: usize = 4096;
 
 /// How many light updates a bot's report spells out.
 const LIGHT_UPDATES_REPORTED: usize = 32;
-
-/// The bits of a position packet that make its yaw or its pitch relative.
-const RELATIVE_LOOK: i32 = 0x08 | 0x10;
 
 /// How an attempt to join ended, for a scenario in which being refused is an answer
 /// and not a failure.
@@ -581,20 +578,61 @@ impl Bot {
     }
 
     /// Confirms that the bot has been moved by `teleport`, as a client does on its own
-    /// unless [`Behaviour::confirm_teleports`] is off.
+    /// unless [`Behaviour::confirm_teleports`] is off: with where the teleport puts it
+    /// and how it looks then ([`Bot::teleported`]), which the official server takes as
+    /// its move. Echoing a relative look's values would turn a rider who looks east to
+    /// yaw 0 there, as mounting is a teleport with the look relative by nothing.
     pub async fn confirm_teleport(&mut self, teleport: &SynchronizePlayerPosition) -> Result<()> {
+        let ((x, y, z), (yaw, pitch)) = self.teleported(teleport);
         self.connection
             .write(&ConfirmTeleportation {
                 teleport_id: teleport.teleport_id,
-                x: teleport.x,
-                y: teleport.y,
-                z: teleport.z,
-                yaw: teleport.yaw,
-                pitch: teleport.pitch,
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
             })
             .await?;
         self.stats.teleports_confirmed += 1;
         Ok(())
+    }
+
+    /// Where `teleport` puts the bot and how it looks then: each of its values, with
+    /// those it marks relative added to the bot's own (the game's
+    /// `PositionMoveRotation.calculateAbsolute`, as a client applies it).
+    pub fn teleported(
+        &self,
+        teleport: &SynchronizePlayerPosition,
+    ) -> ((f64, f64, f64), (f32, f32)) {
+        let flags = teleport.relative_flags;
+        let place = |flag: i32, own: f64, given: f64| {
+            if flags & flag != 0 {
+                own + given
+            } else {
+                given
+            }
+        };
+        let turn = |flag: i32, own: f32, given: f32| {
+            if flags & flag != 0 {
+                own + given
+            } else {
+                given
+            }
+        };
+        let (x, y, z) = self.location;
+        let (yaw, pitch) = self.look;
+        (
+            (
+                place(relative::X, x, teleport.x),
+                place(relative::Y, y, teleport.y),
+                place(relative::Z, z, teleport.z),
+            ),
+            (
+                turn(relative::Y_ROT, yaw, teleport.yaw),
+                turn(relative::X_ROT, pitch, teleport.pitch),
+            ),
+        )
     }
 
     /// Gives up the bot's behaviour and returns the raw connection, for tests that need
@@ -1404,10 +1442,7 @@ impl Bot {
                 if self.behaviour.confirm_teleports {
                     self.confirm_teleport(&packet).await?;
                 }
-                self.location = (packet.x, packet.y, packet.z);
-                if packet.relative_flags & RELATIVE_LOOK == 0 {
-                    self.look = (packet.yaw, packet.pitch);
-                }
+                (self.location, self.look) = self.teleported(&packet);
                 let (location, look) = (self.location, self.look);
                 self.was_told(|state| (state.location, state.look) = (location, look));
                 self.position = Some(packet);

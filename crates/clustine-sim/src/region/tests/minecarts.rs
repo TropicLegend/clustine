@@ -19,6 +19,7 @@ use clustine_world::{
 
 use super::redstone::{block_at, click, holding, state, ticking_with};
 use super::*;
+use crate::api::Tracked;
 
 fn key(n: u64) -> EntityId {
     EntityId((1 << 40) + n)
@@ -989,4 +990,264 @@ fn a_player_who_uses_a_cart_rides_it_and_walking_forwards_starts_it_on_its_way()
     let moving = record(&region, ridden.key).unwrap();
     assert!(moving.motion[0] > 0.0, "{:?}", moving.motion);
     assert!(moving.position[0] > on.position[0]);
+}
+
+/// A motion as a client is sent it: the game's `LpVec3`, three 15-bit fractions of a
+/// shared whole scale (the largest component rounded up), read back as the codec reads
+/// them (`clustine_protocol::codec`). What the official server's comparisons record is
+/// this, not the doubles.
+fn on_the_wire(motion: [f64; 3]) -> [f64; 3] {
+    let largest = motion.iter().fold(0.0_f64, |most, c| most.max(c.abs()));
+    if largest < 3.051_944_088_384_301e-5 {
+        return [0.0; 3];
+    }
+    let scale = largest.ceil();
+    motion.map(|component| {
+        let packed = ((component / scale * 0.5 + 0.5) * 32766.0).round();
+        (packed * 2.0 / 32766.0 - 1.0) * scale
+    })
+}
+
+/// How far the cart is from `start`, in the 4096ths of a block a move is sent in.
+fn moved_in_4096ths(position: [f64; 3], start: [f64; 3]) -> [i64; 3] {
+    let steps = |value: f64| (value * 4096.0).round() as i64;
+    [0, 1, 2].map(|axis| steps(position[axis]) - steps(start[axis]))
+}
+
+/// The official server's run of the slope in `minecarts_oracle.rs` (2026-10-18): its
+/// cart gained some 0.06 a tick where the slope gives 0.008, and was sent every tick
+/// from the second to the sixth, where Clustine's was sent every third. The slope's own
+/// rules were not what differed. The builder hovered three blocks above the cart's
+/// place, at (20.5, 4.5), without flying; the official server moves a player in the
+/// player's own tick (`Player.getMoveSimulationType` is `AUTHORITATIVE_SIDE_AND_SERVER`,
+/// so `LivingEntity.aiStep` travels it, gravity and all) before
+/// `LivingEntity.pushEntities`, and puts it back where its client said
+/// (`tickPlayer`'s `absSnapTo`) after; so the builder's box met the cart's there, and
+/// only there: the cart's own `pushAndPickupEntities` found nobody. Each such tick gave
+/// the cart one `AbstractMinecart.push(player)` from (20.5, 4.5), from the second tick,
+/// when the cart is first a hundredth of a block away, a full 0.05 west (closer than a
+/// block it is not scaled down), and `needsSync`, which made the tick an update.
+///
+/// The same slope, curve and run, with that push alone given to the cart after each of
+/// its ticks while the player's box (at the cart's starting place) meets it, gives what
+/// the official server sent, to the bit.
+#[test]
+fn a_cart_pushed_off_a_hovering_players_place_as_it_rolls_down_a_slope_is_what_the_official_server_sent()
+ {
+    let mut blocks = vec![
+        (BlockPos::new(8, -60, 8), rail("ascending_east")),
+        (BlockPos::new(9, -60, 8), blocks::STONE),
+        (BlockPos::new(9, -59, 8), rail("east_west")),
+        (BlockPos::new(7, -60, 8), rail("south_east")),
+    ];
+    blocks.extend((9..=16).map(|z| (BlockPos::new(7, -60, z), rail("north_south"))));
+    let mut region = ticking_with(&blocks);
+    let start = on_slope(8, 8);
+    let rolling = cart(1, start, [0.0; 3]);
+    lay(&mut region, &rolling);
+    let builder = [8.5, -60.0, 8.5];
+    let mut seen = Vec::new();
+    for tick in 1..=15 {
+        idle(&mut region);
+        // The builder's push in their own tick, while a player's box (0.6 wide) about
+        // their place meets the cart's (0.98).
+        let at = record(&region, rolling.key).unwrap().position;
+        let meets = (at[0] - builder[0]).abs() < 0.79 && (at[2] - builder[2]).abs() < 0.79;
+        let mut output = TickOutput::default();
+        if meets {
+            region.push_minecart(rolling.key, builder, None, &mut output);
+        }
+        let synced = output.events.iter().any(|event| {
+            matches!(event, RegionEvent::EntityTracked(report)
+                if report.entity == rolling.key && report.flags & Tracked::NEEDS_SYNC != 0)
+        });
+        let now = record(&region, rolling.key).unwrap();
+        seen.push((
+            tick,
+            on_the_wire(now.motion),
+            moved_in_4096ths(now.position, start),
+            synced,
+        ));
+    }
+    // The official server's packets: each motion as sent, and each move added up from
+    // the spawn.
+    let official: [(i64, [f64; 3], [i64; 3]); 8] = [
+        (2, [-0.06586095342733322, 0.0, 0.0], [-96, -96, 0]),
+        (3, [-0.12439724104254413, 0.0, 0.0], [-398, -398, 0]),
+        (4, [-0.18354391747543186, 0.0, 0.0], [-940, -940, 0]),
+        (5, [-0.24323994384422876, 0.0, 0.0], [-1723, -1723, 0]),
+        (6, [-0.2950009155832265, 0.0, 0.0], [-2752, -2048, 0]),
+        (9, [0.0, 0.0, 0.26100225843862535], [-4862, -2048, 2814]),
+        (12, [0.0, 0.0, 0.2309100897271561], [-4096, -2048, 5895]),
+        (15, [0.0, 0.0, 0.20429713727644505], [-4096, -2048, 8620]),
+    ];
+    for (tick, motion, moved) in official {
+        let (_, ours, our_move, _) = seen[usize::try_from(tick - 1).unwrap()];
+        assert_eq!(bits(ours), bits(motion), "tick {tick}: {seen:?}");
+        assert_eq!(our_move, moved, "tick {tick}: {seen:?}");
+    }
+    // Pushed, and so sent at once, on the ticks the official server sent every tick.
+    let pushed: Vec<i64> = seen
+        .iter()
+        .filter(|(_, _, _, synced)| *synced)
+        .map(|(tick, _, _, _)| *tick)
+        .collect();
+    assert_eq!(pushed, [2, 3, 4, 5, 6]);
+}
+
+/// A player who really stands where the cart rolls pushes it more than that: once the
+/// cart runs at a tenth of a block a tick, its own `pushAndPickupEntities` finds them in
+/// its box (grown by 0.2 across) and pushes them away, `Entity.push(cart)`, which pushes
+/// the cart too, by the push of `Entity.push` (a twentieth of the way, over the root of
+/// the larger distance), on top of the player's own push of it.
+#[test]
+fn a_player_standing_where_a_cart_rolls_down_a_slope_pushes_it_from_both_ticks() {
+    let mut blocks = vec![
+        (BlockPos::new(0, -60, 0), rail("ascending_east")),
+        (BlockPos::new(1, -60, 0), blocks::STONE),
+        (BlockPos::new(-1, -60, 0), rail("south_east")),
+    ];
+    blocks.extend((1..=8).map(|z| (BlockPos::new(-1, -60, z), rail("north_south"))));
+    let mut region = ticking_with(&blocks);
+    // Player 1 stands at the spawn, (0.5, -60, 0.5): in the cart's box.
+    let rolling = cart(1, on_slope(0, 0), [0.0; 3]);
+    lay(&mut region, &rolling);
+    let mut motions = Vec::new();
+    for _ in 1..=4 {
+        idle(&mut region);
+        motions.push(record(&region, rolling.key).unwrap());
+    }
+    // Ticks 2 and 3 as the official server's: the cart runs under a tenth a tick, and
+    // only the player's own push counts.
+    assert_eq!(
+        on_the_wire(motions[1].motion),
+        [-0.06586095342733322, 0.0, 0.0]
+    );
+    assert_eq!(
+        on_the_wire(motions[2].motion),
+        [-0.12439724104254413, 0.0, 0.0]
+    );
+    // Tick 4: the slope's tick from tick 3's motion, the cart's push of the player, and
+    // the player's push of the cart.
+    let third = &motions[2];
+    let fourth = &motions[3];
+    let mut v = third.motion[0] + -0.0078125;
+    let moved = v;
+    v *= 0.96;
+    let h = v.abs();
+    v *= (h + (third.position[1] - fourth.position[1]) * 0.05) / h;
+    let x = third.position[0] + moved;
+    let dx = x - 0.5;
+    let d = dx.abs().sqrt();
+    let by_the_cart = dx / d * 1.0 * 0.050_000_000_745_058_06;
+    let by_the_player = 1.0 * 0.100_000_001_490_116_12 * 0.5;
+    assert_eq!(fourth.position[0].to_bits(), x.to_bits());
+    assert_eq!(
+        fourth.motion[0].to_bits(),
+        (v + by_the_cart + -by_the_player).to_bits()
+    );
+}
+
+/// Without the player there, the same cart gains what the slope gives, as Clustine sent
+/// it in the same run: a cart let go alone is not pushed.
+#[test]
+fn a_cart_let_go_on_a_slope_alone_gains_an_eighth_of_a_sixteenth_a_tick() {
+    let mut blocks = vec![
+        (BlockPos::new(8, -60, 8), rail("ascending_east")),
+        (BlockPos::new(9, -60, 8), blocks::STONE),
+        (BlockPos::new(7, -60, 8), rail("south_east")),
+    ];
+    blocks.extend((9..=16).map(|z| (BlockPos::new(7, -60, z), rail("north_south"))));
+    let mut region = ticking_with(&blocks);
+    let start = on_slope(8, 8);
+    let rolling = cart(1, start, [0.0; 3]);
+    lay(&mut region, &rolling);
+    let mut motions = Vec::new();
+    for _ in 1..=6 {
+        let output = idle(&mut region);
+        assert!(!output.events.iter().any(|event| {
+            matches!(event, RegionEvent::EntityTracked(report)
+                if report.entity == rolling.key && report.flags & Tracked::NEEDS_SYNC != 0)
+        }));
+        motions.push(on_the_wire(record(&region, rolling.key).unwrap().motion));
+    }
+    // Clustine's packets of ticks 3 and 6.
+    assert_eq!(motions[2], [-0.023927241652932918, 0.0, 0.0]);
+    assert_eq!(motions[5], [-0.04852591100531034, 0.0, 0.0]);
+}
+
+/// The official server's run of the driven cart in `minecarts_oracle.rs` (2026-10-18):
+/// its rider faced east when they got in, but their client's confirmation of the
+/// teleport onto the seat said yaw 0, which the game takes as the rider's look
+/// (`handleAcceptTeleportPacket` → `handlePlayerPositionChange`, which for a passenger
+/// takes only the rotations), so `getLastClientMoveIntent` turned the forward key south,
+/// (0, 0, 1). `moveAlongTrack` adds a thousandth of it after turning the speed onto the
+/// east-west rail, and turns the whole of it onto the rail the next tick: the cart goes
+/// east by the length of what it had, and south by a thousandth again. A rider of yaw 0
+/// gives what the official server sent, to the bit; one facing east (yaw -90) what
+/// Clustine sent.
+#[test]
+fn a_rider_looking_south_on_an_east_west_rail_drives_the_cart_as_the_official_server_had_it() {
+    let drive = |yaw: f32| -> Vec<([f64; 3], [i64; 3])> {
+        let rails: Vec<(BlockPos, BlockState)> = (2..12)
+            .map(|x| (BlockPos::new(x, -60, 4), rail("east_west")))
+            .collect();
+        let mut region = ticking_with(&rails);
+        let start = [3.5, FLAT, 4.5];
+        let ridden = cart(1, start, [0.0; 3]);
+        lay(&mut region, &ridden);
+        let used = moves(vec![numbered(
+            1,
+            PlayerInput::Interact {
+                entity: ridden.key,
+                location: [0.0, 0.3, 0.0],
+                sneaking: false,
+            },
+        )]);
+        checked(&mut region, &used);
+        let walk = moves(vec![
+            numbered(
+                1,
+                PlayerInput::Move {
+                    position: None,
+                    rotation: Some((yaw, 0.0)),
+                    on_ground: false,
+                },
+            ),
+            numbered(
+                1,
+                PlayerInput::Keys(crate::api::Keys {
+                    forward: true,
+                    ..Default::default()
+                }),
+            ),
+        ]);
+        checked(&mut region, &walk);
+        let mut seen = vec![];
+        for _ in 0..12 {
+            let now = record(&region, ridden.key).unwrap();
+            seen.push((
+                on_the_wire(now.motion),
+                moved_in_4096ths(now.position, start),
+            ));
+            idle(&mut region);
+        }
+        seen
+    };
+    // The official server's motions of ticks 3, 6, 9 and 12 after the rider was shown
+    // seated, its move of tick 6, and each the cart's tick 2, 5, 8 and 11 of being driven.
+    let south = drive(0.0);
+    let thousandth = 0.000_976_622_108_282_976_2;
+    assert_eq!(south[1].0, [thousandth, 0.0, thousandth]);
+    assert_eq!(
+        south[4],
+        ([0.001_953_244_216_565_952_5, 0.0, thousandth], [19, 0, 3])
+    );
+    assert_eq!(south[7].0, [0.002_624_671_916_010_568, 0.0, thousandth]);
+    assert_eq!(south[10].0, [0.003_112_982_970_151_945, 0.0, thousandth]);
+    // Facing east: Clustine's motions of the same ticks, and its move of tick 6.
+    let east = drive(-90.0);
+    assert_eq!(east[1].0, [0.002_014_283_098_333_624_6, 0.0, 0.0]);
+    assert_eq!(east[4], ([0.004_944_149_423_182_553, 0.0, 0.0], [46, 0, 0]));
+    assert_eq!(east[7].0, [0.007_874_015_748_031_482, 0.0, 0.0]);
 }

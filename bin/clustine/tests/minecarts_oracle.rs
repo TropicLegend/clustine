@@ -319,6 +319,12 @@ fn described(id: i32) -> String {
 async fn two_bots(address: &str) -> Result<(Bot, Bot)> {
     let mut builder = Bot::join(address, "Builder").await?;
     builder.wait_until(PATIENCE, Bot::is_loaded).await?;
+    // The builder flies, as a client hovering in creative mode does. The official
+    // server moves a player who does not in the player's own tick, gravity and all,
+    // before the player pushes what its box meets (`LivingEntity.aiStep`), and puts it
+    // back after: so a builder hovering above a cart pushed it every tick there (its
+    // run of 2026-10-18), where Clustine, which moves no player itself, did not.
+    builder.set_flying(true).await?;
     let mut watcher = Bot::join(address, "Watcher").await?;
     watcher.wait_until(PATIENCE, Bot::is_loaded).await?;
     // Up from where each joined, then across above everything: the official server does
