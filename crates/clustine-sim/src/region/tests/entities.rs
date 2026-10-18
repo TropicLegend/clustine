@@ -500,6 +500,7 @@ fn item_at(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: -1,
+        riding: Default::default(),
     }
 }
 

@@ -3543,7 +3543,12 @@ impl RegionRunner {
                 | PlayerInput::WithOffHand(_)
                 | PlayerInput::SetFlying { .. }
                 | PlayerInput::Drop { .. }
-                | PlayerInput::Throw { .. } => return false,
+                | PlayerInput::Throw { .. }
+                | PlayerInput::Keys(_)
+                | PlayerInput::Interact { .. }
+                | PlayerInput::Attack { .. }
+                | PlayerInput::MoveVehicle(_)
+                | PlayerInput::PaddleBoat { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

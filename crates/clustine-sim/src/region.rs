@@ -1715,6 +1715,13 @@ impl Region {
                     output.player_events.push((id, event));
                 }
             }
+            // N5's inputs, answered by the steps that bring what they use
+            // (`docs/groundwork/n5-plan.md`); until then passed over.
+            PlayerInput::Keys(_)
+            | PlayerInput::Interact { .. }
+            | PlayerInput::Attack { .. }
+            | PlayerInput::MoveVehicle(_)
+            | PlayerInput::PaddleBoat { .. } => {}
             PlayerInput::Throw { stack } => {
                 // Out of the creative inventory: nothing is taken from the player's,
                 // and a throw refused leaves nothing to put back.
@@ -4090,7 +4097,7 @@ mod tests {
                     clustine_world::EntityData::Item { stack, .. } => {
                         Some((entity.position, stack))
                     }
-                    clustine_world::EntityData::FallingBlock { .. } => None,
+                    _ => None,
                 }
             })
             .collect()

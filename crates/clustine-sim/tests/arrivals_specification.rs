@@ -328,6 +328,7 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], hops: u32) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 

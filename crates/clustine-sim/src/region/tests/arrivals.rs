@@ -45,6 +45,7 @@ fn item(key: u64, position: [f64; 3], motion: [f64; 3], on_ground: bool, hops: u
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 

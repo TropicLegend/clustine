@@ -18,18 +18,29 @@
 //! | Age: the ticks it has ticked, as of the record's tick | u32 |
 //! | Fall distance | f64 |
 //! | Fire: ticks left to burn, or below 0 safe from fire | i32 |
+//! | Riding: its vehicle, cooldown, passengers and leash | see `put_riding` |
 //! | Data | a tag u8, then what the tag says |
 //!
 //! where the data of tag 1, an item, is the item i32, the count i32, the pick-up delay
 //! left as of the record's tick u16, u8 1 followed by the thrower's UUID u128, or u8 0
 //! where nobody threw it, and its health i16; the data of tag 2, a falling block, is its
 //! state u16, the ticks it has fallen i32, and flags u8 (bit 0 it drops as an item where
-//! it cannot land, bit 1 its drop is called off; the others 0). Counters are kept relative to the record they are in
+//! it cannot land, bit 1 its drop is called off; the others 0). Tags 3 to 9 are N5's
+//! kinds (`docs/groundwork/n5-plan.md`): 3 a minecart, 4 a boat, 5 an armour stand, 6 an
+//! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, each written by `put_data` in
+//! the order of its fields; a block-attached entity's attachment is its block (3 × i32)
+//! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
+//! u8, item i32 and count i32, ascending by slot. Counters are kept relative to the record they are in
 //! (section 11 of the plan): regions count their ticks each from their own start.
 //!
 //! A field a tick set is a tag u8 and its value: 1 the position (3 × f64), 2 the motion
 //! (3 × f64), 3 the rotation (yaw f32, pitch f32), 4 on the ground (u8 0 or 1), 5 the
-//! data (as above), 6 the age (u32), 7 the fall distance (f64), 8 the fire (i32).
+//! data (as above), 6 the age (u32), 7 the fall distance (f64), 8 the fire (i32), 9 the
+//! riding (as above).
+//!
+//! A passenger is written in its root's chunk, wherever its own position is, so the
+//! check that a whole entity lies in the chunk it is written under is made only of an
+//! entity that rides nothing.
 //!
 //! A change of an entity is a tag u8 and its body: 1 whole, the entity; 2 gone, its key
 //! u64; 3 set, its key u64, a count of fields u32 and the fields.
@@ -54,7 +65,8 @@
 //! A chunk without entities has no such file.
 
 use clustine_world::{
-    ChunkPos, Entity, EntityChange, EntityData, EntityField, EntityId, ItemStack,
+    Attached, BlockPos, ChunkPos, Contents, Double, EdgeId, Entity, EntityChange, EntityData,
+    EntityField, EntityId, Float, Hurt, ItemStack, Leash, LeashHolder, Pending, Riding, Seat,
 };
 use uuid::Uuid;
 
@@ -68,6 +80,23 @@ const ON_GROUND: u8 = 1;
 
 const DATA_ITEM: u8 = 1;
 const DATA_FALLING_BLOCK: u8 = 2;
+const DATA_MINECART: u8 = 3;
+const DATA_BOAT: u8 = 4;
+const DATA_ARMOR_STAND: u8 = 5;
+const DATA_ITEM_FRAME: u8 = 6;
+const DATA_PAINTING: u8 = 7;
+const DATA_CUSHION: u8 = 8;
+const DATA_LEASH_KNOT: u8 = 9;
+
+const SEAT_PLAYER: u8 = 1;
+const SEAT_PENDING: u8 = 2;
+
+const LEASH_NONE: u8 = 0;
+const LEASH_ENTITY: u8 = 1;
+const LEASH_FENCE: u8 = 2;
+
+const FRAME_FIXED: u8 = 1;
+const FRAME_INVISIBLE: u8 = 2;
 
 const DROP_ITEM: u8 = 1;
 const CANCEL_DROP: u8 = 2;
@@ -80,13 +109,17 @@ const FIELD_DATA: u8 = 5;
 const FIELD_AGE: u8 = 6;
 const FIELD_FALL_DISTANCE: u8 = 7;
 const FIELD_FIRE: u8 = 8;
+const FIELD_RIDING: u8 = 9;
 
 const CHANGE_WHOLE: u8 = 1;
 const CHANGE_GONE: u8 = 2;
 const CHANGE_SET: u8 = 3;
 
-/// Bytes an entity takes at the least: an item without a thrower.
-const ENTITY_LENGTH: usize = 8 + 2 + 16 + 48 + 8 + 1 + 4 + 4 + 8 + 4 + 1 + 4 + 4 + 2 + 1 + 2;
+/// Bytes an entity takes at the least: an item without a thrower, riding nothing.
+const ENTITY_LENGTH: usize =
+    8 + 2 + 16 + 48 + 8 + 1 + 4 + 4 + 8 + 4 + RIDING_LENGTH + 1 + 4 + 4 + 2 + 1 + 2;
+/// Bytes riding nothing takes.
+const RIDING_LENGTH: usize = 1 + 2 + 1 + 1;
 /// Bytes a change takes at the least: a gone one.
 const CHANGE_LENGTH: usize = 9;
 /// Bytes a field takes at the least: on the ground.
@@ -110,6 +143,195 @@ fn take_flag(input: &mut Input<'_>, what: &'static str) -> Result<bool, FormatEr
         1 => Ok(true),
         _ => Err(FormatError::Corrupt(what)),
     }
+}
+
+fn put_position(out: &mut Vec<u8>, position: BlockPos) {
+    out.extend_from_slice(&position.x.to_be_bytes());
+    out.extend_from_slice(&position.y.to_be_bytes());
+    out.extend_from_slice(&position.z.to_be_bytes());
+}
+
+fn take_position(input: &mut Input<'_>) -> Result<BlockPos, FormatError> {
+    Ok(BlockPos::new(input.i32()?, input.i32()?, input.i32()?))
+}
+
+fn put_stack(out: &mut Vec<u8>, stack: ItemStack) {
+    out.extend_from_slice(&stack.item.to_be_bytes());
+    out.extend_from_slice(&stack.count.to_be_bytes());
+}
+
+fn take_stack(input: &mut Input<'_>) -> Result<ItemStack, FormatError> {
+    Ok(ItemStack {
+        item: input.i32()?,
+        count: input.i32()?,
+    })
+}
+
+fn put_optional_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) {
+    match stack {
+        None => out.push(0),
+        Some(stack) => {
+            out.push(1);
+            put_stack(out, stack);
+        }
+    }
+}
+
+fn take_optional_stack(input: &mut Input<'_>) -> Result<Option<ItemStack>, FormatError> {
+    Ok(if take_flag(input, "an item's presence")? {
+        Some(take_stack(input)?)
+    } else {
+        None
+    })
+}
+
+/// A count u8, then per stack its slot u8 and the stack: ascending by slot, each once.
+fn put_contents(out: &mut Vec<u8>, contents: &Contents) {
+    out.push(u8::try_from(contents.len()).expect("a container has at most 255 slots"));
+    for (slot, stack) in contents {
+        out.push(*slot);
+        put_stack(out, *stack);
+    }
+}
+
+fn take_contents(input: &mut Input<'_>) -> Result<Contents, FormatError> {
+    let count = input.u8()?;
+    let mut contents: Contents = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let slot = input.u8()?;
+        if contents.last().is_some_and(|(last, _)| *last >= slot) {
+            return Err(FormatError::Corrupt("a container's slots out of order"));
+        }
+        contents.push((slot, take_stack(input)?));
+    }
+    Ok(contents)
+}
+
+fn put_hurt(out: &mut Vec<u8>, hurt: Hurt) {
+    out.extend_from_slice(&hurt.time.to_be_bytes());
+    out.extend_from_slice(&hurt.direction.to_be_bytes());
+    out.extend_from_slice(&hurt.damage.0.to_be_bytes());
+}
+
+fn take_hurt(input: &mut Input<'_>) -> Result<Hurt, FormatError> {
+    Ok(Hurt {
+        time: input.i32()?,
+        direction: input.i32()?,
+        damage: Float(input.f32()?),
+    })
+}
+
+fn put_attached(out: &mut Vec<u8>, attached: Attached) {
+    put_position(out, attached.block);
+    out.push(attached.direction);
+}
+
+fn take_attached(input: &mut Input<'_>) -> Result<Attached, FormatError> {
+    let block = take_position(input)?;
+    let direction = input.u8()?;
+    if direction > 5 {
+        return Err(FormatError::Corrupt("an attached entity's direction"));
+    }
+    Ok(Attached { block, direction })
+}
+
+/// The vehicle (u8 0, or 1 and its key u64), the cooldown u16, the passengers (a count
+/// u8, then each one's key u64, flags u8: bit 0 a player, bit 1 pending, and where
+/// pending the ticks left u16 and the edge u64), and the leash (u8 0 none, 1 an entity's
+/// key u64, 2 a fence's x, y, z i32, then for 1 and 2 the angular momentum f64).
+fn put_riding(out: &mut Vec<u8>, riding: &Riding) {
+    match riding.vehicle {
+        None => out.push(0),
+        Some(vehicle) => {
+            out.push(1);
+            out.extend_from_slice(&vehicle.0.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&riding.cooldown.to_be_bytes());
+    out.push(u8::try_from(riding.passengers.len()).expect("at most 255 passengers"));
+    for seat in &riding.passengers {
+        out.extend_from_slice(&seat.key.0.to_be_bytes());
+        let mut flags = 0;
+        if seat.player {
+            flags |= SEAT_PLAYER;
+        }
+        if seat.pending.is_some() {
+            flags |= SEAT_PENDING;
+        }
+        out.push(flags);
+        if let Some(pending) = seat.pending {
+            out.extend_from_slice(&pending.left.to_be_bytes());
+            out.extend_from_slice(&pending.edge.0.to_be_bytes());
+        }
+    }
+    match riding.leash.as_deref() {
+        None => out.push(LEASH_NONE),
+        Some(leash) => {
+            match leash.holder {
+                LeashHolder::Entity(key) => {
+                    out.push(LEASH_ENTITY);
+                    out.extend_from_slice(&key.0.to_be_bytes());
+                }
+                LeashHolder::Fence(position) => {
+                    out.push(LEASH_FENCE);
+                    put_position(out, position);
+                }
+            }
+            out.extend_from_slice(&leash.angular_momentum.0.to_be_bytes());
+        }
+    }
+}
+
+fn take_riding(input: &mut Input<'_>) -> Result<Riding, FormatError> {
+    let vehicle = if take_flag(input, "an entity's vehicle flag")? {
+        Some(EntityId(input.u64()?))
+    } else {
+        None
+    };
+    let cooldown = input.u16()?;
+    let count = input.u8()?;
+    let mut passengers = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let key = EntityId(input.u64()?);
+        let flags = input.u8()?;
+        if flags & !(SEAT_PLAYER | SEAT_PENDING) != 0
+            || (flags & SEAT_PENDING != 0 && flags & SEAT_PLAYER == 0)
+        {
+            return Err(FormatError::Corrupt("a seat's flags"));
+        }
+        let pending = if flags & SEAT_PENDING != 0 {
+            Some(Pending {
+                left: input.u16()?,
+                edge: EdgeId(input.u64()?),
+            })
+        } else {
+            None
+        };
+        passengers.push(Seat {
+            key,
+            player: flags & SEAT_PLAYER != 0,
+            pending,
+        });
+    }
+    let holder = match input.u8()? {
+        LEASH_NONE => None,
+        LEASH_ENTITY => Some(LeashHolder::Entity(EntityId(input.u64()?))),
+        LEASH_FENCE => Some(LeashHolder::Fence(take_position(input)?)),
+        _ => return Err(FormatError::Corrupt("a leash's tag")),
+    };
+    let leash = match holder {
+        None => None,
+        Some(holder) => Some(Box::new(Leash {
+            holder,
+            angular_momentum: Double(input.f64()?),
+        })),
+    };
+    Ok(Riding {
+        vehicle,
+        passengers,
+        cooldown,
+        leash,
+    })
 }
 
 fn put_data(out: &mut Vec<u8>, data: &EntityData) {
@@ -151,6 +373,118 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             }
             out.push(flags);
         }
+        EntityData::Minecart {
+            hurt,
+            display,
+            display_offset,
+            flipped,
+            contents,
+            fuel,
+            push,
+        } => {
+            out.push(DATA_MINECART);
+            put_hurt(out, *hurt);
+            match display {
+                None => out.push(0),
+                Some(state) => {
+                    out.push(1);
+                    out.extend_from_slice(&state.to_be_bytes());
+                }
+            }
+            match display_offset {
+                None => out.push(0),
+                Some(offset) => {
+                    out.push(1);
+                    out.extend_from_slice(&offset.to_be_bytes());
+                }
+            }
+            out.push(u8::from(*flipped));
+            put_contents(out, contents);
+            out.extend_from_slice(&fuel.to_be_bytes());
+            for part in push {
+                out.extend_from_slice(&part.0.to_be_bytes());
+            }
+        }
+        EntityData::Boat {
+            hurt,
+            paddles,
+            bubble_time,
+            out_of_control,
+            turning,
+            status,
+            contents,
+        } => {
+            out.push(DATA_BOAT);
+            put_hurt(out, *hurt);
+            out.push(u8::from(paddles[0]) | (u8::from(paddles[1]) << 1));
+            out.extend_from_slice(&bubble_time.to_be_bytes());
+            out.extend_from_slice(&out_of_control.0.to_be_bytes());
+            out.extend_from_slice(&turning.0.to_be_bytes());
+            out.extend_from_slice(status);
+            put_contents(out, contents);
+        }
+        EntityData::ArmorStand {
+            flags,
+            disabled_slots,
+            pose,
+            equipment,
+            health,
+            last_hit,
+        } => {
+            out.push(DATA_ARMOR_STAND);
+            out.push(*flags);
+            out.extend_from_slice(&disabled_slots.to_be_bytes());
+            for part in pose.iter() {
+                for angle in part {
+                    out.extend_from_slice(&angle.0.to_be_bytes());
+                }
+            }
+            put_contents(out, equipment);
+            out.extend_from_slice(&health.0.to_be_bytes());
+            match last_hit {
+                None => out.push(0),
+                Some(age) => {
+                    out.push(1);
+                    out.extend_from_slice(&age.to_be_bytes());
+                }
+            }
+        }
+        EntityData::ItemFrame {
+            attached,
+            item,
+            rotation,
+            drop_chance,
+            fixed,
+            invisible,
+        } => {
+            out.push(DATA_ITEM_FRAME);
+            put_attached(out, *attached);
+            put_optional_stack(out, *item);
+            out.push(*rotation);
+            out.extend_from_slice(&drop_chance.0.to_be_bytes());
+            let mut flags = 0;
+            if *fixed {
+                flags |= FRAME_FIXED;
+            }
+            if *invisible {
+                flags |= FRAME_INVISIBLE;
+            }
+            out.push(flags);
+        }
+        EntityData::Painting { attached, variant } => {
+            out.push(DATA_PAINTING);
+            put_attached(out, *attached);
+            out.extend_from_slice(&variant.to_be_bytes());
+        }
+        EntityData::Cushion { attached, colour } => {
+            out.push(DATA_CUSHION);
+            put_attached(out, *attached);
+            out.push(*colour);
+        }
+        EntityData::LeashKnot { attached } => {
+            out.push(DATA_LEASH_KNOT);
+            put_attached(out, *attached);
+        }
     }
 }
 
@@ -188,6 +522,101 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 cancel_drop: flags & CANCEL_DROP != 0,
             })
         }
+        DATA_MINECART => {
+            let hurt = take_hurt(input)?;
+            let display = if take_flag(input, "a minecart's display flag")? {
+                Some(input.u16()?)
+            } else {
+                None
+            };
+            let display_offset = if take_flag(input, "a minecart's offset flag")? {
+                Some(input.i32()?)
+            } else {
+                None
+            };
+            Ok(EntityData::Minecart {
+                hurt,
+                display,
+                display_offset,
+                flipped: take_flag(input, "a minecart's flipped flag")?,
+                contents: take_contents(input)?,
+                fuel: input.i32()?,
+                push: [Double(input.f64()?), Double(input.f64()?)],
+            })
+        }
+        DATA_BOAT => {
+            let hurt = take_hurt(input)?;
+            let paddles = input.u8()?;
+            if paddles & !3 != 0 {
+                return Err(FormatError::Corrupt("a boat's paddles"));
+            }
+            Ok(EntityData::Boat {
+                hurt,
+                paddles: [paddles & 1 != 0, paddles & 2 != 0],
+                bubble_time: input.i32()?,
+                out_of_control: Float(input.f32()?),
+                turning: Float(input.f32()?),
+                status: [input.u8()?, input.u8()?],
+                contents: take_contents(input)?,
+            })
+        }
+        DATA_ARMOR_STAND => {
+            let flags = input.u8()?;
+            let disabled_slots = input.i32()?;
+            let mut pose = Box::new([[Float(0.0); 3]; 6]);
+            for part in pose.iter_mut() {
+                for angle in part {
+                    *angle = Float(input.f32()?);
+                }
+            }
+            let equipment = take_contents(input)?;
+            let health = Float(input.f32()?);
+            let last_hit = if take_flag(input, "an armour stand's hit flag")? {
+                Some(input.u32()?)
+            } else {
+                None
+            };
+            Ok(EntityData::ArmorStand {
+                flags,
+                disabled_slots,
+                pose,
+                equipment,
+                health,
+                last_hit,
+            })
+        }
+        DATA_ITEM_FRAME => {
+            let attached = take_attached(input)?;
+            let item = take_optional_stack(input)?;
+            let rotation = input.u8()?;
+            if rotation > 7 {
+                return Err(FormatError::Corrupt("an item frame's rotation"));
+            }
+            let drop_chance = Float(input.f32()?);
+            let flags = input.u8()?;
+            if flags & !(FRAME_FIXED | FRAME_INVISIBLE) != 0 {
+                return Err(FormatError::Corrupt("an item frame's flags"));
+            }
+            Ok(EntityData::ItemFrame {
+                attached,
+                item,
+                rotation,
+                drop_chance,
+                fixed: flags & FRAME_FIXED != 0,
+                invisible: flags & FRAME_INVISIBLE != 0,
+            })
+        }
+        DATA_PAINTING => Ok(EntityData::Painting {
+            attached: take_attached(input)?,
+            variant: input.u16()?,
+        }),
+        DATA_CUSHION => Ok(EntityData::Cushion {
+            attached: take_attached(input)?,
+            colour: input.u8()?,
+        }),
+        DATA_LEASH_KNOT => Ok(EntityData::LeashKnot {
+            attached: take_attached(input)?,
+        }),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -206,6 +635,7 @@ pub(crate) fn put_entity(out: &mut Vec<u8>, entity: &Entity) {
     out.extend_from_slice(&entity.age.to_be_bytes());
     out.extend_from_slice(&entity.fall_distance.to_be_bytes());
     out.extend_from_slice(&entity.fire_ticks.to_be_bytes());
+    put_riding(out, &entity.riding);
     put_data(out, &entity.data);
 }
 
@@ -235,6 +665,7 @@ pub(crate) fn take_entity(input: &mut Input<'_>) -> Result<Entity, FormatError> 
         // Read in the order written: struct fields are taken in the order they are here.
         fall_distance: input.f64()?,
         fire_ticks: input.i32()?,
+        riding: take_riding(input)?,
         data: take_data(input)?,
     })
 }
@@ -274,6 +705,10 @@ fn put_field(out: &mut Vec<u8>, field: &EntityField) {
             out.push(FIELD_FIRE);
             out.extend_from_slice(&ticks.to_be_bytes());
         }
+        EntityField::Riding(riding) => {
+            out.push(FIELD_RIDING);
+            put_riding(out, riding);
+        }
     }
 }
 
@@ -290,6 +725,7 @@ fn take_field(input: &mut Input<'_>) -> Result<EntityField, FormatError> {
         FIELD_AGE => EntityField::Age(input.u32()?),
         FIELD_FALL_DISTANCE => EntityField::FallDistance(input.f64()?),
         FIELD_FIRE => EntityField::FireTicks(input.i32()?),
+        FIELD_RIDING => EntityField::Riding(take_riding(input)?),
         _ => return Err(FormatError::Corrupt("entity field tag")),
     })
 }
@@ -316,12 +752,12 @@ fn put_change(out: &mut Vec<u8>, change: &EntityChange) {
 }
 
 /// Reads a change written under `chunk`: a whole entity elsewhere is refused, since its
-/// chunk is where its position is.
+/// chunk is where its position is, but for a passenger, whose chunk is its root's.
 fn take_change(input: &mut Input<'_>, chunk: ChunkPos) -> Result<EntityChange, FormatError> {
     Ok(match input.u8()? {
         CHANGE_WHOLE => {
             let entity = take_entity(input)?;
-            if entity.chunk() != chunk {
+            if entity.riding.vehicle.is_none() && entity.chunk() != chunk {
                 return Err(FormatError::Corrupt(
                     "a whole entity that is not in the chunk it is written under",
                 ));
@@ -445,7 +881,7 @@ impl EntitiesFile {
             Vec::with_capacity(count.min(input.0.len() / ENTITY_LENGTH));
         for _ in 0..count {
             let entity = take_entity(&mut input)?;
-            if entity.chunk() != position {
+            if entity.riding.vehicle.is_none() && entity.chunk() != position {
                 return Err(FormatError::Corrupt(
                     "an entity that is not in the chunk of its file",
                 ));
@@ -493,6 +929,7 @@ pub(crate) mod tests {
             },
             fall_distance: 0.0,
             fire_ticks: -1,
+            riding: Default::default(),
         }
     }
 
@@ -527,6 +964,7 @@ pub(crate) mod tests {
         expected.extend_from_slice(&[0, 0, 0, 12]); // age
         expected.extend_from_slice(&[0; 8]); // fall distance 0
         expected.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // fire -1
+        expected.extend_from_slice(&[0, 0, 0, 0, 0]); // no vehicle, no cooldown, no seats, no leash
         expected.push(1); // an item
         expected.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 64]); // item, count
         expected.extend_from_slice(&[0, 40]); // pick-up delay
@@ -596,6 +1034,7 @@ pub(crate) mod tests {
             (any::<f32>(), any::<f32>(), any::<bool>()),
             (any::<u32>(), any::<u32>(), any::<f64>(), any::<i32>()),
             datas(),
+            ridings(),
         )
             .prop_map(
                 |(
@@ -607,6 +1046,7 @@ pub(crate) mod tests {
                     (yaw, pitch, on_ground),
                     (hops, age, fall_distance, fire_ticks),
                     data,
+                    riding,
                 )| {
                     Entity {
                         key: EntityId(key),
@@ -622,9 +1062,70 @@ pub(crate) mod tests {
                         data,
                         fall_distance,
                         fire_ticks,
+                        riding,
                     }
                 },
             )
+    }
+
+    fn ridings() -> impl Strategy<Value = Riding> {
+        let seat = (any::<u64>(), any::<bool>(), any::<Option<(u16, u64)>>()).prop_map(
+            |(key, player, pending)| Seat {
+                key: EntityId(key),
+                // Only a player's seat is kept for them on their way.
+                player: player || pending.is_some(),
+                pending: pending.map(|(left, edge)| Pending {
+                    left,
+                    edge: EdgeId(edge),
+                }),
+            },
+        );
+        let holder = prop_oneof![
+            any::<u64>().prop_map(|key| LeashHolder::Entity(EntityId(key))),
+            any::<(i32, i32, i32)>()
+                .prop_map(|(x, y, z)| LeashHolder::Fence(BlockPos::new(x, y, z))),
+        ];
+        (
+            any::<Option<u64>>(),
+            prop::collection::vec(seat, 0..4),
+            any::<u16>(),
+            prop::option::of((holder, any::<f64>())),
+        )
+            .prop_map(|(vehicle, passengers, cooldown, leash)| Riding {
+                vehicle: vehicle.map(EntityId),
+                passengers,
+                cooldown,
+                leash: leash.map(|(holder, momentum)| {
+                    Box::new(Leash {
+                        holder,
+                        angular_momentum: Double(momentum),
+                    })
+                }),
+            })
+    }
+
+    fn contents() -> impl Strategy<Value = Contents> {
+        prop::collection::btree_map(any::<u8>(), any::<(i32, i32)>(), 0..6).prop_map(|slots| {
+            slots
+                .into_iter()
+                .map(|(slot, (item, count))| (slot, ItemStack { item, count }))
+                .collect()
+        })
+    }
+
+    fn hurts() -> impl Strategy<Value = Hurt> {
+        any::<(i32, i32, f32)>().prop_map(|(time, direction, damage)| Hurt {
+            time,
+            direction,
+            damage: Float(damage),
+        })
+    }
+
+    fn attachments() -> impl Strategy<Value = Attached> {
+        (any::<(i32, i32, i32)>(), 0..6u8).prop_map(|((x, y, z), direction)| Attached {
+            block: BlockPos::new(x, y, z),
+            direction,
+        })
     }
 
     fn datas() -> impl Strategy<Value = EntityData> {
@@ -652,6 +1153,85 @@ pub(crate) mod tests {
                     cancel_drop,
                 }
             ),
+            (
+                hurts(),
+                any::<(Option<u16>, Option<i32>, bool)>(),
+                contents(),
+                any::<i32>(),
+                any::<[f64; 2]>(),
+            )
+                .prop_map(
+                    |(hurt, (display, display_offset, flipped), contents, fuel, push)| {
+                        EntityData::Minecart {
+                            hurt,
+                            display,
+                            display_offset,
+                            flipped,
+                            contents,
+                            fuel,
+                            push: push.map(Double),
+                        }
+                    }
+                ),
+            (
+                hurts(),
+                any::<([bool; 2], i32, f32, f32, [u8; 2])>(),
+                contents(),
+            )
+                .prop_map(
+                    |(hurt, (paddles, bubble_time, out_of_control, turning, status), contents)| {
+                        EntityData::Boat {
+                            hurt,
+                            paddles,
+                            bubble_time,
+                            out_of_control: Float(out_of_control),
+                            turning: Float(turning),
+                            status,
+                            contents,
+                        }
+                    }
+                ),
+            (
+                any::<(u8, i32)>(),
+                any::<[[f32; 3]; 6]>(),
+                contents(),
+                any::<(f32, Option<u32>)>(),
+            )
+                .prop_map(
+                    |((flags, disabled_slots), pose, equipment, (health, last_hit))| {
+                        EntityData::ArmorStand {
+                            flags,
+                            disabled_slots,
+                            pose: Box::new(pose.map(|part| part.map(Float))),
+                            equipment,
+                            health: Float(health),
+                            last_hit,
+                        }
+                    }
+                ),
+            (
+                attachments(),
+                any::<Option<(i32, i32)>>(),
+                0..8u8,
+                any::<(f32, bool, bool)>(),
+            )
+                .prop_map(
+                    |(attached, item, rotation, (drop_chance, fixed, invisible))| {
+                        EntityData::ItemFrame {
+                            attached,
+                            item: item.map(|(item, count)| ItemStack { item, count }),
+                            rotation,
+                            drop_chance: Float(drop_chance),
+                            fixed,
+                            invisible,
+                        }
+                    }
+                ),
+            (attachments(), any::<u16>())
+                .prop_map(|(attached, variant)| EntityData::Painting { attached, variant }),
+            (attachments(), any::<u8>())
+                .prop_map(|(attached, colour)| EntityData::Cushion { attached, colour }),
+            attachments().prop_map(|attached| EntityData::LeashKnot { attached }),
         ]
     }
 
@@ -666,6 +1246,7 @@ pub(crate) mod tests {
             datas().prop_map(EntityField::Data),
             any::<f64>().prop_map(EntityField::FallDistance),
             any::<i32>().prop_map(EntityField::FireTicks),
+            ridings().prop_map(EntityField::Riding),
         ]
     }
 

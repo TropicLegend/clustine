@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ChunkPos, EntityId};
+use crate::{BlockPos, ChunkPos, EdgeId, EntityId};
 
 /// A number of items of one kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +43,8 @@ pub struct Entity {
     /// The ticks it has left to burn, below 0 the ticks it is safe from fire for (the
     /// game's `remainingFireTicks`, 0 for an entity that has never burned).
     pub fire_ticks: i32,
+    /// What it rides, who rides it and who holds its leash (`docs/groundwork/n5-plan.md`).
+    pub riding: Riding,
     pub data: EntityData,
 }
 
@@ -70,11 +72,134 @@ impl PartialEq for Entity {
             && self.age == other.age
             && self.fall_distance.to_bits() == other.fall_distance.to_bits()
             && self.fire_ticks == other.fire_ticks
+            && self.riding == other.riding
             && self.data == other.data
     }
 }
 
 impl Eq for Entity {}
+
+/// A `float` of the game's that is told apart by its bits, so that a record read back is
+/// equal to the one written.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Float(pub f32);
+
+impl PartialEq for Float {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Float {}
+
+/// A `double` of the game's, told apart by its bits as [`Float`] is.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Double(pub f64);
+
+impl PartialEq for Double {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Double {}
+
+/// What an entity rides, who rides it and who holds its leash. A unit, a root vehicle
+/// and all its passengers, lives in the root's chunk, each member a record of that
+/// chunk's entities, whatever a passenger's own position (ADR-0028, section 5).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Riding {
+    /// The vehicle it rides.
+    pub vehicle: Option<EntityId>,
+    /// Who rides it, in the game's order, which is the seat: the first is the one who
+    /// steers, if a player.
+    pub passengers: Vec<Seat>,
+    /// Ticks before it may ride again (the game's `boardingCooldown`).
+    pub cooldown: u16,
+    /// Who holds its leash; boxed, as few entities are leashed and every record would be
+    /// the larger for it.
+    pub leash: Option<Box<Leash>>,
+}
+
+impl Riding {
+    /// Whether it rides nothing, carries nobody and is held by nobody.
+    pub fn is_free(&self) -> bool {
+        self.vehicle.is_none() && self.passengers.is_empty() && self.leash.is_none()
+    }
+}
+
+/// A place in a vehicle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Seat {
+    /// The entity sitting there: a member of the unit, or a player, whose entity is the
+    /// player's region's.
+    pub key: EntityId,
+    pub player: bool,
+    /// For a player handed over to this vehicle's region and not come yet: the seat is
+    /// theirs for as long as it says (`docs/groundwork/n5-plan.md`, sections 7 and 8).
+    pub pending: Option<Pending>,
+}
+
+/// A seat kept for a player on their way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    /// Ticks it is kept for still, as of the record's tick.
+    pub left: u16,
+    /// The edge the player belongs to, whose going drops the seat.
+    pub edge: EdgeId,
+}
+
+/// Who holds a leash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeashHolder {
+    /// An entity, a player among them.
+    Entity(EntityId),
+    /// A fence, through the knot at it, which is found or made again when the leashed
+    /// entity is taken in and its holder is not there (the game's delayed leash).
+    Fence(BlockPos),
+}
+
+/// A leash and the swing it has (the game's `LeashData`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Leash {
+    pub holder: LeashHolder,
+    /// The game's `angularMomentum`.
+    pub angular_momentum: Double,
+}
+
+/// What `VehicleEntity` keeps of the hits it took: the game sends it and does not save
+/// it; Clustine keeps it so that a cart hit just before a line is not whole after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hurt {
+    /// Ticks the wobble lasts still (`DATA_ID_HURT`).
+    pub time: i32,
+    /// The side it wobbles to, 1 or -1 (`DATA_ID_HURTDIR`).
+    pub direction: i32,
+    /// The damage taken, which falls by one a tick (`DATA_ID_DAMAGE`).
+    pub damage: Float,
+}
+
+impl Default for Hurt {
+    fn default() -> Self {
+        Self {
+            time: 0,
+            direction: 1,
+            damage: Float(0.0),
+        }
+    }
+}
+
+/// Where a block-attached entity is attached (the game's `BlockAttachedEntity.pos` and,
+/// for those that hang, `direction`, the 3D data value of a direction: 0 down, 1 up, 2
+/// north, 3 south, 4 west, 5 east).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attached {
+    pub block: BlockPos,
+    pub direction: u8,
+}
+
+/// The stacks of a container entity, by slot, ascending, each once.
+pub type Contents = Vec<(u8, ItemStack)>;
 
 /// What an entity is beside what every entity is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +224,72 @@ pub enum EntityData {
         /// Whether its drop is called off (a block that broke where it landed).
         cancel_drop: bool,
     },
+    /// A minecart of any kind, the kind its entity type (`AbstractMinecart` and
+    /// `OldMinecartBehavior`).
+    Minecart {
+        hurt: Hurt,
+        /// A block shown in it other than its kind's (`DisplayState`).
+        display: Option<u16>,
+        /// Where the block is shown, if not the kind's (`DisplayOffset`).
+        display_offset: Option<i32>,
+        /// `flipped`.
+        flipped: bool,
+        /// A chest's or a hopper's stacks.
+        contents: Contents,
+        /// A furnace cart's fuel, in ticks.
+        fuel: i32,
+        /// A furnace cart's push, x and z.
+        push: [Double; 2],
+    },
+    /// A boat or a raft of any wood, with a chest or not, the kind its entity type
+    /// (`AbstractBoat`).
+    Boat {
+        hurt: Hurt,
+        /// Whether the left and right paddles move.
+        paddles: [bool; 2],
+        /// `DATA_ID_BUBBLE_TIME`.
+        bubble_time: i32,
+        /// `outOfControlTicks`.
+        out_of_control: Float,
+        /// `deltaRotation`.
+        turning: Float,
+        /// `status` and `oldStatus`, as their ordinals.
+        status: [u8; 2],
+        /// A chest boat's stacks.
+        contents: Contents,
+    },
+    /// An armour stand (`ArmorStand`, a reduced `LivingEntity`).
+    ArmorStand {
+        /// `DATA_CLIENT_FLAGS`: 1 small, 4 arms, 8 no base plate, 16 marker; and
+        /// invisibility, bit 32 here.
+        flags: u8,
+        /// `DisabledSlots`.
+        disabled_slots: i32,
+        /// The head's, the body's, the left and right arms' and legs' rotations; boxed,
+        /// as every entity's record would be the larger for them.
+        pose: Box<[[Float; 3]; 6]>,
+        /// What it wears and holds, by `EquipmentSlot` ordinal.
+        equipment: Contents,
+        health: Float,
+        /// The age at its last hit, for the game's two hits within five ticks.
+        last_hit: Option<u32>,
+    },
+    /// An item frame or a glow item frame.
+    ItemFrame {
+        attached: Attached,
+        item: Option<ItemStack>,
+        /// From 0 to 7.
+        rotation: u8,
+        drop_chance: Float,
+        fixed: bool,
+        invisible: bool,
+    },
+    /// A painting, its variant an index into the painting variants' registry.
+    Painting { attached: Attached, variant: u16 },
+    /// A cushion, of a dye's colour.
+    Cushion { attached: Attached, colour: u8 },
+    /// The knot of a leash tied to a fence.
+    LeashKnot { attached: Attached },
 }
 
 /// What a tick did to an entity of a chunk. Applied in the order a tick made them, after
@@ -135,6 +326,7 @@ pub enum EntityField {
     Data(EntityData),
     FallDistance(f64),
     FireTicks(i32),
+    Riding(Riding),
 }
 
 impl PartialEq for EntityField {
@@ -156,6 +348,7 @@ impl PartialEq for EntityField {
             (Self::Data(a), Self::Data(b)) => a == b,
             (Self::FallDistance(a), Self::FallDistance(b)) => a.to_bits() == b.to_bits(),
             (Self::FireTicks(a), Self::FireTicks(b)) => a == b,
+            (Self::Riding(a), Self::Riding(b)) => a == b,
             _ => false,
         }
     }
@@ -175,6 +368,7 @@ impl EntityField {
             Self::Data(data) => entity.data = data.clone(),
             Self::FallDistance(distance) => entity.fall_distance = *distance,
             Self::FireTicks(ticks) => entity.fire_ticks = *ticks,
+            Self::Riding(riding) => entity.riding = riding.clone(),
         }
     }
 }
@@ -342,6 +536,7 @@ mod tests {
             },
             fall_distance: 0.0,
             fire_ticks: -1,
+            riding: Default::default(),
         };
         EntityField::Position([3.25, -60.0, -0.5]).set(&mut entity);
         EntityField::Age(12).set(&mut entity);

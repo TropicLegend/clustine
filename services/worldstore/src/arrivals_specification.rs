@@ -64,6 +64,7 @@ fn item(key: u64, chunk: ChunkPos, hops: u32) -> Entity {
         age: 30,
         fall_distance: 0.0,
         fire_ticks: -1,
+        riding: Default::default(),
         data: EntityData::Item {
             stack: ItemStack { item: 1, count: 3 },
             pick_up_delay: 0,

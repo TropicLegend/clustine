@@ -268,6 +268,7 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], on_ground: bool) -> Entity
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 
@@ -305,6 +306,7 @@ fn falling(n: u32, position: [f64; 3], block: BlockState) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 

@@ -58,6 +58,7 @@ fn item(key: u64, position: [f64; 3], on_ground: bool) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 
@@ -352,6 +353,7 @@ fn a_falling_block_in_the_path_of_a_head_is_pushed_and_lands_beyond_it() {
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     };
     lay(&mut region, &sand);
     let first = idle(&mut region);

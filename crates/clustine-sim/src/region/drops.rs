@@ -152,6 +152,7 @@ impl Region {
             },
             fall_distance: 0.0,
             fire_ticks: 0,
+            riding: Default::default(),
         };
         self.add_fresh_entity(entity, output);
         true

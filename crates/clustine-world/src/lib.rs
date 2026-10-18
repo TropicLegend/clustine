@@ -20,10 +20,11 @@ pub use chunk::{
     MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked,
     light_tells_apart,
 };
-pub use effects::{Arrival, Due, Effect, EffectId, EffectKey, Effected, FiledEffect};
+pub use effects::{Arrival, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect};
 pub use entity::{
-    ARMOUR_START, Entity, EntityChange, EntityData, EntityField, HOTBAR_SLOTS, INVENTORY_SLOTS,
-    Inventory, ItemStack, MAIN_START, MAX_CHUNK_ENTITIES, OFF_HAND,
+    ARMOUR_START, Attached, Contents, Double, Entity, EntityChange, EntityData, EntityField, Float,
+    HOTBAR_SLOTS, Hurt, INVENTORY_SLOTS, Inventory, ItemStack, Leash, LeashHolder, MAIN_START,
+    MAX_CHUNK_ENTITIES, OFF_HAND, Pending, Riding, Seat,
 };
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{

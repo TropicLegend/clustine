@@ -945,6 +945,10 @@ impl Witness {
                         | RegionEvent::ItemTaken { .. }
                         | RegionEvent::TransientBlock { .. }
                         | RegionEvent::HandedOn { .. }
+                        | RegionEvent::Passengers { .. }
+                        | RegionEvent::Leashed { .. }
+                        | RegionEvent::DataChanged { .. }
+                        | RegionEvent::EntitySound { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);
@@ -963,7 +967,10 @@ impl Witness {
                     self.handled.insert(*player, *sequence);
                 }
                 PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
-                PlayerEvent::InventorySlot { .. } => {}
+                PlayerEvent::InventorySlot { .. }
+                | PlayerEvent::VehicleCorrected { .. }
+                | PlayerEvent::Rides { .. }
+                | PlayerEvent::Kicked { .. } => {}
             },
             WorkerToEdge::Outbox { number, entry } => {
                 // An entry it has seen is ignored, as section 5 has it: it is sent again

@@ -150,6 +150,10 @@ impl FiledArrivals {
 
 /// Something a group did to the arrivals filed, taken back, last first, if the group
 /// cannot be made durable.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an entity is held whole while the store reads, files or replays it; boxing it would allocate once more for each"
+)]
 pub(crate) enum ArrivalUndo {
     Filed(EffectId),
     Removed(EffectId, KeptArrival),
@@ -188,6 +192,7 @@ mod tests {
             age: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
+            riding: Default::default(),
             data: EntityData::Item {
                 stack: ItemStack { item: 1, count: 1 },
                 pick_up_delay: 0,

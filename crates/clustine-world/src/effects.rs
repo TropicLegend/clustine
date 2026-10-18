@@ -5,7 +5,7 @@
 use clustine_data::BlockState;
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockPos, ChunkPos, Entity, SeamKind, Ticked};
+use crate::{BlockPos, ChunkPos, Double, Entity, EntityId, Float, ItemStack, SeamKind, Ticked};
 
 /// What a region's tick would have done to a block in a chunk it does not have loaded,
 /// addressed to that block. The effect carries the call where the target's side decides
@@ -51,6 +51,37 @@ pub enum Effected {
         state: BlockState,
         flags: u32,
     },
+    /// A player's hit on, or use of, the entity `key` of the chunk, which another region
+    /// uses (`docs/groundwork/n5-plan.md`, decision 10 and section 7, item 9). The block
+    /// it is addressed to is the entity's as the player's region last knew it; one gone
+    /// by the time it is done does nothing.
+    OnEntity { key: EntityId, by: EntityUse },
+}
+
+/// What a player did to an entity in another region's land, with what the game reads of
+/// the player for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntityUse {
+    /// `attack`: the damage the hit deals (`base·(0.2 + 0.8·s²)`, a critical's ×1.5
+    /// included), whether the attacker is a creative player and sprints, and where they
+    /// stand.
+    Attack {
+        attacker: EntityId,
+        creative: bool,
+        sprinting: bool,
+        damage: Float,
+        from: [Double; 3],
+    },
+    /// `interact`: the player, whether creative, what they hold in the hand used, where
+    /// on the entity the click landed, whether they sneak, and where they stand.
+    Interact {
+        player: EntityId,
+        creative: bool,
+        held: Option<ItemStack>,
+        location: [Double; 3],
+        sneaking: bool,
+        from: [Double; 3],
+    },
 }
 
 impl Effect {
@@ -65,7 +96,7 @@ impl Effect {
             } => Some(EffectKey::Update(self.at, direction, kind)),
             Effected::Tick { of, .. } => Some(EffectKey::Tick(self.at, of)),
             Effected::Spread { direction, .. } => Some(EffectKey::Spread(self.at, direction)),
-            Effected::SetIf { .. } => None,
+            Effected::SetIf { .. } | Effected::OnEntity { .. } => None,
         }
     }
 }

@@ -313,6 +313,46 @@ pub enum PlayerInput {
     /// inventory. The edge passes on only what the game's throttler of such throws lets
     /// through.
     Throw { stack: ItemStack },
+    /// The keys the player holds, as `player_input` says each time they change (the
+    /// shift dismount and a minecart's rider read them; `docs/groundwork/n5-plan.md`,
+    /// section 7, item 8). Sprinting comes with them, from `player_command` too.
+    Keys(Keys),
+    /// The player used the entity `entity` (`interact`): `location` is where on it the
+    /// click landed, relative to its position, and `sneaking` the packet's own flag, which
+    /// the game sets on the player before anything else. Made with the off hand it comes
+    /// wrapped in [`PlayerInput::WithOffHand`].
+    Interact {
+        entity: EntityId,
+        location: [f64; 3],
+        sneaking: bool,
+    },
+    /// The player hit the entity `entity` (`attack`).
+    Attack { entity: EntityId },
+    /// Where the player's client put the vehicle it drives (`move_vehicle`).
+    MoveVehicle(VehicleMove),
+    /// Which of a driven boat's paddles move (`paddle_boat`).
+    PaddleBoat { left: bool, right: bool },
+}
+
+/// The keys a player holds (`player_input`'s flags, and `player_command`'s sprinting).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Keys {
+    pub forward: bool,
+    pub backward: bool,
+    pub left: bool,
+    pub right: bool,
+    pub jump: bool,
+    pub sneak: bool,
+    pub sprint: bool,
+}
+
+/// A vehicle's place as its driver's client sends it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct VehicleMove {
+    pub position: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
 }
 
 /// What is left to do of something a player did to blocks that the region the player is
@@ -793,6 +833,22 @@ pub enum PlayerEvent {
     /// and the client is to be told what it holds now. `slot` is numbered as
     /// [`Inventory`] numbers them.
     InventorySlot { slot: u8, stack: Option<ItemStack> },
+    /// The vehicle the player drives was put back where the region has it: the move
+    /// their client sent was refused (the clientbound `move_vehicle`).
+    VehicleCorrected {
+        position: Vec3,
+        yaw: f32,
+        pitch: f32,
+    },
+    /// The player got on (`Some`) or off (`None`) a vehicle, which the game does as a
+    /// teleport: their client is sent where they are now and who rides the vehicle.
+    Rides {
+        vehicle: Option<EntityId>,
+        pose: Pose,
+    },
+    /// The player was put out for holding a vehicle in the air too long (the game's
+    /// kick after 160 ticks).
+    Kicked { reason: String },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.
@@ -908,6 +964,41 @@ pub enum RegionEvent {
         position: [f64; 3],
         motion: [f64; 3],
     },
+    /// Who rides the vehicle `vehicle` now, in order, by key: the vehicle's word, which
+    /// the edge takes for its other passengers and checks for players against what each
+    /// player's own region says (`docs/groundwork/n5-plan.md`, section 8, item 4).
+    Passengers {
+        vehicle: EntityId,
+        chunk: ChunkPos,
+        hops: u32,
+        passengers: Vec<EntityId>,
+    },
+    /// Who holds the leash of `entity` now (`set_entity_link`), if anyone.
+    Leashed {
+        entity: EntityId,
+        chunk: ChunkPos,
+        holder: Option<EntityId>,
+    },
+    /// The vehicle `vehicle` was hit and wobbles, or a boat's paddles moved: its data
+    /// changed in a way a client shows (`VehicleEntity`'s hurt data, `AbstractBoat`'s
+    /// paddles and bubble time). The edge sends what changed.
+    DataChanged {
+        entity: EntityId,
+        chunk: ChunkPos,
+        hops: u32,
+        data: EntityData,
+    },
+    /// A sound at an entity (`sound_entity`): the sound's id, its source category, its
+    /// volume, its pitch and the seed the level's sound seeds drew.
+    EntitySound {
+        entity: EntityId,
+        chunk: ChunkPos,
+        sound: i32,
+        category: u8,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+    },
 }
 
 /// What an edge is told of an entity other than a player in a tick that changed it.
@@ -955,7 +1046,11 @@ impl RegionEvent {
             | Self::ItemTaken { chunk, .. } => [*chunk; 2],
             Self::EntityTracked(tracked) => [tracked.chunk; 2],
             Self::TransientBlock { position, .. } => [position.chunk(); 2],
-            Self::HandedOn { chunk, .. } => [*chunk; 2],
+            Self::HandedOn { chunk, .. }
+            | Self::Passengers { chunk, .. }
+            | Self::Leashed { chunk, .. }
+            | Self::DataChanged { chunk, .. }
+            | Self::EntitySound { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }

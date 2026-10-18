@@ -119,7 +119,7 @@ fn burning(entity: &Entity) -> bool {
 fn item_parts(data: &EntityData) -> Option<(ItemStack, i16)> {
     match data {
         EntityData::Item { stack, health, .. } => Some((*stack, *health)),
-        EntityData::FallingBlock { .. } => None,
+        _ => None,
     }
 }
 
@@ -323,7 +323,7 @@ impl Region {
         };
         let thrower = match &current.data {
             EntityData::Item { thrower, .. } => *thrower,
-            EntityData::FallingBlock { .. } => None,
+            _ => None,
         };
         let after = Entity {
             position: item.body.position,
@@ -645,7 +645,7 @@ fn record_is_mergable(record: &Entity) -> bool {
                 && record.age < item::LIFETIME
                 && stack.count < item::max_stack_size(stack)
         }
-        EntityData::FallingBlock { .. } => false,
+        _ => false,
     }
 }
 

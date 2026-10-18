@@ -260,6 +260,7 @@ impl Region {
             EntityData::FallingBlock { .. } => {
                 Some(Pushed::Falling(self.falling_body(record, chunk)))
             }
+            _ => None,
         }
     }
 

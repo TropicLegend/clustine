@@ -47,6 +47,7 @@ fn item(
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 
@@ -452,7 +453,7 @@ fn fire_sets_an_item_alight_and_burning_takes_its_health() {
         healths.push(
             record(&region, burning.key).map(|entity| match entity.data {
                 EntityData::Item { health, .. } => (health, entity.fire_ticks),
-                EntityData::FallingBlock { .. } => panic!(),
+                _ => panic!("an item"),
             }),
         );
     }

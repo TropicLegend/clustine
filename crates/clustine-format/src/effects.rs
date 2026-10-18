@@ -10,12 +10,16 @@
 //! | 2, a scheduled tick | 1 and a block u16, or 2 and a fluid u16; delay i32, priority i8 |
 //! | 3, a spread | direction u8 (0 to 5), the source's block u16 |
 //! | 4, a set if still | the block expected u16, the block to set u16, flags u32 |
+//! | 5, on an entity | its key u64, then 1, an attack: the attacker's key u64, flags u8 (bit 0 creative, bit 1 sprinting), the damage f32, where they stand 3 × f64; or 2, a use: the player's key u64, flags u8 (bit 0 creative, bit 1 sneaking), u8 0 or 1 and the stack held (item i32, count i32), where the click landed 3 × f64, where they stand 3 × f64 |
 //!
 //! When it is due is a u8, 0 for counted from its taking or 1 followed by the holder's
 //! tick u64. An effect's number is its sequence u64 and its index u32.
 
 use clustine_data::{BLOCK_STATE_COUNT, BlockState};
-use clustine_world::{BlockPos, Due, Effect, EffectId, Effected, FiledEffect, SeamKind, Ticked};
+use clustine_world::{
+    BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect, Float,
+    ItemStack, SeamKind, Ticked,
+};
 
 use crate::FormatError;
 use crate::bytes::Input;
@@ -24,6 +28,10 @@ const UPDATE: u8 = 1;
 const TICK: u8 = 2;
 const SPREAD: u8 = 3;
 const SET_IF: u8 = 4;
+const ON_ENTITY: u8 = 5;
+
+const USE_ATTACK: u8 = 1;
+const USE_INTERACT: u8 = 2;
 
 /// Bytes an effect takes at the least: its block and its kind.
 const EFFECT_LENGTH: usize = 13;
@@ -80,7 +88,70 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.extend_from_slice(&state.0.to_be_bytes());
             out.extend_from_slice(&flags.to_be_bytes());
         }
+        Effected::OnEntity { key, by } => {
+            out.push(ON_ENTITY);
+            out.extend_from_slice(&key.0.to_be_bytes());
+            match by {
+                EntityUse::Attack {
+                    attacker,
+                    creative,
+                    sprinting,
+                    damage,
+                    from,
+                } => {
+                    out.push(USE_ATTACK);
+                    out.extend_from_slice(&attacker.0.to_be_bytes());
+                    out.push(u8::from(creative) | (u8::from(sprinting) << 1));
+                    out.extend_from_slice(&damage.0.to_be_bytes());
+                    put_doubles(out, from);
+                }
+                EntityUse::Interact {
+                    player,
+                    creative,
+                    held,
+                    location,
+                    sneaking,
+                    from,
+                } => {
+                    out.push(USE_INTERACT);
+                    out.extend_from_slice(&player.0.to_be_bytes());
+                    out.push(u8::from(creative) | (u8::from(sneaking) << 1));
+                    match held {
+                        None => out.push(0),
+                        Some(stack) => {
+                            out.push(1);
+                            out.extend_from_slice(&stack.item.to_be_bytes());
+                            out.extend_from_slice(&stack.count.to_be_bytes());
+                        }
+                    }
+                    put_doubles(out, location);
+                    put_doubles(out, from);
+                }
+            }
+        }
     }
+}
+
+fn put_doubles(out: &mut Vec<u8>, values: [Double; 3]) {
+    for value in values {
+        out.extend_from_slice(&value.0.to_be_bytes());
+    }
+}
+
+fn take_doubles(input: &mut Input<'_>) -> Result<[Double; 3], FormatError> {
+    Ok([
+        Double(input.f64()?),
+        Double(input.f64()?),
+        Double(input.f64()?),
+    ])
+}
+
+fn take_two_flags(input: &mut Input<'_>) -> Result<(bool, bool), FormatError> {
+    let flags = input.u8()?;
+    if flags & !3 != 0 {
+        return Err(FormatError::Corrupt("an entity use's flags"));
+    }
+    Ok((flags & 1 != 0, flags & 2 != 0))
 }
 
 pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> {
@@ -124,6 +195,44 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
             state: take_block(input)?,
             flags: input.u32()?,
         },
+        ON_ENTITY => {
+            let key = EntityId(input.u64()?);
+            let by = match input.u8()? {
+                USE_ATTACK => {
+                    let attacker = EntityId(input.u64()?);
+                    let (creative, sprinting) = take_two_flags(input)?;
+                    EntityUse::Attack {
+                        attacker,
+                        creative,
+                        sprinting,
+                        damage: Float(input.f32()?),
+                        from: take_doubles(input)?,
+                    }
+                }
+                USE_INTERACT => {
+                    let player = EntityId(input.u64()?);
+                    let (creative, sneaking) = take_two_flags(input)?;
+                    let held = match input.u8()? {
+                        0 => None,
+                        1 => Some(ItemStack {
+                            item: input.i32()?,
+                            count: input.i32()?,
+                        }),
+                        _ => return Err(FormatError::Corrupt("an entity use's held flag")),
+                    };
+                    EntityUse::Interact {
+                        player,
+                        creative,
+                        held,
+                        location: take_doubles(input)?,
+                        sneaking,
+                        from: take_doubles(input)?,
+                    }
+                }
+                _ => return Err(FormatError::Corrupt("an entity use's kind")),
+            };
+            Effected::OnEntity { key, by }
+        }
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };
     Ok(Effect { at, what })
@@ -349,5 +458,77 @@ mod tests {
             take_due(&mut Input(&[2])),
             Err(FormatError::Corrupt("when an effect is due"))
         );
+    }
+}
+
+#[cfg(test)]
+mod entity_uses {
+    use super::*;
+
+    fn round_trip(effect: Effect) {
+        let mut out = Vec::new();
+        put_effect(&mut out, &effect);
+        let mut input = Input(&out);
+        assert_eq!(take_effect(&mut input), Ok(effect));
+        assert!(input.0.is_empty());
+    }
+
+    #[test]
+    fn a_hit_and_a_use_of_an_entity_are_read_back_as_written() {
+        let at = BlockPos::new(-17, 64, 3);
+        round_trip(Effect {
+            at,
+            what: Effected::OnEntity {
+                key: EntityId(9 << 32 | 4),
+                by: EntityUse::Attack {
+                    attacker: EntityId(2 << 32),
+                    creative: true,
+                    sprinting: false,
+                    damage: Float(1.5),
+                    from: [Double(-16.5), Double(64.0), Double(2.25)],
+                },
+            },
+        });
+        for held in [None, Some(ItemStack { item: 7, count: 3 })] {
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(1),
+                    by: EntityUse::Interact {
+                        player: EntityId(5),
+                        creative: false,
+                        held,
+                        location: [Double(0.25), Double(1.5), Double(-0.125)],
+                        sneaking: true,
+                        from: [Double(-15.0), Double(63.0), Double(4.0)],
+                    },
+                },
+            });
+        }
+    }
+
+    #[test]
+    fn a_use_of_an_entity_with_flags_out_of_range_is_refused() {
+        let mut out = Vec::new();
+        put_effect(
+            &mut out,
+            &Effect {
+                at: BlockPos::new(0, 0, 0),
+                what: Effected::OnEntity {
+                    key: EntityId(1),
+                    by: EntityUse::Attack {
+                        attacker: EntityId(2),
+                        creative: false,
+                        sprinting: false,
+                        damage: Float(1.0),
+                        from: [Double(0.0); 3],
+                    },
+                },
+            },
+        );
+        // The flags follow the block (12), the kind (1), the key (8), the use's kind (1)
+        // and the attacker (8).
+        out[30] = 4;
+        assert!(take_effect(&mut Input(&out)).is_err());
     }
 }

@@ -206,6 +206,7 @@ impl Region {
             },
             fall_distance: 0.0,
             fire_ticks: 0,
+            riding: Default::default(),
         };
         let shown_at = output.events.len();
         self.set_block_updated(pos, fluid_block(state), UPDATE_ALL, UPDATE_LIMIT, output);
@@ -680,7 +681,7 @@ impl Region {
                 cancel_drop,
                 ..
             } => Some((*state, *drop_item, *cancel_drop)),
-            EntityData::Item { .. } => None,
+            _ => None,
         };
         let committed = moved
             || after.on_ground != before.on_ground

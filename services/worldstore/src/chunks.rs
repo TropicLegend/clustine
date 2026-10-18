@@ -1506,6 +1506,10 @@ impl ChunkService {
 /// taken, or its seam entries, whole (`docs/adr/0024-block-behaviour-in-a-region.md`,
 /// sections 4 to 6). A commit's records come after its blocks.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an entity is held whole while the store reads, files or replays it; boxing it would allocate once more for each"
+)]
 pub(crate) enum Replayed {
     Block(BlockPos, BlockState),
     /// The data of the block entity at the position, in its place among the blocks

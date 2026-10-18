@@ -929,6 +929,7 @@ impl Region {
                     self.made_in = None;
                 }
             }
+            Effected::OnEntity { key, by } => self.entity_used(key, by, output),
         }
     }
 

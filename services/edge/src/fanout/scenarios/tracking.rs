@@ -49,6 +49,7 @@ fn other(key: u64, position: [f64; 3], hops: u32, data: EntityData) -> EntitySta
     let kind = match data {
         EntityData::Item { .. } => entity_types::ITEM,
         EntityData::FallingBlock { .. } => entity_types::FALLING_BLOCK,
+        _ => unreachable!("the scenarios of tracking show items and falling blocks"),
     };
     EntityState {
         entity: EntityId(key),

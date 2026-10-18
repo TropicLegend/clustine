@@ -39,6 +39,7 @@ fn falling(key: u64, position: [f64; 3], motion: [f64; 3], state: BlockState, ti
         },
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
     }
 }
 

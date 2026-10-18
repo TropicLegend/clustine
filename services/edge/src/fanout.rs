@@ -1677,6 +1677,14 @@ impl Fanout {
                 player,
                 event: PlayerEvent::InventorySlot { slot, stack },
             } => self.inventory_slot(player, slot, stack).await,
+            // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
+            WorkerToEdge::ToPlayer {
+                event:
+                    PlayerEvent::VehicleCorrected { .. }
+                    | PlayerEvent::Rides { .. }
+                    | PlayerEvent::Kicked { .. },
+                ..
+            } => {}
             WorkerToEdge::Outbox { number, entry } => self.outbox(from, number, entry).await,
             WorkerToEdge::Presence { player, answer } => {
                 self.presence(from, player, answer).await;
@@ -2856,6 +2864,11 @@ impl Fanout {
                 motion,
                 ..
             } => self.hand_on(from, entity, hops, position, motion).await,
+            // Shown from the steps of N5 that make them.
+            RegionEvent::Passengers { .. }
+            | RegionEvent::Leashed { .. }
+            | RegionEvent::DataChanged { .. }
+            | RegionEvent::EntitySound { .. } => {}
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
@@ -5152,7 +5165,9 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
         let [x, y, z] = pairing.position;
         let block = match data {
             EntityData::FallingBlock { state, .. } => i32::from(*state),
-            EntityData::Item { .. } => 0,
+            // What N5's kinds send here (a hanging entity's direction) comes with the
+            // steps that bring them.
+            _ => 0,
         };
         let mut packets = vec![encoded(&SpawnEntity {
             entity_id: id,
@@ -5228,8 +5243,9 @@ fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
                 EntityDataValue::ItemStack(Some(protocol_stack(*stack))),
             )],
         },
-        // A falling block's start, its index 8, comes with step N4d.
-        EntityData::FallingBlock { .. } => SetEntityData {
+        // A falling block's start, its index 8, comes with step N4d; N5's kinds' data
+        // with the steps that bring them.
+        _ => SetEntityData {
             entity_id: id,
             values: Vec::new(),
         },

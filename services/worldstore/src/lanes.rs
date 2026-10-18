@@ -302,6 +302,10 @@ impl Group {
 }
 
 /// What a record of the log does to the arrivals, as the store's start reads it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an entity is held whole while the store reads, files or replays it; boxing it would allocate once more for each"
+)]
 enum ArrivalStep {
     File(EffectId, KeptArrival),
     Take(EffectId),

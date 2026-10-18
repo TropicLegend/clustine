@@ -167,6 +167,19 @@ impl Region {
         }
     }
 
+    /// A player's hit on, or use of, the entity `key`, made in another region and done
+    /// here, where the entity is (`docs/groundwork/n5-plan.md`, decision 10). Nothing in
+    /// N5a uses an entity: the steps that bring each kind answer it, and one gone by now
+    /// is passed over.
+    pub(crate) fn entity_used(
+        &mut self,
+        key: EntityId,
+        by: clustine_world::EntityUse,
+        output: &mut TickOutput,
+    ) {
+        let _ = (key, by, output);
+    }
+
     /// Forgets the entities of the chunk at `position`, which is no longer loaded.
     pub(crate) fn let_go_entities(&mut self, position: ChunkPos) {
         let memory = &mut self.entity_memory;
@@ -181,6 +194,7 @@ impl Region {
 
     /// Applies what later commits did to the entities of copied chunks. A whole entity
     /// outside the chunk it is for is passed over: the holder's chunk would not have it.
+    /// A passenger is its root's chunk's, wherever it sits.
     pub(crate) fn update_copied_entities(&mut self, updates: &[(ChunkPos, Vec<EntityChange>)]) {
         for (position, changes) in updates {
             let Some(copy) = self.copies.get_mut(position) else {
@@ -188,6 +202,7 @@ impl Region {
             };
             for change in changes {
                 if let EntityChange::Whole(entity) = change
+                    && entity.riding.vehicle.is_none()
                     && entity.chunk() != *position
                 {
                     continue;
@@ -227,6 +242,9 @@ impl Region {
                 EntityData::FallingBlock { .. } => {
                     self.tick_falling_block(entity, position, output);
                 }
+                // Ticked from the steps of N5 that bring them (`docs/groundwork/
+                // n5-plan.md`); until then they stand as they were made.
+                _ => {}
             }
         }
         // What took another in by a merge has its counters committed as the tick leaves
@@ -394,6 +412,7 @@ impl Region {
             fall_distance: 0.0,
             // The game's field starts at 0.
             fire_ticks: 0,
+            riding: Default::default(),
         };
         output.events.push(RegionEvent::ArmSwung {
             entity: thrower_key,

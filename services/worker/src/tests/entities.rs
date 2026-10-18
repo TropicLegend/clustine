@@ -36,6 +36,7 @@ fn item(key: u64, x: f64, z: f64) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: -1,
+        riding: Default::default(),
     }
 }
 

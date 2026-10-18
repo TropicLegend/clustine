@@ -860,6 +860,7 @@ fn what_a_region_does_in_land_nobody_has_told_it_of_and_it_does_not_want_is_an_e
                 Effected::Tick { .. } => "tick",
                 Effected::Spread { .. } => "spread",
                 Effected::SetIf { .. } => "set",
+                Effected::OnEntity { .. } => "on an entity",
             };
             (effect.at, kind)
         })

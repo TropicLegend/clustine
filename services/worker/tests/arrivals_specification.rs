@@ -791,6 +791,7 @@ fn stone(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
         age: 1,
         fall_distance: 0.0,
         fire_ticks: 0,
+        riding: Default::default(),
         data: EntityData::Item {
             stack: ItemStack {
                 item: items::STONE,

@@ -48,6 +48,7 @@ fn thrown(key: u64) -> Entity {
         },
         fall_distance: 0.0,
         fire_ticks: -1,
+        riding: Default::default(),
     }
 }
 

@@ -294,6 +294,8 @@ impl Tracker {
                     ));
                 }
             }
+            // N5's kinds' data comes with the steps that bring them.
+            _ => {}
         }
         values
     }

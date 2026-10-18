@@ -1077,11 +1077,12 @@ fn put_arrival(out: &mut Vec<u8>, chunk: ChunkPos, entity: &Entity, due: Due) {
     crate::effects::put_due(out, due);
 }
 
-/// Reads what [`put_arrival`] wrote; an entity not in the chunk it is sent to is refused.
+/// Reads what [`put_arrival`] wrote; an entity not in the chunk it is sent to is refused,
+/// but for a passenger, which goes to its root's.
 fn take_arrival(input: &mut Input<'_>) -> Result<(ChunkPos, Entity, Due), FormatError> {
     let chunk = ChunkPos::new(input.i32()?, input.i32()?);
     let entity = crate::entities::take_entity(input)?;
-    if entity.chunk() != chunk {
+    if entity.riding.vehicle.is_none() && entity.chunk() != chunk {
         return Err(FormatError::Corrupt("an arrival outside its chunk"));
     }
     Ok((chunk, entity, crate::effects::take_due(input)?))
