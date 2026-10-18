@@ -6,12 +6,16 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
 
   biome_parameters.bin
   block_classes.rs
+  block_physics.rs
   block_properties.rs
   block_states.bin
   blocks.rs
+  collisions.bin
   dimension_types.rs
   entity_types.rs
+  item_components.rs
   items.rs
+  loot_tables.rs
   mod.rs
   registries.rs
   sound_events.rs
