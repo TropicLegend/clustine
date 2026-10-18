@@ -1540,6 +1540,31 @@ impl Region {
         // stay needs no other name from here on.
         player.attempt = None;
         self.journal.players.insert(id);
+        let (input, off_hand) = match input {
+            PlayerInput::WithOffHand(used) => (used.as_ref(), true),
+            input => (input, false),
+        };
+        // In the hand the use is made with.
+        let held = if off_hand {
+            player.inventory.0[OFF_HAND]
+        } else {
+            player.held()
+        };
+        if off_hand
+            && (held.is_none()
+                || !matches!(
+                    input,
+                    PlayerInput::UseItemOn { .. } | PlayerInput::UseItem { .. }
+                ))
+        {
+            // An empty off hand does nothing, and nothing but a use is made with a hand.
+            if let PlayerInput::UseItemOn { sequence, .. } | PlayerInput::UseItem { sequence, .. } =
+                input
+            {
+                player.acknowledge(*sequence);
+            }
+            return;
+        }
         match input {
             PlayerInput::Move {
                 position,
@@ -1562,6 +1587,8 @@ impl Region {
                     player.inventory.set(usize::from(*slot), *stack);
                 }
             }
+            // A use with the off hand within a use with the off hand: passed over above.
+            PlayerInput::WithOffHand(_) => {}
             PlayerInput::SwapHands => {
                 // As the game's `handlePlayerAction` does it: the off hand's stack goes
                 // into the hand and the hand's into the off hand. The client does not
@@ -1590,7 +1617,7 @@ impl Region {
                 // on, as vanilla takes it before it uses the item.
                 (player.pose.yaw, player.pose.pitch) = *rotation;
                 let item_use = ItemUse {
-                    held: player.held().map(|stack| stack.item),
+                    held: held.map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: rotation.0,
                     pitch: rotation.1,
@@ -1657,16 +1684,21 @@ impl Region {
                     face: *face,
                     cursor: *cursor,
                     sneaking: *sneaking,
-                    held: player.held().map(|stack| stack.item),
+                    held: held.map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: player.pose.yaw,
                     pitch: player.pose.pitch,
+                };
+                let step = if off_hand {
+                    RemoteStep::OffHandOn { click }
+                } else {
+                    RemoteStep::UseOn { click }
                 };
                 let action = RemoteAction {
                     player: id,
                     entity,
                     sequence,
-                    step: RemoteStep::UseOn { click },
+                    step,
                 };
                 // The clicked block is for the region that holds its chunk to judge,
                 // and what is placed beside it for the region that holds that one's.
@@ -1702,22 +1734,28 @@ impl Region {
             self.redstone_ore_clicked(click, output);
         }
         let (click, target, replace_clicked, clicked) = match &action.step {
-            RemoteStep::UseOn { click } => match placement::click(click, &Readable(self)) {
-                Clicked::Nothing => return None,
-                Clicked::Used { changes, flags } => {
-                    self.use_block(&changes, flags, action.player, output);
-                    return None;
+            RemoteStep::UseOn { click } | RemoteStep::OffHandOn { click } => {
+                match placement::click_with(
+                    click,
+                    matches!(action.step, RemoteStep::OffHandOn { .. }),
+                    &Readable(self),
+                ) {
+                    Clicked::Nothing => return None,
+                    Clicked::Used { changes, flags } => {
+                        self.use_block(&changes, flags, action.player, output);
+                        return None;
+                    }
+                    Clicked::ByRule { position, face } => {
+                        self.use_by_rule(position, face, action.player, output);
+                        return None;
+                    }
+                    Clicked::Place {
+                        target,
+                        replace_clicked,
+                        clicked,
+                    } => (click, target, replace_clicked, clicked),
                 }
-                Clicked::ByRule { position, face } => {
-                    self.use_by_rule(position, face, action.player, output);
-                    return None;
-                }
-                Clicked::Place {
-                    target,
-                    replace_clicked,
-                    clicked,
-                } => (click, target, replace_clicked, clicked),
-            },
+            }
             RemoteStep::PlaceAt {
                 click,
                 target,
@@ -2037,9 +2075,9 @@ impl Region {
                 self.place_block(target, block, Some(placer), output);
                 done
             }
-            RemoteStep::UseOn { .. } | RemoteStep::PlaceAt { .. } => {
-                self.click_here(action, output).unwrap_or(done)
-            }
+            RemoteStep::UseOn { .. }
+            | RemoteStep::OffHandOn { .. }
+            | RemoteStep::PlaceAt { .. } => self.click_here(action, output).unwrap_or(done),
         }
     }
 
@@ -4411,6 +4449,38 @@ mod tests {
             "{:?}",
             output.player_events
         );
+    }
+
+    #[test]
+    fn a_use_with_the_off_hand_places_what_the_off_hand_holds_and_an_empty_one_does_nothing() {
+        let mut region = on_floor(&[1]);
+        let off_hand = |input: Input| {
+            let (edge, player, entity, number, used) = input;
+            (
+                edge,
+                player,
+                entity,
+                number,
+                PlayerInput::WithOffHand(Box::new(used)),
+            )
+        };
+        // A stick in hand, which places nothing, and nothing in the off hand: the client
+        // tries the off hand next, and nothing comes of it either.
+        let output = region.tick(&moves(vec![
+            select(1, 2),
+            off_hand(place(1, 2, -61, 0, Face::Top)),
+        ]));
+        assert!(block_changes(&output).is_empty());
+        // With dirt in the off hand it is placed.
+        let output = region.tick(&moves(vec![
+            set_slot(1, 40, Some(DIRT)),
+            off_hand(place(1, 2, -61, 0, Face::Top)),
+        ]));
+        assert_eq!(block_changes(&output), [changed(2, -60, 0, blocks::DIRT)]);
+        // Only a use is made with a hand.
+        let output = region.tick(&moves(vec![off_hand(select(1, 4))]));
+        assert_eq!(region.state().players[&player(1)].selected_slot, 2);
+        assert!(block_changes(&output).is_empty());
     }
 
     #[test]
@@ -7667,7 +7737,9 @@ mod tests {
         for action in actions {
             let kind = match action.step {
                 RemoteStep::Break { .. } => 0,
-                RemoteStep::PlaceAgainst { .. } | RemoteStep::UseOn { .. } => 1,
+                RemoteStep::PlaceAgainst { .. }
+                | RemoteStep::UseOn { .. }
+                | RemoteStep::OffHandOn { .. } => 1,
                 RemoteStep::Place { .. } | RemoteStep::PlaceAt { .. } => 2,
             };
             kinds[kind] += 1;

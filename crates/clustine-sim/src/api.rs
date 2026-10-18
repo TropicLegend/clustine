@@ -283,6 +283,10 @@ pub enum PlayerInput {
     /// off hand (the game's `SWAP_ITEM_WITH_OFFHAND`, the key F). Added at the end, so
     /// that what is stored of inputs reads as it did.
     SwapHands,
+    /// A use (`UseItemOn` or `UseItem`) made with the off hand, which a client sends when
+    /// the same use with the main hand did nothing. Any other input so wrapped is passed
+    /// over.
+    WithOffHand(Box<PlayerInput>),
 }
 
 /// What is left to do of something a player did to blocks that the region the player is
@@ -342,6 +346,13 @@ pub enum RemoteStep {
         target: BlockPos,
         clicked: BlockState,
     },
+    /// A click as `UseOn`'s, made with the off hand, whose item `click` holds: as the game's
+    /// `ServerPlayerGameMode.useItemOn` for the off hand, the clicked block is not used
+    /// without its item (`useWithoutItem` is for the main hand only); in Clustine the
+    /// block is not used at all, and the item is placed, the uses of a block with an item
+    /// in the off hand (a flower into a pot) being a difference to mend when they matter.
+    /// Added at the end, so that what is stored of remote actions reads as it did.
+    OffHandOn { click: Click },
 }
 
 impl RemoteStep {
@@ -351,7 +362,7 @@ impl RemoteStep {
             Self::Break { position } => *position,
             Self::PlaceAgainst { against, .. } => *against,
             Self::Place { target, .. } => *target,
-            Self::UseOn { click } => click.position,
+            Self::UseOn { click } | Self::OffHandOn { click } => click.position,
             Self::PlaceAt { target, .. } => *target,
         }
     }

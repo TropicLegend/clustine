@@ -3335,7 +3335,7 @@ impl RegionRunner {
     fn waits_for_its_chunk(&self, link: &EdgeLink, message: &EdgeMessage) -> bool {
         let chunk = |position: BlockPos| position.chunk();
         let about = match &message.body {
-            EdgeToWorker::Input { input, .. } => match input {
+            EdgeToWorker::Input { input, .. } => match off_hand_or_not(input) {
                 PlayerInput::Dig { position, .. } => vec![chunk(*position)],
                 // The block that was clicked, and the spot beside the clicked face,
                 // where a block is placed.
@@ -3349,6 +3349,7 @@ impl RegionRunner {
                 | PlayerInput::SelectSlot { .. }
                 | PlayerInput::SetInventorySlot { .. }
                 | PlayerInput::SwapHands
+                | PlayerInput::WithOffHand(_)
                 | PlayerInput::SetFlying { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
@@ -3358,7 +3359,7 @@ impl RegionRunner {
                 } => vec![chunk(*against), chunk(*target)],
                 RemoteStep::Place { target, .. } => vec![chunk(*target)],
                 // As for a click of the region's own player.
-                RemoteStep::UseOn { click } => {
+                RemoteStep::UseOn { click } | RemoteStep::OffHandOn { click } => {
                     let beside = click.face.neighbour(click.position);
                     vec![chunk(click.position), chunk(beside)]
                 }
@@ -4165,6 +4166,15 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
     state.entity_ids = restored.entity_ids;
     state.next_entity_id = restored.entity_ids.first;
     Ok(state)
+}
+
+/// The use within a use with the off hand, which is about the same chunks; any other
+/// input as it is.
+fn off_hand_or_not(input: &PlayerInput) -> &PlayerInput {
+    match input {
+        PlayerInput::WithOffHand(used) => used,
+        input => input,
+    }
 }
 
 /// A region running on its own thread.

@@ -358,8 +358,7 @@ async fn used_item_on(
         _ => None,
     };
     match face {
-        // Only the main hand holds anything.
-        Some(face) if packet.hand == MAIN_HAND => {
+        Some(face) => {
             let position = packet.position;
             let input = PlayerInput::UseItemOn {
                 position: BlockPos::new(position.x, position.y, position.z),
@@ -368,7 +367,7 @@ async fn used_item_on(
                 sneaking,
                 sequence: packet.sequence,
             };
-            send_input(shared, client, input).await
+            send_input(shared, client, in_hand(packet.hand, input)).await
         }
         // Nothing happens, but the client counts this among its guesses too.
         _ => handled(shared, client, packet.sequence).await,
@@ -393,10 +392,6 @@ async fn used_item(
     packet: ServerboundUseItem,
     sneaking: bool,
 ) -> Result<(), ConnectionError> {
-    // Only the main hand holds anything.
-    if packet.hand != MAIN_HAND {
-        return handled(shared, client, packet.sequence).await;
-    }
     // A rotation that is no number aims at nothing: only the guess is handled.
     let rotation = if packet.yaw.is_finite() && packet.pitch.is_finite() {
         (packet.yaw, packet.pitch.clamp(-90.0, 90.0))
@@ -408,7 +403,17 @@ async fn used_item(
         sneaking,
         sequence: packet.sequence,
     };
-    send_input(shared, client, input).await
+    send_input(shared, client, in_hand(packet.hand, input)).await
+}
+
+/// `used` as made with `hand`: a client sends a use with the off hand after the same
+/// use with the main hand did nothing, and the region uses what the off hand holds.
+fn in_hand(hand: i32, used: PlayerInput) -> PlayerInput {
+    if hand == MAIN_HAND {
+        used
+    } else {
+        PlayerInput::WithOffHand(Box::new(used))
+    }
 }
 
 /// What a creative-mode client's setting of the container slot `slot` of its inventory

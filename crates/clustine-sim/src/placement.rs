@@ -94,11 +94,17 @@ pub enum Clicked {
 /// What a click on `click.position` does, read where that block is held: a use, or
 /// where a block is to be placed (sections 3.2, 4.1 and 4.2).
 pub fn click(click: &Click, blocks: &dyn Blocks) -> Clicked {
+    click_with(click, false, blocks)
+}
+
+/// [`click`] with the main hand, or with the off hand where `off_hand`.
+pub fn click_with(click: &Click, off_hand: bool, blocks: &dyn Blocks) -> Clicked {
     let Some(clicked) = blocks.block(click.position) else {
         return Clicked::Nothing;
     };
-    // Sneaking with something in hand passes the block by and places against it.
-    if !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
+    // Sneaking with something in hand passes the block by and places against it, and a
+    // click with the off hand does not use the block (`RemoteStep::OffHandOn`).
+    if !off_hand && !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
         let used = use_block(click, clicked, blocks);
         // Wire that is neither a dot nor a cross, or would not change, a bell hit
         // where it does not ring, and a note block clicked on top with a head pass the
