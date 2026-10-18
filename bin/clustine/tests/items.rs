@@ -1,28 +1,37 @@
 //! End-to-end tests of the item a player throws, written from the specification
 //! (`docs/adr/0028-entities.md`, sections 1 to 3 and 6; `docs/groundwork/n2-plan.md`,
-//! sections 1, 7, 8 and 11; the roadmap's "What a player meets until N4") by someone
-//! who did not write the code: Q, ctrl+Q and the creative screen throw an item that
-//! every client in view is shown once, that lies where it was thrown, and that is there
-//! again, exactly once, after the server is stopped and started, after the process is
-//! killed, after its region is taken over and after its chunk was left alone.
+//! sections 1, 7, 8 and 11; `docs/groundwork/n4-plan.md`, section 1; the roadmap's
+//! "What a player meets until N4") by someone who did not write the code: Q, ctrl+Q and
+//! the creative screen throw an item that every client in view is shown once, that flies
+//! off, lands and lies where it landed, and that is there again, exactly once and where
+//! it lay, after the server is stopped and started, after the process is killed, after
+//! its region is taken over and after its chunk was left alone; and a creative player
+//! who walks onto it after its two seconds picks it up.
+//!
+//! A thrown item lands about three blocks in front of its thrower, so a thrower who
+//! stands still is not over it (a player picks up what is within a block of their
+//! box). The bots here never walk over an item but in the test that means them to.
 //!
 //! With `CLUSTINE_TEST_PINS` set, the world is divided as the other end-to-end tests
 //! divide it, and the spawn, where the item is thrown, is at a pinned line.
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clustine::Config;
 use clustine_botswarm::{Bot, Connection, SeenEntity};
 use clustine_data::{entity_types, items};
 use clustine_protocol::codec::{Position, Reader};
+use clustine_protocol::delta::VecDeltaCodec;
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids::play::clientbound;
 use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, ClientboundPlay, EntityDataValue, PlayerAction, ServerboundKeepAlive,
-    SetCreativeModeSlot, SetHeldItem, SpawnEntity, face, inventory, player_action,
+    ClientTickEnd, ClientboundKeepAlive, ClientboundPlay, EntityDataValue, PlayerAction,
+    ServerboundKeepAlive, SetCreativeModeSlot, SetHeldItem, SetPlayerPosition, SpawnEntity,
+    TakeItemEntity, VecDelta, face, inventory, movement_flags, player_action,
 };
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
@@ -35,6 +44,27 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// thrown item leaves (`ServerPlayer.drop`): the plan, section 11.
 const EYES: f32 = 1.62;
 const BELOW_THE_EYES: f64 = 0.300_000_011_920_928_96;
+
+/// The top of the flat world's floor, where a thrown item comes to lie.
+const FLOOR: f64 = -60.0;
+
+/// How far apart two clients' views of an item at rest may be: one follows its moves,
+/// and the edge sends a move only once the item is more than the game's tolerance
+/// (the square root of 7.6e-6, under 0.003 of a block) from where it was last sent, and
+/// the other was shown it whole.
+const AT_REST: f64 = 1.0 / 256.0;
+
+/// How many of the region's ticks an item's position has to stay as shown, on the
+/// ground, for it to be taken as at rest: more than two of the edge's updates of an
+/// item, which come every 20 ticks (the brief's section 9). An item that has stopped
+/// is sent nothing more, so there is no message that says it has; the ticks are
+/// counted by round trips, each of which the region answers in a tick of its own.
+const TICKS_AT_REST: usize = 45;
+
+/// How far from a player's feet, horizontally, an item is out of their reach: a player
+/// picks up what touches their box (0.6 wide) grown by a block, and an item is 0.25
+/// wide; half a block more than that.
+const OUT_OF_REACH: f64 = 0.3 + 1.0 + 0.125 + 0.5;
 
 /// Joins and waits for the chunks around the spawn point.
 async fn join(address: &str, name: &str) -> Bot {
@@ -65,6 +95,37 @@ async fn sees(bot: &mut Bot, uuid: Uuid) -> SeenEntity {
     shown[0].clone()
 }
 
+/// Waits until `bot` shows the item `uuid` at rest, and returns it as shown: on the
+/// ground, and where it was through [`TICKS_AT_REST`] ticks of the region.
+async fn landed(bot: &mut Bot, uuid: Uuid) -> SeenEntity {
+    let shown = |bot: &Bot| {
+        items_of(bot)
+            .into_iter()
+            .find(|item| item.uuid == uuid && item.on_ground)
+            .map(|item| item.position)
+    };
+    loop {
+        bot.wait_until(PATIENCE, |bot| shown(bot).is_some())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} never showed the item {uuid} on the ground: {error:#}",
+                    bot.report()
+                )
+            });
+        let before = shown(bot);
+        for _ in 0..TICKS_AT_REST {
+            let last = bot.dig(6, -61, 6).await.unwrap();
+            bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= last)
+                .await
+                .unwrap();
+        }
+        if shown(bot) == before {
+            return sees(bot, uuid).await;
+        }
+    }
+}
+
 /// The chunks around the bot's, which the server ticks once they are loaded: a throw
 /// from a chunk that does not tick throws nothing (the plan, section 11), so the
 /// tests throw once the bot has them all.
@@ -85,17 +146,57 @@ struct ShownToTheThrower {
     stack: Option<ItemStack>,
 }
 
+/// An item as a [`Player`]'s connection was shown it, its moves followed as a client
+/// follows them.
+#[derive(Debug, Clone)]
+struct ShownItem {
+    uuid: Uuid,
+    position: (f64, f64, f64),
+    on_ground: bool,
+    /// From its data, index 8, as it was last sent.
+    stack: Option<ItemStack>,
+}
+
 /// A player's connection after it has joined, from which it throws and reads what it
-/// is shown, answering keep-alives meanwhile.
-struct Thrower {
+/// is shown, answering keep-alives and following the items it is shown meanwhile.
+struct Player {
     connection: Connection,
     /// Where its feet are.
     feet: (f64, f64, f64),
     /// The wire id the login gave the player's own entity.
     own_id: i32,
+    /// The items it is shown, by wire id.
+    items: BTreeMap<i32, ShownItem>,
+    /// The items it was shown and then told were removed, in order.
+    gone: Vec<ShownItem>,
+    /// Every pick-up it was shown (`take_item_entity`), in order.
+    taken: Vec<TakeItemEntity>,
+    /// The slots of its inventory the server changed of its own accord, as the
+    /// inventory numbers them (`set_player_inventory`).
+    told_slots: BTreeMap<i32, Option<ItemStack>>,
+    /// The number of its latest round trip.
+    sequence: i32,
 }
 
-impl Thrower {
+impl Player {
+    /// Reads from `bot`'s connection from now on; it is shown no item yet.
+    fn of(bot: Bot) -> Self {
+        assert!(items_of(&bot).is_empty(), "{:?}", items_of(&bot));
+        // Its round trips go on from the bot's: a sequence number acknowledged already
+        // is not acknowledged again.
+        let sequence = bot.acknowledged_sequence;
+        Self {
+            feet: bot.location,
+            own_id: bot.info.login.entity_id,
+            connection: bot.into_connection(),
+            items: BTreeMap::new(),
+            gone: Vec::new(),
+            taken: Vec::new(),
+            told_slots: BTreeMap::new(),
+            sequence,
+        }
+    }
+
     async fn join(address: &str, name: &str, watcher: &mut Bot) -> Self {
         let mut bot = join(address, name).await;
         around_loaded(&mut bot).await;
@@ -109,11 +210,7 @@ impl Thrower {
         })
         .await
         .unwrap();
-        Self {
-            feet: bot.location,
-            own_id: bot.info.login.entity_id,
-            connection: bot.into_connection(),
-        }
+        Self::of(bot)
     }
 
     /// Puts `stack` into hotbar slot 0 from the creative inventory and holds it.
@@ -160,10 +257,28 @@ impl Thrower {
             .unwrap();
     }
 
+    /// Moves to `x`, `z` at the height of its feet in a single step, as a client says
+    /// where it is, and ends its tick.
+    async fn step_to(&mut self, x: f64, z: f64) {
+        self.feet = (x, self.feet.1, z);
+        self.connection
+            .write(&SetPlayerPosition {
+                x,
+                y: self.feet.1,
+                z,
+                flags: movement_flags::ON_GROUND,
+            })
+            .await
+            .unwrap();
+        self.connection.write(&ClientTickEnd).await.unwrap();
+    }
+
     /// Breaks a block of the floor where nothing was thrown, and returns once the
     /// server has acknowledged it: everything the server did with what was sent
     /// before has been done, and what it sent of it has come.
-    async fn round_trip(&mut self, sequence: i32) -> Vec<Vec<u8>> {
+    async fn round_trip(&mut self) -> Vec<Vec<u8>> {
+        self.sequence += 1;
+        let sequence = self.sequence;
         self.connection
             .write(&PlayerAction {
                 status: player_action::START_DESTROY_BLOCK,
@@ -188,7 +303,8 @@ impl Thrower {
         }
     }
 
-    /// The next frame that is not a keep-alive, which is answered.
+    /// The next frame that is not a keep-alive, which is answered, after following
+    /// what it says of items.
     async fn next_frame(&mut self, deadline: Instant) -> Result<Vec<u8>> {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -204,8 +320,145 @@ impl Thrower {
                 }
                 continue;
             }
+            self.follow(&frame)?;
             return Ok(frame.to_vec());
         }
+    }
+
+    /// Takes in what `frame` says of items, of pick-ups and of the inventory, as a
+    /// client does; fails where it shows an item twice.
+    fn follow(&mut self, frame: &[u8]) -> Result<()> {
+        let Ok(packet) = ClientboundPlay::decode(frame) else {
+            return Ok(());
+        };
+        match packet {
+            ClientboundPlay::SpawnEntity(spawn) if spawn.kind == entity_types::ITEM => {
+                ensure!(
+                    !self.items.contains_key(&spawn.entity_id)
+                        && !self.items.values().any(|item| item.uuid == spawn.uuid),
+                    "an item shown twice: {spawn:?}"
+                );
+                self.items.insert(
+                    spawn.entity_id,
+                    ShownItem {
+                        uuid: spawn.uuid,
+                        position: (spawn.x, spawn.y, spawn.z),
+                        on_ground: false,
+                        stack: None,
+                    },
+                );
+            }
+            ClientboundPlay::SetEntityData(data) => {
+                if let Some(item) = self.items.get_mut(&data.entity_id) {
+                    for (index, value) in &data.values {
+                        if let (8, EntityDataValue::ItemStack(stack)) = (index, value) {
+                            item.stack = *stack;
+                        }
+                    }
+                }
+            }
+            ClientboundPlay::MoveEntityPos(moved) => {
+                self.moved(moved.entity_id, &moved.delta, moved.on_ground)
+            }
+            ClientboundPlay::MoveEntityPosRot(moved) => {
+                self.moved(moved.entity_id, &moved.delta, moved.on_ground)
+            }
+            ClientboundPlay::SyncEntityPosition(sync) => {
+                if let Some(item) = self.items.get_mut(&sync.entity_id) {
+                    if let Some(position) = sync.path.end() {
+                        item.position = position;
+                    }
+                    item.on_ground = sync.on_ground;
+                }
+            }
+            ClientboundPlay::RemoveEntities(removed) => {
+                for id in removed.entity_ids {
+                    if let Some(item) = self.items.remove(&id) {
+                        self.gone.push(item);
+                    }
+                }
+            }
+            ClientboundPlay::TakeItemEntity(taken) => self.taken.push(taken),
+            ClientboundPlay::SetPlayerInventory(put) => {
+                self.told_slots.insert(put.slot, put.stack);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A relative move of the item `id`, followed as a client follows it.
+    fn moved(&mut self, id: i32, delta: &VecDelta, on_ground: bool) {
+        let Some(item) = self.items.get_mut(&id) else {
+            return;
+        };
+        let delta = match delta {
+            VecDelta::Linear(delta) => *delta,
+            VecDelta::Stepped(steps) => steps.last().map_or([0; 3], |(_, delta)| *delta),
+        };
+        let (x, y, z) = item.position;
+        let [x, y, z] = VecDeltaCodec::new([x, y, z]).decode(delta);
+        item.position = (x, y, z);
+        item.on_ground = on_ground;
+    }
+
+    /// Reads what comes until `done` holds.
+    async fn until(&mut self, what: &str, mut done: impl FnMut(&Self) -> bool) -> Result<()> {
+        let deadline = Instant::now() + PATIENCE;
+        while !done(self) {
+            if let Err(error) = self.next_frame(deadline).await {
+                bail!("never {what}: {error:#}; shown {:?}", self.items);
+            }
+        }
+        Ok(())
+    }
+
+    /// The item `uuid` with its wire id, if it is shown.
+    fn item(&self, uuid: Uuid) -> Option<(i32, &ShownItem)> {
+        (self.items.iter())
+            .find(|(_, item)| item.uuid == uuid)
+            .map(|(id, item)| (*id, item))
+    }
+
+    /// Reads until `done` holds and every item shown is on the ground, and they all
+    /// stay as shown through [`TICKS_AT_REST`] ticks of the region (see [`landed`]).
+    async fn at_rest(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+        let shown = |player: &Self| {
+            let all = (player.items.iter())
+                .map(|(id, item)| (*id, item.position, item.on_ground, item.stack))
+                .collect::<Vec<_>>();
+            (done(player) && all.iter().all(|(_, _, on_ground, _)| *on_ground)).then_some(all)
+        };
+        loop {
+            self.until(what, |player| shown(player).is_some())
+                .await
+                .unwrap();
+            let before = shown(self);
+            for _ in 0..TICKS_AT_REST {
+                self.round_trip().await;
+            }
+            if shown(self) == before {
+                return;
+            }
+        }
+    }
+
+    /// Reads until the item `uuid` is shown at rest, and returns it.
+    async fn landed(&mut self, uuid: Uuid) -> ShownItem {
+        self.at_rest("shown the item at rest", |player| {
+            player.item(uuid).is_some()
+        })
+        .await;
+        self.item(uuid).expect("it was just shown").1.clone()
+    }
+
+    /// How many of each item the items it is shown hold together, by item id.
+    fn totals(&self) -> BTreeMap<i32, i32> {
+        let mut totals = BTreeMap::new();
+        for stack in self.items.values().filter_map(|item| item.stack) {
+            *totals.entry(stack.item).or_default() += stack.count;
+        }
+        totals
     }
 
     /// Reads until an item is spawned and its data follows.
@@ -274,6 +527,50 @@ fn assert_near(seen: (f64, f64, f64), expected: (f64, f64, f64)) {
     );
 }
 
+/// Two views of an item at rest, within [`AT_REST`] of each other.
+fn assert_lies_at(seen: (f64, f64, f64), landed: (f64, f64, f64)) {
+    let off = [seen.0 - landed.0, seen.1 - landed.1, seen.2 - landed.2];
+    assert!(
+        off.iter().all(|off| off.abs() <= AT_REST),
+        "the item is at {seen:?}, not where it landed, {landed:?}"
+    );
+}
+
+fn horizontally(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.2 - b.2)
+}
+
+/// An item thrown from `thrown` landed at `landed`: on the floor, about three blocks
+/// off, out of the reach of a thrower who stood still.
+fn assert_flew(thrown: (f64, f64, f64), landed: (f64, f64, f64)) {
+    assert!(
+        (landed.1 - FLOOR).abs() <= AT_REST,
+        "it lies on the floor: {landed:?}"
+    );
+    let far = horizontally(thrown, landed);
+    assert!(
+        (OUT_OF_REACH..5.0).contains(&far),
+        "an item thrown from {thrown:?} landed {far} blocks off, at {landed:?}"
+    );
+}
+
+/// Throws one stone with Q, and waits until both the thrower and the watcher show it at
+/// rest, the same: returns what the thrower was shown of the throw, and where it lies.
+async fn throw_a_stone_and_let_it_land(
+    thrower: &mut Player,
+    watcher: &mut Bot,
+) -> (ShownToTheThrower, (f64, f64, f64)) {
+    thrower.hold(Some(STONE)).await;
+    thrower.drop_held(false).await;
+    let own = thrower.shown_an_item().await.unwrap();
+    sees(watcher, own.spawn.uuid).await;
+    let lies = thrower.landed(own.spawn.uuid).await.position;
+    assert_flew(thrown_from(thrower.feet), lies);
+    let seen = landed(watcher, own.spawn.uuid).await;
+    assert_lies_at(seen.position, lies);
+    (own, lies)
+}
+
 const STONE: ItemStack = ItemStack {
     item: items::STONE,
     count: 1,
@@ -288,16 +585,16 @@ fn on_disk(directory: &std::path::Path) -> Config {
 }
 
 /// A player throws a stone with Q while another watches: both are shown it once,
-/// where the game puts it, and the watcher sees the thrower's arm swing. The server is
-/// stopped and started on the same world, twice, and both players, joining again,
-/// are shown the same item, once, where it was.
+/// where the game puts it, and the watcher sees the thrower's arm swing; it flies off
+/// and lands, the same for both. The server is stopped and started on the same world,
+/// twice, and both players, joining again, are shown the same item, once, where it lay.
 #[tokio::test]
 async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_server_is_started_again()
 {
     let directory = tempfile::tempdir().unwrap();
     let (server, address) = start_with(on_disk(directory.path())).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
     let swings_before = watcher
         .stats
         .received
@@ -332,11 +629,15 @@ async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_serve
         })
         .await
         .unwrap();
-    // Someone who comes later is shown it where it was thrown, as it was, not where it
-    // would have fallen: until N4 the server keeps it where it was thrown.
+    // It lands, the same for both.
+    let lies = thrower.landed(own.spawn.uuid).await.position;
+    assert_flew(thrown, lies);
+    let seen = landed(&mut watcher, own.spawn.uuid).await;
+    assert_lies_at(seen.position, lies);
+    // Someone who comes later is shown it where it lies.
     let mut latecomer = join(&address, "Latecomer").await;
     let late = sees(&mut latecomer, own.spawn.uuid).await;
-    assert_near(late.position, thrown);
+    assert_lies_at(late.position, lies);
     drop(latecomer);
     drop(thrower);
     server.stop().await;
@@ -348,7 +649,7 @@ async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_serve
         let mut thrower = join(&address, "Thrower").await;
         for bot in [&mut watcher, &mut thrower] {
             let again = sees(bot, own.spawn.uuid).await;
-            assert_near(again.position, thrown);
+            assert_lies_at(again.position, lies);
         }
         // A round trip later, it is still shown once and nothing else was thrown.
         let last = thrower.dig(6, -61, 6).await.unwrap();
@@ -364,26 +665,24 @@ async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_serve
 
 /// Q throws one of the held stack, ctrl+Q the whole stack, and the creative screen's
 /// slot -1 the stack named; an empty hand throws nothing. Each is shown to the
-/// thrower with its stack (the item's data, index 8).
+/// thrower with its stack (the item's data, index 8). The two throws of stone may
+/// merge where they land (`ItemEntity.mergeWithNeighbours`), so what both players are
+/// shown in the end is counted by what the items hold: five stone and three dirt.
 #[tokio::test]
 async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an_empty_hand_nothing()
  {
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    // The watcher, too, is followed by its connection from here, for the items' stacks.
+    let mut watcher = Player::of(watcher);
 
     // An empty hand: nothing. The round trip shows that the server has handled it.
     thrower.hold(None).await;
     thrower.drop_held(false).await;
     thrower.drop_held(true).await;
-    let frames = thrower.round_trip(1).await;
-    assert!(
-        !frames.iter().any(|frame| matches!(
-            ClientboundPlay::decode(frame),
-            Ok(ClientboundPlay::SpawnEntity(spawn)) if spawn.kind == entity_types::ITEM
-        )),
-        "an empty hand threw something"
-    );
+    let frames = thrower.round_trip().await;
+    assert_eq!(spawns_an_item(&frames), 0, "an empty hand threw something");
 
     let five = ItemStack {
         item: items::STONE,
@@ -406,12 +705,10 @@ async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an
     );
     // Now the hand is empty: Q throws nothing more.
     thrower.drop_held(false).await;
-    let frames = thrower.round_trip(2).await;
-    assert!(
-        !frames.iter().any(|frame| matches!(
-            ClientboundPlay::decode(frame),
-            Ok(ClientboundPlay::SpawnEntity(spawn)) if spawn.kind == entity_types::ITEM
-        )),
+    let frames = thrower.round_trip().await;
+    assert_eq!(
+        spawns_an_item(&frames),
+        0,
         "the emptied hand threw something"
     );
 
@@ -423,39 +720,55 @@ async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an
     let screen = thrower.shown_an_item().await.unwrap();
     assert_eq!(screen.stack, Some(dirt));
 
-    // The watcher sees the three, each once, with three wire ids and three UUIDs.
-    let uuids = [one.spawn.uuid, rest.spawn.uuid, screen.spawn.uuid];
-    watcher
-        .wait_until(PATIENCE, |bot| {
-            uuids
-                .iter()
-                .all(|uuid| items_of(bot).iter().any(|item| item.uuid == *uuid))
-        })
-        .await
-        .unwrap();
-    assert_eq!(items_of(&watcher).len(), 3);
+    // Three throws, with three wire ids and three UUIDs.
     let ids = [
         one.spawn.entity_id,
         rest.spawn.entity_id,
         screen.spawn.entity_id,
     ];
     assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+    let uuids = [one.spawn.uuid, rest.spawn.uuid, screen.spawn.uuid];
+    assert!(uuids[0] != uuids[1] && uuids[1] != uuids[2] && uuids[0] != uuids[2]);
+
+    // Both are shown five stone and three dirt, in items each shown once (a second
+    // spawn of one fails the reading), all at rest; any that went went into another
+    // (a merge), not away.
+    let expected = BTreeMap::from([(items::STONE, 5), (items::DIRT, 3)]);
+    for player in [&mut thrower, &mut watcher] {
+        player
+            .at_rest("shown five stone and three dirt, at rest", |player| {
+                player.totals() == expected
+            })
+            .await;
+        assert!(
+            player.items.len() == 2 || player.items.len() == 3,
+            "{:?}",
+            player.items
+        );
+        assert_eq!(
+            player.gone.len(),
+            3 - player.items.len(),
+            "{:?}",
+            player.gone
+        );
+        assert!(
+            player.items.values().all(|item| uuids.contains(&item.uuid)),
+            "{:?}",
+            player.items
+        );
+    }
     server.stop().await;
 }
 
 /// The item's region is taken over by a new runner, as when its worker is believed
 /// dead: the watcher, who never left, keeps being shown the item, without its being
-/// taken away, and someone who joins after is shown it once, where it was thrown.
+/// taken away, and someone who joins after is shown it once, where it lies.
 #[tokio::test]
 async fn a_thrown_item_stays_shown_once_through_its_region_being_taken_over() {
     let (mut server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
-    thrower.hold(Some(STONE)).await;
-    thrower.drop_held(false).await;
-    let own = thrower.shown_an_item().await.unwrap();
-    let thrown = thrown_from(thrower.feet);
-    sees(&mut watcher, own.spawn.uuid).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    let (own, lies) = throw_a_stone_and_let_it_land(&mut thrower, &mut watcher).await;
 
     let home = server.regions().unwrap().home;
     server.take_over(home).await.unwrap();
@@ -467,12 +780,12 @@ async fn a_thrown_item_stays_shown_once_through_its_region_being_taken_over() {
         .unwrap();
     let mut newcomer = join(&address, "Newcomer").await;
     let shown = sees(&mut newcomer, own.spawn.uuid).await;
-    assert_near(shown.position, thrown);
+    assert_lies_at(shown.position, lies);
     // The watcher still shows it, once, and was never told it went: the restored
     // region's load raises its `hops`, and the edge continues it on the wire
     // (ADR-0028, section 6).
     let still = sees(&mut watcher, own.spawn.uuid).await;
-    assert_near(still.position, thrown);
+    assert_lies_at(still.position, lies);
     assert!(
         !watcher
             .vanished
@@ -485,9 +798,9 @@ async fn a_thrown_item_stays_shown_once_through_its_region_being_taken_over() {
     server.stop().await;
 }
 
-/// The server's process is killed once the watcher is shown the item, which a worker
-/// publishes only once its tick is durable: the item is there again, once, when the
-/// server is started on the same world.
+/// The server's process is killed once the watcher is shown the item at rest, which a
+/// worker publishes only once its tick is durable: the item is there again, once,
+/// where it lay, when the server is started on the same world.
 #[tokio::test]
 async fn a_thrown_item_outlasts_the_server_process_being_killed() {
     let directory = tempfile::tempdir().unwrap();
@@ -502,12 +815,8 @@ async fn a_thrown_item_outlasts_the_server_process_being_killed() {
 
     let mut server = spawn_server(&address, &world, &more).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
-    thrower.hold(Some(STONE)).await;
-    thrower.drop_held(false).await;
-    let own = thrower.shown_an_item().await.unwrap();
-    let thrown = thrown_from(thrower.feet);
-    sees(&mut watcher, own.spawn.uuid).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    let (own, lies) = throw_a_stone_and_let_it_land(&mut thrower, &mut watcher).await;
     server.kill().await.unwrap();
     drop(thrower);
     drop(watcher);
@@ -517,27 +826,29 @@ async fn a_thrown_item_outlasts_the_server_process_being_killed() {
     let mut thrower = join(&address, "Thrower").await;
     for bot in [&mut watcher, &mut thrower] {
         let again = sees(bot, own.spawn.uuid).await;
-        assert_near(again.position, thrown);
+        assert_lies_at(again.position, lies);
     }
     server.kill().await.unwrap();
 }
 
 /// A player throws an item and walks so far away that its chunk is let go; when they
-/// come back it is loaded again from the store and shown to them once, where it was.
+/// come back it is loaded again from the store and shown to them once, where it lay.
 #[tokio::test]
 async fn an_item_left_alone_is_there_again_when_its_thrower_comes_back() {
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
-    thrower.hold(Some(STONE)).await;
-    thrower.drop_held(false).await;
-    let own = thrower.shown_an_item().await.unwrap();
-    let thrown = thrown_from(thrower.feet);
-    sees(&mut watcher, own.spawn.uuid).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    let (own, lies) = throw_a_stone_and_let_it_land(&mut thrower, &mut watcher).await;
     drop(thrower);
 
-    // The watcher walks away until the spawn's chunk is out of its view, and back.
-    watcher.walk_to(300.5, 0.5, 2.0).await.unwrap();
+    // The watcher walks away until the spawn's chunk is out of its view, and back, along
+    // a line that the item lies out of the reach of.
+    let home = watcher.location;
+    assert!(
+        (lies.2 - home.2).abs() >= OUT_OF_REACH,
+        "{lies:?}, {home:?}"
+    );
+    watcher.walk_to(300.5, home.2, 2.0).await.unwrap();
     watcher
         .wait_until(PATIENCE, |bot| {
             bot.center == Some((18, 0)) && !bot.chunks.contains_key(&(0, 0))
@@ -545,9 +856,9 @@ async fn an_item_left_alone_is_there_again_when_its_thrower_comes_back() {
         .await
         .unwrap();
     assert!(items_of(&watcher).is_empty(), "{:?}", items_of(&watcher));
-    watcher.walk_to(0.5, 0.5, 2.0).await.unwrap();
+    watcher.walk_to(home.0, home.2, 2.0).await.unwrap();
     let back = sees(&mut watcher, own.spawn.uuid).await;
-    assert_near(back.position, thrown);
+    assert_lies_at(back.position, lies);
     server.stop().await;
 }
 
@@ -589,7 +900,7 @@ async fn walk_tending(walker: &mut Bot, x: f64, z: f64, tended: &mut Bot) {
     }
 }
 
-/// In a world whose regions follow their players: an item lies at the spawn beside a
+/// In a world whose regions follow their players: an item lies near the spawn beside a
 /// watcher, and a wanderer walks so far that it is split off into a region of its own,
 /// and comes back. The watcher shows the item once all the while and is never told it
 /// went; the wanderer is shown it once when it is back.
@@ -604,17 +915,22 @@ async fn a_thrown_item_lies_once_through_a_split_of_a_world_that_follows_its_pla
     }
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
-    thrower.hold(Some(STONE)).await;
-    thrower.drop_held(false).await;
-    let own = thrower.shown_an_item().await.unwrap();
-    let thrown = thrown_from(thrower.feet);
-    sees(&mut watcher, own.spawn.uuid).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    let (own, lies) = throw_a_stone_and_let_it_land(&mut thrower, &mut watcher).await;
     drop(thrower);
 
     let mut wanderer = join(&address, "Wanderer").await;
+    let home = wanderer.location;
+    // The item lies in front of the spawn; the wanderer walks off along the spawn's
+    // line and comes back to behind it, out of the item's reach all the way.
+    let back_at = (home.0, home.1, home.2 - 3.0);
+    assert!(horizontally(back_at, lies) >= OUT_OF_REACH, "{lies:?}");
+    assert!(
+        (lies.2 - home.2).abs() >= OUT_OF_REACH,
+        "{lies:?}, {home:?}"
+    );
     sees(&mut wanderer, own.spawn.uuid).await;
-    walk_tending(&mut wanderer, 400.5, 0.5, &mut watcher).await;
+    walk_tending(&mut wanderer, 400.5, home.2, &mut watcher).await;
     use common::following::region_of;
     let apart = |list: &clustine_rpc::RegionList| {
         let (home, away) = (region_of(list, (0, 0)), region_of(list, (25, 0)));
@@ -622,9 +938,10 @@ async fn a_thrown_item_lies_once_through_a_split_of_a_world_that_follows_its_pla
     };
     let list = until_listed(&server, "split", apart, &mut [&mut watcher, &mut wanderer]).await;
     println!("split: {list:?}");
-    walk_tending(&mut wanderer, 0.5, 3.5, &mut watcher).await;
+    walk_tending(&mut wanderer, back_at.0, home.2, &mut watcher).await;
+    walk_tending(&mut wanderer, back_at.0, back_at.2, &mut watcher).await;
     let back = sees(&mut wanderer, own.spawn.uuid).await;
-    assert_near(back.position, thrown);
+    assert_lies_at(back.position, lies);
     // The watcher answered the server all the while (its keep-alives are answered as
     // it waits), and shows the item as it did.
     let last = watcher.dig(6, -61, 6).await.unwrap();
@@ -633,7 +950,7 @@ async fn a_thrown_item_lies_once_through_a_split_of_a_world_that_follows_its_pla
         .await
         .unwrap();
     let still = sees(&mut watcher, own.spawn.uuid).await;
-    assert_near(still.position, thrown);
+    assert_lies_at(still.position, lies);
     assert!(
         !watcher
             .vanished
@@ -646,8 +963,9 @@ async fn a_thrown_item_lies_once_through_a_split_of_a_world_that_follows_its_pla
 }
 
 /// Beside a pinned line, where the world is divided: a player west of it throws an
-/// item into the western region's chunk, which a player east of it is shown too. The
-/// server is stopped and started, and both are shown it once where it was.
+/// item into the western region's chunk, which a player east of it is shown too. It
+/// lands west of the line, the same for both. The server is stopped and started, and
+/// both are shown it once where it lay.
 #[tokio::test]
 async fn an_item_thrown_beside_a_pinned_line_is_seen_from_both_sides_and_outlasts_a_restart() {
     let directory = tempfile::tempdir().unwrap();
@@ -672,11 +990,7 @@ async fn an_item_thrown_beside_a_pinned_line_is_seen_from_both_sides_and_outlast
         .wait_until(PATIENCE, |bot| bot.seen_player("Thrower").is_some())
         .await
         .unwrap();
-    let mut thrower = Thrower {
-        feet: thrower_bot.location,
-        own_id: thrower_bot.info.login.entity_id,
-        connection: thrower_bot.into_connection(),
-    };
+    let mut thrower = Player::of(thrower_bot);
     // Right after a player has crossed a line, their region may not yet tick the
     // chunk they stand in (it is being handed over): a throw then is refused and the
     // slot put back (the plan, section 11), and the player throws again.
@@ -695,6 +1009,11 @@ async fn an_item_thrown_beside_a_pinned_line_is_seen_from_both_sides_and_outlast
     assert!(thrown.0 < 0.0, "west of chunk x = 0: {thrown:?}");
     let seen = sees(&mut watcher, own.spawn.uuid).await;
     assert_near(seen.position, thrown);
+    let lies = thrower.landed(own.spawn.uuid).await.position;
+    assert_flew(thrown, lies);
+    assert!(lies.0 < 0.0, "it lies west of chunk x = 0: {lies:?}");
+    let seen = landed(&mut watcher, own.spawn.uuid).await;
+    assert_lies_at(seen.position, lies);
     drop(thrower);
     server.stop().await;
     drop(watcher);
@@ -704,12 +1023,90 @@ async fn an_item_thrown_beside_a_pinned_line_is_seen_from_both_sides_and_outlast
     let mut thrower = join(&address, "Thrower").await;
     for bot in [&mut watcher, &mut thrower] {
         let again = sees(bot, own.spawn.uuid).await;
-        assert_near(again.position, thrown);
+        assert_lies_at(again.position, lies);
     }
     server.stop().await;
 }
 
-/// Whether any of `frames` spawns an item.
+/// The plan of N4, section 1, and the brief's section 5: a creative player who walks
+/// onto an item after its pick-up delay of 40 ticks picks it up. The thrower throws its
+/// one stone, which lands; once it lies (it has been still for [`TICKS_AT_REST`]
+/// ticks, more than its delay) the thrower steps onto it. The watcher is shown the pick-up
+/// (`TakeItemEntity`, the thrower collecting one) and then the item's removal; so is
+/// the thrower, whose emptied hotbar slot 0 has the stone again.
+#[tokio::test]
+async fn a_creative_player_who_walks_onto_a_landed_item_picks_it_up_and_everyone_sees_it_go() {
+    let (server, address) = start_with(config()).await;
+    let mut watcher = join(&address, "Watcher").await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
+    let (own, lies) = throw_a_stone_and_let_it_land(&mut thrower, &mut watcher).await;
+    // Standing still, the thrower has not picked it up.
+    assert_ne!(
+        thrower.told_slots.get(&0),
+        Some(&Some(STONE)),
+        "{:?}",
+        thrower.told_slots
+    );
+    assert!(thrower.taken.is_empty() && watcher.taken.is_empty());
+
+    let shown_as = watcher
+        .seen_player("Thrower")
+        .expect("the thrower is in view")
+        .entity_id;
+    let item_as = sees(&mut watcher, own.spawn.uuid).await.entity_id;
+    thrower.step_to(lies.0, lies.2).await;
+
+    // The thrower is shown it taken by itself, its slot filled and the item gone.
+    thrower
+        .until("shown its item picked up", |player| {
+            player.item(own.spawn.uuid).is_none()
+                && player.told_slots.get(&0) == Some(&Some(STONE))
+                && !player.taken.is_empty()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        thrower.taken,
+        [TakeItemEntity {
+            item_id: own.spawn.entity_id,
+            collector_id: thrower.own_id,
+            count: 1,
+        }]
+    );
+    assert!(
+        thrower.gone.iter().any(|gone| gone.uuid == own.spawn.uuid),
+        "{:?}",
+        thrower.gone
+    );
+
+    // The watcher is shown the thrower take it, and then that it went.
+    watcher
+        .wait_until(PATIENCE, |bot| {
+            !bot.taken.is_empty() && bot.vanished.iter().any(|gone| gone.uuid == own.spawn.uuid)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        watcher.taken,
+        [TakeItemEntity {
+            item_id: item_as,
+            collector_id: shown_as,
+            count: 1,
+        }]
+    );
+    assert!(items_of(&watcher).is_empty(), "{:?}", items_of(&watcher));
+    // A round trip later, nothing has come back.
+    let last = watcher.dig(6, -61, 6).await.unwrap();
+    watcher
+        .wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= last)
+        .await
+        .unwrap();
+    assert!(items_of(&watcher).is_empty(), "{:?}", items_of(&watcher));
+    assert!(thrower.items.is_empty(), "{:?}", thrower.items);
+    server.stop().await;
+}
+
+/// How many of `frames` spawn an item.
 fn spawns_an_item(frames: &[Vec<u8>]) -> usize {
     frames
         .iter()
@@ -730,14 +1127,14 @@ fn spawns_an_item(frames: &[Vec<u8>]) -> usize {
 async fn a_creative_throw_of_more_than_the_item_s_maximum_stack_is_passed_over() {
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
     thrower
         .throw_from_the_screen(ItemStack {
             item: items::STONE,
             count: 65,
         })
         .await;
-    let frames = thrower.round_trip(1).await;
+    let frames = thrower.round_trip().await;
     assert_eq!(spawns_an_item(&frames), 0, "65 stone were thrown");
     let full = ItemStack {
         item: items::STONE,
@@ -751,17 +1148,18 @@ async fn a_creative_throw_of_more_than_the_item_s_maximum_stack_is_passed_over()
 
 /// The plan, section 11: throws out of the creative screen go through the game's
 /// `dropSpamThrottler`, which lets 74 through at once (20 a throw, under 1480) and
-/// then about one a second; a hundred at once throw no more than that.
+/// then about one a second; a hundred at once throw no more than that. Each throw is
+/// a spawn, whether or not its item merges into another once it has landed.
 #[tokio::test]
 async fn a_burst_of_creative_throws_is_held_to_the_game_s_throttle() {
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;
-    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
     let started = Instant::now();
     for _ in 0..100 {
         thrower.throw_from_the_screen(STONE).await;
     }
-    let frames = thrower.round_trip(1).await;
+    let frames = thrower.round_trip().await;
     let thrown = spawns_an_item(&frames);
     // One more for every tick of the game the burst took.
     let ticks = started.elapsed().as_millis() / 50;
