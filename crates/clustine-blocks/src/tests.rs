@@ -1,5 +1,6 @@
 //! Tests of the rules against small worlds.
 
+mod fluid_flow;
 mod fluid_rules;
 mod pistons;
 

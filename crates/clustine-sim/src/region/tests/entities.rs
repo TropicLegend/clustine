@@ -91,13 +91,53 @@ fn entities_in(region: &Region, chunk: ChunkPos) -> Vec<Entity> {
     region.chunk(chunk).unwrap().entities().to_vec()
 }
 
-/// The item one whole entity change of `output` makes.
+/// The item one whole entity change of `output` makes: the throw's, which the item's
+/// own first tick in the same tick may follow with what its move set.
 fn the_whole(output: &TickOutput) -> Entity {
-    let [(chunk, EntityChange::Whole(entity))] = &output.entity_changes[..] else {
+    let wholes: Vec<&Entity> = output
+        .entity_changes
+        .iter()
+        .filter_map(|(chunk, change)| match change {
+            EntityChange::Whole(entity) => {
+                assert_eq!(*chunk, entity.chunk());
+                Some(entity)
+            }
+            // What the items thrown before did in the tick: moved, or merged.
+            EntityChange::Set(..) | EntityChange::Gone(_) => None,
+        })
+        .collect();
+    let [entity] = wholes[..] else {
         panic!("one whole entity: {:?}", output.entity_changes);
     };
-    assert_eq!(*chunk, entity.chunk());
     entity.clone()
+}
+
+/// Lays `entity` in its loaded chunk, as a load would have it.
+fn lay(region: &mut Region, entity: Entity) {
+    let chunk = entity.chunk();
+    region
+        .chunks
+        .get_mut(&chunk)
+        .unwrap()
+        .apply_entity(&EntityChange::Whole(entity.clone()));
+    region.entity_chunks.insert(entity.key, chunk);
+}
+
+/// An item of dirt lying still on the floor at `x` and `z`, out of the player's reach.
+fn resting(key: EntityId, x: f64, z: f64) -> Entity {
+    Entity {
+        position: [x, -60.0, z],
+        motion: [0.0; 3],
+        on_ground: true,
+        age: 0,
+        data: EntityData::Item {
+            stack: DIRT,
+            pick_up_delay: 40,
+            thrower: None,
+            health: 5,
+        },
+        ..item_at(key, [x, -60.0, z], 0)
+    }
 }
 
 fn stack_of(entity: &Entity) -> ItemStack {
@@ -167,10 +207,19 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             health: 5,
         }
     );
-    // The chunk has it, ticked once since, the region's next key is the one after it,
+    // The chunk has it, ticked once since: gravity, then the move through the air, then
+    // the air's drag (`ItemEntity.tick`); the region's next key is the one after it,
     // and the thrower's arm swings for others before the item appears.
+    let drag = f64::from(0.98_f32);
+    let fallen = [item.motion[0], item.motion[1] + -0.04, item.motion[2]];
     let ticked = Entity {
         age: 1,
+        position: [
+            item.position[0] + fallen[0],
+            item.position[1] + fallen[1],
+            item.position[2] + fallen[2],
+        ],
+        motion: [fallen[0] * drag, fallen[1] * drag, fallen[2] * drag],
         data: EntityData::Item {
             stack: STONE,
             pick_up_delay: 39,
@@ -179,7 +228,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
         },
         ..item.clone()
     };
-    assert_eq!(entities_in(&region, ORIGIN), [ticked]);
+    assert_eq!(entities_in(&region, ORIGIN), std::slice::from_ref(&ticked));
     assert_eq!(region.state().next_entity_id, EntityId(3));
     assert_eq!(output.delta.next_entity_id, Some(EntityId(3)));
     let shown: Vec<&RegionEvent> = output
@@ -213,8 +262,13 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             data: item.data.clone(),
         }
     );
-    // And it is among the region's entities, after the players, where it was thrown.
-    assert_eq!(region.entity(FIRST_ITEM).unwrap().pose, state.pose);
+    // And it is among the region's entities, after the players, where its first tick
+    // took it.
+    let position = region.entity(FIRST_ITEM).unwrap().pose.position;
+    assert_eq!(
+        [position.x, position.y, position.z].map(f64::to_bits),
+        ticked.position.map(f64::to_bits)
+    );
     let all: Vec<EntityId> = region.entities().map(|state| state.entity).collect();
     assert_eq!(all, [PLAYER_KEY, FIRST_ITEM]);
 }
@@ -273,7 +327,14 @@ fn q_takes_one_ctrl_q_the_stack_creative_lessens_it_and_an_empty_hand_throws_not
 
     // An empty hand throws nothing, and nobody is told anything.
     let output = region.tick(&moves(vec![throw_held(false), throw_held(true)]));
-    assert!(output.entity_changes.is_empty());
+    assert!(
+        !output
+            .entity_changes
+            .iter()
+            .any(|(_, change)| matches!(change, EntityChange::Whole(_))),
+        "{:?}",
+        output.entity_changes
+    );
     assert!(
         !output
             .events
@@ -301,15 +362,30 @@ fn q_takes_one_ctrl_q_the_stack_creative_lessens_it_and_an_empty_hand_throws_not
         ItemStack { count: 0, ..DIRT },
     ] {
         let output = region.tick(&moves(vec![numbered(1, PlayerInput::Throw { stack })]));
-        assert!(output.entity_changes.is_empty(), "{stack:?}");
+        assert!(
+            !output
+                .entity_changes
+                .iter()
+                .any(|(_, change)| matches!(change, EntityChange::Whole(_))),
+            "{stack:?}"
+        );
     }
 
-    // Four thrown so far, under the keys after the player's, ascending in the chunk.
-    let keys: Vec<u64> = entities_in(&region, ORIGIN)
+    // Three thrown so far, under the keys after the player's, ascending in the chunk;
+    // the two of stone fell together and merged, as the game's do.
+    assert_eq!(region.state().next_entity_id, EntityId(5));
+    let lying: Vec<(u64, ItemStack)> = entities_in(&region, ORIGIN)
         .iter()
-        .map(|entity| entity.key.0)
+        .map(|entity| (entity.key.0, stack_of(entity)))
         .collect();
-    assert_eq!(keys, [2, 3, 4]);
+    let stone: i32 = lying
+        .iter()
+        .filter(|(_, stack)| stack.item == STONE.item)
+        .map(|(_, stack)| stack.count)
+        .sum();
+    assert_eq!(stone, 10);
+    assert!(lying.contains(&(4, five)), "{lying:?}");
+    assert!(lying.windows(2).all(|pair| pair[0].0 < pair[1].0));
 }
 
 #[test]
@@ -324,9 +400,9 @@ fn two_throws_in_one_tick_draw_on_from_the_thrower_s_stream() {
     let motions: Vec<[f64; 3]> = output
         .entity_changes
         .iter()
-        .map(|(_, change)| match change {
-            EntityChange::Whole(entity) => entity.motion,
-            other => panic!("{other:?}"),
+        .filter_map(|(_, change)| match change {
+            EntityChange::Whole(entity) => Some(entity.motion),
+            _ => None,
         })
         .collect();
     let first = game_s_motion(0.0, 0.0, draws_of(PLAYER_KEY, output.tick, 0));
@@ -418,16 +494,20 @@ fn counters(entity: &Entity) -> (u32, u16) {
 #[test]
 fn an_item_at_rest_counts_its_age_while_its_chunk_ticks_and_commits_nothing() {
     let mut region = on_ticking_floor_with(&[]);
-    let thrown = region.tick(&moves(vec![throw_held(false)]));
-    // It ticks in the tick it was thrown in, as the game's item does in the tick after
-    // the packet that threw it.
-    assert_eq!(counters(&entities_in(&region, ORIGIN)[0]), (1, 39));
-    assert_eq!(thrown.entity_changes.len(), 1);
-    for tick in 2..=45 {
+    let key = EntityId(1 << 40);
+    lay(&mut region, resting(key, 8.5, 8.5));
+    for tick in 1..=45 {
         let output = idle(&mut region);
+        // Its motion runs down by gravity and is cut back to nothing at each fourth
+        // tick's move, and its place does not change: nothing is committed, and its
+        // chunk is named among those whose entities aged.
         assert!(output.entity_changes.is_empty(), "tick {tick}");
+        assert_eq!(output.entities_ageing, [ORIGIN], "tick {tick}");
         let expected = (tick, 40_u16.saturating_sub(tick as u16));
-        assert_eq!(counters(&entities_in(&region, ORIGIN)[0]), expected);
+        let lying = &entities_in(&region, ORIGIN)[0];
+        assert_eq!(counters(lying), expected);
+        assert_eq!(lying.position, [8.5, -60.0, 8.5]);
+        assert!(lying.on_ground);
     }
     // Where its chunk stops ticking, they stand still; the chunk still has it.
     let around: Vec<ChunkPos> = (-1..=1)
@@ -515,9 +595,16 @@ fn a_thrown_item_survives_a_restore_of_the_region_and_its_counters_go_on_from_wh
         hops: 1,
         ..item.clone()
     };
-    assert_eq!(
-        output.entity_changes,
-        [(ORIGIN, EntityChange::Whole(raised))]
+    // Its tick in the same tick goes on from there: it still slides, and commits what
+    // its move set after the whole record.
+    let [(ORIGIN, EntityChange::Whole(whole)), rest @ ..] = &output.entity_changes[..] else {
+        panic!("{:?}", output.entity_changes);
+    };
+    assert_eq!(*whole, raised);
+    assert!(
+        rest.iter().all(|(chunk, change)| *chunk == ORIGIN
+            && matches!(change, EntityChange::Set(key, _) if *key == item.key)),
+        "{rest:?}"
     );
     assert_eq!(output.tick, 5);
     // The chunks loaded tick in that very tick: the item's count goes on by one.
@@ -603,8 +690,10 @@ fn the_regions_a_merge_and_a_split_make_take_in_the_items_of_their_warm_chunks()
         let wholes: Vec<(ChunkPos, EntityId, u32)> = output
             .entity_changes
             .iter()
-            .map(|(position, change)| match change {
-                EntityChange::Whole(entity) => (*position, entity.key, entity.hops),
+            .filter_map(|(position, change)| match change {
+                EntityChange::Whole(entity) => Some((*position, entity.key, entity.hops)),
+                // Its move in the same tick, after the record taken in.
+                EntityChange::Set(..) => None,
                 other => panic!("{other:?}"),
             })
             .collect();

@@ -367,8 +367,8 @@ fn restored_view(runner: &mut RegionRunner, edge: EdgeId) -> Link {
 /// thrower; the region's next key is its key; the thrower's arm swings for others in
 /// the same tick before it appears. The commit has it: a crash after the edge was shown
 /// it leaves it there, once, under its key and UUID, with one more change of holder
-/// (the restore's load, ADR-0028 section 6), its counters as of its record (it rested
-/// meanwhile and committed nothing), and the stack it left kept whole between the item
+/// (the restore's load, ADR-0028 section 6), where its moves left it, its counters as of
+/// its record (its moves commit no counters), and the stack it left kept whole between the item
 /// and the hand. The restored region's keys are a fresh block (section 1), and an item
 /// thrown after the restore is given one of them.
 #[test]
@@ -431,9 +431,16 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
             count: 63
         })
     );
-    // It rests a while, committing nothing; then the worker is lost.
+    // It flies, lands and comes to rest, committing its moves (step N4b); then the
+    // worker is lost.
     run_ticks(&mut runner, &mut link, 30);
     let lost_at = runner.region().tick_number();
+    let rested = runner
+        .region()
+        .entity(state.entity)
+        .expect("the item lies in the region")
+        .pose
+        .position;
     let _lost = runner;
 
     let (mut runner, restored) = world.open();
@@ -459,7 +466,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
         panic!("one item in the snapshot: {shown:?}");
     };
     assert_eq!(again.entity, state.entity);
-    assert_eq!(again.pose.position, state.pose.position);
+    assert_eq!(again.pose.position, rested, "where its last move left it");
     let EntityKind::Other {
         uuid: uuid_again,
         hops: hops_again,

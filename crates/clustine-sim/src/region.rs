@@ -24,6 +24,7 @@ mod diodes;
 mod entities;
 mod fluids;
 mod instruments;
+mod items;
 mod lends;
 mod pistons;
 mod pressed;
@@ -362,6 +363,9 @@ pub struct Region {
     /// How many draws each entity has taken from its stream in this tick
     /// (`entities.rs`); empty between ticks.
     entity_draws: BTreeMap<EntityId, u64>,
+    /// What the game keeps of an entity in memory and not in its record, by key
+    /// (`items.rs`); forgotten at a take-in, so no part of the state.
+    entity_memory: BTreeMap<EntityId, items::Memory>,
 }
 
 impl Region {
@@ -458,6 +462,7 @@ impl Region {
             circuit_changes: BTreeMap::new(),
             entity_chunks: BTreeMap::new(),
             entity_draws: BTreeMap::new(),
+            entity_memory: BTreeMap::new(),
         }
     }
 
@@ -810,6 +815,9 @@ impl Region {
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
         self.run_block_entities(&mut output);
+        // The players pick up what lies around them as the game's connections tick
+        // after its levels, block entities and all (`items.rs`).
+        self.pick_up_items(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
         // entities: a piston's move finishing) with the next tick's
@@ -2677,6 +2685,7 @@ mod tests {
     mod entities;
     mod fluids;
     mod instruments;
+    mod item_physics;
     mod lends;
     mod lends_by_the_record;
     mod pistons;

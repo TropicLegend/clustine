@@ -74,6 +74,11 @@ tag!(
 tag!(JUNGLE_LOGS, "minecraft:jungle_logs");
 tag!(SNOW, "minecraft:snow");
 tag!(MAINTAINS_FARMLAND, "minecraft:maintains_farmland");
+tag!(BLOCKS_FLUID_FLOW, "minecraft:blocks_fluid_flow");
+tag!(FENCES, "minecraft:fences");
+tag!(WALLS, "minecraft:walls");
+tag!(FALL_DAMAGE_RESETTING, "minecraft:fall_damage_resetting");
+tag!(SUPPRESSES_BOUNCE, "minecraft:suppresses_bounce");
 
 /// The fluid in `state` by the game's ids (`clustine_data::FLUIDS`): empty (0) where
 /// there is none.
@@ -230,6 +235,10 @@ mod tests {
     fn every_tag_the_rules_ask_is_in_the_games_data() {
         // A tag the data lacks would hold nothing and quietly change a rule's answer.
         for name in [
+            "blocks_fluid_flow",
+            "fall_damage_resetting",
+            "suppresses_bounce",
+            "walls",
             "cannot_support_seagrass",
             "cannot_support_snow_layer",
             "fences",

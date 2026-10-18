@@ -448,11 +448,8 @@ fn q_throws_one_ctrl_q_the_stack_and_an_empty_hand_nothing() {
                 crouching: false,
             }],
         );
-        assert!(
-            output.entity_changes.is_empty(),
-            "{:?}",
-            output.entity_changes
-        );
+        // The items thrown before fly on and commit their moves; nothing new is made.
+        assert!(made(&output).is_empty(), "{:?}", output.entity_changes);
         assert!(
             !output
                 .events
@@ -462,7 +459,15 @@ fn q_throws_one_ctrl_q_the_stack_and_an_empty_hand_nothing() {
             output.events
         );
     }
-    assert_eq!(region.chunk(ORIGIN).expect("loaded").entities().len(), 2);
+    // The two thrown fall together and merge, as the game's do: one stack of 64.
+    let lying: i32 = region
+        .chunk(ORIGIN)
+        .expect("loaded")
+        .entities()
+        .iter()
+        .map(|entity| stack_of(entity).count)
+        .sum();
+    assert_eq!(lying, 64);
 }
 
 /// The creative screen's throw (`SetCreativeModeSlot` with slot -1) throws the stack

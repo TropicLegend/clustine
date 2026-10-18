@@ -182,6 +182,107 @@ pub fn height<V: BlockView + ?Sized>(view: &mut V, fluid: FluidState, pos: Block
     }
 }
 
+/// `FlowingFluid.getFlow`: the way `fluid`, held at `pos`, pushes what is in it, as a
+/// vector of length 1 (or none): towards the neighbours that hold less of it or none,
+/// each by how much less, and steeply down where it falls beside a wall. In the game's
+/// widths: the differences are floats, summed as doubles.
+pub fn flow<V: BlockView + ?Sized>(view: &mut V, fluid: FluidState, pos: BlockPos) -> [f64; 3] {
+    let Some(kind) = fluid.kind() else {
+        return [0.0; 3];
+    };
+    // `affectsFlow`: no fluid, or the same fluid.
+    let affects = |other: FluidState| other.is_empty() || other.kind() == Some(kind);
+    let (mut dx, mut dz) = (0.0_f64, 0.0_f64);
+    for face in HORIZONTAL {
+        let beside = relative(pos, face);
+        let beside_state = view.block(beside);
+        let beside_fluid = FluidState::of(beside_state);
+        if !affects(beside_fluid) {
+            continue;
+        }
+        let height = beside_fluid.own_height();
+        let mut difference = 0.0_f32;
+        if height == 0.0 {
+            if !crate::data::BLOCKS_FLUID_FLOW.contains(beside_state) {
+                let below = FluidState::of(view.block(relative(beside, Face::Down)));
+                if affects(below) {
+                    let below_height = below.own_height();
+                    if below_height > 0.0 {
+                        difference = fluid.own_height() - (below_height - 0.888_888_9);
+                    }
+                }
+            }
+        } else if height > 0.0 {
+            difference = fluid.own_height() - height;
+        }
+        if difference != 0.0 {
+            let (step_x, step_z) = horizontal_step(face);
+            dx += f64::from(step_x as f32 * difference);
+            dz += f64::from(step_z as f32 * difference);
+        }
+    }
+    let mut flow = [dx, 0.0, dz];
+    if fluid.falling {
+        for face in HORIZONTAL {
+            let beside = relative(pos, face);
+            if is_solid_face(view, kind, beside, face)
+                || is_solid_face(view, kind, relative(beside, Face::Up), face)
+            {
+                let [x, y, z] = normalize(flow);
+                flow = [x, y + -6.0, z];
+                break;
+            }
+        }
+    }
+    normalize(flow)
+}
+
+/// `Vec3.normalize`: the vector scaled to length 1, or none where it is shorter than
+/// the game's 1e-5 (a float, widened).
+pub fn normalize([x, y, z]: [f64; 3]) -> [f64; 3] {
+    let length = (x * x + y * y + z * z).sqrt();
+    if length < f64::from(1.0e-5_f32) {
+        [0.0; 3]
+    } else {
+        [x / length, y / length, z / length]
+    }
+}
+
+/// The x and z of a horizontal direction's step.
+fn horizontal_step(face: Face) -> (i32, i32) {
+    match face {
+        Face::North => (0, -1),
+        Face::South => (0, 1),
+        Face::West => (-1, 0),
+        Face::East => (1, 0),
+        Face::Up | Face::Down => (0, 0),
+    }
+}
+
+/// `FlowingFluid.isSolidFace`: whether the block at `pos` stops a fall of `kind` beside
+/// it on its side `face`: not where it holds the same fluid, always upwards, never for
+/// ice, and otherwise where that side is sturdy.
+fn is_solid_face<V: BlockView + ?Sized>(
+    view: &mut V,
+    kind: Kind,
+    pos: BlockPos,
+    face: Face,
+) -> bool {
+    let state = view.block(pos);
+    if FluidState::of(state).kind() == Some(kind) {
+        return false;
+    }
+    if face == Face::Up {
+        return true;
+    }
+    if is_class(state, BlockClass::IceBlock) {
+        return false;
+    }
+    state
+        .props()
+        .is_face_sturdy(face, clustine_data::SupportType::Full)
+}
+
 /// `FluidState.canBeReplacedWith`: whether `fluid`, held at `pos`, gives way to
 /// `other` coming from the direction `direction` (the way it flows). Nothing gives way
 /// to anything; water to anything but water from above; lava to water where it is

@@ -34,9 +34,6 @@ const BELOW_THE_EYES: f64 = 0.300_000_011_920_928_96;
 /// The ticks before a thrown item may be picked up.
 const THROWN_PICK_UP_DELAY: u16 = 40;
 
-/// The pick-up delay the game reads as never, which does not count down.
-const NEVER_PICKED_UP: u16 = 32_767;
-
 /// The game's `Mth.DEG_TO_RAD`, a float.
 const DEGREES_TO_RADIANS: f32 = 0.017_453_292;
 
@@ -165,12 +162,21 @@ impl Region {
         }
         for key in keys {
             self.entity_chunks.insert(key, position);
+            // What the game keeps in memory starts again at a take-in.
+            self.entity_memory.remove(&key);
         }
     }
 
     /// Forgets the entities of the chunk at `position`, which is no longer loaded.
     pub(crate) fn let_go_entities(&mut self, position: ChunkPos) {
-        self.entity_chunks.retain(|_, chunk| *chunk != position);
+        let memory = &mut self.entity_memory;
+        self.entity_chunks.retain(|key, chunk| {
+            let kept = *chunk != position;
+            if !kept {
+                memory.remove(key);
+            }
+            kept
+        });
     }
 
     /// Applies what later commits did to the entities of copied chunks. A whole entity
@@ -191,18 +197,23 @@ impl Region {
         }
     }
 
-    /// The entities' phase of the tick (ADR-0028, section 2): every entity whose chunk
-    /// ticks, in ascending key. An item counts its age up and its pick-up delay down
-    /// (`ItemEntity.tick`); it does nothing else until N4, and commits nothing, its chunk
-    /// being named among those whose entities age (`TickOutput::entities_ageing`).
+    /// The entities' phase of the tick (ADR-0028, section 2, as the plan of N4 amends
+    /// it): every entity whose chunk ticks, in ascending key, those added before the
+    /// phase among them; one added in the phase waits for the next tick, as the game's
+    /// list of entities being ticked takes no new ones. An item ticks as the game's
+    /// (`items.rs`); a falling block only ages until step N4c.
     pub(crate) fn run_entities(&mut self, output: &mut TickOutput) {
-        let ticking: Vec<(EntityId, ChunkPos)> = self
+        let ticking: Vec<EntityId> = self
             .entity_chunks
             .iter()
             .filter(|(_, chunk)| self.ticks_chunk(**chunk))
-            .map(|(key, chunk)| (*key, *chunk))
+            .map(|(key, _)| *key)
             .collect();
-        for (key, position) in ticking {
+        for key in ticking {
+            // An item another merged into in this tick is gone.
+            let Some(&position) = self.entity_chunks.get(&key) else {
+                continue;
+            };
             let Some(chunk) = self.chunks.get_mut(&position) else {
                 continue;
             };
@@ -210,30 +221,15 @@ impl Region {
             let Ok(at) = entities.binary_search_by_key(&key, |entity| entity.key) else {
                 continue;
             };
-            let entity = &entities[at];
-            let mut fields = vec![EntityField::Age(entity.age.saturating_add(1))];
+            let entity = entities[at].clone();
             match &entity.data {
-                EntityData::Item {
-                    stack,
-                    pick_up_delay,
-                    thrower,
-                    health,
-                } => {
-                    if *pick_up_delay > 0 && *pick_up_delay != NEVER_PICKED_UP {
-                        fields.push(EntityField::Data(EntityData::Item {
-                            stack: *stack,
-                            pick_up_delay: pick_up_delay - 1,
-                            thrower: *thrower,
-                            health: *health,
-                        }));
-                    }
-                }
+                EntityData::Item { .. } => self.tick_item(entity, position, output),
                 // Falling blocks fall from step N4c on.
-                EntityData::FallingBlock { .. } => {}
-            }
-            chunk.apply_entity(&EntityChange::Set(key, fields));
-            if output.entities_ageing.last() != Some(&position) {
-                output.entities_ageing.push(position);
+                EntityData::FallingBlock { .. } => {
+                    let fields = vec![EntityField::Age(entity.age.saturating_add(1))];
+                    chunk.apply_entity(&EntityChange::Set(key, fields));
+                    output.entities_ageing.push(position);
+                }
             }
         }
         output.entities_ageing.sort();
@@ -328,7 +324,8 @@ impl Region {
                 health: 5,
             },
             fall_distance: 0.0,
-            fire_ticks: -1,
+            // The game's field starts at 0.
+            fire_ticks: 0,
         };
         output.events.push(RegionEvent::ArmSwung {
             entity: thrower_key,
