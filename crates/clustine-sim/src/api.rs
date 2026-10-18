@@ -868,6 +868,63 @@ pub enum RegionEvent {
     /// `LivingEntity.swing` shows it to everyone but the player, whose client swings it
     /// already: when they throw an item.
     ArmSwung { entity: EntityId, chunk: ChunkPos },
+    /// An entity other than a player as its tick left it, reported in a tick that
+    /// changed what an edge shows of it or set one of its flags for the edge
+    /// (`docs/groundwork/n4-plan.md`, section 7; the brief's section 9).
+    EntityTracked(Tracked),
+    /// An entity other than a player is gone: it died, was picked up, despawned or
+    /// merged into another. Passed over by an edge that shows it with a higher `hops`
+    /// (`docs/adr/0028-entities.md`, section 6).
+    EntityGone {
+        entity: EntityId,
+        chunk: ChunkPos,
+        hops: u32,
+    },
+    /// The player entity `collector` picked up `count` of the item `item`, which is in
+    /// `chunk` (`TakeItemEntity`); the item's removal, if it went whole, follows.
+    ItemTaken {
+        item: EntityId,
+        collector: EntityId,
+        count: i32,
+        chunk: ChunkPos,
+    },
+    /// A falling block landed at `position` as `state` (`AddTransientBlock`, sent after
+    /// the block's change).
+    TransientBlock { position: BlockPos, state: u16 },
+}
+
+/// What an edge is told of an entity other than a player in a tick that changed it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tracked {
+    pub entity: EntityId,
+    pub chunk: ChunkPos,
+    pub hops: u32,
+    pub position: [f64; 3],
+    pub motion: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+    /// [`Tracked::HORIZONTAL_COLLISION`] and the rest.
+    pub flags: u8,
+    /// Its data, where the tick changed it (an item's stack after a merge).
+    pub data: Option<EntityData>,
+}
+
+impl Tracked {
+    /// The tick's move collided along x or z (`horizontalCollision`).
+    pub const HORIZONTAL_COLLISION: u8 = 1;
+    /// The tick's move collided along y (`verticalCollision`).
+    pub const VERTICAL_COLLISION: u8 = 2;
+    /// Its position is to be sent whole (`getRequiresPrecisePosition`).
+    pub const PRECISE: u8 = 4;
+    /// It is to be sent this tick whatever the interval says (`needsSync`).
+    pub const NEEDS_SYNC: u8 = 8;
+    /// This tick is to be one of its update ticks (`syncPosition`).
+    pub const SYNC_POSITION: u8 = 16;
+    /// Its motion is to be sent to everyone, itself included (`syncVelocity`).
+    pub const SYNC_VELOCITY: u8 = 32;
+    /// It is on fire (the shared flags' bit 0, its data index 0).
+    pub const ON_FIRE: u8 = 64;
 }
 
 impl RegionEvent {
@@ -875,7 +932,12 @@ impl RegionEvent {
     pub fn chunks(&self) -> [ChunkPos; 2] {
         match self {
             Self::EntitySpawned(state) => [state.chunk(); 2],
-            Self::EntityRemoved { chunk, .. } | Self::ArmSwung { chunk, .. } => [*chunk; 2],
+            Self::EntityRemoved { chunk, .. }
+            | Self::ArmSwung { chunk, .. }
+            | Self::EntityGone { chunk, .. }
+            | Self::ItemTaken { chunk, .. } => [*chunk; 2],
+            Self::EntityTracked(tracked) => [tracked.chunk; 2],
+            Self::TransientBlock { position, .. } => [position.chunk(); 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }
@@ -1025,4 +1087,9 @@ pub struct TickOutput {
     /// it: to be committed with the tick (`docs/adr/0028-entities.md`, section 3). Only
     /// for chunks the region has loaded.
     pub entity_changes: Vec<(ChunkPos, EntityChange)>,
+    /// The chunks whose entities changed in the tick without a commit: counters, and a
+    /// resting item's motion (`docs/groundwork/n4-plan.md`, sections 2 and 7). The
+    /// worker saves their entities at its checkpoints and its stop, so that what the
+    /// store has of them is never older than the last checkpoint.
+    pub entities_ageing: Vec<ChunkPos>,
 }

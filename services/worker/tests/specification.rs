@@ -941,7 +941,13 @@ impl Witness {
                         | RegionEvent::Sound { .. }
                         | RegionEvent::LevelEvent { .. }
                         | RegionEvent::ArmSwung { .. }
+                        | RegionEvent::EntityTracked(_)
+                        | RegionEvent::ItemTaken { .. }
+                        | RegionEvent::TransientBlock { .. }
                         | RegionEvent::BlockEventsBegin => {}
+                        RegionEvent::EntityGone { entity, .. } => {
+                            self.entities.remove(entity);
+                        }
                         RegionEvent::EntityMoved { entity, pose, .. } => {
                             self.entities.insert(*entity, *pose);
                         }

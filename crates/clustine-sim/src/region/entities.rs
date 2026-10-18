@@ -193,8 +193,9 @@ impl Region {
 
     /// The entities' phase of the tick (ADR-0028, section 2): every entity whose chunk
     /// ticks, in ascending key. An item counts its age up and its pick-up delay down
-    /// (`ItemEntity.tick`); it does nothing else until N4, and commits nothing.
-    pub(crate) fn run_entities(&mut self) {
+    /// (`ItemEntity.tick`); it does nothing else until N4, and commits nothing, its chunk
+    /// being named among those whose entities age (`TickOutput::entities_ageing`).
+    pub(crate) fn run_entities(&mut self, output: &mut TickOutput) {
         let ticking: Vec<(EntityId, ChunkPos)> = self
             .entity_chunks
             .iter()
@@ -216,18 +217,27 @@ impl Region {
                     stack,
                     pick_up_delay,
                     thrower,
+                    health,
                 } => {
                     if *pick_up_delay > 0 && *pick_up_delay != NEVER_PICKED_UP {
                         fields.push(EntityField::Data(EntityData::Item {
                             stack: *stack,
                             pick_up_delay: pick_up_delay - 1,
                             thrower: *thrower,
+                            health: *health,
                         }));
                     }
                 }
+                // Falling blocks fall from step N4c on.
+                EntityData::FallingBlock { .. } => {}
             }
             chunk.apply_entity(&EntityChange::Set(key, fields));
+            if output.entities_ageing.last() != Some(&position) {
+                output.entities_ageing.push(position);
+            }
         }
+        output.entities_ageing.sort();
+        output.entities_ageing.dedup();
     }
 
     /// `count` floats from the stream of the entity `key` in this tick, on from what it
@@ -315,7 +325,10 @@ impl Region {
                 stack,
                 pick_up_delay: THROWN_PICK_UP_DELAY,
                 thrower: Some(player.0),
+                health: 5,
             },
+            fall_distance: 0.0,
+            fire_ticks: -1,
         };
         output.events.push(RegionEvent::ArmSwung {
             entity: thrower_key,

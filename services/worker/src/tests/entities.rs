@@ -32,7 +32,10 @@ fn item(key: u64, x: f64, z: f64) -> Entity {
             stack: ItemStack { item: 1, count: 1 },
             pick_up_delay: 40,
             thrower: None,
+            health: 5,
         },
+        fall_distance: 0.0,
+        fire_ticks: -1,
     }
 }
 
@@ -203,4 +206,65 @@ async fn an_entity_change_for_a_chunk_not_loaded_is_refused() {
         &gate,
         vec![(far, EntityChange::Gone(EntityId(1)))],
     );
+}
+
+/// An item that lies in a chunk that ticks ages without a commit, and its age reaches
+/// the store at the next checkpoint and at the region's stop all the same, so that a
+/// restart, a merge or a split does not make it young again
+/// (`docs/groundwork/n4-plan.md`, section 7).
+#[tokio::test]
+async fn an_item_that_lies_and_commits_nothing_has_its_age_saved_at_a_checkpoint_and_at_a_stop() {
+    // An item lies in K as the store has it.
+    let world = Divided::stripes();
+    {
+        let (handle, _) = world.open(RegionId(0), 1);
+        let mut chunk = clustine_worldgen::FlatGenerator::classic().generate(K);
+        chunk.set(1, 100, 1, clustine_data::blocks::STONE);
+        chunk.set_entities(vec![lying()]);
+        handle.request(StoreRequest::Save {
+            position: K,
+            tick: 0,
+            chunk,
+            parts: Parts::ALL,
+        });
+        handle.flush();
+    }
+    let (runner, gate) = gated_as(&world.store, world.hello(RegionId(0), 2), settings(0));
+    let mut runner = runner.with_id(RegionId(0));
+    let (edge, worker_end) = in_process(256);
+    runner.links().attach(worker_end);
+    runner.checkpoint_interval = 1_000_000;
+    // K and its neighbours, so that K ticks.
+    let around: Vec<ChunkPos> = (-1..=1)
+        .flat_map(|dx| (-1..=1).map(move |dz| ChunkPos::new(K.x + dx, K.z + dz)))
+        .collect();
+    edge.send(asking_for(around.clone())).await.unwrap();
+    step_until(&mut runner, |runner| {
+        around
+            .iter()
+            .all(|position| runner.region().chunk(*position).is_some())
+    });
+    let age_in = |runner: &RegionRunner| runner.region().chunk(K).unwrap().entities()[0].age;
+    step_until(&mut runner, |runner| age_in(runner) >= 30);
+    let committed = committed_entity_changes(&gate).len();
+    runner.checkpoint();
+    assert_eq!(
+        saved_parts(&gate, K),
+        [Parts::ALL],
+        "its first save since it was loaded, which is of every part"
+    );
+    step_until(&mut runner, |runner| age_in(runner) >= 60);
+    runner.checkpoint();
+    assert_eq!(saved_parts(&gate, K).last(), Some(&Parts::ENTITIES));
+    step_until(&mut runner, |runner| age_in(runner) >= 90);
+    let aged = age_in(&runner);
+    runner.checkpoint_at_stop();
+    assert_eq!(
+        committed_entity_changes(&gate).len(),
+        committed,
+        "the item's ageing made no commit"
+    );
+    drop(runner);
+    let (handle, _) = world.open(RegionId(0), 3);
+    assert_eq!(stored_chunk(&handle, K).entities()[0].age, aged);
 }

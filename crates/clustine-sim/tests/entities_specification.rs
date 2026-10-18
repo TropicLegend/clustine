@@ -214,7 +214,9 @@ fn made(output: &TickOutput) -> Vec<Entity> {
 }
 
 fn stack_of(entity: &Entity) -> ItemStack {
-    let EntityData::Item { stack, .. } = &entity.data;
+    let EntityData::Item { stack, .. } = &entity.data else {
+        panic!("{entity:?} is not an item");
+    };
     *stack
 }
 
@@ -294,6 +296,7 @@ fn a_thrown_item_leaves_from_below_the_eyes_along_the_look_with_the_game_s_motio
                 },
                 pick_up_delay: 40,
                 thrower: Some(player(1).0),
+                health: 5,
             },
             "{case}"
         );
@@ -481,7 +484,10 @@ fn the_creative_screen_throws_the_stack_named_and_leaves_the_inventory_as_it_was
         pick_up_delay,
         thrower,
         ..
-    } = &item.data;
+    } = &item.data
+    else {
+        panic!("{:?} is not an item", item);
+    };
     assert_eq!((*pick_up_delay, *thrower), (40, Some(player(1).0)));
     assert_eq!(held(&region, 0), Some(HELD));
     for (number, stack) in [
@@ -577,7 +583,10 @@ fn lying(key: EntityId, hops: u32) -> Entity {
             },
             pick_up_delay: 35,
             thrower: None,
+            health: 5,
         },
+        fall_distance: 0.0,
+        fire_ticks: -1,
     }
 }
 
@@ -618,7 +627,9 @@ fn a_loaded_item_is_taken_in_with_one_more_hop_and_then_commits_nothing_while_it
         );
     }
     let kept = &region.chunk(ORIGIN).expect("loaded").entities()[0];
-    let EntityData::Item { pick_up_delay, .. } = &kept.data;
+    let EntityData::Item { pick_up_delay, .. } = &kept.data else {
+        panic!("{kept:?} is not an item");
+    };
     assert_eq!(u32::from(*pick_up_delay) + kept.age, 40, "{kept:?}");
     assert_eq!(kept.hops, 3);
 }

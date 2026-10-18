@@ -895,6 +895,11 @@ pub struct RegionRunner {
     ///
     /// [`TickOutput::ticks_pending`]: clustine_sim::api::TickOutput::ticks_pending
     ageing: BTreeSet<ChunkPos>,
+    /// Loaded chunks whose entities changed without a commit since they were last
+    /// saved: counters, a resting item's motion. Saved at every checkpoint and at a stop,
+    /// so that what the store has of them is never older than the last checkpoint
+    /// (`docs/groundwork/n4-plan.md`, section 7).
+    entities_ageing: BTreeSet<ChunkPos>,
     /// How many ticks pass between two checkpoints.
     checkpoint_interval: u64,
     /// How many ticks an edge may be without a link before it is gone.
@@ -1116,6 +1121,7 @@ impl RegionRunner {
             saved_once: BTreeSet::new(),
             lends_in_flight: BTreeSet::new(),
             ageing: BTreeSet::new(),
+            entities_ageing: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
             gone_after: DEFAULT_GONE_AFTER,
             warm: BTreeMap::new(),
@@ -2605,6 +2611,13 @@ impl RegionRunner {
             .map(|position| (*position, self.region.scheduled_ticks(*position)))
             .collect();
         self.ageing = output.ticks_pending.iter().copied().collect();
+        let region = &self.region;
+        self.entities_ageing.extend(
+            output
+                .entities_ageing
+                .iter()
+                .filter(|position| region.chunk(**position).is_some()),
+        );
         // A chunk post-processed in the tick is committed as such, so that a restore
         // does not post-process it again (section 6 of the same record).
         let marks_taken: Vec<ChunkPos> = output
@@ -3115,12 +3128,16 @@ impl RegionRunner {
     fn save_parts(&mut self, position: ChunkPos, also: Parts) {
         // Ticks are kept with the blocks.
         let ageing = self.ageing.remove(&position).then_some(Parts::BLOCKS);
-        let Some(mut parts) = self.unsaved.remove(&position).or(ageing) else {
+        let entities = self
+            .entities_ageing
+            .remove(&position)
+            .then_some(Parts::ENTITIES);
+        let Some(mut parts) = self.unsaved.remove(&position).or(ageing).or(entities) else {
             return;
         };
         parts = parts.with(also);
-        if let Some(ageing) = ageing {
-            parts = parts.with(ageing);
+        for more in [ageing, entities].into_iter().flatten() {
+            parts = parts.with(more);
         }
         if let Some(mut chunk) = self.region.saved_chunk(position) {
             if self.saved_once.insert(position) {
@@ -3150,7 +3167,8 @@ impl RegionRunner {
     /// Hands every chunk with unsaved changes and the region's whole state to the store,
     /// which keeps them in place of the commits up to here.
     fn checkpoint(&mut self) {
-        let unsaved: Vec<ChunkPos> = self.unsaved.keys().copied().collect();
+        let mut unsaved: BTreeSet<ChunkPos> = self.unsaved.keys().copied().collect();
+        unsaved.extend(self.entities_ageing.iter().copied());
         for position in unsaved {
             self.save(position);
         }
@@ -3174,6 +3192,7 @@ impl RegionRunner {
     fn checkpoint_at_stop(&mut self) {
         let mut stopping: BTreeSet<ChunkPos> = self.unsaved.keys().copied().collect();
         stopping.extend(self.ageing.iter().copied());
+        stopping.extend(self.entities_ageing.iter().copied());
         for position in stopping {
             self.save_parts(position, Parts::ALL);
         }

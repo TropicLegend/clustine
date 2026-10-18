@@ -24,6 +24,7 @@ fn thrown(key: u64, x: f64, hops: u32) -> EntityState {
                 stack: STACK,
                 pick_up_delay: 40,
                 thrower: None,
+                health: 5,
             },
         },
         pose: Pose {

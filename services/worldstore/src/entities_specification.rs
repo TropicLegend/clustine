@@ -44,7 +44,10 @@ fn thrown(key: u64) -> Entity {
             stack: ItemStack { item: 1, count: 1 },
             pick_up_delay: 40,
             thrower: Some(uuid::Uuid::from_u128(1)),
+            health: 5,
         },
+        fall_distance: 0.0,
+        fire_ticks: -1,
     }
 }
 

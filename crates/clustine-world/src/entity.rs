@@ -37,6 +37,12 @@ pub struct Entity {
     pub hops: u32,
     /// The ticks it has ticked.
     pub age: u32,
+    /// How far it has fallen since it last stood on something (the game's
+    /// `fallDistance`, a `double`).
+    pub fall_distance: f64,
+    /// The ticks it has left to burn, below 0 the ticks it is safe from fire for (the
+    /// game's `remainingFireTicks`, -1 for an entity that has never burned).
+    pub fire_ticks: i32,
     pub data: EntityData,
 }
 
@@ -62,6 +68,8 @@ impl PartialEq for Entity {
             && self.on_ground == other.on_ground
             && self.hops == other.hops
             && self.age == other.age
+            && self.fall_distance.to_bits() == other.fall_distance.to_bits()
+            && self.fire_ticks == other.fire_ticks
             && self.data == other.data
     }
 }
@@ -77,6 +85,19 @@ pub enum EntityData {
         pick_up_delay: u16,
         /// Who threw it, if a player did.
         thrower: Option<Uuid>,
+        /// What it can still take before it is destroyed (the game's 5).
+        health: i16,
+    },
+    /// A block falling (`FallingBlockEntity`).
+    FallingBlock {
+        /// The block's state id.
+        state: u16,
+        /// The ticks it has fallen (the game's `time`).
+        time: i32,
+        /// Whether it drops as an item where it cannot land.
+        drop_item: bool,
+        /// Whether its drop is called off (a block that broke where it landed).
+        cancel_drop: bool,
     },
 }
 
@@ -112,6 +133,8 @@ pub enum EntityField {
     OnGround(bool),
     Age(u32),
     Data(EntityData),
+    FallDistance(f64),
+    FireTicks(i32),
 }
 
 impl PartialEq for EntityField {
@@ -131,6 +154,8 @@ impl PartialEq for EntityField {
             (Self::OnGround(a), Self::OnGround(b)) => a == b,
             (Self::Age(a), Self::Age(b)) => a == b,
             (Self::Data(a), Self::Data(b)) => a == b,
+            (Self::FallDistance(a), Self::FallDistance(b)) => a.to_bits() == b.to_bits(),
+            (Self::FireTicks(a), Self::FireTicks(b)) => a == b,
             _ => false,
         }
     }
@@ -148,6 +173,8 @@ impl EntityField {
             Self::OnGround(on_ground) => entity.on_ground = *on_ground,
             Self::Age(age) => entity.age = *age,
             Self::Data(data) => entity.data = data.clone(),
+            Self::FallDistance(distance) => entity.fall_distance = *distance,
+            Self::FireTicks(ticks) => entity.fire_ticks = *ticks,
         }
     }
 }
@@ -311,7 +338,10 @@ mod tests {
                 stack: ItemStack { item: 1, count: 1 },
                 pick_up_delay: 40,
                 thrower: None,
+                health: 5,
             },
+            fall_distance: 0.0,
+            fire_ticks: -1,
         };
         EntityField::Position([3.25, -60.0, -0.5]).set(&mut entity);
         EntityField::Age(12).set(&mut entity);

@@ -101,7 +101,9 @@ fn the_whole(output: &TickOutput) -> Entity {
 }
 
 fn stack_of(entity: &Entity) -> ItemStack {
-    let EntityData::Item { stack, .. } = &entity.data;
+    let EntityData::Item { stack, .. } = &entity.data else {
+        panic!("{entity:?} is not an item");
+    };
     *stack
 }
 
@@ -162,6 +164,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             stack: STONE,
             pick_up_delay: 40,
             thrower: Some(player(1).0),
+            health: 5,
         }
     );
     // The chunk has it, ticked once since, the region's next key is the one after it,
@@ -172,6 +175,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             stack: STONE,
             pick_up_delay: 39,
             thrower: Some(player(1).0),
+            health: 5,
         },
         ..item.clone()
     };
@@ -397,12 +401,17 @@ fn item_at(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
             stack: DIRT,
             pick_up_delay: 33,
             thrower: None,
+            health: 5,
         },
+        fall_distance: 0.0,
+        fire_ticks: -1,
     }
 }
 
 fn counters(entity: &Entity) -> (u32, u16) {
-    let EntityData::Item { pick_up_delay, .. } = &entity.data;
+    let EntityData::Item { pick_up_delay, .. } = &entity.data else {
+        panic!("{entity:?} is not an item");
+    };
     (entity.age, *pick_up_delay)
 }
 

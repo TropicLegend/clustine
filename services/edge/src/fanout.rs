@@ -2754,6 +2754,11 @@ impl Fanout {
                     .await;
             }
             RegionEvent::ArmSwung { entity, .. } => self.swing_arm(entity).await,
+            // Shown to clients from step N4d on.
+            RegionEvent::EntityTracked(_)
+            | RegionEvent::EntityGone { .. }
+            | RegionEvent::ItemTaken { .. }
+            | RegionEvent::TransientBlock { .. } => {}
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;
@@ -4713,6 +4718,11 @@ fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
                 entity_data::ITEM_STACK,
                 EntityDataValue::ItemStack(Some(protocol_stack(*stack))),
             )],
+        },
+        // A falling block's start, its index 8, comes with step N4d.
+        EntityData::FallingBlock { .. } => SetEntityData {
+            entity_id: id,
+            values: Vec::new(),
         },
     }
 }

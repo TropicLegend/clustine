@@ -808,7 +808,7 @@ impl Region {
         // (`docs/adr/0026-redstone.md`, sections 3 and 5). Then the chunks keep the
         // events still queued.
         self.players_touch_blocks(&mut output);
-        self.run_entities();
+        self.run_entities(&mut output);
         self.run_block_entities(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block

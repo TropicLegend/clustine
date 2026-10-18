@@ -341,7 +341,9 @@ fn items_in(runner: &RegionRunner) -> Vec<clustine_world::Entity> {
 }
 
 fn stack_of(data: &EntityData) -> ItemStack {
-    let EntityData::Item { stack, .. } = data;
+    let EntityData::Item { stack, .. } = data else {
+        panic!("{data:?} is not an item");
+    };
     *stack
 }
 
@@ -419,6 +421,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
             },
             pick_up_delay: 40,
             thrower: Some(player(1).0),
+            health: 5,
         }
     );
     assert_eq!(
@@ -473,7 +476,10 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
         pick_up_delay,
         thrower,
         ..
-    } = data_again;
+    } = data_again
+    else {
+        panic!("not an item");
+    };
     assert_eq!(*thrower, Some(player(1).0));
     // Its counters went on from its record, at the throw: not from where the lost
     // worker had them, 30 ticks and more on.
@@ -487,7 +493,9 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
     let [kept] = &items_in(&runner)[..] else {
         panic!("one item in the chunk: {:?}", items_in(&runner));
     };
-    let EntityData::Item { pick_up_delay, .. } = &kept.data;
+    let EntityData::Item { pick_up_delay, .. } = &kept.data else {
+        panic!("{kept:?} is not an item");
+    };
     assert_eq!(u32::from(*pick_up_delay) + kept.age, 40, "{kept:?}");
     // The hand and the item hold the 64 between them.
     assert_eq!(
@@ -638,7 +646,9 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
     assert_eq!(saved.key, key);
     // As of the tick it was saved at: it has aged from its throw to then, and its
     // delay with it.
-    let EntityData::Item { pick_up_delay, .. } = &saved.data;
+    let EntityData::Item { pick_up_delay, .. } = &saved.data else {
+        panic!("{saved:?} is not an item");
+    };
     assert_eq!(u32::from(*pick_up_delay) + saved.age, 40, "{saved:?}");
     assert!(
         u64::from(saved.age) <= file.tick - thrown_at + 1,

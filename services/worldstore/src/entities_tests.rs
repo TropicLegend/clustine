@@ -61,7 +61,10 @@ pub(crate) fn item(key: u64, x: f64, z: f64) -> Entity {
             stack: ItemStack { item: 1, count: 5 },
             pick_up_delay: 40,
             thrower: None,
+            health: 5,
         },
+        fall_distance: 0.0,
+        fire_ticks: -1,
     }
 }
 
@@ -178,6 +181,7 @@ fn first_aged() -> [EntityField; 3] {
             stack: ItemStack { item: 1, count: 4 },
             pick_up_delay: 0,
             thrower: Some(uuid::Uuid::from_u128(77)),
+            health: 5,
         }),
     ]
 }

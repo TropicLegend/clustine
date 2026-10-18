@@ -856,7 +856,10 @@ mod tests {
                 stack: crate::ItemStack { item: 1, count: 1 },
                 pick_up_delay: 0,
                 thrower: None,
+                health: 5,
             },
+            fall_distance: 0.0,
+            fire_ticks: -1,
         }
     }
 

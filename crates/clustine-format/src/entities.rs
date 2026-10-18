@@ -16,16 +16,20 @@
 //! | Flags | u8: bit 0 on the ground; the others 0 |
 //! | Hops: changes of holder behind it | u32 |
 //! | Age: the ticks it has ticked, as of the record's tick | u32 |
+//! | Fall distance | f64 |
+//! | Fire: ticks left to burn, or below 0 safe from fire | i32 |
 //! | Data | a tag u8, then what the tag says |
 //!
 //! where the data of tag 1, an item, is the item i32, the count i32, the pick-up delay
-//! left as of the record's tick u16, and u8 1 followed by the thrower's UUID u128, or u8
-//! 0 where nobody threw it. Counters are kept relative to the record they are in
+//! left as of the record's tick u16, u8 1 followed by the thrower's UUID u128, or u8 0
+//! where nobody threw it, and its health i16; the data of tag 2, a falling block, is its
+//! state u16, the ticks it has fallen i32, and flags u8 (bit 0 it drops as an item where
+//! it cannot land, bit 1 its drop is called off; the others 0). Counters are kept relative to the record they are in
 //! (section 11 of the plan): regions count their ticks each from their own start.
 //!
 //! A field a tick set is a tag u8 and its value: 1 the position (3 × f64), 2 the motion
 //! (3 × f64), 3 the rotation (yaw f32, pitch f32), 4 on the ground (u8 0 or 1), 5 the
-//! data (as above), 6 the age (u32).
+//! data (as above), 6 the age (u32), 7 the fall distance (f64), 8 the fire (i32).
 //!
 //! A change of an entity is a tag u8 and its body: 1 whole, the entity; 2 gone, its key
 //! u64; 3 set, its key u64, a count of fields u32 and the fields.
@@ -63,6 +67,10 @@ pub const KIND_ENTITIES: u8 = 7;
 const ON_GROUND: u8 = 1;
 
 const DATA_ITEM: u8 = 1;
+const DATA_FALLING_BLOCK: u8 = 2;
+
+const DROP_ITEM: u8 = 1;
+const CANCEL_DROP: u8 = 2;
 
 const FIELD_POSITION: u8 = 1;
 const FIELD_MOTION: u8 = 2;
@@ -70,13 +78,15 @@ const FIELD_ROTATION: u8 = 3;
 const FIELD_ON_GROUND: u8 = 4;
 const FIELD_DATA: u8 = 5;
 const FIELD_AGE: u8 = 6;
+const FIELD_FALL_DISTANCE: u8 = 7;
+const FIELD_FIRE: u8 = 8;
 
 const CHANGE_WHOLE: u8 = 1;
 const CHANGE_GONE: u8 = 2;
 const CHANGE_SET: u8 = 3;
 
 /// Bytes an entity takes at the least: an item without a thrower.
-const ENTITY_LENGTH: usize = 8 + 2 + 16 + 48 + 8 + 1 + 4 + 4 + 1 + 4 + 4 + 2 + 1;
+const ENTITY_LENGTH: usize = 8 + 2 + 16 + 48 + 8 + 1 + 4 + 4 + 8 + 4 + 1 + 4 + 4 + 2 + 1 + 2;
 /// Bytes a change takes at the least: a gone one.
 const CHANGE_LENGTH: usize = 9;
 /// Bytes a field takes at the least: on the ground.
@@ -108,6 +118,7 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             stack,
             pick_up_delay,
             thrower,
+            health,
         } => {
             out.push(DATA_ITEM);
             out.extend_from_slice(&stack.item.to_be_bytes());
@@ -120,6 +131,25 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
                     out.extend_from_slice(&thrower.as_u128().to_be_bytes());
                 }
             }
+            out.extend_from_slice(&health.to_be_bytes());
+        }
+        EntityData::FallingBlock {
+            state,
+            time,
+            drop_item,
+            cancel_drop,
+        } => {
+            out.push(DATA_FALLING_BLOCK);
+            out.extend_from_slice(&state.to_be_bytes());
+            out.extend_from_slice(&time.to_be_bytes());
+            let mut flags = 0;
+            if *drop_item {
+                flags |= DROP_ITEM;
+            }
+            if *cancel_drop {
+                flags |= CANCEL_DROP;
+            }
+            out.push(flags);
         }
     }
 }
@@ -141,6 +171,21 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 stack,
                 pick_up_delay,
                 thrower,
+                health: input.i16()?,
+            })
+        }
+        DATA_FALLING_BLOCK => {
+            let state = input.u16()?;
+            let time = input.i32()?;
+            let flags = input.u8()?;
+            if flags & !(DROP_ITEM | CANCEL_DROP) != 0 {
+                return Err(FormatError::Corrupt("a falling block's flags"));
+            }
+            Ok(EntityData::FallingBlock {
+                state,
+                time,
+                drop_item: flags & DROP_ITEM != 0,
+                cancel_drop: flags & CANCEL_DROP != 0,
             })
         }
         _ => Err(FormatError::Corrupt("entity data tag")),
@@ -159,6 +204,8 @@ pub(crate) fn put_entity(out: &mut Vec<u8>, entity: &Entity) {
     out.push(if entity.on_ground { ON_GROUND } else { 0 });
     out.extend_from_slice(&entity.hops.to_be_bytes());
     out.extend_from_slice(&entity.age.to_be_bytes());
+    out.extend_from_slice(&entity.fall_distance.to_be_bytes());
+    out.extend_from_slice(&entity.fire_ticks.to_be_bytes());
     put_data(out, &entity.data);
 }
 
@@ -185,6 +232,9 @@ pub(crate) fn take_entity(input: &mut Input<'_>) -> Result<Entity, FormatError> 
         on_ground: flags & ON_GROUND != 0,
         hops: input.u32()?,
         age: input.u32()?,
+        // Read in the order written: struct fields are taken in the order they are here.
+        fall_distance: input.f64()?,
+        fire_ticks: input.i32()?,
         data: take_data(input)?,
     })
 }
@@ -216,6 +266,14 @@ fn put_field(out: &mut Vec<u8>, field: &EntityField) {
             out.push(FIELD_AGE);
             out.extend_from_slice(&age.to_be_bytes());
         }
+        EntityField::FallDistance(distance) => {
+            out.push(FIELD_FALL_DISTANCE);
+            out.extend_from_slice(&distance.to_be_bytes());
+        }
+        EntityField::FireTicks(ticks) => {
+            out.push(FIELD_FIRE);
+            out.extend_from_slice(&ticks.to_be_bytes());
+        }
     }
 }
 
@@ -230,6 +288,8 @@ fn take_field(input: &mut Input<'_>) -> Result<EntityField, FormatError> {
         FIELD_ON_GROUND => EntityField::OnGround(take_flag(input, "an entity's on-ground field")?),
         FIELD_DATA => EntityField::Data(take_data(input)?),
         FIELD_AGE => EntityField::Age(input.u32()?),
+        FIELD_FALL_DISTANCE => EntityField::FallDistance(input.f64()?),
+        FIELD_FIRE => EntityField::FireTicks(input.i32()?),
         _ => return Err(FormatError::Corrupt("entity field tag")),
     })
 }
@@ -429,7 +489,10 @@ pub(crate) mod tests {
                 stack: ItemStack { item: 1, count: 64 },
                 pick_up_delay: 40,
                 thrower: thrower.map(Uuid::from_u128),
+                health: 5,
             },
+            fall_distance: 0.0,
+            fire_ticks: -1,
         }
     }
 
@@ -462,11 +525,14 @@ pub(crate) mod tests {
         expected.push(1); // on the ground
         expected.extend_from_slice(&[0, 0, 0, 3]); // hops
         expected.extend_from_slice(&[0, 0, 0, 12]); // age
+        expected.extend_from_slice(&[0; 8]); // fall distance 0
+        expected.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // fire -1
         expected.push(1); // an item
         expected.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 64]); // item, count
         expected.extend_from_slice(&[0, 40]); // pick-up delay
         expected.push(1); // a thrower
         expected.extend_from_slice(&7u128.to_be_bytes());
+        expected.extend_from_slice(&[0, 5]); // health
         let checksum = crc32fast::hash(&expected);
         expected.extend_from_slice(&checksum.to_be_bytes());
         assert_eq!(bytes, expected);
@@ -528,7 +594,7 @@ pub(crate) mod tests {
             (-1e7..1e7f64, -2048.0..2048.0f64, -1e7..1e7f64),
             any::<[f64; 3]>(),
             (any::<f32>(), any::<f32>(), any::<bool>()),
-            (any::<u32>(), any::<u32>()),
+            (any::<u32>(), any::<u32>(), any::<f64>(), any::<i32>()),
             datas(),
         )
             .prop_map(
@@ -539,7 +605,7 @@ pub(crate) mod tests {
                     (x, y, z),
                     motion,
                     (yaw, pitch, on_ground),
-                    (hops, age),
+                    (hops, age, fall_distance, fire_ticks),
                     data,
                 )| {
                     Entity {
@@ -554,23 +620,39 @@ pub(crate) mod tests {
                         hops,
                         age,
                         data,
+                        fall_distance,
+                        fire_ticks,
                     }
                 },
             )
     }
 
     fn datas() -> impl Strategy<Value = EntityData> {
-        (
-            any::<i32>(),
-            any::<i32>(),
-            any::<u16>(),
-            any::<Option<u128>>(),
-        )
-            .prop_map(|(item, count, pick_up_delay, thrower)| EntityData::Item {
-                stack: ItemStack { item, count },
-                pick_up_delay,
-                thrower: thrower.map(Uuid::from_u128),
-            })
+        prop_oneof![
+            (
+                any::<i32>(),
+                any::<i32>(),
+                any::<u16>(),
+                any::<Option<u128>>(),
+                any::<i16>(),
+            )
+                .prop_map(|(item, count, pick_up_delay, thrower, health)| {
+                    EntityData::Item {
+                        stack: ItemStack { item, count },
+                        pick_up_delay,
+                        thrower: thrower.map(Uuid::from_u128),
+                        health,
+                    }
+                }),
+            (any::<u16>(), any::<i32>(), any::<bool>(), any::<bool>()).prop_map(
+                |(state, time, drop_item, cancel_drop)| EntityData::FallingBlock {
+                    state,
+                    time,
+                    drop_item,
+                    cancel_drop,
+                }
+            ),
+        ]
     }
 
     fn fields() -> impl Strategy<Value = EntityField> {
@@ -582,6 +664,8 @@ pub(crate) mod tests {
             any::<bool>().prop_map(EntityField::OnGround),
             any::<u32>().prop_map(EntityField::Age),
             datas().prop_map(EntityField::Data),
+            any::<f64>().prop_map(EntityField::FallDistance),
+            any::<i32>().prop_map(EntityField::FireTicks),
         ]
     }
 
