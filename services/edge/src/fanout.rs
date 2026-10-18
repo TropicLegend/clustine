@@ -22,13 +22,14 @@ use clustine_protocol::codec::Position;
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, Animate, BlockEvent, BlockUpdate, ChunkBatchFinished, ChunkBatchStart,
-    Disconnect, EntityDataValue, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry,
-    PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate,
-    SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetHeadRotation,
-    SetHeldSlot, SetPlayerInventory, Sound, SpawnEntity, SyncEntityPosition,
-    SynchronizePlayerPosition, UnloadChunk, abilities, angle, animation, entity_data, game_event,
-    game_mode, inventory as protocol_inventory, level_event, player_info,
+    AcknowledgeBlockChange, AddTransientBlock, Animate, BlockEvent, BlockUpdate,
+    ChunkBatchFinished, ChunkBatchStart, Disconnect, EntityDataValue, GameEvent, LevelEvent, Login,
+    PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
+    RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
+    SetDefaultSpawnPosition, SetEntityData, SetHeadRotation, SetHeldSlot, SetPlayerInventory,
+    Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk,
+    abilities, angle, animation, entity_data, game_event, game_mode,
+    inventory as protocol_inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -37,7 +38,7 @@ use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
     Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected, PlayerEvent, PlayerInput,
-    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
+    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight,
@@ -52,6 +53,7 @@ use crate::encode::chunk_packet;
 use crate::figures::{self, FIGURES};
 use crate::light::{FromThread, LightJob, LightOutcome, Lighting};
 use crate::login::Profile;
+use crate::tracking::{Pairing, Seen, Tracker};
 use crate::{EdgeIdentity, RegionLink, Relink, Routing, Stopped};
 
 const OVERWORLD: &str = "minecraft:overworld";
@@ -797,7 +799,39 @@ pub(crate) struct Fanout {
     /// Where the seeds of the sounds this edge sends come from: any number will do,
     /// and none of the regions' rules draws it.
     sound_seeds: u64,
+    /// The tick of each region's latest `TickDelta`, by the region it stands for.
+    region_ticks: BTreeMap<RegionId, u64>,
+    /// The region and tick of the report being handled, and whether the updates of
+    /// that tick's entities have run: where a tracker made now begins.
+    reporting: Option<Reporting>,
+    /// The entities other than players that died, were picked up, despawned or merged,
+    /// with their `hops`, kept so that a late report of an old holder does not bring
+    /// them back (`docs/adr/0028-entities.md`, section 6).
+    gone: BTreeMap<EntityId, Gone>,
 }
+
+/// The report the edge is handling: of `region`'s `tick`, before or after the updates
+/// of that tick's entities ran (the game's `sendChanges`, which comes after the tick's
+/// block changes are broadcast and before its entities tick).
+#[derive(Debug, Clone, Copy)]
+struct Reporting {
+    region: RegionId,
+    tick: u64,
+    updated: bool,
+}
+
+/// An entity other than a player that is gone: the `hops` of its removal, and for each
+/// region the edge has heard from since, the tick of the first report it heard of it
+/// after the removal. It is forgotten once every region the edge hears from has
+/// reported [`GONE_FOR`] ticks after that.
+#[derive(Debug, Clone, Default)]
+struct Gone {
+    hops: u32,
+    heard: BTreeMap<RegionId, u64>,
+}
+
+/// How many of a region's ticks a removal is kept after its first report following it.
+const GONE_FOR: u64 = 600;
 
 /// The ids by which this edge's clients know entities. An entity's key is unique for
 /// the life of the world and does not fit the protocol's `i32`, so each edge gives the
@@ -853,6 +887,8 @@ impl WireIds {
 struct Shown {
     state: EntityState,
     from: RegionId,
+    /// What the edge sends of it as it moves, for an entity other than a player.
+    tracker: Option<Tracker>,
 }
 
 impl Fanout {
@@ -908,6 +944,9 @@ impl Fanout {
             stands_for: BTreeMap::new(),
             carried: BTreeMap::new(),
             sound_seeds: 0,
+            region_ticks: BTreeMap::new(),
+            reporting: None,
+            gone: BTreeMap::new(),
         }
     }
 
@@ -1644,13 +1683,22 @@ impl Fanout {
                 ask,
                 chunk,
                 entities,
-                ..
+                tick,
             } => {
                 if self.served(from, position, ask) {
+                    // A snapshot is the chunk after its tick: an entity first seen in it
+                    // is updated from the next tick on.
+                    let region = self.living(from);
+                    self.reporting = Some(Reporting {
+                        region,
+                        tick,
+                        updated: true,
+                    });
                     self.take_snapshot(from, position, chunk, entities).await;
+                    self.reporting = None;
                 }
             }
-            WorkerToEdge::TickDelta { events, .. } => {
+            WorkerToEdge::TickDelta { tick, events } => {
                 // The changes of blocks of one tick go out together, those of one
                 // section in one packet, as the game's `ChunkHolder.broadcastChanges`
                 // sends them: a tick can change thousands (the leaves of a forest set
@@ -1662,6 +1710,18 @@ impl Fanout {
                 let mut changed = self.carried.remove(&from).unwrap_or_default();
                 let mut later = Changed::new();
                 let mut begun = false;
+                // The entities other than players are updated for the ticks the region
+                // said nothing in, and for this one where the game does it: after the
+                // block changes are broadcast, before the entities tick
+                // (`docs/groundwork/n4-plan.md`, section 7).
+                let region = self.living(from);
+                self.heard_tick(region, tick);
+                self.update_entities(region, tick, true).await;
+                self.reporting = Some(Reporting {
+                    region,
+                    tick,
+                    updated: false,
+                });
                 for event in events {
                     match event {
                         RegionEvent::BlockChanged {
@@ -1689,12 +1749,22 @@ impl Fanout {
                             if !begun {
                                 begun = true;
                                 self.show_changes(std::mem::take(&mut changed)).await;
+                                self.update_entities(region, tick, false).await;
+                                self.reporting = Some(Reporting {
+                                    region,
+                                    tick,
+                                    updated: true,
+                                });
                             }
                         }
                         event => self.handle_event(from, event).await,
                     }
                 }
                 self.show_changes(changed).await;
+                if !begun {
+                    self.update_entities(region, tick, false).await;
+                }
+                self.reporting = None;
                 if !later.is_empty() {
                     self.carried.insert(from, later);
                 }
@@ -2754,11 +2824,29 @@ impl Fanout {
                     .await;
             }
             RegionEvent::ArmSwung { entity, .. } => self.swing_arm(entity).await,
-            // Shown to clients from step N4d on.
-            RegionEvent::EntityTracked(_)
-            | RegionEvent::EntityGone { .. }
-            | RegionEvent::ItemTaken { .. }
-            | RegionEvent::TransientBlock { .. } => {}
+            RegionEvent::EntityTracked(tracked) => self.track_entity(from, tracked).await,
+            RegionEvent::EntityGone { entity, hops, .. } => {
+                if self.was_gone(entity, hops) || !self.takes_word_of(from, entity, hops) {
+                    return;
+                }
+                self.remove_entity(entity).await;
+                self.gone.insert(
+                    entity,
+                    Gone {
+                        hops,
+                        heard: BTreeMap::new(),
+                    },
+                );
+            }
+            RegionEvent::ItemTaken {
+                item,
+                collector,
+                count,
+                ..
+            } => self.show_taken(from, item, collector, count).await,
+            RegionEvent::TransientBlock { position, state } => {
+                self.show_transient(position, state).await;
+            }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;
@@ -2767,7 +2855,22 @@ impl Fanout {
                 // the snapshot of the chunk it is in, which is still on its way.
                 if let Some(shown) = self.entities.get_mut(&entity) {
                     shown.state.pose = pose;
-                    self.refresh_entity(entity, true).await;
+                    // An entity other than a player is moved on the wire by its tracker.
+                    let tracked = match (&mut shown.tracker, &shown.state.kind) {
+                        (Some(tracker), EntityKind::Other { kind, motion, .. }) => {
+                            tracker.moved(Seen {
+                                kind: *kind,
+                                position: [pose.position.x, pose.position.y, pose.position.z],
+                                motion: *motion,
+                                yaw: pose.yaw,
+                                pitch: pose.pitch,
+                                on_ground: pose.on_ground,
+                            });
+                            true
+                        }
+                        _ => false,
+                    };
+                    self.refresh_entity(entity, !tracked).await;
                 }
                 // The view of a player follows where the worker says the player is.
                 if let Some(player) = self.entity_owners.get(&entity).copied() {
@@ -2803,15 +2906,48 @@ impl Fanout {
         // of holder behind it (`docs/adr/0028-entities.md`, section 6).
         let player = match &state.kind {
             EntityKind::Player { player, .. } => *player,
-            EntityKind::Other { hops, .. } => {
-                if !self.takes_word_of(from, entity, *hops) {
+            EntityKind::Other {
+                hops,
+                kind,
+                motion,
+                data,
+                ..
+            } => {
+                if self.was_gone(entity, *hops) || !self.takes_word_of(from, entity, *hops) {
                     return;
                 }
-                let moved = self
-                    .entities
-                    .insert(entity, Shown { state, from })
-                    .is_some_and(|known| known.state.pose != pose);
-                self.refresh_entity(entity, moved).await;
+                // More changes of holder than its removal had: not what was removed.
+                self.gone.remove(&entity);
+                let seen = Seen {
+                    kind: *kind,
+                    position: [pose.position.x, pose.position.y, pose.position.z],
+                    motion: *motion,
+                    yaw: pose.yaw,
+                    pitch: pose.pitch,
+                    on_ground: pose.on_ground,
+                };
+                let start = self.tracker_start(from);
+                let known = self.entities.get(&entity);
+                let taken_over =
+                    known.is_some_and(|known| self.living(known.from) != self.living(from));
+                let tracker = match known.and_then(|known| known.tracker.clone()) {
+                    Some(mut tracker) => {
+                        // The tick it is updated next is the new holder's next.
+                        if taken_over {
+                            tracker.ran = start;
+                        }
+                        tracker.moved(seen);
+                        tracker
+                    }
+                    None => Tracker::new(seen, data, start),
+                };
+                let shown = Shown {
+                    state,
+                    from,
+                    tracker: Some(tracker),
+                };
+                self.entities.insert(entity, shown);
+                self.refresh_entity(entity, false).await;
                 return;
             }
         };
@@ -2825,11 +2961,239 @@ impl Fanout {
         for earlier in self.note_stay(player, entity) {
             self.remove_entity(earlier).await;
         }
+        let shown = Shown {
+            state,
+            from,
+            tracker: None,
+        };
         let moved = self
             .entities
-            .insert(entity, Shown { state, from })
+            .insert(entity, shown)
             .is_some_and(|known| known.state.pose != pose);
         self.refresh_entity(entity, moved).await;
+    }
+
+    /// The tick of `from` whose update an entity it introduces now is past: that of the
+    /// report being handled if its entities' updates ran already, and the one before
+    /// if not, so that one thrown before the tick's update is updated in it.
+    fn tracker_start(&self, from: RegionId) -> u64 {
+        let region = self.living(from);
+        match self.reporting {
+            Some(reporting) if reporting.region == region => {
+                if reporting.updated {
+                    reporting.tick
+                } else {
+                    reporting.tick.saturating_sub(1)
+                }
+            }
+            _ => self.region_ticks.get(&region).copied().unwrap_or(0),
+        }
+    }
+
+    /// Whether `entity` is gone with at least `hops` changes of holder behind its
+    /// removal, so that a report with as many is of what was removed.
+    fn was_gone(&self, entity: EntityId, hops: u32) -> bool {
+        self.gone.get(&entity).is_some_and(|gone| hops <= gone.hops)
+    }
+
+    /// Notes that `region` has reported `tick`, and forgets the removals that every
+    /// region the edge hears from has reported [`GONE_FOR`] ticks after.
+    fn heard_tick(&mut self, region: RegionId, tick: u64) {
+        self.region_ticks.insert(region, tick);
+        if self.gone.is_empty() {
+            return;
+        }
+        let linked: BTreeSet<RegionId> = self
+            .regions
+            .iter()
+            .filter(|(_, port)| port.link.is_some())
+            .map(|(id, _)| self.living(*id))
+            .collect();
+        let ticks = &self.region_ticks;
+        self.gone.retain(|_, gone| {
+            gone.heard.entry(region).or_insert(tick);
+            !linked.iter().all(|linked| {
+                let first = gone.heard.get(linked);
+                let latest = ticks.get(linked);
+                matches!((first, latest), (Some(first), Some(latest)) if *latest >= first + GONE_FOR)
+            })
+        });
+    }
+
+    /// Runs the updates of the entities shown from `region`: with `catching_up`, of the
+    /// ticks before `tick` the region said nothing in, and otherwise of `tick` itself;
+    /// each sent to everyone shown the entity.
+    async fn update_entities(&mut self, region: RegionId, tick: u64, catching_up: bool) {
+        let keys: Vec<EntityId> = self
+            .entities
+            .iter()
+            .filter(|(_, shown)| shown.tracker.is_some() && self.living(shown.from) == region)
+            .map(|(key, _)| *key)
+            .collect();
+        let mut outgoing: Vec<(PlayerId, Bytes)> = Vec::new();
+        for key in keys {
+            let viewers: Vec<PlayerId> = self
+                .players
+                .iter()
+                .filter(|(_, view)| view.visible.contains_key(&key))
+                .map(|(player, _)| *player)
+                .collect();
+            // Only a packet that names the entity needs its id.
+            let id = if viewers.is_empty() {
+                0
+            } else {
+                self.wire.of(key)
+            };
+            let Some(shown) = self.entities.get_mut(&key) else {
+                continue;
+            };
+            let EntityKind::Other { data, .. } = &shown.state.kind else {
+                continue;
+            };
+            let Some(tracker) = shown.tracker.as_mut() else {
+                continue;
+            };
+            let sent = if catching_up {
+                // A region restored from its checkpoint reports ticks again that the
+                // tracker ran: it goes on from them.
+                if tracker.ran >= tick {
+                    tracker.ran = tick.saturating_sub(1);
+                    continue;
+                }
+                let missed = tick - (tracker.ran + 1);
+                if missed == 0 {
+                    continue;
+                }
+                tracker.ran = tick - 1;
+                tracker.catch_up(id, data, missed)
+            } else {
+                if tracker.ran >= tick {
+                    continue;
+                }
+                tracker.ran = tick;
+                tracker.send_changes(id, data)
+            };
+            for packet in sent {
+                let packet = packet.encoded();
+                outgoing.extend(viewers.iter().map(|player| (*player, packet.clone())));
+            }
+        }
+        for (player, packet) in outgoing {
+            self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Takes the region's report of an entity's tick (`docs/groundwork/n4-plan.md`,
+    /// section 7): what it shows of it now, for its tracker to send at its updates, and
+    /// for its viewers to change where it moved into or out of their view. One the edge
+    /// does not show is covered by the snapshot of its chunk, which is on its way.
+    async fn track_entity(&mut self, from: RegionId, tracked: Tracked) {
+        let entity = tracked.entity;
+        if self.was_gone(entity, tracked.hops) || !self.takes_word_of(from, entity, tracked.hops) {
+            return;
+        }
+        let start = self.tracker_start(from);
+        let Some(known) = self.entities.get(&entity) else {
+            return;
+        };
+        let taken_over = self.living(known.from) != self.living(from);
+        let Some(shown) = self.entities.get_mut(&entity) else {
+            return;
+        };
+        let EntityKind::Other {
+            motion, hops, data, ..
+        } = &mut shown.state.kind
+        else {
+            return;
+        };
+        if let Some(tracker) = shown.tracker.as_mut() {
+            tracker.report(&tracked, data);
+            if taken_over {
+                tracker.ran = start;
+            }
+        }
+        *motion = tracked.motion;
+        *hops = tracked.hops;
+        if let Some(changed) = tracked.data {
+            *data = changed;
+        }
+        let [x, y, z] = tracked.position;
+        shown.state.pose = Pose {
+            position: clustine_world::Vec3::new(x, y, z),
+            yaw: tracked.yaw,
+            pitch: tracked.pitch,
+            on_ground: tracked.on_ground,
+        };
+        shown.from = from;
+        self.refresh_entity(entity, false).await;
+    }
+
+    /// Shows everyone who is shown the item `item` that `collector` picked up `count`
+    /// of it (`ClientboundTakeItemEntityPacket`, which the game broadcasts to the item's
+    /// trackers); its removal follows if it went whole.
+    async fn show_taken(
+        &mut self,
+        from: RegionId,
+        item: EntityId,
+        collector: EntityId,
+        count: i32,
+    ) {
+        if !self.entities.contains_key(&item) || !self.is_of(item, from) {
+            return;
+        }
+        let watching: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.visible.contains_key(&item))
+            .map(|(player, _)| *player)
+            .collect();
+        if watching.is_empty() {
+            return;
+        }
+        let packet = encoded(&TakeItemEntity {
+            item_id: self.wire.of(item),
+            collector_id: self.wire.of(collector),
+            count,
+        });
+        self.release_wire(collector);
+        for player in watching {
+            self.send_to_player(player, [packet.clone()]).await;
+        }
+    }
+
+    /// Shows the clients that have the chunk the block a falling block landed as, at
+    /// once and then for a moment, as the game's `FallingBlockEntity` does: its
+    /// `BlockUpdate`, then `AddTransientBlock`. The change of the block itself goes with
+    /// the tick's other changes as well.
+    async fn show_transient(&mut self, position: BlockPos, state: u16) {
+        let chunk = position.chunk();
+        let at = Position {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+        };
+        let packets = [
+            encoded(&BlockUpdate {
+                position: at,
+                state: i32::from(state),
+            }),
+            encoded(&AddTransientBlock {
+                position: at,
+                state: i32::from(state),
+            }),
+        ];
+        let viewers: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| {
+                view.entity.is_some()
+                    && (view.sent.contains(&chunk) || view.replace.contains(&chunk))
+            })
+            .map(|(player, _)| *player)
+            .collect();
+        for player in viewers {
+            self.send_to_player(player, packets.clone()).await;
+        }
     }
 
     /// Whether a report of the region `from` about the entity `entity`, other than a
@@ -2894,12 +3258,13 @@ impl Fanout {
     /// Brings every player's client up to date about one entity: shows it to those who
     /// have it in view, moves it if `moved`, and hides it from those who lost sight of it.
     async fn refresh_entity(&mut self, entity: EntityId, moved: bool) {
-        let Some(state) = self.entities.get(&entity).map(|shown| shown.state.clone()) else {
+        let Some(shown) = self.entities.get(&entity).cloned() else {
             return;
         };
+        let state = &shown.state;
         let mut outgoing = Vec::new();
         for (player, view) in &mut self.players {
-            let packets = view.update_visibility(*player, &state, moved, &mut self.wire);
+            let packets = view.update_visibility(*player, &shown, moved, &mut self.wire);
             if !packets.is_empty() {
                 outgoing.push((*player, packets));
             }
@@ -3213,7 +3578,7 @@ impl Fanout {
         view.wanted = wanted;
         // Entities in chunks that came into view appear, those left behind disappear.
         for shown in self.entities.values() {
-            packets.extend(view.update_visibility(player, &shown.state, false, &mut self.wire));
+            packets.extend(view.update_visibility(player, shown, false, &mut self.wire));
         }
         // Who waits for what has changed, and how near they are: that moves entries
         // between the sets of light and sends or dispatches nothing.
@@ -4552,10 +4917,12 @@ impl PlayerView {
     fn update_visibility(
         &mut self,
         me: PlayerId,
-        state: &EntityState,
+        shown: &Shown,
         moved: bool,
         wire: &mut WireIds,
     ) -> Vec<Bytes> {
+        let state = &shown.state;
+        let pairing = shown.tracker.as_ref().map(Tracker::pairing);
         let in_world = self.entity.is_some();
         let own = self.entity == Some(state.entity)
             || matches!(&state.kind, EntityKind::Player { player: of, .. } if *of == me);
@@ -4566,7 +4933,7 @@ impl PlayerView {
                 let mut packets = Vec::new();
                 let EntityKind::Player { player, name } = &state.kind else {
                     self.visible.insert(state.entity, None);
-                    return spawn_packets(state, wire.of(state.entity)).into();
+                    return spawn_packets(state, wire.of(state.entity), pairing.as_ref());
                 };
                 // A client takes a player to be one entity. Should word of an entity
                 // the player was before still be around, it goes first.
@@ -4587,7 +4954,7 @@ impl PlayerView {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));
                 }
-                packets.extend(spawn_packets(state, wire.of(state.entity)));
+                packets.extend(spawn_packets(state, wire.of(state.entity), None));
                 packets
             }
             (true, true) if moved => move_packets(state, wire.of(state.entity)),
@@ -4662,12 +5029,47 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 }
 
 /// The packets that make an entity appear on a client: for a player the entity and
-/// where its head looks; for any other the entity, with its motion, its yaw, and its
-/// pitch and head at 0, and then its data (the game's `ServerEntity.sendPairingData`).
-fn spawn_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
+/// where its head looks; for any other the entity, where its tracker sent it last and
+/// with the motion and angles sent last, its head at 0 and, for a falling block, its
+/// block as the spawn's data; and then the values of its data that are not the
+/// defaults, if any (the game's `ServerEntity.sendPairingData`).
+fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec<Bytes> {
     let position = state.pose.position;
+    if let (
+        EntityKind::Other {
+            kind, uuid, data, ..
+        },
+        Some(pairing),
+    ) = (&state.kind, pairing)
+    {
+        let [x, y, z] = pairing.position;
+        let block = match data {
+            EntityData::FallingBlock { state, .. } => i32::from(*state),
+            EntityData::Item { .. } => 0,
+        };
+        let mut packets = vec![encoded(&SpawnEntity {
+            entity_id: id,
+            uuid: *uuid,
+            kind: i32::from(*kind),
+            x,
+            y,
+            z,
+            velocity: pairing.motion,
+            pitch: pairing.pitch,
+            yaw: pairing.yaw,
+            head_yaw: 0,
+            data: block,
+        })];
+        if !pairing.values.is_empty() {
+            packets.push(encoded(&SetEntityData {
+                entity_id: id,
+                values: pairing.values.clone(),
+            }));
+        }
+        return packets;
+    }
     match &state.kind {
-        EntityKind::Player { player, .. } => [
+        EntityKind::Player { player, .. } => vec![
             encoded(&SpawnEntity {
                 entity_id: id,
                 uuid: player.0,
@@ -4689,7 +5091,7 @@ fn spawn_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
             motion,
             data,
             ..
-        } => [
+        } => vec![
             encoded(&SpawnEntity {
                 entity_id: id,
                 uuid: *uuid,
@@ -6878,6 +7280,7 @@ mod scenarios {
     mod items;
     mod items_specification;
     mod redstone;
+    mod tracking;
 
     /// The flat world's spawn, which these tests' edges tell their clients.
     const FLAT_SPAWN: BlockPos = BlockPos::new(0, -60, 0);
@@ -7654,6 +8057,11 @@ mod scenarios {
         spawns: Vec<SpawnEntity>,
         entity_data: Vec<SetEntityData>,
         swings: Vec<Animate>,
+        /// Every packet it was sent of an entity's tracking (its moves, relative and
+        /// whole, its motion, its being picked up) and every transient block, in order.
+        tracking: Vec<ClientboundPlay>,
+        /// The id of every packet it was sent, in order.
+        ids: Vec<i32>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -7675,6 +8083,8 @@ mod scenarios {
         Removal,
         Data,
         Swing,
+        Motion,
+        Taken,
     }
 
     /// Something a client was told that changes whom it shows or lists.
@@ -7720,6 +8130,8 @@ mod scenarios {
                 spawns: Vec::new(),
                 entity_data: Vec::new(),
                 swings: Vec::new(),
+                tracking: Vec::new(),
+                ids: Vec::new(),
             }
         }
 
@@ -7757,6 +8169,8 @@ mod scenarios {
         fn take(&mut self, packet: Bytes) {
             let decoded = ClientboundPlay::decode(&packet).expect("the edge sends packets");
             self.taken += 1;
+            let id = clustine_protocol::codec::Reader::new(&packet).var_int();
+            self.ids.push(id.expect("a packet starts with its id"));
             match decoded {
                 ClientboundPlay::SetCenterChunk(centre) => {
                     self.centres
@@ -7839,7 +8253,30 @@ mod scenarios {
                 }
                 ClientboundPlay::SyncEntityPosition(moved) => {
                     self.named.push((Naming::Position, moved.entity_id));
+                    self.tracking
+                        .push(ClientboundPlay::SyncEntityPosition(moved));
                 }
+                ClientboundPlay::MoveEntityPos(ref moved) => {
+                    self.named.push((Naming::Position, moved.entity_id));
+                    self.tracking.push(decoded);
+                }
+                ClientboundPlay::MoveEntityPosRot(ref moved) => {
+                    self.named.push((Naming::Position, moved.entity_id));
+                    self.tracking.push(decoded);
+                }
+                ClientboundPlay::MoveEntityRot(ref moved) => {
+                    self.named.push((Naming::Position, moved.entity_id));
+                    self.tracking.push(decoded);
+                }
+                ClientboundPlay::SetEntityMotion(ref motion) => {
+                    self.named.push((Naming::Motion, motion.entity_id));
+                    self.tracking.push(decoded);
+                }
+                ClientboundPlay::TakeItemEntity(ref taken) => {
+                    self.named.push((Naming::Taken, taken.item_id));
+                    self.tracking.push(decoded);
+                }
+                ClientboundPlay::AddTransientBlock(_) => self.tracking.push(decoded),
                 ClientboundPlay::SetHeadRotation(head) => {
                     self.named.push((Naming::HeadRotation, head.entity_id));
                 }

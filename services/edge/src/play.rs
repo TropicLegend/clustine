@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use clustine_data::ITEMS;
+use clustine_data::{ITEMS, ItemComponents};
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::Packet;
@@ -458,11 +458,6 @@ fn thrown_by(status: i32, sneaking: bool) -> Option<PlayerInput> {
     })
 }
 
-/// The most of one item a stack can hold whatever the item (the game's
-/// `Item.ABSOLUTE_MAX_STACK_SIZE`). The game holds a stack to its item's own maximum,
-/// which the data does not have yet; until it does, a stack is held to this.
-const ABSOLUTE_MAX_STACK_SIZE: i32 = 99;
-
 /// The game's `dropSpamThrottler` of a connection: every throw out of the creative
 /// inventory adds 20, every tick of the game takes 1 away, and a throw is let through
 /// only while the count is below 1480. So 74 throws go at once, and then about one a
@@ -511,9 +506,11 @@ fn creative_throw(
     throttler: &mut DropThrottler,
     now: Instant,
 ) -> Option<PlayerInput> {
+    // `handleSetCreativeModeSlot`: a stack of an item that exists, within the item's own
+    // maximum (`minecraft:max_stack_size`).
     let valid = stack.is_none_or(|stack| {
-        (1..=ABSOLUTE_MAX_STACK_SIZE).contains(&stack.count)
-            && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
+        usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
+            && (1..=i32::from(ItemComponents::of(stack.item).max_stack_size)).contains(&stack.count)
     });
     if !valid {
         return None;
@@ -540,6 +537,8 @@ fn hotbar_slot(slot: i32) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use clustine_data::items;
+
     use super::*;
 
     /// The slot a creative client's setting of `container` asks the region to set,
@@ -641,8 +640,16 @@ mod tests {
         assert!(!throttler.lets_through(start));
         let mut throttler = DropThrottler::new(start);
         let too_many = protocol::ItemStack {
-            item: 1,
-            count: 100,
+            item: items::STONE,
+            count: 65,
+        };
+        let too_many_snowballs = protocol::ItemStack {
+            item: items::SNOWBALL,
+            count: 17,
+        };
+        let two_swords = protocol::ItemStack {
+            item: items::DIAMOND_SWORD,
+            count: 2,
         };
         let unknown = protocol::ItemStack {
             item: i32::MAX,
@@ -650,14 +657,21 @@ mod tests {
         };
         let negative = protocol::ItemStack { item: -1, count: 1 };
         for _ in 0..100 {
-            for stack in [too_many, unknown, negative] {
+            for stack in [too_many, too_many_snowballs, two_swords, unknown, negative] {
                 assert!(!thrown(Some(stack), &mut throttler, start));
             }
         }
         // None of those counted.
         assert_eq!(throttler.count, 0);
-        let most = protocol::ItemStack { item: 1, count: 99 };
-        assert!(thrown(Some(most), &mut throttler, start));
+        // Each item's own maximum: 64 stone, 16 snowballs, one sword.
+        for (item, count) in [
+            (items::STONE, 64),
+            (items::SNOWBALL, 16),
+            (items::DIAMOND_SWORD, 1),
+        ] {
+            let most = protocol::ItemStack { item, count };
+            assert!(thrown(Some(most), &mut throttler, start));
+        }
     }
 
     #[test]

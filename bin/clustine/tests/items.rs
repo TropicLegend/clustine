@@ -724,14 +724,9 @@ fn spawns_an_item(frames: &[Vec<u8>]) -> usize {
 
 /// The plan, section 11, as the game's `handleSetCreativeModeSlot` has it: a throw out
 /// of the creative screen is taken if the item exists and the count is within its
-/// maximum stack, from the data; stone stacks to 64, so 65 of it are passed over and
-/// 64 thrown.
-///
-/// A finding: the edge holds a thrown stack to 99 of any item
-/// (`ABSOLUTE_MAX_STACK_SIZE`, `services/edge/src/play.rs`), as the data has no
-/// maximum per item yet, so 65 stone are thrown.
+/// maximum stack, from the data (`ItemComponents::of`); stone stacks to 64, so 65 of it
+/// are passed over and 64 thrown.
 #[tokio::test]
-#[ignore = "finding: a creative throw is held to 99 of any item, not to the item's own maximum"]
 async fn a_creative_throw_of_more_than_the_item_s_maximum_stack_is_passed_over() {
     let (server, address) = start_with(config()).await;
     let mut watcher = join(&address, "Watcher").await;

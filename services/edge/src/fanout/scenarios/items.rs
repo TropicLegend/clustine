@@ -79,13 +79,25 @@ fn of_item(client: &Client, key: u64) -> Vec<(Naming, i32)> {
 }
 
 /// Checks that the client was shown the item `state` once, as the plan has it, and
-/// returns the wire id.
+/// returns the wire id. What its tracker sent after, the update of the tick it was
+/// thrown in (a move of nothing: `tests::tracking`), is no showing.
 fn shown_once(client: &Client, state: &EntityState) -> i32 {
     let key = state.entity.0;
     let named = of_item(client, key);
-    let [(Naming::Spawn, id), (Naming::Data, data_id)] = named[..] else {
+    let [
+        (Naming::Spawn, id),
+        (Naming::Data, data_id),
+        ref updates @ ..,
+    ] = named[..]
+    else {
         panic!("a spawn and its data: {named:?}");
     };
+    assert!(
+        updates
+            .iter()
+            .all(|(naming, _)| *naming == Naming::Position),
+        "{named:?}"
+    );
     assert_eq!(id, data_id);
     let spawns: Vec<&SpawnEntity> = client
         .spawns
@@ -214,6 +226,16 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
         ticked(vec![RegionEvent::EntitySpawned(item(key, HOME, 0))]),
     );
     edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    let moves = |client: &Client| {
+        let named = client.named.iter();
+        named
+            .filter(|(naming, _)| *naming == Naming::Position)
+            .count()
+    };
+    // The update of the tick of its spawn: a move of nothing.
+    let updated = moves(&first);
+    assert_eq!(updated, 1);
 
     // The east says the same with as many: passed over, so the west's snapshot without
     // it still removes it.
@@ -233,12 +255,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
             .count(),
         1
     );
-    assert!(
-        !first
-            .named
-            .iter()
-            .any(|(naming, _)| *naming == Naming::Position)
-    );
+    assert_eq!(moves(&first), updated);
 
     // With one more, the east takes over: the client is shown it where the east says,
     // under the id it has, with no spawn.
@@ -254,6 +271,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
         [
             (Naming::Spawn, id),
             (Naming::Data, id),
+            (Naming::Position, id),
             (Naming::Position, id)
         ]
     );
@@ -271,7 +289,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
     edge.tell(WEST, snapshot_of(HOME, ask, chunk, there));
     edge.settle(WEST).await;
     edge.sync(&mut first).await;
-    assert_eq!(of_item(&first, key).len(), 3, "{:?}", of_item(&first, key));
+    assert_eq!(of_item(&first, key).len(), 4, "{:?}", of_item(&first, key));
     assert!(first.entities.contains(&key));
 
     // The east's removal of it takes it away.
