@@ -523,5 +523,6 @@ neither side holds whole. The fixes take machinery away.
 **For the owner**, replacing the proposals of sections 7 and 9: a container a step across
 a pinned line opens only from its own side, as no menu spans two regions. Making it open
 from either side needs either a lend at the moment of use, which four reviews found
-unsound, or a menu run across two regions, a design of its own. Proposed as named; the
-owner can ask for either.
+unsound, or a menu run across two regions, a design of its own. The owner chose on
+2026-10-18 to have it as named for now ("I'd prefer option 1 for now"); a menu run
+across two regions can come later as a step of its own without undoing anything.
