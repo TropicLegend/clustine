@@ -2,8 +2,8 @@
 
 use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
-    Durable, EntityState, HOTBAR_SLOTS, ItemStack, Place, PlayerEvent, PlayerInput, PlayerJoin,
-    PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote,
+    Durable, EntityState, Inventory, Place, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer,
+    Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
@@ -272,7 +272,7 @@ pub enum Presence {
     Present {
         entity: EntityId,
         pose: Pose,
-        hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+        inventory: Inventory,
         selected_slot: u8,
         /// The number of the last input applied.
         last_input: u64,

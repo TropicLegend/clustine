@@ -652,16 +652,18 @@ mod tests {
     /// `docs/adr/0020-one-stay-per-player.md`, sections 3, 5 and 7.
     #[test]
     fn what_is_said_of_stays_to_and_by_the_world_store_round_trips() {
-        use clustine_sim::api::{HOTBAR_SLOTS, ItemStack, Place, Pose, StayNote};
+        use clustine_sim::api::{Inventory, ItemStack, OFF_HAND, Place, Pose, StayNote};
         use clustine_world::{BlockPos, EntityId, EntityIds, PlayerId, Vec3};
 
         use crate::{Restored, StoreReply, StoreRequest, StoreWelcome};
 
         let player = PlayerId(uuid::Uuid::from_u128(7));
         let other = PlayerId(uuid::Uuid::from_u128(u128::MAX));
-        let mut hotbar = [None; HOTBAR_SLOTS];
-        hotbar[0] = Some(ItemStack { item: 1, count: 64 });
-        hotbar[8] = Some(ItemStack { item: 35, count: 1 });
+        let mut inventory = Inventory::default();
+        inventory.set(0, Some(ItemStack { item: 1, count: 64 }));
+        inventory.set(8, Some(ItemStack { item: 35, count: 1 }));
+        inventory.set(39, Some(ItemStack { item: 7, count: 1 }));
+        inventory.set(OFF_HAND, Some(ItemStack { item: 9, count: 3 }));
         let place = Place {
             pose: Pose {
                 position: Vec3::new(-1234.5, 71.25, 0.5),
@@ -670,13 +672,13 @@ mod tests {
                 on_ground: false,
             },
             flying: true,
-            hotbar,
+            inventory,
             selected_slot: 8,
         };
         let standing = Place {
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
         };
 

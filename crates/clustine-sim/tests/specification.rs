@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 
 use clustine_data::{blocks, items};
 use clustine_sim::api::{
-    Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
+    Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction,
+    RemoteStep,
 };
 use clustine_sim::{
     Durable, EdgeEvent, EdgeState, Entered, Holdings, Knowledge, Misdirected, PlayerChange,
@@ -57,7 +58,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 fn config_a() -> RegionConfig {
     RegionConfig {
         spawn: Vec3::new(14.5, 64.0, 8.5),
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
         seed: 0,
@@ -82,7 +83,7 @@ fn holdings_a() -> Holdings {
 fn config_b() -> RegionConfig {
     RegionConfig {
         spawn: Vec3::new(24.5, 64.0, 8.5),
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
         seed: 0,
@@ -953,7 +954,7 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(Vec3::new(12.5, 64.0, 8.5)),
-        hotbar: hotbar(),
+        inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
         last_input,
         hops: 0,

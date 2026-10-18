@@ -23,7 +23,7 @@ mod seams;
 
 pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use log::{
-    HOTBAR_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
+    INVENTORY_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
     read_log_with_offsets,
 };
 pub use region::{
@@ -34,7 +34,10 @@ pub use region::{
 /// The version of the encodings in this crate. It is written into everything stored:
 /// the first byte of every file and of every record of the log. A world says in its
 /// `meta` which one it is of, and the store opens no world of another.
-pub const FORMAT_VERSION: u8 = 3;
+///
+/// 4 since a player's place holds their whole inventory, 41 slots, where it held the
+/// nine of the hotbar (`docs/groundwork/n2-plan.md`, section 2).
+pub const FORMAT_VERSION: u8 = 4;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

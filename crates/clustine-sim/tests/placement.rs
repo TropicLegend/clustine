@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, ITEMS, SupportType, block_id_by_name, blocks, items};
-use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack};
+use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, OFF_HAND};
 use clustine_sim::placement::{self, Blocks, Click, Clicked, ItemUse, UsedItem};
-use clustine_world::{BlockPos, ChunkPos, Vec3};
+use clustine_world::{ARMOUR_START, BlockPos, ChunkPos, Vec3};
 
 /// The overworld's height: from y = -64 up to, and not including, y = 320.
 const MIN_Y: i32 = -64;
@@ -2141,7 +2141,7 @@ fn use_down(held: i32, feet: Vec3) -> ItemUse {
         yaw: SOUTH,
         pitch: 90.0,
         sneaking: false,
-        hotbar: hotbar_holding(held),
+        inventory: Inventory::with_hotbar(hotbar_holding(held)),
     }
 }
 
@@ -2150,10 +2150,10 @@ fn over_p() -> Vec3 {
     Vec3::new(8.5, 66.0, 8.5)
 }
 
-/// A hotbar slot that a use changes, and what it holds then.
+/// An inventory slot that a use changes, and what it holds then.
 type SlotChange = Option<(u8, Option<ItemStack>)>;
 
-/// What a use changes: blocks, and a hotbar slot.
+/// What a use changes: blocks, and an inventory slot.
 fn used(item_use: &ItemUse, world: &World) -> Option<(Changes, SlotChange)> {
     used_among(item_use, world, &[])
 }
@@ -2164,7 +2164,7 @@ fn used_among(
     bodies: &[[f64; 6]],
 ) -> Option<(Changes, SlotChange)> {
     placement::use_item(item_use, world, bodies)
-        .map(|UsedItem { changes, hotbar }| (as_changes(changes), hotbar))
+        .map(|UsedItem { changes, slot }| (as_changes(changes), slot))
 }
 
 #[track_caller]
@@ -2172,13 +2172,13 @@ fn assert_used(
     item_use: &ItemUse,
     world: &World,
     expected: &[(BlockPos, &str)],
-    hotbar: SlotChange,
+    expected_slot: SlotChange,
 ) {
     let Some((changes, slot)) = used(item_use, world) else {
         panic!("the use changed nothing");
     };
     assert_changes(&changes, expected);
-    assert_eq!(slot, hotbar);
+    assert_eq!(slot, expected_slot);
 }
 
 fn one(item: i32) -> Option<ItemStack> {
@@ -2220,7 +2220,7 @@ fn the_filled_bucket_goes_into_the_first_empty_slot_unless_one_is_there() {
     hotbar[1] = one(items::STONE);
     hotbar[3] = one(items::LAVA_BUCKET);
     let item_use = ItemUse {
-        hotbar,
+        inventory: Inventory::with_hotbar(hotbar),
         ..use_down(items::BUCKET, over_p())
     };
     assert_used(
@@ -2233,22 +2233,54 @@ fn the_filled_bucket_goes_into_the_first_empty_slot_unless_one_is_there() {
     let mut hotbar = hotbar_holding(items::BUCKET);
     hotbar[5] = one(items::WATER_BUCKET);
     let item_use = ItemUse {
-        hotbar,
+        inventory: Inventory::with_hotbar(hotbar),
         ..use_down(items::BUCKET, over_p())
     };
     assert_used(&item_use, &world, &[(P, "air")], None);
 }
 
 #[test]
-fn a_full_hotbar_takes_no_filled_bucket_and_the_source_is_taken_all_the_same() {
-    // Ambiguity: the plan does not say what happens with no empty slot; read as
-    // vanilla's creative inventory, where the source is taken and the bucket that
-    // does not fit is lost.
+fn a_full_hotbar_sends_the_filled_bucket_into_the_main_inventory() {
+    // The game's `Inventory.add` looks for a free slot among the hotbar and the main
+    // inventory, in their order.
     let world = World::new().with(below(P), "stone").with(P, "water");
     let mut hotbar = [one(items::STONE); HOTBAR_SLOTS];
     hotbar[0] = one(items::BUCKET);
     let item_use = ItemUse {
-        hotbar,
+        inventory: Inventory::with_hotbar(hotbar),
+        ..use_down(items::BUCKET, over_p())
+    };
+    assert_used(
+        &item_use,
+        &world,
+        &[(P, "air")],
+        Some((9, one(items::WATER_BUCKET))),
+    );
+}
+
+#[test]
+fn a_full_inventory_takes_no_filled_bucket_and_the_source_is_taken_all_the_same() {
+    // Ambiguity: the plan does not say what happens with no empty slot; read as
+    // vanilla's creative inventory, where the source is taken and the bucket that
+    // does not fit is lost. Armour and the off hand are not where `Inventory.add`
+    // puts anything, so they stay empty.
+    let world = World::new().with(below(P), "stone").with(P, "water");
+    let mut inventory = Inventory::default();
+    for slot in 0..ARMOUR_START {
+        inventory.set(slot, one(items::STONE));
+    }
+    inventory.set(0, one(items::BUCKET));
+    let item_use = ItemUse {
+        inventory,
+        ..use_down(items::BUCKET, over_p())
+    };
+    assert_used(&item_use, &world, &[(P, "air")], None);
+
+    // A filled bucket anywhere, the off hand too, is one already.
+    let mut inventory = Inventory::with_hotbar(hotbar_holding(items::BUCKET));
+    inventory.set(OFF_HAND, one(items::WATER_BUCKET));
+    let item_use = ItemUse {
+        inventory,
         ..use_down(items::BUCKET, over_p())
     };
     assert_used(&item_use, &world, &[(P, "air")], None);
@@ -2439,7 +2471,7 @@ fn nothing_but_buckets_and_lily_pads_is_used_without_a_block() {
     }
     let empty_hand = ItemUse {
         held: None,
-        hotbar: [None; HOTBAR_SLOTS],
+        inventory: Inventory::default(),
         ..use_down(items::BUCKET, over_p())
     };
     assert!(used(&empty_hand, &world).is_none());

@@ -8,15 +8,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use bytes::Bytes;
+use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
     ClientboundKeepAlive, Disconnect, LevelChunkWithLight, LightUpdate, PlayerAction,
-    ServerboundPlay, ServerboundUseItem, UseItemOn, face, inventory, movement_flags, player_action,
+    ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags, player_action,
     player_input,
 };
-use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput};
+use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -174,15 +175,11 @@ async fn pump(
                         send_input(shared, client, PlayerInput::SelectSlot { slot }).await?;
                     }
                     ServerboundPlay::SetCreativeModeSlot(packet) => {
-                        // Only the hotbar is modelled; the rest of the inventory is the
-                        // client's own business for now.
-                        let slot = i32::from(packet.slot) - inventory::HOTBAR_START as i32;
-                        if let Some(slot) = hotbar_slot(slot) {
-                            let stack = packet.stack.map(|stack| ItemStack {
-                                item: stack.item,
-                                count: stack.count,
-                            });
-                            let input = PlayerInput::SetHotbarSlot { slot, stack };
+                        // A slot of the inventory screen sets that slot of the
+                        // inventory. The crafting grid is the client's own business,
+                        // and what a negative slot throws is for the step that brings
+                        // items (`docs/groundwork/n2-plan.md`, section 2).
+                        if let Some(input) = creative_slot(packet.slot, packet.stack) {
                             send_input(shared, client, input).await?;
                         }
                     }
@@ -302,6 +299,10 @@ async fn acted(
         player_action::ABORT_DESTROY_BLOCK | player_action::STOP_DESTROY_BLOCK => {
             handled(shared, client, action.sequence).await
         }
+        // F: the region swaps the hands and tells the client, which does not foresee it.
+        player_action::SWAP_ITEM_WITH_OFFHAND => {
+            send_input(shared, client, PlayerInput::SwapHands).await
+        }
         // Dropping and using items does not exist yet.
         _ => Ok(()),
     }
@@ -410,6 +411,20 @@ async fn used_item(
     send_input(shared, client, input).await
 }
 
+/// What a creative-mode client's setting of the container slot `slot` of its inventory
+/// screen asks of the region: the inventory slot shown there set to `stack`, if it is
+/// one. The armour is shown from the head down, so the order of its slots is reversed
+/// ([`Inventory::from_container`]).
+fn creative_slot(slot: i16, stack: Option<protocol::ItemStack>) -> Option<PlayerInput> {
+    let slot = Inventory::from_container(slot)?;
+    let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
+    let stack = stack.map(|stack| ItemStack {
+        item: stack.item,
+        count: stack.count,
+    });
+    Some(PlayerInput::SetInventorySlot { slot, stack })
+}
+
 /// `slot` as a hotbar slot, if it is one.
 fn hotbar_slot(slot: i32) -> Option<u8> {
     u8::try_from(slot)
@@ -420,6 +435,51 @@ fn hotbar_slot(slot: i32) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The slot a creative client's setting of `container` asks the region to set,
+    /// with a stone in it.
+    fn set_by(container: i16) -> Option<u8> {
+        let stone = protocol::ItemStack { item: 1, count: 3 };
+        match creative_slot(container, Some(stone)) {
+            Some(PlayerInput::SetInventorySlot { slot, stack }) => {
+                assert_eq!(stack, Some(ItemStack { item: 1, count: 3 }));
+                Some(slot)
+            }
+            None => None,
+            Some(other) => panic!("{other:?} is no setting of a slot"),
+        }
+    }
+
+    #[test]
+    fn creative_slots_of_every_part_of_the_screen_set_the_inventory_slot_shown_there() {
+        // The armour from the head down: the helmet's container slot 5 is the
+        // inventory's slot 39, the boots' 8 its 36.
+        assert_eq!(set_by(5), Some(39));
+        assert_eq!(set_by(6), Some(38));
+        assert_eq!(set_by(7), Some(37));
+        assert_eq!(set_by(8), Some(36));
+        // The main inventory is numbered alike in both.
+        assert_eq!(set_by(9), Some(9));
+        assert_eq!(set_by(35), Some(35));
+        // The hotbar is at the bottom of the screen and first in the inventory.
+        assert_eq!(set_by(36), Some(0));
+        assert_eq!(set_by(44), Some(8));
+        // The off hand.
+        assert_eq!(set_by(45), Some(40));
+        // The crafting grid and its result are passed over, and so is a throw out of
+        // the screen, which a later step brings, and what is beyond the screen.
+        for passed_over in [0, 1, 2, 3, 4, -1, -999, 46, i16::MAX] {
+            assert_eq!(set_by(passed_over), None, "slot {passed_over}");
+        }
+        // Emptying a slot empties it.
+        assert_eq!(
+            creative_slot(45, None),
+            Some(PlayerInput::SetInventorySlot {
+                slot: 40,
+                stack: None
+            })
+        );
+    }
 
     #[test]
     fn a_click_lands_on_the_block_whatever_the_client_says() {

@@ -27,7 +27,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use clustine_data::items;
-use clustine_sim::api::{HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteStep};
+use clustine_sim::api::{
+    HOTBAR_SLOTS, Inventory, ItemStack, OFF_HAND, PlayerInput, Pose, RegionEvent, RemoteStep,
+};
 use clustine_sim::{
     Durable, EdgeEvent, Entered, EnteringState, Holdings, Knowledge, Misdirected, Place,
     PlayerChange, PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig,
@@ -82,18 +84,23 @@ fn starting() -> [Option<ItemStack>; HOTBAR_SLOTS] {
     hotbar
 }
 
-/// What a player held who has been in the world before: nothing like [`starting`].
-fn kept() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[3] = stack(items::DIRT, 7);
-    hotbar[5] = stack(items::STONE, 2);
-    hotbar
+/// What a player held who has been in the world before: nothing like [`starting`], and
+/// something in every part of the inventory, armour and the off hand among them.
+fn kept() -> Inventory {
+    let mut inventory = Inventory::default();
+    inventory.set(3, stack(items::DIRT, 7));
+    inventory.set(5, stack(items::STONE, 2));
+    inventory.set(20, stack(items::GLASS, 33));
+    inventory.set(36, stack(items::DIRT, 1));
+    inventory.set(39, stack(items::STONE, 1));
+    inventory.set(OFF_HAND, stack(items::GLASS, 5));
+    inventory
 }
 
 fn config() -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
-        starting_hotbar: starting(),
+        starting_inventory: Inventory::with_hotbar(starting()),
         // Nothing is given back in these tests.
         return_after: 1_000_000,
         lowest_y: LOWEST_Y,
@@ -127,7 +134,7 @@ fn middle(chunk: ChunkPos) -> Vec3 {
 }
 
 /// A place the store kept: in the air above the middle of `chunk`, looking somewhere,
-/// flying, with [`kept`] in the hotbar and another slot than the first in hand.
+/// flying, with [`kept`] in the inventory and another slot than the first in hand.
 fn place_in(chunk: ChunkPos) -> Place {
     let ground = middle(chunk);
     Place {
@@ -138,7 +145,7 @@ fn place_in(chunk: ChunkPos) -> Place {
             on_ground: false,
         },
         flying: true,
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 5,
     }
 }
@@ -148,7 +155,7 @@ fn place_of(state: &PlayerState) -> Place {
     Place {
         pose: state.pose,
         flying: state.flying,
-        hotbar: state.hotbar,
+        inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
     }
 }
@@ -158,7 +165,7 @@ fn place_from(transfer: &PlayerTransfer) -> Place {
     Place {
         pose: transfer.pose,
         flying: transfer.flying,
-        hotbar: transfer.hotbar,
+        inventory: transfer.inventory.clone(),
         selected_slot: transfer.selected_slot,
     }
 }
@@ -255,7 +262,7 @@ fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 2,
         last_input: 0,
         hops,
@@ -498,7 +505,7 @@ fn spawned(place: &Place) -> (PlayerId, PlayerEvent) {
         entity_id: entity(1),
         pose: place.pose,
         flying: place.flying,
-        hotbar: place.hotbar,
+        inventory: place.inventory.clone(),
         selected_slot: place.selected_slot,
     };
     (player(1), event)
@@ -509,7 +516,7 @@ fn at_spawn() -> Place {
     Place {
         pose: Pose::at(SPAWN),
         flying: false,
-        hotbar: starting(),
+        inventory: Inventory::with_hotbar(starting()),
         selected_slot: 0,
     }
 }
@@ -606,7 +613,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         entity_id: entity(1),
         name: name(1),
         pose: place.pose,
-        hotbar: place.hotbar,
+        inventory: place.inventory.clone(),
         selected_slot: place.selected_slot,
         last_input: 0,
         hops: 1,
@@ -637,7 +644,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         entity_id: entity(1),
         name: name(1),
         pose: place.pose,
-        hotbar: place.hotbar,
+        inventory: place.inventory.clone(),
         selected_slot: place.selected_slot,
         last_input: 0,
         hops: 1,
@@ -670,7 +677,7 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
     let back = Place {
         pose: Pose::at(SPAWN),
         flying: false,
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 5,
     };
     for holder in [None, Some(OTHER)] {
@@ -780,7 +787,7 @@ fn whatever_changes_of_a_player_is_named_with_their_place_and_nothing_else_is() 
         (3, PlayerInput::SetFlying { flying: true }),
         (
             4,
-            PlayerInput::SetHotbarSlot {
+            PlayerInput::SetInventorySlot {
                 slot: 1,
                 stack: stack(items::DIRT, 3),
             },
@@ -796,7 +803,7 @@ fn whatever_changes_of_a_player_is_named_with_their_place_and_nothing_else_is() 
     }
     let state = state_of(&region, 1);
     assert_eq!((state.selected_slot, state.flying), (4, true));
-    assert_eq!(state.hotbar[1], stack(items::DIRT, 3));
+    assert_eq!(state.inventory.0[1], stack(items::DIRT, 3));
 
     // An input that is not applied changes nothing and names nobody: one of another
     // stay, and one through another edge.
@@ -904,7 +911,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         entity_id: TRAVELLER,
         name: "traveller".to_owned(),
         pose: Pose::at(middle(EAST)),
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 2,
         last_input: 6,
         handled: None,
@@ -1349,7 +1356,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         entity_id: EntityId(entity(1).0 - 1),
         name: name(1),
         pose: Pose::at(NEARBY),
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 1,
         last_input: 4,
         handled: None,
@@ -1428,7 +1435,7 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         entity_id: entity(1),
         name: name(1),
         pose: Pose::at(position),
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 0,
         last_input: 3,
         handled: None,
@@ -1576,7 +1583,7 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         entity_id: EntityId(entity(1).0 - 1),
         name: name(1),
         pose: Pose::at(SPAWN),
-        hotbar: kept(),
+        inventory: kept(),
         selected_slot: 0,
         last_input: 0,
         handled: None,

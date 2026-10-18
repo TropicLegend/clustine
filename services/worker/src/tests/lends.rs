@@ -21,7 +21,7 @@
 //! not one does.
 
 use clustine_data::{BlockState, blocks, items};
-use clustine_sim::api::{Face, PlayerEvent};
+use clustine_sim::api::{Face, ItemStack, PlayerEvent};
 
 use super::*;
 
@@ -64,11 +64,11 @@ fn own() -> Vec<ChunkPos> {
 /// borrower's own stay loaded throughout.
 fn builders_settings() -> RegionSettings {
     let mut settings = settings(1_000);
-    settings.starting_hotbar[0] = Some(ItemStack {
+    settings.starting_inventory.0[0] = Some(ItemStack {
         item: items::LEVER,
         count: 64,
     });
-    settings.starting_hotbar[1] = Some(ItemStack {
+    settings.starting_inventory.0[1] = Some(ItemStack {
         item: items::STONE,
         count: 64,
     });

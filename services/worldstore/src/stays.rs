@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use clustine_format::{LogRecord, LoggedPlace, LoggedStay, PlayerRecord, PlayersFile, read_log};
 use clustine_rpc::{ItemStack, Place, Pose, SplitPart, StayNote};
-use clustine_world::{ChunkPos, EntityId, EntityIds, PlayerId, Vec3};
+use clustine_world::{
+    ChunkPos, EntityId, EntityIds, INVENTORY_SLOTS, Inventory, OFF_HAND, PlayerId, Vec3,
+};
 use tracing::Level;
 
 use super::*;
@@ -44,12 +46,18 @@ pub(crate) fn player(number: u128) -> PlayerId {
 /// A place at `(x, z)`, which tells it from every other place of these tests, with
 /// something in every field.
 pub(crate) fn place(x: f64, z: f64) -> Place {
-    let mut hotbar = [None; 9];
-    hotbar[0] = Some(ItemStack { item: 1, count: 64 });
-    hotbar[8] = Some(ItemStack {
-        item: 40,
-        count: x as i32,
-    });
+    let mut inventory = Inventory::default();
+    inventory.set(0, Some(ItemStack { item: 1, count: 64 }));
+    inventory.set(
+        8,
+        Some(ItemStack {
+            item: 40,
+            count: x as i32,
+        }),
+    );
+    inventory.set(20, Some(ItemStack { item: 2, count: 5 }));
+    inventory.set(38, Some(ItemStack { item: 3, count: 1 }));
+    inventory.set(OFF_HAND, Some(ItemStack { item: 4, count: 7 }));
     Place {
         pose: Pose {
             position: Vec3::new(x, 70.5, z),
@@ -58,7 +66,7 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
             on_ground: z >= 0.0,
         },
         flying: z < 0.0,
-        hotbar,
+        inventory,
         selected_slot: 3,
     }
 }
@@ -133,9 +141,9 @@ fn dead(stays: &[(PlayerId, u64, u32)]) -> StoreReply {
 
 /// The place as the file keeps it, worked out here and not by the store.
 pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
-    let mut hotbar = [None; 9];
-    for (slot, stack) in place.hotbar.iter().enumerate() {
-        hotbar[slot] = stack.map(|stack| (stack.item, stack.count));
+    let mut inventory = [None; INVENTORY_SLOTS];
+    for (slot, stack) in place.inventory.0.iter().enumerate() {
+        inventory[slot] = stack.map(|stack| (stack.item, stack.count));
     }
     LoggedPlace {
         position: [
@@ -148,7 +156,7 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         on_ground: place.pose.on_ground,
         flying: place.flying,
         selected_slot: place.selected_slot,
-        hotbar,
+        inventory,
     }
 }
 
@@ -1617,10 +1625,12 @@ fn the_players_file_that_cannot_be_written_before_a_make_over_fails_the_start() 
 #[ignore = "a measurement, which prints what it found"]
 fn the_players_file_with_ten_thousand_records_is_written_in_this_time() {
     const PLAYERS: u128 = 10_000;
-    // With something in every slot of the hotbar, which is the longest a record gets.
+    // With something in every slot of the inventory, which is the longest a record gets.
     let full = |x: f64| {
         let mut place = place(x, 3.0);
-        place.hotbar = [Some(ItemStack { item: 9, count: 64 }); 9];
+        place.inventory = Inventory(Box::new(
+            [Some(ItemStack { item: 9, count: 64 }); INVENTORY_SLOTS],
+        ));
         place
     };
     let noted = |from: u128, to: u128| -> Vec<Vec<StayNote>> {

@@ -25,9 +25,9 @@ use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, BlockEvent, BlockUpdate, ChunkBatchFinished, ChunkBatchStart,
     Disconnect, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
     PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, Sound, SpawnEntity,
-    SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, abilities, angle, game_event,
-    game_mode, inventory, level_event, player_info,
+    SetContainerContent, SetDefaultSpawnPosition, SetHeadRotation, SetHeldSlot, SetPlayerInventory,
+    Sound, SpawnEntity, SyncEntityPosition, SynchronizePlayerPosition, UnloadChunk, abilities,
+    angle, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -35,8 +35,8 @@ use clustine_region::RegionId;
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
-    Durable, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerEvent,
-    PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
+    Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected, PlayerEvent, PlayerInput,
+    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, EntityId, InChunk, Light, PlayerId, SectionLight, light_tells_apart,
@@ -1602,7 +1602,7 @@ impl Fanout {
                         entity_id,
                         pose,
                         flying,
-                        hotbar,
+                        inventory,
                         selected_slot,
                     },
             } => {
@@ -1619,7 +1619,7 @@ impl Fanout {
                         entity: entity_id,
                         pose,
                         flying,
-                        inventory: inventory_packets(&hotbar, selected_slot),
+                        inventory: inventory_packets(&inventory, selected_slot),
                     };
                     self.spawn_player(player, entering).await;
                 }
@@ -1628,6 +1628,10 @@ impl Fanout {
                 player,
                 event: PlayerEvent::Acknowledged { sequence },
             } => self.handled(player, sequence).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::InventorySlot { slot, stack },
+            } => self.inventory_slot(player, slot, stack).await,
             WorkerToEdge::Outbox { number, entry } => self.outbox(from, number, entry).await,
             WorkerToEdge::Presence { player, answer } => {
                 self.presence(from, player, answer).await;
@@ -1946,7 +1950,7 @@ impl Fanout {
         let Presence::Present {
             entity,
             pose,
-            hotbar,
+            inventory,
             selected_slot,
             last_input,
             handled,
@@ -1984,7 +1988,7 @@ impl Fanout {
                     entity,
                     pose,
                     flying,
-                    inventory: inventory_packets(&hotbar, selected_slot),
+                    inventory: inventory_packets(&inventory, selected_slot),
                 };
                 self.spawn_player(player, entering).await;
             }
@@ -2484,6 +2488,20 @@ impl Fanout {
         self.acknowledge(player).await;
     }
 
+    /// Tells the client of `player` what a slot of its inventory holds now that its
+    /// region changed it. Only a client that has entered the world is told: one that
+    /// has not is sent the whole inventory when it enters, as the region has it then.
+    async fn inventory_slot(&mut self, player: PlayerId, slot: u8, stack: Option<ItemStack>) {
+        let entered = self
+            .players
+            .get(&player)
+            .is_some_and(|view| view.entity.is_some());
+        if entered {
+            let packet = inventory_slot_packet(slot, stack);
+            self.send_to_player(player, [packet]).await;
+        }
+    }
+
     /// Notes that an action of `player` that concerned another region's blocks has been
     /// dealt with there, and tells the client as far as it may be told.
     async fn arrived(&mut self, player: PlayerId, sequence: i32) {
@@ -2915,7 +2933,7 @@ impl Fanout {
             entity,
             pose: transfer.pose,
             flying: transfer.flying,
-            inventory: inventory_packets(&transfer.hotbar, transfer.selected_slot),
+            inventory: inventory_packets(&transfer.inventory, transfer.selected_slot),
         };
         if let Some(view) = self.players.get_mut(&player) {
             view.region = to;
@@ -4525,19 +4543,18 @@ impl PlayerView {
     }
 }
 
-/// The packets that tell a client what its player carries: the nine hotbar slots, all
-/// other slots empty, and which hotbar slot is selected.
-fn inventory_packets(hotbar: &[Option<ItemStack>; HOTBAR_SLOTS], selected_slot: u8) -> [Bytes; 2] {
-    let mut slots = vec![None; inventory::SLOT_COUNT];
-    for (slot, stack) in hotbar.iter().enumerate() {
-        slots[inventory::HOTBAR_START + slot] = stack.map(|stack| protocol::ItemStack {
-            item: stack.item,
-            count: stack.count,
-        });
+/// The packets that tell a client what its player carries: every slot of the inventory
+/// screen, the crafting grid empty, and which hotbar slot is selected.
+fn inventory_packets(inventory: &Inventory, selected_slot: u8) -> [Bytes; 2] {
+    let mut slots = vec![None; protocol_inventory::SLOT_COUNT];
+    for (slot, stack) in inventory.0.iter().enumerate() {
+        let container = Inventory::to_container(slot).expect("every inventory slot is shown");
+        let container = usize::try_from(container).expect("container slots are not negative");
+        slots[container] = stack.map(protocol_stack);
     }
     [
         encoded(&SetContainerContent {
-            window_id: inventory::PLAYER_WINDOW,
+            window_id: protocol_inventory::PLAYER_WINDOW,
             state_id: 0,
             slots,
             carried: None,
@@ -4546,6 +4563,24 @@ fn inventory_packets(hotbar: &[Option<ItemStack>; HOTBAR_SLOTS], selected_slot: 
             slot: selected_slot.into(),
         }),
     ]
+}
+
+/// The packet that tells a client what one slot of its inventory holds now, after the
+/// region changed it of its own accord (`PlayerEvent::InventorySlot`): the game's
+/// `ClientboundSetPlayerInventoryPacket`, which names the slot as the inventory does.
+fn inventory_slot_packet(slot: u8, stack: Option<ItemStack>) -> Bytes {
+    encoded(&SetPlayerInventory {
+        slot: i32::from(slot),
+        stack: stack.map(protocol_stack),
+    })
+}
+
+/// A stack as the protocol writes it.
+fn protocol_stack(stack: ItemStack) -> protocol::ItemStack {
+    protocol::ItemStack {
+        item: stack.item,
+        count: stack.count,
+    }
 }
 
 /// Adds players to a client's player list.
@@ -4975,7 +5010,7 @@ mod tests {
                 entity_id: entity,
                 pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
                 flying: false,
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
             },
         }
@@ -4995,7 +5030,7 @@ mod tests {
             entity_id: entity,
             name: "Player1".to_owned(),
             pose: Pose::at(Vec3::new(64.5, -60.0, 0.5)),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input,
             hops: 0,
@@ -5008,7 +5043,7 @@ mod tests {
         Presence::Present {
             entity,
             pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input,
             handled: None,
@@ -5023,7 +5058,7 @@ mod tests {
         let Presence::Present {
             entity,
             pose,
-            hotbar,
+            inventory,
             selected_slot,
             last_input,
             handled,
@@ -5036,7 +5071,7 @@ mod tests {
         Presence::Present {
             entity,
             pose,
-            hotbar,
+            inventory,
             selected_slot,
             last_input,
             handled,
@@ -7798,7 +7833,7 @@ mod scenarios {
                 entity_id: entity,
                 pose: Pose::at(SPAWN),
                 flying: false,
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
             },
         }
@@ -7810,7 +7845,7 @@ mod scenarios {
             entity_id: entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input,
             hops: 0,
@@ -7930,7 +7965,7 @@ mod scenarios {
             answer: Presence::Present {
                 entity,
                 pose: Pose::at(SPAWN),
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
                 last_input: 0,
                 handled: None,
@@ -9548,6 +9583,74 @@ mod scenarios {
         edge.acknowledged(&mut client, action.sequence).await;
         edge.nothing_numbered().await;
         edge.end().await;
+    }
+
+    /// A slot the region changed of its own accord, as the swap of the hands does it,
+    /// reaches the client as the game's set-player-inventory packet, which names the
+    /// slot as the inventory numbers it.
+    #[tokio::test]
+    async fn a_slot_the_region_changed_is_told_to_the_client_by_its_inventory_number() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        let stick = ItemStack { item: 1, count: 2 };
+        for (slot, stack) in [(3, None), (40, Some(stick))] {
+            let event = PlayerEvent::InventorySlot { slot, stack };
+            edge.tell(
+                WEST,
+                WorkerToEdge::ToPlayer {
+                    player: player(1),
+                    event,
+                },
+            );
+            let told = loop {
+                let packet = edge.packet(&mut client).await;
+                let packet = packet.expect("the edge ended the connection");
+                if let Ok(ClientboundPlay::SetPlayerInventory(told)) =
+                    ClientboundPlay::decode(&packet)
+                {
+                    break told;
+                }
+                client.take(packet);
+            };
+            let expected = SetPlayerInventory {
+                slot: i32::from(slot),
+                stack: stack.map(protocol_stack),
+            };
+            assert_eq!(told, expected);
+        }
+        edge.end().await;
+    }
+
+    #[test]
+    fn a_client_is_told_every_slot_of_the_inventory_where_its_screen_shows_it() {
+        let mut inventory = Inventory::default();
+        for slot in 0..clustine_world::INVENTORY_SLOTS {
+            let n = i32::try_from(slot).unwrap() + 1;
+            inventory.set(slot, Some(ItemStack { item: n, count: n }));
+        }
+        let [content, held] = inventory_packets(&inventory, 4);
+        let Ok(ClientboundPlay::SetContainerContent(content)) = ClientboundPlay::decode(&content)
+        else {
+            panic!("the first packet is the container's content");
+        };
+        let item = |container: usize| content.slots[container].map(|stack| stack.item);
+        assert_eq!(content.slots.len(), 46);
+        // The crafting grid and its result are empty.
+        assert!(content.slots[..5].iter().all(Option::is_none));
+        // The armour from the head down: the helmet is the inventory's slot 39.
+        assert_eq!([5, 6, 7, 8].map(item), [40, 39, 38, 37].map(Some));
+        assert_eq!(item(9), Some(10));
+        assert_eq!(item(35), Some(36));
+        // The hotbar at the bottom, and the off hand last.
+        assert_eq!(item(36), Some(1));
+        assert_eq!(item(44), Some(9));
+        assert_eq!(item(45), Some(41));
+        assert_eq!(content.slots[45].map(|stack| stack.count), Some(41));
+        let Ok(ClientboundPlay::SetHeldSlot(held)) = ClientboundPlay::decode(&held) else {
+            panic!("the second packet selects the slot");
+        };
+        assert_eq!(held.slot, 4);
     }
 
     /// Scenario 17. A region that was passed an action and believes another to hold
@@ -12436,7 +12539,7 @@ mod scenarios {
                 answer: Presence::Present {
                     entity: resident.entity,
                     pose: Pose::at(within(resident.chunk)),
-                    hotbar: [None; HOTBAR_SLOTS],
+                    inventory: Inventory::default(),
                     selected_slot: 0,
                     last_input: resident.last_input,
                     handled: None,
@@ -13561,7 +13664,7 @@ mod scenarios {
             answer: Presence::Present {
                 entity,
                 pose: Pose::at(SPAWN),
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
                 last_input,
                 handled: None,

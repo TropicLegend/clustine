@@ -22,7 +22,7 @@ use clustine_data::{BlockClass, BlockState, ItemClass};
 use clustine_world::{BlockPos, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Face, HOTBAR_SLOTS, ItemStack};
+use crate::api::{Face, Inventory, ItemStack};
 use context::{Context, World};
 use geometry::DirExt;
 
@@ -535,8 +535,8 @@ pub struct ItemUse {
     pub yaw: f32,
     pub pitch: f32,
     pub sneaking: bool,
-    /// What the player's hotbar holds, for an empty bucket's filled one.
-    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// What the player carries, for an empty bucket's filled one.
+    pub inventory: Inventory,
 }
 
 /// What the use of an item changes.
@@ -544,8 +544,9 @@ pub struct ItemUse {
 pub struct UsedItem {
     /// The blocks that change, all or none.
     pub changes: Vec<(BlockPos, BlockState)>,
-    /// A hotbar slot that changes, and what it holds then.
-    pub hotbar: Option<(u8, Option<ItemStack>)>,
+    /// A slot of the inventory that changes, numbered as [`Inventory`] numbers them,
+    /// and what it holds then.
+    pub slot: Option<(u8, Option<ItemStack>)>,
 }
 
 /// What the use of `item_use`'s item changes, or `None` if nothing does.

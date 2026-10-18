@@ -440,8 +440,8 @@ mod tests {
 
     use super::*;
     use crate::api::{
-        HOTBAR_SLOTS, ItemStack, PlayerChange, PlayerInput, PlayerJoin, PlayerTransfer, Pose,
-        RegionEvent, TickInputs, TickOutput, Ticket,
+        HOTBAR_SLOTS, Inventory, ItemStack, PlayerChange, PlayerInput, PlayerJoin, PlayerTransfer,
+        Pose, RegionEvent, TickInputs, TickOutput, Ticket,
     };
     use crate::region::{Knowledge, RegionConfig};
 
@@ -459,7 +459,7 @@ mod tests {
     fn config(return_after: u64) -> RegionConfig {
         RegionConfig {
             spawn: SPAWN,
-            starting_hotbar: [None; HOTBAR_SLOTS],
+            starting_inventory: Inventory::default(),
             return_after,
             lowest_y: -64,
             seed: 0,
@@ -501,7 +501,7 @@ mod tests {
                 pitch: -10.0,
                 on_ground: true,
             },
-            hotbar,
+            inventory: Inventory::with_hotbar(hotbar),
             selected_slot: (entity % 9) as u8,
             last_input: entity as u64 * 3,
             handled: Some(entity * 7),
@@ -524,7 +524,7 @@ mod tests {
             entity_id: stay.entity_id,
             name: stay.name,
             pose: stay.pose,
-            hotbar: stay.hotbar,
+            inventory: stay.inventory.clone(),
             selected_slot: stay.selected_slot,
             last_input: stay.last_input,
             hops: stay.hops,

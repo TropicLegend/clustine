@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, blocks, items};
-use clustine_sim::api::{Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent};
+use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, Pose, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, EdgeState, Entered, Holdings, Knowledge, Misdirected, NoSplit,
     PlayerChange, PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig,
@@ -76,7 +76,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
         seed: 0,
@@ -408,7 +408,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
             pitch: -10.0,
             on_ground: true,
         },
-        hotbar: bar,
+        inventory: Inventory::with_hotbar(bar),
         selected_slot: (n % 9) as u8,
         last_input: n as u64 % 50 + 2,
         handled: Some(n % 30),
@@ -1553,7 +1553,7 @@ const START: u64 = 10;
 fn run_config() -> RegionConfig {
     RegionConfig {
         spawn: ENTRANCE,
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
         seed: 0,
@@ -2655,7 +2655,7 @@ impl Play {
                 }),
                 _ => hotbar()[0],
             };
-            return PlayerInput::SetHotbarSlot { slot, stack };
+            return PlayerInput::SetInventorySlot { slot, stack };
         }
         // A block of one of the two rows beside the player's, at the top of the stone
         // or on it, near where they stand.

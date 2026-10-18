@@ -80,7 +80,9 @@
 //! | Yaw, pitch | f32, f32 |
 //! | Flags | u8: bit 0 on-ground, bit 1 flying |
 //! | Selected slot | u8 |
-//! | Hotbar | nine times: u8 0 for an empty slot, or u8 1, i32 item, i32 count |
+//! | Inventory | 41 times, in the order of the game's `Inventory` (0 to 8 the hotbar, 9 to
+//! 35 the rest, 36 to 39 armour from the feet up, 40 the off hand): u8 0 for an empty
+//! slot, or u8 1, i32 item, i32 count |
 //!
 //! See `docs/adr/0020-one-stay-per-player.md`, section 8.
 //!
@@ -126,8 +128,8 @@ const FLYING: u8 = 2;
 /// Bytes a stay note takes in a payload at the least.
 const STAY_LENGTH: usize = 25;
 
-/// The number of slots in a player's hotbar.
-pub const HOTBAR_SLOTS: usize = 9;
+/// The number of slots in a player's inventory, as the game's `Inventory` numbers them.
+pub const INVENTORY_SLOTS: usize = 41;
 
 /// Bytes of the length and the checksum in front of every payload.
 const FRAME_HEADER_LENGTH: usize = 8;
@@ -150,6 +152,10 @@ const CHUNK_LENGTH: usize = 8;
 /// that the layout is the store's own and does not change with what a region's state
 /// looks like. See `docs/adr/0020-one-stay-per-player.md`, sections 3 and 8.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a place carries a whole inventory, and notes are read and written a few at a time"
+)]
 pub enum LoggedStay {
     /// The home region has given `player` the stay `entity` and holds it as entering.
     Entering { player: u128, entity: u64 },
@@ -176,8 +182,8 @@ pub struct LoggedPlace {
     pub on_ground: bool,
     pub flying: bool,
     pub selected_slot: u8,
-    /// Each slot of the hotbar: the item and how many, if there is anything in it.
-    pub hotbar: [Option<(i32, i32)>; HOTBAR_SLOTS],
+    /// Each slot of the inventory: the item and how many, if there is anything in it.
+    pub inventory: [Option<(i32, i32)>; INVENTORY_SLOTS],
 }
 
 impl PartialEq for LoggedPlace {
@@ -188,7 +194,7 @@ impl PartialEq for LoggedPlace {
             && self.on_ground == other.on_ground
             && self.flying == other.flying
             && self.selected_slot == other.selected_slot
-            && self.hotbar == other.hotbar
+            && self.inventory == other.inventory
     }
 }
 
@@ -861,7 +867,7 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     let flying = if place.flying { FLYING } else { 0 };
     out.push(on_ground | flying);
     out.push(place.selected_slot);
-    for slot in place.hotbar {
+    for slot in place.inventory {
         match slot {
             None => out.push(0),
             Some((item, count)) => {
@@ -882,12 +888,12 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         return Err(FormatError::Corrupt("place flags"));
     }
     let selected_slot = input.u8()?;
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    for slot in &mut hotbar {
+    let mut inventory = [None; INVENTORY_SLOTS];
+    for slot in &mut inventory {
         *slot = match input.u8()? {
             0 => None,
             1 => Some((input.i32()?, input.i32()?)),
-            _ => return Err(FormatError::Corrupt("hotbar slot")),
+            _ => return Err(FormatError::Corrupt("inventory slot")),
         };
     }
     Ok(LoggedPlace {
@@ -897,7 +903,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         on_ground: flags & ON_GROUND != 0,
         flying: flags & FLYING != 0,
         selected_slot,
-        hotbar,
+        inventory,
     })
 }
 
@@ -2145,11 +2151,14 @@ mod tests {
         assert_eq!(read_log(&too_long), Ok((Vec::new(), 0)));
     }
 
-    /// A place in which nothing is as it is by default.
+    /// A place in which nothing is as it is by default: something in the hotbar, on the
+    /// head and in the off hand.
     fn place() -> LoggedPlace {
-        let mut hotbar = [None; HOTBAR_SLOTS];
-        hotbar[0] = Some((1, 64));
-        hotbar[8] = Some((-2, 258));
+        let mut inventory = [None; INVENTORY_SLOTS];
+        inventory[0] = Some((1, 64));
+        inventory[8] = Some((-2, 258));
+        inventory[39] = Some((3, 1));
+        inventory[40] = Some((5, 16));
         LoggedPlace {
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
@@ -2157,7 +2166,7 @@ mod tests {
             on_ground: false,
             flying: true,
             selected_slot: 8,
-            hotbar,
+            inventory,
         }
     }
 
@@ -2196,7 +2205,7 @@ mod tests {
     fn known_answer_of_a_commit_with_stays() {
         let record = commit_with_stays();
         let bytes = record.encode();
-        let payload = [
+        let mut payload = vec![
             FORMAT_VERSION,
             8, // version, kind
             0,
@@ -2345,8 +2354,14 @@ mod tests {
             0,
             0,
             1,
-            2, // the last slot
+            2, // the last slot of the hotbar
         ];
+        // Thirty empty slots: the rest of the hotbar's and the armour's from the feet up
+        // to the chest.
+        payload.extend_from_slice(&[0; 30]);
+        // The head and the off hand.
+        payload.extend_from_slice(&[1, 0, 0, 0, 3, 0, 0, 0, 1]);
+        payload.extend_from_slice(&[1, 0, 0, 0, 5, 0, 0, 0, 16]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -2468,7 +2483,7 @@ mod tests {
         slot[flags + 2] = 2;
         assert_eq!(
             read_log(&frame(&slot)),
-            Err(FormatError::Corrupt("hotbar slot"))
+            Err(FormatError::Corrupt("inventory slot"))
         );
     }
 
@@ -2510,15 +2525,21 @@ mod tests {
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
     }
 
+    /// Inventories of every kind: proptest makes arrays of up to 32 by itself.
+    fn inventories() -> impl Strategy<Value = [Option<(i32, i32)>; INVENTORY_SLOTS]> {
+        proptest::collection::vec(any::<Option<(i32, i32)>>(), INVENTORY_SLOTS)
+            .prop_map(|slots| slots.try_into().expect("as many slots as an inventory has"))
+    }
+
     fn places() -> impl Strategy<Value = LoggedPlace> {
         (
             any::<[f64; 3]>(),
             any::<(f32, f32)>(),
             any::<(bool, bool, u8)>(),
-            any::<[Option<(i32, i32)>; HOTBAR_SLOTS]>(),
+            inventories(),
         )
             .prop_map(
-                |(position, (yaw, pitch), (on_ground, flying, selected_slot), hotbar)| {
+                |(position, (yaw, pitch), (on_ground, flying, selected_slot), inventory)| {
                     LoggedPlace {
                         position,
                         yaw,
@@ -2526,7 +2547,7 @@ mod tests {
                         on_ground,
                         flying,
                         selected_slot,
-                        hotbar,
+                        inventory,
                     }
                 },
             )

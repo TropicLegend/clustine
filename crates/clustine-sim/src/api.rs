@@ -37,10 +37,7 @@ impl Pose {
     }
 }
 
-/// The number of slots in a player's hotbar.
-pub const HOTBAR_SLOTS: usize = 9;
-
-pub use clustine_world::ItemStack;
+pub use clustine_world::{HOTBAR_SLOTS, INVENTORY_SLOTS, Inventory, ItemStack, OFF_HAND};
 
 /// A side of a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +76,7 @@ impl Face {
 pub struct Place {
     pub pose: Pose,
     pub flying: bool,
-    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    pub inventory: Inventory,
     pub selected_slot: u8,
 }
 
@@ -138,7 +135,7 @@ pub struct PlayerTransfer {
     pub entity_id: EntityId,
     pub name: String,
     pub pose: Pose,
-    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    pub inventory: Inventory,
     pub selected_slot: u8,
     /// The number of the last input the region applied; see [`TickInputs::inputs`].
     pub last_input: u64,
@@ -266,8 +263,9 @@ pub enum PlayerInput {
     },
     /// The player selected another hotbar slot, from 0 to 8.
     SelectSlot { slot: u8 },
-    /// A creative-mode player put a stack into a hotbar slot, or emptied it.
-    SetHotbarSlot { slot: u8, stack: Option<ItemStack> },
+    /// A creative-mode player put a stack into a slot of their inventory, numbered as
+    /// [`Inventory`] numbers them, or emptied it.
+    SetInventorySlot { slot: u8, stack: Option<ItemStack> },
     /// The player used the item in their hand without a block it uses on: a bucket or
     /// a lily pad, which find what they reach by a ray along `rotation` (yaw, pitch),
     /// the player's rotation from then on. `sneaking` and `sequence` are as for
@@ -281,6 +279,10 @@ pub enum PlayerInput {
     /// player and tells the world store with their place; nobody else is shown it. See
     /// `docs/adr/0020-one-stay-per-player.md`, section 13.
     SetFlying { flying: bool },
+    /// The player swapped what they hold in the main hand with what they hold in the
+    /// off hand (the game's `SWAP_ITEM_WITH_OFFHAND`, the key F). Added at the end, so
+    /// that what is stored of inputs reads as it did.
+    SwapHands,
 }
 
 /// What is left to do of something a player did to blocks that the region the player is
@@ -581,7 +583,7 @@ pub struct TickInputs {
     ///
     /// - none, or one whose feet are below [`RegionConfig::lowest_y`]: the player is
     ///   placed at the spawn point, looking ahead and not flying, with the starting
-    ///   hotbar if there is no place and with what the place has them hold otherwise;
+    ///   inventory if there is no place and with what the place has them hold otherwise;
     /// - a place and no `holder`: the player is placed there as the place has them;
     /// - a place and a `holder`: the stay is let go to that region in this tick
     ///   without being placed, with a [`Durable::Departed`] whose transfer has one
@@ -724,7 +726,7 @@ pub enum PlayerEvent {
         entity_id: EntityId,
         pose: Pose,
         flying: bool,
-        hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+        inventory: Inventory,
         selected_slot: u8,
     },
     /// Everything the player did with a sequence number up to `sequence` has been
@@ -737,6 +739,11 @@ pub enum PlayerEvent {
     /// The player could not enter the world. A region does not emit this itself: it
     /// makes a [`Durable::Refused`], which a worker passes on as this.
     Refused,
+    /// The region changed a slot of the player's inventory of its own accord, as the
+    /// game's server does where the client does not foresee it (the swap of the hands),
+    /// and the client is to be told what it holds now. `slot` is numbered as
+    /// [`Inventory`] numbers them.
+    InventorySlot { slot: u8, stack: Option<ItemStack> },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.
@@ -860,7 +867,8 @@ pub struct TickOutput {
     pub tick: u64,
     /// [`PlayerEvent::Spawned`], in the order the players joined, or, where the world
     /// store says where a player enters, in the order of its answers
-    /// ([`TickInputs::entered`]); and then [`PlayerEvent::Acknowledged`], in the order
+    /// ([`TickInputs::entered`]); then [`PlayerEvent::InventorySlot`], in the order of
+    /// the inputs that made them; and then [`PlayerEvent::Acknowledged`], in the order
     /// of the players. What else concerns a single player is among `durable`.
     pub player_events: Vec<(PlayerId, PlayerEvent)>,
     pub events: Vec<RegionEvent>,

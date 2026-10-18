@@ -25,7 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, blocks, items};
 use clustine_sim::api::{
-    Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
+    Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction,
+    RemoteStep,
 };
 use clustine_sim::placement::Click;
 use clustine_sim::{
@@ -91,7 +92,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
         spawn: SPAWN,
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
         seed: 0,
@@ -298,7 +299,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
-        hotbar: hotbar(),
+        inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
         last_input,
         hops: 0,
@@ -314,7 +315,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
-        hotbar: state.hotbar,
+        inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
         last_input: state.last_input,
         hops: state.hops + 1,
@@ -1942,7 +1943,7 @@ fn a_player_in_a_chunk_that_turns_out_to_be_anothers_is_let_go_in_the_tick_of_th
         5,
         PlayerInput::SelectSlot { slot: 3 },
     );
-    let emptied = PlayerInput::SetHotbarSlot {
+    let emptied = PlayerInput::SetInventorySlot {
         slot: 0,
         stack: None,
     };
@@ -2132,7 +2133,7 @@ fn a_player_who_joins_at_a_spawn_point_the_region_believes_anothers_is_let_go_at
                 "what they did is not applied"
             );
             assert_eq!(transfer.last_input, 0);
-            assert_eq!(transfer.hotbar, hotbar());
+            assert_eq!(transfer.inventory, Inventory::with_hotbar(hotbar()));
             let block = EntityIds::block(4).expect("block 4 exists");
             assert_eq!(transfer.entity_id, block.first, "the next entity id");
         }

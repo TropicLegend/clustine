@@ -22,7 +22,8 @@ use clustine_rpc::{
     WorkerToEdge,
 };
 use clustine_sim::api::{
-    EntityKind, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
+    EntityKind, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction,
+    RemoteStep,
 };
 use clustine_sim::{Durable, PlayerEvent, PlayerJoin, RegionState};
 use clustine_worker::{Ended, RegionRunner, RegionSettings, Worker};
@@ -105,7 +106,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// [`CUT`], whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
 fn settings() -> RegionSettings {
     RegionSettings {
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
         // What these tests count is a region's claims and loads for viewers' and
@@ -954,6 +955,7 @@ impl Witness {
                     self.handled.insert(*player, *sequence);
                 }
                 PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
+                PlayerEvent::InventorySlot { .. } => {}
             },
             WorkerToEdge::Outbox { number, entry } => {
                 // An entry it has seen is ignored, as section 5 has it: it is sent again
@@ -1635,7 +1637,7 @@ fn busy_region(runner: &mut RegionRunner) -> (Link, Link, EntityId) {
             player(1),
             entity,
             5,
-            PlayerInput::SetHotbarSlot {
+            PlayerInput::SetInventorySlot {
                 slot: 2,
                 stack: Some(ItemStack {
                     item: items::DIRT,
@@ -1736,7 +1738,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
                 pitch: 0.0,
                 on_ground: true,
             },
-            hotbar: changed_hotbar,
+            inventory: Inventory::with_hotbar(changed_hotbar),
             selected_slot: 4,
             last_input: 5,
             // The action beyond the region is not handled by this one.
@@ -5351,7 +5353,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
             pitch: 0.0,
             on_ground: true,
         },
-        hotbar: hotbar(),
+        inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
         last_input: 0,
         handled: None,

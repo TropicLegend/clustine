@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Durable, HOTBAR_SLOTS, ItemStack, Pose};
+use crate::api::{Durable, Inventory, Pose};
 
 /// Everything a region knows apart from its chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,7 +57,8 @@ pub struct PlayerState {
     pub entity_id: EntityId,
     pub name: String,
     pub pose: Pose,
-    pub hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// Everything the player carries, numbered as the game's `Inventory` numbers it.
+    pub inventory: Inventory,
     /// The hotbar slot whose item the player holds.
     pub selected_slot: u8,
     /// The number of the last input that was applied.

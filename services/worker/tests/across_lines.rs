@@ -23,7 +23,7 @@ use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     CopyUse, EdgeMessage, EdgeToWorker, RegionHello, StoreReply, StoreRequest, WorkerToEdge,
 };
-use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
+use clustine_sim::api::Inventory;
 use clustine_worker::{RegionRunner, RegionSettings};
 use clustine_world::{
     BlockPos, Chunk, ChunkGenerator, ChunkPos, EdgeId, InChunk, ScheduledTick, Ticked,
@@ -49,7 +49,7 @@ fn generator() -> Arc<FlatGenerator> {
 
 fn settings() -> RegionSettings {
     RegionSettings {
-        starting_hotbar: [None::<ItemStack>; HOTBAR_SLOTS],
+        starting_inventory: Inventory::default(),
         return_after: 0,
         lowest_y: -64,
         rings: false,

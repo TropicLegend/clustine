@@ -10,9 +10,10 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, LendAsked,
-    Misdirected, Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose,
-    RegionEvent, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
+    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack,
+    LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput,
+    Ticket,
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
@@ -42,8 +43,8 @@ pub struct RegionConfig {
     /// Where players enter the world. The chunk it is in is the home chunk, which a
     /// region that holds it never gives back.
     pub spawn: Vec3,
-    /// What players have in their hotbar when they enter the world.
-    pub starting_hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// What players carry when they enter the world for the first time.
+    pub starting_inventory: Inventory,
     /// How many ticks a chunk the region holds outside its pinned areas may be without
     /// use before the region gives it back.
     pub return_after: u64,
@@ -223,7 +224,8 @@ struct Player {
     /// The highest sequence number handled in this tick, to be acknowledged. Always
     /// `None` between ticks.
     handled_sequence: Option<i32>,
-    hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// Everything the player carries, numbered as the game's `Inventory` numbers it.
+    inventory: Inventory,
     /// The hotbar slot whose item the player holds.
     selected_slot: u8,
     /// The number of the last input that was applied.
@@ -849,7 +851,7 @@ impl Region {
                 place: Place {
                     pose: transfer.pose,
                     flying: transfer.flying,
-                    hotbar: transfer.hotbar,
+                    inventory: transfer.inventory.clone(),
                     selected_slot: transfer.selected_slot,
                 },
             };
@@ -1111,7 +1113,7 @@ impl Region {
                 entity_id: player.entity_id,
                 pose: player.pose,
                 flying: player.flying,
-                hotbar: player.hotbar,
+                inventory: player.inventory.clone(),
                 selected_slot: player.selected_slot,
             },
         ));
@@ -1258,7 +1260,7 @@ impl Region {
             pose: transfer.pose,
             moved_from: None,
             handled_sequence: None,
-            hotbar: transfer.hotbar,
+            inventory: transfer.inventory.clone(),
             selected_slot: transfer.selected_slot,
             last_input: transfer.last_input,
             handled: None,
@@ -1321,9 +1323,14 @@ impl Region {
         let lowest = f64::from(self.config.lowest_y);
         let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
         let at_spawn = self.spawn_pose();
-        let (pose, flying, hotbar, selected_slot) = match kept {
-            None => (at_spawn, false, self.config.starting_hotbar, 0),
-            Some((place, true)) => (at_spawn, false, place.hotbar, place.selected_slot),
+        let (pose, flying, inventory, selected_slot) = match kept {
+            None => (at_spawn, false, self.config.starting_inventory.clone(), 0),
+            Some((place, true)) => (
+                at_spawn,
+                false,
+                place.inventory.clone(),
+                place.selected_slot,
+            ),
             Some((place, false)) => {
                 if let Some(to) = answer.holder {
                     // Another region held the place: the stay goes there without
@@ -1333,7 +1340,7 @@ impl Region {
                         entity_id,
                         name,
                         pose: place.pose,
-                        hotbar: place.hotbar,
+                        inventory: place.inventory.clone(),
                         selected_slot: place.selected_slot,
                         last_input: 0,
                         hops: 1,
@@ -1346,7 +1353,12 @@ impl Region {
                 // Nobody held it, or this region did. If the region knows nothing of
                 // the chunk it is claimed at the end of the tick, as for an arrival,
                 // and the player is let go when the store says it is another's.
-                (place.pose, place.flying, place.hotbar, place.selected_slot)
+                (
+                    place.pose,
+                    place.flying,
+                    place.inventory.clone(),
+                    place.selected_slot,
+                )
             }
         };
         let player = Player {
@@ -1355,7 +1367,7 @@ impl Region {
             pose,
             moved_from: None,
             handled_sequence: None,
-            hotbar,
+            inventory,
             selected_slot,
             last_input: 0,
             handled: None,
@@ -1539,16 +1551,33 @@ impl Region {
                     player.selected_slot = *slot;
                 }
             }
-            PlayerInput::SetHotbarSlot { slot, stack } => {
-                // Only stacks of items that exist are kept.
+            PlayerInput::SetInventorySlot { slot, stack } => {
+                // Only stacks of items that exist are kept, and only in slots the
+                // inventory has.
                 let known = stack.is_none_or(|stack| {
                     stack.count > 0
                         && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
                 });
-                if let Some(held) = player.hotbar.get_mut(usize::from(*slot))
-                    && known
-                {
-                    *held = *stack;
+                if known {
+                    player.inventory.set(usize::from(*slot), *stack);
+                }
+            }
+            PlayerInput::SwapHands => {
+                // As the game's `handlePlayerAction` does it: the off hand's stack goes
+                // into the hand and the hand's into the off hand. The client does not
+                // foresee it, so it is told of each slot that changed, the hotbar's
+                // first, as the game's menu sends them in the order of its slots.
+                let hand = usize::from(player.selected_slot);
+                let held = player.held();
+                let off = player.inventory.0[OFF_HAND];
+                if held != off {
+                    player.inventory.set(hand, off);
+                    player.inventory.set(OFF_HAND, held);
+                    for (slot, stack) in [(hand, off), (OFF_HAND, held)] {
+                        let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
+                        let event = PlayerEvent::InventorySlot { slot, stack };
+                        output.player_events.push((id, event));
+                    }
                 }
             }
             PlayerInput::SetFlying { flying } => player.flying = *flying,
@@ -1561,12 +1590,12 @@ impl Region {
                 // on, as vanilla takes it before it uses the item.
                 (player.pose.yaw, player.pose.pitch) = *rotation;
                 let item_use = ItemUse {
-                    held: player.hotbar[usize::from(player.selected_slot)].map(|stack| stack.item),
+                    held: player.held().map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: rotation.0,
                     pitch: rotation.1,
                     sneaking: *sneaking,
-                    hotbar: player.hotbar,
+                    inventory: player.inventory.clone(),
                 };
                 let sequence = *sequence;
                 let bodies = self.bodies(Some(id));
@@ -1575,11 +1604,10 @@ impl Region {
                     && self.change_all(&used.changes, output)
                 {
                     self.play_item_use(id, &item_use, &used, output);
-                    if let Some((slot, stack)) = used.hotbar
+                    if let Some((slot, stack)) = used.slot
                         && let Some(player) = self.players.get_mut(&id)
-                        && let Some(held) = player.hotbar.get_mut(usize::from(slot))
                     {
-                        *held = stack;
+                        player.inventory.set(usize::from(slot), stack);
                     }
                 }
                 if let Some(player) = self.players.get_mut(&id) {
@@ -1629,7 +1657,7 @@ impl Region {
                     face: *face,
                     cursor: *cursor,
                     sneaking: *sneaking,
-                    held: player.hotbar[usize::from(player.selected_slot)].map(|stack| stack.item),
+                    held: player.held().map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: player.pose.yaw,
                     pitch: player.pose.pitch,
@@ -1770,7 +1798,7 @@ impl Region {
         let (sound, position, source) = match item_use.held {
             Some(items::BUCKET) => {
                 let filled = used
-                    .hotbar
+                    .slot
                     .and_then(|(_, stack)| stack)
                     .map(|stack| stack.item);
                 let sound = match filled {
@@ -2377,7 +2405,7 @@ impl Player {
             entity_id: self.entity_id,
             name: self.name.clone(),
             pose: self.pose,
-            hotbar: self.hotbar,
+            inventory: self.inventory.clone(),
             selected_slot: self.selected_slot,
             last_input: self.last_input,
             handled: self.handled,
@@ -2395,7 +2423,7 @@ impl Player {
             pose: state.pose,
             moved_from: None,
             handled_sequence: None,
-            hotbar: state.hotbar,
+            inventory: state.inventory,
             selected_slot: state.selected_slot,
             last_input: state.last_input,
             handled: state.handled,
@@ -2411,7 +2439,7 @@ impl Player {
         Place {
             pose: self.pose,
             flying: self.flying,
-            hotbar: self.hotbar,
+            inventory: self.inventory.clone(),
             selected_slot: self.selected_slot,
         }
     }
@@ -2423,7 +2451,7 @@ impl Player {
             entity_id: self.entity_id,
             name: self.name,
             pose: self.pose,
-            hotbar: self.hotbar,
+            inventory: self.inventory,
             selected_slot: self.selected_slot,
             last_input: self.last_input,
             hops: self.hops + 1,
@@ -2447,6 +2475,11 @@ impl Player {
     fn acknowledge(&mut self, sequence: i32) {
         self.handled_sequence = self.handled_sequence.max(Some(sequence));
         self.handled = self.handled.max(Some(sequence));
+    }
+
+    /// What the player holds in the main hand: the stack of the selected hotbar slot.
+    fn held(&self) -> Option<ItemStack> {
+        self.inventory.0[usize::from(self.selected_slot)]
     }
 
     /// Whether the player's eyes are close enough to the block at `position` to work on it.
@@ -2532,7 +2565,7 @@ mod tests {
     use super::*;
     use clustine_data::items;
 
-    use crate::api::{Face, PlayerJoin};
+    use crate::api::{Face, INVENTORY_SLOTS, PlayerJoin};
 
     mod block_updates;
     mod diodes;
@@ -2587,7 +2620,7 @@ mod tests {
     fn config() -> RegionConfig {
         RegionConfig {
             spawn: SPAWN,
-            starting_hotbar: hotbar(),
+            starting_inventory: Inventory::with_hotbar(hotbar()),
             return_after: 0,
             lowest_y: -64,
             seed: 0,
@@ -3236,7 +3269,7 @@ mod tests {
             entity_id: EntityId(entity),
             pose: Pose::at(SPAWN),
             flying: false,
-            hotbar: hotbar(),
+            inventory: Inventory::with_hotbar(hotbar()),
             selected_slot: 0,
         };
         assert_eq!(
@@ -3358,7 +3391,7 @@ mod tests {
             entity_id: EntityId(2),
             pose: Pose::at(SPAWN),
             flying: false,
-            hotbar: hotbar(),
+            inventory: Inventory::with_hotbar(hotbar()),
             selected_slot: 0,
         };
         assert_eq!(told(&output), [(player(1), spawned)]);
@@ -4267,7 +4300,7 @@ mod tests {
     #[test]
     fn creative_players_fill_their_own_hotbar() {
         let mut region = on_floor(&[1]);
-        let set = |slot, stack| numbered(1, PlayerInput::SetHotbarSlot { slot, stack });
+        let set = |slot, stack| numbered(1, PlayerInput::SetInventorySlot { slot, stack });
         let glass = ItemStack {
             item: items::GLASS,
             count: 1,
@@ -4289,11 +4322,95 @@ mod tests {
             count: 1,
         };
         let output = region.tick(&moves(vec![
-            set(9, Some(glass)),
+            set(41, Some(glass)),
             set(4, Some(nonsense)),
             place(1, 3, -61, 0, Face::Top),
         ]));
         assert!(output.events.is_empty());
+    }
+
+    /// Something different in every slot of the inventory: in slot `n` the item `n + 1`,
+    /// `n + 1` of it.
+    fn full_inventory() -> Inventory {
+        let mut inventory = Inventory::default();
+        for slot in 0..INVENTORY_SLOTS {
+            let n = i32::try_from(slot).unwrap() + 1;
+            inventory.set(slot, Some(ItemStack { item: n, count: n }));
+        }
+        inventory
+    }
+
+    #[test]
+    fn a_creative_player_sets_every_slot_of_their_inventory_and_no_other() {
+        let mut region = on_floor(&[1]);
+        let inputs = (0..INVENTORY_SLOTS)
+            .map(|slot| {
+                let stack = full_inventory().0[slot];
+                set_slot(1, u8::try_from(slot).unwrap(), stack)
+            })
+            .collect();
+        region.tick(&moves(inputs));
+        assert_eq!(
+            region.state().players[&player(1)].inventory,
+            full_inventory()
+        );
+
+        // A slot beyond the off hand, an empty stack and an item that does not exist
+        // change nothing.
+        let output = region.tick(&moves(vec![
+            set_slot(1, 41, Some(GLASS)),
+            set_slot(1, 40, Some(ItemStack { item: 1, count: 0 })),
+            set_slot(1, 39, Some(ItemStack { item: -1, count: 1 })),
+        ]));
+        assert_eq!(
+            region.state().players[&player(1)].inventory,
+            full_inventory()
+        );
+        assert!(
+            output.player_events.is_empty(),
+            "{:?}",
+            output.player_events
+        );
+    }
+
+    #[test]
+    fn swapping_the_hands_trades_the_held_stack_for_the_off_hand_and_tells_the_client_of_both() {
+        let mut region = on_floor(&[1]);
+        let swap = || numbered(1, PlayerInput::SwapHands);
+        // The starting inventory holds a stick in slot 2 and nothing in the off hand.
+        let output = region.tick(&moves(vec![select(1, 2), swap()]));
+        let inventory = region.state().players[&player(1)].inventory.clone();
+        assert_eq!((inventory.0[2], inventory.0[OFF_HAND]), (None, Some(STICK)));
+        let told = |slot, stack| (player(1), PlayerEvent::InventorySlot { slot, stack });
+        assert_eq!(
+            output.player_events,
+            [told(2, None), told(40, Some(STICK))],
+            "the hand first, as the game's menu sends its slots in their order"
+        );
+
+        // With dirt in hand the two trade places again.
+        let output = region.tick(&moves(vec![select(1, 1), swap()]));
+        let inventory = region.state().players[&player(1)].inventory.clone();
+        assert_eq!(
+            (inventory.0[1], inventory.0[OFF_HAND]),
+            (Some(STICK), Some(DIRT))
+        );
+        assert_eq!(
+            output.player_events,
+            [told(1, Some(STICK)), told(40, Some(DIRT))]
+        );
+
+        // Two empty hands change nothing, and nobody is told anything.
+        let output = region.tick(&moves(vec![set_slot(1, 40, None), select(1, 5), swap()]));
+        assert_eq!(
+            region.state().players[&player(1)].inventory.0[OFF_HAND],
+            None
+        );
+        assert!(
+            output.player_events.is_empty(),
+            "{:?}",
+            output.player_events
+        );
     }
 
     #[test]
@@ -4328,7 +4445,7 @@ mod tests {
     };
 
     fn set_slot(number: u128, slot: u8, stack: Option<ItemStack>) -> Input {
-        numbered(number, PlayerInput::SetHotbarSlot { slot, stack })
+        numbered(number, PlayerInput::SetInventorySlot { slot, stack })
     }
 
     /// What a region hands over when it lets a player go at `x` after their input
@@ -4346,7 +4463,7 @@ mod tests {
                 pitch: -20.0,
                 on_ground: true,
             },
-            hotbar,
+            inventory: Inventory::with_hotbar(hotbar),
             selected_slot: 6,
             last_input,
             hops: 0,
@@ -4913,7 +5030,7 @@ mod tests {
                         entity_id: EntityId(1),
                         name: "Player1".to_owned(),
                         pose,
-                        hotbar: carried,
+                        inventory: Inventory::with_hotbar(carried),
                         selected_slot: 4,
                         last_input: 4,
                         // Handed on for the first time.
@@ -5210,7 +5327,7 @@ mod tests {
             entity_id: EntityId(1),
             pose: Pose::at(SPAWN),
             flying: false,
-            hotbar: hotbar(),
+            inventory: Inventory::with_hotbar(hotbar()),
             selected_slot: 0,
         };
         // No input of theirs was applied, so the stay still carries the attempt of
@@ -5219,7 +5336,7 @@ mod tests {
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
             pose: Pose::at(SPAWN),
-            hotbar: hotbar(),
+            inventory: Inventory::with_hotbar(hotbar()),
             selected_slot: 0,
             last_input: 0,
             hops: 1,
@@ -6249,6 +6366,51 @@ mod tests {
         assert!(state.flying);
     }
 
+    #[test]
+    fn the_whole_inventory_goes_with_a_player_who_arrives_is_restored_and_is_let_go() {
+        let mut region = region_in(EAST);
+        let arriving = PlayerTransfer {
+            inventory: full_inventory(),
+            ..transfer(5, 40, 2.5, 0)
+        };
+        region.tick(&changes(vec![arrive(5, &arriving)]));
+        assert_eq!(
+            region.player_state(player(5)).unwrap().inventory,
+            full_inventory()
+        );
+
+        let holdings = Holdings {
+            pinned: vec![EAST],
+            ..Holdings::default()
+        };
+        let restored = Region::restore(config(), region.state(), holdings);
+        assert_eq!(
+            restored.player_state(player(5)).unwrap().inventory,
+            full_inventory()
+        );
+
+        let step = as_entity(40, walk(5, -0.5, 0.5));
+        let output = region.tick(&moves(vec![with_number(1, step)]));
+        let let_go: Vec<_> = output
+            .durable
+            .iter()
+            .filter_map(|(_, _, entry)| match entry {
+                Durable::Departed { transfer, .. } => Some(transfer.inventory.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(let_go, [full_inventory()]);
+        let kept: Vec<_> = output
+            .stays
+            .iter()
+            .filter_map(|note| match note {
+                StayNote::Has { place, .. } => Some(place.inventory.clone()),
+                StayNote::Entering { .. } => None,
+            })
+            .collect();
+        assert_eq!(kept, [full_inventory()], "the store keeps it for a rejoin");
+    }
+
     /// What a region hands on of a player has the stay's attempt, how often it was
     /// handed on and whether the player flies, and a region that takes the player in
     /// keeps all three.
@@ -6832,15 +6994,12 @@ mod tests {
     }
 
     /// The entity of a player in `region` and what a handover has to preserve of them.
-    fn carried(
-        region: &Region,
-        id: PlayerId,
-    ) -> Option<(EntityId, Pose, [Option<ItemStack>; HOTBAR_SLOTS], u8)> {
+    fn carried(region: &Region, id: PlayerId) -> Option<(EntityId, Pose, Inventory, u8)> {
         let player = region.players.get(&id)?;
         Some((
             player.entity_id,
             player.pose,
-            player.hotbar,
+            player.inventory.clone(),
             player.selected_slot,
         ))
     }
@@ -6955,14 +7114,16 @@ mod tests {
                         0 => PlayerInput::SelectSlot {
                             slot: random(10) as u8,
                         },
+                        1 if random(4) == 0 => PlayerInput::SwapHands,
                         1 => {
-                            // Counts make it unlikely that two stacks are alike.
+                            // Counts make it unlikely that two stacks are alike. Any slot
+                            // of the inventory, and now and then one beyond it.
                             let stack = ItemStack {
                                 count: 1 + random(64) as i32,
                                 ..[STONE, DIRT, GLASS][random(3) as usize]
                             };
-                            PlayerInput::SetHotbarSlot {
-                                slot: random(10) as u8,
+                            PlayerInput::SetInventorySlot {
+                                slot: random(42) as u8,
                                 stack: (random(4) != 0).then_some(stack),
                             }
                         }
@@ -7009,7 +7170,12 @@ mod tests {
             let output = regions[ticking].tick(&std::mem::take(&mut waiting[ticking]));
             assert!(!output.events.iter().any(is_removal), "step {step}");
             for (id, event) in told(&output) {
-                // Nobody joins or digs, so nothing else is to be expected.
+                // A swap of the hands tells the client of its slots, which the state
+                // compared with the reference's covers. Nobody joins or digs, so
+                // nothing else is to be expected.
+                if matches!(event, PlayerEvent::InventorySlot { .. }) {
+                    continue;
+                }
                 let PlayerEvent::Departed(transfer) = event else {
                     panic!("unexpected event {event:?} in step {step}");
                 };

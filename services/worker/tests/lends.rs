@@ -15,7 +15,7 @@ use clustine_data::BlockState;
 use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{EdgeMessage, EdgeToWorker, RegionHello, WorkerToEdge};
-use clustine_sim::api::HOTBAR_SLOTS;
+use clustine_sim::api::Inventory;
 use clustine_sim::{Knowledge, RemoteAction, RemoteStep};
 use clustine_worker::{RegionRunner, RegionSettings};
 use clustine_world::{BlockPos, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
@@ -34,7 +34,7 @@ const STEPS: usize = 20_000;
 
 fn settings() -> RegionSettings {
     RegionSettings {
-        starting_hotbar: [None; HOTBAR_SLOTS],
+        starting_inventory: Inventory::default(),
         return_after: 1_000,
         lowest_y: -64,
         rings: true,

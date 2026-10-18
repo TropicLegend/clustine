@@ -31,7 +31,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use super::{RETRY, sleep_until_some};
-use crate::{LINK_CAPACITY, starting_hotbar};
+use crate::{LINK_CAPACITY, starting_inventory};
 
 /// How often a worker looks at its regions: whether each still ticks, whether it has
 /// lost the world store, and where its players are. What the worker vouches for to the
@@ -1368,7 +1368,7 @@ fn hold(assignment: Assignment) -> Held {
         // The region's entity ids are the store's to say, not the coordinator's, and so
         // are the chunks it holds, the areas it is pinned to and the world's spawn.
         settings: RegionSettings {
-            starting_hotbar: starting_hotbar(),
+            starting_inventory: starting_inventory(),
             return_after: DEFAULT_RETURN_AFTER,
             lowest_y: lowest_y(),
             rings: true,

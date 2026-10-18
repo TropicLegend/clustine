@@ -26,7 +26,7 @@ use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, RegionHello, StoreReply, StoreRequest, WorkerToEdge,
 };
-use clustine_sim::api::HOTBAR_SLOTS;
+use clustine_sim::api::Inventory;
 use clustine_worker::{RegionRunner, RegionSettings, RegionStatus, Worker};
 use clustine_world::{BlockPos, ChunkPos, EdgeId, InChunk, ScheduledTick, Ticked};
 use clustine_worldgen::FlatGenerator;
@@ -65,7 +65,7 @@ const UNCACHED_SYNC: Duration = Duration::from_millis(22);
 
 fn settings() -> RegionSettings {
     RegionSettings {
-        starting_hotbar: [None; HOTBAR_SLOTS],
+        starting_inventory: Inventory::default(),
         return_after: 1_000,
         lowest_y: -64,
         rings: true,

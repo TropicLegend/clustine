@@ -45,8 +45,8 @@ use clustine_rpc::{
     StoreReply, StoreRequest, Welcome, WorkerToEdge,
 };
 use clustine_sim::api::{
-    EntityState, Face, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerInput, PlayerTransfer, Pose,
-    RegionEvent, RemoteAction, RemoteStep,
+    EntityState, Face, HOTBAR_SLOTS, Inventory, ItemStack, Misdirected, PlayerInput,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
 use clustine_sim::{Durable, EdgeState, Knowledge, Part, PlayerEvent, PlayerJoin, RegionState};
 use clustine_worker::{
@@ -150,7 +150,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn settings(return_after: u64) -> RegionSettings {
     RegionSettings {
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
         // What these tests count is a region's claims and loads for viewers' and
@@ -1421,7 +1421,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         entity_id: entity,
         name: "arriving".to_owned(),
         pose: Pose::at(Vec3::new(x, FEET, 8.5)),
-        hotbar: hotbar(),
+        inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
         last_input: 0,
         hops: 0,
@@ -2373,8 +2373,8 @@ fn a_hello_that_names_neither_of_an_edges_two_players_is_answered_with_a_present
     assert!(
         matches!(
             presence(log, player(1)),
-            Some(Presence::Present { last_input: 1, pose, selected_slot: 0, hotbar: held, .. })
-                if pose.position == SPAWN && *held == hotbar()
+            Some(Presence::Present { last_input: 1, pose, selected_slot: 0, inventory: held, .. })
+                if pose.position == SPAWN && *held == Inventory::with_hotbar(hotbar())
         ),
         "{}",
         brief(log)
@@ -2940,7 +2940,7 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
         Some(&Presence::Present {
             entity: pair.two,
             pose: theirs.pose,
-            hotbar: theirs.hotbar,
+            inventory: theirs.inventory.clone(),
             selected_slot: theirs.selected_slot,
             last_input: 3,
             handled: theirs.handled,

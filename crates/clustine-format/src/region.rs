@@ -965,8 +965,9 @@ mod tests {
     }
 
     fn players() -> PlayersFile {
-        let mut hotbar = [None; crate::HOTBAR_SLOTS];
-        hotbar[1] = Some((7, 3));
+        let mut inventory = [None; crate::INVENTORY_SLOTS];
+        inventory[1] = Some((7, 3));
+        inventory[36] = Some((9, 1));
         PlayersFile {
             from: 7,
             issued: 258,
@@ -988,7 +989,7 @@ mod tests {
                         on_ground: true,
                         flying: true,
                         selected_slot: 1,
-                        hotbar,
+                        inventory,
                     }),
                 },
             ],
@@ -998,7 +999,7 @@ mod tests {
     #[test]
     fn known_answer_of_the_players() {
         let bytes = players().encode();
-        let body = [
+        let mut body = vec![
             FORMAT_VERSION,
             4, // version, kind
             0,
@@ -1131,6 +1132,11 @@ mod tests {
             0,
             0, // seven empty slots
         ];
+        // The other 27 of the main inventory are empty, then the feet hold something,
+        // and the rest of the armour and the off hand nothing.
+        body.extend_from_slice(&[0; 27]);
+        body.extend_from_slice(&[1, 0, 0, 0, 9, 0, 0, 0, 1]);
+        body.extend_from_slice(&[0; 4]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1320,6 +1326,12 @@ mod tests {
         prop::collection::vec(area(), 0..4)
     }
 
+    /// Inventories of every kind: proptest makes arrays of up to 32 by itself.
+    fn inventories() -> impl Strategy<Value = [Option<(i32, i32)>; crate::INVENTORY_SLOTS]> {
+        prop::collection::vec(any::<Option<(i32, i32)>>(), crate::INVENTORY_SLOTS)
+            .prop_map(|slots| slots.try_into().expect("as many slots as an inventory has"))
+    }
+
     proptest! {
         #[test]
         fn the_table_round_trips(
@@ -1398,7 +1410,7 @@ mod tests {
                     prop::option::of((
                         any::<[f64; 3]>(),
                         any::<(f32, f32, bool, bool, u8)>(),
-                        any::<[Option<(i32, i32)>; crate::HOTBAR_SLOTS]>(),
+                        inventories(),
                     )),
                 ),
                 0..12,
@@ -1414,7 +1426,7 @@ mod tests {
                         stay,
                         hops,
                         place: place.map(
-                            |(position, (yaw, pitch, on_ground, flying, selected_slot), hotbar)| {
+                            |(position, (yaw, pitch, on_ground, flying, selected_slot), inventory)| {
                                 LoggedPlace {
                                     position,
                                     yaw,
@@ -1422,7 +1434,7 @@ mod tests {
                                     on_ground,
                                     flying,
                                     selected_slot,
-                                    hotbar,
+                                    inventory,
                                 }
                             },
                         ),

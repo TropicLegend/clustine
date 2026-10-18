@@ -761,7 +761,7 @@ mod tests {
     use clustine_world::{Biome, Chunk, ChunkPos, EntityIds, Vec3};
 
     use super::*;
-    use crate::api::{HOTBAR_SLOTS, TickInputs, Ticket};
+    use crate::api::{Inventory, TickInputs, Ticket};
     use crate::region::{Holdings, RegionConfig};
 
     /// The floor's top: stone at y = -61, so a test's blocks stand at -60.
@@ -802,7 +802,7 @@ mod tests {
             .collect();
         let config = RegionConfig {
             spawn: Vec3::new(0.5, -60.0, 0.5),
-            starting_hotbar: [None; HOTBAR_SLOTS],
+            starting_inventory: Inventory::default(),
             return_after: u64::MAX,
             lowest_y: -64,
             seed,

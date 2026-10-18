@@ -205,8 +205,8 @@ mod tests {
     use clustine_data::{DIMENSION_TYPES, blocks};
     use clustine_sim::api::{Durable, Misdirected};
     use clustine_sim::api::{
-        EntityKind, EntityState, Face, HOTBAR_SLOTS, ItemStack, PlayerEvent, PlayerInput,
-        PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
+        EntityKind, EntityState, Face, INVENTORY_SLOTS, Inventory, ItemStack, PlayerEvent,
+        PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
     };
     use clustine_world::{
         Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
@@ -255,7 +255,9 @@ mod tests {
             entity_id: EntityId(5),
             name: "Notch".to_owned(),
             pose: Pose::at(Vec3::new(-0.5, -60.0, 2.5)),
-            hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+            inventory: Inventory(Box::new(
+                [Some(ItemStack { item: 1, count: 64 }); INVENTORY_SLOTS],
+            )),
             selected_slot: 8,
             last_input: 77,
             hops: 3,
@@ -331,7 +333,7 @@ mod tests {
                 player: player(),
                 entity: EntityId(u64::MAX),
                 number: u64::MAX,
-                input: PlayerInput::SetHotbarSlot {
+                input: PlayerInput::SetInventorySlot {
                     slot: 8,
                     stack: None,
                 },
@@ -392,7 +394,9 @@ mod tests {
                         on_ground: true,
                     },
                     flying: true,
-                    hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+                    inventory: Inventory(Box::new(
+                        [Some(ItemStack { item: 1, count: 64 }); INVENTORY_SLOTS],
+                    )),
                     selected_slot: 3,
                 },
             },
@@ -532,7 +536,9 @@ mod tests {
                 answer: Presence::Present {
                     entity: EntityId(5),
                     pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
-                    hotbar: [Some(ItemStack { item: 1, count: 64 }); HOTBAR_SLOTS],
+                    inventory: Inventory(Box::new(
+                        [Some(ItemStack { item: 1, count: 64 }); INVENTORY_SLOTS],
+                    )),
                     selected_slot: 2,
                     last_input: 77,
                     handled: Some(12),
@@ -545,7 +551,7 @@ mod tests {
                 answer: Presence::Present {
                     entity: EntityId(5),
                     pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
-                    hotbar: [None; HOTBAR_SLOTS],
+                    inventory: Inventory::default(),
                     selected_slot: 0,
                     last_input: 0,
                     handled: None,

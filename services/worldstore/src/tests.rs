@@ -9,7 +9,7 @@ use std::sync::{Barrier, Mutex};
 use std::time::Duration;
 
 use clustine_data::{BlockState, DATA_VERSION, blocks};
-use clustine_format::{LogRecord, read_log};
+use clustine_format::{FORMAT_VERSION, LogRecord, read_log};
 use clustine_rpc::TickState;
 use clustine_world::generation::GeneratorSettings;
 use clustine_world::{
@@ -335,7 +335,7 @@ fn a_chunk_file_has_the_tick_of_the_save_and_the_epoch_of_the_region_that_saved_
     assert_eq!(unfit, 0);
     assert_eq!((file.position, file.tick, file.epoch), (position, 31, 7));
     assert_eq!(file.chunk, edited());
-    assert_eq!(bytes[..2], [3, clustine_format::KIND_CHUNK]);
+    assert_eq!(bytes[..2], [FORMAT_VERSION, clustine_format::KIND_CHUNK]);
 }
 
 /// A chunk with something of everything a chunk carries, at `position`.
@@ -1258,15 +1258,16 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     found
 }
 
-/// A world of format 1 or 2 is not opened, not made over and not touched: worlds are
+/// A world of format 1, 2 or 3 is not opened, not made over and not touched: worlds are
 /// thrown away until the first release, and whoever kept one is told what to do with
 /// the directory. The store says that before it looks at anything else, so the sentence
 /// is the same whatever else of the world differs, and every file is afterwards what
 /// it was, byte for byte.
 #[test]
-fn a_world_of_format_1_or_2_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched() {
+fn a_world_of_an_earlier_format_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched()
+{
     let settings = generator().settings().identity;
-    let metas = [1u8, 2].into_iter().flat_map(|format| {
+    let metas = [1u8, 2, 3].into_iter().flat_map(|format| {
         [
             format!("format={format}\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
             // One whose other settings are not this server's either.
@@ -1306,7 +1307,7 @@ fn a_world_of_format_1_or_2_is_refused_with_the_records_sentence_and_nothing_in_
 
         let sentence = format!(
             "This world was made by an earlier Clustine (world format {format}; this server \
-             writes format 3). Worlds are not carried over before the first release: move {} away or \
+             writes format {FORMAT_VERSION}). Worlds are not carried over before the first release: move {} away or \
              name another, and a new world is made.",
             world.display()
         );
@@ -1320,7 +1321,7 @@ fn a_world_of_format_1_or_2_is_refused_with_the_records_sentence_and_nothing_in_
                     error,
                     StoreError::EarlierFormat {
                         stored,
-                        current: 3,
+                        current: FORMAT_VERSION,
                         ..
                     } if stored == format
                 ),
@@ -1339,10 +1340,11 @@ fn a_world_of_format_1_or_2_is_refused_with_the_records_sentence_and_nothing_in_
 fn a_world_of_a_later_format_is_refused_as_one_this_server_does_not_use() {
     let directory = tempfile::tempdir().unwrap();
     let settings = generator().settings().identity;
-    let meta = format!("format=4\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
+    let later = FORMAT_VERSION + 1;
+    let meta = format!("format={later}\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
     fs::write(directory.path().join("meta"), &meta).unwrap();
     let Err(error) = spawn_local(directory.path(), generator()) else {
-        panic!("a world of format 4 was opened");
+        panic!("a world of format {later} was opened");
     };
     assert!(
         matches!(

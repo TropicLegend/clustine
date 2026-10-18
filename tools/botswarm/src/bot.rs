@@ -1451,6 +1451,19 @@ impl Bot {
                     self.was_told(|state| state.hotbar = hotbar);
                 }
             }
+            // A slot the server changed of its own accord, numbered as the game's
+            // inventory numbers them: the hotbar is its first nine.
+            ClientboundPlay::SetPlayerInventory(packet) => {
+                if let Some(slot) = usize::try_from(packet.slot)
+                    .ok()
+                    .filter(|slot| *slot < self.hotbar.len())
+                {
+                    self.hotbar[slot] = packet.stack;
+                    self.own_hotbar[slot] = packet.stack;
+                    let hotbar = self.hotbar;
+                    self.was_told(|state| state.hotbar = hotbar);
+                }
+            }
             ClientboundPlay::SetHeldSlot(packet) => {
                 let slot = packet.slot;
                 (self.selected_slot, self.own_slot) = (slot, slot);

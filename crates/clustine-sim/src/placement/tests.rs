@@ -690,7 +690,7 @@ fn item_use(held: i32, feet: Vec3, pitch: f32) -> ItemUse {
         yaw: 0.0,
         pitch,
         sneaking: false,
-        hotbar: [None; HOTBAR_SLOTS],
+        inventory: Inventory::default(),
     }
 }
 
@@ -703,13 +703,13 @@ fn a_water_bucket_empties_onto_the_block_looked_at_and_an_empty_one_takes_it_bac
     let (pos, placed) = used.changes[0];
     assert_eq!(placed, blocks::WATER);
     assert_eq!(pos.y, 64);
-    assert_eq!(used.hotbar, None);
+    assert_eq!(used.slot, None);
 
     let world = world.with(pos.x, pos.y, pos.z, blocks::WATER);
     let used = use_item(&item_use(items::BUCKET, feet, 60.0), &world, &[]).unwrap();
     assert_eq!(used.changes, vec![(pos, blocks::AIR)]);
     assert_eq!(
-        used.hotbar,
+        used.slot,
         Some((
             0,
             Some(ItemStack {

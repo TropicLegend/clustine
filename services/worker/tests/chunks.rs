@@ -29,8 +29,8 @@ use clustine_rpc::{
     WorkerToEdge,
 };
 use clustine_sim::api::{
-    EntityKind, EntityState, HOTBAR_SLOTS, ItemStack, Misdirected, PlayerInput, PlayerTransfer,
-    Pose, RegionEvent, RemoteAction, RemoteStep,
+    EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack, Misdirected, PlayerInput,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
 };
 use clustine_sim::{Durable, Knowledge, PlayerEvent, PlayerJoin};
 use clustine_worker::{Ended, RegionRunner, RegionSettings, Worker};
@@ -116,7 +116,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// Of every chunk the region asks the store whether it is its own.
 fn settings(return_after: u64) -> RegionSettings {
     RegionSettings {
-        starting_hotbar: hotbar(),
+        starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
         // What these tests count is a region's claims and loads for viewers' and
@@ -1274,7 +1274,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         entity_id: entity,
         name: "arriving".to_owned(),
         pose: Pose::at(Vec3::new(x, FEET, 8.5)),
-        hotbar: hotbar(),
+        inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
         last_input: 0,
         hops: 0,
@@ -6389,7 +6389,7 @@ fn open_with_rings(
 ) -> RegionRunner {
     let (handle, restored) = world.open_raw();
     let settings = RegionSettings {
-        starting_hotbar: hotbar,
+        starting_inventory: Inventory::with_hotbar(hotbar),
         rings,
         ..settings(0)
     };

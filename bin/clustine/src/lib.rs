@@ -23,7 +23,7 @@ use clustine_edge::{Edge, EdgeIdentity, Routing};
 pub use clustine_edge::{EdgeConfig, LoginWorld};
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
-use clustine_sim::api::{HOTBAR_SLOTS, ItemStack};
+use clustine_sim::api::{HOTBAR_SLOTS, Inventory, ItemStack};
 use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_world::ChunkGenerator;
 use clustine_worldgen::scheduler::{Options, Scheduler};
@@ -56,9 +56,10 @@ const STARTING_HOTBAR: [i32; HOTBAR_SLOTS] = [
     items::GLOWSTONE,
 ];
 
-/// What players have in their hotbar when they enter the world.
-pub(crate) fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 }))
+/// What players carry when they enter the world for the first time: the blocks in the
+/// hotbar, and nothing else.
+pub(crate) fn starting_inventory() -> Inventory {
+    Inventory::with_hotbar(STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })))
 }
 
 /// What makes the chunks nobody has changed in the flat world.

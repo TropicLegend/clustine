@@ -170,7 +170,7 @@ use clustine_protocol::packets::play::ClientboundPlay;
 use clustine_region::RegionId;
 use clustine_rpc::link::{self, WorkerEnd};
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
-use clustine_sim::api::{Durable, HOTBAR_SLOTS, PlayerEvent, PlayerTransfer, Pose, RegionEvent};
+use clustine_sim::api::{Durable, Inventory, PlayerEvent, PlayerTransfer, Pose, RegionEvent};
 use clustine_world::{
     Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, LIGHT_ARRAY_LENGTH, Light, PlayerId,
     SectionLight, Vec3,
@@ -1159,7 +1159,7 @@ impl Script {
             entity_id: person.entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input: 0,
             hops: 0,
@@ -1268,7 +1268,7 @@ impl Script {
                 Some(person) => Presence::Present {
                     entity: person.entity,
                     pose: Pose::at(within(person.chunk)),
-                    hotbar: [None; HOTBAR_SLOTS],
+                    inventory: Inventory::default(),
                     selected_slot: 0,
                     last_input: 0,
                     handled: None,
@@ -1478,7 +1478,7 @@ impl Script {
                 entity_id: entity,
                 pose: Pose::at(within(HOME)),
                 flying: false,
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
             },
         };

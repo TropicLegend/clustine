@@ -13,7 +13,7 @@
 //! the same tick would be passed over (section 6 of the record).
 
 use clustine_sim::EnteringState;
-use clustine_sim::api::{ItemStack, Place, StayNote};
+use clustine_sim::api::{Inventory, ItemStack, Place, StayNote};
 
 use super::*;
 
@@ -345,7 +345,7 @@ fn place_at(x: f64) -> Place {
     Place {
         pose: standing(x),
         flying: false,
-        hotbar: [None; HOTBAR_SLOTS],
+        inventory: Inventory::default(),
         selected_slot: 0,
     }
 }
@@ -385,13 +385,13 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                 entity_id,
                 pose,
                 flying,
-                hotbar,
+                inventory,
                 selected_slot,
             } if of == attempt => {
                 let place = Place {
                     pose,
                     flying,
-                    hotbar,
+                    inventory,
                     selected_slot,
                 };
                 Some((entity_id, place))
@@ -585,7 +585,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
     let does_all = [
         turned,
         PlayerInput::SetFlying { flying: true },
-        PlayerInput::SetHotbarSlot {
+        PlayerInput::SetInventorySlot {
             slot: 4,
             stack: Some(stack),
         },
@@ -611,7 +611,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
             on_ground: false,
         },
         flying: true,
-        hotbar,
+        inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 4,
     };
 
@@ -730,7 +730,7 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         entity_id: second,
         name: "player-1".to_owned(),
         pose: standing(EAST_X + 1.0),
-        hotbar: [None; HOTBAR_SLOTS],
+        inventory: Inventory::default(),
         selected_slot: 0,
         last_input: 0,
         hops: 1,
@@ -805,7 +805,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
         item: clustine_data::items::STONE,
         count: 3,
     };
-    let held = PlayerInput::SetHotbarSlot {
+    let held = PlayerInput::SetInventorySlot {
         slot: 2,
         stack: Some(stack),
     };
@@ -843,7 +843,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
     let place = Place {
         pose: Pose::at(SPAWN),
         flying: false,
-        hotbar,
+        inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 2,
     };
     assert_eq!((second, entered), (EntityId(2), place));

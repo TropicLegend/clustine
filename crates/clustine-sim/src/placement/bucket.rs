@@ -7,10 +7,11 @@
 use clustine_data::Face as Dir;
 use clustine_data::{BlockClass, BlockState, ItemClass, blocks, items};
 use clustine_noise::trig;
-use clustine_world::{BlockPos, Vec3};
+use clustine_world::{ARMOUR_START, BlockPos, Vec3};
 
 use super::geometry::{self, DirExt};
 use super::{Blocks, Click, ItemUse, UsedItem, data};
+
 use crate::api::ItemStack;
 
 /// How far a creative-mode player reaches with an item, vanilla's block interaction
@@ -72,17 +73,19 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
         return None;
     };
     // In creative mode the bucket in hand stays empty, and the filled one is added to
-    // the inventory if it holds none, which here is the hotbar.
+    // the inventory if no slot of it holds one (`ItemUtils.createFilledResult`): into
+    // the first empty slot of the hotbar and the main inventory, which is where the
+    // game's `Inventory.add` puts a stack of one that can have nothing added to it.
     let has_one = item_use
-        .hotbar
+        .inventory
+        .0
         .iter()
         .flatten()
         .any(|stack| stack.item == filled);
-    let hotbar = if has_one {
+    let slot = if has_one {
         None
     } else {
-        item_use
-            .hotbar
+        item_use.inventory.0[..ARMOUR_START]
             .iter()
             .position(Option::is_none)
             .map(|slot| {
@@ -90,12 +93,13 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
                     item: filled,
                     count: 1,
                 };
-                (slot as u8, Some(stack))
+                let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
+                (slot, Some(stack))
             })
     };
     Some(UsedItem {
         changes: vec![(hit.pos, taken)],
-        hotbar,
+        slot,
     })
 }
 
@@ -120,7 +124,7 @@ fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> 
     };
     (!changes.is_empty()).then_some(UsedItem {
         changes,
-        hotbar: None,
+        slot: None,
     })
 }
 
@@ -191,7 +195,7 @@ fn on_water(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) -> Opt
     let changes = super::place(&click, target, replace_clicked, clicked, blocks, bodies)?;
     Some(UsedItem {
         changes,
-        hotbar: None,
+        slot: None,
     })
 }
 

@@ -13,7 +13,8 @@
 
 use clustine_data::{BlockState, blocks, items};
 use clustine_sim::api::{
-    Face, HOTBAR_SLOTS, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction, RemoteStep,
+    Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, Pose, RegionEvent, RemoteAction,
+    RemoteStep,
 };
 use clustine_sim::placement::Click;
 use clustine_sim::{
@@ -62,7 +63,7 @@ fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 fn config(spawn: Vec3) -> RegionConfig {
     RegionConfig {
         spawn,
-        starting_hotbar: starting_hotbar(),
+        starting_inventory: Inventory::with_hotbar(starting_hotbar()),
         return_after: 0,
         lowest_y: -64,
         seed: 0,
@@ -308,7 +309,7 @@ fn act(region: &mut Region, actor: &mut Actor, inputs: Vec<PlayerInput>) -> Tick
 /// What puts `item` into the hand: the first hotbar slot, selected.
 fn hold(item: Option<i32>) -> Vec<PlayerInput> {
     vec![
-        PlayerInput::SetHotbarSlot {
+        PlayerInput::SetInventorySlot {
             slot: 0,
             stack: item.and_then(stack),
         },
@@ -1304,7 +1305,7 @@ fn a_water_bucket_looking_at_the_floor_places_water_and_turns_the_player() {
     assert_eq!(now.position, SPAWN_A);
     // In creative the bucket stays as it is.
     assert_eq!(
-        region.state().players[&actor.id].hotbar[0],
+        region.state().players[&actor.id].inventory.0[0],
         stack(items::WATER_BUCKET)
     );
 }
@@ -1319,7 +1320,7 @@ fn an_empty_bucket_takes_a_source_and_the_filled_bucket_goes_into_the_hotbar() {
     let output = act(&mut region, &mut actor, inputs);
     assert_eq!(changed(&output), vec![(source, blocks::AIR)]);
     assert_eq!(acknowledged(&output, actor.id), vec![1]);
-    let hotbar = region.state().players[&actor.id].hotbar;
+    let hotbar = region.state().players[&actor.id].inventory.hotbar();
     assert_eq!(hotbar[0], stack(items::BUCKET), "the empty bucket stays");
     // Reading: the starting hotbar's stone was replaced in slot 0, so slot 1 is the
     // first empty one; the count of the filled bucket put there is taken to be one.
@@ -1381,7 +1382,7 @@ fn a_lava_bucket_places_lava_and_an_empty_bucket_takes_it_back() {
         vec![(BlockPos::new(13, 64, 8), blocks::AIR)]
     );
     assert_eq!(
-        region.state().players[&actor.id].hotbar[1],
+        region.state().players[&actor.id].inventory.0[1],
         stack(items::LAVA_BUCKET)
     );
 }

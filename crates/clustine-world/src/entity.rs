@@ -168,13 +168,15 @@ pub const ARMOUR_START: usize = 36;
 pub const OFF_HAND: usize = 40;
 
 /// A player's inventory: [`INVENTORY_SLOTS`] slots, numbered as the game's `Inventory`.
-/// A type of its own because serde derives arrays only up to 32.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Inventory(pub [Option<ItemStack>; INVENTORY_SLOTS]);
+/// A type of its own because serde derives arrays only up to 32. The slots are boxed:
+/// inline they would make every message that carries a player (a transfer, a place, a
+/// presence) some 500 bytes, and every enum with such a variant as large.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inventory(pub Box<[Option<ItemStack>; INVENTORY_SLOTS]>);
 
 impl Default for Inventory {
     fn default() -> Self {
-        Self([None; INVENTORY_SLOTS])
+        Self(Box::new([None; INVENTORY_SLOTS]))
     }
 }
 
@@ -246,7 +248,7 @@ impl Serialize for Inventory {
 impl<'de> Deserialize<'de> for Inventory {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let slots = Vec::<Option<ItemStack>>::deserialize(deserializer)?;
-        let slots: [Option<ItemStack>; INVENTORY_SLOTS] =
+        let slots: Box<[Option<ItemStack>; INVENTORY_SLOTS]> =
             slots.try_into().map_err(|slots: Vec<_>| {
                 serde::de::Error::invalid_length(slots.len(), &"the slots of an inventory")
             })?;

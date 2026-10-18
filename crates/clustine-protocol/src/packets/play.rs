@@ -1810,6 +1810,35 @@ impl Decode for SetContainerContent {
     }
 }
 
+/// Sets one slot of the player's inventory, numbered as the game's `Inventory` numbers
+/// them (0 to 8 the hotbar, 9 to 35 the rest, 36 to 39 armour, 40 the off hand),
+/// without a window or a state id: what the server sends of a slot it changed itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPlayerInventory {
+    pub slot: i32,
+    pub stack: Option<ItemStack>,
+}
+
+impl Packet for SetPlayerInventory {
+    const ID: i32 = clientbound::SET_PLAYER_INVENTORY;
+}
+
+impl Encode for SetPlayerInventory {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.slot);
+        w.put_item_stack(self.stack);
+    }
+}
+
+impl Decode for SetPlayerInventory {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            slot: r.var_int()?,
+            stack: r.item_stack()?,
+        })
+    }
+}
+
 /// Tells the client which hotbar slot is selected, from 0 to 8.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SetHeldSlot {
@@ -1885,6 +1914,7 @@ packet_set! {
         Sound,
         SetContainerContent,
         SetHeldSlot,
+        SetPlayerInventory,
     }
 }
 
@@ -2591,6 +2621,13 @@ mod tests {
             ClientboundPlay::decode,
             ClientboundPlay::SetHeldSlot,
         );
+        for (slot, stack) in [(40, stone), (8, None)] {
+            assert_round_trip(
+                SetPlayerInventory { slot, stack },
+                ClientboundPlay::decode,
+                ClientboundPlay::SetPlayerInventory,
+            );
+        }
     }
 
     #[test]

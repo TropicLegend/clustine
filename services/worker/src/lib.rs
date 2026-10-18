@@ -56,7 +56,7 @@ use clustine_rpc::{
     Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Presence, Restored, SplitPart, StoreReply,
     StoreRequest, Welcome, WorkerToEdge,
 };
-use clustine_sim::api::{Entered, HOTBAR_SLOTS, ItemStack, PlayerInput, RegionEvent};
+use clustine_sim::api::{Entered, Inventory, PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, LendAnswer, LendAsked, Misdirected, NoSplit, Part,
     PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting,
@@ -517,7 +517,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 7;
+pub const STATE_FORMAT: u8 = 8;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1009,8 +1009,8 @@ impl SlowTicks {
 /// when it opens the region.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionSettings {
-    /// [`RegionConfig::starting_hotbar`].
-    pub starting_hotbar: [Option<ItemStack>; HOTBAR_SLOTS],
+    /// [`RegionConfig::starting_inventory`].
+    pub starting_inventory: Inventory,
     /// [`RegionConfig::return_after`].
     pub return_after: u64,
     /// [`RegionConfig::lowest_y`].
@@ -1029,7 +1029,7 @@ impl RegionSettings {
     pub fn with_spawn(self, spawn: BlockPos, world: u64) -> RegionConfig {
         RegionConfig {
             spawn: Vec3::bottom_centre_of(spawn),
-            starting_hotbar: self.starting_hotbar,
+            starting_inventory: self.starting_inventory,
             return_after: self.return_after,
             lowest_y: self.lowest_y,
             seed: world,
@@ -2319,7 +2319,7 @@ impl RegionRunner {
                 Some(Presence::Present {
                     entity: state.entity_id,
                     pose: state.pose,
-                    hotbar: state.hotbar,
+                    inventory: state.inventory.clone(),
                     selected_slot: state.selected_slot,
                     last_input: state.last_input,
                     handled: state.handled,
@@ -3347,7 +3347,8 @@ impl RegionRunner {
                 PlayerInput::Move { .. }
                 | PlayerInput::UseItem { .. }
                 | PlayerInput::SelectSlot { .. }
-                | PlayerInput::SetHotbarSlot { .. }
+                | PlayerInput::SetInventorySlot { .. }
+                | PlayerInput::SwapHands
                 | PlayerInput::SetFlying { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
@@ -4278,7 +4279,8 @@ mod tests {
     use clustine_rpc::RegionHello;
     use clustine_rpc::link::{self, EdgeEnd, LinkError};
     use clustine_sim::api::{
-        EntityKind, EntityState, HOTBAR_SLOTS, PlayerInput, PlayerJoin, Pose, RegionEvent,
+        EntityKind, EntityState, HOTBAR_SLOTS, Inventory, PlayerInput, PlayerJoin, Pose,
+        RegionEvent,
     };
     use clustine_sim::{PlayerTransfer, RemoteAction};
     use clustine_world::{ChunkArea, EntityIds, Vec3};
@@ -4808,7 +4810,7 @@ mod tests {
     /// `return_after` ticks.
     fn settings(return_after: u64) -> RegionSettings {
         RegionSettings {
-            starting_hotbar: [None; HOTBAR_SLOTS],
+            starting_inventory: Inventory::default(),
             return_after,
             lowest_y: -64,
             // What these tests count is a region's claims and loads for viewers' and
@@ -4967,7 +4969,7 @@ mod tests {
             entity_id,
             name: "Jeb".to_owned(),
             pose: Pose::at(Vec3::new(10.5, -60.0, 0.5)),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 4,
             last_input: 7,
             hops: 0,
@@ -5280,7 +5282,7 @@ mod tests {
                     entity_id: EntityId(1),
                     pose: Pose::at(SPAWN),
                     flying: false,
-                    hotbar: [None; HOTBAR_SLOTS],
+                    inventory: Inventory::default(),
                     selected_slot: 0,
                 })
             );
@@ -6876,7 +6878,7 @@ mod tests {
             Presence::Present {
                 entity,
                 pose,
-                hotbar: [None; HOTBAR_SLOTS],
+                inventory: Inventory::default(),
                 selected_slot: 0,
                 last_input: input,
                 handled: None,
@@ -7038,7 +7040,7 @@ mod tests {
             entity,
             // As of before the tick that took the step.
             pose: Pose::at(SPAWN),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input: 0,
             handled: None,
@@ -7693,7 +7695,7 @@ mod tests {
             entity_id: EntityId(77),
             name: "Notch".to_owned(),
             pose: Pose::at(beyond),
-            hotbar: [None; HOTBAR_SLOTS],
+            inventory: Inventory::default(),
             selected_slot: 0,
             last_input: 5,
             hops: 2,
@@ -7798,41 +7800,48 @@ mod tests {
     /// tick before took gives out no entity id and says that two entering stays are
     /// no more, where one tick used to take a join and place the player. Format 7
     /// writes entity keys as `u64` (`docs/adr/0028-entities.md`, section 1), which
-    /// postcard writes as a plain varint where an `i32` was zigzagged.
+    /// postcard writes as a plain varint where an `i32` was zigzagged. Format 8 keeps a
+    /// player's whole inventory, 41 slots with their count in front, where it kept the
+    /// nine of the hotbar (`docs/groundwork/n2-plan.md`, section 2).
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 7);
+        assert_eq!(STATE_FORMAT, 8);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "000702018080808010030110000000000000000000000000000000020204416c6578000000000000",
-                "2d400000000000004ec0000000000000e03f00000000000000000100000000000000000000020007",
-                "0000000107030102060601040010000000000000000000000000000000034d054e6f746368000000",
-                "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
-                "05020101170102021000000000000000000000000000000002021200207900010103001000000000",
-                "0000000000000000000000010105537465766500000000004044400000000000004ec00000000000",
-                "00e03f00000000000000000100000000000000000000010100000104050104060201030506090110",
-                "000000000000000000000000000000034d0117060710000000000000000000000000000000034c01",
-                "180110000000000000000000000000000000034e034a6562071901010609",
+                "000802018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
+                "00000000000000000000000000000000000000000000000000000000000002000700000001070301",
+                "02060601040010000000000000000000000000000000034d054e6f74636800000000004044400000",
+                "000000004ec0000000000000e03f0000000000000000002900000000000000000000000000000000",
+                "00000000000000000000000000000000000000000000000000000502010117010202100000000000",
+                "00000000000000000000020212002079000101030010000000000000000000000000000000010105",
+                "537465766500000000004044400000000000004ec0000000000000e03f0000000000000000012900",
+                "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "00010100000104050104060201030506090110000000000000000000000000000000034d01170607",
+                "10000000000000000000000000000000034c01180110000000000000000000000000000000034e03",
+                "4a6562071901010609",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00070200021000000000000000000000000000000001001000000000000000000000000000000002",
+                "00080200021000000000000000000000000000000001001000000000000000000000000000000002",
                 "010204416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
-                "00000000000000000000020007000000010701030102060000060104001000000000000000000000",
-                "0000000000034d054e6f74636800000000004044400000000000004ec0000000000000e03f000000",
-                "00000000000000000000000000000000050201011701020210000000000000000000000000000000",
-                "02021200207900010103001000000000000000000000000000000001010553746576650000000000",
-                "4044400000000000004ec0000000000000e03f000000000000000001000000000000000000000101",
-                "00000104050104060201030506090110000000000000000000000000000000034d01170607100000",
-                "00000000000000000000000000034c01180310000000000000000000000000000000010010000000",
-                "00000000000000000000000002001000000000000000000000000000000003014e034a6562071901",
-                "01060109",
+                "29000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "0000000200070000000107010301020600000601040010000000000000000000000000000000034d",
+                "054e6f74636800000000004044400000000000004ec0000000000000e03f00000000000000000029",
+                "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "00000502010117010202100000000000000000000000000000000202120020790001010300100000",
+                "00000000000000000000000000010105537465766500000000004044400000000000004ec0000000",
+                "000000e03f0000000000000000012900000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000000000000101000001040501040602010305060901100000000000",
+                "00000000000000000000034d0117060710000000000000000000000000000000034c011803100000",
+                "00000000000000000000000000010010000000000000000000000000000000020010000000000000",
+                "00000000000000000003014e034a656207190101060109",
             )
         );
     }
