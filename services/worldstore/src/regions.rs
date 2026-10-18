@@ -857,19 +857,20 @@ impl<C: Chunks> Chunks for Gated<C> {
         self.chunks.load(position)
     }
 
-    fn save(
+    fn save_parts(
         &mut self,
         position: ChunkPos,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
+        parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
         if self.gated.contains(&position) {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
         }
-        self.chunks.save(position, tick, epoch, chunk)
+        self.chunks.save_parts(position, tick, epoch, chunk, parts)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {

@@ -484,15 +484,16 @@ impl<C: Chunks> Chunks for Stopping<C> {
         self.chunks.load(position)
     }
 
-    fn save(
+    fn save_parts(
         &mut self,
         position: ChunkPos,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
+        parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
         self.gate.pass(Stop::BeforeSave(position));
-        self.chunks.save(position, tick, epoch, chunk)
+        self.chunks.save_parts(position, tick, epoch, chunk, parts)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {

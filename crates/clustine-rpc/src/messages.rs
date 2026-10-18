@@ -1208,4 +1208,32 @@ impl Parts {
         blocks: true,
         entities: true,
     };
+    /// Neither.
+    pub const NONE: Self = Self {
+        blocks: false,
+        entities: false,
+    };
+    /// The file of the blocks alone.
+    pub const BLOCKS: Self = Self {
+        blocks: true,
+        entities: false,
+    };
+    /// The file of the entities alone.
+    pub const ENTITIES: Self = Self {
+        blocks: false,
+        entities: true,
+    };
+
+    /// The parts either names.
+    pub fn with(self, other: Self) -> Self {
+        Self {
+            blocks: self.blocks || other.blocks,
+            entities: self.entities || other.entities,
+        }
+    }
+
+    /// Whether it names neither.
+    pub fn is_none(self) -> bool {
+        !self.blocks && !self.entities
+    }
 }

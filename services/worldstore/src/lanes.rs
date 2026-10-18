@@ -55,8 +55,8 @@ use clustine_rpc::{
     StoreReply, StoreRequest, TickState,
 };
 use clustine_world::{
-    BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, EntityId, EntityIds,
-    FiledEffect, PlayerId,
+    BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, EntityChange, EntityId,
+    EntityIds, FiledEffect, PlayerId,
 };
 use tracing::{error, info, warn};
 
@@ -1080,8 +1080,7 @@ impl Lanes {
                 effects,
                 taken,
                 events,
-                // Carried into the log by step N2b.
-                entity_changes: _,
+                entity_changes,
             } => {
                 let region = session.region;
                 // An effect is filed if its chunk is in use, and left out otherwise:
@@ -1112,16 +1111,27 @@ impl Lanes {
                 taken.dedup();
                 // The changes of chunks that others copy, by chunk and in their order:
                 // those the region holds from before the tick, as a replay puts in
-                // (section 3), block entities' data among them.
-                let mut updates: BTreeMap<ChunkPos, Vec<BlockChange>> = BTreeMap::new();
-                for change in &changes {
-                    let chunk = change.position().chunk();
+                // (section 3), block entities' data among them, and the changes of
+                // their entities, which count as the chunk's for the chain
+                // (`docs/adr/0028-entities.md`, section 3).
+                let copied = |chunk: ChunkPos| {
                     let held = self
                         .table
                         .held_from(region, chunk)
                         .is_some_and(|from| tick > from);
-                    if held && !self.copies.copiers(chunk).is_empty() {
-                        updates.entry(chunk).or_default().push(change.clone());
+                    held && !self.copies.copiers(chunk).is_empty()
+                };
+                let mut updates: BTreeMap<ChunkPos, (Vec<BlockChange>, Vec<EntityChange>)> =
+                    BTreeMap::new();
+                for change in &changes {
+                    let chunk = change.position().chunk();
+                    if copied(chunk) {
+                        updates.entry(chunk).or_default().0.push(change.clone());
+                    }
+                }
+                for (chunk, change) in &entity_changes {
+                    if copied(*chunk) {
+                        updates.entry(*chunk).or_default().1.push(change.clone());
                     }
                 }
                 // The notes are in the commit's own record, so that the two are on
@@ -1143,7 +1153,7 @@ impl Lanes {
                         .collect(),
                     taken: taken.clone(),
                     events,
-                    entity_changes: Vec::new(),
+                    entity_changes,
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -1169,7 +1179,7 @@ impl Lanes {
                                 self.group.effects.push(effects::Undo::Removed(id, kept));
                             }
                         }
-                        for (chunk, changes) in updates {
+                        for (chunk, (changes, entity_changes)) in updates {
                             let previous = self
                                 .copies
                                 .changed(chunk, at)
@@ -1180,7 +1190,7 @@ impl Lanes {
                                     sequence: at,
                                     previous,
                                     changes: changes.clone(),
-                                    entity_changes: Vec::new(),
+                                    entity_changes: entity_changes.clone(),
                                 };
                                 self.group.stream(copier, Streamed::Reply(Box::new(update)));
                             }
@@ -1286,13 +1296,13 @@ impl Lanes {
                 position,
                 tick,
                 chunk,
-                // Written by parts from step N2b on; until then every save writes both.
-                parts: _,
+                parts,
             } => Job::Save {
                 position,
                 tick,
                 epoch: owner.epoch,
                 chunk,
+                parts,
                 peer,
             },
             StoreRequest::Checkpoint { tick, state } => {
@@ -3380,7 +3390,9 @@ impl Log {
 
 /// Of a commit's record: its tick, what it changed in chunks (its blocks and their block
 /// entities' data in the order the tick changed them, then the
-/// ticks of its chunks, then whose marks it took, then their seams) and its state.
+/// ticks of its chunks, then whose marks it took, then their seams, then their kept
+/// events, then the changes of their entities in the order the tick made them) and its
+/// state.
 #[allow(clippy::type_complexity)]
 pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, Vec<u8>)> {
     let LogRecord::Commit {
@@ -3391,6 +3403,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         marks_taken,
         seams,
         events,
+        entity_changes,
         ..
     } = record
     else {
@@ -3410,7 +3423,14 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
     let events = events
         .into_iter()
         .map(|(chunk, events)| Replayed::Events(chunk, events));
-    let records = ticks.chain(marks).chain(seams).chain(events);
+    let entities = entity_changes
+        .into_iter()
+        .map(|(chunk, change)| Replayed::Entity(chunk, change));
+    let records = ticks
+        .chain(marks)
+        .chain(seams)
+        .chain(events)
+        .chain(entities);
     Some((tick, blocks.chain(records).collect(), state))
 }
 

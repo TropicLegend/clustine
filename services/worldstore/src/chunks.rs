@@ -21,11 +21,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use clustine_data::BlockState;
-use clustine_format::{ChunkFile, FormatError, StateFile, read_log};
-use clustine_rpc::{Restored, StoreReply};
+use clustine_format::{ChunkFile, EntitiesFile, FormatError, StateFile, read_log};
+use clustine_rpc::{Parts, Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, KeptEvent, ScheduledTick, Seam,
+    BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, EntityChange, KeptEvent, ScheduledTick, Seam,
 };
 use tracing::{error, info, warn};
 
@@ -52,16 +52,29 @@ pub(crate) trait Chunks: Send {
     fn has(&mut self, position: ChunkPos) -> Result<bool, StoreError> {
         Ok(self.load(position)?.is_some())
     }
-    /// Stores the chunk, so that it is what is loaded from now on. It need not be
-    /// durable before [`Chunks::sync`]. `tick` and `epoch` are those of the region
-    /// that saves it, for whoever looks at what is stored.
+    /// Stores the `parts` of the chunk, so that the chunk is what is loaded from now on:
+    /// its blocks (with everything else it keeps) and its entities are kept apart, and a
+    /// part not named stays as it was stored (`docs/adr/0028-entities.md`, section 2).
+    /// It need not be durable before [`Chunks::sync`]. `tick` and `epoch` are those of
+    /// the region that saves it, for whoever looks at what is stored.
+    fn save_parts(
+        &mut self,
+        position: ChunkPos,
+        tick: u64,
+        epoch: u64,
+        chunk: &Chunk,
+        parts: Parts,
+    ) -> Result<(), StoreError>;
+    /// Stores the whole chunk, as [`Chunks::save_parts`] does with every part.
     fn save(
         &mut self,
         position: ChunkPos,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
-    ) -> Result<(), StoreError>;
+    ) -> Result<(), StoreError> {
+        self.save_parts(position, tick, epoch, chunk, Parts::ALL)
+    }
     /// Makes every chunk saved so far durable. After an error none of those saved
     /// since the last time may be taken for durable, and they are to be saved again.
     fn sync(&mut self) -> Result<(), StoreError>;
@@ -105,14 +118,28 @@ impl Chunks for MemoryChunks {
         Ok(())
     }
 
-    fn save(
+    /// As files keep them: a part not named is as it was, and entities saved without
+    /// blocks of a chunk that is not stored are not either.
+    fn save_parts(
         &mut self,
         position: ChunkPos,
         _tick: u64,
         _epoch: u64,
         chunk: &Chunk,
+        parts: Parts,
     ) -> Result<(), StoreError> {
-        self.0.insert(position, chunk.clone());
+        let stored = self.0.get(&position);
+        let mut kept = match (parts.blocks, stored) {
+            (true, _) => chunk.clone(),
+            (false, Some(stored)) => stored.clone(),
+            (false, None) => return Ok(()),
+        };
+        if parts.entities {
+            kept.set_entities(chunk.entities().to_vec());
+        } else {
+            kept.set_entities(stored.map_or_else(Vec::new, |stored| stored.entities().to_vec()));
+        }
+        self.0.insert(position, kept);
         Ok(())
     }
 
@@ -121,17 +148,20 @@ impl Chunks for MemoryChunks {
     }
 }
 
-/// Keeps chunks in files of the world, one file a chunk:
+/// Keeps chunks in files of the world, one file a chunk and one for its entities where
+/// it has any:
 ///
 /// ```text
-/// chunks/overworld/<rx>.<rz>/<x>.<z>.chunk   grouped by 32×32 chunks
+/// chunks/overworld/<rx>.<rz>/<x>.<z>.chunk      grouped by 32×32 chunks
+/// chunks/overworld/<rx>.<rz>/<x>.<z>.entities   beside it
 /// ```
 ///
 /// A saved chunk is held here and touches no file until [`Chunks::sync`], which writes
 /// all that were saved since the last one in one round: the files are written under
 /// temporary names and synced at the same time, each is renamed into place, and their
 /// directories are synced at the same time. Until then a load is answered with what
-/// is held.
+/// is held. The entities' file of a chunk whose entities are all gone is removed in the
+/// round, after the renames and before the directories are synced.
 ///
 /// A file names nothing but its own chunk and is put in place by renaming a file that
 /// is durable, so a chunk on disk is whole, as it was before or as it was saved,
@@ -152,10 +182,49 @@ pub(crate) struct FileChunks {
 struct Saved {
     /// What a load is answered with.
     chunk: Chunk,
-    /// The encoded file.
-    file: Vec<u8>,
+    /// The parts to be written. A later save of the chunk while this one is pending
+    /// adds its own, and all are written from the later chunk (the plan, section 11).
+    parts: Parts,
+    /// The encoded file of its blocks, if they are to be written.
+    blocks: Option<Vec<u8>>,
+    /// The encoded file of its entities, if they are to be written: none where the
+    /// chunk has none, whose file is removed instead.
+    entities: Option<Option<Vec<u8>>>,
     /// Noted, not saved: a chunk as the generator made it, which no handle answers for.
     noted: bool,
+}
+
+impl Saved {
+    /// The `parts` of `chunk`, encoded.
+    fn new(position: ChunkPos, tick: u64, epoch: u64, chunk: Chunk, parts: Parts) -> Self {
+        let blocks = parts.blocks.then(|| {
+            ChunkFile {
+                position,
+                tick,
+                epoch,
+                chunk: chunk.clone(),
+            }
+            .encode()
+        });
+        let entities = parts.entities.then(|| {
+            (!chunk.entities().is_empty()).then(|| {
+                EntitiesFile {
+                    position,
+                    tick,
+                    epoch,
+                    entities: chunk.entities().to_vec(),
+                }
+                .encode()
+            })
+        });
+        Self {
+            chunk,
+            parts,
+            blocks,
+            entities,
+            noted: false,
+        }
+    }
 }
 
 /// The files of a round of a sync: all are written under temporary names, those are
@@ -171,9 +240,15 @@ struct Round {
 }
 
 impl Round {
-    /// Puts each of the contents in the file it is paired with. They are durably
-    /// there only if this returns without an error; `self` says what a failure left.
-    fn put(&mut self, disk: &dyn Disk, files: &[(PathBuf, &[u8])]) -> io::Result<()> {
+    /// Puts each of the contents in the file it is paired with, and removes the files
+    /// of `removed` once those are in place. They are durably so only if this returns
+    /// without an error; `self` says what a failure left.
+    fn put(
+        &mut self,
+        disk: &dyn Disk,
+        files: &[(PathBuf, &[u8])],
+        removed: &[PathBuf],
+    ) -> io::Result<()> {
         let mut directories = BTreeSet::new();
         for (path, contents) in files {
             let directory = parent(path);
@@ -191,6 +266,16 @@ impl Round {
         for ((path, _), temporary) in files.iter().zip(&self.temporaries) {
             disk.rename(temporary, path)?;
             self.placed += 1;
+        }
+        // A chunk's entities' file is removed where its entities are all gone. A crash
+        // that keeps it keeps entities the log has the end of, which a restore replays.
+        // Where there is none, there is nothing to make durable, and perhaps no
+        // directory to sync.
+        for path in removed {
+            if disk.exists(path)? {
+                disk.remove(path)?;
+                directories.insert(parent(path).to_owned());
+            }
         }
         disk.sync_directories(&Vec::from_iter(directories))
     }
@@ -229,6 +314,12 @@ impl FileChunks {
             .join(format!("{}.{}", position.x >> 5, position.z >> 5))
             .join(format!("{}.{}.chunk", position.x, position.z))
     }
+
+    /// Where the entities of the chunk at `position` are kept, beside its file.
+    pub(crate) fn entities_path(&self, position: ChunkPos) -> PathBuf {
+        self.chunk_path(position)
+            .with_file_name(format!("{}.{}.entities", position.x, position.z))
+    }
 }
 
 impl Chunks for FileChunks {
@@ -246,11 +337,21 @@ impl Chunks for FileChunks {
         let Some(bytes) = self.disk.read(&self.chunk_path(position))? else {
             return Ok(None);
         };
-        let (file, unfit) = ChunkFile::decode(&bytes)?;
+        let (mut file, unfit) = ChunkFile::decode(&bytes)?;
         if file.position != position {
             // A file that was moved or copied by hand. Its blocks are another chunk's,
             // however well its checksum fits.
             return Err(FormatError::Corrupt("the file is of another chunk").into());
+        }
+        // Read only beside the blocks: a chunk that is not stored is made by the
+        // generator, and the commits since the last checkpoint, which have every entity
+        // change since, are put into it at a restore.
+        if let Some(bytes) = self.disk.read(&self.entities_path(position))? {
+            let entities = EntitiesFile::decode(&bytes)?;
+            if entities.position != position {
+                return Err(FormatError::Corrupt("the entities' file is of another chunk").into());
+            }
+            file.chunk.set_entities(entities.entities);
         }
         if unfit > 0 {
             // The reader has put them right: an entity without data where the blocks
@@ -265,28 +366,28 @@ impl Chunks for FileChunks {
         Ok(Some(file.chunk))
     }
 
-    fn save(
+    fn save_parts(
         &mut self,
         position: ChunkPos,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
+        parts: Parts,
     ) -> Result<(), StoreError> {
-        let file = ChunkFile {
-            position,
-            tick,
-            epoch,
-            chunk: chunk.clone(),
-        };
         // Only noted. Written by itself a chunk costs two syncs, one after the other,
         // and a checkpoint saves a great many; the next sync writes all of them in a
         // round whose syncs wait together. A later save of the chunk takes the place
-        // of this one.
-        let saved = Saved {
-            file: file.encode(),
-            chunk: file.chunk,
-            noted: false,
+        // of this one, with the parts of both, from the later chunk: a pending save of
+        // the blocks followed by one of the entities writes both. A pending note is a
+        // chunk that is not stored, whose blocks are written whatever is saved of it.
+        let parts = match self.pending.get(&position) {
+            Some(pending) => pending.parts.with(parts),
+            None => parts,
         };
+        if parts.is_none() {
+            return Ok(());
+        }
+        let saved = Saved::new(position, tick, epoch, chunk.clone(), parts);
         self.pending.insert(position, saved);
         Ok(())
     }
@@ -294,18 +395,12 @@ impl Chunks for FileChunks {
     fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
         // A save that is pending is the chunk with a change in it, and a note that is
         // pending is this very chunk, by purity.
+        // Its blocks: a chunk as the generator made it has no entities, and an entities'
+        // file there may be is left for the commits a restore replays.
         if let btree_map::Entry::Vacant(entry) = self.pending.entry(position) {
-            let file = ChunkFile {
-                position,
-                tick: 0,
-                epoch: NO_REGION,
-                chunk: chunk.clone(),
-            };
-            entry.insert(Saved {
-                file: file.encode(),
-                chunk: file.chunk,
-                noted: true,
-            });
+            let mut saved = Saved::new(position, 0, NO_REGION, chunk.clone(), Parts::BLOCKS);
+            saved.noted = true;
+            entry.insert(saved);
         }
         Ok(())
     }
@@ -328,13 +423,22 @@ impl Chunks for FileChunks {
                 return Err(error.into());
             }
         }
-        let files: Vec<_> = self
-            .pending
-            .iter()
-            .map(|(position, saved)| (self.chunk_path(*position), saved.file.as_slice()))
-            .collect();
+        let mut files = Vec::new();
+        let mut removed = Vec::new();
+        for (position, saved) in &self.pending {
+            if let Some(blocks) = &saved.blocks {
+                files.push((self.chunk_path(*position), blocks.as_slice()));
+            }
+            match &saved.entities {
+                Some(Some(entities)) => {
+                    files.push((self.entities_path(*position), entities.as_slice()));
+                }
+                Some(None) => removed.push(self.entities_path(*position)),
+                None => {}
+            }
+        }
         let mut round = Round::default();
-        let put = round.put(self.disk.as_ref(), &files);
+        let put = round.put(self.disk.as_ref(), &files, &removed);
         if let Err(error) = put {
             round.withdraw(self.disk.as_ref());
             // After a failed sync, what it was to make durable may be lost although a
@@ -377,6 +481,8 @@ pub(crate) enum Job {
         /// The epoch the handle opened its region with.
         epoch: u64,
         chunk: Chunk,
+        /// The parts of the chunk to write.
+        parts: Parts,
         peer: Arc<Peer>,
     },
     /// Once the saves before it are durable, writes `state` under a name of its own and
@@ -1027,9 +1133,10 @@ impl ChunkService {
     }
 
     /// Whether a stored chunk counts as not stored: an older generator failed in it,
-    /// and nobody changed it since, which would have taken the mark (S8).
+    /// and nobody changed it since, which would have taken the mark (S8). One with
+    /// entities was changed, whatever its blocks say: made again it would lose them.
     fn remakes(&self, stored: &Chunk) -> bool {
-        stored.with_failure() && stored.generated() < self.version
+        stored.with_failure() && stored.generated() < self.version && stored.entities().is_empty()
     }
 
     /// Asks the generator for the chunk at `position`. Its answer comes among the
@@ -1251,13 +1358,14 @@ impl ChunkService {
                 tick,
                 epoch,
                 chunk,
+                parts,
                 peer,
             } => {
                 // Done even if the handle has been lost since: it was asked for before
                 // that, and only once the commits before it were durable, so it holds
                 // nothing that a restored region does not know of. And it comes before
                 // whatever the next owner does with the chunk.
-                match self.chunks.save(position, tick, epoch, &chunk) {
+                match self.chunks.save_parts(position, tick, epoch, &chunk, parts) {
                     Ok(()) => {
                         self.saved.push(Arc::downgrade(&peer));
                         if self.chunks.pending() >= PENDING_LIMIT {
@@ -1404,6 +1512,9 @@ pub(crate) enum Replayed {
     /// The block events the chunk keeps, whole (`docs/adr/0026-redstone.md`, section
     /// 4).
     Events(ChunkPos, Vec<KeptEvent>),
+    /// What the commit's tick did to an entity of the chunk, after its blocks
+    /// (`docs/adr/0028-entities.md`, section 3).
+    Entity(ChunkPos, EntityChange),
 }
 
 impl Replayed {
@@ -1413,7 +1524,16 @@ impl Replayed {
             Self::Ticks(chunk, _)
             | Self::MarksTaken(chunk)
             | Self::Seams(chunk, _)
-            | Self::Events(chunk, _) => *chunk,
+            | Self::Events(chunk, _)
+            | Self::Entity(chunk, _) => *chunk,
+        }
+    }
+
+    /// The part of its chunk it changes.
+    fn part(&self) -> Parts {
+        match self {
+            Self::Entity(..) => Parts::ENTITIES,
+            _ => Parts::BLOCKS,
         }
     }
 }
@@ -1458,25 +1578,38 @@ fn lost(position: ChunkPos, changes: usize, why: &dyn std::fmt::Display) {
 
 /// Applies block changes, in order, to the chunks of `bases` they lie in, and saves
 /// those chunks as of `tick`, for the region opened with `epoch`. A change to a chunk
-/// that is not among them is passed over.
+/// that is not among them is passed over. Each chunk's save names the parts the
+/// changes replayed into it (the plan, section 11): the other is as stored, and as of
+/// the last checkpoint, since no change since was of it.
 ///
 /// A chunk may have been saved with some of them in it already, or with all of them;
 /// applying all of them again in order ends in the same state, because each one sets a
-/// block to a definite state and the last one for a block wins.
+/// block to a definite state and the last one for a block wins, and each change of an
+/// entity sets what it changes to a definite value.
 fn apply(
     chunks: &mut dyn Chunks,
-    mut bases: BTreeMap<ChunkPos, Chunk>,
+    bases: BTreeMap<ChunkPos, Chunk>,
     changes: &[Replayed],
     tick: u64,
     epoch: u64,
 ) -> Result<(), StoreError> {
+    let mut bases: BTreeMap<ChunkPos, (Chunk, Parts)> = bases
+        .into_iter()
+        .map(|(position, chunk)| (position, (chunk, Parts::NONE)))
+        .collect();
     for change in changes {
-        if let Some(chunk) = bases.get_mut(&change.chunk()) {
+        if let Some((chunk, parts)) = bases.get_mut(&change.chunk()) {
+            // A chunk as generated that an entity change takes that from is saved with
+            // its blocks too, so that it is not made again over its entities.
+            if chunk.generated() != 0 {
+                *parts = parts.with(Parts::BLOCKS);
+            }
+            *parts = parts.with(change.part());
             put(chunk, change);
         }
     }
-    for (position, chunk) in &bases {
-        chunks.save(*position, tick, epoch, chunk)?;
+    for (position, (chunk, parts)) in &bases {
+        chunks.save_parts(*position, tick, epoch, chunk, *parts)?;
     }
     Ok(())
 }
@@ -1511,6 +1644,12 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
         }
         Replayed::Events(_, events) => {
             chunk.set_events(events.clone());
+            chunk.clear_generated();
+        }
+        // After the commit's blocks. A chunk with an entity changed is no longer as
+        // generated either, so that remaking it does not lose its entities.
+        Replayed::Entity(_, change) => {
+            chunk.apply_entity(change);
             chunk.clear_generated();
         }
     }

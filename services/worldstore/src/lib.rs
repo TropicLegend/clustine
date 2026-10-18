@@ -46,11 +46,15 @@ mod effects_by_the_record;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
+mod entities_tests;
+#[cfg(test)]
 mod generation_tests;
 #[cfg(test)]
 mod kill;
 #[cfg(test)]
 mod kill_entities;
+#[cfg(test)]
+mod kill_entity_changes;
 #[cfg(test)]
 mod kill_regions;
 #[cfg(test)]
