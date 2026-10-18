@@ -436,10 +436,6 @@ async fn a_rider_who_comes_before_their_cart_is_never_shown_dismounted() {
 /// and the vehicle's report has not yet named". The player's transfer says they ride
 /// the cart; the east's first report of the cart does not name them yet.
 #[tokio::test]
-#[ignore = "finding: plan section 8 item 4 says the edge adds a player it has the player's \
-            word for (their transfer rides the cart) and the vehicle's report has not yet \
-            named; the edge takes the vehicle's report alone, and tells both clients the \
-            cart carries nobody"]
 async fn a_rider_whose_word_says_they_ride_is_shown_riding_before_the_vehicle_names_them() {
     let (mut edge, mut rider, mut watcher) = riding_by_the_line().await;
     let from = [rider.passengers.len(), watcher.passengers.len()];
@@ -459,10 +455,6 @@ async fn a_rider_whose_word_says_they_ride_is_shown_riding_before_the_vehicle_na
 /// is not shown in the seat that the vehicle's region still names in a later report
 /// (a restore of the sender, whose loads raise `hops`).
 #[tokio::test]
-#[ignore = "finding: plan section 8 item 4 says the edge shows a player in a vehicle's list \
-            only where the player's own latest stay says they ride it; after the player's \
-            region said they got off, a later report of the cart naming them shows them \
-            riding it again"]
 async fn a_player_whose_region_says_they_got_off_is_not_shown_in_a_seat_a_vehicle_still_names() {
     let (mut edge, mut rider, mut watcher) = riding_by_the_line().await;
     west_lets_the_rider_go(&mut edge).await;
@@ -497,10 +489,6 @@ async fn a_player_whose_region_says_they_got_off_is_not_shown_in_a_seat_a_vehicl
 /// `player_position` and `set_passengers` when they get on, by their region's word of
 /// it, whatever the vehicle's report says and before it comes.
 #[tokio::test]
-#[ignore = "finding: brief 0.11 says the riding player is also sent its own set_passengers \
-            when it mounts, and plan section 8 item 4 that the edge adds a player it has the \
-            player's word for; on `PlayerEvent::Rides` alone the rider's client is \
-            teleported and told nothing of whom the vehicle carries"]
 async fn a_player_told_they_ride_is_shown_riding_by_their_own_regions_word() {
     let mut edge = Harness::start().await;
     let mut rider = edge.joined(player(1), RIDER).await;

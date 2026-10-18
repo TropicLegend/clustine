@@ -128,7 +128,17 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
         .filter(|(_, id)| *id == own_id)
         .map(|(naming, _)| *naming)
         .collect();
-    assert_eq!(since, [Naming::HeadRotation]);
+    // The body's rotation (`move_entity_rot`, which the client counts with moves) and
+    // the head's, and no position.
+    assert_eq!(since, [Naming::Position, Naming::HeadRotation]);
+    assert!(watcher.tracking.iter().any(|packet| matches!(
+        packet,
+        ClientboundPlay::MoveEntityRot(rotation) if rotation.entity_id == own_id
+    )));
+    assert!(!watcher.tracking.iter().any(|packet| matches!(
+        packet,
+        ClientboundPlay::SyncEntityPosition(moved) if moved.entity_id == own_id
+    )));
 
     // Off again: the seat is empty for everyone, and the rider teleported once more.
     edge.tell(WEST, ticked(vec![passengers(1 << 32, &[])]));

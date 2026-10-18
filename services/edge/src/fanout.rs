@@ -815,6 +815,11 @@ pub(crate) struct Fanout {
     /// the other way round (`docs/groundwork/n5-plan.md`).
     passengers: BTreeMap<EntityId, Vec<EntityId>>,
     vehicle_of: BTreeMap<EntityId, EntityId>,
+    /// What each of this edge's players rides by their own region's word: what it said
+    /// last of getting on and off, or what the hand-over that brought them said. It
+    /// decides whether they are shown in a vehicle's seat, over the vehicle's word
+    /// (`docs/groundwork/n5-plan.md`, section 8 item 4).
+    rides_word: BTreeMap<EntityId, RidesWord>,
     /// Who holds each leashed entity's leash, by the leashee's region's word
     /// (`set_entity_link`, `docs/groundwork/n5-brief.md`, section 7.5).
     leashes: BTreeMap<EntityId, EntityId>,
@@ -991,6 +996,7 @@ impl Fanout {
             entities: BTreeMap::new(),
             passengers: BTreeMap::new(),
             vehicle_of: BTreeMap::new(),
+            rides_word: BTreeMap::new(),
             leashes: BTreeMap::new(),
             wire,
             stands_for: BTreeMap::new(),
@@ -1736,8 +1742,13 @@ impl Fanout {
             // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
             WorkerToEdge::ToPlayer {
                 player,
-                event: PlayerEvent::Rides { pose, .. },
-            } => self.rides(player, pose).await,
+                event: PlayerEvent::Rides { vehicle, pose },
+            } => {
+                self.rides(player, pose).await;
+                if let Some(rider) = self.players.get(&player).and_then(|view| view.entity) {
+                    self.take_rides_word(rider, vehicle).await;
+                }
+            }
             WorkerToEdge::ToPlayer {
                 player,
                 event:
@@ -2717,6 +2728,12 @@ impl Fanout {
         transfer: PlayerTransfer,
         back: bool,
     ) {
+        // What the player rides as their old region let them go is their word until
+        // their new one says otherwise.
+        let riding_word = transfer.riding.map(|riding| riding.vehicle);
+        if riding_word.is_some() || self.rides_word.contains_key(&transfer.entity_id) {
+            self.take_rides_word(transfer.entity_id, riding_word).await;
+        }
         let position = transfer.pose.position;
         let chunk = ChunkPos::containing(position.x, position.z);
         // The stay of this connection's join, let go before the edge was told its
@@ -3490,7 +3507,11 @@ impl Fanout {
         let state = &shown.state;
         // A rider is placed by each client on its vehicle: it is sent no position, only
         // which way it looks (`ServerEntity`'s passengers).
-        let rides = self.vehicle_of.get(&entity).copied();
+        let rides = match self.rides_word.get(&entity) {
+            Some(word) => word.vehicle,
+            None => self.vehicle_of.get(&entity).copied(),
+        };
+        let lists = effective_passengers(&self.passengers, &self.rides_word);
         let mut outgoing = Vec::new();
         for (player, view) in &mut self.players {
             let newly = !view.visible.contains_key(&entity);
@@ -3498,7 +3519,15 @@ impl Fanout {
                 view.update_visibility(*player, &shown, moved && rides.is_none(), &mut self.wire);
             let visible = view.visible.contains_key(&entity);
             if moved && rides.is_some() && visible && !newly {
-                packets.push(head_rotation(state, self.wire.of(entity)));
+                // `ServerEntity` sends a passenger its body's rotation and its head's.
+                let id = self.wire.of(entity);
+                packets.push(encoded(&clustine_protocol::packets::play::MoveEntityRot {
+                    entity_id: id,
+                    yaw: clustine_protocol::packets::play::pack_degrees(state.pose.yaw),
+                    pitch: clustine_protocol::packets::play::pack_degrees(state.pose.pitch),
+                    on_ground: state.pose.on_ground,
+                }));
+                packets.push(head_rotation(state, id));
             }
             // Who rides it, and what it rides, go with it to a client newly shown it,
             // and then who holds its leash (`ServerEntity.sendPairingData`).
@@ -3506,7 +3535,7 @@ impl Fanout {
                 let mut vehicles = vec![entity];
                 vehicles.extend(rides);
                 for vehicle in vehicles {
-                    if let Some(riders) = self.passengers.get(&vehicle)
+                    if let Some(riders) = lists.get(&vehicle)
                         && let Some(packet) =
                             passengers_packet(view, vehicle, riders, &mut self.wire)
                     {
@@ -3544,18 +3573,55 @@ impl Fanout {
         }
         for rider in &passengers {
             self.vehicle_of.insert(*rider, vehicle);
-        }
-        let mut outgoing = Vec::new();
-        for (player, view) in &self.players {
-            if let Some(packet) = passengers_packet(view, vehicle, &passengers, &mut self.wire) {
-                outgoing.push((*player, packet));
+            // The vehicle names them under their word: its later word counts.
+            if let Some(word) = self.rides_word.get_mut(rider)
+                && word.vehicle == Some(vehicle)
+            {
+                word.named = true;
             }
         }
         if !passengers.is_empty() {
             self.passengers.insert(vehicle, passengers);
         }
+        self.tell_passengers(vehicle).await;
+    }
+
+    /// Tells each client that shows the vehicle `vehicle`, or rides it, whom it carries
+    /// now, by its word and its riders' own.
+    async fn tell_passengers(&mut self, vehicle: EntityId) {
+        let riders = effective_passengers(&self.passengers, &self.rides_word)
+            .remove(&vehicle)
+            .unwrap_or_default();
+        let mut outgoing = Vec::new();
+        for (player, view) in &self.players {
+            if let Some(packet) = passengers_packet(view, vehicle, &riders, &mut self.wire) {
+                outgoing.push((*player, packet));
+            }
+        }
         for (player, packet) in outgoing {
             self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Takes the word of the region of the player whose entity is `rider` that they ride
+    /// `vehicle` now, or nothing, and tells the clients of the vehicles it concerns.
+    async fn take_rides_word(&mut self, rider: EntityId, vehicle: Option<EntityId>) {
+        let before = self
+            .rides_word
+            .insert(
+                rider,
+                RidesWord {
+                    vehicle,
+                    named: false,
+                },
+            )
+            .and_then(|word| word.vehicle);
+        let mut concerned: Vec<EntityId> = before.into_iter().chain(vehicle).collect();
+        concerned.extend(self.vehicle_of.get(&rider).copied());
+        concerned.sort();
+        concerned.dedup();
+        for vehicle in concerned {
+            self.tell_passengers(vehicle).await;
         }
     }
 
@@ -3708,6 +3774,7 @@ impl Fanout {
     async fn remove_entity(&mut self, entity: EntityId) {
         self.entities.remove(&entity);
         self.leashes.remove(&entity);
+        self.rides_word.remove(&entity);
         // A vehicle that is gone carries nobody, and a rider that is gone rides nothing.
         if let Some(riders) = self.passengers.remove(&entity) {
             for rider in riders {
@@ -4022,7 +4089,7 @@ impl Fanout {
             packets.extend(view.update_visibility(player, shown, false, &mut self.wire));
         }
         // And who rides those that appeared, or what those that appeared ride.
-        for (vehicle, riders) in &self.passengers {
+        for (vehicle, riders) in &effective_passengers(&self.passengers, &self.rides_word) {
             let appeared =
                 |key: &EntityId| view.visible.contains_key(key) && !shown_before.contains(key);
             if (appeared(vehicle) || riders.iter().any(appeared))
@@ -5717,6 +5784,48 @@ fn passengers_packet(
         vehicle_id: wire.of(vehicle),
         passengers,
     }))
+}
+
+/// A player's own region's word of what they ride, and whether the vehicle has named
+/// them since: a word adds a player to a vehicle's seats only until it does, so that a
+/// vehicle's own later word of their getting off is not undone by a word gone stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RidesWord {
+    vehicle: Option<EntityId>,
+    named: bool,
+}
+
+/// Whom each vehicle carries as clients are to be shown it: those the vehicle names, but
+/// a player whose own region says they ride something else or nothing, and then the
+/// players whose own region says they ride it and the vehicle does not name yet.
+fn effective_passengers(
+    passengers: &BTreeMap<EntityId, Vec<EntityId>>,
+    words: &BTreeMap<EntityId, RidesWord>,
+) -> BTreeMap<EntityId, Vec<EntityId>> {
+    let mut lists: BTreeMap<EntityId, Vec<EntityId>> = passengers
+        .iter()
+        .map(|(vehicle, riders)| {
+            let kept = riders
+                .iter()
+                .copied()
+                .filter(|rider| {
+                    words
+                        .get(rider)
+                        .is_none_or(|word| word.vehicle == Some(*vehicle))
+                })
+                .collect();
+            (*vehicle, kept)
+        })
+        .collect();
+    for (rider, word) in words {
+        if let (Some(vehicle), false) = (word.vehicle, word.named) {
+            let list = lists.entry(vehicle).or_default();
+            if !list.contains(rider) {
+                list.push(*rider);
+            }
+        }
+    }
+    lists
 }
 
 /// `set_entity_link` of the leashee `entity` to `holder`, 0 for none.
