@@ -112,6 +112,10 @@ pub struct EntityTypeDump {
     pub fire_immune: bool,
     /// The serialised name of its `MobCategory`, such as `misc`.
     pub category: String,
+    /// Where its passengers sit and where it sits on a vehicle, unrotated, as double
+    /// bits.
+    pub passenger_points: Vec<[u64; 3]>,
+    pub vehicle_points: Vec<[u64; 3]>,
 }
 
 /// The order in which the game places the features of each dimension: by dimension,
@@ -728,7 +732,7 @@ pub fn state_collisions(text: &str) -> Result<Vec<StateCollisionDump>> {
 pub fn entity_types(text: &str) -> Result<Vec<EntityTypeDump>> {
     let mut types = Vec::new();
     for line in text.lines() {
-        let fields = numbered_fields(line, 11, types.len())?;
+        let fields = numbered_fields(line, 13, types.len())?;
         types.push(EntityTypeDump {
             name: fields[1].to_owned(),
             width: float_bits(fields[2])?,
@@ -740,9 +744,31 @@ pub fn entity_types(text: &str) -> Result<Vec<EntityTypeDump>> {
             track_deltas: boolean(fields[8])?,
             fire_immune: boolean(fields[9])?,
             category: fields[10].to_owned(),
+            passenger_points: points(fields[11])?,
+            vehicle_points: points(fields[12])?,
         });
     }
     Ok(types)
+}
+
+/// Attachment points as `entity_types.txt` writes them: `x;y;z` of double bits, joined by
+/// `|`, at least one.
+fn points(text: &str) -> Result<Vec<[u64; 3]>> {
+    let mut points = Vec::new();
+    for point in text.split('|') {
+        let parts: Vec<&str> = point.split(';').collect();
+        ensure!(
+            parts.len() == 3,
+            "{point:?} is not a point of three coordinates"
+        );
+        let mut coordinates = [0; 3];
+        for (coordinate, part) in coordinates.iter_mut().zip(parts) {
+            *coordinate = u64::from_str_radix(part, 16)
+                .with_context(|| format!("{part:?} is not a double's bits"))?;
+        }
+        points.push(coordinates);
+    }
+    Ok(points)
 }
 
 fn integer<T: std::str::FromStr>(text: &str) -> Result<T> {
@@ -764,6 +790,7 @@ mod tests {
 
     const ONE: &str = "3ff0000000000000";
     const HALF: &str = "3fe0000000000000";
+    const QUARTER: &str = "3fd0000000000000";
 
     #[test]
     fn a_line_of_a_state_is_read_field_by_field() {
@@ -947,8 +974,16 @@ mod tests {
         assert!(state_collisions("0\t0\t2\t1\n").is_err());
 
         let read =
-            entity_types("0\tminecraft:item\t3e800000\t3e800000\t3e59999a\t0\t6\t20\t1\t0\tmisc\n")
-                .unwrap();
+            entity_types(&format!(
+                "0\tminecraft:item\t3e800000\t3e800000\t3e59999a\t0\t6\t20\t1\t0\tmisc\t0;{QUARTER};0|0;{ONE};0\t0;0;0\n"
+            ))
+            .unwrap();
+        assert_eq!(
+            read[0].passenger_points,
+            [[0, 0.25f64.to_bits(), 0], [0, 1f64.to_bits(), 0]]
+        );
+        assert_eq!(read[0].vehicle_points, [[0, 0, 0]]);
+        assert!(points("0;0").is_err() && points("").is_err());
         assert_eq!(read[0].name, "minecraft:item");
         assert_eq!(f32::from_bits(read[0].width), 0.25);
         assert_eq!(f32::from_bits(read[0].eye_height), 0.2125);

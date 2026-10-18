@@ -357,6 +357,12 @@ pub struct EntityTypeInfo {
     /// `fireImmune`.
     pub fire_immune: bool,
     pub category: MobCategory,
+    /// Where its passengers sit, by their place in its list, the last for any after it
+    /// (`EntityAttachments`' `PASSENGER`), unrotated, relative to its position.
+    pub passenger_points: &'static [[f64; 3]],
+    /// Where it sits on a vehicle, relative to its position (`VEHICLE`; the first is the
+    /// one the game uses).
+    pub vehicle_points: &'static [[f64; 3]],
 }
 
 impl EntityTypeInfo {

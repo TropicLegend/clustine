@@ -55,6 +55,8 @@ import net.minecraft.server.packs.repository.PackRepository;
 import net.minecraft.server.packs.repository.ServerPacksSource;
 import net.minecraft.server.permissions.PermissionSet;
 import net.minecraft.util.Util;
+import net.minecraft.world.entity.EntityAttachment;
+import net.minecraft.world.entity.EntityAttachments;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.player.Player;
@@ -597,6 +599,33 @@ public final class Extract {
         return text.toString();
     }
 
+    /// The points of one kind an entity type's attachments hold, as `entityTypes` writes
+    /// them. The builder fills a kind no type declares from its fallback, so none is
+    /// empty.
+    private static String attachmentPoints(EntityAttachments attachments, EntityAttachment kind)
+            throws ReflectiveOperationException {
+        Field field = EntityAttachments.class.getDeclaredField("attachments");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<EntityAttachment, List<Vec3>> points = (Map<EntityAttachment, List<Vec3>>) field.get(attachments);
+        List<Vec3> list = points.get(kind);
+        if (list == null || list.isEmpty()) {
+            throw new IllegalStateException("an entity type has no " + kind + " points");
+        }
+        StringBuilder text = new StringBuilder();
+        for (Vec3 point : list) {
+            if (text.length() > 0) {
+                text.append('|');
+            }
+            text.append(Long.toHexString(Double.doubleToRawLongBits(point.x)));
+            text.append(';');
+            text.append(Long.toHexString(Double.doubleToRawLongBits(point.y)));
+            text.append(';');
+            text.append(Long.toHexString(Double.doubleToRawLongBits(point.z)));
+        }
+        return text.toString();
+    }
+
     private static String floatBits(float value) {
         return Integer.toHexString(Float.floatToRawIntBits(value));
     }
@@ -772,8 +801,11 @@ public final class Extract {
     /// One line an entity type, in id order: id, name, width, height and eye height as
     /// float bits, whether its size is fixed, its client tracking range in chunks, its
     /// update interval in ticks, whether its motion is sent (`trackDeltas`), whether it
-    /// is immune to fire, and its mob category by the game's name for it.
-    private static String entityTypes() {
+    /// is immune to fire, its mob category by the game's name for it, and the points its
+    /// passengers sit at and it sits at on a vehicle (`EntityAttachments`' `PASSENGER` and
+    /// `VEHICLE` lists, unrotated: `docs/groundwork/n5-brief.md`, section 8.1), each a list
+    /// of `x;y;z` as double bits joined by `|`.
+    private static String entityTypes() throws ReflectiveOperationException {
         StringBuilder text = new StringBuilder();
         for (int id = 0; id < BuiltInRegistries.ENTITY_TYPE.size(); id++) {
             EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(id);
@@ -792,6 +824,8 @@ public final class Extract {
             field(text, type.trackDeltas() ? "1" : "0");
             field(text, type.fireImmune() ? "1" : "0");
             field(text, type.getCategory().getSerializedName());
+            field(text, attachmentPoints(dimensions.attachments(), EntityAttachment.PASSENGER));
+            field(text, attachmentPoints(dimensions.attachments(), EntityAttachment.VEHICLE));
             text.append('\n');
         }
         return text.toString();

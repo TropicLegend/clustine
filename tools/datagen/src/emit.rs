@@ -922,7 +922,8 @@ fn entity_types(data: &GameData) -> Result<String> {
             out,
             "    EntityTypeInfo {{ width: f32::from_bits({:#010x}), height: f32::from_bits({:#010x}), \
              eye_height: f32::from_bits({:#010x}), fixed: {}, client_tracking_range: {}, \
-             update_interval: {}, track_deltas: {}, fire_immune: {}, category: MobCategory::{category} }}, \
+             update_interval: {}, track_deltas: {}, fire_immune: {}, category: MobCategory::{category}, \
+             passenger_points: &[{}], vehicle_points: &[{}] }}, \
              // {}",
             dumped.width,
             dumped.height,
@@ -932,12 +933,26 @@ fn entity_types(data: &GameData) -> Result<String> {
             dumped.update_interval,
             dumped.track_deltas,
             dumped.fire_immune,
+            points(&dumped.passenger_points),
+            points(&dumped.vehicle_points),
             name.strip_prefix("minecraft:").unwrap_or(name)
         )?;
     }
     writeln!(out, "];\n")?;
     out.push_str(&id_constants(data.entity_types.iter().map(String::as_str))?);
     Ok(out)
+}
+
+/// Attachment points as Rust: `[x, y, z]` of `f64::from_bits`, joined by commas.
+fn points(points: &[[u64; 3]]) -> String {
+    points
+        .iter()
+        .map(|point| {
+            let [x, y, z] = point.map(|bits| format!("f64::from_bits({bits:#018x})"));
+            format!("[{x}, {y}, {z}]")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `block_physics.rs`: what an entity meets on a block (`docs/groundwork/n4-brief.md`,
