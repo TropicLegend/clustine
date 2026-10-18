@@ -2,7 +2,8 @@
 
 Draft of 2026-10-18, revised the same day after independent reviews (sections 6, 7 and
 8, each overriding what it amends above it and the sections before it); a third review of section 7 is answered in section 8, and a fourth review of section 8 in
-section 9, which withdraws the lend at the moment of use. Step N6 of the
+section 9, which withdraws the lend at the moment of use; a fifth review of section 9 is
+answered in section 10. Step N6 of the
 [phase plan](n-plan.md): "TNT and explosions, and the redstone of ADR-0026 section 11
 that waits for entities (dispensers, droppers, hoppers, detector rails, pressure plates
 that count entities, tripwire)". The game's rules are in the [porting brief](n6-brief.md),
@@ -469,3 +470,58 @@ the last, so it is withdrawn, and with it the owner keeps ADR-0027 as they chose
 **For the owner**, replacing the proposal of section 7: containers follow your "lending
 at build time" of ADR-0027 as circuits do. The difference you would meet is that a
 container across a pinned line opens only for players on the side that holds it.
+
+## 10. The fifth review, and what it changed
+
+A fifth independent review (2026-10-18) read section 9. Making containers circuit's parts
+would trap lends: any part *in* a chunk keeps its lend (`give_back_lent`), so a lever two
+blocks from the line, once broken, would leave the other side's storage room lent away
+for good. And two chests side by side across a line would make a double chest that
+neither side holds whole. The fixes take machinery away.
+
+1. **Containers are not circuit's parts** (withdrawing section 9 item 1). A chest, a
+   trapped chest, a barrel, a shulker box and an ender chest ask for no land and keep no
+   lend by standing anywhere. Dispensers, droppers and hoppers stay parts (section 6 item
+   4), and keep a lend only by their reach leaving their own chunk (the block they face,
+   the block below a hopper), never by standing in it; ADR-0027 section 4 is amended so.
+2. **Two chests across a line stay single.** A chest does not join a chest in a chunk its
+   region does not hold, at its placement or at the shape update that crosses as an
+   effect: it is placed single, as a sneaking player places one. So every container is
+   whole in one region, and decision 10's "a menu opens only where the player's region
+   holds every chunk of its container" never leaves a container that nobody can open.
+   Named: "two chests across a pinned line stay single".
+3. **A container across a pinned line opens only from its side** (named; for the
+   owner). A player whose region does not hold a container's chunk uses it as a remote
+   action, which opens nothing (section 6 item 2): a chest one step across the line, even
+   one they placed themselves from this side, opens only once they step over. Where
+   regions follow players this does not arise (they merge first).
+4. **A shulker box facing across a line** reads the copy for room to open and does not
+   push the other region's entities (named), as a piston at a line reads one.
+5. **Contents and the circuit hooks.** `part_gone_near` and `circuit_changed` fire on a
+   block's state; a dispenser, dropper or hopper whose contents change calls
+   `circuit_changed` itself (N6a fixes the hook; section 7 item 14). Opening a container
+   does not count, except a barrel's `open`, which is a state and counts as any state
+   does. Where regions follow players, a busy hopper at a line keeps their split away
+   (ADR-0027 section 7), as active redstone does.
+6. **The lender's wait** (section 9 item 3, third bullet) covers either half of a double
+   chest whose block is in the asked chunk, and a container vehicle whose entity is in it
+   at the ask.
+7. **Text still in force that this replaces**: section 7 item 16 no longer gives N6a
+   "the use kept for a lend" nor N6g "item 4"; section 8 item 11's "replaced by item 4"
+   and "waits for its lend, up to 40 ticks" are withdrawn, and section 4 has instead
+   items 2 to 4 here. The worker's held click (section 8 item 6, bounded by section 9
+   item 3) is the one new hold in `waits_for_its_chunk`. N6e makes dispensers, droppers
+   and hoppers circuit's parts with their reach in `lends.rs`, beside their ticking;
+   N6g, mine, the amendments of ADR-0027 and the lender's wait. A held click waits, as a
+   held use does today, with everything behind it on its link, until the chunk it waits
+   for loads (named among the pauses of a merge).
+8. **What to try with `--pin 4 --reshape by-hand`** (section 9 item 4 corrected): a chest
+   placed while standing on its side opens; one placed a step across the line opens only
+   from over there; two chests placed across the line stay single; a hopper line across
+   the line feeds a chest.
+
+**For the owner**, replacing the proposals of sections 7 and 9: a container a step across
+a pinned line opens only from its own side, as no menu spans two regions. Making it open
+from either side needs either a lend at the moment of use, which four reviews found
+unsound, or a menu run across two regions, a design of its own. Proposed as named; the
+owner can ask for either.
