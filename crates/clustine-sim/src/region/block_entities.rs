@@ -87,18 +87,18 @@ impl Typed {
     }
 }
 
-const TAG_END: u8 = 0;
-const TAG_BYTE: u8 = 1;
-const TAG_INT: u8 = 3;
+pub(super) const TAG_END: u8 = 0;
+pub(super) const TAG_BYTE: u8 = 1;
+pub(super) const TAG_INT: u8 = 3;
 const TAG_FLOAT: u8 = 5;
 const TAG_STRING: u8 = 8;
-const TAG_COMPOUND: u8 = 10;
+pub(super) const TAG_COMPOUND: u8 = 10;
 
 /// The bucket of a `HashMap` of 16 that Java puts the string `name` in: its
 /// `hashCode` over UTF-16, spread as `HashMap.hash` spreads it. A game's compound is
 /// such a map, and its entries are written in the order of their buckets, then of
 /// their putting in.
-fn string_bucket(name: &str) -> u32 {
+pub(super) fn string_bucket(name: &str) -> u32 {
     let hash = name.encode_utf16().fold(0i32, |hash, unit| {
         hash.wrapping_mul(31).wrapping_add(i32::from(unit))
     }) as u32;
@@ -126,7 +126,7 @@ fn compound(mut entries: Vec<Entry>) -> Vec<u8> {
     data
 }
 
-fn nbt_put_string(data: &mut Vec<u8>, text: &str) {
+pub(super) fn nbt_put_string(data: &mut Vec<u8>, text: &str) {
     let length = u16::try_from(text.len()).expect("a short string");
     data.extend_from_slice(&length.to_be_bytes());
     data.extend_from_slice(text.as_bytes());
@@ -357,7 +357,7 @@ fn read_output_signal(data: &[u8]) -> u8 {
 }
 
 /// A string as NBT writes one, its length first, and what follows it.
-fn nbt_string(data: &[u8]) -> Option<(&[u8], &[u8])> {
+pub(super) fn nbt_string(data: &[u8]) -> Option<(&[u8], &[u8])> {
     let length = usize::from(u16::from_be_bytes(data.get(..2)?.try_into().ok()?));
     let string = data.get(2..2 + length)?;
     Some((string, &data[2 + length..]))
@@ -365,7 +365,7 @@ fn nbt_string(data: &[u8]) -> Option<(&[u8], &[u8])> {
 
 /// What follows the payload of a tag of type `tag` at the start of `data`; `None` for
 /// data cut short, a type NBT does not have, or nesting deeper than the game allows.
-fn skip_nbt(tag: u8, data: &[u8], depth: u32) -> Option<&[u8]> {
+pub(super) fn skip_nbt(tag: u8, data: &[u8], depth: u32) -> Option<&[u8]> {
     if depth > 512 {
         return None;
     }

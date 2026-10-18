@@ -224,6 +224,23 @@ pub fn block_id_by_name(name: &str) -> Option<usize> {
     Some(usize::from(BLOCKS_BY_NAME[found]))
 }
 
+/// The items' ids in the order of their names, for [`item_id_by_name`].
+static ITEMS_BY_NAME: std::sync::LazyLock<Vec<u16>> = std::sync::LazyLock::new(|| {
+    let count = u16::try_from(ITEMS.len()).expect("fewer than 65536 items");
+    let mut ids: Vec<u16> = (0..count).collect();
+    ids.sort_by_key(|&id| ITEMS[usize::from(id)].name);
+    ids
+});
+
+/// The id of the item called `name`, such as `minecraft:stone`, as a stack's `id` in
+/// saved data names it; its index in [`ITEMS`].
+pub fn item_id_by_name(name: &str) -> Option<i32> {
+    let found = ITEMS_BY_NAME
+        .binary_search_by(|&id| ITEMS[usize::from(id)].name.cmp(name))
+        .ok()?;
+    Some(i32::from(ITEMS_BY_NAME[found]))
+}
+
 /// The properties of the block with this id, in the order the game numbers its states
 /// by: the first counts most. Panics if there is no such block.
 pub fn block_properties(block_id: usize) -> impl Iterator<Item = &'static BlockProperty> {
@@ -481,6 +498,16 @@ mod tests {
         let last = BlockState((BLOCK_STATE_COUNT - 1) as u16);
         assert!(last.block().is_some());
         assert!(BlockState(last.0 + 1).block().is_none());
+    }
+
+    #[test]
+    fn every_item_is_found_by_its_name_and_nothing_else_is() {
+        for (id, item) in ITEMS.iter().enumerate() {
+            assert_eq!(item_id_by_name(item.name), i32::try_from(id).ok());
+        }
+        assert_eq!(item_id_by_name("minecraft:stone"), Some(items::STONE));
+        assert_eq!(item_id_by_name("minecraft:no_such_item"), None);
+        assert_eq!(item_id_by_name("stone"), None);
     }
 
     #[test]

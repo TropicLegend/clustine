@@ -26,6 +26,7 @@ mod block_entities;
 mod block_events;
 mod boats;
 mod colliders;
+mod containers;
 mod cushions;
 mod diodes;
 mod drops;
