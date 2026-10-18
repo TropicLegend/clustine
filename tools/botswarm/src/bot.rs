@@ -22,12 +22,12 @@ use clustine_protocol::packets::login::{
     ClientboundLogin, LoginAcknowledged, LoginStart, LoginSuccess,
 };
 use clustine_protocol::packets::play::{
-    ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, LevelChunkWithLight,
-    LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
-    ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
-    SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
-    SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
-    movement_flags, player_action, player_input,
+    ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, Interact,
+    LevelChunkWithLight, LightUpdate, Login, PlayerAbilities, PlayerAction, PlayerLoaded,
+    ServerboundKeepAlive, ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem,
+    SetCreativeModeSlot, SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition,
+    SetPlayerPositionAndRotation, SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta,
+    face, inventory, movement_flags, player_action, player_input,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -1051,9 +1051,32 @@ impl Bot {
 
     /// Holds down or lets go of the sneak key, and no other.
     pub async fn sneak(&mut self, sneaking: bool) -> Result<()> {
-        let flags = if sneaking { player_input::SHIFT } else { 0 };
+        self.hold_keys(if sneaking { player_input::SHIFT } else { 0 })
+            .await
+    }
+
+    /// Holds down the movement keys `flags` (a combination of the protocol's
+    /// `player_input` values) and lets go of every other, as a client says when one of
+    /// them changes. A player who rides a cart pushes it with them.
+    pub async fn hold_keys(&mut self, flags: u8) -> Result<()> {
         self.connection
             .write(&ServerboundPlayerInput { flags })
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Uses the main hand on the entity `entity_id`, the aim meeting its box at
+    /// `location` relative to the entity's position, without sneaking: what a client
+    /// sends to get into a cart or a boat.
+    pub async fn interact(&mut self, entity_id: i32, location: [f64; 3]) -> Result<()> {
+        self.connection
+            .write(&Interact {
+                entity_id,
+                hand: 0,
+                location,
+                using_secondary_action: false,
+            })
             .await?;
         self.has_sent();
         Ok(())
