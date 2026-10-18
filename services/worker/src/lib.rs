@@ -3097,7 +3097,20 @@ impl RegionRunner {
         };
         let mut beside = Vec::new();
         let mut others = Vec::new();
-        for position in self.region.circuit_changes() {
+        // Entities working at a line count as circuits do: what the region sent across
+        // one in the last 600 ticks, where it went if the region knows, and otherwise
+        // whoever uses the chunks about it (`docs/adr/0028-entities.md`, section 7;
+        // `docs/groundwork/n3-plan.md`, step N3f). The cap of what is reported is shared.
+        let mut circuits = self.region.circuit_changes();
+        for (position, went) in self.region.entities_at_line() {
+            match went {
+                Some(to) if to != own => beside.push((position, to)),
+                _ => circuits.push(position),
+            }
+        }
+        circuits.sort_unstable();
+        circuits.dedup();
+        for position in circuits {
             let users: BTreeSet<RegionId> = (-1..=1)
                 .flat_map(|dx| (-1..=1).map(move |dz| (dx, dz)))
                 .filter_map(|(dx, dz)| {
