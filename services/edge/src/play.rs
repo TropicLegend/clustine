@@ -200,6 +200,14 @@ async fn pump(
                     }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
+                    // Decoded now, but not yet acted on: they were `Unhandled` before,
+                    // and what riding and using entities do with them is N5's.
+                    | ServerboundPlay::Attack(_)
+                    | ServerboundPlay::Interact(_)
+                    | ServerboundPlay::ServerboundMoveVehicle(_)
+                    | ServerboundPlay::PaddleBoat(_)
+                    | ServerboundPlay::PickItemFromEntity(_)
+                    | ServerboundPlay::PlayerCommand(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
             }

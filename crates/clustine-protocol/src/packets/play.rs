@@ -2156,6 +2156,252 @@ impl Decode for SetHeldSlot {
     }
 }
 
+/// The player hit an entity (`ServerboundAttackPacket`): a vehicle, an armour stand, a
+/// frame or a painting to break, or anything else to hurt. Only the entity's network id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attack {
+    pub entity_id: i32,
+}
+
+impl Packet for Attack {
+    const ID: i32 = serverbound::ATTACK;
+}
+
+impl Encode for Attack {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+    }
+}
+
+impl Decode for Attack {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+        })
+    }
+}
+
+/// The player used a hand on an entity (`ServerboundInteractPacket`): to get into a
+/// boat or a cart, to put an item into a frame, to take armour from a stand.
+///
+/// The hand is `InteractionHand.STREAM_CODEC`, a class not dumped; it is written as a
+/// VarInt of the hand's id here, as the hand of [`ServerboundUseItem`] is and as the
+/// reference servers read it. The comparisons with the official server check it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Interact {
+    pub entity_id: i32,
+    /// 0 for the main hand, 1 for the off hand.
+    pub hand: i32,
+    /// Where the player's aim met the entity's box, relative to the entity's position,
+    /// in the compact form of [`Writer::put_velocity`] (`Vec3.LP_STREAM_CODEC`).
+    pub location: [f64; 3],
+    /// The sneak key was held.
+    pub using_secondary_action: bool,
+}
+
+impl Packet for Interact {
+    const ID: i32 = serverbound::INTERACT;
+}
+
+impl Encode for Interact {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.hand);
+        w.put_velocity(self.location);
+        w.put_bool(self.using_secondary_action);
+    }
+}
+
+impl Decode for Interact {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            hand: r.var_int()?,
+            location: r.velocity()?,
+            using_secondary_action: r.bool()?,
+        })
+    }
+}
+
+/// Where the player who steers a vehicle has moved it (`ServerboundMoveVehiclePacket`):
+/// the client moves a boat it controls itself and tells the server so.
+///
+/// The place and the turn are `PositionAndRotation.STREAM_CODEC`, a class not dumped;
+/// the handler reads its `position()`, `yRot()` and `xRot()`, and the reference servers
+/// write it as three doubles and then the two floats, yaw before pitch, as here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerboundMoveVehicle {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// `yRot`, in degrees.
+    pub yaw: f32,
+    /// `xRot`, in degrees.
+    pub pitch: f32,
+    pub on_ground: bool,
+}
+
+impl Packet for ServerboundMoveVehicle {
+    const ID: i32 = serverbound::MOVE_VEHICLE;
+}
+
+impl Encode for ServerboundMoveVehicle {
+    fn encode(&self, w: &mut Writer) {
+        put_position_and_rotation(w, [self.x, self.y, self.z], self.yaw, self.pitch);
+        w.put_bool(self.on_ground);
+    }
+}
+
+impl Decode for ServerboundMoveVehicle {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let ([x, y, z], yaw, pitch) = read_position_and_rotation(r)?;
+        Ok(Self {
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            on_ground: r.bool()?,
+        })
+    }
+}
+
+/// Writes the game's `PositionAndRotation`: the position as three doubles, then `yRot`
+/// and `xRot`. See [`ServerboundMoveVehicle`] for where the layout comes from.
+fn put_position_and_rotation(w: &mut Writer, position: [f64; 3], yaw: f32, pitch: f32) {
+    for value in position {
+        w.put_f64(value);
+    }
+    w.put_f32(yaw);
+    w.put_f32(pitch);
+}
+
+/// Reads what [`put_position_and_rotation`] writes.
+fn read_position_and_rotation(r: &mut Reader<'_>) -> Result<([f64; 3], f32, f32), DecodeError> {
+    Ok(([r.f64()?, r.f64()?, r.f64()?], r.f32()?, r.f32()?))
+}
+
+/// Which of a boat's paddles the player is turning (`ServerboundPaddleBoatPacket`); the
+/// server shows the paddles to others through the boat's data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaddleBoat {
+    pub left: bool,
+    pub right: bool,
+}
+
+impl Packet for PaddleBoat {
+    const ID: i32 = serverbound::PADDLE_BOAT;
+}
+
+impl Encode for PaddleBoat {
+    fn encode(&self, w: &mut Writer) {
+        w.put_bool(self.left);
+        w.put_bool(self.right);
+    }
+}
+
+impl Decode for PaddleBoat {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            left: r.bool()?,
+            right: r.bool()?,
+        })
+    }
+}
+
+/// The player picked the item of an entity with the middle button
+/// (`ServerboundPickItemFromEntityPacket`): a minecart, a boat, an armour stand, a
+/// painting or what a frame holds.
+///
+/// The packet's class is not dumped. The handler reads its `id()` and `includeData()`
+/// (ServerGamePacketListenerImpl), and the reference servers read the id as a VarInt
+/// and then a boolean, as here. The comparisons with the official server check it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PickItemFromEntity {
+    pub entity_id: i32,
+    /// The control key was held: a creative player then gets the entity's data with it.
+    pub include_data: bool,
+}
+
+impl Packet for PickItemFromEntity {
+    const ID: i32 = serverbound::PICK_ITEM_FROM_ENTITY;
+}
+
+impl Encode for PickItemFromEntity {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_bool(self.include_data);
+    }
+}
+
+impl Decode for PickItemFromEntity {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            include_data: r.bool()?,
+        })
+    }
+}
+
+/// The actions of [`PlayerCommand`]: the ordinals of the game's
+/// `ServerboundPlayerCommandPacket$Action`, which `writeEnum` writes.
+pub mod player_command {
+    pub const STOP_SLEEPING: i32 = 0;
+    pub const START_SPRINTING: i32 = 1;
+    pub const STOP_SPRINTING: i32 = 2;
+    /// The player began to charge a jump of what they ride; `data` is the charge.
+    pub const START_RIDING_JUMP: i32 = 3;
+    pub const STOP_RIDING_JUMP: i32 = 4;
+    /// The player opened the inventory of what they ride, such as a chest boat.
+    pub const OPEN_INVENTORY: i32 = 5;
+    pub const START_FALL_FLYING: i32 = 6;
+}
+
+/// Something the player began or stopped that is not a move
+/// (`ServerboundPlayerCommandPacket`): sprinting, a ridden jump, opening what they ride.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerCommand {
+    /// The player's own entity id.
+    pub entity_id: i32,
+    /// One of the [`player_command`] values.
+    pub action: i32,
+    /// The charge of a [`player_command::START_RIDING_JUMP`], from 0 to 100; 0 for the
+    /// others, as the game's two-argument constructor sends.
+    pub data: i32,
+}
+
+impl Packet for PlayerCommand {
+    const ID: i32 = serverbound::PLAYER_COMMAND;
+}
+
+impl Encode for PlayerCommand {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.action);
+        w.put_var_int(self.data);
+    }
+}
+
+impl Decode for PlayerCommand {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let action = r.var_int()?;
+        // `readEnum` indexes the enum's constants, so the game refuses any other
+        // ordinal; so does this.
+        if !(player_command::STOP_SLEEPING..=player_command::START_FALL_FLYING).contains(&action) {
+            return Err(DecodeError::InvalidValue {
+                what: "player command",
+                value: i64::from(action),
+            });
+        }
+        Ok(Self {
+            entity_id,
+            action,
+            data: r.var_int()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -2176,27 +2422,83 @@ packet_set! {
         SetHeldItem,
         SetCreativeModeSlot,
         ServerboundPlayerAbilities,
+        Attack,
+        Interact,
+        ServerboundMoveVehicle,
+        PaddleBoat,
+        PickItemFromEntity,
+        PlayerCommand,
     }
 }
 
 /// A value of an entity's synchronised data (the game's `SynchedEntityData`), by the
-/// serializer that writes it. Only those Clustine sends so far.
+/// serializer that writes it. Only those Clustine sends.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntityDataValue {
     /// `EntityDataSerializers.BYTE`: the shared flags of every entity, at index 0.
     Byte(u8),
+    /// `EntityDataSerializers.INT`, a VarInt: a vehicle's hurt time, a frame's rotation.
+    Int(i32),
+    /// `EntityDataSerializers.FLOAT`: a vehicle's damage, a living entity's health.
+    Float(f32),
     /// `EntityDataSerializers.ITEM_STACK`: a slot, empty or not.
     ItemStack(Option<ItemStack>),
+    /// `EntityDataSerializers.BOOLEAN`, one byte: a boat's paddles, a furnace cart's fuel.
+    Boolean(bool),
+    /// `EntityDataSerializers.ROTATIONS`: the angles of an armour stand's limb in
+    /// degrees, x, y and z. `Rotations.STREAM_CODEC` is not dumped; three floats in that
+    /// order are what the reference servers write.
+    Rotations([f32; 3]),
     /// `EntityDataSerializers.BLOCK_POS`: a falling block's start, as a long.
     BlockPos(Position),
+    /// `EntityDataSerializers.OPTIONAL_BLOCK_POS`: a sleeping position, `BlockPos`'s
+    /// codec made optional, which is a presence flag and then the long.
+    OptionalBlockPos(Option<Position>),
+    /// `EntityDataSerializers.DIRECTION`: the face a hanging entity hangs on, as a
+    /// VarInt of the direction's 3D value (down 0, up 1, north 2, south 3, west 4,
+    /// east 5); see [`direction`].
+    Direction(i32),
+    /// `EntityDataSerializers.OPTIONAL_BLOCK_STATE`: a minecart's custom display block,
+    /// as a VarInt of the state's id, with 0 for none. Air is state 0, so a cart told to
+    /// show air shows none. The codec, `EntityDataSerializers$2`, is not dumped; this is
+    /// how the reference servers write it.
+    OptionalBlockState(i32),
+    /// `EntityDataSerializers.PAINTING_VARIANT`: a painting's variant, by its id in the
+    /// registry the client was sent. The codec is `ByteBufCodecs.holder`, which writes
+    /// a registered value as its id plus one, 0 being a variant sent whole, which the
+    /// server never sends.
+    PaintingVariant(i32),
+    /// `EntityDataSerializers.DYE_COLOR`: a cushion's colour, as a VarInt of the dye's
+    /// id (white 0 to black 15).
+    DyeColor(i32),
 }
 
 /// The serializer ids of the game's `EntityDataSerializers`, in the order it registers
-/// them.
+/// them (its static initialiser), which is not the order of their fields.
 pub mod entity_data_serializer {
     pub const BYTE: i32 = 0;
+    pub const INT: i32 = 1;
+    pub const FLOAT: i32 = 3;
     pub const ITEM_STACK: i32 = 7;
+    pub const BOOLEAN: i32 = 8;
+    pub const ROTATIONS: i32 = 9;
     pub const BLOCK_POS: i32 = 10;
+    pub const OPTIONAL_BLOCK_POS: i32 = 11;
+    pub const DIRECTION: i32 = 12;
+    pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const PAINTING_VARIANT: i32 = 34;
+    pub const DYE_COLOR: i32 = 43;
+}
+
+/// The 3D values of the game's `Direction`, which [`EntityDataValue::Direction`] and the
+/// data of a hanging entity's spawn carry.
+pub mod direction {
+    pub const DOWN: i32 = 0;
+    pub const UP: i32 = 1;
+    pub const NORTH: i32 = 2;
+    pub const SOUTH: i32 = 3;
+    pub const WEST: i32 = 4;
+    pub const EAST: i32 = 5;
 }
 
 /// The indices of entity data fields, as the game's classes define them one after the
@@ -2246,6 +2548,44 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::BLOCK_POS);
                     w.put_position(*position);
                 }
+                EntityDataValue::Int(value) => {
+                    w.put_var_int(entity_data_serializer::INT);
+                    w.put_var_int(*value);
+                }
+                EntityDataValue::Float(value) => {
+                    w.put_var_int(entity_data_serializer::FLOAT);
+                    w.put_f32(*value);
+                }
+                EntityDataValue::Boolean(value) => {
+                    w.put_var_int(entity_data_serializer::BOOLEAN);
+                    w.put_bool(*value);
+                }
+                EntityDataValue::Rotations(angles) => {
+                    w.put_var_int(entity_data_serializer::ROTATIONS);
+                    for angle in angles {
+                        w.put_f32(*angle);
+                    }
+                }
+                EntityDataValue::OptionalBlockPos(position) => {
+                    w.put_var_int(entity_data_serializer::OPTIONAL_BLOCK_POS);
+                    w.put_option(position.as_ref(), |w, position| w.put_position(*position));
+                }
+                EntityDataValue::Direction(direction) => {
+                    w.put_var_int(entity_data_serializer::DIRECTION);
+                    w.put_var_int(*direction);
+                }
+                EntityDataValue::OptionalBlockState(state) => {
+                    w.put_var_int(entity_data_serializer::OPTIONAL_BLOCK_STATE);
+                    w.put_var_int(*state);
+                }
+                EntityDataValue::PaintingVariant(variant) => {
+                    w.put_var_int(entity_data_serializer::PAINTING_VARIANT);
+                    w.put_var_int(*variant + 1);
+                }
+                EntityDataValue::DyeColor(colour) => {
+                    w.put_var_int(entity_data_serializer::DYE_COLOR);
+                    w.put_var_int(*colour);
+                }
             }
         }
         w.put_u8(ENTITY_DATA_END);
@@ -2265,6 +2605,30 @@ impl Decode for SetEntityData {
                 entity_data_serializer::BYTE => EntityDataValue::Byte(r.u8()?),
                 entity_data_serializer::ITEM_STACK => EntityDataValue::ItemStack(r.item_stack()?),
                 entity_data_serializer::BLOCK_POS => EntityDataValue::BlockPos(r.position()?),
+                entity_data_serializer::INT => EntityDataValue::Int(r.var_int()?),
+                entity_data_serializer::FLOAT => EntityDataValue::Float(r.f32()?),
+                entity_data_serializer::BOOLEAN => EntityDataValue::Boolean(r.bool()?),
+                entity_data_serializer::ROTATIONS => {
+                    EntityDataValue::Rotations([r.f32()?, r.f32()?, r.f32()?])
+                }
+                entity_data_serializer::OPTIONAL_BLOCK_POS => {
+                    EntityDataValue::OptionalBlockPos(r.option(Reader::position)?)
+                }
+                entity_data_serializer::DIRECTION => EntityDataValue::Direction(r.var_int()?),
+                entity_data_serializer::OPTIONAL_BLOCK_STATE => {
+                    EntityDataValue::OptionalBlockState(r.var_int()?)
+                }
+                entity_data_serializer::PAINTING_VARIANT => match r.var_int()? {
+                    // As for a sound: the server sends no variant whole.
+                    0 => {
+                        return Err(DecodeError::InvalidValue {
+                            what: "registered painting variant",
+                            value: 0,
+                        });
+                    }
+                    holder => EntityDataValue::PaintingVariant(holder - 1),
+                },
+                entity_data_serializer::DYE_COLOR => EntityDataValue::DyeColor(r.var_int()?),
                 other => {
                     return Err(DecodeError::InvalidValue {
                         what: "entity data serializer",
@@ -2313,6 +2677,215 @@ impl Decode for Animate {
     }
 }
 
+/// Puts the vehicle the player steers where the server says it is
+/// (`ClientboundMoveVehiclePacket`): the answer to a [`ServerboundMoveVehicle`] the
+/// server would not take. The layout is that of [`ServerboundMoveVehicle`] without the
+/// on-ground flag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientboundMoveVehicle {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    /// `yRot`, in degrees.
+    pub yaw: f32,
+    /// `xRot`, in degrees.
+    pub pitch: f32,
+}
+
+impl Packet for ClientboundMoveVehicle {
+    const ID: i32 = clientbound::MOVE_VEHICLE;
+}
+
+impl Encode for ClientboundMoveVehicle {
+    fn encode(&self, w: &mut Writer) {
+        put_position_and_rotation(w, [self.x, self.y, self.z], self.yaw, self.pitch);
+    }
+}
+
+impl Decode for ClientboundMoveVehicle {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let ([x, y, z], yaw, pitch) = read_position_and_rotation(r)?;
+        Ok(Self {
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+        })
+    }
+}
+
+/// Who rides an entity (`ClientboundSetPassengersPacket`): its direct passengers in the
+/// order they got on, the first of them the one who steers. An empty list puts everyone
+/// off.
+///
+/// The list is `writeVarIntArray`, of `FriendlyByteBuf`, which is not dumped: a VarInt
+/// count and then each id as a VarInt, as the reference servers write it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetPassengers {
+    pub vehicle_id: i32,
+    pub passengers: Vec<i32>,
+}
+
+impl Packet for SetPassengers {
+    const ID: i32 = clientbound::SET_PASSENGERS;
+}
+
+impl Encode for SetPassengers {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.vehicle_id);
+        w.put_array(&self.passengers, |w, id| w.put_var_int(*id));
+    }
+}
+
+impl Decode for SetPassengers {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            vehicle_id: r.var_int()?,
+            passengers: r.array(Reader::var_int)?,
+        })
+    }
+}
+
+/// Ties a lead from one entity to another, or cuts it (`ClientboundSetEntityLinkPacket`).
+/// Unlike most entity packets the ids are four-byte ints, not VarInts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetEntityLink {
+    /// The leashed entity.
+    pub leashed_id: i32,
+    /// What holds the lead: a player or a fence's knot; 0 when nothing does.
+    pub holder_id: i32,
+}
+
+impl Packet for SetEntityLink {
+    const ID: i32 = clientbound::SET_ENTITY_LINK;
+}
+
+impl Encode for SetEntityLink {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i32(self.leashed_id);
+        w.put_i32(self.holder_id);
+    }
+}
+
+impl Decode for SetEntityLink {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            leashed_id: r.i32()?,
+            holder_id: r.i32()?,
+        })
+    }
+}
+
+/// A sound that follows an entity (`ClientboundSoundEntityPacket`): a minecart rolling,
+/// a frame's item turned. Named, like [`Sound`], by its id in the sound event registry.
+///
+/// The class is not dumped. The game builds it from a holder, a `SoundSource`, the
+/// entity, volume, pitch and seed (its constructor in ServerGamePacketListenerImpl);
+/// the order on the wire is that of the reference server Pumpkin: the holder as a
+/// VarInt of the id plus one, the source as a VarInt, the entity as a VarInt, then
+/// volume, pitch and seed. The comparisons with the official server check it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundEntity {
+    pub sound: i32,
+    /// The game's `SoundSource`, by its number.
+    pub source: i32,
+    pub entity_id: i32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub seed: i64,
+}
+
+impl Packet for SoundEntity {
+    const ID: i32 = clientbound::SOUND_ENTITY;
+}
+
+impl Encode for SoundEntity {
+    fn encode(&self, w: &mut Writer) {
+        // A holder of the registry, as in `Sound`.
+        w.put_var_int(self.sound + 1);
+        w.put_var_int(self.source);
+        w.put_var_int(self.entity_id);
+        w.put_f32(self.volume);
+        w.put_f32(self.pitch);
+        w.put_i64(self.seed);
+    }
+}
+
+impl Decode for SoundEntity {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let holder = r.var_int()?;
+        if holder == 0 {
+            // As for `Sound`: the server sends none whole.
+            return Err(DecodeError::InvalidValue {
+                what: "registered sound",
+                value: 0,
+            });
+        }
+        Ok(Self {
+            sound: holder - 1,
+            source: r.var_int()?,
+            entity_id: r.var_int()?,
+            volume: r.f32()?,
+            pitch: r.f32()?,
+            seed: r.i64()?,
+        })
+    }
+}
+
+/// The kinds of a swing, as the game's `SwingAnimationType` numbers them.
+pub mod swing_animation {
+    pub const NONE: i32 = 0;
+    /// The ordinary swing, the game's `SwingAnimation.DEFAULT` with a duration of 6.
+    pub const WHACK: i32 = 1;
+    /// The thrust of a spear.
+    pub const STAB: i32 = 2;
+    /// The duration of `SwingAnimation.DEFAULT`, in ticks.
+    pub const DEFAULT_DURATION: i32 = 6;
+}
+
+/// Shows an entity swing a hand in a given way (`ClientboundSwingAnimationPacket`):
+/// what a player's interaction with an entity shows to the others.
+///
+/// The class is not dumped; the game builds it from the entity, an `InteractionHand`
+/// and a `SwingAnimation` (`ServerPlayer.swing`). The layout is that of the reference
+/// server SteelMC: the entity as a VarInt, the hand as a VarInt, then the swing's kind
+/// and its duration in ticks as VarInts. The comparisons with the official server
+/// check it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwingAnimation {
+    pub entity_id: i32,
+    /// 0 for the main hand, 1 for the off hand.
+    pub hand: i32,
+    /// One of the [`swing_animation`] kinds.
+    pub kind: i32,
+    pub duration: i32,
+}
+
+impl Packet for SwingAnimation {
+    const ID: i32 = clientbound::SWING_ANIMATION;
+}
+
+impl Encode for SwingAnimation {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.hand);
+        w.put_var_int(self.kind);
+        w.put_var_int(self.duration);
+    }
+}
+
+impl Decode for SwingAnimation {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            hand: r.var_int()?,
+            kind: r.var_int()?,
+            duration: r.var_int()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a server can send in the play state.
     pub enum ClientboundPlay in crate::packet_ids::play::clientbound {
@@ -2352,6 +2925,11 @@ packet_set! {
         SetEntityMotion,
         TakeItemEntity,
         AddTransientBlock,
+        ClientboundMoveVehicle,
+        SetPassengers,
+        SetEntityLink,
+        SoundEntity,
+        SwingAnimation,
     }
 }
 
@@ -3391,6 +3969,414 @@ mod tests {
             },
             Set::decode,
             Set::SetEntityData,
+        );
+    }
+
+    /// A position and a turn as `PositionAndRotation` is written: x, y and z as
+    /// doubles, then `yRot` and `xRot` as floats (0.5, 64, -2.25, 90 and -10 here).
+    const AT_AND_TURNED: [u8; 32] = [
+        0x3F, 0xE0, 0, 0, 0, 0, 0, 0, 0x40, 0x50, 0, 0, 0, 0, 0, 0, 0xC0, 0x02, 0, 0, 0, 0, 0, 0,
+        0x42, 0xB4, 0, 0, 0xC1, 0x20, 0, 0,
+    ];
+
+    /// The serverbound packets of riding and of using an entity, byte for byte in the
+    /// order of the fields of each class's codec (`ServerboundAttackPacket`,
+    /// `ServerboundInteractPacket`, `ServerboundMoveVehiclePacket`,
+    /// `ServerboundPaddleBoatPacket`, `ServerboundPlayerCommandPacket`), and of the pick
+    /// from an entity as the reference servers read it.
+    #[test]
+    fn the_packets_a_player_sends_about_entities_are_read_as_the_game_writes_them() {
+        assert_eq!(
+            [
+                Attack::ID,
+                Interact::ID,
+                ServerboundMoveVehicle::ID,
+                PaddleBoat::ID,
+                PickItemFromEntity::ID,
+                PlayerCommand::ID
+            ],
+            [1, 26, 34, 35, 37, 42]
+        );
+        let attack = [0x01, 0xAC, 0x02];
+        assert_eq!(
+            ServerboundPlay::decode(&attack),
+            Ok(ServerboundPlay::Attack(Attack { entity_id: 300 }))
+        );
+        // The entity, the hand, a location of zero as its one byte, the sneak key.
+        let interact = [0x1A, 42, 1, 0, 1];
+        assert_eq!(
+            ServerboundPlay::decode(&interact),
+            Ok(ServerboundPlay::Interact(Interact {
+                entity_id: 42,
+                hand: 1,
+                location: [0.0; 3],
+                using_secondary_action: true,
+            }))
+        );
+        // `LpVec3` of (1, 0, -1): a scale of 1 in the low bits, then 32766, 16383 and 0
+        // as 15-bit fractions, in six bytes.
+        let interact = [0x1A, 5, 0, 0xF1, 0xFF, 0, 0, 0xFF, 0xFF, 0];
+        assert_eq!(
+            ServerboundPlay::decode(&interact),
+            Ok(ServerboundPlay::Interact(Interact {
+                entity_id: 5,
+                hand: 0,
+                location: [1.0, 0.0, -1.0],
+                using_secondary_action: false,
+            }))
+        );
+        let mut moved = vec![0x22];
+        moved.extend(AT_AND_TURNED);
+        moved.push(1);
+        assert_eq!(
+            ServerboundPlay::decode(&moved),
+            Ok(ServerboundPlay::ServerboundMoveVehicle(
+                ServerboundMoveVehicle {
+                    x: 0.5,
+                    y: 64.0,
+                    z: -2.25,
+                    yaw: 90.0,
+                    pitch: -10.0,
+                    on_ground: true,
+                }
+            ))
+        );
+        assert_eq!(
+            ServerboundPlay::decode(&[0x23, 1, 0]),
+            Ok(ServerboundPlay::PaddleBoat(PaddleBoat {
+                left: true,
+                right: false,
+            }))
+        );
+        assert_eq!(
+            ServerboundPlay::decode(&[0x25, 0xAC, 0x02, 1]),
+            Ok(ServerboundPlay::PickItemFromEntity(PickItemFromEntity {
+                entity_id: 300,
+                include_data: true,
+            }))
+        );
+        // The player, the action's ordinal, the jump's charge.
+        assert_eq!(
+            ServerboundPlay::decode(&[0x2A, 7, 3, 90]),
+            Ok(ServerboundPlay::PlayerCommand(PlayerCommand {
+                entity_id: 7,
+                action: player_command::START_RIDING_JUMP,
+                data: 90,
+            }))
+        );
+        assert_eq!(
+            [
+                player_command::STOP_SLEEPING,
+                player_command::START_SPRINTING,
+                player_command::STOP_SPRINTING,
+                player_command::START_RIDING_JUMP,
+                player_command::STOP_RIDING_JUMP,
+                player_command::OPEN_INVENTORY,
+                player_command::START_FALL_FLYING,
+            ],
+            [0, 1, 2, 3, 4, 5, 6]
+        );
+        // There is no eighth action, and the game refuses one.
+        assert!(ServerboundPlay::decode(&[0x2A, 7, 7, 0]).is_err());
+        assert!(ServerboundPlay::decode(&[0x2A, 7, 0x7F, 0]).is_err());
+        // The bots write what the server reads.
+        assert_eq!(crate::packets::encode(&Attack { entity_id: 300 }), attack);
+        assert_eq!(
+            crate::packets::encode(&Interact {
+                entity_id: 5,
+                hand: 0,
+                location: [1.0, 0.0, -1.0],
+                using_secondary_action: false,
+            }),
+            interact
+        );
+    }
+
+    /// The clientbound packets of riding, of leads, of an entity's sound and of a swing,
+    /// byte for byte in the order of the fields of `ClientboundMoveVehiclePacket`,
+    /// `ClientboundSetPassengersPacket` and `ClientboundSetEntityLinkPacket`, and of the
+    /// sound and the swing as the reference servers write them.
+    #[test]
+    fn the_packets_of_riding_leads_sounds_and_swings_are_written_as_the_game_writes_them() {
+        assert_eq!(
+            [
+                ClientboundMoveVehicle::ID,
+                SetPassengers::ID,
+                SetEntityLink::ID,
+                SoundEntity::ID,
+                SwingAnimation::ID
+            ],
+            [58, 109, 102, 118, 123]
+        );
+        let mut moved = vec![0x3A];
+        moved.extend(AT_AND_TURNED);
+        assert_eq!(
+            crate::packets::encode(&ClientboundMoveVehicle {
+                x: 0.5,
+                y: 64.0,
+                z: -2.25,
+                yaw: 90.0,
+                pitch: -10.0,
+            }),
+            moved
+        );
+        // The vehicle, then the count and each passenger as VarInts.
+        assert_eq!(
+            crate::packets::encode(&SetPassengers {
+                vehicle_id: 9,
+                passengers: vec![300, 2],
+            }),
+            [0x6D, 9, 2, 0xAC, 0x02, 2]
+        );
+        assert_eq!(
+            crate::packets::encode(&SetPassengers {
+                vehicle_id: 9,
+                passengers: Vec::new(),
+            }),
+            [0x6D, 9, 0]
+        );
+        // Two four-byte ints, the holder 0 for a lead cut.
+        assert_eq!(
+            crate::packets::encode(&SetEntityLink {
+                leashed_id: 300,
+                holder_id: 0,
+            }),
+            [0x66, 0, 0, 0x01, 0x2C, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            crate::packets::encode(&SetEntityLink {
+                leashed_id: 1,
+                holder_id: -1,
+            }),
+            [0x66, 0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+        // The sound's id plus one (1851), the source, the entity, volume 1, pitch 0.5
+        // and the seed.
+        assert_eq!(
+            crate::packets::encode(&SoundEntity {
+                sound: 1850,
+                source: 6,
+                entity_id: 300,
+                volume: 1.0,
+                pitch: 0.5,
+                seed: 1,
+            }),
+            [
+                0x76, 0xBB, 0x0E, 6, 0xAC, 0x02, 0x3F, 0x80, 0, 0, 0x3F, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 1
+            ]
+        );
+        // A sound sent whole is not modelled.
+        assert!(ClientboundPlay::decode(&[0x76, 0, 6, 1, 0, 0, 0, 0]).is_err());
+        // The entity, the off hand, a stab of 13 ticks.
+        assert_eq!(
+            crate::packets::encode(&SwingAnimation {
+                entity_id: 7,
+                hand: 1,
+                kind: swing_animation::STAB,
+                duration: 13,
+            }),
+            [0x7B, 7, 1, 2, 13]
+        );
+    }
+
+    /// Each serializer N5's entities need, as `SetEntityData` writes it: the index, the
+    /// serializer's id in the order `EntityDataSerializers` registers them, the value.
+    #[test]
+    fn the_entity_data_of_vehicles_stands_and_hanging_things_is_written_as_the_game_writes_it() {
+        let one = |index: u8, value: EntityDataValue| {
+            crate::packets::encode(&SetEntityData {
+                entity_id: 1,
+                values: vec![(index, value)],
+            })
+        };
+        let with = |body: &[u8]| {
+            let mut expected = vec![0x65, 1];
+            expected.extend(body);
+            expected.push(0xFF);
+            expected
+        };
+        // `INT`, 1: a VarInt.
+        assert_eq!(one(8, EntityDataValue::Int(300)), with(&[8, 1, 0xAC, 0x02]));
+        assert_eq!(
+            one(8, EntityDataValue::Int(-1)),
+            with(&[8, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F])
+        );
+        // `FLOAT`, 3: four bytes.
+        assert_eq!(
+            one(10, EntityDataValue::Float(1.0)),
+            with(&[10, 3, 0x3F, 0x80, 0, 0])
+        );
+        // `BOOLEAN`, 8: one byte.
+        assert_eq!(one(11, EntityDataValue::Boolean(true)), with(&[11, 8, 1]));
+        // `ROTATIONS`, 9: x, y and z as floats (a left arm's default pose).
+        assert_eq!(
+            one(18, EntityDataValue::Rotations([-10.0, 0.0, 10.0])),
+            with(&[18, 9, 0xC1, 0x20, 0, 0, 0, 0, 0, 0, 0x41, 0x20, 0, 0])
+        );
+        // `OPTIONAL_BLOCK_POS`, 11: a presence flag, then the long.
+        assert_eq!(
+            one(14, EntityDataValue::OptionalBlockPos(None)),
+            with(&[14, 11, 0])
+        );
+        let at = Position { x: 1, y: -60, z: 2 };
+        assert_eq!(
+            one(14, EntityDataValue::OptionalBlockPos(Some(at))),
+            with(&[14, 11, 1, 0, 0, 0, 0x40, 0, 0, 0x2F, 0xC4])
+        );
+        // `DIRECTION`, 12: the 3D value.
+        assert_eq!(
+            one(8, EntityDataValue::Direction(direction::SOUTH)),
+            with(&[8, 12, 3])
+        );
+        // `OPTIONAL_BLOCK_STATE`, 15: the state's id, 0 for none.
+        assert_eq!(
+            one(11, EntityDataValue::OptionalBlockState(0)),
+            with(&[11, 15, 0])
+        );
+        assert_eq!(
+            one(11, EntityDataValue::OptionalBlockState(300)),
+            with(&[11, 15, 0xAC, 0x02])
+        );
+        // `PAINTING_VARIANT`, 34: a holder, the variant's id plus one.
+        assert_eq!(
+            one(9, EntityDataValue::PaintingVariant(4)),
+            with(&[9, 34, 5])
+        );
+        // `DYE_COLOR`, 43: the dye's id.
+        assert_eq!(one(8, EntityDataValue::DyeColor(15)), with(&[8, 43, 15]));
+        // A painting variant sent whole is not modelled.
+        assert!(ClientboundPlay::decode(&[0x65, 1, 9, 34, 0, 0xFF]).is_err());
+    }
+
+    #[test]
+    fn the_packets_and_the_entity_data_of_riding_round_trip() {
+        use ClientboundPlay as Client;
+        use ServerboundPlay as Server;
+        assert_round_trip(Attack { entity_id: -5 }, Server::decode, Server::Attack);
+        assert_round_trip(
+            Interact {
+                entity_id: 9,
+                hand: 1,
+                location: [1.0, 0.0, -1.0],
+                using_secondary_action: true,
+            },
+            Server::decode,
+            Server::Interact,
+        );
+        assert_round_trip(
+            ServerboundMoveVehicle {
+                x: -1.5e7,
+                y: 319.99,
+                z: 0.1,
+                yaw: -179.5,
+                pitch: 12.25,
+                on_ground: false,
+            },
+            Server::decode,
+            Server::ServerboundMoveVehicle,
+        );
+        assert_round_trip(
+            PaddleBoat {
+                left: false,
+                right: true,
+            },
+            Server::decode,
+            Server::PaddleBoat,
+        );
+        assert_round_trip(
+            PickItemFromEntity {
+                entity_id: 70_000,
+                include_data: false,
+            },
+            Server::decode,
+            Server::PickItemFromEntity,
+        );
+        for action in player_command::STOP_SLEEPING..=player_command::START_FALL_FLYING {
+            assert_round_trip(
+                PlayerCommand {
+                    entity_id: 12,
+                    action,
+                    data: 0,
+                },
+                Server::decode,
+                Server::PlayerCommand,
+            );
+        }
+        assert_round_trip(
+            ClientboundMoveVehicle {
+                x: 3.0,
+                y: -64.0,
+                z: 1e6,
+                yaw: 45.0,
+                pitch: -90.0,
+            },
+            Client::decode,
+            Client::ClientboundMoveVehicle,
+        );
+        assert_round_trip(
+            SetPassengers {
+                vehicle_id: 4,
+                passengers: vec![5, 600_000, -1],
+            },
+            Client::decode,
+            Client::SetPassengers,
+        );
+        assert_round_trip(
+            SetEntityLink {
+                leashed_id: 8,
+                holder_id: 9,
+            },
+            Client::decode,
+            Client::SetEntityLink,
+        );
+        assert_round_trip(
+            SoundEntity {
+                sound: 0,
+                source: 6,
+                entity_id: 3,
+                volume: 0.8,
+                pitch: 1.2,
+                seed: -7,
+            },
+            Client::decode,
+            Client::SoundEntity,
+        );
+        assert_round_trip(
+            SwingAnimation {
+                entity_id: 3,
+                hand: 0,
+                kind: swing_animation::WHACK,
+                duration: swing_animation::DEFAULT_DURATION,
+            },
+            Client::decode,
+            Client::SwingAnimation,
+        );
+        assert_round_trip(
+            SetEntityData {
+                entity_id: 9,
+                values: vec![
+                    (8, EntityDataValue::Int(-3)),
+                    (9, EntityDataValue::Float(40.5)),
+                    (11, EntityDataValue::Boolean(false)),
+                    (16, EntityDataValue::Rotations([1.0, -2.0, 3.5])),
+                    (14, EntityDataValue::OptionalBlockPos(None)),
+                    (
+                        14,
+                        EntityDataValue::OptionalBlockPos(Some(Position {
+                            x: -7,
+                            y: 300,
+                            z: 9,
+                        })),
+                    ),
+                    (8, EntityDataValue::Direction(direction::EAST)),
+                    (11, EntityDataValue::OptionalBlockState(27_000)),
+                    (9, EntityDataValue::PaintingVariant(0)),
+                    (8, EntityDataValue::DyeColor(0)),
+                ],
+            },
+            Client::decode,
+            Client::SetEntityData,
         );
     }
 }

@@ -1611,6 +1611,13 @@ impl Bot {
             | ClientboundPlay::GameEvent(_)
             | ClientboundPlay::SetEntityData(_)
             | ClientboundPlay::Animate(_)
+            // The bots neither ride nor lead anything yet, so what is said about riding,
+            // leads and swings is not theirs to keep.
+            | ClientboundPlay::ClientboundMoveVehicle(_)
+            | ClientboundPlay::SetPassengers(_)
+            | ClientboundPlay::SetEntityLink(_)
+            | ClientboundPlay::SoundEntity(_)
+            | ClientboundPlay::SwingAnimation(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)
