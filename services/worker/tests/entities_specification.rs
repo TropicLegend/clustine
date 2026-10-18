@@ -405,6 +405,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
         hops,
         data,
         motion,
+        ..
     } = state.kind.clone()
     else {
         panic!("an item");

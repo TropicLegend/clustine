@@ -40,6 +40,7 @@ fn item(key: u64, chunk: ChunkPos, hops: u32) -> EntityState {
                 thrower: Some(player(1).0),
                 health: 5,
             },
+            riding: Default::default(),
         },
         pose: Pose {
             position: Vec3::new(

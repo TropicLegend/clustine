@@ -81,6 +81,7 @@ pub(crate) fn state_of(entity: &Entity) -> EntityState {
             motion: entity.motion,
             hops: entity.hops,
             data: entity.data.clone(),
+            riding: entity.riding.clone(),
         },
         pose: Pose {
             position: clustine_world::Vec3::new(

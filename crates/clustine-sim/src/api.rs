@@ -238,6 +238,9 @@ pub enum EntityKind {
         motion: [f64; 3],
         hops: u32,
         data: EntityData,
+        /// What it rides, who rides it and who holds its leash, so that a client shown
+        /// it from a snapshot is shown those too.
+        riding: clustine_world::Riding,
     },
 }
 

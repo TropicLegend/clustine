@@ -341,6 +341,7 @@ fn a_thrown_item_leaves_from_below_the_eyes_along_the_look_with_the_game_s_motio
             motion,
             hops,
             data,
+            ..
         } = &state.kind
         else {
             panic!("an entity other than a player: {state:?}");

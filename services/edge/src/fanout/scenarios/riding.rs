@@ -34,6 +34,7 @@ fn cushion(key: u64) -> EntityState {
                 },
                 colour: 0,
             },
+            riding: Default::default(),
         },
         pose: Pose::at(SPAWN),
     }
@@ -162,6 +163,40 @@ async fn a_client_newly_shown_a_vehicle_is_told_who_rides_it() {
     assert!(edge.shows(&mut rider, WEST, HOME).await);
     edge.tell(WEST, ticked(vec![passengers(1 << 32, &[5])]));
     edge.quiet().await;
+    let mut late = edge.joined(player(2), EntityId(6)).await;
+    edge.quiet().await;
+    assert!(edge.shows(&mut late, WEST, HOME).await);
+    late.drain();
+    let seat_id = late.ledger_id(1 << 32);
+    let rider_id = late.ledger_id(5);
+    assert!(
+        late.passengers
+            .iter()
+            .any(|told| told.vehicle_id == seat_id && told.passengers == [rider_id]),
+        "{:?}",
+        late.passengers
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_of_a_ridden_vehicle_tells_a_client_who_rides_it() {
+    let mut edge = Harness::start().await;
+    let mut rider = edge.joined(player(1), EntityId(5)).await;
+    edge.quiet().await;
+    let mut seat = cushion(1 << 32);
+    if let EntityKind::Other { riding, .. } = &mut seat.kind {
+        riding.passengers.push(clustine_world::Seat {
+            key: EntityId(5),
+            player: true,
+            pending: None,
+        });
+    }
+    let ask = edge.ask(WEST, HOME);
+    edge.tell(
+        WEST,
+        snapshot_of(HOME, ask, empty_chunk(), vec![own(1, EntityId(5)), seat]),
+    );
+    assert!(edge.shows(&mut rider, WEST, HOME).await);
     let mut late = edge.joined(player(2), EntityId(6)).await;
     edge.quiet().await;
     assert!(edge.shows(&mut late, WEST, HOME).await);

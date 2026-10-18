@@ -26,6 +26,7 @@ fn thrown(key: u64, x: f64, hops: u32) -> EntityState {
                 thrower: None,
                 health: 5,
             },
+            riding: Default::default(),
         },
         pose: Pose {
             position: Vec3::new(x, -58.68, 0.5),

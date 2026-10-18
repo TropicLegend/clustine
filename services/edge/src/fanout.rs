@@ -3108,6 +3108,10 @@ impl Fanout {
                     }
                     None => Tracker::new(seen, data, start),
                 };
+                let riding = match &state.kind {
+                    EntityKind::Other { riding, .. } => riding.clone(),
+                    EntityKind::Player { .. } => clustine_world::Riding::default(),
+                };
                 let shown = Shown {
                     state,
                     from,
@@ -3115,6 +3119,9 @@ impl Fanout {
                     handed_on: None,
                 };
                 self.entities.insert(entity, shown);
+                // Before it is shown, so that a client shown it is told who rides it and
+                // who holds it, as a vehicle's and a leashee's pairing tells it.
+                self.note_riding(entity, &riding);
                 self.refresh_entity(entity, false).await;
                 return;
             }
@@ -3550,6 +3557,47 @@ impl Fanout {
         for (player, packet) in outgoing {
             self.send_to_player(player, [packet]).await;
         }
+    }
+
+    /// Takes in, from a report of the whole entity (a spawn, a snapshot), whom it carries
+    /// and who holds its leash, which a client newly shown it is then told. A leash tied
+    /// to a fence is held by the knot there, which the edge finds among what it shows.
+    fn note_riding(&mut self, entity: EntityId, riding: &clustine_world::Riding) {
+        let passengers: Vec<EntityId> = riding.passengers.iter().map(|seat| seat.key).collect();
+        if let Some(before) = self.passengers.remove(&entity) {
+            for rider in before {
+                if self.vehicle_of.get(&rider) == Some(&entity) {
+                    self.vehicle_of.remove(&rider);
+                }
+            }
+        }
+        for rider in &passengers {
+            self.vehicle_of.insert(*rider, entity);
+        }
+        if !passengers.is_empty() {
+            self.passengers.insert(entity, passengers);
+        }
+        let holder = riding
+            .leash
+            .as_deref()
+            .and_then(|leash| match leash.holder {
+                clustine_world::LeashHolder::Entity(key) => Some(key),
+                clustine_world::LeashHolder::Fence(fence) => {
+                    self.entities
+                        .iter()
+                        .find_map(|(key, shown)| match &shown.state.kind {
+                            EntityKind::Other {
+                                data: EntityData::LeashKnot { attached },
+                                ..
+                            } if attached.block == fence => Some(*key),
+                            _ => None,
+                        })
+                }
+            });
+        match holder {
+            Some(holder) => self.leashes.insert(entity, holder),
+            None => self.leashes.remove(&entity),
+        };
     }
 
     /// Takes in who holds the leash of `entity` now, by its region's word, and tells
@@ -20484,6 +20532,7 @@ mod scenarios {
                 motion: [0.0, -0.0784, 0.0],
                 hops: 0,
                 data: data.clone(),
+                riding: Default::default(),
             },
             pose: Pose {
                 position: Vec3::new(3.5, -60.0, 3.5),

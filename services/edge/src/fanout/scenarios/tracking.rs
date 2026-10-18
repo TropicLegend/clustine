@@ -59,6 +59,7 @@ fn other(key: u64, position: [f64; 3], hops: u32, data: EntityData) -> EntitySta
             motion: [0.0; 3],
             hops,
             data,
+            riding: Default::default(),
         },
         pose: Pose {
             position: Vec3::new(position[0], position[1], position[2]),

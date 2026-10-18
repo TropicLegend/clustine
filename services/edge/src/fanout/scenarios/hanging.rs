@@ -64,6 +64,7 @@ fn hanging(key: u64, kind: i32, position: [f64; 3], yaw: f32, data: EntityData) 
             motion: [0.0; 3],
             hops: 0,
             data,
+            riding: Default::default(),
         },
         pose: Pose {
             position: Vec3::new(position[0], position[1], position[2]),

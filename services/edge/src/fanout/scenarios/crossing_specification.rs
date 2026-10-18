@@ -52,6 +52,7 @@ fn item(position: [f64; 3], hops: u32) -> EntityState {
                 thrower: None,
                 health: 5,
             },
+            riding: Default::default(),
         },
         pose: Pose {
             position: Vec3::new(position[0], position[1], position[2]),

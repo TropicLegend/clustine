@@ -38,6 +38,7 @@ fn boat(key: u64) -> EntityState {
                 status: [3; 2],
                 contents: Vec::new(),
             },
+            riding: Default::default(),
         },
         pose: Pose::at(Vec3::new(3.5, -60.0, 0.5)),
     }
@@ -175,6 +176,7 @@ async fn a_knot_is_spawned_at_its_fences_corner_with_no_data() {
                     direction: 0,
                 },
             },
+            riding: Default::default(),
         },
         pose: Pose::at(Vec3::new(2.5, -59.625, 3.5)),
     };

@@ -260,6 +260,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             motion: item.motion,
             hops: 0,
             data: item.data.clone(),
+            riding: Default::default(),
         }
     );
     // And it is among the region's entities, after the players, where its first tick
