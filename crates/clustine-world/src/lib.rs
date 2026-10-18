@@ -7,6 +7,7 @@ mod bytes;
 mod change;
 mod chunk;
 mod effects;
+mod entity;
 pub mod generation;
 mod light;
 mod position;
@@ -20,6 +21,10 @@ pub use chunk::{
     light_tells_apart,
 };
 pub use effects::{Due, Effect, EffectId, EffectKey, Effected, FiledEffect};
+pub use entity::{
+    ARMOUR_START, Entity, EntityChange, EntityData, EntityField, HOTBAR_SLOTS, INVENTORY_SLOTS,
+    Inventory, ItemStack, MAIN_START, MAX_CHUNK_ENTITIES, OFF_HAND,
+};
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,

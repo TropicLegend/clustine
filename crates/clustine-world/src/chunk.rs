@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::generation::{Done, Failed, GeneratorSettings, Wanted};
 use crate::light::{Light, SectionLight};
-use crate::{Biome, BlockPos, COLUMNS_PER_CHUNK, ChunkPos, SECTION_SIZE, Section};
+use crate::{
+    Biome, BlockPos, COLUMNS_PER_CHUNK, ChunkPos, Entity, EntityChange, EntityId, SECTION_SIZE,
+    Section,
+};
 
 /// The most data one block entity may have, in bytes, and the most all of a chunk's
 /// may have together. Data is refused where it comes in, so that no chunk can be made
@@ -255,6 +258,9 @@ pub struct Chunk {
     /// The block events of this chunk's blocks that outlived their tick, in the order
     /// of the queue they wait in.
     events: Vec<KeptEvent>,
+    /// The entities other than players in the chunk, ascending by key
+    /// (`docs/adr/0028-entities.md`, section 2).
+    entities: Vec<Entity>,
 }
 
 impl PartialEq for Chunk {
@@ -267,6 +273,7 @@ impl PartialEq for Chunk {
             && self.marks == other.marks
             && self.seams == other.seams
             && self.events == other.events
+            && self.entities == other.entities
     }
 }
 
@@ -296,6 +303,7 @@ impl Chunk {
             marks: Vec::new(),
             seams: Vec::new(),
             events: Vec::new(),
+            entities: Vec::new(),
         };
         chunk.heights = chunk.scanned_heights();
         chunk.block_entities = chunk.owed_block_entities(BTreeMap::new());
@@ -615,14 +623,55 @@ impl Chunk {
     }
 
     /// The chunk as an edge is handed it: without the ticks, the marks, the seams and
-    /// the block events, which are the simulation's and the store's.
+    /// the block events, which are the simulation's and the store's, and without the
+    /// entities, which an edge is told of as entities.
     pub fn for_viewers(&self) -> Self {
         Self {
             ticks: Vec::new(),
             marks: Vec::new(),
             seams: Vec::new(),
             events: Vec::new(),
+            entities: Vec::new(),
             ..self.clone()
+        }
+    }
+
+    /// The entities other than players in the chunk, ascending by key.
+    pub fn entities(&self) -> &[Entity] {
+        &self.entities
+    }
+
+    /// Takes `entities` as the chunk's; of two with one key, the later.
+    pub fn set_entities(&mut self, entities: Vec<Entity>) {
+        let mut kept: BTreeMap<EntityId, Entity> = BTreeMap::new();
+        for entity in entities {
+            kept.insert(entity.key, entity);
+        }
+        self.entities = kept.into_values().collect();
+    }
+
+    /// Does what a tick did to an entity of the chunk: a whole entity takes the place of
+    /// the one with its key or is added, one gone is removed, and fields set are set on
+    /// the entity with the key. A change of a key the chunk does not have is passed
+    /// over, as replay from any state at or after the last checkpoint needs. Nothing is
+    /// refused here: what a chunk may hold is the simulation's to decide before it makes
+    /// a change.
+    pub fn apply_entity(&mut self, change: &EntityChange) {
+        let at = self
+            .entities
+            .binary_search_by_key(&change.key(), |entity| entity.key);
+        match (change, at) {
+            (EntityChange::Whole(entity), Ok(at)) => self.entities[at] = entity.clone(),
+            (EntityChange::Whole(entity), Err(at)) => self.entities.insert(at, entity.clone()),
+            (EntityChange::Gone(_), Ok(at)) => {
+                self.entities.remove(at);
+            }
+            (EntityChange::Set(_, fields), Ok(at)) => {
+                for field in fields {
+                    field.set(&mut self.entities[at]);
+                }
+            }
+            (EntityChange::Gone(_) | EntityChange::Set(..), Err(_)) => {}
         }
     }
 
@@ -648,6 +697,7 @@ struct ChunkRepr {
     marks: Vec<InChunk>,
     seams: Vec<Seam>,
     events: Vec<KeptEvent>,
+    entities: Vec<Entity>,
 }
 
 impl From<Chunk> for ChunkRepr {
@@ -663,6 +713,7 @@ impl From<Chunk> for ChunkRepr {
             marks: chunk.marks,
             seams: chunk.seams,
             events: chunk.events,
+            entities: chunk.entities,
         }
     }
 }
@@ -712,6 +763,14 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.marks = repr.marks;
         chunk.set_seams(repr.seams);
         chunk.events = repr.events;
+        if !repr
+            .entities
+            .windows(2)
+            .all(|pair| pair[0].key < pair[1].key)
+        {
+            return Err("a chunk's entities are not ascending by key, each once".to_owned());
+        }
+        chunk.entities = repr.entities;
         Ok(chunk)
     }
 }
@@ -779,6 +838,61 @@ mod tests {
 
     fn empty() -> Chunk {
         Chunk::empty(overworld(), Biome(0))
+    }
+
+    fn item(key: u64, x: f64) -> Entity {
+        Entity {
+            key: EntityId(key),
+            kind: 72,
+            uuid: uuid::Uuid::from_u128(u128::from(key)),
+            position: [x, -59.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+            hops: 0,
+            age: 0,
+            data: crate::EntityData::Item {
+                stack: crate::ItemStack { item: 1, count: 1 },
+                pick_up_delay: 0,
+                thrower: None,
+            },
+        }
+    }
+
+    #[test]
+    fn entity_changes_applied_in_order_leave_the_chunk_as_the_tick_left_it_whatever_was_applied_before()
+     {
+        use crate::{EntityChange, EntityField};
+        let changes = [
+            EntityChange::Whole(item(9, 1.5)),
+            EntityChange::Whole(item(4, 2.5)),
+            EntityChange::Set(EntityId(9), vec![EntityField::Position([3.5, -59.0, 0.5])]),
+            EntityChange::Gone(EntityId(4)),
+            EntityChange::Set(EntityId(4), vec![EntityField::Age(3)]),
+        ];
+        let mut chunk = empty();
+        for change in &changes {
+            chunk.apply_entity(change);
+        }
+        let mut expected = item(9, 1.5);
+        expected.position = [3.5, -59.0, 0.5];
+        assert_eq!(chunk.entities(), [expected.clone()]);
+        // Replayed over a chunk that has some of them already, as a restore does from a
+        // stored chunk saved in the middle: the same.
+        let mut again = chunk.clone();
+        for change in &changes {
+            again.apply_entity(change);
+        }
+        assert_eq!(again.entities(), [expected]);
+        // Kept ascending by key, and part of what a chunk is equal by.
+        let mut two = empty();
+        two.apply_entity(&EntityChange::Whole(item(9, 1.5)));
+        two.apply_entity(&EntityChange::Whole(item(4, 2.5)));
+        assert_eq!(two.entities()[0].key, EntityId(4));
+        assert_ne!(two, empty());
+        assert!(two.shows_the_same(&empty()));
+        assert!(two.for_viewers().entities().is_empty());
     }
 
     /// An edge keeps a chunk's light beside the chunk: it can take it out, with what

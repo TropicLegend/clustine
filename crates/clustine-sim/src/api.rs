@@ -40,13 +40,7 @@ impl Pose {
 /// The number of slots in a player's hotbar.
 pub const HOTBAR_SLOTS: usize = 9;
 
-/// A number of items of one kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ItemStack {
-    /// Id in the item registry.
-    pub item: i32,
-    pub count: i32,
-}
+pub use clustine_world::ItemStack;
 
 /// A side of a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
