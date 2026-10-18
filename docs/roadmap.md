@@ -138,21 +138,35 @@ use; N2b and N2c, entities kept in their chunks and in every commit, saved apart
 the blocks, replayed, copied and folded, and the item thrown by Q, ctrl+Q and the
 creative screen, shown to every client in view.
 
-**What a player meets until N4** (physics and pick-up): a thrown item falls on the
-thrower's screen, since the client moves items itself, while the server keeps it where
-it was thrown, so a client that comes into view later sees it in the air; items are not
-picked up and do not despawn. Named differences to mend with N4: entities tick where a
-chunk's 3x3 is loaded or copied, not its 5x5 (ADR-0028, section 2); an entity's `hops`
-rises at a merge too, which the edge takes as it should; an entity moving into another
-chunk must be committed as gone from one and whole in the other, since a chunk's file
-refuses an entity outside it. Found by the tests written from the plan
-(`n2-spec`, 36 of them, which found no ordering or durability fault): a Q pressed right
-after crossing a pinned line is refused and the slot put back, a try 150 ms later
-throwing (N3 mends it, an item thrown into another region's chunk going as an arrival);
-a creative throw of more than an item's own stack is let through, the data having no
-stack sizes yet (a finding kept as an ignored test); a removal does not yet carry the
-entity's `hops`, which N4's pick-up and despawning need; `Restored::issued` is left from
-before N1 and goes when nothing reads it.
+**N4, physics, items and falling blocks** (2026-10-18, [plan](groundwork/n4-plan.md) and
+[brief](groundwork/n4-brief.md) read from the jar): the game's data for physics
+(voxel collision shapes, each block's friction, speed, jump and bounce, entity sizes,
+items' stack sizes, the block loot tables) extracted; the game's collider and
+`Entity.move`; items fall, bounce on slime and beds, slide on ice, float and are pushed
+by flowing water, burn in lava and fire but netherite, merge, despawn after five
+minutes and are picked up by a creative player after their two seconds; sand, gravel,
+concrete powder, anvils, the dragon egg, scaffolding and stalactites fall as entities;
+blocks broken by a rule (an update, water, decay, a piston) drop by their loot tables,
+a creative player's own break nothing; pistons push items and falling blocks, slime
+launches them, honey carries them; clients are sent what the game's `ServerEntity` sends.
+A resting entity's age reaches the store at every checkpoint and stop (which N2 missed).
+
+**What a player meets until N3** (crossing): an entity stops at every line between
+regions, also between regions that follow players, and is neither lost nor doubled
+there; an item cannot be picked up across a line. Named differences: entities tick where
+a chunk's 3x3 is loaded or copied, not its 5x5 (ADR-0028, section 2); `hops` rises at a
+merge too; a client may be left about 0.003 of a block from where a resting item lies
+(the game corrects it every 60 ticks; the edge sends nothing once it stops being
+reported), and an entity's periodic updates are sent late while its region reports
+nothing (a worker sends no delta in a tick without events); each edge counts an
+entity's update ticks from its first report, so two edges' phases differ; a region
+restored while a piston moves pushes a tick behind the one that ran, as the game does
+after a reload; draws are the game's in distribution, not in value; no entity damage
+from anvils or stalactites; container contents, experience and silverfish are not
+dropped; containers, banners, heads and hives drop the plain item (stacks carry no
+components yet). Found by the tests written from the plan of N2 (`n2-spec`, 36, no
+ordering or durability fault): a Q pressed right after crossing a pinned line is
+refused and the slot put back (N3 mends it); `Restored::issued` is left from before N1.
 
 S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
