@@ -8,6 +8,9 @@
 //! move an entity at most 0.51 along an axis (`limitPistonMovement`), the moving blocks
 //! going the same way do not stop it, and the effects of the blocks on its way follow.
 //!
+//! A block-attached entity (a frame, a painting, a cushion, a knot) in the way is popped,
+//! as any move of it breaks it (`BlockAttachedEntity.move`).
+//!
 //! The entities are the items and falling blocks of the region's chunks; a push commits
 //! as their own moves do (a change of place, of being on the ground, commits the record
 //! with its motion), one pushed into a chunk the region has not loaded is sent there
@@ -31,6 +34,7 @@
 use clustine_world::{BlockPos, ChunkPos, Entity, EntityData, EntityId};
 
 use super::Region;
+use super::attached::is_block_attached;
 use super::block_entities::Moving;
 use super::items::{Memory, View};
 use crate::api::{TickOutput, Tracked};
@@ -49,7 +53,7 @@ const STUCK_TOP: f64 = 1.500_001_000_000_000_1;
 /// An entity as a piston moves it.
 enum Pushed {
     Item(Box<Item>),
-    Falling(Body),
+    Falling(Box<Body>),
 }
 
 impl Pushed {
@@ -117,6 +121,22 @@ impl Region {
         let axis = piston::axis(direction);
         let along = f64::from(piston::step(direction)[axis]);
         for (record, chunk) in found {
+            if is_block_attached(&record.data) {
+                // `BlockAttachedEntity.move`: a push of any length pops it.
+                let entity = self.entity_box(&record);
+                let reached = boxes
+                    .iter()
+                    .map(|one| movement_area(one.moved(offset), direction, d))
+                    .filter(|area| area.intersects(entity))
+                    .map(|area| movement(area, direction, entity))
+                    .fold(0.0_f64, f64::max);
+                if reached > 0.0 {
+                    let amount = reached.min(d) + PUSH_OFFSET;
+                    let step = piston::step(direction).map(f64::from);
+                    self.moved_attached(record.key, step.map(|along| along * amount), output);
+                }
+                continue;
+            }
             let Some(mut pushed) = self.pushed_of(&record, chunk) else {
                 continue;
             };
@@ -258,7 +278,7 @@ impl Region {
         match record.data {
             EntityData::Item { .. } => Some(Pushed::Item(Box::new(self.item_of(record, chunk)?))),
             EntityData::FallingBlock { .. } => {
-                Some(Pushed::Falling(self.falling_body(record, chunk)))
+                Some(Pushed::Falling(Box::new(self.falling_body(record, chunk))))
             }
             _ => None,
         }
@@ -348,6 +368,7 @@ impl Region {
                         last_movements: Vec::new(),
                         stuck_speed: body.stuck_speed,
                         no_physics: false,
+                        ticks_since_check: 0,
                     },
                 );
                 let mut flags = 0;

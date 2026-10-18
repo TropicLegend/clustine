@@ -10,6 +10,7 @@ use clustine_world::BlockPos;
 
 use super::aabb::{Aabb, lerp};
 use super::collide::{self, Context};
+use super::entities::Mover;
 use super::{Vec3, World};
 
 /// The game's air drag of entities that do not change it, `0.98f`.
@@ -65,6 +66,8 @@ pub(crate) struct Body {
     pub(crate) fell_on: Option<(f64, BlockPos)>,
     /// The way a piston is moving it, while it does (the game's `NOCLIP`).
     pub(crate) noclip: Option<Face>,
+    /// What it is to the entities it may meet.
+    pub(crate) mover: Mover,
 }
 
 impl Body {
@@ -186,7 +189,7 @@ impl Body {
             self.stuck_speed = [0.0; 3];
             self.motion = [0.0; 3];
         }
-        let out = collide::collide(world, self.context(), &self.bounds(), vector);
+        let out = collide::collide(world, self.context(), &self.mover, &self.bounds(), vector);
         let moved = super::length_sqr(out);
         if moved > 1.0e-7 || super::length_sqr(vector) - moved < 1.0e-7 {
             if self.fall_distance != 0.0 && moved >= 1.0 {

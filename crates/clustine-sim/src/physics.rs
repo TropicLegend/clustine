@@ -12,6 +12,7 @@
 pub(crate) mod aabb;
 pub(crate) mod body;
 pub(crate) mod collide;
+pub(crate) mod entities;
 pub(crate) mod fluids;
 pub(crate) mod item;
 pub(crate) mod piston;
@@ -37,6 +38,21 @@ pub(crate) trait World {
     /// gone. A world without block entities has none, and the moving piston is empty.
     fn moving_block(&self, _pos: BlockPos) -> Option<piston::MovingBlock> {
         None
+    }
+
+    /// The entities of the region's loaded and copied chunks whose boxes meet `bounds`,
+    /// as obstacles, in the order of the game's lookups (`docs/groundwork/n5-brief.md`,
+    /// finding 18). A world without entities has none.
+    fn entity_colliders(&self, _bounds: &aabb::Aabb) -> Vec<entities::Collider> {
+        Vec::new()
+    }
+
+    /// The players whose boxes meet `bounds`, as obstacles: players are not entities of
+    /// the region's chunks, and none is given yet (a named difference of
+    /// `docs/groundwork/n5-plan.md`, section 7 item 3, until the region passes the
+    /// boxes it knows).
+    fn player_colliders(&self, _bounds: &aabb::Aabb) -> Vec<entities::Collider> {
+        Vec::new()
     }
 
     /// The block at `pos`, air where [`World::block`] has none.

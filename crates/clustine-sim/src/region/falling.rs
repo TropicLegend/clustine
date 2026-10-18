@@ -31,6 +31,7 @@ use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{Memory, View, tracked};
 use super::random_ticks::Random;
+use super::riding::Relocated;
 use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT, fluid_block};
 use crate::api::{RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::Aabb;
@@ -285,6 +286,7 @@ impl Region {
             item: false,
             fell_on: None,
             noclip: None,
+            mover: self.mover_of(entity, position),
         };
         if memory.is_none() && body.on_ground {
             let view = View {
@@ -470,6 +472,7 @@ impl Region {
                 last_movements: Vec::new(),
                 stuck_speed: body.stuck_speed,
                 no_physics: false,
+                ticks_since_check: 0,
             },
         );
         let mut flags = 0;
@@ -672,6 +675,12 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let key = before.key;
+        let mut after = after;
+        let to = match self.relocate(position, before.position, &mut after, output) {
+            Relocated::Sent => return,
+            Relocated::Moved(to) => to,
+            Relocated::Stays => position,
+        };
         let bits = |values: [f64; 3]| values.map(f64::to_bits);
         let moved = bits(after.position) != bits(before.position);
         let block_of = |data: &EntityData| match data {
@@ -686,24 +695,7 @@ impl Region {
         let committed = moved
             || after.on_ground != before.on_ground
             || block_of(&after.data) != block_of(&before.data);
-        let to = after.chunk();
-        if to != position && !self.chunks.contains_key(&to) {
-            self.send_entity(position, after, output);
-            return;
-        }
-        if to != position {
-            let gone = EntityChange::Gone(key);
-            if let Some(chunk) = self.chunks.get_mut(&position) {
-                chunk.apply_entity(&gone);
-            }
-            output.entity_changes.push((position, gone));
-            let whole = EntityChange::Whole(after.clone());
-            if let Some(chunk) = self.chunks.get_mut(&to) {
-                chunk.apply_entity(&whole);
-            }
-            output.entity_changes.push((to, whole));
-            self.entity_chunks.insert(key, to);
-        } else {
+        if to == position {
             if committed {
                 let mut fields = Vec::new();
                 if moved {
@@ -732,11 +724,10 @@ impl Region {
         output.entities_ageing.push(to);
         let changed_block = block_of(&after.data) != block_of(&before.data);
         if committed || to != position {
-            output.events.push(RegionEvent::EntityTracked(tracked(
-                &after,
-                flags,
-                changed_block,
-            )));
+            let mut report = tracked(&after, flags, changed_block);
+            // A passenger is its unit's chunk's, wherever it sits.
+            report.chunk = to;
+            output.events.push(RegionEvent::EntityTracked(report));
         }
     }
 }

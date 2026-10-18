@@ -7,15 +7,17 @@
 //! A moving piston's shape is its block entity's ([`World::moving_block`]): the block
 //! where its move has taken it, and a retracting piston's base.
 //!
-//! No entity collides with these entities yet (boats, minecarts and shulkers come
-//! later), and the world border's shape is left out: Clustine has none, and the game's
-//! default lies near 30 million blocks out.
+//! Entities are obstacles too (`super::entities`): their boxes come before the blocks'
+//! shapes in a move, as `collectCollidersIgnoringWorldBorder` puts them. The world
+//! border's shape is left out: Clustine has none, and the game's default lies near 30
+//! million blocks out.
 
 use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, BlockState, Face, OffsetType, blocks};
 use clustine_world::BlockPos;
 
 use super::aabb::Aabb;
+use super::entities::Mover;
 use super::voxel::{Cells, Placed};
 use super::{Vec3, World};
 
@@ -203,19 +205,51 @@ pub(crate) fn axis_step_order(vector: Vec3) -> [usize; 3] {
 }
 
 /// `Shapes.collide(axis, box, shapes, d)`.
-fn collide_along(axis: usize, bounds: &Aabb, shapes: &[Found], mut d: f64) -> f64 {
-    for found in shapes {
+fn collide_along(axis: usize, bounds: &Aabb, shapes: &[Placed], mut d: f64) -> f64 {
+    for shape in shapes {
         if d.abs() < 1.0e-7 {
             return 0.0;
         }
-        d = found.shape.collide(axis, bounds, d);
+        d = shape.collide(axis, bounds, d);
     }
     d
 }
 
+/// `Shapes.create(box)` of an entity's box: one cell between its bounds.
+pub(crate) fn box_shape(bounds: &Aabb) -> Placed {
+    Placed {
+        cells: Cells::Box([
+            bounds.min[0],
+            bounds.min[1],
+            bounds.min[2],
+            bounds.max[0],
+            bounds.max[1],
+            bounds.max[2],
+        ]),
+        shift: None,
+        offset: [0.0; 3],
+    }
+}
+
+/// `EntityGetter.getEntityCollisions(mover, bounds)` over what `world` has: the
+/// region's entities, then the players it knows.
+pub(crate) fn entity_collisions<W: World + ?Sized>(
+    world: &W,
+    mover: &Mover,
+    bounds: &Aabb,
+) -> Vec<Aabb> {
+    let reach = bounds.inflate([1.0e-7; 3]);
+    super::entities::entity_collisions(
+        mover,
+        bounds,
+        &world.entity_colliders(&reach),
+        &world.player_colliders(&reach),
+    )
+}
+
 /// `Entity.collideWithShapes`: `vector` cut down axis by axis, in the order of
 /// [`axis_step_order`], by `shapes` in their order.
-pub(crate) fn collide_with_shapes(vector: Vec3, bounds: &Aabb, shapes: &[Found]) -> Vec3 {
+pub(crate) fn collide_with_shapes(vector: Vec3, bounds: &Aabb, shapes: &[Placed]) -> Vec3 {
     if shapes.is_empty() {
         return vector;
     }
@@ -230,18 +264,27 @@ pub(crate) fn collide_with_shapes(vector: Vec3, bounds: &Aabb, shapes: &[Found])
     moved
 }
 
-/// `Entity.collide` for an entity that steps up nothing and that no entity collides
-/// with: the move the blocks leave of `vector` for a box at `bounds`.
+/// `Entity.collide` for an entity that steps up nothing: the move the entities it meets
+/// and the blocks leave of `vector` for a box at `bounds`, the entities' boxes first.
 pub(crate) fn collide<W: World + ?Sized>(
     world: &W,
     context: Context,
+    mover: &Mover,
     bounds: &Aabb,
     vector: Vec3,
 ) -> Vec3 {
+    // `expandTowards(vector).expandTowards(0, maxUpStep, 0)`, the step 0.
+    let swept = bounds.expand_towards(vector);
+    let entities = entity_collisions(world, mover, &swept);
     if super::length_sqr(vector) == 0.0 {
         return vector;
     }
-    let shapes = block_collisions(world, context, &bounds.expand_towards(vector));
+    let mut shapes: Vec<Placed> = entities.iter().map(box_shape).collect();
+    shapes.extend(
+        block_collisions(world, context, &swept)
+            .into_iter()
+            .map(|found| found.shape),
+    );
     collide_with_shapes(vector, bounds, &shapes)
 }
 
@@ -274,9 +317,16 @@ pub(crate) fn find_supporting_block<W: World + ?Sized>(
     best
 }
 
-/// `CollisionGetter.noCollision(entity, bounds)`: no block's shape meets the box.
-pub(crate) fn no_collision<W: World + ?Sized>(world: &W, context: Context, bounds: &Aabb) -> bool {
+/// `CollisionGetter.noCollision(entity, bounds)`: no block's shape meets the box, and no
+/// entity the mover meets does.
+pub(crate) fn no_collision<W: World + ?Sized>(
+    world: &W,
+    context: Context,
+    mover: &Mover,
+    bounds: &Aabb,
+) -> bool {
     block_collisions(world, context, bounds).is_empty()
+        && entity_collisions(world, mover, bounds).is_empty()
 }
 
 #[cfg(test)]

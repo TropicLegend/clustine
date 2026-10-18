@@ -19,16 +19,23 @@ use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{EdgeDelta, EdgeState, EnteringState, PlayerState, RegionState, StateDelta};
 
 mod arrivals;
+mod attached;
 mod block_entities;
 mod block_events;
+mod boats;
+mod colliders;
+mod cushions;
 mod diodes;
 mod drops;
 mod entities;
 mod falling;
 mod fluids;
+mod hanging;
 mod instruments;
 mod items;
+mod knots;
 mod lends;
+mod minecarts;
 mod pistons;
 mod pressed;
 mod pushed;
@@ -36,8 +43,11 @@ mod rails;
 mod random_ticks;
 mod redstone;
 mod reshape;
+mod riding;
+mod stands;
 mod ticks;
 mod updates;
+mod vehicles;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
@@ -2764,6 +2774,7 @@ mod tests {
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;
+    mod riding;
     mod scheduled_ticks;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);

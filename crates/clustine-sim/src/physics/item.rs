@@ -258,8 +258,12 @@ impl Item {
             self.body.apply_gravity();
         }
         let context = self.body.context();
-        self.no_physics =
-            !collide::no_collision(world, context, &self.body.bounds().deflate(1.0e-7));
+        self.no_physics = !collide::no_collision(
+            world,
+            context,
+            &self.body.mover,
+            &self.body.bounds().deflate(1.0e-7),
+        );
         if self.no_physics {
             let bounds = self.body.bounds();
             let centre = [

@@ -30,6 +30,7 @@ use clustine_world::{
 
 use super::Region;
 use super::random_ticks::Random;
+use super::riding::Relocated;
 use crate::api::{PlayerEvent, RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::Aabb;
 use crate::physics::body::{Body, Movement};
@@ -46,6 +47,9 @@ pub(crate) struct Memory {
     /// `noPhysics` as its last tick left it, which a piston's push between its ticks
     /// reads.
     pub(crate) no_physics: bool,
+    /// A block-attached entity's `ticksSinceLastCheck`, which starts again at a
+    /// take-in as at the game's load (`docs/groundwork/n5-plan.md`, section 7 item 7).
+    pub(crate) ticks_since_check: u32,
 }
 
 /// The region as the physics of one entity read it: its loaded and copied chunks, and
@@ -74,6 +78,10 @@ impl World for View<'_> {
 
     fn has_chunk(&self, chunk: ChunkPos) -> bool {
         self.region.readable(chunk)
+    }
+
+    fn entity_colliders(&self, bounds: &Aabb) -> Vec<physics::entities::Collider> {
+        self.region.colliders_in(bounds)
     }
 }
 
@@ -177,6 +185,7 @@ impl Region {
             item: true,
             fell_on: None,
             noclip: None,
+            mover: self.mover_of(entity, position),
         };
         if memory.is_none() && body.on_ground {
             // As a move would have found it.
@@ -348,8 +357,15 @@ impl Region {
                 last_movements: item.last_movements.clone(),
                 stuck_speed: item.body.stuck_speed,
                 no_physics: item.no_physics,
+                ticks_since_check: 0,
             },
         );
+        let mut after = after;
+        let to = match self.relocate(position, before.position, &mut after, output) {
+            Relocated::Sent => return,
+            Relocated::Moved(to) => to,
+            Relocated::Stays => position,
+        };
         let bits = |values: [f64; 3]| values.map(f64::to_bits);
         let moved = bits(after.position) != bits(before.position);
         let stack_changed = item_parts(&after.data).map(|(stack, _)| stack)
@@ -358,24 +374,7 @@ impl Region {
             || after.on_ground != before.on_ground
             || item_parts(&after.data) != item_parts(&before.data)
             || burning(&after) != burning(before);
-        let to = after.chunk();
-        if to != position && !self.chunks.contains_key(&to) {
-            self.send_entity(position, after, output);
-            return;
-        }
-        if to != position {
-            let gone = EntityChange::Gone(key);
-            if let Some(chunk) = self.chunks.get_mut(&position) {
-                chunk.apply_entity(&gone);
-            }
-            output.entity_changes.push((position, gone));
-            let whole = EntityChange::Whole(after.clone());
-            if let Some(chunk) = self.chunks.get_mut(&to) {
-                chunk.apply_entity(&whole);
-            }
-            output.entity_changes.push((to, whole));
-            self.entity_chunks.insert(key, to);
-        } else {
+        if to == position {
             if committed {
                 let mut fields = Vec::new();
                 if moved {
@@ -430,11 +429,10 @@ impl Region {
         }
         let synced = Tracked::NEEDS_SYNC | Tracked::SYNC_POSITION | Tracked::SYNC_VELOCITY;
         if committed || to != position || flags & synced != 0 {
-            output.events.push(RegionEvent::EntityTracked(tracked(
-                &after,
-                flags,
-                stack_changed,
-            )));
+            let mut report = tracked(&after, flags, stack_changed);
+            // A passenger is its unit's chunk's, wherever it sits.
+            report.chunk = to;
+            output.events.push(RegionEvent::EntityTracked(report));
         }
     }
 
@@ -552,11 +550,7 @@ impl Region {
                 let mut here: Vec<(i32, EntityId)> = loaded
                     .entities()
                     .iter()
-                    .filter(|entity| {
-                        let info = EntityTypeInfo::of(i32::from(entity.kind));
-                        Aabb::of_entity(entity.position, info.width, info.height)
-                            .intersects(*bounds)
-                    })
+                    .filter(|entity| self.entity_box(entity).intersects(*bounds))
                     .map(|entity| (physics::floor(entity.position[1]) >> 4, entity.key))
                     .collect();
                 here.sort();

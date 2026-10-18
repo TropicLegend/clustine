@@ -168,16 +168,54 @@ impl Region {
     }
 
     /// A player's hit on, or use of, the entity `key`, made in another region and done
-    /// here, where the entity is (`docs/groundwork/n5-plan.md`, decision 10). Nothing in
-    /// N5a uses an entity: the steps that bring each kind answer it, and one gone by now
-    /// is passed over.
+    /// here, where the entity is (`docs/groundwork/n5-plan.md`, decision 10): each kind
+    /// answers it in its own hook, which the step that brings the kind fills; one gone by
+    /// now is passed over.
     pub(crate) fn entity_used(
         &mut self,
         key: EntityId,
         by: clustine_world::EntityUse,
         output: &mut TickOutput,
     ) {
-        let _ = (key, by, output);
+        let Some((chunk, entity)) = self.find_entity(key) else {
+            return;
+        };
+        let entity = entity.clone();
+        match entity.data {
+            EntityData::Minecart { .. } => self.minecart_used(&entity, chunk, by, output),
+            EntityData::Boat { .. } => self.boat_used(&entity, chunk, by, output),
+            EntityData::ArmorStand { .. } => self.armor_stand_used(&entity, chunk, by, output),
+            EntityData::ItemFrame { .. } | EntityData::Painting { .. } => {
+                self.hanging_used(&entity, chunk, by, output);
+            }
+            EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
+            EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
+            EntityData::Item { .. } | EntityData::FallingBlock { .. } => {}
+        }
+    }
+
+    /// The tick of `entity`, of the loaded chunk `position`, as its kind ticks: an item
+    /// as the game's (`items.rs`), a falling block (`falling.rs`), and each of N5's
+    /// kinds in its own hook, which the step that brings it fills.
+    pub(crate) fn tick_entity(
+        &mut self,
+        entity: Entity,
+        position: ChunkPos,
+        output: &mut TickOutput,
+    ) {
+        match &entity.data {
+            EntityData::Item { .. } => self.tick_item(entity, position, output),
+            EntityData::FallingBlock { .. } => {
+                self.tick_falling_block(entity, position, output);
+            }
+            EntityData::Minecart { .. } => self.tick_minecart(entity, position, output),
+            EntityData::Boat { .. } => self.tick_boat(entity, position, output),
+            EntityData::ArmorStand { .. } => self.tick_armor_stand(entity, position, output),
+            EntityData::ItemFrame { .. }
+            | EntityData::Painting { .. }
+            | EntityData::Cushion { .. }
+            | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
+        }
     }
 
     /// Forgets the entities of the chunk at `position`, which is no longer loaded.
@@ -215,8 +253,11 @@ impl Region {
     /// The entities' phase of the tick (ADR-0028, section 2, as the plan of N4 amends
     /// it): every entity whose chunk ticks, in ascending key, those added before the
     /// phase among them; one added in the phase waits for the next tick, as the game's
-    /// list of entities being ticked takes no new ones. An item ticks as the game's
-    /// (`items.rs`), and so does a falling block (`falling.rs`).
+    /// list of entities being ticked takes no new ones. A unit ticks as the game's level
+    /// ticks it (`ServerLevel.tickNonPassenger`, `riding.rs`): a passenger its vehicle
+    /// still holds waits for its vehicle, one it does not gets off and ticks on its own;
+    /// the root ticks as its kind ticks, then its passengers, and then the unit goes
+    /// where its root's position says.
     pub(crate) fn run_entities(&mut self, output: &mut TickOutput) {
         let ticking: Vec<EntityId> = self
             .entity_chunks
@@ -237,14 +278,27 @@ impl Region {
                 continue;
             };
             let entity = entities[at].clone();
-            match &entity.data {
-                EntityData::Item { .. } => self.tick_item(entity, position, output),
-                EntityData::FallingBlock { .. } => {
-                    self.tick_falling_block(entity, position, output);
+            if let Some(vehicle) = entity.riding.vehicle {
+                if self.holds_passenger(vehicle, key) {
+                    continue;
                 }
-                // Ticked from the steps of N5 that bring them (`docs/groundwork/
-                // n5-plan.md`); until then they stand as they were made.
-                _ => {}
+                self.stop_riding(key, output);
+            }
+            // Getting off may have moved it.
+            let Some((position, entity)) = self
+                .find_entity(key)
+                .map(|(position, entity)| (position, entity.clone()))
+            else {
+                continue;
+            };
+            if !self.ticks_chunk(position) {
+                continue;
+            }
+            let start = entity.position;
+            self.tick_entity(entity, position, output);
+            if self.entity_chunks.contains_key(&key) {
+                self.tick_passengers(key, output);
+                self.settle_unit(key, start, output);
             }
         }
         // What took another in by a merge has its counters committed as the tick leaves

@@ -36,11 +36,23 @@ const LINE_CROSSED_FOR: u64 = 600;
 const AT_THE_LINE: f64 = 4.0;
 
 impl Region {
-    /// Sends `entity`, as the tick left it, out of the chunk `from`: its chunk commits it
-    /// `Gone`, the tick hands it on whole to the chunk it is in with the `hops` it had,
-    /// the edges are told it is handed on where it is, and what the region kept of it
+    /// Sends the unit whose root is `root`, as the tick left it, out of the chunk `from`
+    /// (ADR-0028, section 5, "Vehicles and riders"): every member, the root first and
+    /// each passenger before its own passengers, is committed `Gone` from the chunk and
+    /// handed on whole to the root's chunk with the `hops` it had, so that the members
+    /// go as one group of arrivals and are taken together, their keys and links as they
+    /// were; the edges are told each is handed on, and what the region kept of each
     /// beyond its record is dropped.
-    pub(super) fn send_entity(&mut self, from: ChunkPos, entity: Entity, output: &mut TickOutput) {
+    pub(super) fn send_entity(&mut self, from: ChunkPos, root: Entity, output: &mut TickOutput) {
+        let to = root.chunk();
+        self.crossed_at(&root);
+        for member in self.unit_records(from, root) {
+            self.hand_on(from, member, to, output);
+        }
+    }
+
+    /// Hands one member of a unit on to the chunk `to`.
+    fn hand_on(&mut self, from: ChunkPos, entity: Entity, to: ChunkPos, output: &mut TickOutput) {
         let key = entity.key;
         let gone = EntityChange::Gone(key);
         if let Some(chunk) = self.chunks.get_mut(&from) {
@@ -58,8 +70,7 @@ impl Region {
             position: entity.position,
             motion: entity.motion,
         });
-        self.crossed_at(&entity);
-        output.arrivals.push((entity.chunk(), entity));
+        output.arrivals.push((to, entity));
     }
 
     /// Hands on an entity that is made in a chunk the region does not have loaded and
@@ -85,7 +96,9 @@ impl Region {
     }
 
     /// Takes the arrivals the runner hands in whose chunks are loaded, in their order,
-    /// after the effects and before the entities' phase, so that each ticks in this tick
+    /// after the effects and before the entities' phase (the members of a unit come
+    /// together, addressed to their root's chunk, and are taken as they are, keys and
+    /// links and all), so that each ticks in this tick
     /// where its chunk ticks: whole, with `hops` one higher, into its chunk however full
     /// (an arrival cannot be refused), and reported spawned before the tick's moves. One
     /// of a chunk not loaded is left for the runner to hand in again. One whose key the

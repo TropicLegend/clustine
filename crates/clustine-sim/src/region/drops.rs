@@ -122,6 +122,21 @@ impl Region {
         stack: ItemStack,
         output: &mut TickOutput,
     ) -> bool {
+        self.spawn_item_as(position, stack, DEFAULT_PICK_UP_DELAY, None, output)
+    }
+
+    /// [`Region::spawn_item`] with the pick-up delay `pick_up_delay` and, where given,
+    /// the motion `motion` set after the constructor's (which draws its own all the
+    /// same): `Containers.dropItemStack` sets no delay, the constructor's 0, and a
+    /// motion of its own.
+    pub(crate) fn spawn_item_as(
+        &mut self,
+        position: [f64; 3],
+        stack: ItemStack,
+        pick_up_delay: u16,
+        motion: Option<[f64; 3]>,
+        output: &mut TickOutput,
+    ) -> bool {
         let chunk = ChunkPos::containing(position[0], position[2]);
         let Some(key) = self.take_entity_key(chunk) else {
             return false;
@@ -138,7 +153,7 @@ impl Region {
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
             uuid,
             position,
-            motion: [x, 0.2, z],
+            motion: motion.unwrap_or([x, 0.2, z]),
             yaw,
             pitch: 0.0,
             on_ground: false,
@@ -146,7 +161,7 @@ impl Region {
             age: 0,
             data: EntityData::Item {
                 stack,
-                pick_up_delay: DEFAULT_PICK_UP_DELAY,
+                pick_up_delay,
                 thrower: None,
                 health: 5,
             },
