@@ -401,6 +401,9 @@ pub struct Region {
     /// restored, merged or split within those ticks has none, and the player, not seated
     /// in time, gets off where they are (a named difference).
     forwarded: BTreeMap<EntityId, (ChunkPos, u16)>,
+    /// The notes of riders who left the world in this tick, each with where their
+    /// vehicle let them off (`riders.rs`). Empty between ticks.
+    dismounted: Vec<(PlayerId, StayNote)>,
     /// How far pistons have moved each entity along each axis in this tick
     /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
     /// them at the first push of a tick.
@@ -519,6 +522,7 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
+            dismounted: Vec::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
@@ -836,6 +840,7 @@ impl Region {
                         entity: *entity,
                         chunk: *chunk,
                     });
+                    self.drop_pending_seat_of_player(*entity, &mut output);
                 }
             }
         }
@@ -950,7 +955,7 @@ impl Region {
         let mut let_go: Vec<(PlayerId, StayNote)> = Vec::new();
         let departing = departing.into_iter().filter_map(|(id, to)| {
             let player = self.players.remove(&id)?;
-            self.unseat_leaving(&player, &mut output);
+            self.unseat_leaving(None, &player, &mut output);
             self.journal.players.insert(id);
             let edge = player.edge;
             Some((edge, id, player.into_transfer(), to))
@@ -979,7 +984,10 @@ impl Region {
         }
         self.settle_chunks(&mut output);
 
-        output.stays = self.notes(first, let_go);
+        // Riders who left the world, noted where they got off, then those let go.
+        let mut noted = std::mem::take(&mut self.dismounted);
+        noted.extend(let_go);
+        output.stays = self.notes(first, noted);
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
@@ -1125,7 +1133,7 @@ impl Region {
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
         if let Some(player) = self.players.remove(&id) {
-            self.unseat_leaving(&player, output);
+            self.unseat_leaving(Some(id), &player, output);
             self.journal.players.insert(id);
             output.events.push(RegionEvent::EntityRemoved {
                 entity: player.entity_id,
@@ -1141,7 +1149,7 @@ impl Region {
         let Some(player) = self.players.remove(&id) else {
             return;
         };
-        self.unseat_leaving(&player, output);
+        self.unseat_leaving(Some(id), &player, output);
         self.journal.players.insert(id);
         output.events.push(RegionEvent::EntityRemoved {
             entity: player.entity_id,
@@ -1346,7 +1354,7 @@ impl Region {
                     return;
                 }
                 if let Some(player) = self.players.remove(&id) {
-                    self.unseat_leaving(&player, output);
+                    self.unseat_leaving(None, &player, output);
                 }
                 self.journal.players.insert(id);
             }

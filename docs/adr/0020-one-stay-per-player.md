@@ -1035,6 +1035,13 @@ No change: the coordinator, the routing table, `clustine-region`.
 | 5 | Rule 9: the store says the highest stay and the region goes on above it | Also a new block for a home region whose block has no id above it, and the runner takes the store's block | Section 7 |
 | 6 | – | The join names its attempt and the stay carries it; `Presence::Entering`; an arrival drops only its own inputs (from R2.1) | Sections 4.1 to 4.3, 12 |
 
+**Amended with step N5 (2026-10-18; `docs/groundwork/n5-plan.md`, section 8 item 6).**
+A player removed from the world while they ride (a leave, an ended or replaced stay, an
+edge's reset) gets off as they go: the commit that removes them writes a `Has` note of
+their stay with the place their vehicle lets them off at, so that they come back beside
+it rather than in a seat that is no longer theirs. It is harmless below the floor, as
+any `Has` note is, and is the one note a removal writes.
+
 ## Changes to earlier records
 
 Each gets a note under its own "Changes" heading that points here, with this text.

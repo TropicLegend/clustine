@@ -836,7 +836,6 @@ fn a_waiting_player_keeps_only_their_latest_twenty_moves() {
 /// Five moves of 2.1 blocks north are dropped; the first kept is then 10.5 blocks from
 /// the boat, beyond the test's ten (finding 13), and is accepted.
 #[test]
-#[ignore = "finding: the plan (section 8 item 10) accepts the first kept move without the too-quickly test when moves were dropped; it is refused, and every later kept move with it (20 corrections)"]
 fn the_first_kept_move_after_moves_were_dropped_is_not_tested_for_going_too_quickly() {
     let crossing = crossing();
     let mut east = east(&[]);
@@ -965,7 +964,6 @@ fn a_player_who_comes_after_their_seat_was_let_go_is_dismounted_at_once() {
 /// ADR-0028, section 5: a player whose vehicle has not come within 100 ticks is
 /// dismounted where they are, and is never seated later.
 #[test]
-#[ignore = "finding: ADR-0028 section 5 and the plan (section 4 item 4) never seat later a player whose unit did not come in 100 ticks, and the task asks for no phantom seat; a unit that comes after they got off keeps their seat pending (98 ticks left) beside them standing"]
 fn a_player_whose_unit_never_comes_gets_off_where_they_are_and_is_never_seated_later() {
     let crossing = crossing();
     let mut east = east(&[]);
@@ -1049,7 +1047,6 @@ fn a_waiting_player_who_sneaks_stays_seated() {
 
 /// The plan, section 7 item 5: while pending, mounting elsewhere is refused.
 #[test]
-#[ignore = "finding: the plan (section 7 item 5) refuses mounting elsewhere while the seat is pending; a waiting player who clicks another boat is dismounted from the pending one and seated in the other"]
 fn a_waiting_player_who_clicks_another_boat_stays_seated_in_theirs() {
     let crossing = crossing();
     let mut east = east(&[boat(2, [17.5, -60.0, 8.5])]);
@@ -1081,7 +1078,6 @@ fn a_waiting_player_who_clicks_another_boat_stays_seated_in_theirs() {
 /// The plan, section 4 item 4 and section 8 item 9: the unit's region drops a pending
 /// player passenger whose hand-over is discarded.
 #[test]
-#[ignore = "finding: ADR-0028 section 5 and the plan (section 4 item 4) have the unit region drop a pending player passenger whose hand-over is discarded; after a Discard of the rider the seat is still kept"]
 fn a_seat_kept_for_a_player_whose_hand_over_is_discarded_goes() {
     let crossing = crossing();
     let mut east = east(&[]);
@@ -1136,7 +1132,6 @@ fn a_seat_kept_for_a_player_of_an_edge_that_goes_away_goes() {
 /// The plan, section 8 item 5: a player who comes naming no vehicle drops any pending
 /// entry of theirs rather than be seated by it.
 #[test]
-#[ignore = "finding: the plan (section 8 item 5) has a player who comes naming no vehicle drop any pending entry of theirs; the boat keeps the seat pending for them while they stand beside it"]
 fn a_player_who_comes_riding_nothing_is_not_seated_by_a_seat_kept_for_them() {
     let crossing = crossing();
     let mut east = east(&[]);
@@ -1330,7 +1325,6 @@ fn a_restore_keeps_a_seat_kept_with_time_left_and_the_player_is_seated_when_they
 /// pending. A chunk loaded with a boat whose record names a seated player the region
 /// does not have leaves no phantom seat.
 #[test]
-#[ignore = "finding: the plan (section 7 item 5, section 8 item 1) has a take-in drop player passengers neither present nor pending; a chunk loaded with a boat naming a seated player the region does not have keeps the seat"]
 fn a_boat_loaded_naming_a_seated_player_who_is_not_there_drops_the_seat() {
     let mut stale = boat(1, [20.5, -60.0, 8.5]);
     stale.riding.passengers = vec![Seat {
@@ -1471,7 +1465,6 @@ fn a_merge_keeps_a_seat_kept_with_time_left_and_seats_the_player_in_the_survivor
 /// their seat is freed and reported, and their stay note has the place they got off
 /// to, not their seat.
 #[test]
-#[ignore = "finding: the plan (section 8 item 6) has the commit that removes a rider write a Has note with the place they are dismounted to; the leave of a rider writes no stay note at all"]
 fn a_rider_who_leaves_gets_off_the_boat_stays_and_their_note_has_where_they_got_off() {
     let mut seated = seated();
     let output = seated.west.tick(&TickInputs {

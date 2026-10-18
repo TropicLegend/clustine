@@ -754,7 +754,6 @@ fn a_rider_who_leaves_frees_the_seat_in_that_tick_and_their_note_has_where_they_
 /// Plan, section 8 item 6: "the commit that removes a rider writes a `Has` note with the
 /// place they are dismounted to", so that they come back beside the vehicle.
 #[test]
-#[ignore = "finding: plan 8.6 says the commit that removes a rider writes a Has note with the place they are dismounted to; the leave's tick writes no stay note at all"]
 fn a_leaving_rider_s_stay_note_has_the_place_they_are_dismounted_to() {
     let (mut scene, seat) = on_a_cushion(1);
     scene.tick(vec![(1, use_entity(seat))]);

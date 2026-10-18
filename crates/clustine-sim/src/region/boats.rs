@@ -1487,6 +1487,18 @@ impl Region {
         moved: VehicleMove,
         output: &mut TickOutput,
     ) {
+        self.move_vehicle_tested(id, moved, true, output);
+    }
+
+    /// [`Region::move_vehicle`], with the "too quickly" test made only if `test_speed`:
+    /// a move kept for a player who waited, after others were let go, is not.
+    pub(crate) fn move_vehicle_tested(
+        &mut self,
+        id: PlayerId,
+        moved: VehicleMove,
+        test_speed: bool,
+        output: &mut TickOutput,
+    ) {
         if vehicle_move::invalid(&moved) {
             output.player_events.push((
                 id,
@@ -1527,7 +1539,7 @@ impl Region {
             root: checked,
             check,
             mut correction,
-        }) = self.check_root_move(&root, chunk, &riding, &moved)
+        }) = self.check_root_move(&root, chunk, &riding, &moved, test_speed)
         else {
             return;
         };
@@ -1590,6 +1602,7 @@ impl Region {
         chunk: ChunkPos,
         riding: &PlayerRiding,
         moved: &VehicleMove,
+        test_speed: bool,
     ) -> Option<Checked> {
         let tick = self.boat_tick_of(root, chunk)?;
         let view = View {
@@ -1611,7 +1624,7 @@ impl Region {
             root,
             moved,
             false,
-            true,
+            test_speed,
         ))
     }
 

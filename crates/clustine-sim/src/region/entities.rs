@@ -140,12 +140,47 @@ impl Region {
         &mut self,
         position: ChunkPos,
         continued: bool,
-        output: Option<&mut TickOutput>,
+        mut output: Option<&mut TickOutput>,
     ) {
         let Some(chunk) = self.chunks.get_mut(&position) else {
             return;
         };
+        // A seat of a player the region does not have and keeps for nobody is no
+        // seat: they left, or are another region's (`docs/groundwork/n5-plan.md`,
+        // section 7 item 5 and section 8 item 1). Kept seats with time left stay.
+        let present: std::collections::BTreeSet<EntityId> = self
+            .players
+            .values()
+            .map(|player| player.entity_id)
+            .collect();
+        let phantom = |seat: &clustine_world::Seat| {
+            seat.player && seat.pending.is_none() && !present.contains(&seat.key)
+        };
+        let unseated: Vec<Entity> = chunk
+            .entities()
+            .iter()
+            .filter(|entity| entity.riding.passengers.iter().any(phantom))
+            .map(|entity| {
+                let mut entity = entity.clone();
+                entity.riding.passengers.retain(|seat| !phantom(seat));
+                entity
+            })
+            .collect();
+        for entity in &unseated {
+            chunk.apply_entity(&EntityChange::Set(
+                entity.key,
+                vec![EntityField::Riding(entity.riding.clone())],
+            ));
+        }
         let keys: Vec<EntityId> = chunk.entities().iter().map(|entity| entity.key).collect();
+        if let Some(output) = output.as_deref_mut() {
+            for entity in unseated {
+                output.entity_changes.push((
+                    position,
+                    EntityChange::Set(entity.key, vec![EntityField::Riding(entity.riding)]),
+                ));
+            }
+        }
         if !continued && let Some(output) = output {
             let raised: Vec<Entity> = chunk
                 .entities()

@@ -103,10 +103,12 @@ impl Region {
             return false;
         };
         let player = &self.players[&id];
+        // One on their way to their unit rides it already, and gets on nothing else
+        // meanwhile (`docs/groundwork/n5-plan.md`, section 7 item 5).
         if player.keys.sneak
             || player
                 .riding
-                .is_some_and(|riding| riding.vehicle == vehicle)
+                .is_some_and(|riding| riding.vehicle == vehicle || riding.pending.is_some())
         {
             return false;
         }
@@ -260,11 +262,40 @@ impl Region {
 
     /// Takes the player `player`, who is leaving the region, out of their vehicle's
     /// seats, so that it keeps no seat for nobody (`docs/groundwork/n5-plan.md`,
-    /// section 7, item 6). Nothing is told to them: they are gone.
-    pub(super) fn unseat_leaving(&mut self, player: &Player, output: &mut TickOutput) {
+    /// section 7, item 6). Nothing is told to them: they are gone. One who leaves the
+    /// world (`left` names them) has the place the vehicle lets them off at noted with
+    /// the store, so that they come back beside it, not in a seat that is no longer
+    /// theirs (section 8, item 6; ADR-0020, section 3, as amended).
+    pub(super) fn unseat_leaving(
+        &mut self,
+        left: Option<PlayerId>,
+        player: &Player,
+        output: &mut TickOutput,
+    ) {
         let Some(riding) = player.riding else {
             return;
         };
+        if let Some(id) = left
+            && let Some((chunk, record)) = self.find_entity(riding.vehicle)
+        {
+            let at = self.dismount_location(
+                record,
+                chunk,
+                &player.as_passenger(riding.vehicle),
+                &PLAYER_POSES,
+            );
+            let mut place = player.place();
+            place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
+            self.dismounted.push((
+                id,
+                crate::api::StayNote::Has {
+                    player: id,
+                    entity: player.entity_id,
+                    hops: player.hops,
+                    place,
+                },
+            ));
+        }
         let Some((chunk, record)) = self.find_entity(riding.vehicle) else {
             return;
         };
@@ -458,17 +489,34 @@ impl Region {
         // the first counting from where the vehicle is now, as `tickPlayer` would seed it
         // (`docs/groundwork/n5-plan.md`, section 7 item 4).
         if !kept.is_empty() {
-            let root = self.root_of(riding.vehicle);
-            if let Some((_, root)) = self.find_entity(root) {
-                let position = root.position;
-                let player = self.players.get_mut(&id).expect("found above");
-                if let Some(rides) = player.riding.as_mut() {
-                    rides.check = crate::physics::vehicle_move::seeded(&rides.check, position);
+            self.seed_vehicle_check(id, riding.vehicle);
+            // Twenty kept are as many as are kept: some may have been let go before
+            // them, and then the first is taken as the game takes a driver's first
+            // move, without the "too quickly" test (section 8 item 10).
+            let some_dropped = kept.len() >= crate::state::KEPT_MOVES;
+            for (index, moved) in kept.into_iter().enumerate() {
+                // Each as one client tick: the check counts from where the last left
+                // the vehicle, as the end of a player's tick would seed it.
+                if index > 0 {
+                    self.seed_vehicle_check(id, riding.vehicle);
                 }
+                self.move_vehicle_tested(id, moved, !(some_dropped && index == 0), output);
             }
-            for moved in kept {
-                self.move_vehicle(id, moved, output);
-            }
+        }
+    }
+
+    /// Seeds the check of the player `id`'s moves of their vehicle `vehicle` from where
+    /// its root is now, as `tickPlayer` does at the end of a driver's tick.
+    fn seed_vehicle_check(&mut self, id: PlayerId, vehicle: EntityId) {
+        let root = self.root_of(vehicle);
+        let Some(position) = self.find_entity(root).map(|(_, root)| root.position) else {
+            return;
+        };
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        if let Some(rides) = player.riding.as_mut() {
+            rides.check = crate::physics::vehicle_move::seeded(&rides.check, position);
         }
     }
 
@@ -519,9 +567,32 @@ impl Region {
             return;
         }
         let mut record = record.clone();
-        for seat in &mut record.riding.passengers {
+        // A seat kept for a player who is here and does not wait for this vehicle (who
+        // came riding nothing, or another, or gave up waiting) goes at once: they are
+        // never seated in it later.
+        let here_not_waiting: Vec<bool> = record
+            .riding
+            .passengers
+            .iter()
+            .map(|seat| {
+                seat.pending.is_some()
+                    && self
+                        .player_with_entity(seat.key)
+                        .and_then(|id| self.players.get(&id))
+                        .is_some_and(|player| {
+                            player.riding.is_none_or(|riding| {
+                                riding.vehicle != vehicle || riding.pending.is_none()
+                            })
+                        })
+            })
+            .collect();
+        for (seat, gone) in record.riding.passengers.iter_mut().zip(here_not_waiting) {
             if let Some(pending) = seat.pending.as_mut() {
-                pending.left = pending.left.saturating_sub(1);
+                pending.left = if gone {
+                    0
+                } else {
+                    pending.left.saturating_sub(1)
+                };
             }
         }
         let before = record.riding.passengers.len();
@@ -551,6 +622,16 @@ impl Region {
         }
     }
 
+    /// Lets go of every seat kept for the player of the stay `entity`, whose hand-over
+    /// was discarded: they do not come now (ADR-0028, section 5).
+    pub(crate) fn drop_pending_seat_of_player(
+        &mut self,
+        entity: EntityId,
+        output: &mut TickOutput,
+    ) {
+        self.drop_pending_seats(|seat| seat.key == entity, output);
+    }
+
     /// Lets go of every seat kept for a player of the edge `edge`, which has gone: none
     /// of them comes now (`docs/groundwork/n5-plan.md`, section 8 item 9).
     pub(crate) fn drop_pending_seats_of(
@@ -558,30 +639,32 @@ impl Region {
         edge: clustine_world::EdgeId,
         output: &mut TickOutput,
     ) {
-        let units: Vec<(EntityId, ChunkPos)> =
-            self.chunks
-                .iter()
-                .flat_map(|(position, chunk)| {
-                    chunk
-                        .entities()
-                        .iter()
-                        .filter(|entity| {
-                            entity.riding.passengers.iter().any(|seat| {
-                                seat.pending.is_some_and(|pending| pending.edge == edge)
-                            })
-                        })
-                        .map(|entity| (entity.key, *position))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
+        self.drop_pending_seats(
+            |seat| seat.pending.is_some_and(|pending| pending.edge == edge),
+            output,
+        );
+    }
+
+    /// Lets go of every kept seat that `goes` says of, in the region's loaded chunks.
+    fn drop_pending_seats(&mut self, goes: impl Fn(&Seat) -> bool, output: &mut TickOutput) {
+        let goes = |seat: &Seat| seat.pending.is_some() && goes(seat);
+        let units: Vec<(EntityId, ChunkPos)> = self
+            .chunks
+            .iter()
+            .flat_map(|(position, chunk)| {
+                chunk
+                    .entities()
+                    .iter()
+                    .filter(|entity| entity.riding.passengers.iter().any(&goes))
+                    .map(|entity| (entity.key, *position))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         for (key, chunk) in units {
             let Some(mut record) = self.entity_record(key, chunk).cloned() else {
                 continue;
             };
-            record
-                .riding
-                .passengers
-                .retain(|seat| seat.pending.is_none_or(|pending| pending.edge != edge));
+            record.riding.passengers.retain(|seat| !goes(seat));
             self.commit_entity(
                 chunk,
                 key,
