@@ -741,9 +741,9 @@ pub enum Decline {
 /// What the world store has of a region, as it hands it to the owner that opens it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Restored {
-    /// The entity ids the store issued to the region when it was first opened. They are
-    /// the region's for good. A region that was split off another has none: its block
-    /// is empty, with `first` and `end` both 0.
+    /// The block of entity keys the store gave the region at this hello: a fresh one at
+    /// every hello, a split's part's among them, so that keys a lost tick gave out are
+    /// never given again (`docs/adr/0028-entities.md`, section 1).
     pub entity_ids: EntityIds,
     /// The region's whole state as of its last checkpoint, or of the merge or split
     /// it went through since, if it has had any of these.

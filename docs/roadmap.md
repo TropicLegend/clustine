@@ -145,7 +145,14 @@ picked up and do not despawn. Named differences to mend with N4: entities tick w
 chunk's 3x3 is loaded or copied, not its 5x5 (ADR-0028, section 2); an entity's `hops`
 rises at a merge too, which the edge takes as it should; an entity moving into another
 chunk must be committed as gone from one and whole in the other, since a chunk's file
-refuses an entity outside it.
+refuses an entity outside it. Found by the tests written from the plan
+(`n2-spec`, 36 of them, which found no ordering or durability fault): a Q pressed right
+after crossing a pinned line is refused and the slot put back, a try 150 ms later
+throwing (N3 mends it, an item thrown into another region's chunk going as an arrival);
+a creative throw of more than an item's own stack is let through, the data having no
+stack sizes yet (a finding kept as an ignored test); a removal does not yet carry the
+entity's `hops`, which N4's pick-up and despawning need; `Restored::issued` is left from
+before N1 and goes when nothing reads it.
 
 S3 beside them. The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
