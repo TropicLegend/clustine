@@ -1003,7 +1003,6 @@ fn a_stone_sent_into_land_nobody_holds_is_granted_to_its_sender_taken_and_given_
 /// not taken; the runner gives the chunk back, and the home region's claim of it is
 /// granted with the stone on its stream.
 #[test]
-#[ignore = "finding: the runner clears its unreadable chunks before it builds the Return, so the Return names none; the store keeps the chunk back for its arrival and grants it again, every ~100 ticks"]
 fn an_arrival_into_an_unreadable_chunk_stays_filed_through_its_return_for_the_next_holder() {
     let mut world = gap();
     // The chunk stored, and spoilt.

@@ -2575,11 +2575,8 @@ impl RegionRunner {
         }
         // Another region can hold and change a chunk that is given back, and one that
         // nobody has asked for in all this time is not about to be shown.
-        // A chunk that could not be read is asked for again when it is granted anew:
-        // the file, or the generator, may have changed by then.
         for position in &output.returns {
             self.warm.remove(position);
-            self.unreadable.remove(position);
         }
         let tick = output.tick;
         self.warm
@@ -2767,11 +2764,15 @@ impl RegionRunner {
             // given back, or to their next holder.
             self.border
                 .drop_arrivals_of(&output.returns.iter().copied().collect());
+            // The store keeps an unreadable chunk's arrivals for its next holder rather
+            // than keeping its return back for them (the plan, section 6). The chunk is
+            // asked for again when it is granted anew: the file, or the generator, may
+            // have changed by then.
             let unreadable = output
                 .returns
                 .iter()
                 .copied()
-                .filter(|chunk| self.unreadable.contains(chunk))
+                .filter(|chunk| self.unreadable.remove(chunk))
                 .collect();
             self.store.request(StoreRequest::Return {
                 chunks: output.returns,
