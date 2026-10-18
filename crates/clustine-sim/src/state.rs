@@ -7,10 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
+use clustine_world::{BlockPos, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Durable, EnderChest, Inventory, Keys, Pose, VehicleMove};
+use crate::api::{Durable, EnderChest, Inventory, ItemStack, Keys, MenuKind, Pose, VehicleMove};
 
 /// Everything a region knows apart from its chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +92,60 @@ pub struct PlayerState {
     /// oldest first, at most [`KEPT_MOVES`]: applied in order when they are seated
     /// (`docs/groundwork/n5-plan.md`, section 7 item 4).
     pub kept: Vec<VehicleMove>,
+    /// The menu the player has open, if any. A hand-over closes it, so it is in no
+    /// transfer (`docs/groundwork/n6-plan.md`, section 6 items 1 and 2).
+    pub menu: Option<Menu>,
+}
+
+/// A menu a player has open: what it shows, the stack on the cursor and a drag under
+/// way. What the region last reported of it is not here: a restored region reports it
+/// whole (`docs/groundwork/n6-plan.md`, section 6 item 1 and section 7 item 3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Menu {
+    /// The number of the input that opened it, which the edge and the client's clicks
+    /// name it by (section 7 item 2).
+    pub serial: u64,
+    pub of: MenuOf,
+    pub kind: MenuKind,
+    /// The stack the player carries on the cursor (`AbstractContainerMenu.carried`).
+    pub carried: Option<ItemStack>,
+    /// A drag under way (`quickcraftStatus`, `quickcraftType`, `quickcraftSlots`).
+    pub drag: Option<Drag>,
+}
+
+/// What a menu shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MenuOf {
+    /// A container block at `at`, and the other half of a double chest; slots 0 to 26
+    /// are those of `at`, which is the right half (`ChestBlock.getBlockType`).
+    Block {
+        at: BlockPos,
+        other: Option<BlockPos>,
+    },
+    /// The player's own ender chest, opened at the block `at`, whose openers it counts.
+    Ender { at: BlockPos },
+    /// A container vehicle: a chest boat, a chest cart or a hopper cart.
+    Entity(EntityId),
+}
+
+/// A drag of the carried stack over slots (the game's quick craft), between its start
+/// and its end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Drag {
+    pub kind: DragKind,
+    /// The slots dragged over so far, in the order they were added.
+    pub slots: Vec<u16>,
+}
+
+/// How a drag shares out the carried stack (`quickcraftType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DragKind {
+    /// Evenly over the slots (a left drag, `QUICKCRAFT_TYPE_CHARITABLE`).
+    Split,
+    /// One into each (a right drag, `QUICKCRAFT_TYPE_GREEDY`).
+    One,
+    /// A full stack into each, for a creative player (a middle drag, `CLONE`).
+    Clone,
 }
 
 /// The most moves of a vehicle kept for a player who waits for it.
@@ -307,4 +361,51 @@ pub struct EdgeDelta {
     pub confirmed: u64,
     /// The entries made in the tick, in the order of their numbers.
     pub added: Vec<(u64, Durable)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_menu_with_a_drag_under_way_reads_back_as_it_was_written() {
+        let menus = [
+            Menu {
+                serial: 41,
+                of: MenuOf::Block {
+                    at: BlockPos::new(3, -60, 7),
+                    other: Some(BlockPos::new(4, -60, 7)),
+                },
+                kind: MenuKind::Rows6,
+                carried: Some(ItemStack { item: 12, count: 9 }),
+                drag: Some(Drag {
+                    kind: DragKind::One,
+                    slots: vec![53, 0, 27],
+                }),
+            },
+            Menu {
+                serial: u64::MAX,
+                of: MenuOf::Ender {
+                    at: BlockPos::new(-1, 70, -1),
+                },
+                kind: MenuKind::Rows3,
+                carried: None,
+                drag: None,
+            },
+            Menu {
+                serial: 0,
+                of: MenuOf::Entity(EntityId(1 << 40)),
+                kind: MenuKind::Hopper,
+                carried: None,
+                drag: Some(Drag {
+                    kind: DragKind::Clone,
+                    slots: Vec::new(),
+                }),
+            },
+        ];
+        for menu in menus {
+            let bytes = postcard::to_stdvec(&menu).expect("a menu serialises");
+            assert_eq!(postcard::from_bytes::<Menu>(&bytes), Ok(menu));
+        }
+    }
 }

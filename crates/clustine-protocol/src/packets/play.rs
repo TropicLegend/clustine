@@ -2473,6 +2473,337 @@ impl Decode for PlayerCommand {
     }
 }
 
+/// Menus' kinds by their id in the `minecraft:menu` registry (`docs/groundwork/n6-brief.md`,
+/// section 9.3).
+pub mod menu {
+    pub const GENERIC_9X3: i32 = 2;
+    pub const GENERIC_9X6: i32 = 5;
+    pub const GENERIC_3X3: i32 = 6;
+    pub const CRAFTER_3X3: i32 = 7;
+    pub const HOPPER: i32 = 16;
+    pub const SHULKER_BOX: i32 = 20;
+}
+
+/// The kinds of click (`ContainerInput`, the game's `ClickType` before 26.3), as a click
+/// carries them.
+pub mod click {
+    pub const PICKUP: i32 = 0;
+    pub const QUICK_MOVE: i32 = 1;
+    pub const SWAP: i32 = 2;
+    pub const CLONE: i32 = 3;
+    pub const THROW: i32 = 4;
+    pub const QUICK_CRAFT: i32 = 5;
+    pub const PICKUP_ALL: i32 = 6;
+}
+
+/// The most slots a click says the client changed (`ByteBufCodecs.map` with 128).
+pub const MAX_CHANGED_SLOTS: usize = 128;
+/// The most components a hashed stack names as added, or as removed.
+pub const MAX_HASHED_COMPONENTS: usize = 256;
+
+/// A stack as a client believes a slot holds it, with its components by hashes alone
+/// (`HashedStack`): an item, a count, and per component added its type and the CRC32C of
+/// its value, per component removed its type. What a client sends of an empty slot is
+/// `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HashedStack {
+    pub item: i32,
+    pub count: i32,
+    /// The components added, as (type, hash).
+    pub added: Vec<(i32, i32)>,
+    /// The types of the components removed.
+    pub removed: Vec<i32>,
+}
+
+impl HashedStack {
+    /// Whether this is what a client would say of `stack`, which has no components: the
+    /// same item and count, and no component added or removed.
+    pub fn matches(&self, stack: Option<ItemStack>) -> bool {
+        stack.is_some_and(|stack| {
+            stack.item == self.item
+                && stack.count == self.count
+                && self.added.is_empty()
+                && self.removed.is_empty()
+        })
+    }
+}
+
+impl Writer {
+    /// Writes a hashed stack, or an empty slot.
+    pub fn put_hashed_stack(&mut self, stack: Option<&HashedStack>) {
+        self.put_option(stack, |w, stack| {
+            w.put_var_int(stack.item);
+            w.put_var_int(stack.count);
+            w.put_array(&stack.added, |w, (kind, hash)| {
+                w.put_var_int(*kind);
+                w.put_i32(*hash);
+            });
+            w.put_array(&stack.removed, |w, kind| w.put_var_int(*kind));
+        });
+    }
+}
+
+impl Reader<'_> {
+    /// Reads a hashed stack, or an empty slot.
+    pub fn hashed_stack(&mut self) -> Result<Option<HashedStack>, DecodeError> {
+        self.option(|r| {
+            let item = r.var_int()?;
+            let count = r.var_int()?;
+            let added = r.array_at_most(MAX_HASHED_COMPONENTS, "components added", |r| {
+                Ok((r.var_int()?, r.i32()?))
+            })?;
+            let removed =
+                r.array_at_most(MAX_HASHED_COMPONENTS, "components removed", Reader::var_int)?;
+            Ok(HashedStack {
+                item,
+                count,
+                added,
+                removed,
+            })
+        })
+    }
+
+    /// Reads an element count of at most `max`, refused above it as the game's
+    /// `readCount` refuses it, and that many elements.
+    fn array_at_most<T>(
+        &mut self,
+        max: usize,
+        what: &'static str,
+        mut item: impl FnMut(&mut Self) -> Result<T, DecodeError>,
+    ) -> Result<Vec<T>, DecodeError> {
+        let count = self.length()?;
+        if count > max {
+            return Err(DecodeError::InvalidValue {
+                what,
+                value: i64::try_from(count).unwrap_or(i64::MAX),
+            });
+        }
+        (0..count).map(|_| item(self)).collect()
+    }
+}
+
+/// A click in a menu (`container_click`): the client's view, after its own prediction,
+/// of every slot it changed and of the carried stack, which the server compares with
+/// what it holds (`docs/groundwork/n6-brief.md`, sections 3.15 to 3.17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerClick {
+    pub window_id: i32,
+    pub state_id: i32,
+    /// The menu's slot; -999 outside the window, -1 its margin.
+    pub slot: i16,
+    pub button: i8,
+    /// One of [`click`]; the game reads any other as a pickup.
+    pub input: i32,
+    pub changed: Vec<(i16, Option<HashedStack>)>,
+    pub carried: Option<HashedStack>,
+}
+
+impl Packet for ContainerClick {
+    const ID: i32 = serverbound::CONTAINER_CLICK;
+}
+
+impl Encode for ContainerClick {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_var_int(self.state_id);
+        w.put_i16(self.slot);
+        w.put_i8(self.button);
+        w.put_var_int(self.input);
+        w.put_array(&self.changed, |w, (slot, stack)| {
+            w.put_i16(*slot);
+            w.put_hashed_stack(stack.as_ref());
+        });
+        w.put_hashed_stack(self.carried.as_ref());
+    }
+}
+
+impl Decode for ContainerClick {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            state_id: r.var_int()?,
+            slot: r.i16()?,
+            button: r.i8()?,
+            input: r.var_int()?,
+            changed: r.array_at_most(MAX_CHANGED_SLOTS, "slots changed", |r| {
+                Ok((r.i16()?, r.hashed_stack()?))
+            })?,
+            carried: r.hashed_stack()?,
+        })
+    }
+}
+
+/// The client closed the window `window_id` (`container_close`, serverbound).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerboundContainerClose {
+    pub window_id: i32,
+}
+
+impl Packet for ServerboundContainerClose {
+    const ID: i32 = serverbound::CONTAINER_CLOSE;
+}
+
+impl Encode for ServerboundContainerClose {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+    }
+}
+
+impl Decode for ServerboundContainerClose {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+        })
+    }
+}
+
+/// The server closed the window `window_id` (`container_close`, clientbound).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientboundContainerClose {
+    pub window_id: i32,
+}
+
+impl Packet for ClientboundContainerClose {
+    const ID: i32 = clientbound::CONTAINER_CLOSE;
+}
+
+impl Encode for ClientboundContainerClose {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+    }
+}
+
+impl Decode for ClientboundContainerClose {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+        })
+    }
+}
+
+/// Opens a menu's window (`open_screen`): its id, its kind (one of [`menu`]) and its
+/// title, a text component.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenScreen {
+    pub window_id: i32,
+    pub menu: i32,
+    pub title: Nbt,
+}
+
+impl Packet for OpenScreen {
+    const ID: i32 = clientbound::OPEN_SCREEN;
+}
+
+impl Encode for OpenScreen {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_var_int(self.menu);
+        w.put_nbt(&self.title);
+    }
+}
+
+impl Decode for OpenScreen {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            menu: r.var_int()?,
+            title: r.nbt()?.ok_or(DecodeError::InvalidValue {
+                what: "text component",
+                value: 0,
+            })?,
+        })
+    }
+}
+
+/// Sets one slot of a window (`container_set_slot`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerSetSlot {
+    pub window_id: i32,
+    pub state_id: i32,
+    pub slot: i16,
+    pub stack: Option<ItemStack>,
+}
+
+impl Packet for ContainerSetSlot {
+    const ID: i32 = clientbound::CONTAINER_SET_SLOT;
+}
+
+impl Encode for ContainerSetSlot {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_var_int(self.state_id);
+        w.put_i16(self.slot);
+        w.put_item_stack(self.stack);
+    }
+}
+
+impl Decode for ContainerSetSlot {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            state_id: r.var_int()?,
+            slot: r.i16()?,
+            stack: r.item_stack()?,
+        })
+    }
+}
+
+/// Sets one data slot of a window (`container_set_data`), such as a crafter's slot
+/// being disabled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerSetData {
+    pub window_id: i32,
+    pub id: i16,
+    pub value: i16,
+}
+
+impl Packet for ContainerSetData {
+    const ID: i32 = clientbound::CONTAINER_SET_DATA;
+}
+
+impl Encode for ContainerSetData {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_i16(self.id);
+        w.put_i16(self.value);
+    }
+}
+
+impl Decode for ContainerSetData {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            id: r.i16()?,
+            value: r.i16()?,
+        })
+    }
+}
+
+/// Sets the stack a player carries on the cursor (`set_cursor_item`), with no window and
+/// no state id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetCursorItem {
+    pub stack: Option<ItemStack>,
+}
+
+impl Packet for SetCursorItem {
+    const ID: i32 = clientbound::SET_CURSOR_ITEM;
+}
+
+impl Encode for SetCursorItem {
+    fn encode(&self, w: &mut Writer) {
+        w.put_item_stack(self.stack);
+    }
+}
+
+impl Decode for SetCursorItem {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            stack: r.item_stack()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -2499,6 +2830,8 @@ packet_set! {
         PaddleBoat,
         PickItemFromEntity,
         PlayerCommand,
+        ContainerClick,
+        ServerboundContainerClose,
     }
 }
 
@@ -3058,6 +3391,11 @@ packet_set! {
         BlockEvent,
         Sound,
         SetContainerContent,
+        OpenScreen,
+        ContainerSetSlot,
+        ContainerSetData,
+        SetCursorItem,
+        ClientboundContainerClose,
         SetHeldSlot,
         SetPlayerInventory,
         SetEntityData,
@@ -3330,6 +3668,108 @@ mod tests {
             Set::decode,
             Set::Disconnect,
         );
+    }
+
+    #[test]
+    fn the_packets_of_menus_round_trip() {
+        use ClientboundPlay as Client;
+        use ServerboundPlay as Server;
+        let named = HashedStack {
+            item: 7,
+            count: 3,
+            added: vec![(5, -0x1234_5678)],
+            removed: vec![9],
+        };
+        assert_round_trip(
+            ContainerClick {
+                window_id: 100,
+                state_id: 4,
+                slot: -999,
+                button: 1,
+                input: click::QUICK_CRAFT,
+                changed: vec![(0, None), (53, Some(named.clone()))],
+                carried: Some(named),
+            },
+            Server::decode,
+            Server::ContainerClick,
+        );
+        assert_round_trip(
+            ServerboundContainerClose { window_id: 3 },
+            Server::decode,
+            Server::ServerboundContainerClose,
+        );
+        assert_round_trip(
+            OpenScreen {
+                window_id: 1,
+                menu: menu::GENERIC_9X6,
+                title: Text::translatable("container.chestDouble").to_nbt(),
+            },
+            Client::decode,
+            Client::OpenScreen,
+        );
+        assert_round_trip(
+            ContainerSetSlot {
+                window_id: 1,
+                state_id: 9,
+                slot: 26,
+                stack: Some(ItemStack { item: 1, count: 64 }),
+            },
+            Client::decode,
+            Client::ContainerSetSlot,
+        );
+        assert_round_trip(
+            ContainerSetData {
+                window_id: 1,
+                id: 2,
+                value: 1,
+            },
+            Client::decode,
+            Client::ContainerSetData,
+        );
+        assert_round_trip(
+            SetCursorItem { stack: None },
+            Client::decode,
+            Client::SetCursorItem,
+        );
+        assert_round_trip(
+            ClientboundContainerClose { window_id: 100 },
+            Client::decode,
+            Client::ClientboundContainerClose,
+        );
+    }
+
+    #[test]
+    fn a_click_naming_more_than_128_slots_is_refused() {
+        let click = |slots: i16| ContainerClick {
+            window_id: 1,
+            state_id: 0,
+            slot: 0,
+            button: 0,
+            input: click::PICKUP,
+            changed: (0..slots).map(|slot| (slot, None)).collect(),
+            carried: None,
+        };
+        let read = |slots| ServerboundPlay::decode(&crate::packets::encode(&click(slots)));
+        assert_eq!(read(128), Ok(ServerboundPlay::ContainerClick(click(128))));
+        assert!(read(129).is_err());
+    }
+
+    #[test]
+    fn a_hashed_stack_matches_only_a_stack_of_its_item_and_count_without_components() {
+        let plain = HashedStack {
+            item: 4,
+            count: 2,
+            added: Vec::new(),
+            removed: Vec::new(),
+        };
+        assert!(plain.matches(Some(ItemStack { item: 4, count: 2 })));
+        assert!(!plain.matches(Some(ItemStack { item: 4, count: 3 })));
+        assert!(!plain.matches(None));
+        let named = HashedStack {
+            added: vec![(1, 0)],
+            ..plain
+        };
+        assert!(!named.matches(Some(ItemStack { item: 4, count: 2 })));
     }
 
     #[test]

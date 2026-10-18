@@ -359,6 +359,75 @@ pub enum PlayerInput {
     /// it there (`docs/groundwork/n5-plan.md`, section 8 item 7). Added at the end, so
     /// that what is stored of inputs reads as it did.
     PickItemFromEntity { entity: EntityId },
+    /// A click in the menu the player's client shows, of the serial `serial` (the
+    /// number of the input that opened it, [`PlayerEvent::MenuOpened`]): `slot` is the
+    /// menu's slot, -999 outside the window and -1 its margin, `button` and `kind` as
+    /// the game's `clicked` takes them. The client's hashes and state id stay at the
+    /// edge. A click of another serial than the open menu's is refused and answered
+    /// with the menu whole, or with none (`docs/groundwork/n6-plan.md`, sections 7 and
+    /// 8). Added at the end, as every input of N6 is.
+    ContainerClick {
+        serial: u64,
+        slot: i16,
+        button: i8,
+        kind: ClickKind,
+    },
+    /// The player's client closed the menu of the serial `serial`.
+    CloseContainer { serial: u64 },
+    /// The player asked for the inventory of the vehicle they ride (`player_command`'s
+    /// `OPEN_INVENTORY`, a chest boat's or a chest cart's key).
+    OpenVehicleInventory,
+    /// The edge's link to the region was resumed, and player events may have been lost
+    /// on it: the region answers with the player's menu whole, or with
+    /// [`PlayerEvent::NoMenu`] (section 7 item 7). An input, so that the region stays a
+    /// function of its inputs.
+    MenuResync,
+}
+
+/// The kinds of click in a menu (the game's `ContainerInput`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClickKind {
+    Pickup,
+    QuickMove,
+    Swap,
+    Clone,
+    Throw,
+    QuickCraft,
+    PickupAll,
+}
+
+/// The kinds of menu of N6, each a kind of window on the client (`minecraft:menu`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MenuKind {
+    /// Three rows of nine (`generic_9x3`): a chest, a barrel, an ender chest, a chest
+    /// boat or a chest cart.
+    Rows3,
+    /// Six rows of nine (`generic_9x6`): a double chest.
+    Rows6,
+    /// A shulker box's three rows (`shulker_box`).
+    ShulkerBox,
+    /// Three by three (`generic_3x3`): a dispenser or a dropper.
+    Grid3x3,
+    /// A hopper's five (`hopper`), a hopper cart's too.
+    Hopper,
+}
+
+impl MenuKind {
+    /// The slots of the container the menu shows, before the player's inventory's 36.
+    pub fn container_slots(self) -> usize {
+        match self {
+            Self::Rows3 | Self::ShulkerBox => 27,
+            Self::Rows6 => 54,
+            Self::Grid3x3 => 9,
+            Self::Hopper => 5,
+        }
+    }
+
+    /// All the menu's slots: the container's, then the main inventory's 27 and the
+    /// hotbar's 9, as every menu of N6 lays them out.
+    pub fn slots(self) -> usize {
+        self.container_slots() + 36
+    }
 }
 
 /// The keys a player holds (`player_input`'s flags, and `player_command`'s sprinting).
@@ -879,6 +948,40 @@ pub enum PlayerEvent {
     /// The region selected the hotbar slot `slot`, from 0 to 8, of its own accord (a
     /// pick of an entity's item), which the client is told (`set_held_slot`).
     HeldSlot { slot: u8 },
+    /// A menu, of the serial `serial`, whole: opened (the edge sends `open_screen`,
+    /// closing a menu of another serial first), or reported again whole (after a
+    /// restore, when its container's chunks load, or answering a click of another
+    /// serial or a [`PlayerInput::MenuResync`]), which the edge sends as
+    /// `container_set_content`. `applied` is the number of the last input of the player
+    /// applied when it was reported; `title` the translation key of its name; `slots`
+    /// every slot of the menu, [`MenuKind::slots`] of them; `carried` the stack on the
+    /// cursor (`docs/groundwork/n6-plan.md`, sections 7 to 9).
+    MenuOpened {
+        serial: u64,
+        applied: u64,
+        kind: MenuKind,
+        title: String,
+        slots: Vec<Option<ItemStack>>,
+        carried: Option<ItemStack>,
+    },
+    /// The menu of the serial `serial` changed, or a click was answered: the slots that
+    /// changed against what the region last reported, by the menu's numbers, and the
+    /// carried stack if it changed. A click that changed nothing, was refused or was
+    /// passed over is answered with none, so that the edge compares what its client
+    /// guessed (section 7 item 1).
+    MenuChanged {
+        serial: u64,
+        applied: u64,
+        slots: Vec<(u16, Option<ItemStack>)>,
+        carried: Option<Option<ItemStack>>,
+    },
+    /// The menu of the serial `serial` is closed: by the client, by another opening, by
+    /// `stillValid`, or at a hand-over. The slots of the inventory the carried stack went
+    /// into come as [`PlayerEvent::InventorySlot`]s after it.
+    MenuClosed { serial: u64, applied: u64 },
+    /// The answer to a [`PlayerInput::MenuResync`] of a player with no menu open: their
+    /// inventory whole, as a resume may have lost what a close sent.
+    NoMenu { applied: u64, inventory: Inventory },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.

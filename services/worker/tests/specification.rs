@@ -972,7 +972,11 @@ impl Witness {
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::VehicleCorrected { .. }
                 | PlayerEvent::Rides { .. }
-                | PlayerEvent::Kicked { .. } => {}
+                | PlayerEvent::Kicked { .. }
+                | PlayerEvent::MenuOpened { .. }
+                | PlayerEvent::MenuChanged { .. }
+                | PlayerEvent::MenuClosed { .. }
+                | PlayerEvent::NoMenu { .. } => {}
             },
             WorkerToEdge::Outbox { number, entry } => {
                 // An entry it has seen is ignored, as section 5 has it: it is sent again
@@ -5385,6 +5389,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        menu: None,
     }
 }
 

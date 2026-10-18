@@ -267,6 +267,8 @@ struct Player {
     riding: Option<PlayerRiding>,
     keys: Keys,
     kept: Vec<crate::api::VehicleMove>,
+    /// See [`PlayerState::menu`].
+    menu: Option<crate::state::Menu>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1413,6 +1415,7 @@ impl Region {
             riding: transfer.riding,
             keys: transfer.keys,
             kept: transfer.kept.clone(),
+            menu: None,
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1532,6 +1535,7 @@ impl Region {
             riding: None,
             keys: Keys::default(),
             kept: Vec::new(),
+            menu: None,
         };
         self.enter(id, player, attempt, output);
     }
@@ -1873,6 +1877,11 @@ impl Region {
                 };
                 self.pick_entity_item(id, user, *entity, output);
             }
+            // The menus' inputs, which step N6b takes (`docs/groundwork/n6-plan.md`).
+            PlayerInput::ContainerClick { .. }
+            | PlayerInput::CloseContainer { .. }
+            | PlayerInput::OpenVehicleInventory
+            | PlayerInput::MenuResync => {}
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
@@ -2781,6 +2790,7 @@ impl Player {
             riding: self.riding,
             keys: self.keys,
             kept: self.kept.clone(),
+            menu: self.menu.clone(),
         }
     }
 
@@ -2803,6 +2813,7 @@ impl Player {
             riding: state.riding,
             keys: state.keys,
             kept: state.kept,
+            menu: state.menu,
         }
     }
 

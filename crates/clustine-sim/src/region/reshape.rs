@@ -513,6 +513,7 @@ mod tests {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            menu: None,
         }
     }
 

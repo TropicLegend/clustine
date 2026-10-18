@@ -1739,6 +1739,15 @@ impl Fanout {
                 player,
                 event: PlayerEvent::HeldSlot { slot },
             } => self.held_slot(player, slot).await,
+            // Menus are shown from step N6b (`docs/groundwork/n6-plan.md`).
+            WorkerToEdge::ToPlayer {
+                event:
+                    PlayerEvent::MenuOpened { .. }
+                    | PlayerEvent::MenuChanged { .. }
+                    | PlayerEvent::MenuClosed { .. }
+                    | PlayerEvent::NoMenu { .. },
+                ..
+            } => {}
             // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
             WorkerToEdge::ToPlayer {
                 player,

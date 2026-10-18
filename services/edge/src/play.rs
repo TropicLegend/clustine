@@ -291,6 +291,9 @@ async fn pump(
                         // nothing N5 brings is.
                         on_entity(shared, client, packet.entity_id, OnEntity::Pick).await?;
                     }
+                    // Menus are step N6b's (`docs/groundwork/n6-plan.md`).
+                    ServerboundPlay::ContainerClick(_)
+                    | ServerboundPlay::ServerboundContainerClose(_) => {}
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}

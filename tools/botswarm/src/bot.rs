@@ -353,6 +353,24 @@ pub struct Bot {
     /// Every clientbound `move_vehicle` that came, in order: where the server put back
     /// the vehicle the bot drives.
     pub vehicle_corrections: Vec<ClientboundMoveVehicle>,
+    /// The menu the server has opened and not closed, as it showed it.
+    pub menu: Option<ShownMenu>,
+    /// The stack on the cursor, as the server last said (`set_cursor_item`, or a whole
+    /// window's contents).
+    pub cursor: Option<ItemStack>,
+    /// The windows the server closed (`container_close`), in order.
+    pub menus_closed: Vec<i32>,
+}
+
+/// A menu's window as a client shows it: what `open_screen` said, then the slots and the
+/// state id as `container_set_content` and `container_set_slot` set them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShownMenu {
+    pub window_id: i32,
+    pub menu: i32,
+    pub title: clustine_protocol::text::Text,
+    pub slots: Vec<Option<ItemStack>>,
+    pub state_id: i32,
 }
 
 impl Bot {
@@ -556,6 +574,9 @@ impl Bot {
             passengers: BTreeMap::new(),
             passenger_log: Vec::new(),
             vehicle_corrections: Vec::new(),
+            menu: None,
+            cursor: None,
+            menus_closed: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1626,7 +1647,52 @@ impl Bot {
                     });
                 }
             }
+            ClientboundPlay::OpenScreen(packet) => {
+                self.menu = Some(ShownMenu {
+                    window_id: packet.window_id,
+                    menu: packet.menu,
+                    title: clustine_protocol::text::Text::from_nbt(packet.title),
+                    slots: Vec::new(),
+                    state_id: 0,
+                });
+            }
+            ClientboundPlay::ContainerSetSlot(packet) => {
+                if let Some(menu) = self
+                    .menu
+                    .as_mut()
+                    .filter(|menu| menu.window_id == packet.window_id)
+                    && let Ok(slot) = usize::try_from(packet.slot)
+                {
+                    if menu.slots.len() <= slot {
+                        menu.slots.resize(slot + 1, None);
+                    }
+                    menu.slots[slot] = packet.stack;
+                    menu.state_id = packet.state_id;
+                }
+            }
+            ClientboundPlay::SetCursorItem(packet) => self.cursor = packet.stack,
+            ClientboundPlay::ClientboundContainerClose(packet) => {
+                if self
+                    .menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.window_id == packet.window_id)
+                {
+                    self.menu = None;
+                }
+                self.menus_closed.push(packet.window_id);
+            }
+            // No menu of N6 has data slots but the crafter's.
+            ClientboundPlay::ContainerSetData(_) => {}
             ClientboundPlay::SetContainerContent(packet) => {
+                if let Some(menu) = self
+                    .menu
+                    .as_mut()
+                    .filter(|menu| menu.window_id == packet.window_id)
+                {
+                    menu.slots.clone_from(&packet.slots);
+                    menu.state_id = packet.state_id;
+                    self.cursor = packet.carried;
+                }
                 if packet.window_id == inventory::PLAYER_WINDOW {
                     for (slot, held) in self.hotbar.iter_mut().enumerate() {
                         *held = packet
