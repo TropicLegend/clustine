@@ -1,7 +1,7 @@
 # Step N3: entities crossing a line, planned
 
-Draft of 2026-10-18, revised the same day after an independent review (section 5), whose
-changes to the contracts and the store are to be read again before they are built. Step N3 of
+Draft of 2026-10-18, revised the same day after two independent reviews (sections 5
+and 6); ready to build. Step N3 of
 [ADR-0028](../adr/0028-entities.md), sections 5 and 6 as accepted after five reviews,
 built after N4 (an entity must move before it can cross). The record decides the rules;
 this plan says where each goes in the code as it is now, and in what order. It is not
@@ -223,3 +223,47 @@ differ.
   still for one to three ticks at each crossing and snaps back on the client; items on
   either side of a line do not merge (merging is a region's own: it waits for entity effects
   across a line, with N7).
+
+## 6. The second review (2026-10-18), and what changes
+
+Ready after small fixes, which are these (section 5 and these replace the earlier
+sections where they differ):
+
+- **An arrival's `Due`** (its 1): computed at filing, in the Commit arm, against the holder
+  after the commit's own grant (a sender granted the chunk gets `FromTaking`), with a
+  variant of `couplings.due` with no delay; carried in the log (kind 16 carries
+  `(ChunkPos, Entity, Due)`), in `Arrival` and in `ArrivalsForward`; never recomputed at a
+  resend; set to `FromTaking` at every change of holder: `lent`, `returned`, `absorb`,
+  `split`, and at the store's start for every arrival whose sequence lies below the last
+  `Absorbed` or `Split` record that concerns it. A coupling that changes later leaves it.
+- **The fold's leftovers** (2): arrivals the fold cannot write into a chunk are written as
+  `ArrivalsForward` in a new segment synced before the `Opened { restored: 0 }` records,
+  since those take back every earlier commit's arrivals at the next start. That the fold is
+  safe rests on its `Opened` excluding the commits whose `ArrivalsDropped` it wrote: said in
+  the code.
+- **A return of an unreadable chunk** (3): `StoreRequest::Return` carries the chunks the
+  runner found unreadable; the lane keeps them, and neither the Return arm nor the Commit
+  arm calls their return off.
+- **The Commit arm's borrows and early return** (4): calls-off of another region's return
+  are gathered and applied after the sender's lane and owner are let go; the arrivals are
+  filed, streamed and the calls-off gathered before the stay notes' early return; a sender
+  that is the holder is answered through its own `owner`.
+- **The runner holds its pinned land** (5): from `Restored::pinned` and `Absorbed::pinned`,
+  less what it has lent away, so that an arrival into its pinned land beyond its viewers is
+  kept and ticketed. Arrival tickets are read everywhere lend tickets are
+  (`lend_ticketed`: the claims, the chunks asked for, the check that keeps a delivered
+  chunk), not only in `wants()`.
+- **The start's order** (6): `ArrivalsForward` and `ArrivalsDropped` apply in their place in
+  the read; the commits' filings, takings and take-backs by (region, tick) are resolved
+  after them.
+- **Marks** (7): `admit` and `absorb` send a `Mark` when they resend arrivals, as when they
+  resend effects.
+- **A refused commit** (8): `lose` with `owner_lost`, so that the region's couplings end; the
+  chunks of a commit's arrivals deduplicated before the grants (one `Granted` for two
+  arrivals into one chunk nobody holds).
+- **A key the holder has already** (9, settled): the holder keeps its own entity, counts the
+  arrival as taken and logs an error, so that the stream heals and a restore does not halt
+  on it again.
+- **The worker's order** (10): arrivals handed in and not taken are put back before the
+  tick's returns and lends drop what they drop.
+- **The store's type** (11) is `FiledArrivals`, `chunks.rs` having an `Arrivals` already.
