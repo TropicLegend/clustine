@@ -57,6 +57,42 @@ const ONCE: u8 = Tracked::NEEDS_SYNC | Tracked::SYNC_POSITION | Tracked::SYNC_VE
 /// Values of [`Tracker::dirty`]: which of the entity's data changed since it was sent.
 const DIRTY_FLAGS: u8 = 1;
 const DIRTY_STACK: u8 = 2;
+/// A hanging entity's direction, a frame's rotation, a painting's variant.
+const DIRTY_DIRECTION: u8 = 4;
+const DIRTY_ROTATION: u8 = 8;
+const DIRTY_VARIANT: u8 = 16;
+
+/// The indices of the data of hanging entities (`HangingEntity.DATA_DIRECTION`, then
+/// `ItemFrame.DATA_ITEM` and `DATA_ROTATION`, or `Painting.DATA_PAINTING_VARIANT_ID`;
+/// `docs/groundwork/n5-brief.md`, section 8.2).
+const HANGING_DIRECTION: u8 = 8;
+const FRAME_ITEM: u8 = 9;
+const FRAME_ROTATION: u8 = 10;
+const PAINTING_VARIANT: u8 = 9;
+
+/// The shared flag of an invisible entity (`Entity.FLAG_INVISIBLE`, bit 5).
+const INVISIBLE: u8 = 0x20;
+
+/// The default of `DATA_DIRECTION`, south's 3D value, which a pairing leaves unsent.
+const SOUTH: u8 = 3;
+
+/// The interval of a type that has none (`EntityType.NO_UPDATE_INTERVAL`): its tracker is
+/// `UpdateInterval.NEVER`, sent only on `needsSync` or changed data.
+const NO_UPDATE_INTERVAL: i32 = i32::MAX;
+
+/// Where the game's `ServerEntity` takes an entity to be for its moves
+/// (`Entity.trackingPosition()`): a painting's block's corner, which its spawn carries
+/// too, and any other's position.
+fn tracking_position(data: &EntityData, position: [f64; 3]) -> [f64; 3] {
+    match data {
+        EntityData::Painting { attached, .. } => [
+            f64::from(attached.block.x),
+            f64::from(attached.block.y),
+            f64::from(attached.block.z),
+        ],
+        _ => position,
+    }
+}
 
 /// One of the packets a tracker sends, to everyone shown the entity.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +170,12 @@ pub(crate) struct Tracker {
     /// (`trackDelta`), and whether it is an item, whose positions after a collision
     /// are sent whole where a delta would round them (`isFullPrecisionEncodingRequired`).
     interval: i32,
+    /// Whether the type has no interval (`UpdateInterval.NEVER`): no tick is an update
+    /// tick of its own.
+    never: bool,
+    /// A painting's block's corner, where it is taken to be ([`tracking_position`]): its
+    /// block never changes.
+    corner: Option<[f64; 3]>,
     track_delta: bool,
     item: bool,
     tick_count: i32,
@@ -188,6 +230,8 @@ impl Tracker {
         let info = ENTITY_TYPE_INFO.get(usize::from(seen.kind));
         let (interval, track_delta) =
             info.map_or((20, true), |info| (info.update_interval, info.track_deltas));
+        let never = interval == NO_UPDATE_INTERVAL;
+        let at = tracking_position(data, seen.position);
         let start = matches!(data, EntityData::FallingBlock { .. }).then(|| Position {
             x: seen.position[0].floor() as i32,
             y: seen.position[1].floor() as i32,
@@ -195,11 +239,13 @@ impl Tracker {
         });
         let mut tracker = Self {
             interval: interval.max(1),
+            never,
+            corner: matches!(data, EntityData::Painting { .. }).then_some(at),
             track_delta,
             item: i32::from(seen.kind) == entity_types::ITEM,
             tick_count: 0,
             teleport_delay: 0,
-            codec: VecDeltaCodec::new(seen.position),
+            codec: VecDeltaCodec::new(at),
             last_motion: seen.motion,
             last_yaw: pack_degrees(seen.yaw),
             last_pitch: pack_degrees(seen.pitch),
@@ -208,7 +254,7 @@ impl Tracker {
             sent_on_ground: std::cell::Cell::new(false),
             pairing: Vec::new(),
             start,
-            position: seen.position,
+            position: at,
             motion: seen.motion,
             yaw: seen.yaw,
             pitch: seen.pitch,
@@ -225,7 +271,7 @@ impl Tracker {
     /// Takes a report of the entity's tick. `data` is its data before the report, to
     /// see what changed.
     pub(crate) fn report(&mut self, tracked: &Tracked, data: &EntityData) {
-        self.position = tracked.position;
+        self.position = self.corner.unwrap_or(tracked.position);
         self.motion = tracked.motion;
         self.yaw = tracked.yaw;
         self.pitch = tracked.pitch;
@@ -242,6 +288,9 @@ impl Tracker {
         {
             self.dirty |= DIRTY_STACK;
         }
+        if let Some(new) = &tracked.data {
+            self.dirty |= hanging_changes(data, new);
+        }
     }
 
     /// Takes where the entity is from a report that is not of its tick (it was shown
@@ -249,10 +298,11 @@ impl Tracker {
     /// Where that is not where the edge had it, which a tick's report would have told,
     /// the clients are corrected at the next tick, as `needsSync` has it.
     pub(crate) fn moved(&mut self, seen: Seen) {
-        if seen.position != self.position || seen.on_ground != self.on_ground {
+        let at = self.corner.unwrap_or(seen.position);
+        if at != self.position || seen.on_ground != self.on_ground {
             self.once |= Tracked::NEEDS_SYNC;
         }
-        self.position = seen.position;
+        self.position = at;
         self.motion = seen.motion;
         self.yaw = seen.yaw;
         self.pitch = seen.pitch;
@@ -265,8 +315,16 @@ impl Tracker {
     fn values(&self, data: &EntityData, pairing: bool) -> Vec<(u8, EntityDataValue)> {
         let mut values = Vec::new();
         let burning = self.lasting & Tracked::ON_FIRE != 0;
-        if (pairing && burning) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
-            let flags = if burning { entity_data::ON_FIRE } else { 0 };
+        let invisible = matches!(
+            data,
+            EntityData::ItemFrame {
+                invisible: true,
+                ..
+            }
+        );
+        let flags =
+            if burning { entity_data::ON_FIRE } else { 0 } | if invisible { INVISIBLE } else { 0 };
+        if (pairing && flags != 0) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
             values.push((entity_data::SHARED_FLAGS, EntityDataValue::Byte(flags)));
         }
         match data {
@@ -294,10 +352,56 @@ impl Tracker {
                     ));
                 }
             }
-            // N5's kinds' data comes with the steps that bring them.
+            EntityData::ItemFrame {
+                attached,
+                item,
+                rotation,
+                ..
+            } => {
+                self.direction_value(attached.direction, pairing, &mut values);
+                if (pairing && item.is_some()) || (!pairing && self.dirty & DIRTY_STACK != 0) {
+                    let stack = item.map(|stack| WireStack {
+                        item: stack.item,
+                        count: stack.count,
+                    });
+                    values.push((FRAME_ITEM, EntityDataValue::ItemStack(stack)));
+                }
+                if (pairing && *rotation != 0) || (!pairing && self.dirty & DIRTY_ROTATION != 0) {
+                    values.push((FRAME_ROTATION, EntityDataValue::Int(i32::from(*rotation))));
+                }
+            }
+            EntityData::Painting { attached, variant } => {
+                self.direction_value(attached.direction, pairing, &mut values);
+                // **Inferred**: the default is the registry's first variant, which the
+                // game's `VariantUtils.getAny` gives (`MappedRegistry.getAny` is not
+                // in the dump).
+                if (pairing && *variant != 0) || (!pairing && self.dirty & DIRTY_VARIANT != 0) {
+                    values.push((
+                        PAINTING_VARIANT,
+                        EntityDataValue::PaintingVariant(i32::from(*variant)),
+                    ));
+                }
+            }
+            // The other kinds of N5 have their data from the steps that bring them.
             _ => {}
         }
         values
+    }
+
+    /// A hanging entity's direction, as a newly shown client is sent it (where it is not
+    /// south, the default) or as a change sends it.
+    fn direction_value(
+        &self,
+        direction: u8,
+        pairing: bool,
+        values: &mut Vec<(u8, EntityDataValue)>,
+    ) {
+        if (pairing && direction != SOUTH) || (!pairing && self.dirty & DIRTY_DIRECTION != 0) {
+            values.push((
+                HANGING_DIRECTION,
+                EntityDataValue::Direction(i32::from(direction)),
+            ));
+        }
     }
 
     /// What a client that is newly shown the entity is sent (`sendPairingData`).
@@ -339,7 +443,8 @@ impl Tracker {
             self.once &= !Tracked::SYNC_POSITION;
         }
         let needs_sync = self.once & Tracked::NEEDS_SYNC != 0;
-        if needs_sync || self.tick_count % self.interval == 0 || self.dirty != 0 {
+        let periodic = !self.never && self.tick_count % self.interval == 0;
+        if needs_sync || periodic || self.dirty != 0 {
             let yaw = pack_degrees(self.yaw);
             let pitch = pack_degrees(self.pitch);
             let rotated = yaw != self.last_yaw || pitch != self.last_pitch;
@@ -406,7 +511,8 @@ impl Tracker {
     pub(crate) fn catch_up(&mut self, id: i32, data: &EntityData, mut ticks: u64) -> Vec<Sent> {
         let mut out = Vec::new();
         while ticks > 0 {
-            let due = self.once != 0 || self.dirty != 0 || self.tick_count % self.interval == 0;
+            let periodic = !self.never && self.tick_count % self.interval == 0;
+            let due = self.once != 0 || self.dirty != 0 || periodic;
             if due {
                 let held = Held {
                     position: self.codec.base,
@@ -422,7 +528,12 @@ impl Tracker {
                 continue;
             }
             let to_next = self.interval - self.tick_count.rem_euclid(self.interval);
-            let skipped = u64::try_from(to_next).unwrap_or(1).min(ticks);
+            // A type with no interval waits for nothing but a report.
+            let skipped = if self.never {
+                ticks
+            } else {
+                u64::try_from(to_next).unwrap_or(1).min(ticks)
+            };
             self.tick_count = self
                 .tick_count
                 .wrapping_add(i32::try_from(skipped).expect("fewer than an interval"));
@@ -513,6 +624,54 @@ impl Tracker {
         self.lasting & Tracked::HORIZONTAL_COLLISION != 0
             && ((delta.has_x() && off(z)) || (delta.has_z() && off(x)))
     }
+}
+
+/// Which of a hanging entity's values differ between its data `old` and `new`, as dirty
+/// marks.
+fn hanging_changes(old: &EntityData, new: &EntityData) -> u8 {
+    let mut dirty = 0;
+    match (old, new) {
+        (
+            EntityData::ItemFrame {
+                attached: was,
+                item: had,
+                rotation: turned,
+                ..
+            },
+            EntityData::ItemFrame {
+                attached,
+                item,
+                rotation,
+                ..
+            },
+        ) => {
+            if was.direction != attached.direction {
+                dirty |= DIRTY_DIRECTION;
+            }
+            if had != item {
+                dirty |= DIRTY_STACK;
+            }
+            if turned != rotation {
+                dirty |= DIRTY_ROTATION;
+            }
+        }
+        (
+            EntityData::Painting {
+                attached: was,
+                variant: had,
+            },
+            EntityData::Painting { attached, variant },
+        ) => {
+            if was.direction != attached.direction {
+                dirty |= DIRTY_DIRECTION;
+            }
+            if had != variant {
+                dirty |= DIRTY_VARIANT;
+            }
+        }
+        _ => {}
+    }
+    dirty
 }
 
 fn length_squared(v: [f64; 3]) -> f64 {

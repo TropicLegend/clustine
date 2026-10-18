@@ -23,7 +23,7 @@ pub mod survive;
 #[cfg(test)]
 mod tests;
 
-use clustine_data::BlockState;
+use clustine_data::{BlockState, Face};
 use clustine_world::BlockPos;
 
 pub use shape::{leaf_distance, mossy_carpet_updated, update_shape};
@@ -67,6 +67,14 @@ pub trait BlockView {
     /// entities.
     fn comparator_output(&mut self, _at: BlockPos) -> u8 {
         0
+    }
+
+    /// What a comparator facing `facing` reads of the item frames at `at`, the block
+    /// beyond the conductor behind it (`ComparatorBlock.getItemFrame`): the analog
+    /// output of the one frame facing the same way whose box meets the block's, or
+    /// `None` where there is none, or more than one. A view without entities has none.
+    fn item_frame_signal(&mut self, _at: BlockPos, _facing: Face) -> Option<u8> {
+        None
     }
 }
 

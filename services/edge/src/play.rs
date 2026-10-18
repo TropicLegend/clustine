@@ -269,10 +269,14 @@ async fn pump(
                         let flying = packet.is_flying();
                         send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
                     }
+                    ServerboundPlay::PickItemFromEntity(packet) => {
+                        // Answered by the player's own region from the entity as it has
+                        // it. `includeData` gives an operator an avatar's profile, which
+                        // nothing N5 brings is.
+                        on_entity(shared, client, packet.entity_id, OnEntity::Pick).await?;
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
-                    // Picking an entity's item comes with the hanging entities (N5c).
-                    | ServerboundPlay::PickItemFromEntity(_)
                     | ServerboundPlay::Unhandled { .. } => {}
                 }
             }

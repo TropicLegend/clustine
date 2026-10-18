@@ -84,9 +84,9 @@ fn diode_input<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: Bloc
 
 /// `getInputSignal` of a diode: a repeater's as [`diode_input`]; a comparator's the
 /// analog output of the block behind it in place of that, or else, behind a
-/// conductor that is not powered whole, the analog output of the block beyond it
-/// (`ComparatorBlock.getInputSignal`). An item frame beyond the conductor waits for
-/// entities.
+/// conductor that is not powered whole, the larger of the analog output of the block
+/// beyond it and of the one item frame there that faces the comparator's way
+/// (`ComparatorBlock.getInputSignal`), where either gives one.
 pub fn input_signal<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: BlockPos) -> u8 {
     let input = diode_input(view, state, pos);
     if !is_comparator(state) {
@@ -99,9 +99,16 @@ pub fn input_signal<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos:
         return signal::analog_output(block).unwrap_or(0);
     }
     if input < MAX_SIGNAL && is_conductor(block) {
-        let beyond = view.block(relative(at, direction));
-        if beyond.props().has_analog_output_signal() {
-            return signal::analog_output(beyond).unwrap_or(0);
+        let far = relative(at, direction);
+        let beyond = view.block(far);
+        // `Integer.MIN_VALUE` in the game for each that gives nothing.
+        let frame = view.item_frame_signal(far, direction);
+        let block_output = beyond
+            .props()
+            .has_analog_output_signal()
+            .then(|| signal::analog_output(beyond).unwrap_or(0));
+        if let Some(read) = frame.max(block_output) {
+            return read;
         }
     }
     input

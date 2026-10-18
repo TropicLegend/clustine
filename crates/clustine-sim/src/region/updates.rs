@@ -1030,6 +1030,10 @@ impl BlockView for RegionView<'_> {
         self.0.has_scheduled_tick(at, Ticked::Block(block))
     }
 
+    fn item_frame_signal(&mut self, at: BlockPos, facing: Face) -> Option<u8> {
+        self.0.frame_signal(at, facing)
+    }
+
     fn comparator_output(&mut self, at: BlockPos) -> u8 {
         self.0.comparator_output(at)
     }

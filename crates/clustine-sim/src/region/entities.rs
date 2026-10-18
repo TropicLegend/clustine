@@ -364,7 +364,7 @@ impl Region {
     /// The region's next key, taken; `None`, and nothing taken, where it has none left.
     /// An entity sent as it is made needs no room where it goes: an arrival is never
     /// refused.
-    fn take_key(&mut self) -> Option<EntityId> {
+    pub(super) fn take_key(&mut self) -> Option<EntityId> {
         let key = self.next_entity_id;
         if !self.entity_ids.contains(key) {
             return None;

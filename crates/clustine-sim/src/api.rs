@@ -332,6 +332,12 @@ pub enum PlayerInput {
     MoveVehicle(VehicleMove),
     /// Which of a driven boat's paddles move (`paddle_boat`).
     PaddleBoat { left: bool, right: bool },
+    /// The player picked the item of the entity `entity` (`pick_item_from_entity`, a
+    /// middle click): answered by the player's region from its record or its copy of
+    /// the entity, which selects the item in the hotbar or, for a creative player, puts
+    /// it there (`docs/groundwork/n5-plan.md`, section 8 item 7). Added at the end, so
+    /// that what is stored of inputs reads as it did.
+    PickItemFromEntity { entity: EntityId },
 }
 
 /// The keys a player holds (`player_input`'s flags, and `player_command`'s sprinting).
@@ -849,6 +855,9 @@ pub enum PlayerEvent {
     /// The player was put out for holding a vehicle in the air too long (the game's
     /// kick after 160 ticks).
     Kicked { reason: String },
+    /// The region selected the hotbar slot `slot`, from 0 to 8, of its own accord (a
+    /// pick of an entity's item), which the client is told (`set_held_slot`).
+    HeldSlot { slot: u8 },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.

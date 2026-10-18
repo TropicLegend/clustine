@@ -38,6 +38,7 @@ mod items;
 mod knots;
 mod lends;
 mod minecarts;
+mod picks;
 mod pistons;
 mod placing;
 mod pressed;
@@ -1801,6 +1802,17 @@ impl Region {
                 };
                 self.player_used_entity(user, *entity, by, output);
             }
+            PlayerInput::PickItemFromEntity { entity } => {
+                let user = uses::User {
+                    feet: [
+                        player.pose.position.x,
+                        player.pose.position.y,
+                        player.pose.position.z,
+                    ],
+                    sneaking: false,
+                };
+                self.pick_entity_item(id, user, *entity, output);
+            }
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
@@ -2855,6 +2867,7 @@ mod tests {
     mod entities;
     mod falling_and_drops;
     mod fluids;
+    mod hanging;
     mod instruments;
     mod item_physics;
     mod lends;

@@ -968,6 +968,7 @@ impl Witness {
                 }
                 PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
                 PlayerEvent::InventorySlot { .. }
+                | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::VehicleCorrected { .. }
                 | PlayerEvent::Rides { .. }
                 | PlayerEvent::Kicked { .. } => {}

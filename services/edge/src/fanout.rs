@@ -97,6 +97,8 @@ pub(crate) enum OnEntity {
         sneaking: bool,
         off_hand: bool,
     },
+    /// `pick_item_from_entity`: the middle click that picks the entity's item.
+    Pick,
 }
 
 /// What a connection tells the fan-out task.
@@ -1577,6 +1579,7 @@ impl Fanout {
                 };
                 let input = match what {
                     OnEntity::Attack => PlayerInput::Attack { entity },
+                    OnEntity::Pick => PlayerInput::PickItemFromEntity { entity },
                     OnEntity::Interact {
                         location,
                         sneaking,
@@ -1721,6 +1724,10 @@ impl Fanout {
                 player,
                 event: PlayerEvent::InventorySlot { slot, stack },
             } => self.inventory_slot(player, slot, stack).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::HeldSlot { slot },
+            } => self.held_slot(player, slot).await,
             // Shown from the steps of N5 that make them (`docs/groundwork/n5-plan.md`).
             WorkerToEdge::ToPlayer {
                 player,
@@ -2627,6 +2634,19 @@ impl Fanout {
             .is_some_and(|view| view.entity.is_some());
         if entered {
             let packet = inventory_slot_packet(slot, stack);
+            self.send_to_player(player, [packet]).await;
+        }
+    }
+
+    /// Tells the client of `player` that the region selected the hotbar slot `slot`
+    /// (`ClientboundSetHeldSlotPacket`), once it has entered.
+    async fn held_slot(&mut self, player: PlayerId, slot: u8) {
+        let entered = self
+            .players
+            .get(&player)
+            .is_some_and(|view| view.entity.is_some());
+        if entered {
+            let packet = encoded(&SetHeldSlot { slot: slot.into() });
             self.send_to_player(player, [packet]).await;
         }
     }
@@ -5343,11 +5363,21 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
         Some(pairing),
     ) = (&state.kind, pairing)
     {
-        let [x, y, z] = pairing.position;
+        let [mut x, mut y, mut z] = pairing.position;
         let block = match data {
             EntityData::FallingBlock { state, .. } => i32::from(*state),
-            // What N5's kinds send here (a hanging entity's direction) comes with the
-            // steps that bring them.
+            // A frame's and a painting's spawn carries its block's corner and its
+            // direction's 3D value (`ClientboundAddEntityPacket(entity, direction, pos)`),
+            // from which the client works out its box and centre.
+            EntityData::ItemFrame { attached, .. } | EntityData::Painting { attached, .. } => {
+                [x, y, z] = [
+                    f64::from(attached.block.x),
+                    f64::from(attached.block.y),
+                    f64::from(attached.block.z),
+                ];
+                i32::from(attached.direction)
+            }
+            // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
         let mut packets = vec![encoded(&SpawnEntity {
@@ -7620,6 +7650,7 @@ mod scenarios {
 
     mod block_destroyed;
     mod crossing_specification;
+    mod hanging;
     mod items;
     mod items_specification;
     mod physics_specification;

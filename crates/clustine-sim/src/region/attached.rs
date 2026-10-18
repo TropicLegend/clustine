@@ -100,7 +100,7 @@ impl Region {
 
     /// `BlockAttachedEntity.move(type, vector)` and `push(dx, dy, dz)`: any move or push
     /// of length above 0 kills the entity `key` and drops its item, as if broken by
-    /// nothing. True where it broke.
+    /// nothing, but a fixed frame, which ignores both. True where it broke.
     pub(crate) fn moved_attached(
         &mut self,
         key: EntityId,
@@ -109,6 +109,12 @@ impl Region {
     ) -> bool {
         let [x, y, z] = by;
         if x * x + y * y + z * z <= 0.0 {
+            return false;
+        }
+        if self
+            .find_entity(key)
+            .is_some_and(|(_, record)| self.hanging_ignores_moves(record))
+        {
             return false;
         }
         self.hurt_attached(key, Breaker::Nothing, output)

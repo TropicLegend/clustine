@@ -3548,7 +3548,8 @@ impl RegionRunner {
                 | PlayerInput::Interact { .. }
                 | PlayerInput::Attack { .. }
                 | PlayerInput::MoveVehicle(_)
-                | PlayerInput::PaddleBoat { .. } => return false,
+                | PlayerInput::PaddleBoat { .. }
+                | PlayerInput::PickItemFromEntity { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

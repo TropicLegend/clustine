@@ -12,7 +12,7 @@ use crate::physics::aabb::Aabb;
 
 /// A creative player's reach to an entity: `entity_interaction_range` (3), the creative
 /// modifier's 2, and the 3 the handlers add, from the eyes to the entity's box.
-const CREATIVE_ENTITY_REACH: f64 = 3.0 + 2.0 + 3.0;
+pub(super) const CREATIVE_ENTITY_REACH: f64 = 3.0 + 2.0 + 3.0;
 
 /// The eyes' height of a player standing, and sneaking (`Pose.CROUCHING`).
 const STANDING_EYES: f64 = 1.62;
@@ -20,7 +20,7 @@ const SNEAKING_EYES: f64 = 1.27;
 
 /// `AABB.distanceToSqr(point)`: the square of the distance from `point` to the nearest
 /// point of `bounds`.
-fn distance_to_sqr(bounds: Aabb, point: [f64; 3]) -> f64 {
+pub(super) fn distance_to_sqr(bounds: Aabb, point: [f64; 3]) -> f64 {
     let mut squared = 0.0;
     for (axis, at) in point.into_iter().enumerate() {
         let off = (bounds.min[axis] - at).max(at - bounds.max[axis]).max(0.0);
@@ -37,7 +37,7 @@ pub(crate) struct User {
 }
 
 impl User {
-    fn eyes(&self) -> [f64; 3] {
+    pub(super) fn eyes(&self) -> [f64; 3] {
         let height = if self.sneaking {
             SNEAKING_EYES
         } else {
@@ -85,7 +85,7 @@ impl Region {
     }
 
     /// The entity `key` as the copy of its chunk has it, with that chunk.
-    fn copied_entity(&self, key: EntityId) -> Option<(ChunkPos, Entity)> {
+    pub(super) fn copied_entity(&self, key: EntityId) -> Option<(ChunkPos, Entity)> {
         self.copies.iter().find_map(|(position, copy)| {
             let entities = copy.entities();
             let at = entities
