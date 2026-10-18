@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Barrier;
 
 use clustine_data::{BlockState, blocks};
-use clustine_format::{LogRecord, RegionFile, StateFile, TableFile};
+use clustine_format::{BlocksFile, LogRecord, RegionFile, StateFile, TableFile};
 use clustine_rpc::{ChunkBox, Decline, RegionInfo, RegionList, SplitPart, TickState};
 use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkPos, EntityIds};
 
@@ -445,23 +445,28 @@ fn gap_at_the_east() -> Division {
 }
 
 /// The ids of the stripes are used again by the stripes of another division, with the
-/// epochs their region files have and the entity ids they were issued; and no block of
-/// entity ids is issued twice, whatever has become of the region that has one.
+/// epochs their region files have; and every hello is given a fresh block of entity
+/// keys, above every block given before, whatever division each store was started
+/// with and whatever has become of the region that had a block.
 #[test]
-fn epochs_and_entity_ids_outlive_a_change_of_the_division() {
+fn epochs_outlive_a_change_of_the_division_and_every_hello_is_given_a_higher_block() {
     let disk = Arc::new(MemoryDisk::default());
+    let given = std::cell::RefCell::new(Vec::<EntityIds>::new());
     let opened = |told: &Division, region: u32, epoch: u64| {
         let store = store_on(&disk, told).unwrap();
         let opened = store.open_region(hello_of(told, region, epoch));
         opened.map(|(handle, restored)| {
             handle.flush();
-            restored.entity_ids
+            let block = restored.entity_ids;
+            let mut given = given.borrow_mut();
+            let highest = given.iter().map(|block| block.index()).max();
+            assert!(highest < Some(block.index()), "{block:?} after {given:?}");
+            given.push(block);
         })
     };
     let two = stripes(&[0]);
-    let west = opened(&two, 0, 3).unwrap();
-    let east = opened(&two, 1, 4).unwrap();
-    assert_ne!(west, east);
+    opened(&two, 0, 3).unwrap();
+    opened(&two, 1, 4).unwrap();
 
     // One region: it is region 0 as the western stripe was.
     let one = stripes(&[]);
@@ -469,29 +474,200 @@ fn epochs_and_entity_ids_outlive_a_change_of_the_division() {
         opened(&one, 0, 2),
         Err(StoreError::EpochRefused { seen: 3, .. })
     ));
-    assert_eq!(opened(&one, 0, 3).unwrap(), west);
+    opened(&one, 0, 3).unwrap();
     assert!(matches!(
         opened(&one, 1, 9),
         Err(StoreError::UnknownRegion { .. })
     ));
 
-    // Three: the third is new, and its block is not the one the eastern stripe has,
-    // whose file was kept although the region was gone for a while.
+    // Three: the third is new, and the eastern stripe's epoch was kept although the
+    // region was gone for a while.
     let three = stripes(&[0, 16]);
-    let third = opened(&three, 2, 1).unwrap();
-    assert!(third != west && third != east);
-    assert_eq!(opened(&three, 1, 4).unwrap(), east);
+    opened(&three, 2, 1).unwrap();
+    opened(&three, 1, 4).unwrap();
     assert!(matches!(
         opened(&three, 1, 3),
         Err(StoreError::EpochRefused { seen: 4, .. })
     ));
-    // And back to two, after which a region of yet another division gets a fourth.
-    assert_eq!(opened(&two, 0, 5).unwrap(), west);
-    let home = opened(&gap(), 2, 1).unwrap();
-    assert_eq!(home, third);
+    // And back to two, and on to yet other divisions.
+    opened(&two, 0, 5).unwrap();
+    opened(&gap(), 2, 1).unwrap();
     let four = stripes(&[0, 16, 32]);
-    let fourth = opened(&four, 3, 1).unwrap();
-    assert!(![west, east, third].contains(&fourth));
+    opened(&four, 3, 1).unwrap();
+    assert_eq!(given.borrow().len(), 8);
+}
+
+/// The file of blocks of the world on `disk`: the first block not reserved.
+fn blocks_end(disk: &MemoryDisk) -> Option<u32> {
+    let bytes = disk.read(Path::new("/world/regions/blocks")).unwrap()?;
+    Some(BlocksFile::decode(&bytes).unwrap().end)
+}
+
+/// The block the region file of `region` on `disk` names.
+fn block_in_file(disk: &MemoryDisk, region: u32) -> EntityIds {
+    let path = format!("/world/regions/{region}.region");
+    let bytes = disk.read(Path::new(&path)).unwrap();
+    RegionFile::decode(&bytes.expect("the region has a file"))
+        .unwrap()
+        .entity_ids
+}
+
+/// ADR-0028, section 1: every hello is given the next block, pinned or not, home or
+/// not, and again with the same epoch, after its region file names it.
+#[test]
+fn a_region_is_given_a_different_higher_block_at_each_hello() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let hellos = [(0, 1), (2, 1), (0, 1), (1, 4), (0, 2), (2, 1), (2, 7)];
+    for (index, (region, epoch)) in (0..).zip(hellos) {
+        let (handle, restored) = store.open_region(hello_of(&gap(), region, epoch)).unwrap();
+        let case = format!("hello {index}, region {region} with epoch {epoch}");
+        assert_eq!(
+            restored.entity_ids,
+            EntityIds::block(index).unwrap(),
+            "{case}"
+        );
+        // The region file names it before the answer, on disk whatever a crash keeps.
+        let left = disk.crashed(Survival::Nothing);
+        assert_eq!(block_in_file(&left, region), restored.entity_ids, "{case}");
+        drop(handle);
+    }
+    // Sixteen are reserved at a time.
+    assert_eq!(blocks_end(&disk.crashed(Survival::Nothing)), Some(16));
+}
+
+/// The blocks a store reserved in the file of blocks and did not give before it
+/// stopped are given by no later store: the next is the first block not reserved,
+/// and the file is raised again before it is given.
+#[test]
+fn blocks_reserved_in_the_file_of_blocks_are_never_given_again_after_a_restart() {
+    let disk = Arc::new(MemoryDisk::default());
+    {
+        let store = store_on(&disk, &gap()).unwrap();
+        for region in [0, 1, 2] {
+            open(&store, hello_of(&gap(), region, 1));
+        }
+    }
+    for survival in SURVIVALS {
+        let left = Arc::new(disk.crashed(survival));
+        assert_eq!(blocks_end(&left), Some(16), "{survival:?}");
+        let store = store_on(&left, &gap()).unwrap();
+        // Blocks 3 to 15 were reserved by the store before, and are passed over.
+        for (index, epoch) in (16..=32).zip(2..) {
+            let (_, restored) = store.open_region(hello_of(&gap(), 2, epoch)).unwrap();
+            let case = format!("{survival:?}, epoch {epoch}");
+            assert_eq!(
+                restored.entity_ids,
+                EntityIds::block(index).unwrap(),
+                "{case}"
+            );
+            let reserved = if index < 32 { 32 } else { 48 };
+            let on_disk = blocks_end(&left.crashed(Survival::Nothing));
+            assert_eq!(on_disk, Some(reserved), "{case}");
+        }
+        // And once more on what that store left.
+        let again = Arc::new(left.crashed(Survival::Nothing));
+        let store = store_on(&again, &gap()).unwrap();
+        let (_, restored) = store.open_region(hello_of(&gap(), 0, 2)).unwrap();
+        assert_eq!(
+            restored.entity_ids,
+            EntityIds::block(48).unwrap(),
+            "{survival:?}"
+        );
+    }
+}
+
+/// Against a file of blocks that is missing, the store starts above every block a
+/// region file names, also that of a region that was absorbed.
+#[test]
+fn without_the_file_of_blocks_a_store_gives_blocks_above_every_one_a_region_file_names() {
+    let disk = Arc::new(MemoryDisk::default());
+    {
+        let store = store_on(&disk, &gap()).unwrap();
+        // Blocks 0 to 4, of which the part, region 3, which is absorbed again, has 2,
+        // and the home region the highest.
+        let (west, _) = opened(&store, 0, 1);
+        opened(&store, 1, 1);
+        assert_eq!(
+            split(&west, 1, &[WEST], 2, 3),
+            StoreReply::Split {
+                region: RegionId(3)
+            }
+        );
+        let (_part, restored) = store.open_region(hello_of(&gap(), 3, 2)).unwrap();
+        assert_eq!(restored.entity_ids, EntityIds::block(2).unwrap());
+        opened(&store, 2, 1);
+        open(&store, hello_of(&gap(), 2, 1));
+        assert!(matches!(
+            absorb(&west, 3, 2, 2),
+            StoreReply::Absorbed { .. }
+        ));
+        west.flush();
+    }
+    for survival in SURVIVALS {
+        let left = Arc::new(disk.crashed(survival));
+        left.remove(Path::new("/world/regions/blocks")).unwrap();
+        left.sync_directory(Path::new("/world/regions")).unwrap();
+        // The home region's file names block 4, the highest.
+        assert_eq!(block_in_file(&left, 2), EntityIds::block(4).unwrap());
+        let store = store_on(&left, &gap()).unwrap();
+        let (_, restored) = store.open_region(hello_of(&gap(), 0, 5)).unwrap();
+        assert_eq!(
+            restored.entity_ids,
+            EntityIds::block(5).unwrap(),
+            "{survival:?}"
+        );
+        // The file of blocks is there again, before the block was given.
+        assert_eq!(
+            blocks_end(&left.crashed(Survival::Nothing)),
+            Some(21),
+            "{survival:?}"
+        );
+    }
+
+    // With the file of the highest block missing as well, the next highest counts, and
+    // what the absorbed part's file names is not given again.
+    let left = Arc::new(disk.crashed(Survival::Nothing));
+    for path in ["/world/regions/blocks", "/world/regions/2.region"] {
+        left.remove(Path::new(path)).unwrap();
+    }
+    left.sync_directory(Path::new("/world/regions")).unwrap();
+    assert_eq!(block_in_file(&left, 3), EntityIds::block(2).unwrap());
+    let store = store_on(&left, &gap()).unwrap();
+    let (_, restored) = store.open_region(hello_of(&gap(), 1, 5)).unwrap();
+    assert_eq!(restored.entity_ids, EntityIds::block(3).unwrap());
+}
+
+/// ADR-0028, section 1: a split's part is opened with a hello before it runs, and that
+/// hello gives it a block of its own, as any other; the region file the split wrote
+/// is written again with it before the answer.
+#[test]
+fn a_splits_part_is_given_a_block_at_its_hello() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let (west, west_was) = store.open_region(hello_of(&gap(), 0, 1)).unwrap();
+    assert_eq!(west_was.entity_ids, EntityIds::block(0).unwrap());
+    assert_eq!(
+        split(&west, 1, &[WEST], 4, 3),
+        StoreReply::Split {
+            region: RegionId(3)
+        }
+    );
+    let (_part, part) = store.open_region(hello_of(&gap(), 3, 4)).unwrap();
+    assert_eq!(part.held, [(WEST, 1)]);
+    assert_eq!(part.entity_ids, EntityIds::block(1).unwrap());
+    assert_eq!(
+        block_in_file(&disk.crashed(Survival::Nothing), 3),
+        part.entity_ids
+    );
+    // After a crash, the part's next hello is given a block above it.
+    for survival in SURVIVALS {
+        let left = Arc::new(disk.crashed(survival));
+        let store = store_on(&left, &gap()).unwrap();
+        let (_, again) = store.open_region(hello_of(&gap(), 3, 4)).unwrap();
+        assert!(again.entity_ids.index() > 1, "{survival:?}");
+        assert_eq!(again.held, [(WEST, 1)], "{survival:?}");
+    }
 }
 
 /// Writes `contents` to the file at `path` of `disk`, for good.
@@ -1906,11 +2082,9 @@ fn a_split_makes_a_region_of_the_part() {
         assert_eq!(restored.deltas, [], "{case}");
         assert_eq!(restored.held, [(inside, 7), (FREE, 7)], "{case}");
         assert_eq!(restored.pinned, [], "{case}");
-        let none = EntityIds {
-            first: clustine_world::EntityId(0),
-            end: clustine_world::EntityId(0),
-        };
-        assert_eq!(restored.entity_ids, none, "{case}");
+        // A part is given a block at its hello as any region is.
+        let block = restored.entity_ids;
+        assert_eq!(EntityIds::block(block.index()), Some(block), "{case}");
         assert_eq!(load(&part, inside), built(inside, blocks::STONE), "{case}");
         assert_eq!(load(&part, FREE), built(FREE, blocks::GLASS), "{case}");
         part.flush();
@@ -2117,12 +2291,11 @@ fn what_was_split_off_a_pinned_region_comes_back_by_a_return_or_a_merge() {
         // By being pinned again, without a grant; and by the merge, from its tick.
         assert_eq!(held, [(second, 6)], "{survival:?}");
         assert_eq!(load(&pinned, first), generator().generate(first));
-        // The region that is gone has left no files, and its id is not used again.
+        // The region that is gone has left no state, only its region file, which
+        // names the block its hello was given; and its id is not used again.
         let files = left.list(Path::new("/world/regions")).unwrap();
-        assert!(
-            !files.iter().any(|name| name.starts_with("3.")),
-            "{files:?}"
-        );
+        let of_it: Vec<&String> = files.iter().filter(|name| name.starts_with("3.")).collect();
+        assert_eq!(of_it, ["3.region"], "{files:?}");
         let again = StoreReply::Split {
             region: RegionId(4),
         };

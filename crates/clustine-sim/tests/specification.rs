@@ -368,7 +368,7 @@ fn single_input(
 /// The entity of the `n`th player to enter a region that gives out [`ids`], counted
 /// from 1: what an edge is told when the player has spawned, and names in their inputs.
 fn entity(n: i32) -> EntityId {
-    EntityId(ids().first.0 + n - 1)
+    EntityId(ids().first.0 + n as u64 - 1)
 }
 
 fn move_to(x: f64) -> PlayerInput {
@@ -425,7 +425,7 @@ fn outbox_numbers(region: &Region, edge: EdgeId) -> Vec<u64> {
 
 /// The entity that `id` has in another region, as the remote actions here name it.
 fn elsewhere(id: PlayerId) -> EntityId {
-    EntityId(9000 + id.0.as_u128() as i32)
+    EntityId(9000 + id.0.as_u128() as u64)
 }
 
 /// A remote action of a player of another region.
@@ -966,7 +966,7 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
 fn an_arrival_makes_the_player_the_edges() {
     let mut region = loaded(config_a(), CHUNK_A);
     checked_tick(&mut region, &edges(vec![started(E, 10), started(F, 10)]));
-    let entity = EntityId(7_000_001);
+    let entity = EntityId(7 * EntityIds::BLOCK_SIZE + 1);
     checked_tick(
         &mut region,
         &changes(vec![PlayerChange::Arrive(
@@ -996,7 +996,7 @@ fn an_arrival_makes_the_player_the_edges() {
 #[test]
 fn an_arrival_through_an_unknown_edge_reports_the_entity_removed() {
     let mut region = loaded(config_a(), CHUNK_A);
-    let entity = EntityId(7_000_001);
+    let entity = EntityId(7 * EntityIds::BLOCK_SIZE + 1);
     let output = checked_tick(
         &mut region,
         &changes(vec![PlayerChange::Arrive(
@@ -1423,7 +1423,7 @@ fn an_arriving_player_starts_with_nothing_handled_here() {
         &changes(vec![PlayerChange::Arrive(
             E,
             player(5),
-            transfer(EntityId(7_000_001), 3),
+            transfer(EntityId(7 * EntityIds::BLOCK_SIZE + 1), 3),
         )]),
     );
     assert_eq!(region.state().players[&player(5)].handled, None);
@@ -1465,7 +1465,7 @@ fn an_arrival_of_an_earlier_stay_of_a_player_the_region_has_leaves_them_as_they_
 #[test]
 fn a_discard_changes_nothing_of_the_state() {
     let mut region = one_player();
-    let entity = EntityId(7_000_001);
+    let entity = EntityId(7 * EntityIds::BLOCK_SIZE + 1);
     let output = checked_tick(
         &mut region,
         &changes(vec![PlayerChange::Discard {
@@ -1505,7 +1505,7 @@ fn a_confirmation_before_a_reset_in_one_tick_leaves_the_new_start_clean() {
     ]);
     // A player who arrives through the edge after the reset can act in this very tick,
     // which one who joins cannot: they enter only when the store has answered.
-    let arriving = EntityId(7_000_009);
+    let arriving = EntityId(7 * EntityIds::BLOCK_SIZE + 9);
     inputs.change(PlayerChange::Arrive(E, player(9), transfer(arriving, 0)));
     inputs.input(E, player(9), arriving, 1, dig(BORDER_BLOCK_B, 1));
     inputs.input(E, player(9), arriving, 2, dig(BORDER_BLOCK_B, 2));
@@ -1711,7 +1711,7 @@ fn a_confirmation_in_the_tick_of_a_reset_does_not_drop_the_new_entries() {
     ]);
     // A player who arrives through the edge after the reset can act in this very tick,
     // which one who joins cannot: they enter only when the store has answered.
-    let arriving = EntityId(7_000_009);
+    let arriving = EntityId(7 * EntityIds::BLOCK_SIZE + 9);
     inputs.change(PlayerChange::Arrive(E, player(9), transfer(arriving, 0)));
     inputs.input(E, player(9), arriving, 1, dig(BORDER_BLOCK_B, 1));
     let output = checked_tick(&mut region, &inputs);

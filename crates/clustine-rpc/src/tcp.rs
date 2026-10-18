@@ -153,7 +153,7 @@ mod tests {
                 number: Some(round as u64 + 1),
                 body: EdgeToWorker::PlayerLeave {
                     player,
-                    entity: Some(EntityId(round as i32 + 1)),
+                    entity: Some(EntityId(round as u64 + 1)),
                     attempt: None,
                 },
             };
@@ -170,7 +170,7 @@ mod tests {
                 number: Some(round as u64 + 1),
                 body: EdgeToWorker::PlayerLeave {
                     player,
-                    entity: Some(EntityId(round as i32 + 1)),
+                    entity: Some(EntityId(round as u64 + 1)),
                     attempt: None,
                 },
             };

@@ -349,7 +349,7 @@ enum Message {
     /// and the records.
     #[cfg(test)]
     Players {
-        answer: Sender<(i32, Vec<clustine_format::PlayerRecord>)>,
+        answer: Sender<(u64, Vec<clustine_format::PlayerRecord>)>,
     },
 }
 
@@ -538,7 +538,7 @@ impl Store {
     /// durable: the highest stay ever given, and the records in ascending order of
     /// the players. Nothing outside the store reads the records; its tests do.
     #[cfg(test)]
-    pub(crate) fn players(&self) -> (i32, Vec<clustine_format::PlayerRecord>) {
+    pub(crate) fn players(&self) -> (u64, Vec<clustine_format::PlayerRecord>) {
         let (answer, answered) = mpsc::channel();
         let _ = self.messages.send(Message::Players { answer });
         answered

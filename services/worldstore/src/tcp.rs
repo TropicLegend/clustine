@@ -1004,7 +1004,7 @@ mod tests {
             "{:?}",
             refused.err()
         );
-        let expected = Restored {
+        let mut expected = Restored {
             spawn: crate::tests::SPAWN,
             held: Vec::new(),
             // The eastern stripe.
@@ -1028,12 +1028,14 @@ mod tests {
             given_up: false,
             lends: clustine_rpc::Lends::default(),
         };
+        // Each hello is given a fresh block, above the one before.
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
-        assert_eq!(restored, expected);
+        assert!(alike(&restored, &expected), "{restored:?}");
+        expected.entity_ids = restored.entity_ids;
         drop(remote);
         server.stop();
         let (owner, restored) = store.open_region(hello(1, 8)).unwrap();
-        assert_eq!(restored, expected);
+        assert!(alike(&restored, &expected), "{restored:?}");
         assert_eq!(load(&owner, origin), edited());
         let mut expected = generator().generate(dug.0.chunk());
         expected.set(8, -61, 4, blocks::AIR);
@@ -1724,6 +1726,16 @@ mod tests {
         restored
     }
 
+    /// Whether `later` is what `earlier` is but for its block of entity keys, which is
+    /// fresh at every hello, and so above the earlier one.
+    fn alike(later: &Restored, earlier: &Restored) -> bool {
+        let same = Restored {
+            entity_ids: earlier.entity_ids,
+            ..later.clone()
+        };
+        later.entity_ids.index() > earlier.entity_ids.index() && same == *earlier
+    }
+
     /// The number of bytes `part` is on the connection.
     fn sent_length(part: &RestoredPart) -> usize {
         let mut sent = Vec::new();
@@ -2018,7 +2030,7 @@ mod tests {
 
             let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
             // Not `assert_eq`, which would print all of it.
-            assert!(restored == expected);
+            assert!(alike(&restored, &expected));
 
             // The region is the owner's from then on, and nothing it was restored with
             // is taken for an answer.
@@ -2054,7 +2066,7 @@ mod tests {
             assert_eq!((&restored.state, &restored.deltas), (&None, &Vec::new()));
             drop(remote);
             let (_local, locally) = store.open_region(hello(0, 2)).unwrap();
-            assert_eq!(restored, locally);
+            assert!(alike(&locally, &restored), "{locally:?} after {restored:?}");
         }
 
         // A few deltas, one of them without a byte: without a state, after one, and
@@ -2065,7 +2077,7 @@ mod tests {
                 let (_server, address) = served(&store);
                 let expected = filled(&store, 1, state, &[3, 0, 7]);
                 let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
-                assert_eq!(restored, expected);
+                assert!(alike(&restored, &expected), "{restored:?}");
                 remote.flush();
                 assert_eq!(remote.try_reply(), None);
             }
@@ -2174,14 +2186,21 @@ mod tests {
             let expected = filled(&store, 1, Some(2 * MEBIBYTE), &[MEBIBYTE; 10]);
 
             // An owner that goes away with the first part, and one that goes away with
-            // the welcome alone.
+            // the welcome alone. Each hello is given a fresh block, above the one before.
+            let mut given = expected.entity_ids;
             for parts in [1, 0] {
                 let mut connection = TcpStream::connect(&address).unwrap();
                 wire::blocking::write(&mut connection, &StoreHello::Region(hello(1, 3))).unwrap();
                 let welcome = wire::blocking::read(&mut connection).unwrap();
+                let block = match &welcome {
+                    Some(StoreWelcome::Accepted { entity_ids, .. }) => *entity_ids,
+                    other => panic!("{other:?}"),
+                };
+                assert!(block.index() > given.index(), "{block:?} after {given:?}");
+                given = block;
                 let accepted = StoreWelcome::Accepted {
                     spawn: crate::tests::SPAWN,
-                    entity_ids: expected.entity_ids,
+                    entity_ids: block,
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
                     world: crate::world_number(&generator().settings().identity),
@@ -2204,7 +2223,8 @@ mod tests {
 
             // The same owner comes back with its epoch and is given all of it.
             let (remote, restored) = StoreHandle::connect(&address, hello(1, 3)).unwrap();
-            assert!(restored == expected);
+            assert!(restored.entity_ids.index() > given.index());
+            assert!(alike(&restored, &expected));
             assert_eq!(load(&remote, origin), generator().generate(origin));
             let tick = expected.tick() + 1;
             log(&remote, tick, &[]);

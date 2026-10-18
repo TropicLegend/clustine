@@ -216,7 +216,7 @@ fn single_input(
 /// The entity of the `n`th player to enter a region that gives out [`ids`], counted
 /// from 1.
 fn entity(n: i32) -> EntityId {
-    EntityId(ids().first.0 + n - 1)
+    EntityId(ids().first.0 + n as u64 - 1)
 }
 
 /// A step to the point with these x and z coordinates, on the stone.
@@ -393,7 +393,7 @@ impl Random {
 /// A player of a state made by hand, standing in the middle of `chunk`, who differs
 /// from a player with another entity in everything a state says of a player.
 fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
-    let n = entity.0;
+    let n = entity.0 as i32;
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack {
         item: items::STONE,
@@ -472,7 +472,7 @@ fn numbers_of(state: &RegionState) -> Vec<i32> {
     state
         .players
         .values()
-        .map(|player| player.entity_id.0 - ids().first.0 + 1)
+        .map(|player| (player.entity_id.0 - ids().first.0 + 1) as i32)
         .collect()
 }
 

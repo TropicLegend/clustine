@@ -19,7 +19,7 @@ use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
 use crate::regions::{SURVIVALS, hello_of, store_on};
-use crate::unpinned::{HOME, NO_ENTITY_IDS, answer, open_world, opened};
+use crate::unpinned::{HOME, answer, open_world, opened};
 
 /// The chunks the scenario works on besides the home chunk: one that stays the home
 /// region's, two that go with the part, one that the home region gives back and the
@@ -290,23 +290,22 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     let store = store_on(&left, &world).unwrap_or_else(|error| panic!("{case}: {error}"));
     let (list, regions) = opened(&store, &world, 1000, case);
 
-    // The home region is region 0 whatever happened, holds the home chunk from the
-    // start, and is the only region that has entity ids; and nothing is pinned.
+    // The home region is region 0 whatever happened, and holds the home chunk from
+    // the start; every region is given a fresh block of entity keys at its hello,
+    // each above the one before; and nothing is pinned.
     let living: Vec<u32> = list.regions.iter().map(|info| info.region.0).collect();
     assert_eq!((list.home, living[0]), (RegionId(0), 0), "{case}");
     assert!(regions[0].1.held.contains(&(HOME, 0)), "{case}");
-    let first = EntityIds::block(0).unwrap();
+    let mut given: Option<u32> = None;
     for (info, (_, restored)) in list.regions.iter().zip(&regions) {
         assert!(
             info.pinned.is_empty() && restored.pinned.is_empty(),
             "{case}"
         );
-        let issued = if info.region == list.home {
-            first
-        } else {
-            NO_ENTITY_IDS
-        };
-        assert_eq!(restored.entity_ids, issued, "{case}");
+        let block = restored.entity_ids;
+        assert_eq!(EntityIds::block(block.index()), Some(block), "{case}");
+        assert!(given < Some(block.index()), "{case}: {block:?}");
+        given = Some(block.index());
     }
     // No chunk is two regions'.
     let mut holders: BTreeMap<ChunkPos, u32> = BTreeMap::new();
@@ -366,8 +365,31 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     let store = store_on(&again, &world).unwrap_or_else(|error| panic!("{case}: {error}"));
     let (same, regions) = opened(&store, &world, 1001, &case);
     assert_eq!(same, list, "{case}");
-    let restored: Vec<&Restored> = regions.iter().map(|(_, restored)| restored).collect();
-    assert_eq!(restored, found.iter().collect::<Vec<_>>(), "{case}");
+    // The same but for the blocks of entity keys, which are fresh at every hello and
+    // above every one the first start gave.
+    let given = found
+        .iter()
+        .map(|restored| restored.entity_ids.index())
+        .max();
+    let restored: Vec<Restored> = regions
+        .iter()
+        .map(|(_, restored)| {
+            let block = restored.entity_ids;
+            assert!(Some(block.index()) > given, "{case}: {block:?}");
+            Restored {
+                entity_ids: EntityIds::block(0).expect("the first block"),
+                ..restored.clone()
+            }
+        })
+        .collect();
+    let found: Vec<Restored> = found
+        .into_iter()
+        .map(|restored| Restored {
+            entity_ids: EntityIds::block(0).expect("the first block"),
+            ..restored
+        })
+        .collect();
+    assert_eq!(restored, found, "{case}");
 
     // Every block of a commit that was confirmed is in its chunk, as whoever holds the
     // chunk loads it. A chunk that is nobody's is claimed by the home region first.

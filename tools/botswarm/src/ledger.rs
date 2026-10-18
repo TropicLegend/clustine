@@ -745,18 +745,6 @@ fn put_out_fault(ended: Option<&Ending>) -> Option<String> {
     }
 }
 
-/// What is wrong with a player being the entity `later` in the stay after the one in
-/// which they were `earlier`, if anything: entity ids never go back for the life of a
-/// world, which is what orders two stays everywhere (the record's section 7).
-fn later_stay_fault(earlier: i32, later: i32) -> Option<String> {
-    (later <= earlier).then(|| {
-        format!(
-            "the server made the player entity {later} in a stay after the one in which \
-             they were entity {earlier}: a later stay has a higher entity id"
-        )
-    })
-}
-
 /// What is wrong with what the server said to `name` when it first entered the world
 /// in this scenario, if anything.
 fn first_fault(ledger: &Ledger, name: &str, told: &Kept) -> Option<String> {
@@ -1619,11 +1607,8 @@ impl Player {
         if let Some(fault) = left.fault(&self.ledger.world, &told) {
             bail!("{} joined again after it {parting}: {fault}", self.name);
         }
-        if let Some(fault) =
-            later_stay_fault(self.bot.info.login.entity_id, bot.info.login.entity_id)
-        {
-            bail!("{} joined again after it {parting}: {fault}", self.name);
-        }
+        // Which stay is the later is told by the stays' keys, which no client sees: the
+        // wire ids an edge gives are its own (`docs/adr/0028-entities.md`, section 1).
         bot.wait_for_chunks(1, patience).await?;
 
         // What the old connection was still told, before it is forgotten. An action
@@ -2673,15 +2658,6 @@ mod tests {
         assert!(fault.contains("no disconnect packet"), "{fault}");
         let fault = put_out_fault(None).unwrap();
         assert!(fault.contains("was not ended"), "{fault}");
-    }
-
-    #[test]
-    fn a_later_stay_of_a_player_has_a_higher_entity_id() {
-        assert_eq!(later_stay_fault(4097, 4098), None);
-        assert_eq!(later_stay_fault(3, 70_000), None);
-        let fault = later_stay_fault(4098, 4098).unwrap();
-        assert!(fault.contains("entity 4098 in a stay after"), "{fault}");
-        assert!(later_stay_fault(4098, 4097).is_some());
     }
 
     #[test]

@@ -3047,17 +3047,28 @@ impl Coordinator {
             self.used_blocks.insert(index);
             return entity_ids;
         }
-        let held: BTreeSet<u32> = self
+        // The lowest block no owner's ids reach into. A worker may report any range, so
+        // the ranges are walked rather than spread out into their blocks.
+        let mut held: Vec<Range<u32>> = self
             .regions
             .values()
             .filter_map(|region| region.owner.as_ref())
-            .flat_map(|owner| block_indices(owner.entity_ids))
+            .map(|owner| block_indices(owner.entity_ids))
+            .filter(|indices| !indices.is_empty())
             .collect();
+        held.sort_by_key(|indices| indices.start);
+        let mut lowest = 0;
+        for indices in held {
+            if indices.start > lowest {
+                break;
+            }
+            lowest = lowest.max(indices.end);
+        }
         let none = EntityIds {
             first: EntityId(1),
             end: EntityId(1),
         };
-        unused_block(&held).map_or(none, |(_, entity_ids)| entity_ids)
+        EntityIds::block(lowest).unwrap_or(none)
     }
 
     /// The owner of every region that has one.
@@ -3127,14 +3138,12 @@ impl Coordinator {
 /// The indices of the blocks [`EntityIds::block`] makes that share an id with `ids`.
 /// For a block made by it that is its own index; a worker may report anything, though.
 fn block_indices(ids: EntityIds) -> Range<u32> {
-    // No block has a negative id.
-    let first = ids.first.0.max(0);
-    let end = ids.end.0;
+    let (first, end) = (ids.first.0, ids.end.0);
     if first >= end {
         return 0..0;
     }
-    let index = |id: i32| (id / EntityIds::BLOCK_SIZE).unsigned_abs();
-    index(first)..index(end - 1) + 1
+    let index = |id: u64| (id / EntityIds::BLOCK_SIZE) as u32;
+    index(first)..index(end - 1).saturating_add(1)
 }
 
 /// The entity id block with the lowest index that is not in `used`, if any is left.
@@ -5347,46 +5356,6 @@ mod tests {
     }
 
     #[test]
-    fn a_region_is_assigned_all_the_same_when_the_entity_ids_run_out() {
-        let mut cluster = Cluster::new(&[0]);
-        let mut now = LEASE;
-        // Region 1 keeps the last block; region 0 goes from worker to worker, and each
-        // uses up another. The worker that keeps has no connection, or it would be
-        // given the other region whenever that loses its owner.
-        let kept = assignment(1, 5, EntityIds::BLOCK_COUNT - 1);
-        cluster.register(0, "keeps", "keeps:25601", &[kept]);
-        assert_eq!(cluster.disconnected(0, "keeps"), Changes::default());
-        for block in 0..EntityIds::BLOCK_COUNT - 1 {
-            cluster.register(now, "a", "a:25601", &[]);
-            assert!(cluster.heartbeat(now, "keeps"));
-            assert_eq!(cluster.tick(now), changes(&["a"], true));
-            assert_eq!(cluster.assignments("a")[0].entity_ids, ids(block));
-            now += LEASE + 1;
-            assert!(cluster.heartbeat(now, "keeps"));
-            assert_eq!(cluster.tick(now), changes(&["a"], true));
-        }
-        // Then a block no owner has is filled in, and when there is none, no ids at all.
-        cluster.register(now, "a", "a:25601", &[]);
-        assert_eq!(cluster.tick(now), changes(&["a"], true));
-        assert_eq!(cluster.assignments("a")[0].entity_ids, ids(0));
-        assert_eq!(cluster.assignments("keeps"), [kept]);
-    }
-
-    #[test]
-    fn no_entity_ids_are_filled_in_when_every_block_has_an_owner() {
-        let mut coordinator = coordinator(&stripes_of(&[]), Instant::now(), FIRST_EPOCH);
-        coordinator.used_blocks = (0..EntityIds::BLOCK_COUNT).collect();
-        let everything = EntityIds {
-            first: EntityId(1),
-            end: EntityId(i32::MAX),
-        };
-        let region = coordinator.regions.get_mut(&RegionId(0)).unwrap();
-        region.owner = Some(Owner::new("a", everything, Instant::now()));
-        let none = coordinator.fill_entity_ids();
-        assert_eq!(none.first, none.end);
-    }
-
-    #[test]
     fn a_region_stays_without_an_owner_when_the_epochs_run_out() {
         let mut cluster = Cluster::new(&[0]);
         // No epoch is above this one.
@@ -5415,10 +5384,10 @@ mod tests {
         }
         assert_eq!(indices(size - 1, size + 1), 0..2);
         assert_eq!(indices(3 * size, 5 * size), 3..5);
-        assert_eq!(indices(-5, 1), 0..1);
-        assert_eq!(indices(i32::MIN, i32::MAX), 0..EntityIds::BLOCK_COUNT + 1);
+        assert_eq!(indices(0, 1), 0..1);
+        assert_eq!(indices(0, u64::MAX), 0..EntityIds::BLOCK_COUNT);
         // Without an id there is nothing to keep clear of.
-        for (first, end) in [(5, 5), (9, 2), (-9, -2), (i32::MAX, i32::MIN)] {
+        for (first, end) in [(5, 5), (9, 2), (u64::MAX, 0)] {
             assert!(indices(first, end).is_empty());
         }
 
@@ -6500,7 +6469,7 @@ mod tests {
             // What the present coordinator has seen: the blocks of entity ids it issued
             // or was told of, the latest owner of each region with its epoch, and who
             // waits to hear how a move ended.
-            let mut used_blocks: BTreeSet<i32> = BTreeSet::new();
+            let mut used_blocks: BTreeSet<u32> = BTreeSet::new();
             let mut tenures: BTreeMap<RegionId, (String, u64)> = BTreeMap::new();
             let mut movers: BTreeSet<u64> = BTreeSet::new();
             // When each worker that the present coordinator knows last failed a
@@ -6589,7 +6558,7 @@ mod tests {
                     turned_away += holding.iter().filter(|held| !has.contains(held)).count();
                     for reported in &holding {
                         highest_epoch = highest_epoch.max(reported.epoch);
-                        used_blocks.insert(reported.entity_ids.first.0 / EntityIds::BLOCK_SIZE);
+                        used_blocks.insert(reported.entity_ids.index());
                     }
                     // Most of the time the answer reaches the worker.
                     if !random.once_in(4) {
@@ -6830,8 +6799,8 @@ mod tests {
                     free.remove(&assignment.region);
                     assert!(assignment.epoch > highest_epoch, "{assignment:?}");
                     highest_epoch = assignment.epoch;
-                    let block = assignment.entity_ids.first.0 / EntityIds::BLOCK_SIZE;
-                    assert_eq!(assignment.entity_ids, ids(block as u32));
+                    let block = assignment.entity_ids.index();
+                    assert_eq!(assignment.entity_ids, ids(block));
                     assert!(used_blocks.insert(block), "{assignment:?}");
                     issued += 1;
                     // A leaving worker is never given a region.

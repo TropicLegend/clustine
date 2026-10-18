@@ -26,7 +26,7 @@ use clustine_sim::api::{
 };
 use clustine_sim::{Durable, PlayerEvent, PlayerJoin, RegionState};
 use clustine_worker::{Ended, RegionRunner, RegionSettings, Worker};
-use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, Vec3};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3};
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Pins, Store, StoreHandle};
 use uuid::Uuid;
@@ -702,9 +702,31 @@ fn join(id: PlayerId) -> EdgeToWorker {
     })
 }
 
+/// `state` as a region is restored with it: with the fresh block of keys the store
+/// gave at the hello, and that block's first key as the next, whatever the stored state
+/// said (`docs/adr/0028-entities.md`, section 1).
+fn with_keys(mut state: RegionState, block: EntityIds) -> RegionState {
+    state.entity_ids = block;
+    state.next_entity_id = block.first;
+    state
+}
+
+/// `expected`, whose keys are those of an earlier hello, as `restored` should have it:
+/// with a fresh block, above the block of `expected` (`docs/adr/0028-entities.md`,
+/// section 1).
+fn with_fresh_keys(expected: RegionState, restored: &RegionState) -> RegionState {
+    assert!(
+        restored.entity_ids.first > expected.entity_ids.first,
+        "a restored region is given a fresh block: {:?} after {:?}",
+        restored.entity_ids,
+        expected.entity_ids
+    );
+    with_keys(expected, restored.entity_ids)
+}
+
 /// The entity that `id` has in another region, as the remote actions here name it.
 fn elsewhere(id: PlayerId) -> EntityId {
-    EntityId(9000 + id.0.as_u128() as i32)
+    EntityId(9000 + id.0.as_u128() as u64)
 }
 
 /// The entity of the `n`th player to enter the region of a [`World`], counted from 1,
@@ -714,7 +736,7 @@ fn elsewhere(id: PlayerId) -> EntityId {
 /// inputs behind a join without waiting for that knows the entity this way.
 fn nth_entity(n: i32) -> EntityId {
     let ids = clustine_world::EntityIds::block(0).expect("the first block");
-    EntityId(ids.first.0 + n - 1)
+    EntityId(ids.first.0 + n as u64 - 1)
 }
 
 fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
@@ -2113,9 +2135,17 @@ fn a_resume_holds_what_follows_until_the_hellos_chunks_are_out_in(mut world: Wor
 
     // The dig is there together with the hello, long before any chunk is. Applied to a
     // chunk that is not loaded it would change nothing.
+    // The store was opened to hand the chunks out before the region first ran, so the
+    // player's stay is of the block of the second hello, not the first
+    // (`docs/adr/0028-entities.md`, section 1).
+    let stay = runner
+        .region()
+        .player(player(1))
+        .expect("restored with them")
+        .0;
     let mut e = Link::attach(&runner);
     e.hello(E, 5, 0, vec![player(1)], chunks.clone());
-    e.numbered(2, input(player(1), nth_entity(1), 1, dig(near, 1)));
+    e.numbered(2, input(player(1), stay, 1, dig(near, 1)));
     wait_applied(&mut runner, &mut [&mut e], 0, 2);
     sync(&mut runner, &mut [&mut e], 0);
     let log = &e.log;
@@ -3153,14 +3183,18 @@ fn a_region_restored_for_the_first_time_is_new_and_takes_its_entity_ids_from_the
     assert!(ids.contains(entity));
     wait_applied(&mut runner, &mut [&mut e], 0, 1);
 
-    // The next owner carries on with the same block and does not issue the id again.
+    // The next owner is given a fresh block, above the first, and does not issue the
+    // id again (`docs/adr/0028-entities.md`, section 1).
     let mut next = world.open();
     drop(runner);
-    assert_eq!(next.region().state().entity_ids, ids);
+    let fresh = next.region().state().entity_ids;
+    assert_ne!(fresh, ids);
+    assert!(fresh.first > ids.first);
+    assert_eq!(next.region().state().next_entity_id, fresh.first);
     let mut e = resumed(&mut next, E, 5, 0, vec![player(1)]);
     let other = join_and_wait(&mut next, &mut e, 2, player(2));
     assert_ne!(other, entity);
-    assert!(ids.contains(other));
+    assert!(fresh.contains(other));
 }
 
 #[test]
@@ -3680,10 +3714,11 @@ fn a_released_region_is_restored_from_its_state_alone_with_all_its_edges_were_to
         "{} commits come with the state of a released region",
         restored.deltas.len()
     );
+    let block = restored.entity_ids;
     let mut next = RegionRunner::restore(settings(), handle, restored)
         .expect("what the store has is readable");
     let state = next.region().state();
-    assert_eq!(state, runner.region().state());
+    assert_eq!(state, with_keys(runner.region().state(), block));
     // And the edges had been told all of it before their links were closed.
     e.witness.check(&state, E);
     f.witness.check(&state, F);
@@ -5445,7 +5480,8 @@ fn after_unknown_every_entry_follows_and_the_hellos_seen_drops_none_in(mut world
         )
     });
     let mut runner = world.open();
-    assert_eq!(runner.region().state(), state(ids));
+    let restored = runner.region().state();
+    assert_eq!(restored, with_fresh_keys(state(ids), &restored));
     let named = [player(1)];
 
     // The edge never read the welcome that told it the 9: it says none, or another, and
@@ -5588,17 +5624,19 @@ fn a_region_stored_before_there_was_a_format_is_restored_empty_at_its_last_tick_
         assert!(state.players.is_empty(), "{:?}", state.players);
         assert!(state.edges.is_empty(), "{:?}", state.edges);
         assert_eq!(runner.region().tick_number(), 42);
-        assert_eq!(state, expected);
+        assert_eq!(state, with_fresh_keys(expected.clone(), &state));
     }
 
     // It is carried on: an edge is new to it, and entity ids are given out from the
-    // start of the block again.
+    // start of the fresh block its hello gave.
     let mut runner = world.open();
+    let block = runner.region().state().entity_ids;
+    assert!(block.first > ids.first);
     let mut e = established(&mut runner, E, 5);
     let since = unknown_since(&e.log);
     assert!(since > 42, "{since}");
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
-    assert_eq!(entity, ids.first);
+    assert_eq!(entity, block.first);
     wait_applied(&mut runner, &mut [&mut e], 0, 1);
 
     // The next owner drops the same again, and applies what this build committed.
@@ -5670,7 +5708,8 @@ fn deltas_of_this_build_behind_what_is_from_before_are_applied_in(mut world: Wor
     let mut runner =
         RegionRunner::restore(settings(), handle, restored).expect("a region from before");
     assert_eq!(runner.region().tick_number(), 44);
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 
     // The edge of those deltas says the since they have, and is resumed with what they
     // left for it.
@@ -5725,7 +5764,8 @@ fn a_state_of_this_build_before_a_delta_from_before_is_dropped_with_it_in(mut wo
     let (handle, restored) = world.open_raw();
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
     let runner = RegionRunner::restore(settings(), handle, restored).expect("a region from before");
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 }
 
 #[test]
@@ -5758,7 +5798,8 @@ fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42, 43]));
     let runner = RegionRunner::restore(settings(), handle, restored)
         .expect("what is from before is not read, so it cannot fail to be");
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 
     // A state with the lower number, and nothing behind it.
     let mut world = World::memory();
@@ -5770,7 +5811,8 @@ fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
     });
     let mut expected = RegionState::new(ids);
     expected.tick = 40;
-    assert_eq!(world.open().region().state(), expected);
+    let state = world.open().region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 
     // No bytes at all do not begin with a zero byte either.
     let mut world = World::memory();
@@ -5786,7 +5828,8 @@ fn what_is_from_before_is_dropped_without_being_read_in(mut world: World) {
     assert_eq!(stored_ticks(&restored), (Some(40), vec![41, 42]));
     let runner = RegionRunner::restore(settings(), handle, restored)
         .expect("what is from before is not read, so it cannot fail to be");
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 }
 
 #[test]
@@ -5823,13 +5866,14 @@ fn deltas_from_before_without_a_state_are_dropped_up_to_the_last_in(mut world: W
     );
     let mut runner = RegionRunner::restore(settings(), handle, restored)
         .expect("a region from before is carried on");
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 
     // It runs on from there, and the next owner has what it committed.
     let mut e = established(&mut runner, E, 5);
     assert!(unknown_since(&e.log) > 4);
     let entity = join_and_wait(&mut runner, &mut e, 1, player(1));
-    assert_eq!(entity, ids.first);
+    assert_eq!(entity, state.entity_ids.first);
     wait_applied(&mut runner, &mut [&mut e], 0, 1);
     let next = world.open();
     assert_eq!(next.region().player_count(), 1);
@@ -5865,7 +5909,8 @@ fn the_state_of_a_region_that_never_ran_stored_before_there_was_a_format_is_not_
     );
     let runner = RegionRunner::restore(settings(), handle, restored)
         .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
-    assert_eq!(runner.region().state(), RegionState::new(ids));
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(RegionState::new(ids), &state));
 }
 
 #[test]
@@ -5881,7 +5926,8 @@ fn a_state_of_tick_0_of_this_build_is_that_of_a_region_that_never_ran() {
     assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
     let runner = RegionRunner::restore(settings(), handle, restored)
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(runner.region().state(), RegionState::new(ids));
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(RegionState::new(ids), &state));
 }
 
 #[test]
@@ -5899,7 +5945,8 @@ fn a_runner_told_to_stop_before_its_first_tick_leaves_a_state_of_tick_0_that_is_
     assert_eq!(stored_ticks(&restored), (Some(0), Vec::new()));
     let next = RegionRunner::restore(settings(), handle, restored)
         .expect("the state of a region that never ran");
-    assert_eq!(next.region().state(), RegionState::new(ids));
+    let state = next.region().state();
+    assert_eq!(state, with_fresh_keys(RegionState::new(ids), &state));
 }
 
 #[test]
@@ -5934,7 +5981,8 @@ fn a_state_of_tick_0_is_not_read_whatever_it_is_and_what_was_committed_since_is_
     );
     let runner = RegionRunner::restore(settings(), handle, restored)
         .unwrap_or_else(|error| panic!("a state of tick 0 was read: {error}"));
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
 }
 
 #[test]
@@ -6040,7 +6088,8 @@ fn a_state_and_deltas_of_this_build_written_by_hand_are_restored_as_they_are() {
     let mut expected = lived_in(ids, 40);
     expected.apply(&answering(41, F, 8));
     let runner = world.open();
-    assert_eq!(runner.region().state(), expected);
+    let state = runner.region().state();
+    assert_eq!(state, with_fresh_keys(expected, &state));
     assert_eq!(runner.region().player_count(), 1);
 }
 
@@ -6079,7 +6128,8 @@ fn a_checkpoint_replaces_what_was_dropped_in(mut world: World) {
     assert!(item.tick > 41);
     assert!(restored.deltas.is_empty(), "{:?}", stored_ticks(&restored));
     let next = RegionRunner::restore(settings(), handle, restored).expect("readable");
-    assert_eq!(next.region().state(), runner.region().state());
+    let state = next.region().state();
+    assert_eq!(state, with_fresh_keys(runner.region().state(), &state));
     assert_eq!(
         next.region().player(player(1)).map(|(entity, _)| entity),
         Some(entity)

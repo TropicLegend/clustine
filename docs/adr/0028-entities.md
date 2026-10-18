@@ -65,8 +65,11 @@ high half is the block's index, so blocks never meet; no block holds key 0.
 **`next_block` is kept in a synced file of its own** (`regions/blocks`), raised and
 synced before any block is given, at a hello or on a stream, instead of being worked
 out at the store's start from the highest block a region file names
-(`lanes.rs:361-367`): every region now has a block, and the files of absorbed regions
-need not be kept for `next_block`'s sake. The region file still names its block, for its
+(`lanes.rs:361-367`). Every region now has a block, so the files of absorbed regions,
+which are kept while they name one (`absorb`, `align`), are kept for good: in a world
+whose regions follow players they pile up, one small file for every part ever opened,
+and they let a store whose blocks' file is lost start above every block given. Clearing
+them is left for later. The region file still names its block, for its
 restore, and the store's start takes the highest of `regions/blocks` and the blocks the
 region files name, against a damaged file. A hello raises `next_block` by sixteen blocks
 at a time and keeps the rest for the next fifteen hellos, so that most hellos sync only

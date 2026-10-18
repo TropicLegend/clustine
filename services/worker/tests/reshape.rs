@@ -123,7 +123,7 @@ const OTHER: ChunkPos = ChunkPos::new(5, 3);
 const FREE: ChunkPos = ChunkPos::new(2, 0);
 
 /// An entity of no region's block of ids, as a test makes one up for an arrival.
-const STRANGER: EntityId = EntityId(900_000_001);
+const STRANGER: EntityId = EntityId(900 * EntityIds::BLOCK_SIZE + 1);
 
 /// How many ticks a chunk a region holds outside its pinned areas may be without use
 /// before the region gives it back, unless a test says otherwise: as the processes set
@@ -312,11 +312,13 @@ impl World {
     /// Plays the worker that has split `part` off: says hello for it with `as_epoch`
     /// and runs it from what it has in memory.
     fn run_part(&self, region: RegionId, as_epoch: u64, part: Part) -> RegionRunner {
-        let (handle, _) = self
+        let (handle, restored) = self
             .open_with(region, as_epoch)
             .expect("the epoch of the split opens the part");
-        // Told which region it runs, as a worker tells every runner.
+        // With what its hello said of its borders and its block of keys, and told which
+        // region it runs, as a worker does (`bin/clustine/src/cluster/worker.rs`).
         RegionRunner::of_part(part, handle)
+            .with_borders(&restored)
             .without_rings()
             .with_id(region)
     }
@@ -1349,9 +1351,18 @@ fn join(id: PlayerId) -> EdgeToWorker {
     })
 }
 
+/// `state` as a region is restored with it: with the fresh block of keys the store
+/// gave at the hello, and that block's first key as the next, whatever the stored state
+/// said (`docs/adr/0028-entities.md`, section 1).
+fn with_keys(mut state: RegionState, block: EntityIds) -> RegionState {
+    state.entity_ids = block;
+    state.next_entity_id = block.first;
+    state
+}
+
 /// The entity that `id` has in another region, as the remote actions here name it.
 fn elsewhere(id: PlayerId) -> EntityId {
-    EntityId(9000 + id.0.as_u128() as i32)
+    EntityId(9000 + id.0.as_u128() as u64)
 }
 
 fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
@@ -2966,9 +2977,10 @@ fn a_crash_right_after_a_merge_restores_the_merged_state_with_no_commit_to_apply
     assert!(restored.deltas.is_empty());
     assert_eq!(restored.pinned, areas(Shape::Stripes));
     assert!(restored.held.is_empty());
+    let block = restored.entity_ids;
     let mut next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
-    assert_eq!(next.region().state(), merged);
+    assert_eq!(next.region().state(), with_keys(merged.clone(), block));
     assert_eq!(merged.players.len(), 2);
 
     let again = greeted(&mut next, hello_to_a(&pair.to_a));
@@ -4419,25 +4431,24 @@ fn after_a_split_the_list_has_the_new_region_and_a_crash_of_either_restores_the_
     assert!(restored.deltas.is_empty());
     assert_eq!(restored.pinned, areas(Shape::Stripes)[..1]);
     assert!(restored.held.is_empty());
+    let block = restored.entity_ids;
     let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
-    assert_eq!(next.region().state(), stays);
+    assert_eq!(next.region().state(), with_keys(stays.clone(), block));
 
     let (handle, restored) = whole.world.open_raw(n);
     assert_eq!(restored.tick(), m);
     assert!(restored.deltas.is_empty());
-    assert_eq!(
-        restored.entity_ids,
-        EntityIds {
-            first: EntityId(0),
-            end: EntityId(0),
-        }
-    );
+    // The part has a block of keys of its own, given at its hello as at every other
+    // (`docs/adr/0028-entities.md`, section 1).
+    let part_block = restored.entity_ids;
+    assert_eq!(EntityIds::block(part_block.index()), Some(part_block));
+    assert_ne!(part_block, block);
     assert_eq!(restored.held, vec![(FARTHER, m), (FAR, m)]);
     assert!(restored.pinned.is_empty());
     let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
         .expect("what the store has is readable");
-    assert_eq!(next.region().state(), goes);
+    assert_eq!(next.region().state(), with_keys(goes.clone(), part_block));
     assert_eq!(next.region().knowledge(FAR), Knowledge::Held);
     // Every player is in exactly one of the two.
     assert_eq!(stays.players.keys().collect::<Vec<_>>(), vec![&player(1)]);
@@ -4511,8 +4522,13 @@ fn a_runner_made_of_the_part_says_whom_it_has_and_serves_the_parts_chunks_in(wor
     assert_eq!(block_in(chunk, FAR_BLOCK), blocks::AIR);
     assert!(entities.iter().any(|state| state.entity == whole.two));
 
-    // The player goes on where they were, numbered from 1 with the new region, and
-    // nobody joins it: it has no entity ids to give.
+    // The player goes on where they were, numbered from 1 with the new region. A join
+    // it is sent is given a key of the block the part's hello gave it, as one sent to
+    // any region with a block is (`docs/adr/0028-entities.md`, section 1); a part used
+    // to have no block, and refused it.
+    let block = part_runner.region().state().entity_ids;
+    assert_eq!(EntityIds::block(block.index()), Some(block));
+    assert_eq!(part_runner.region().state().next_entity_id, block.first);
     let walked = second.next(input(player(2), whole.two, 3, move_to(FAR_X - 1.0)));
     assert_eq!(walked, 1);
     let joined = second.next(join(player(7)));
@@ -4520,15 +4536,20 @@ fn a_runner_made_of_the_part_says_whom_it_has_and_serves_the_parts_chunks_in(wor
     sync(&mut part_runner, &mut [&mut second], 0);
     assert!(moved(&second.log, whole.two, FAR_X - 1.0).is_some());
     assert!(
-        matches!(
-            outbox(&second.log).as_slice(),
-            [(_, 1, Durable::Refused { player: refused, attempt: named })]
-                if *refused == player(7) && *named == attempt(player(7))
-        ),
+        !outbox(&second.log)
+            .iter()
+            .any(|(_, _, entry)| matches!(entry, Durable::Refused { .. })),
         "{}",
         brief(&second.log)
     );
-    assert_eq!(part_runner.region().player_count(), 1);
+    let state = part_runner.region().state();
+    let stay = state
+        .entering
+        .get(&player(7))
+        .map(|entering| entering.entity_id)
+        .or_else(|| state.players.get(&player(7)).map(|stay| stay.entity_id));
+    assert_eq!(stay, Some(block.first), "{}", brief(&second.log));
+    assert!(state.players.contains_key(&player(2)));
 }
 
 /// R43, `Nobody`: no named chunk has a player; the only named chunk with a player is
@@ -5544,8 +5565,8 @@ fn a_merge_behind_a_merge_is_told_as_an_entry_among_the_entries_of_the_first() {
 }
 
 fn a_merge_behind_a_merge_is_told_as_an_entry_among_the_entries_of_the_first_in(mut world: World) {
-    const WESTERNER: EntityId = EntityId(900_000_010);
-    const EASTERNER: EntityId = EntityId(900_000_020);
+    const WESTERNER: EntityId = EntityId(900 * EntityIds::BLOCK_SIZE + 10);
+    const EASTERNER: EntityId = EntityId(900 * EntityIds::BLOCK_SIZE + 20);
     let mut home = world.open(THREE_HOME);
     let mut east = world.open(THREE_EAST);
     let mut west = world.open(THREE_WEST);
@@ -5817,14 +5838,73 @@ struct Run {
     told: Vec<(&'static str, Told)>,
     shown: Vec<BTreeMap<ChunkPos, (Chunk, Vec<EntityState>)>>,
     states: Vec<Timeless>,
+    /// The keys each region gave out while its link was watched: from its next key
+    /// when the link came, up to its next key at the end.
+    given: Vec<(EntityId, EntityId)>,
+}
+
+/// The keys a region gives out from `from` up to `to`, as the `n`th it gave.
+///
+/// A region that lived on and one restored at the same tick give out keys of different
+/// blocks: the store gives a fresh block at every hello (`docs/adr/0028-entities.md`,
+/// section 1). Everything else they tell has to be the same, and so has the order in
+/// which they give their keys.
+fn given_keys(what: &impl std::fmt::Debug, (from, to): (EntityId, EntityId)) -> String {
+    let text = format!("{what:?}");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("EntityId(") {
+        let (before, after) = rest.split_at(at + "EntityId(".len());
+        out.push_str(before);
+        let digits = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        let (number, after) = after.split_at(digits);
+        match number.parse::<u64>() {
+            Ok(key) if from.0 <= key && key < to.0 => {
+                out.push_str(&format!("given {}", key - from.0));
+            }
+            _ => out.push_str(number),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn assert_the_same(live: &Run, restored: &Run) {
-    for ((name, one), (_, other)) in live.told.iter().zip(&restored.told) {
-        assert_eq!(one, other, "{name}: the region that lived is on the left");
+    let same_count = |one: &[(EntityId, EntityId)], other: &[(EntityId, EntityId)]| {
+        let count = |given: &[(EntityId, EntityId)]| -> Vec<u64> {
+            given.iter().map(|(from, to)| to.0 - from.0).collect()
+        };
+        assert_eq!(count(one), count(other), "the number of keys given");
+    };
+    same_count(&live.given, &restored.given);
+    for (((name, one), (_, other)), (live_given, restored_given)) in live
+        .told
+        .iter()
+        .zip(&restored.told)
+        .zip(live.given.iter().zip(&restored.given))
+    {
+        assert_eq!(
+            given_keys(one, *live_given),
+            given_keys(other, *restored_given),
+            "{name}: the region that lived is on the left"
+        );
     }
+    let without_entities = |shown: &[BTreeMap<ChunkPos, (Chunk, Vec<EntityState>)>]| {
+        shown
+            .iter()
+            .map(|shown| {
+                shown
+                    .iter()
+                    .map(|(position, (chunk, _))| (*position, chunk.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .collect::<Vec<_>>()
+    };
     assert!(
-        live.shown == restored.shown,
+        without_entities(&live.shown) == without_entities(&restored.shown),
         "the snapshots of {:?} and of {:?} differ",
         live.shown
             .iter()
@@ -5836,7 +5916,37 @@ fn assert_the_same(live: &Run, restored: &Run) {
             .map(|shown| shown.keys().collect::<Vec<_>>())
             .collect::<Vec<_>>()
     );
-    assert_eq!(live.states, restored.states);
+    for (((one, other), live_given), restored_given) in live
+        .shown
+        .iter()
+        .zip(&restored.shown)
+        .zip(&live.given)
+        .zip(&restored.given)
+    {
+        let entities = |shown: &BTreeMap<ChunkPos, (Chunk, Vec<EntityState>)>| {
+            shown
+                .iter()
+                .map(|(position, (_, entities))| (*position, entities.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            given_keys(&entities(one), *live_given),
+            given_keys(&entities(other), *restored_given),
+            "the entities shown"
+        );
+    }
+    for (((one, other), live_given), restored_given) in live
+        .states
+        .iter()
+        .zip(&restored.states)
+        .zip(&live.given)
+        .zip(&restored.given)
+    {
+        assert_eq!(
+            given_keys(one, *live_given),
+            given_keys(other, *restored_given)
+        );
+    }
 }
 
 /// A merge, and then one link that resumes, asks for chunks, and passes on what
@@ -5851,6 +5961,7 @@ fn a_link_after_a_merge(world: World, crash: bool) -> Run {
             .expect("what the store has is readable")
             .with_id(A);
     }
+    let from = pair.a.region().state().next_entity_id;
     let mut again = Link::attach(&pair.a).after(pair.to_a.sent);
     again.hello(hello_to_a(&pair.to_a));
     let guest = again.subscribe_as_guest(vec![OTHER]);
@@ -5869,6 +5980,7 @@ fn a_link_after_a_merge(world: World, crash: bool) -> Run {
         told: vec![("the survivor", told(&again, m))],
         shown: vec![shown(&again)],
         states: vec![timeless(&pair.a)],
+        given: vec![(from, pair.a.region().state().next_entity_id)],
     }
 }
 
@@ -5901,6 +6013,8 @@ fn links_after_a_split(world: World, crash: bool) -> Run {
     } else {
         whole.world.run_part(n, as_epoch, part)
     };
+    let from_a = whole.a.region().state().next_entity_id;
+    let from_n = part_runner.region().state().next_entity_id;
 
     let mut again = Link::attach(&whole.a).after(whole.to_a.sent);
     again.hello(
@@ -5941,6 +6055,10 @@ fn links_after_a_split(world: World, crash: bool) -> Run {
         ],
         shown: vec![shown(&again), shown(&to_n)],
         states: vec![timeless(&whole.a), timeless(&part_runner)],
+        given: vec![
+            (from_a, whole.a.region().state().next_entity_id),
+            (from_n, part_runner.region().state().next_entity_id),
+        ],
     }
 }
 
@@ -7859,9 +7977,10 @@ fn a_region_that_checkpoints_with_every_tick_merges_and_splits_all_the_same() {
         drop(part);
         for (region, state) in [(A, stays), (n, goes)] {
             let (handle, restored) = whole.world.open_raw(region);
+            let block = restored.entity_ids;
             let next = RegionRunner::restore(settings(RETURN_AFTER), handle, restored)
                 .expect("what the store has is readable");
-            assert_eq!(next.region().state(), state, "{region:?}");
+            assert_eq!(next.region().state(), with_keys(state, block), "{region:?}");
         }
     }
 }

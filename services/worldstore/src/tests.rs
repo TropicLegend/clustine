@@ -335,7 +335,7 @@ fn a_chunk_file_has_the_tick_of_the_save_and_the_epoch_of_the_region_that_saved_
     assert_eq!(unfit, 0);
     assert_eq!((file.position, file.tick, file.epoch), (position, 31, 7));
     assert_eq!(file.chunk, edited());
-    assert_eq!(bytes[..2], [2, clustine_format::KIND_CHUNK]);
+    assert_eq!(bytes[..2], [3, clustine_format::KIND_CHUNK]);
 }
 
 /// A chunk with something of everything a chunk carries, at `position`.
@@ -1049,10 +1049,11 @@ fn a_region_given_up_is_opened_again_with_the_same_epoch_or_a_higher_one() {
     }
 }
 
-/// The epochs and the entity ids are on disk, and a store that is started again knows
-/// them.
+/// The epochs and the blocks of entity keys given are on disk, and a store that is
+/// started again knows them: it refuses a lower epoch, and gives every hello a block
+/// above all it gave before.
 #[test]
-fn entity_ids_and_the_highest_epoch_outlive_the_store() {
+fn the_blocks_given_and_the_highest_epoch_outlive_the_store() {
     let directory = tempfile::tempdir().unwrap();
     let (west_ids, east_ids) = {
         let store = local(directory.path());
@@ -1071,17 +1072,22 @@ fn entity_ids_and_the_highest_epoch_outlive_the_store() {
         Err(StoreError::EpochRefused { seen: 3, .. })
     ));
     let (_east, east) = store.open_region(hello(1, 9)).unwrap();
-    assert_eq!(east.entity_ids, east_ids);
+    let highest = west_ids.index().max(east_ids.index());
+    assert!(east.entity_ids.index() > highest, "{east:?}");
     let (_west, west) = store.open_region(hello(0, 3)).unwrap();
-    assert_eq!(west.entity_ids, west_ids);
+    assert!(
+        west.entity_ids.index() > east.entity_ids.index(),
+        "{west:?}"
+    );
 
-    // In memory, a region opened for the first time gets a block of its own all the same.
+    // In memory, every hello is given a block of its own all the same, a region's
+    // second hello too.
     let store = memory();
     let (_, first) = store.open_region(hello(1, 1)).unwrap();
     let (_, second) = store.open_region(hello(0, 1)).unwrap();
     let (_, again) = store.open_region(hello(1, 2)).unwrap();
-    assert_ne!(first.entity_ids, second.entity_ids);
-    assert_eq!(first.entity_ids, again.entity_ids);
+    let blocks = [first, second, again].map(|restored| restored.entity_ids.index());
+    assert!(blocks[0] < blocks[1] && blocks[1] < blocks[2], "{blocks:?}");
 }
 
 #[test]
@@ -1252,26 +1258,29 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     found
 }
 
-/// A world of format 1 is not opened, not made over and not touched: worlds are thrown
-/// away until the first release, and whoever kept one is told what to do with the
-/// directory. The store says that before it looks at anything else, so the sentence
+/// A world of format 1 or 2 is not opened, not made over and not touched: worlds are
+/// thrown away until the first release, and whoever kept one is told what to do with
+/// the directory. The store says that before it looks at anything else, so the sentence
 /// is the same whatever else of the world differs, and every file is afterwards what
 /// it was, byte for byte.
 #[test]
-fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched() {
+fn a_world_of_format_1_or_2_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched() {
     let settings = generator().settings().identity;
-    let metas = [
-        format!("format=1\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
-        // One whose other settings are not this server's either.
-        "format=1\ndata-version=1\ngenerator=another\n".to_owned(),
-        // One that says nothing else.
-        "format=1\n".to_owned(),
-    ];
-    for meta in metas {
+    let metas = [1u8, 2].into_iter().flat_map(|format| {
+        [
+            format!("format={format}\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
+            // One whose other settings are not this server's either.
+            format!("format={format}\ndata-version=1\ngenerator=another\n"),
+            // One that says nothing else.
+            format!("format={format}\n"),
+        ]
+        .map(move |meta| (format, meta))
+    });
+    for (format, meta) in metas {
         let directory = tempfile::tempdir().unwrap();
         let world = directory.path().join("world");
-        // What a world of format 1 has, and what the worlds before it had: none of
-        // it is this server's to read.
+        // What a world of an earlier format has, and what the worlds before it had:
+        // none of it is this server's to read.
         let files: [(&str, &[u8]); 10] = [
             ("meta", meta.as_bytes()),
             ("table", &[1, 3, 0, 0]),
@@ -1296,24 +1305,24 @@ fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is
         assert_eq!(before.len(), 21);
 
         let sentence = format!(
-            "This world was made by an earlier Clustine (world format 1; this server writes \
-             format 2). Worlds are not carried over before the first release: move {} away or \
+            "This world was made by an earlier Clustine (world format {format}; this server \
+             writes format 3). Worlds are not carried over before the first release: move {} away or \
              name another, and a new world is made.",
             world.display()
         );
         for attempt in 1..=2 {
             let Err(error) = Store::local_told(&world, generator(), division()) else {
-                panic!("the world of format 1 was opened at attempt {attempt}: {meta:?}");
+                panic!("the world of format {format} was opened at attempt {attempt}: {meta:?}");
             };
             assert_eq!(error.to_string(), sentence, "{meta:?}");
             assert!(
                 matches!(
                     error,
                     StoreError::EarlierFormat {
-                        stored: 1,
-                        current: 2,
+                        stored,
+                        current: 3,
                         ..
-                    }
+                    } if stored == format
                 ),
                 "{error:?}"
             );
@@ -1330,10 +1339,10 @@ fn a_world_of_format_1_is_refused_with_the_records_sentence_and_nothing_in_it_is
 fn a_world_of_a_later_format_is_refused_as_one_this_server_does_not_use() {
     let directory = tempfile::tempdir().unwrap();
     let settings = generator().settings().identity;
-    let meta = format!("format=3\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
+    let meta = format!("format=4\ndata-version={DATA_VERSION}\ngenerator={settings}\n");
     fs::write(directory.path().join("meta"), &meta).unwrap();
     let Err(error) = spawn_local(directory.path(), generator()) else {
-        panic!("a world of format 3 was opened");
+        panic!("a world of format 4 was opened");
     };
     assert!(
         matches!(

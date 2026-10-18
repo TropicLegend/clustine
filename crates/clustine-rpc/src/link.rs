@@ -329,7 +329,7 @@ mod tests {
             },
             EdgeToWorker::Input {
                 player: player(),
-                entity: EntityId(i32::MAX),
+                entity: EntityId(u64::MAX),
                 number: u64::MAX,
                 input: PlayerInput::SetHotbarSlot {
                     slot: 8,

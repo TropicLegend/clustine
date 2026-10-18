@@ -346,8 +346,9 @@ fn as_built(
 
 /// The world on the disk of `store` is made over for `told`: its regions are those of
 /// `told` and are restored with nothing, and everything of `built` is in the chunks as
-/// their holders load them. `used` is the next region id of the table the world had,
-/// 0 if it had none. Returns what each region was restored with.
+/// their holders load them, and each is given a fresh block of entity keys, above
+/// the one before. `used` is the next region id of the table the world had, 0 if it
+/// had none. Returns what each region was restored with.
 fn as_made_over(
     store: &Store,
     told: &Division,
@@ -375,6 +376,17 @@ fn as_made_over(
         };
         assert_eq!(restored.held, held, "{case}");
     }
+    let blocks: Vec<EntityIds> = regions
+        .iter()
+        .map(|(_, restored)| restored.entity_ids)
+        .collect();
+    assert!(!blocks.contains(&NO_ENTITY_IDS), "{case}: {blocks:?}");
+    assert!(
+        blocks
+            .windows(2)
+            .all(|pair| pair[0].index() < pair[1].index()),
+        "{case}: {blocks:?}"
+    );
     as_built(&list, told, &regions, built, case);
     regions.into_iter().map(|(_, restored)| restored).collect()
 }
@@ -607,9 +619,10 @@ fn life(store: &Store) -> Built {
     };
     assert_eq!(list.regions[1], part);
 
-    // The part has no entity ids, and is pinned to nothing either.
+    // The part is given the next block of entity keys at its hello, as any region
+    // is, and is pinned to nothing.
     let (part, restored) = store.open_region(hello_of(&told, 1, 4)).unwrap();
-    assert_eq!(restored.entity_ids, NO_ENTITY_IDS);
+    assert_eq!(restored.entity_ids, EntityIds::block(1).unwrap());
     assert_eq!(state_of(&restored), Some((2, whole("part", 2))));
     assert_eq!(restored.held, [(EAST, 2), (EAST_TOO, 2)]);
     assert_eq!(restored.pinned, []);
@@ -692,7 +705,8 @@ fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
     };
     assert_eq!(list, expected, "{case}");
     let restored = &regions[0].1;
-    assert_eq!(restored.entity_ids, EntityIds::block(0).unwrap(), "{case}");
+    // A fresh block, above the two that [`life`] gave.
+    assert!(restored.entity_ids.index() >= 2, "{case}");
     assert_eq!(state_of(restored), Some((4, whole("merged", 4))), "{case}");
     assert_eq!(restored.deltas, [], "{case}");
     // Its own from when it was granted them, and the part's from the merge on.
@@ -738,10 +752,10 @@ fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert!(
-        !files.iter().any(|name| name.starts_with("1.")),
-        "{files:?}"
-    );
+    // The part's state went with the merge; its region file names the block its
+    // hello was given, and is kept.
+    assert!(!files.iter().any(|name| name == "1.state"), "{files:?}");
+    assert!(files.iter().any(|name| name == "1.region"), "{files:?}");
 
     // And on a disk that crashes, with a store killed at every point of its start.
     let disk = Arc::new(MemoryDisk::default());
@@ -759,11 +773,10 @@ fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
     }
     started_at_every_kill_point(&disk, &open_world(), |store, left, epoch, case| {
         as_after_a_life(store, &built, epoch, case);
+        // The part's state went with the merge; its region file names its block.
         let files = region_files(left);
-        assert!(
-            !files.iter().any(|name| name.starts_with("1.")),
-            "{files:?}"
-        );
+        assert!(!files.iter().any(|name| name == "1.state"), "{files:?}");
+        assert!(files.iter().any(|name| name == "1.region"), "{files:?}");
     });
 }
 
@@ -795,7 +808,7 @@ fn a_world_without_pins_is_served_over_a_connection() {
     assert_eq!(list, store.regions().unwrap());
     assert_eq!((list.home, list.next), (RegionId(0), RegionId(2)));
     let (_, restored) = StoreHandle::connect(&address, hello_of(&told, 1, 3)).unwrap();
-    assert_eq!(restored.entity_ids, NO_ENTITY_IDS);
+    assert_eq!(restored.entity_ids, EntityIds::block(1).unwrap());
     assert_eq!(
         (restored.held, restored.pinned),
         (vec![(EAST, 2)], Vec::new())
@@ -921,11 +934,12 @@ fn as_without_pins_lived_in(store: &Store, built: &Built, epoch: u64, case: &str
         restored.deltas.iter().map(|delta| delta.tick).collect()
     };
     let (home, part) = (&regions[0].1, &regions[1].1);
-    assert_eq!(home.entity_ids, EntityIds::block(0).unwrap(), "{case}");
+    // Fresh blocks, above the two the world was given before.
+    assert!(home.entity_ids.index() >= 2, "{case}");
+    assert!(part.entity_ids.index() > home.entity_ids.index(), "{case}");
     assert_eq!(state_of(home), Some((2, whole("rest", 2))), "{case}");
     assert_eq!(ticks(home), [3], "{case}");
     assert_eq!(home.held, [(HOME, 0), (NEAR, 0)], "{case}");
-    assert_eq!(part.entity_ids, NO_ENTITY_IDS, "{case}");
     assert_eq!(state_of(part), Some((3, whole("part", 3))), "{case}");
     assert_eq!(ticks(part), [4], "{case}");
     assert_eq!(part.held, [(GROWN, 2), (EAST, 2), (EAST_TOO, 2)], "{case}");
@@ -1051,10 +1065,14 @@ fn as_side_by_side_lived_in(
         of_the_part(cut).map(|chunk| (chunk, 2)),
         "{case}"
     );
-    // The stripes keep the entity ids they were issued, and the part has none.
-    let blocks = [0, 1].map(|block| EntityIds::block(block).unwrap());
-    assert_eq!([west.entity_ids, east.entity_ids], blocks, "{case}");
-    assert_eq!(part.entity_ids, NO_ENTITY_IDS, "{case}");
+    // Fresh blocks, each above the one before and above the three the stripes and
+    // the part were given before.
+    let blocks = [west, east, part].map(|region| region.entity_ids.index());
+    assert!(blocks[0] >= 3, "{case}: {blocks:?}");
+    assert!(
+        blocks[0] < blocks[1] && blocks[1] < blocks[2],
+        "{case}: {blocks:?}"
+    );
     as_built(&list, told, &regions, built, case);
 }
 
@@ -1139,13 +1157,17 @@ fn a_world_of_stripes_started_without_pins_is_made_over_into_one_home_region() {
 
         made_over(&disk, &told, cut == 0, |store, left, epoch, case| {
             let regions = as_made_over(store, &told, 3, &built, epoch, case);
-            // And the entity ids it was issued.
-            let issued = EntityIds::block(0).unwrap();
-            assert_eq!(regions[0].entity_ids, issued, "{case}");
-            // No state is left, and of the regions that are gone only the file of the
-            // one that has entity ids, which are not to be issued again.
+            // A fresh block, above the three the stripes and the part were given.
+            assert!(regions[0].entity_ids.index() >= 3, "{case}");
+            // No state is left. Every region that was opened has a block, and the
+            // region files of those that are gone are kept, naming blocks that are
+            // not to be given again whatever becomes of the file of blocks.
             let files = region_files(left);
-            assert_eq!(files, ["0.region", "1.region", "table"], "{case}");
+            assert_eq!(
+                files,
+                ["0.region", "1.region", "2.region", "blocks", "table"],
+                "{case}"
+            );
         });
     }
 }
@@ -1169,16 +1191,9 @@ fn a_world_without_pins_started_with_pins_is_made_over_into_pinned_regions() {
 
         made_over(&disk, &told, told == two, |store, left, epoch, case| {
             let regions = as_made_over(store, &told, 2, &built, epoch, case);
-            // Region 0 keeps the entity ids it was issued as the home region, and
-            // every other region is issued a block of its own, also the one whose
-            // id was the part's, which had none.
-            let mut blocks: Vec<EntityIds> =
-                regions.iter().map(|region| region.entity_ids).collect();
-            assert_eq!(blocks[0], EntityIds::block(0).unwrap(), "{case}");
-            blocks.sort_by_key(|block| block.first.0);
-            blocks.dedup();
-            assert_eq!(blocks.len(), regions.len(), "{case}");
-            assert!(!blocks.contains(&NO_ENTITY_IDS), "{case}");
+            // Every region is given a fresh block, above the two the home region and
+            // the part were given before, also the one whose id was the part's.
+            assert!(regions[0].entity_ids.index() >= 2, "{case}");
             let files = region_files(left);
             assert!(
                 !files.iter().any(|name| name.ends_with(".state")),
@@ -1211,9 +1226,11 @@ fn a_world_without_pins_started_with_another_home_chunk_is_made_over() {
                 assert_eq!(listed(&store.regions().unwrap()), alone(home, 2), "{case}");
             }
             let regions = as_made_over(store, &told, 2, &built, epoch, case);
-            let issued = EntityIds::block(0).unwrap();
-            assert_eq!(regions[0].entity_ids, issued, "{case}");
-            assert_eq!(region_files(left), ["0.region", "table"], "{case}");
+            // A fresh block, above the two the home region and the part were given.
+            assert!(regions[0].entity_ids.index() >= 2, "{case}");
+            // No state is left; the part's region file names its block, and is kept.
+            let files = region_files(left);
+            assert_eq!(files, ["0.region", "1.region", "blocks", "table"], "{case}");
         });
     }
 }
@@ -1246,10 +1263,9 @@ fn a_world_from_before_there_was_a_table_is_made_over_whatever_its_layout_was() 
         let dies = killed.contains(&told);
         made_over(&world, &told, dies, |store, left, epoch, case| {
             let regions = as_made_over(store, &told, 0, &built, epoch, case);
-            // The ids of the stripes are those of the new regions, with their epochs
-            // and entity ids.
-            let issued = EntityIds::block(0).unwrap();
-            assert_eq!(regions[0].entity_ids, issued, "{case}");
+            // The ids of the stripes are those of the new regions, with their epochs,
+            // and the blocks the stripes' files name are given to none of them.
+            assert!(regions[0].entity_ids.index() >= 2, "{case}");
             let files = region_files(left);
             assert!(
                 !files.iter().any(|name| name.ends_with(".state")),

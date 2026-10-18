@@ -585,7 +585,7 @@ mod tests {
         for chunk in [empty(), full()] {
             let file = file(chunk);
             let bytes = file.encode();
-            assert_eq!(bytes[..2], [2, 5]);
+            assert_eq!(bytes[..2], [FORMAT_VERSION, 5]);
             assert_eq!(ChunkFile::decode(&bytes), Ok((file.clone(), 0)));
             // One form: what was read is written as it was.
             assert_eq!(ChunkFile::decode(&bytes).unwrap().0.encode(), bytes);

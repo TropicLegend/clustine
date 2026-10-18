@@ -180,7 +180,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::fanout::{Command, Fanout, FanoutConfig, LightSettings, NO_TELEPORT, SessionId};
+use crate::fanout::{
+    Command, Fanout, FanoutConfig, LightSettings, NO_TELEPORT, SessionId, WireLedger,
+};
 use crate::light::{Held, LightJob, Lighting};
 use crate::login::Profile;
 use crate::{EdgeIdentity, LoginWorld, RegionLink, Relinks, Routing, Stopped};
@@ -781,6 +783,7 @@ impl Setup {
                 region_patience: Duration::from_secs(1_000_000),
                 login: LoginWorld::FLAT,
                 light: LightSettings::AT_ONCE,
+                wire_ledger: WireLedger::default(),
             },
             end,
             linked: REGIONS.to_vec(),
@@ -1440,7 +1443,7 @@ impl Script {
         self.sessions += 1;
         let session = SessionId(self.sessions);
         // Entities are numbered in the order stays begin.
-        let entity = EntityId(100 + self.sessions as i32);
+        let entity = EntityId(100 + self.sessions);
         let (outbound, packets) = mpsc::channel(room);
         let queue = outbound.downgrade();
         let join = Command::Join {

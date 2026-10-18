@@ -68,7 +68,7 @@
 //! |---|---|
 //! | Kind | u8: 1 `Entering`, 2 `Has` |
 //! | Player | u128 |
-//! | Entity | i32 |
+//! | Entity | u64 |
 //! | *`Has` only:* hops | u32 |
 //! | … the place | see below |
 //!
@@ -124,7 +124,7 @@ const ON_GROUND: u8 = 1;
 const FLYING: u8 = 2;
 
 /// Bytes a stay note takes in a payload at the least.
-const STAY_LENGTH: usize = 21;
+const STAY_LENGTH: usize = 25;
 
 /// The number of slots in a player's hotbar.
 pub const HOTBAR_SLOTS: usize = 9;
@@ -152,12 +152,12 @@ const CHUNK_LENGTH: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoggedStay {
     /// The home region has given `player` the stay `entity` and holds it as entering.
-    Entering { player: u128, entity: i32 },
+    Entering { player: u128, entity: u64 },
     /// The stay is in the region after the tick, or was let go in it, with `hops`
     /// hand-overs behind it and this place.
     Has {
         player: u128,
-        entity: i32,
+        entity: u64,
         hops: u32,
         place: LoggedPlace,
     },
@@ -835,7 +835,7 @@ fn take_stays(input: &mut Input<'_>) -> Result<Vec<LoggedStay>, FormatError> {
     let mut stays = Vec::with_capacity(count.min(input.0.len() / STAY_LENGTH));
     for _ in 0..count {
         let kind = input.u8()?;
-        let (player, entity) = (input.u128()?, input.i32()?);
+        let (player, entity) = (input.u128()?, input.u64()?);
         stays.push(match kind {
             STAY_ENTERING => LoggedStay::Entering { player, entity },
             STAY_HAS => LoggedStay::Has {
@@ -998,13 +998,52 @@ mod tests {
         };
         let bytes = record.encode();
         let payload = [
-            2, 2, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 1, // one change
-            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
-            0, 0, 0, 2, 7, 8, // the state
+            FORMAT_VERSION,
+            2, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            1, // one change
+            0,
+            0,
+            0,
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            3,
+            0,
+            9, // the change
+            0,
+            0,
+            0,
+            2,
+            7,
+            8, // the state
         ];
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
@@ -1018,10 +1057,28 @@ mod tests {
         };
         let bytes = opened.encode();
         let payload = [
-            2, 3, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 9, // epoch
-            0, 0, 0, 0, 0, 0, 1, 44, // restored
+            FORMAT_VERSION,
+            3, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            9, // epoch
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            44, // restored
         ];
         assert_eq!(bytes[8..], payload);
         assert_eq!(read_log(&bytes), Ok((vec![opened], bytes.len())));
@@ -1033,11 +1090,42 @@ mod tests {
     #[test]
     fn records_of_block_changes_alone_are_read() {
         let payload = [
-            2, 1, // version, kind
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 1, // one change
-            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9,
+            FORMAT_VERSION,
+            1, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            1, // one change
+            0,
+            0,
+            0,
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            3,
+            0,
+            9,
         ];
         let bytes = frame(&payload);
         let expected = LogRecord::Changes {
@@ -1164,38 +1252,154 @@ mod tests {
     fn known_answers_of_the_records_of_regions() {
         let payloads: [&[u8]; 4] = [
             &[
-                2, 4, // version, kind
-                0, 0, 0, 4, // region
-                0, 0, 0, 0, 0, 0, 0, 2, // tick
-                0, 0, 0, 2, // two chunks
-                0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, // the first
-                0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 3, // the second
+                FORMAT_VERSION,
+                4, // version, kind
+                0,
+                0,
+                0,
+                4, // region
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2, // tick
+                0,
+                0,
+                0,
+                2, // two chunks
+                0,
+                0,
+                0,
+                1,
+                0xFF,
+                0xFF,
+                0xFF,
+                0xFF, // the first
+                0xFF,
+                0xFF,
+                0xFF,
+                0xFE,
+                0,
+                0,
+                0,
+                3, // the second
             ],
             &[
-                2, 5, // version, kind
-                0, 0, 0, 4, // region
-                0, 0, 0, 1, // one chunk
-                0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 3, // the chunk
+                FORMAT_VERSION,
+                5, // version, kind
+                0,
+                0,
+                0,
+                4, // region
+                0,
+                0,
+                0,
+                1, // one chunk
+                0xFF,
+                0xFF,
+                0xFF,
+                0xFE,
+                0,
+                0,
+                0,
+                3, // the chunk
             ],
             &[
-                2, 6, // version, kind
-                0, 0, 0, 4, // region
-                0, 0, 0, 0, 0, 0, 0, 9, // epoch
-                0, 0, 0, 5, // absorbed
-                0, 0, 0, 0, 0, 0, 1, 44, // tick
-                0, 0, 0, 2, 7, 8, // the state
+                FORMAT_VERSION,
+                6, // version, kind
+                0,
+                0,
+                0,
+                4, // region
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                9, // epoch
+                0,
+                0,
+                0,
+                5, // absorbed
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                44, // tick
+                0,
+                0,
+                0,
+                2,
+                7,
+                8, // the state
             ],
             &[
-                2, 7, // version, kind
-                0, 0, 0, 4, // region
-                0, 0, 0, 0, 0, 0, 0, 9, // epoch
-                0, 0, 0, 0, 0, 0, 1, 45, // tick
-                0, 0, 0, 1, 7, // the state
-                0, 0, 0, 6, // part
-                0, 0, 0, 0, 0, 0, 0, 2, // part epoch
-                0, 0, 0, 1, // one chunk
-                0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, // the chunk
-                0, 0, 0, 3, 8, 9, 10, // the part's state
+                FORMAT_VERSION,
+                7, // version, kind
+                0,
+                0,
+                0,
+                4, // region
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                9, // epoch
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                45, // tick
+                0,
+                0,
+                0,
+                1,
+                7, // the state
+                0,
+                0,
+                0,
+                6, // part
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2, // part epoch
+                0,
+                0,
+                0,
+                1, // one chunk
+                0,
+                0,
+                0,
+                1,
+                0xFF,
+                0xFF,
+                0xFF,
+                0xFF, // the chunk
+                0,
+                0,
+                0,
+                3,
+                8,
+                9,
+                10, // the part's state
             ],
         ];
         for (record, payload) in records_of_regions().into_iter().zip(payloads) {
@@ -1246,7 +1450,7 @@ mod tests {
         // kinds of their own; 15 stands in for them.
         for kind in [0, 15, 255] {
             assert_eq!(
-                read_log(&frame(&[2, kind])),
+                read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
             );
         }
@@ -1268,7 +1472,7 @@ mod tests {
             assert_eq!(read_log(&frame(&payload[..2])), Err(FormatError::Truncated));
         }
         // More chunks than the payload holds, which must not be reserved either.
-        let mut payload = vec![2, KIND_RETURNED, 0, 0, 0, 4];
+        let mut payload = vec![FORMAT_VERSION, KIND_RETURNED, 0, 0, 0, 4];
         payload.extend_from_slice(&u32::MAX.to_be_bytes());
         payload.extend_from_slice(&[0; 8]);
         assert_eq!(read_log(&frame(&payload)), Err(FormatError::Truncated));
@@ -1393,7 +1597,10 @@ mod tests {
      {
         let record = commit_with_ticks(12, ticks_of_three_chunks());
         let bytes = record.encode();
-        assert_eq!(bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2], [2, 9]);
+        assert_eq!(
+            bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2],
+            [FORMAT_VERSION, 9]
+        );
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
     }
 
@@ -1443,8 +1650,8 @@ mod tests {
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
-        assert_eq!(without[..2], [2, 2]);
-        assert_eq!(with[..2], [2, 9]);
+        assert_eq!(without[..2], [FORMAT_VERSION, 2]);
+        assert_eq!(with[..2], [FORMAT_VERSION, 9]);
         assert_eq!(with[2..without.len()], without[2..]);
         // No notes.
         assert_eq!(with[without.len()..without.len() + 4], [0, 0, 0, 0]);
@@ -1508,18 +1715,60 @@ mod tests {
             events: Vec::new(),
         };
         let payload = [
-            2, 2, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 1, // one change
-            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
-            0, 0, 0, 2, 7, 8, // the state
+            FORMAT_VERSION,
+            2, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            1, // one change
+            0,
+            0,
+            0,
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            3,
+            0,
+            9, // the change
+            0,
+            0,
+            0,
+            2,
+            7,
+            8, // the state
         ];
         assert_eq!(plain.encode(), frame(&payload));
         // The notes of the commit with stays follow its state directly, as in kind 8.
         let bytes = commit_with_stays().encode();
-        assert_eq!(bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2], [2, 8]);
+        assert_eq!(
+            bytes[FRAME_HEADER_LENGTH..FRAME_HEADER_LENGTH + 2],
+            [FORMAT_VERSION, 8]
+        );
         assert_eq!(
             bytes[FRAME_HEADER_LENGTH + 26..FRAME_HEADER_LENGTH + 36],
             [0, 0, 0, 2, 7, 8, 0, 0, 0, 2]
@@ -1532,26 +1781,114 @@ mod tests {
     #[test]
     fn an_older_log_without_commits_with_ticks_reads_unchanged() {
         let changes = [
-            2, 1, // version, kind
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 1, // one change
-            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9,
+            FORMAT_VERSION,
+            1, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            1, // one change
+            0,
+            0,
+            0,
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            3,
+            0,
+            9,
         ];
         let commit = [
-            2, 2, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 1, // one change
-            0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 3, 0, 9, // the change
-            0, 0, 0, 2, 7, 8, // the state
+            FORMAT_VERSION,
+            2, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            1, // one change
+            0,
+            0,
+            0,
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            3,
+            0,
+            9, // the change
+            0,
+            0,
+            0,
+            2,
+            7,
+            8, // the state
         ];
         let opened = [
-            2, 3, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 9, // epoch
-            0, 0, 0, 0, 0, 0, 1, 44, // restored
+            FORMAT_VERSION,
+            3, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            9, // epoch
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            44, // restored
         ];
         let mut log = frame(&changes);
         log.extend(frame(&commit));
@@ -1839,7 +2176,7 @@ mod tests {
                 },
                 LoggedStay::Has {
                     player: 3,
-                    entity: -1,
+                    entity: u64::MAX,
                     hops: 5,
                     place: place(),
                 },
@@ -1860,30 +2197,155 @@ mod tests {
         let record = commit_with_stays();
         let bytes = record.encode();
         let payload = [
-            2, 8, // version, kind
-            0, 0, 0, 4, // region
-            0, 0, 0, 0, 0, 0, 0, 2, // tick
-            0, 0, 0, 0, 0, 0, 0, 1, // epoch
-            0, 0, 0, 0, // no changes
-            0, 0, 0, 2, 7, 8, // the state
-            0, 0, 0, 2, // two notes
+            FORMAT_VERSION,
+            8, // version, kind
+            0,
+            0,
+            0,
+            4, // region
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // tick
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // epoch
+            0,
+            0,
+            0,
+            0, // no changes
+            0,
+            0,
+            0,
+            2,
+            7,
+            8, // the state
+            0,
+            0,
+            0,
+            2, // two notes
             1, // entering
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // the player
-            0, 0, 1, 2, // the entity
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16, // the player
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            2, // the entity
             2, // has
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, // the player
-            0xFF, 0xFF, 0xFF, 0xFF, // the entity
-            0, 0, 0, 5, // hops
-            0x3F, 0xF8, 0, 0, 0, 0, 0, 0, // x: 1.5
-            0xC0, 0, 0, 0, 0, 0, 0, 0, // y: -2
-            0, 0, 0, 0, 0, 0, 0, 0, // z: 0
-            0x42, 0xB4, 0, 0, // yaw: 90
-            0xC2, 0x34, 0, 0, // pitch: -45
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            3, // the player
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF, // the entity
+            0,
+            0,
+            0,
+            5, // hops
+            0x3F,
+            0xF8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // x: 1.5
+            0xC0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // y: -2
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // z: 0
+            0x42,
+            0xB4,
+            0,
+            0, // yaw: 90
+            0xC2,
+            0x34,
+            0,
+            0, // pitch: -45
             2, // flying, not on the ground
             8, // the selected slot
-            1, 0, 0, 0, 1, 0, 0, 0, 64, // the first slot
-            0, 0, 0, 0, 0, 0, 0, // seven empty slots
-            1, 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 1, 2, // the last slot
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            64, // the first slot
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // seven empty slots
+            1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFE,
+            0,
+            0,
+            1,
+            2, // the last slot
         ];
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
@@ -1921,11 +2383,11 @@ mod tests {
             events: Vec::new(),
         };
         let bytes = without.encode();
-        assert_eq!(bytes[8..10], [2, KIND_COMMIT]);
+        assert_eq!(bytes[8..10], [FORMAT_VERSION, KIND_COMMIT]);
         // Nothing follows the state.
         assert_eq!(bytes[bytes.len() - 6..], [0, 0, 0, 2, 7, 8]);
         assert_eq!(read_log(&bytes), Ok((vec![without], bytes.len())));
-        assert_eq!(commit_with_stays().encode()[8..10], [2, 8]);
+        assert_eq!(commit_with_stays().encode()[8..10], [FORMAT_VERSION, 8]);
     }
 
     /// A commit with stays is cut off and damaged like any other record.
@@ -1991,9 +2453,9 @@ mod tests {
             read_log(&frame(&unknown)),
             Err(FormatError::Corrupt("stay kind"))
         );
-        // The second note begins behind the first, which is 21 bytes; its place begins
+        // The second note begins behind the first, which is 25 bytes; its place begins
         // behind its kind, player, entity and hops, with 32 bytes of position and look.
-        let flags = notes + 4 + 21 + 25 + 32;
+        let flags = notes + 4 + 25 + 29 + 32;
         assert_eq!(payload[flags], 2);
         let mut flagged = payload.clone();
         flagged[flags] = 4;
@@ -2072,9 +2534,9 @@ mod tests {
 
     fn stays() -> impl Strategy<Value = Vec<LoggedStay>> {
         let stay = prop_oneof![
-            (any::<u128>(), any::<i32>())
+            (any::<u128>(), any::<u64>())
                 .prop_map(|(player, entity)| LoggedStay::Entering { player, entity }),
-            (any::<u128>(), any::<i32>(), any::<u32>(), places()).prop_map(
+            (any::<u128>(), any::<u64>(), any::<u32>(), places()).prop_map(
                 |(player, entity, hops, place)| LoggedStay::Has {
                     player,
                     entity,

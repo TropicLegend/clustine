@@ -1260,13 +1260,20 @@ fn a_restored_home_region_names_every_stay_in_its_first_tick_and_the_entering_on
     let land = land.restarted();
 
     let (mut west, gate) = land.runner(WEST, 2);
+    // With the fresh block of keys of its hello (`docs/adr/0028-entities.md`, section
+    // 1).
+    let block = west.region().state().entity_ids;
+    assert_ne!(block, before.entity_ids);
     assert_eq!(
         RegionState {
             tick: before.tick,
+            entity_ids: before.entity_ids,
+            next_entity_id: before.next_entity_id,
             ..west.region().state()
         },
         before
     );
+    assert_eq!(west.region().state().next_entity_id, block.first);
     let restored_at = west.region().tick_number();
     assert!(gate.noted().is_empty());
     west.step();
@@ -1765,7 +1772,7 @@ fn a_split_drops_what_the_store_said_of_stays_and_both_regions_name_every_stay_i
 /// highest stay ever given, a state and the changes since.
 fn restored_with(
     block: EntityIds,
-    issued: i32,
+    issued: u64,
     state: Option<&RegionState>,
     deltas: &[StateDelta],
 ) -> Restored {
@@ -1793,7 +1800,7 @@ fn restored_with(
 }
 
 /// A state as of tick 5 with `block` as its block and `next` as its next entity id.
-fn state_with(block: EntityIds, next: i32) -> RegionState {
+fn state_with(block: EntityIds, next: u64) -> RegionState {
     RegionState {
         tick: 5,
         next_entity_id: EntityId(next),
@@ -1802,123 +1809,38 @@ fn state_with(block: EntityIds, next: i32) -> RegionState {
 }
 
 /// The next entity id of the region as it is restored from `restored`, and its block.
-fn next_of(restored: Restored) -> (i32, EntityIds) {
+fn next_of(restored: Restored) -> (u64, EntityIds) {
     let state = restored_state(restored).unwrap();
     (state.next_entity_id.0, state.entity_ids)
 }
 
 #[test]
-fn a_restored_region_goes_on_with_the_next_id_of_its_state_if_that_is_of_the_stores_block() {
-    let block = EntityIds::block(0).unwrap();
-    let state = state_with(block, 7);
-    // Nothing was ever given, or the store kept no count: as it was before.
-    assert_eq!(
-        next_of(restored_with(block, 0, Some(&state), &[])),
-        (7, block)
-    );
-    // What was given is below it.
-    assert_eq!(
-        next_of(restored_with(block, 6, Some(&state), &[])),
-        (7, block)
-    );
-    assert_eq!(
-        next_of(restored_with(block, 3, Some(&state), &[])),
-        (7, block)
-    );
-    // A commit since the state has a later one.
-    let delta = StateDelta {
-        tick: 6,
-        next_entity_id: Some(EntityId(9)),
-        ..StateDelta::default()
-    };
-    let with_a_commit = restored_with(block, 8, Some(&state), std::slice::from_ref(&delta));
-    assert_eq!(next_of(with_a_commit), (9, block));
-    // A region that never ran begins with the first id of its block.
-    assert_eq!(next_of(restored_with(block, 0, None, &[])), (1, block));
-}
-
-#[test]
-fn a_restored_region_never_gives_an_id_again_that_the_store_was_told_of() {
-    let block = EntityIds::block(0).unwrap();
-    // The state says less than the store was told: a commit that named a stay is in
-    // the log, and the region's state as of it was dropped for another build.
-    let state = state_with(block, 7);
-    assert_eq!(
-        next_of(restored_with(block, 11, Some(&state), &[])),
-        (12, block)
-    );
-    // A state of another build is dropped as a whole, and the region does not begin
-    // with the first id of its block again.
-    let mut of_another_build = restored_with(block, 11, Some(&state), &[]);
-    of_another_build.state.as_mut().unwrap().state = vec![5, 0, 0];
-    assert_eq!(next_of(of_another_build), (12, block));
-    // A region that has no state at all, in a world that has given stays: the home
-    // region of another division, which has this block.
-    assert_eq!(next_of(restored_with(block, 11, None, &[])), (12, block));
-    // A stay of another block says nothing of this one.
-    let other = EntityIds::block(3).unwrap();
-    assert_eq!(
-        next_of(restored_with(other, 11, None, &[])),
-        (other.first.0, other)
-    );
-}
-
-#[test]
-fn a_region_given_a_new_block_has_the_same_next_id_at_every_restore_until_its_next_checkpoint() {
-    // The store has given the home region the block `new`: the one it had has no id
-    // above the highest stay. The whole state on disk still names the old block.
+fn a_restored_region_begins_with_the_first_key_of_the_block_the_store_gave_it_whatever_its_state_says()
+ {
+    // The store gives a fresh block at every hello (`docs/adr/0028-entities.md`,
+    // section 1): keys a durable tick gave out, and lost with its machine, are never
+    // given again.
     let old = EntityIds::block(0).unwrap();
-    let new = EntityIds::block(2).unwrap();
-    let issued = old.end.0 - 1;
-    let state = state_with(old, old.end.0);
-    // Before any stay of the new block: its first id, every time.
-    for _ in 0..2 {
-        let restored = restored_with(new, issued, Some(&state), &[]);
-        assert_eq!(next_of(restored), (new.first.0, new));
-    }
-    // After two joins, whose commits have next ids of the new block: the state's id is
-    // kept, and the highest stay is below it.
-    let join = |tick: u64, next: i32| StateDelta {
+    let fresh = EntityIds::block(2).unwrap();
+    let join = |tick: u64, next: u64| StateDelta {
         tick,
         next_entity_id: Some(EntityId(next)),
         ..StateDelta::default()
     };
-    let deltas = [join(6, new.first.0 + 1), join(7, new.first.0 + 2)];
-    for _ in 0..2 {
-        let restored = restored_with(new, new.first.0 + 1, Some(&state), &deltas);
-        assert_eq!(next_of(restored), (new.first.0 + 2, new));
+    let state = state_with(old, 7);
+    let deltas = [join(6, 8), join(7, 9)];
+    for restored in [
+        restored_with(fresh, 0, None, &[]),
+        restored_with(fresh, 0, Some(&state), &[]),
+        restored_with(fresh, 8, Some(&state), &deltas),
+        restored_with(fresh, 0, Some(&state_with(old, old.end.0)), &[]),
+    ] {
+        assert_eq!(next_of(restored), (fresh.first.0, fresh));
     }
-    // A next id of the old block that happens to be the new block's first is that.
-    let adjacent = EntityIds::block(1).unwrap();
-    assert_eq!(old.end, adjacent.first);
-    let restored = restored_with(adjacent, issued, Some(&state), &[]);
-    assert_eq!(next_of(restored), (adjacent.first.0, adjacent));
-}
-
-#[test]
-fn a_region_whose_block_is_used_up_stays_so_when_it_is_restored() {
-    // The end of the block is the next id of a region that has given out every id of
-    // it. Counted as outside the block, it would begin with the first again.
-    let block = EntityIds::block(0).unwrap();
-    let state = state_with(block, block.end.0);
-    assert_eq!(
-        next_of(restored_with(block, 0, Some(&state), &[])),
-        (block.end.0, block)
-    );
-    assert_eq!(
-        next_of(restored_with(block, block.end.0 - 1, Some(&state), &[])),
-        (block.end.0, block)
-    );
-    // A region that a split made has no ids at all.
-    let none = EntityIds {
-        first: EntityId(0),
-        end: EntityId(0),
-    };
-    let state = state_with(none, 0);
-    assert_eq!(
-        next_of(restored_with(none, 40, Some(&state), &[])),
-        (0, none)
-    );
+    // A state of another build is dropped as a whole; the same holds.
+    let mut of_another_build = restored_with(fresh, 0, Some(&state), &[]);
+    of_another_build.state.as_mut().unwrap().state = vec![5, 0, 0];
+    assert_eq!(next_of(of_another_build), (fresh.first.0, fresh));
 }
 
 #[test]
@@ -1961,19 +1883,28 @@ fn a_home_region_whose_state_was_dropped_gives_the_next_player_an_id_above_every
     drop(handle);
     let land = land.restarted();
 
+    // Each hello is given a fresh block, above every stay given, and the region counts
+    // from its first (`docs/adr/0028-entities.md`, section 1).
+    let mut blocks = Vec::new();
     for epoch in [3, 4] {
         let (handle, restored) = land.world.open(WEST, epoch);
         assert_eq!(restored.issued, second);
+        let block = restored.entity_ids;
         let state = restored_state(restored).unwrap();
-        assert_eq!(state.next_entity_id, EntityId(3));
+        assert!(block.first > second);
+        assert_eq!(state.next_entity_id, block.first);
         assert!(state.players.is_empty());
+        blocks.push(block);
         drop(handle);
     }
+    assert_ne!(blocks[0], blocks[1]);
     let (mut west, _gate) = land.runner(WEST, 5);
+    let block = west.region().state().entity_ids;
+    assert!(block.first > blocks[1].first);
     let mut e = Seat::first(&west, E, &[]);
     // Everybody joins again, in place, with a higher id.
     let (third, entered) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 81);
-    assert_eq!((third, entered), (EntityId(3), place_at(HOME_X)));
+    assert_eq!((third, entered), (block.first, place_at(HOME_X)));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2051,7 +1982,9 @@ fn a_login_with_a_death(on_disk: bool, last: Last, death: Death) {
     }
     let entries_before = e.entries().len();
 
-    let second = EntityId(2);
+    // The second stay's key, if the region that is running gives it out. One that the
+    // next owner gives is of the fresh block of its hello (below).
+    let mut second = EntityId(2);
     // The edge keeps the join until it is told that it is applied.
     let join = join_as(player(), 5);
     let done = |seat: &Seat| match last {
@@ -2153,6 +2086,10 @@ fn a_login_with_a_death(on_disk: bool, last: Last, death: Death) {
         }
         if applied < joined {
             f_again.send_again(joined, join.clone());
+            // The next owner takes the join, with a key of the fresh block its hello
+            // gave (`docs/adr/0028-entities.md`, section 1).
+            second = west.region().state().entity_ids.first;
+            assert!(second > first, "{context}");
         }
         // Everything read before the death is still what the edge has read.
         e_again.log.splice(0..0, e.log.clone());
@@ -2257,8 +2194,12 @@ fn a_login_with_a_death(on_disk: bool, last: Last, death: Death) {
     let land = land.restarted();
     let (handle, restored) = land.world.open(WEST, 7);
     assert_eq!(restored.issued, second, "{context}");
+    // The hello's fresh block is above every stay given, and the region counts from
+    // its first (`docs/adr/0028-entities.md`, section 1).
+    let block = restored.entity_ids;
+    assert!(block.first > first && block.first > second, "{context}");
     let state = restored_state(restored).unwrap();
-    assert_eq!(state.next_entity_id, EntityId(3), "{context}");
+    assert_eq!(state.next_entity_id, block.first, "{context}");
     assert!(state.entering.is_empty(), "{context}");
     drop(handle);
 }

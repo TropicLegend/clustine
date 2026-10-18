@@ -214,7 +214,7 @@ fn populated() -> Region {
     region
 }
 
-fn removed(entity: i32, chunk: ChunkPos) -> RegionEvent {
+fn removed(entity: u64, chunk: ChunkPos) -> RegionEvent {
     RegionEvent::EntityRemoved {
         entity: EntityId(entity),
         chunk,
@@ -1036,7 +1036,7 @@ impl Scenario {
                     PlayerChange::Arrive(edge, id, transfer)
                 }
                 _ => PlayerChange::Discard {
-                    entity: EntityId(random.below(40) as i32),
+                    entity: EntityId(random.below(40)),
                     chunk: ChunkPos::new(random.below(5) as i32 - 2, 0),
                 },
             };

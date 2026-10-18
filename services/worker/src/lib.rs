@@ -517,7 +517,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 6;
+pub const STATE_FORMAT: u8 = 7;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1134,10 +1134,12 @@ impl RegionRunner {
     }
 
     /// The runner with what the store said of the region's borders when it was opened:
-    /// its couplings, and the chunks it uses, each timed until the region loads it
+    /// its block of entity keys, its couplings, and the chunks it uses, each timed until the region loads it
     /// (`docs/adr/0025-effects-between-regions.md`, sections 5 and 8). [`RegionRunner::
     /// restore`] does this itself; the runner of a split's part is given it here.
     pub fn with_borders(mut self, restored: &Restored) -> Self {
+        // The part was made in memory with no keys; its hello gave it a block.
+        self.region.take_keys(restored.entity_ids);
         let warm = self.warm.keys().copied().collect::<Vec<_>>();
         self.border = Border::opened(
             restored.offset,
@@ -4106,15 +4108,11 @@ fn holdings(restored: &Restored) -> Holdings {
 /// every block. The same comes out every time the region is opened, until its next
 /// checkpoint replaces what was dropped.
 ///
-/// The block of entity ids is the one the store names, whatever the state says: the
-/// store gives the home region a new block when the one it had has no id left above
-/// the highest stay ever given (`Restored::issued`), and until the next checkpoint the
-/// whole state on disk names the old block while the commits since have next ids of
-/// the new one. The next id is the state's if it is of that block, and the block's
-/// first otherwise; and it is above the highest stay ever given if that is of the
-/// block. So no entity id is given twice in the life of a world, also where a state was
-/// dropped for another build and the region counts from the start of its block again.
-/// See `docs/adr/0020-one-stay-per-player.md`, section 7.
+/// The block of entity keys is the one the store names, whatever the state says, and
+/// the next key its first: the store gives a fresh block at every hello, so that no key
+/// is given twice in the life of a world, also where a durable tick that gave keys out
+/// was lost with its machine, or a state was dropped for another build
+/// (`docs/adr/0028-entities.md`, section 1).
 fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
     let fresh = |tick| {
         let mut state = RegionState::new(restored.entity_ids);
@@ -4163,18 +4161,8 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
             }
         }
     }
-    let block = restored.entity_ids;
-    state.entity_ids = block;
-    // The end of the block is the next id of a region that has given out every id of
-    // it, and stays so: a block that is used up refuses every join.
-    let of_the_block = |id: EntityId| block.contains(id) || id == block.end;
-    if !of_the_block(state.next_entity_id) {
-        state.next_entity_id = block.first;
-    }
-    if block.contains(restored.issued) {
-        let above = EntityId(restored.issued.0 + 1);
-        state.next_entity_id = state.next_entity_id.max(above);
-    }
+    state.entity_ids = restored.entity_ids;
+    state.next_entity_id = restored.entity_ids.first;
     Ok(state)
 }
 
@@ -4999,7 +4987,24 @@ mod tests {
     /// order of [`player`], [`other_player`] and [`third_player`]. A test whose player
     /// has another entity says so with [`of_entity`].
     fn usual_entity(player: PlayerId) -> EntityId {
-        EntityId(i32::try_from(player.0.as_u128()).expect("a player of these tests"))
+        EntityId(u64::try_from(player.0.as_u128()).expect("a player of these tests"))
+    }
+
+    /// `state` as a region is restored with it: with the fresh block of keys the store
+    /// gave at the hello, and that block's first key as the next, whatever the stored
+    /// state said (`docs/adr/0028-entities.md`, section 1).
+    fn with_keys(mut state: RegionState, block: EntityIds) -> RegionState {
+        state.entity_ids = block;
+        state.next_entity_id = block.first;
+        state
+    }
+
+    /// `region` as a runner restored with it from a hello that gave it `block` has it:
+    /// a split's part is made in memory with no keys, and a restore takes the block.
+    fn with_keys_of_region(region: &Region, block: EntityIds) -> Region {
+        let mut region = region.clone();
+        region.take_keys(block);
+        region
     }
 
     /// `input`, which has to be an input, as of the stay with `entity`.
@@ -5640,7 +5645,10 @@ mod tests {
 
         let (edge, worker_end) = in_process(256);
         let mut second = opened(&on_disk(directory.path()), settings(0));
-        assert_eq!(second.region().state(), state);
+        // With a fresh block of keys (`docs/adr/0028-entities.md`, section 1).
+        let block = second.region().state().entity_ids;
+        assert_ne!(block, state.entity_ids);
+        assert_eq!(second.region().state(), with_keys(state, block));
         second.links().attach(worker_end);
         edge.send(asking_for(vec![ORIGIN])).await.unwrap();
         step_until(&mut second, |runner| {
@@ -6818,7 +6826,11 @@ mod tests {
         assert!(closed(&mut edge).await);
 
         let mut restored = world.runner(RegionId(0), 1);
-        assert_eq!(restored.region().state(), committed);
+        // The store gives a fresh block of keys at every hello, and the region counts
+        // from its first (`docs/adr/0028-entities.md`, section 1).
+        let block = restored.region().state().entity_ids;
+        assert_ne!(block, committed.entity_ids);
+        assert_eq!(restored.region().state(), with_keys(committed, block));
         let (edge_end, worker_end) = link::in_process(256);
         let mut again = edge.again(edge_end, &restored);
         restored.links().attach(worker_end);
@@ -6904,8 +6916,11 @@ mod tests {
         drop(first);
 
         let mut second = Divided::stripes_in(directory.path()).runner(RegionId(0), 1);
-        // Ticks go on from the last the store has.
-        assert_eq!(second.region().state(), state);
+        // Ticks go on from the last the store has, with a fresh block of keys
+        // (`docs/adr/0028-entities.md`, section 1).
+        let block = second.region().state().entity_ids;
+        assert_ne!(block, state.entity_ids);
+        assert_eq!(second.region().state(), with_keys(state.clone(), block));
         assert_eq!(second.status().tick.load(Ordering::Relaxed), state.tick);
         assert_eq!(second.status().players.load(Ordering::Relaxed), 1);
         step(&mut second);
@@ -7781,41 +7796,43 @@ mod tests {
     /// it"). The state written down is the one it was. The delta is of another tick
     /// than before, in the same shape: a tick that places two players whose joins the
     /// tick before took gives out no entity id and says that two entering stays are
-    /// no more, where one tick used to take a join and place the player.
+    /// no more, where one tick used to take a join and place the player. Format 7
+    /// writes entity keys as `u64` (`docs/adr/0028-entities.md`, section 1), which
+    /// postcard writes as a plain varint where an `i32` was zigzagged.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 6);
+        assert_eq!(STATE_FORMAT, 7);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "0006020280808001060110000000000000000000000000000000020404416c65780000000000002d",
-                "400000000000004ec0000000000000e03f0000000000000000010000000000000000000002000700",
-                "00000107030102060601040010000000000000000000000000000000039a01054e6f746368000000",
+                "000702018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "2d400000000000004ec0000000000000e03f00000000000000000100000000000000000000020007",
+                "0000000107030102060601040010000000000000000000000000000000034d054e6f746368000000",
                 "00004044400000000000004ec0000000000000e03f00000000000000000000000000000000000000",
-                "05020101170102021000000000000000000000000000000002041200207900010103001000000000",
-                "0000000000000000000000010205537465766500000000004044400000000000004ec00000000000",
+                "05020101170102021000000000000000000000000000000002021200207900010103001000000000",
+                "0000000000000000000000010105537465766500000000004044400000000000004ec00000000000",
                 "00e03f00000000000000000100000000000000000000010100000104050104060201030506090110",
-                "000000000000000000000000000000039a0101170607100000000000000000000000000000000398",
-                "0101180110000000000000000000000000000000039c01034a6562071901010609",
+                "000000000000000000000000000000034d0117060710000000000000000000000000000000034c01",
+                "180110000000000000000000000000000000034e034a6562071901010609",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00060200021000000000000000000000000000000001001000000000000000000000000000000002",
-                "010404416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
+                "00070200021000000000000000000000000000000001001000000000000000000000000000000002",
+                "010204416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
                 "00000000000000000000020007000000010701030102060000060104001000000000000000000000",
-                "0000000000039a01054e6f74636800000000004044400000000000004ec0000000000000e03f0000",
-                "00000000000000000000000000000000000502010117010202100000000000000000000000000000",
-                "00020412002079000101030010000000000000000000000000000000010205537465766500000000",
-                "004044400000000000004ec0000000000000e03f0000000000000000010000000000000000000001",
-                "0100000104050104060201030506090110000000000000000000000000000000039a010117060710",
-                "00000000000000000000000000000003980101180310000000000000000000000000000000010010",
-                "00000000000000000000000000000002001000000000000000000000000000000003019c01034a65",
-                "6207190101060109",
+                "0000000000034d054e6f74636800000000004044400000000000004ec0000000000000e03f000000",
+                "00000000000000000000000000000000050201011701020210000000000000000000000000000000",
+                "02021200207900010103001000000000000000000000000000000001010553746576650000000000",
+                "4044400000000000004ec0000000000000e03f000000000000000001000000000000000000000101",
+                "00000104050104060201030506090110000000000000000000000000000000034d01170607100000",
+                "00000000000000000000000000034c01180310000000000000000000000000000000010010000000",
+                "00000000000000000000000002001000000000000000000000000000000003014e034a6562071901",
+                "01060109",
             )
         );
     }
@@ -7875,9 +7892,13 @@ mod tests {
         );
         assert_eq!(restored_state(mixed).unwrap(), fresh(4));
 
-        // What this build stored is read as it is.
+        // What this build stored is read as it is, but for its keys: those of the
+        // block the store gave (`docs/adr/0028-entities.md`, section 1).
         let whole = restored(Some(item(2, stored(&state))), vec![]);
-        assert_eq!(restored_state(whole).unwrap(), state);
+        assert_eq!(
+            restored_state(whole).unwrap(),
+            with_keys(state.clone(), ids)
+        );
 
         // A lower number is from before as well; a higher one is a later build's.
         let mut lower = stored(&state);
@@ -8021,8 +8042,9 @@ mod tests {
                 restored.state.as_ref().map(|stored| stored.tick),
                 Some(state.tick)
             );
+            let block = restored.entity_ids;
             let mut second = RegionRunner::restore(settings(0), handle, restored).unwrap();
-            assert_eq!(second.region().state(), state);
+            assert_eq!(second.region().state(), with_keys(state.clone(), block));
             let (again, worker_end) = in_process(256);
             second.links().attach(worker_end);
             again.send(asking_for(vec![ORIGIN])).await.unwrap();
@@ -8146,8 +8168,9 @@ mod tests {
         // under the number it had.
         let (handle, restored) = opened_next(&store);
         assert_eq!(restored.deltas, []);
+        let block = restored.entity_ids;
         let mut next = RegionRunner::restore(settings(0), handle, restored).unwrap();
-        assert_eq!(next.region().state(), state);
+        assert_eq!(next.region().state(), with_keys(state, block));
         let (edge_end, worker_end) = link::in_process(256);
         let mut again = edge.again(edge_end, &runner);
         next.links().attach(worker_end);
@@ -8223,8 +8246,9 @@ mod tests {
 
         let (_handle, restored) = opened_next(&store);
         assert_eq!(restored.deltas, []);
+        let block = restored.entity_ids;
         let state = restored_state(restored).unwrap();
-        assert_eq!(state, runner.region().state());
+        assert_eq!(state, with_keys(runner.region().state(), block));
         assert_eq!(state.players[&player()].pose.position.x, 5.0);
     }
 
@@ -8402,8 +8426,9 @@ mod tests {
             let (handle, restored) = opened_next(&store);
             assert_eq!(restored.deltas, []);
             let settings = settings(0);
+            let block = restored.entity_ids;
             let mut next = RegionRunner::restore(settings, handle, restored).unwrap();
-            assert_eq!(next.region().state(), state);
+            assert_eq!(next.region().state(), with_keys(state.clone(), block));
             let (again, worker_end) = in_process(256);
             next.links().attach(worker_end);
             again.send(asking_for(vec![ORIGIN])).await.unwrap();
@@ -10222,7 +10247,7 @@ mod tests {
     }
 
     /// Someone who arrives in [`FAR_EAST`] with `entity`.
-    fn arriving_in_the_east(player: PlayerId, entity: i32) -> EdgeToWorker {
+    fn arriving_in_the_east(player: PlayerId, entity: u64) -> EdgeToWorker {
         EdgeToWorker::PlayerArrive {
             player,
             transfer: PlayerTransfer {
@@ -10273,8 +10298,9 @@ mod tests {
         assert_eq!(released(&mut east), Ended::Released);
 
         let (handle, restored) = world.open(EAST, 2);
+        let block = restored.entity_ids;
         let state = absorbable(&handle, restored).unwrap();
-        assert_eq!(state, east.region().state());
+        assert_eq!(state, with_keys(east.region().state(), block));
         East {
             handle,
             state,
@@ -10483,13 +10509,19 @@ mod tests {
                 deltas: Vec::new(),
                 ..restored.clone()
             };
-            assert_eq!(restored_state(as_of_the_merge).unwrap(), merged);
+            // With the fresh block of keys of the hello (`docs/adr/0028-entities.md`,
+            // section 1).
+            let block = restored.entity_ids;
+            assert_eq!(
+                restored_state(as_of_the_merge).unwrap(),
+                with_keys(merged, block)
+            );
             assert_eq!(restored.pinned.len(), 2);
             // A tick that changed nothing has no commit, and is not counted by the store.
             let mut stored = restored_state(restored).unwrap();
             assert!(tick < stored.tick && stored.tick <= now.tick);
             stored.tick = now.tick;
-            assert_eq!(stored, now);
+            assert_eq!(stored, with_keys(now, block));
         }
     }
 
@@ -10917,8 +10949,13 @@ mod tests {
             assert_eq!(listed, [(RegionId(0), 1), (EAST, 0), (new, 5)]);
             let (handle, restored) = world.store.open_region(world.hello(new, 5)).unwrap();
             let holdings = holdings(&restored);
+            let block = restored.entity_ids;
             let state = restored_state(restored).unwrap();
-            assert_eq!(Region::restore(config(0), state, holdings), part.region);
+            // The part was made with no keys, and takes the block its hello gave, as a
+            // runner restored with it does (`docs/adr/0028-entities.md`, section 1).
+            let mut region = Region::restore(config(0), state, holdings);
+            region.take_keys(block);
+            assert_eq!(region, with_keys_of_region(&part.region, block));
 
             // The edge is back at the region that was split, with what it had there.
             let both = [player(), other_player()];
@@ -11147,10 +11184,11 @@ mod tests {
         // number.
         let (_handle, restored) = world.open(RegionId(0), 2);
         assert_eq!(restored.deltas, []);
+        let block = restored.entity_ids;
         let mut state = restored_state(restored).unwrap();
         assert!(state.tick >= merged.tick);
         state.tick = merged.tick;
-        assert_eq!(state, merged);
+        assert_eq!(state, with_keys(merged, block));
     }
 
     /// Steps `runner`, which may be standing still with ticks that are not confirmed,
@@ -12201,8 +12239,11 @@ mod tests {
             let mut held = holdings(&restored).held;
             held.sort();
             assert_eq!(held, [AHEAD, FAR_WEST]);
+            // With the block of keys its hello gave (`docs/adr/0028-entities.md`,
+            // section 1).
+            let block = restored.entity_ids;
             let next = RegionRunner::restore(settings(0), handle, restored).unwrap();
-            assert_eq!(*next.region(), part.region);
+            assert_eq!(*next.region(), with_keys_of_region(&part.region, block));
             // The next owner of the region that was split is told nothing of the chunk
             // ahead, and when it asks, that it is the part's. A pinned region is
             // restored without the chunks of its own area and claims them anew.
@@ -12398,8 +12439,15 @@ mod tests {
         drop(runner);
         for (id, epoch, in_memory) in [(HOME, 2, &split), (region, 5, &part.region)] {
             let (handle, restored) = world.open(id, epoch);
+            // Each with the block of keys its hello gave (`docs/adr/0028-entities.md`,
+            // section 1).
+            let block = restored.entity_ids;
             let next = RegionRunner::restore(settings(0), handle, restored).unwrap();
-            assert_eq!(next.region(), in_memory, "{id:?}");
+            assert_eq!(
+                *next.region(),
+                with_keys_of_region(in_memory, block),
+                "{id:?}"
+            );
         }
         assert_eq!(split.held_chunk_count(), 2);
         assert_eq!(part.region.held_chunk_count(), 2);
@@ -13248,8 +13296,13 @@ mod tests {
             let held: Vec<ChunkPos> = restored.held.iter().map(|(chunk, _)| *chunk).collect();
             assert_eq!(held, of_the_part);
             let holdings = holdings(&restored);
+            let block = restored.entity_ids;
             let state = restored_state(restored).unwrap();
-            assert_eq!(&Region::restore(config(KEPT_FOR), state, holdings), part);
+            // The part was made with no keys, and takes the block its hello gave, as a
+            // runner restored with it does (`docs/adr/0028-entities.md`, section 1).
+            let mut restored = Region::restore(config(KEPT_FOR), state, holdings);
+            restored.take_keys(block);
+            assert_eq!(restored, with_keys_of_region(part, block));
         }
 
         /// R1, as the runner's own tests can have it: the gate holds the store's

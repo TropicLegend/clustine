@@ -22,7 +22,7 @@ pub(crate) struct Players {
     records: BTreeMap<u128, Record>,
     /// The highest entity id an `Entering` note ever named that raised a floor; 0 if
     /// none did.
-    issued: i32,
+    issued: u64,
     /// The first segment of the log whose notes are not in the players' file; 0 in a
     /// world without the file.
     pub(crate) from: u64,
@@ -36,7 +36,7 @@ pub(crate) struct Players {
 struct Record {
     /// The floor: the highest stay the store was told the home region gave the
     /// player. Never lowered.
-    stay: i32,
+    stay: u64,
     /// The highest hand-over count the store was told of that stay.
     hops: u32,
     place: Option<LoggedPlace>,
@@ -57,7 +57,7 @@ pub(crate) struct Undo {
     /// touched it, or that there was none.
     records: BTreeMap<u128, Option<Record>>,
     /// `issued` as it was before the group first raised it.
-    issued: Option<i32>,
+    issued: Option<u64>,
     /// `last` as it was before the group first wrote a commit with notes.
     last: Option<Option<u64>>,
 }
@@ -73,7 +73,7 @@ pub(crate) enum Taken {
     Again { place: Option<LoggedPlace> },
     /// The note named a stay that is dead: one below `(stay, hops)`, which is what
     /// the record has. `why` says whether that is in order.
-    Dead { stay: i32, hops: u32, why: Why },
+    Dead { stay: u64, hops: u32, why: Why },
     /// A `Has` note of the living stay: the record has its hand-overs and its place.
     Written,
     /// A `Has` note of a stay above the record's, which cannot be. Nothing is changed
@@ -140,7 +140,7 @@ impl Players {
     }
 
     /// The highest entity id a stay was ever given; 0 if none was.
-    pub(crate) fn issued(&self) -> i32 {
+    pub(crate) fn issued(&self) -> u64 {
         self.issued
     }
 

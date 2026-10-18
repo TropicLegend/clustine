@@ -27,14 +27,14 @@ pub use log::{
     read_log_with_offsets,
 };
 pub use region::{
-    CoupledRegion, CouplingsFile, Handshake, PlayerRecord, PlayersFile, RegionFile, StateFile,
-    TableFile, TableRegion,
+    BlocksFile, CoupledRegion, CouplingsFile, Handshake, PlayerRecord, PlayersFile, RegionFile,
+    StateFile, TableFile, TableRegion,
 };
 
 /// The version of the encodings in this crate. It is written into everything stored:
 /// the first byte of every file and of every record of the log. A world says in its
 /// `meta` which one it is of, and the store opens no world of another.
-pub const FORMAT_VERSION: u8 = 2;
+pub const FORMAT_VERSION: u8 = 3;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

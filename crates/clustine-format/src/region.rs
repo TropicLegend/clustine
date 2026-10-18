@@ -9,7 +9,7 @@
 //! | Format version | u8 |
 //! | Kind | u8, 1 for a region file |
 //! | Highest epoch the region was opened with | u64 |
-//! | First entity id of the region's block, and the one beyond it | i32, i32 |
+//! | First entity key of the region's block, and the one beyond it | u64, u64 |
 //! | CRC-32 of everything before | u32 |
 //!
 //! and a state file is:
@@ -55,11 +55,22 @@
 //! | Format version | u8 |
 //! | Kind | u8, 4 for the players' file |
 //! | `from`: the first log segment whose stay notes are not in this file | u64 |
-//! | `issued`: the highest entity id a stay was ever given | i32 |
+//! | `issued`: the highest entity key a stay was ever given | u64 |
 //! | Records, ascending by player: count, then per record | u32 |
-//! | … player, stay, hops | u128, i32, u32 |
+//! | … player, stay, hops | u128, u64, u32 |
 //! | … has a place | u8 0 or 1 |
 //! | … the place, if it has one, as in a stay note of the log | |
+//! | CRC-32 of everything before | u32 |
+//!
+//! The blocks' file says how far blocks of entity keys are reserved: a region is given a
+//! fresh block at every hello, and none at or above `end` was ever given
+//! (`docs/adr/0028-entities.md`, section 1).
+//!
+//! | Field | Type |
+//! |---|---|
+//! | Format version | u8 |
+//! | Kind | u8, 6 for the blocks' file |
+//! | `end`: the first block not reserved | u32 |
 //! | CRC-32 of everything before | u32 |
 //!
 //! The couplings' file is what the store keeps of the lockstep of regions whose border
@@ -95,9 +106,10 @@ const KIND_STATE: u8 = 2;
 const KIND_TABLE: u8 = 3;
 const KIND_PLAYERS: u8 = 4;
 const KIND_COUPLINGS: u8 = 5;
+const KIND_BLOCKS: u8 = 6;
 
 /// Bytes a player's record takes in a players' file at the least.
-const RECORD_LENGTH: usize = 25;
+const RECORD_LENGTH: usize = 29;
 
 /// Bytes an area takes in a table file.
 const AREA_LENGTH: usize = 9;
@@ -136,8 +148,8 @@ impl RegionFile {
         let mut input = opened(bytes, KIND_REGION)?;
         let epoch = input.u64()?;
         let entity_ids = EntityIds {
-            first: EntityId(input.i32()?),
-            end: EntityId(input.i32()?),
+            first: EntityId(input.u64()?),
+            end: EntityId(input.u64()?),
         };
         input.finish()?;
         Ok(Self { epoch, entity_ids })
@@ -169,6 +181,29 @@ impl StateFile {
         let state = input.take(length)?.to_vec();
         input.finish()?;
         Ok(Self { tick, state })
+    }
+}
+
+/// How far the store has reserved blocks of entity keys: every block below `end` may
+/// have been given to a region, and none at or above it has
+/// (`docs/adr/0028-entities.md`, section 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlocksFile {
+    pub end: u32,
+}
+
+impl BlocksFile {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = vec![FORMAT_VERSION, KIND_BLOCKS];
+        out.extend_from_slice(&self.end.to_be_bytes());
+        seal(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
+        let mut input = opened(bytes, KIND_BLOCKS)?;
+        let end = input.u32()?;
+        input.finish()?;
+        Ok(Self { end })
     }
 }
 
@@ -292,7 +327,7 @@ pub struct PlayersFile {
     /// The first segment of the log whose stay notes are not in this file.
     pub from: u64,
     /// The highest entity id a stay was ever given; 0 if none was.
-    pub issued: i32,
+    pub issued: u64,
     /// The records, in ascending order of their players.
     pub records: Vec<PlayerRecord>,
 }
@@ -302,7 +337,7 @@ pub struct PlayersFile {
 pub struct PlayerRecord {
     pub player: u128,
     /// The entity of the latest stay the store was told the player was given.
-    pub stay: i32,
+    pub stay: u64,
     /// The highest number of hand-overs the store was told of that stay.
     pub hops: u32,
     /// Where the player was last, if a region has said.
@@ -335,7 +370,7 @@ impl PlayersFile {
     pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
         let mut input = opened(bytes, KIND_PLAYERS)?;
         let from = input.u64()?;
-        let issued = input.i32()?;
+        let issued = input.u64()?;
         let count = input.u32()? as usize;
         // A forged count must not reserve more than the file can hold.
         let mut records: Vec<PlayerRecord> =
@@ -345,7 +380,7 @@ impl PlayersFile {
             if records.last().is_some_and(|before| before.player >= player) {
                 return Err(FormatError::Corrupt("players out of order"));
             }
-            let (stay, hops) = (input.i32()?, input.u32()?);
+            let (stay, hops) = (input.u64()?, input.u32()?);
             let place = match input.u8()? {
                 0 => None,
                 1 => Some(take_place(&mut input)?),
@@ -580,9 +615,32 @@ mod tests {
         };
         let bytes = region.encode();
         let body = [
-            2, 1, // version, kind
-            0, 0, 0, 0, 0, 0, 0, 5, // epoch
-            0, 0x10, 0, 0, 0, 0x20, 0, 0, // the block
+            FORMAT_VERSION,
+            1, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            5, // epoch
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            0,
+            0, // the block
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -594,9 +652,22 @@ mod tests {
         };
         let bytes = state.encode();
         let body = [
-            2, 2, // version, kind
-            0, 0, 0, 0, 0, 0, 1, 2, // tick
-            0, 0, 0, 2, 4, 2, // the state
+            FORMAT_VERSION,
+            2, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            2, // tick
+            0,
+            0,
+            0,
+            2,
+            4,
+            2, // the state
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(StateFile::decode(&bytes), Ok(state));
@@ -695,31 +766,185 @@ mod tests {
     }
 
     #[test]
+    fn known_answer_of_the_blocks() {
+        let blocks = BlocksFile { end: 258 };
+        let bytes = blocks.encode();
+        let body = [
+            FORMAT_VERSION,
+            6, // version, kind
+            0,
+            0,
+            1,
+            2, // end
+        ];
+        assert_eq!(bytes[..body.len()], body);
+        assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
+        assert_eq!(BlocksFile::decode(&bytes), Ok(blocks));
+        let mut damaged = bytes.clone();
+        damaged[4] ^= 1;
+        assert!(BlocksFile::decode(&damaged).is_err());
+        assert!(
+            BlocksFile::decode(
+                &RegionFile {
+                    epoch: 1,
+                    entity_ids: EntityIds::block(0).unwrap()
+                }
+                .encode()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn known_answer_of_the_table() {
         let bytes = table().encode();
         let body = [
-            2, 3, // version, kind
-            0, 0, 0, 0, 0, 0, 0, 7, // from
-            0, 0, 0, 4, // the next region id
-            0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, // the home chunk
-            0, 0, 0, 1, // the home region
-            0, 0, 0, 2, // the division: two areas
-            2, 0, 0, 0, 0, 0, 0, 0, 0, // west of 0
-            1, 0, 0, 0, 0, 0, 0, 0, 0, // from 0 on
-            0, 0, 0, 2, // two regions
-            0, 0, 0, 1, // region 1
-            0, 0, 0, 2, // pinned to two areas
-            3, 0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 3, // from -2 up to 3
-            0, 0, 0, 0, 0, 0, 0, 0, 0, // everywhere
-            0, 0, 0, 0, // no grants
-            0, 0, 0, 3, // region 3
-            0, 0, 0, 0, // not pinned
-            0, 0, 0, 2, // two grants
-            0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 9, // the first
-            0, 0, 0, 2, 0xFF, 0xFF, 0xFF, 0xFA, 0, 0, 0, 0, 0, 0, 1, 2, // the second
-            0, 0, 0, 2, // two absorbed regions
-            0, 0, 0, 0, 0, 0, 0, 1, // 0 into 1
-            0, 0, 0, 2, 0, 0, 0, 3, // 2 into 3
+            FORMAT_VERSION,
+            3, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7, // from
+            0,
+            0,
+            0,
+            4, // the next region id
+            0,
+            0,
+            0,
+            0,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF, // the home chunk
+            0,
+            0,
+            0,
+            1, // the home region
+            0,
+            0,
+            0,
+            2, // the division: two areas
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // west of 0
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // from 0 on
+            0,
+            0,
+            0,
+            2, // two regions
+            0,
+            0,
+            0,
+            1, // region 1
+            0,
+            0,
+            0,
+            2, // pinned to two areas
+            3,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFE,
+            0,
+            0,
+            0,
+            3, // from -2 up to 3
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // everywhere
+            0,
+            0,
+            0,
+            0, // no grants
+            0,
+            0,
+            0,
+            3, // region 3
+            0,
+            0,
+            0,
+            0, // not pinned
+            0,
+            0,
+            0,
+            2, // two grants
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF,
+            0,
+            0,
+            0,
+            5,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            9, // the first
+            0,
+            0,
+            0,
+            2,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFA,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            2, // the second
+            0,
+            0,
+            0,
+            2, // two absorbed regions
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1, // 0 into 1
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            0,
+            3, // 2 into 3
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -774,28 +999,137 @@ mod tests {
     fn known_answer_of_the_players() {
         let bytes = players().encode();
         let body = [
-            2, 4, // version, kind
-            0, 0, 0, 0, 0, 0, 0, 7, // from
-            0, 0, 1, 2, // issued
-            0, 0, 0, 2, // two records
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, // the first player
-            0, 0, 1, 1, // their stay
-            0, 0, 0, 0, // its hops
+            FORMAT_VERSION,
+            4, // version, kind
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7, // from
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            2, // issued
+            0,
+            0,
+            0,
+            2, // two records
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2, // the first player
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1, // their stay
+            0,
+            0,
+            0,
+            0, // its hops
             0, // no place
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, // the second player
-            0, 0, 1, 2, // their stay
-            0, 0, 0, 4, // its hops
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16, // the second player
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            2, // their stay
+            0,
+            0,
+            0,
+            4, // its hops
             1, // a place
-            0x3F, 0xF8, 0, 0, 0, 0, 0, 0, // x: 1.5
-            0xC0, 0, 0, 0, 0, 0, 0, 0, // y: -2
-            0, 0, 0, 0, 0, 0, 0, 0, // z: 0
-            0x42, 0xB4, 0, 0, // yaw: 90
-            0xC2, 0x34, 0, 0, // pitch: -45
+            0x3F,
+            0xF8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // x: 1.5
+            0xC0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // y: -2
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // z: 0
+            0x42,
+            0xB4,
+            0,
+            0, // yaw: 90
+            0xC2,
+            0x34,
+            0,
+            0, // pitch: -45
             3, // on the ground and flying
             1, // the selected slot
             0, // an empty slot
-            1, 0, 0, 0, 7, 0, 0, 0, 3, // the second slot
-            0, 0, 0, 0, 0, 0, 0, // seven empty slots
+            1,
+            0,
+            0,
+            0,
+            7,
+            0,
+            0,
+            0,
+            3, // the second slot
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0, // seven empty slots
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -807,7 +1141,7 @@ mod tests {
             issued: 0,
             records: Vec::new(),
         };
-        assert_eq!(empty.encode().len(), 2 + 8 + 4 + 4 + 4);
+        assert_eq!(empty.encode().len(), 2 + 8 + 8 + 4 + 4);
         assert_eq!(PlayersFile::decode(&empty.encode()), Ok(empty));
     }
 
@@ -845,12 +1179,12 @@ mod tests {
             PlayersFile::decode(&twice.encode()),
             Err(FormatError::Corrupt("players out of order"))
         );
-        // Neither with a place nor without. The byte is behind the head of 18 bytes
+        // Neither with a place nor without. The byte is behind the head of 22 bytes
         // and the first record's player, stay and hops.
         let mut body = players().encode();
         body.truncate(body.len() - 4);
-        assert_eq!(body[18 + 24], 0);
-        body[18 + 24] = 2;
+        assert_eq!(body[22 + 28], 0);
+        body[22 + 28] = 2;
         assert_eq!(
             PlayersFile::decode(&seal(body)),
             Err(FormatError::Corrupt("whether a player has a place"))
@@ -858,7 +1192,7 @@ mod tests {
         // More records than the file holds, which must not be reserved either.
         let mut body = players().encode();
         body.truncate(body.len() - 4);
-        body[14..18].copy_from_slice(&u32::MAX.to_be_bytes());
+        body[18..22].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(
             PlayersFile::decode(&seal(body)),
             Err(FormatError::Truncated)
@@ -1027,7 +1361,7 @@ mod tests {
         }
 
         #[test]
-        fn files_round_trip(epoch: u64, first: i32, end: i32, tick: u64, state: Vec<u8>) {
+        fn files_round_trip(epoch: u64, first: u64, end: u64, tick: u64, state: Vec<u8>) {
             let region = RegionFile {
                 epoch,
                 entity_ids: EntityIds { first: EntityId(first), end: EntityId(end) },
@@ -1056,11 +1390,11 @@ mod tests {
         #[test]
         fn players_round_trip(
             from: u64,
-            issued: i32,
+            issued: u64,
             records in prop::collection::btree_map(
                 any::<u128>(),
                 (
-                    any::<(i32, u32)>(),
+                    any::<(u64, u32)>(),
                     prop::option::of((
                         any::<[f64; 3]>(),
                         any::<(f32, f32, bool, bool, u8)>(),

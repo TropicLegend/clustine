@@ -314,7 +314,13 @@ async fn while_a_marked_chunk_waits_it_does_not_hold_its_links_other_messages() 
         .send(again.hello(0, &[player()], &watched))
         .await
         .unwrap();
-    again.send(walk(player(), THERE)).await.unwrap();
+    // The region was opened by the second hello of the world, whose block of keys its
+    // player's stay is of (`docs/adr/0028-entities.md`, section 1).
+    let stay = runner.region().player(player()).unwrap().0;
+    again
+        .send(of_entity(stay, walk(player(), THERE)))
+        .await
+        .unwrap();
 
     step_until(&mut runner, |runner| {
         assert!(runner.region().chunk(N).is_none(), "N is still made");
@@ -360,9 +366,16 @@ async fn post_processing_and_seams_are_committed_and_outlive_the_runner_without_
 
     // The player walks into `N` and breaks the grass at its western edge, beyond which
     // nothing is loaded.
-    edge.send(walk(player(), -60.5)).await.unwrap();
+    // The region was opened by the second hello of the world, whose block of keys its
+    // player's stay is of (`docs/adr/0028-entities.md`, section 1).
+    let stay = runner.region().player(player()).unwrap().0;
+    edge.send(of_entity(stay, walk(player(), -60.5)))
+        .await
+        .unwrap();
     step_until(&mut runner, |runner| x_of(runner, player()) == Some(-60.5));
-    edge.send(dig_by(player(), -64, 1)).await.unwrap();
+    edge.send(of_entity(stay, dig_by(player(), -64, 1)))
+        .await
+        .unwrap();
     step_until(&mut runner, |runner| !runner.region().seams(N).is_empty());
     settle(&mut runner);
     let seams = runner.region().seams(N);

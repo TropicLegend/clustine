@@ -236,7 +236,7 @@ fn single_input(
 /// The entity of the `n`th player to enter a region that gives out [`ids`], counted
 /// from 1: what an edge is told when the player has spawned, and names in their inputs.
 fn entity(n: i32) -> EntityId {
-    EntityId(ids().first.0 + n - 1)
+    EntityId(ids().first.0 + n as u64 - 1)
 }
 
 /// A step to the point with these x and z coordinates, on the stone.
@@ -269,7 +269,7 @@ fn use_on(position: BlockPos, face: Face, sequence: i32) -> PlayerInput {
 
 /// The entity that `id` has in another region, as the remote actions here name it.
 fn elsewhere(id: PlayerId) -> EntityId {
-    EntityId(9000 + id.0.as_u128() as i32)
+    EntityId(9000 + id.0.as_u128() as u64)
 }
 
 fn remote(id: PlayerId, sequence: i32, step: RemoteStep) -> RemoteAction {
@@ -2283,7 +2283,7 @@ fn a_player_who_steps_across_and_back_within_the_inputs_of_one_tick_is_let_go_at
 // S8: arrivals
 // ---------------------------------------------------------------------------------------
 
-const TRAVELLER: EntityId = EntityId(7_000_001);
+const TRAVELLER: EntityId = EntityId(7 * EntityIds::BLOCK_SIZE + 1);
 
 /// Points in the four chunks of [`at_the_line`].
 const IN_HOME: Vec3 = Vec3::new(12.5, 64.0, 8.5);
@@ -3644,8 +3644,8 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
 
     // One tick with an entry of every kind for both edges, each kind given in an order
     // that is not that of the edges or of the players.
-    let arriving_5 = transfer(EntityId(7_000_005), 0, IN_EAST);
-    let arriving_7 = transfer(EntityId(7_000_007), 0, IN_EAST);
+    let arriving_5 = transfer(EntityId(7 * EntityIds::BLOCK_SIZE + 5), 0, IN_EAST);
+    let arriving_7 = transfer(EntityId(7 * EntityIds::BLOCK_SIZE + 7), 0, IN_EAST);
     let done = remote(player(20), 1, break_at(OWN_BLOCK));
     let theirs = remote(player(21), 2, break_at(BORDER_BLOCK_B));
     let nobodys = remote(player(22), 3, break_at(NORTH_BLOCK));
@@ -3657,7 +3657,7 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
     ]);
     inputs.remote_actions = vec![(F, done), (E, theirs.clone()), (F, nobodys.clone())];
     // The four entered in the order of their numbers and have the block's four ids.
-    let entity = |n: i32| EntityId(four.first.0 + n - 1);
+    let entity = |n: i32| EntityId(four.first.0 + n as u64 - 1);
     inputs.input(F, player(4), entity(4), 1, move_to(17.5));
     inputs.input(E, player(1), entity(1), 1, dig(BORDER_BLOCK_B, 11));
     inputs.input(
@@ -5279,7 +5279,11 @@ fn script() -> Vec<TickInputs> {
     });
     script.push(changes(vec![
         PlayerChange::Arrive(F, player(5), transfer(TRAVELLER, 3, IN_NORTH)),
-        PlayerChange::Arrive(E, player(6), transfer(EntityId(7_000_002), 1, IN_SOUTH)),
+        PlayerChange::Arrive(
+            E,
+            player(6),
+            transfer(EntityId(7 * EntityIds::BLOCK_SIZE + 2), 1, IN_SOUTH),
+        ),
     ]));
     script.push(TickInputs {
         foreign: vec![(EAST, OTHER)],
@@ -5293,7 +5297,7 @@ fn script() -> Vec<TickInputs> {
     inputs.change(PlayerChange::Arrive(
         F,
         player(7),
-        transfer(EntityId(7_000_003), 1, IN_EAST),
+        transfer(EntityId(7 * EntityIds::BLOCK_SIZE + 3), 1, IN_EAST),
     ));
     script.push(inputs);
     script.push(single_input(

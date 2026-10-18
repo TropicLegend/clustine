@@ -232,7 +232,8 @@ fn parted(region: u32) -> StoreReply {
     }
 }
 
-/// The block of entity ids of a region that a split made.
+/// No block of entity keys: what [`world`] puts in the place of the block a hello was
+/// given.
 const NO_ENTITY_IDS: EntityIds = EntityIds {
     first: EntityId(0),
     end: EntityId(0),
@@ -298,11 +299,22 @@ fn answers_until_lost(handle: &StoreHandle) -> Vec<StoreReply> {
 }
 
 /// What a store says of its world: the list of regions, without their epochs, which
-/// are the tests' own, and what each living region is restored with.
-#[derive(Debug, PartialEq)]
+/// are the tests' own, and what each living region is restored with, but for its block
+/// of entity keys, which is fresh at every hello and is in `blocks` instead.
+#[derive(Debug)]
 struct World {
     list: RegionList,
     restored: Vec<(RegionId, Restored)>,
+    /// The block each living region was given, in the order of `restored`.
+    blocks: Vec<EntityIds>,
+}
+
+/// Two worlds are alike whatever blocks they were given: no two hellos are given the
+/// same one.
+impl PartialEq for World {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.list, &self.restored) == (&other.list, &other.restored)
+    }
 }
 
 /// Reads the list of `store` and opens every living region with `epoch`.
@@ -320,7 +332,23 @@ fn world(store: &Store, division: &Division, epoch: u64, case: &str) -> World {
         handle.flush();
         restored.push((info.region, region));
     }
-    World { list, restored }
+    // Every hello is given a fresh block, each above the one before.
+    let blocks: Vec<EntityIds> = restored
+        .iter_mut()
+        .map(|(_, region)| std::mem::replace(&mut region.entity_ids, NO_ENTITY_IDS))
+        .collect();
+    assert!(!blocks.contains(&NO_ENTITY_IDS), "{case}: {blocks:?}");
+    assert!(
+        blocks
+            .windows(2)
+            .all(|pair| pair[0].index() < pair[1].index()),
+        "{case}: {blocks:?}"
+    );
+    World {
+        list,
+        restored,
+        blocks,
+    }
 }
 
 /// Starts a store on what each kind of crash leaves of `disk` and has `check` look at
@@ -352,7 +380,16 @@ fn starts_again_alike(disk: &MemoryDisk, division: &Division, point: &str) {
         let case = format!("{case}, started again");
         let again = Arc::new(left.crashed(Survival::Nothing));
         let store = store_on(&again, division).unwrap_or_else(|error| panic!("{case}: {error}"));
-        assert_eq!(world(&store, division, 1001, &case), first, "{case}");
+        let again = world(&store, division, 1001, &case);
+        assert_eq!(again, first, "{case}");
+        // What the first start gave is never given again by the second.
+        let given = first.blocks.last().map_or(0, |block| block.index());
+        assert!(
+            again.blocks.iter().all(|block| block.index() > given),
+            "{case}: {:?} after {:?}",
+            again.blocks,
+            first.blocks
+        );
     }
 }
 
@@ -2425,7 +2462,11 @@ fn a_merge_gives_the_survivor_everything_the_absorbed_region_had() {
             "{case}"
         );
         assert_eq!(areas(&restored.pinned), both, "{case}");
-        assert_eq!(restored.entity_ids, west_restored.entity_ids, "{case}");
+        // A fresh block, above the one the survivor had before the merge.
+        assert!(
+            restored.entity_ids.index() > west_restored.entity_ids.index(),
+            "{case}"
+        );
         // The survivor loads chunks of both areas and what the other was granted, as
         // the other left them.
         assert_eq!(load(&west, EAST), built(EAST, &[GLASS]), "{case}");
@@ -2975,9 +3016,16 @@ fn a_split_makes_a_region_of_the_part_that_only_its_epoch_opens() {
             "{case}"
         );
         assert_eq!(restored.pinned, [], "{case}");
-        assert_eq!(restored.entity_ids, NO_ENTITY_IDS, "{case}");
+        // The part is given a block at its hello as any region is.
+        let part_block = restored.entity_ids;
+        assert_eq!(
+            EntityIds::block(part_block.index()),
+            Some(part_block),
+            "{case}"
+        );
 
         let (rest, restored) = opened_gap(store, 0, epochs[0]);
+        assert!(restored.entity_ids.index() > part_block.index(), "{case}");
         assert_eq!(state_of(&restored), Some((5, whole("rest", 5))), "{case}");
         assert_eq!(restored.deltas, [], "{case}");
         assert_eq!(restored.held, [(FREE_THREE, 1)], "{case}");
@@ -3032,7 +3080,7 @@ fn the_part_of_a_split_is_opened_over_a_connection_with_its_epoch() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();
-    let (west, _) = opened_gap(&store, 0, 1);
+    let (west, west_was) = opened_gap(&store, 0, 1);
     assert_eq!(split(&west, 5, &[WEST, WEST_TOO], 7, 3), parted(3));
 
     let refused = StoreHandle::connect(&address, hello_of(&gap(), 3, 6));
@@ -3045,7 +3093,10 @@ fn the_part_of_a_split_is_opened_over_a_connection_with_its_epoch() {
     assert_eq!(state_of(&restored), Some((5, whole("part", 5))));
     assert_eq!(restored.held, [(WEST, 5), (WEST_TOO, 5)]);
     assert_eq!(restored.pinned, []);
-    assert_eq!(restored.entity_ids, NO_ENTITY_IDS);
+    // The part is given a block at its hello, above the one its region had.
+    let block = restored.entity_ids;
+    assert_eq!(EntityIds::block(block.index()), Some(block));
+    assert!(block.index() > west_was.entity_ids.index());
     assert_eq!(load(&remote, WEST), built(WEST, &[]));
     assert_eq!(regions(&address).unwrap(), store.regions().unwrap());
 }
@@ -3424,8 +3475,10 @@ fn a_part_absorbed_by_the_pinned_region_it_was_split_off_is_among_what_that_was_
     assert!(part.is_lost());
     assert_eq!(load(&west, WEST), built(WEST, &[GLASS]));
     west.flush();
-    // A region that a split made has no entity ids, and its region file goes with it.
-    assert!(!exists(disk.as_ref(), "/world/regions/3.region"));
+    // The part's state goes with it. Its region file names the block its hello was
+    // given, and is kept, so that a store that cannot read the file of blocks still
+    // gives that block to no other region.
+    assert!(exists(disk.as_ref(), "/world/regions/3.region"));
     assert!(!exists(disk.as_ref(), "/world/regions/3.state"));
     let absorbed = |store: &Store, epoch: u64, case: &str| {
         let list = store.regions().unwrap();
@@ -3577,7 +3630,8 @@ fn the_region_file_of_a_part_that_could_not_be_written_is_written_later() {
             let (_, restored) = opened_gap(store, 3, 6);
             assert_eq!(state_of(&restored), Some((1, whole("part", 1))), "{case}");
             assert_eq!(restored.held, [(WEST, 1)], "{case}");
-            assert_eq!(restored.entity_ids, NO_ENTITY_IDS, "{case}");
+            let block = restored.entity_ids;
+            assert_eq!(EntityIds::block(block.index()), Some(block), "{case}");
         });
         starts_again_alike(&disk.disk, &gap(), &case);
 
@@ -3586,7 +3640,8 @@ fn the_region_file_of_a_part_that_could_not_be_written_is_written_later() {
         disk.mend();
         lower_is_refused(&store, &case);
         let (part, restored) = opened_gap(&store, 3, 6);
-        assert_eq!(restored.entity_ids, NO_ENTITY_IDS, "{case}");
+        let given = restored.entity_ids;
+        assert_eq!(EntityIds::block(given.index()), Some(given), "{case}");
         for (handle, name) in [(&part, "part"), (&west, "west")] {
             log(handle, 2, &[]);
             checkpoint(handle, 2, name);
@@ -3601,17 +3656,17 @@ fn the_region_file_of_a_part_that_could_not_be_written_is_written_later() {
         assert!(!records(&disk.disk).iter().any(splits), "{case}");
         lower_is_refused(&store, &case);
 
-        // The file is durably there, with the epoch and without entity ids.
+        // The file is durably there, with the epoch and the block its hello was given.
         let left = disk.disk.crashed(Survival::Nothing);
         let bytes = left.read(Path::new("/world/regions/3.region")).unwrap();
         let file = RegionFile::decode(&bytes.expect("the part has a region file")).unwrap();
-        assert_eq!((file.epoch, file.entity_ids), (6, NO_ENTITY_IDS), "{case}");
+        assert_eq!((file.epoch, file.entity_ids), (6, given), "{case}");
         after_every_crash(&disk.disk, &gap(), &case, |store, case| {
             lower_is_refused(store, case);
             let (_, restored) = opened_gap(store, 3, 6);
             assert_eq!(state_of(&restored), Some((2, whole("part", 2))), "{case}");
             assert_eq!(restored.held, [(WEST, 1)], "{case}");
-            assert_eq!(restored.entity_ids, NO_ENTITY_IDS, "{case}");
+            assert!(restored.entity_ids.index() > given.index(), "{case}");
         });
         starts_again_alike(&disk.disk, &gap(), &case);
     }
@@ -3687,7 +3742,7 @@ fn merged_and_split() -> (Arc<MemoryDisk>, [Restored; 2]) {
 
 /// Looks at a world of [`merged_and_split`] that a store was started on with the two
 /// stripes of [`division`]: it has the stripes and nothing else, their states are
-/// dropped, their entity ids are as before, and the chunks have what the old regions
+/// dropped, they are given fresh blocks of entity keys above those they had, and the chunks have what the old regions
 /// committed to chunks they held, and nothing else. Returns the western region's
 /// handle.
 fn made_over(store: &Store, was: &[Restored; 2], case: &str) -> StoreHandle {
@@ -3716,11 +3771,13 @@ fn made_over(store: &Store, was: &[Restored; 2], case: &str) -> StoreHandle {
     let (west, restored) = opened(store, &stripes, 0, 100);
     assert_eq!((restored.state, restored.deltas.len()), (None, 0), "{case}");
     assert_eq!(restored.held, [], "{case}");
-    assert_eq!(restored.entity_ids, was[0].entity_ids, "{case}");
+    let had = was[0].entity_ids.index().max(was[1].entity_ids.index());
+    let west_block = restored.entity_ids;
+    assert!(west_block.index() > had, "{case}");
     let (east, restored) = opened(store, &stripes, 1, 100);
     assert_eq!((restored.state, restored.deltas.len()), (None, 0), "{case}");
     assert_eq!(restored.held, [], "{case}");
-    assert_eq!(restored.entity_ids, was[1].entity_ids, "{case}");
+    assert!(restored.entity_ids.index() > west_block.index(), "{case}");
 
     assert_eq!(load(&west, WEST), built(WEST, &[GLASS]), "{case}");
     assert_eq!(load(&west, WEST_TOO), built(WEST_TOO, &[GLASS]), "{case}");
@@ -3813,8 +3870,8 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_at_every_kill_point()
 }
 
 /// Open question 8 of the record: a stripe whose id was a part's before the division
-/// changed takes over the part's highest epoch, and is issued entity ids, which the
-/// part had none of, when it is next opened.
+/// changed takes over the part's highest epoch, and is issued a fresh block of entity
+/// keys when it is next opened, as every region is at every hello.
 #[test]
 fn a_stripe_whose_id_was_a_parts_keeps_the_epoch_and_is_issued_entity_ids() {
     let (disk, was) = merged_and_split();
@@ -3843,8 +3900,15 @@ fn a_stripe_whose_id_was_a_parts_keeps_the_epoch_and_is_issued_entity_ids() {
         assert!(!issued.contains(&restored.entity_ids), "region {region}");
         issued.push(restored.entity_ids);
     }
-    assert_eq!(issued[1], was[0].entity_ids);
-    assert_eq!(issued[2], was[1].entity_ids);
+    // Each above the one before, and above what the stripes had before.
+    let had = was[0].entity_ids.index().max(was[1].entity_ids.index());
+    assert!(issued[0].index() > had, "{issued:?}");
+    assert!(
+        issued
+            .windows(2)
+            .all(|pair| pair[0].index() < pair[1].index()),
+        "{issued:?}"
+    );
 }
 
 /// Another home chunk makes the world over as other areas do: the region that was
@@ -3892,14 +3956,19 @@ fn a_world_with_an_absorbed_region_and_a_part_is_made_over_for_another_home_chun
 
         let (west, restored) = opened(&store, &moved, 0, 100);
         assert_eq!((restored.state, restored.held), (None, vec![]), "{case}");
-        assert_eq!(restored.entity_ids, was[0].entity_ids, "{case}");
+        // Fresh blocks, each above the one before and above what the regions had.
+        let had = was[0].entity_ids.index().max(was[1].entity_ids.index());
+        let west_block = restored.entity_ids;
+        assert!(west_block.index() > had, "{case}");
         let (east, restored) = opened(&store, &moved, 1, 100);
         assert_eq!((restored.state, restored.held), (None, vec![]), "{case}");
         assert_eq!(restored.pinned, [east_area()], "{case}");
-        assert_eq!(restored.entity_ids, was[1].entity_ids, "{case}");
+        let east_block = restored.entity_ids;
+        assert!(east_block.index() > west_block.index(), "{case}");
         let (home, restored) = opened(&store, &moved, 2, 100);
         assert_eq!(restored.state, None, "{case}");
         assert_eq!(restored.held, [(FREE_THREE, 0)], "{case}");
+        assert!(restored.entity_ids.index() > east_block.index(), "{case}");
 
         assert_eq!(load(&west, WEST), built(WEST, &[GLASS]), "{case}");
         assert_eq!(load(&west, WEST_TOO), built(WEST_TOO, &[GLASS]), "{case}");
@@ -4197,8 +4266,9 @@ fn regions_absorbed_one_after_the_other_end_up_with_the_last_survivor() {
 }
 
 /// Section 2, entity ids: no block is issued twice. A region that is opened for the
-/// first time after another was absorbed, whose region file stays, gets a block of its
-/// own, in the store that merged and in one that starts on its world.
+/// first time after another was absorbed gets a block of its own, above both blocks
+/// the merged regions had, in the store that merged and in one that starts on its
+/// world; and so does the survivor at its next hello.
 #[test]
 fn the_entity_ids_of_an_absorbed_region_are_not_issued_again() {
     let (store, disk) = gap_store();
@@ -4224,8 +4294,10 @@ fn the_entity_ids_of_an_absorbed_region_are_not_issued_again() {
             ids != west_was.entity_ids && ids != east_was.entity_ids,
             "{case}"
         );
+        let had = west_was.entity_ids.index().max(east_was.entity_ids.index());
+        assert!(ids.index() > had, "{case}");
         let (_, west) = opened_gap(store, 0, 2);
-        assert_eq!(west.entity_ids, west_was.entity_ids, "{case}");
+        assert!(west.entity_ids.index() > ids.index(), "{case}");
     };
     after_every_crash(&disk, &gap(), "merged", check);
     check(&store, "in the store that merged");
@@ -4918,6 +4990,9 @@ fn a_merge_or_a_split_whose_record_was_cut_off_has_not_happened() {
     let (_, part) = opened_gap(&store, 3, 4);
     assert_eq!(state_of(&part), Some((1, whole("part", 1))));
     assert_eq!(part.held, [(WEST, 1)]);
-    assert_eq!(part.entity_ids, NO_ENTITY_IDS);
+    assert_eq!(
+        EntityIds::block(part.entity_ids.index()),
+        Some(part.entity_ids)
+    );
     starts_again_alike(&left, &gap(), "a whole split");
 }

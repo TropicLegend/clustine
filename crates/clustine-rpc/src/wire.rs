@@ -523,7 +523,7 @@ mod tests {
             StoreWelcome::Accepted {
                 entity_ids: restored.entity_ids,
                 pinned: restored.pinned.clone(),
-                issued: EntityId(i32::MAX),
+                issued: EntityId(u64::MAX),
                 spawn: BlockPos::new(0, -60, 0),
                 world: 0,
                 offset: None,
@@ -697,7 +697,7 @@ mod tests {
                 },
                 StayNote::Has {
                     player: other,
-                    entity: EntityId(i32::MAX),
+                    entity: EntityId(u64::MAX),
                     hops: u32::MAX,
                     place: place.clone(),
                 },
@@ -724,7 +724,7 @@ mod tests {
             },
             StoreReply::Enter {
                 player: other,
-                entity: EntityId(i32::MAX),
+                entity: EntityId(u64::MAX),
                 place: Some(place),
                 holder: Some(clustine_region::RegionId(u32::MAX)),
             },
@@ -735,7 +735,7 @@ mod tests {
         ] {
             round_trip(reply);
         }
-        for issued in [EntityId(0), EntityId(41), EntityId(i32::MAX)] {
+        for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
                 entity_ids: EntityIds::block(3).unwrap(),
                 pinned: Vec::new(),

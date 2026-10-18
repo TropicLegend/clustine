@@ -538,6 +538,15 @@ impl Region {
         crowds.into_iter().collect()
     }
 
+    /// Takes `block` as the region's keys, from its first: the fresh block the store
+    /// gives at every hello (`docs/adr/0028-entities.md`, section 1), which a split's
+    /// part, made in memory with none, is given when it is opened.
+    pub fn take_keys(&mut self, block: EntityIds) {
+        self.entity_ids = block;
+        self.next_entity_id = block.first;
+        self.journal.next_entity_id = true;
+    }
+
     /// The number of ticks the region has run.
     pub fn tick_number(&self) -> u64 {
         self.tick
@@ -2915,7 +2924,7 @@ mod tests {
     /// another entity says so with [`as_entity`] or [`of_the_stay_in`].
     fn numbered(number: u128, input: PlayerInput) -> Input {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let entity = EntityId(i32::try_from(number).expect("a small number"));
+        let entity = EntityId(u64::try_from(number).expect("a small number"));
         let next = NEXT.fetch_add(1, Ordering::Relaxed);
         (EDGE, player(number), entity, next, input)
     }
@@ -2928,7 +2937,7 @@ mod tests {
     /// `input` as of the stay with the entity `entity`, for a player who has another
     /// entity than that of their number: one who arrived with it, or joined out of turn.
     fn as_entity(entity: i32, (edge, player, _, number, input): Input) -> Input {
-        (edge, player, EntityId(entity), number, input)
+        (edge, player, EntityId(entity as u64), number, input)
     }
 
     /// `input` as an edge sends it that has been told of the player by `region`: with
@@ -2936,7 +2945,7 @@ mod tests {
     /// it is; the region has nobody to apply it to.
     fn of_the_stay_in(region: &Region, input: Input) -> Input {
         match region.player(input.1) {
-            Some((entity, _)) => as_entity(entity.0, input),
+            Some((entity, _)) => as_entity(entity.0 as i32, input),
             None => input,
         }
     }
@@ -3096,7 +3105,7 @@ mod tests {
     /// The connection of the player with this number ends when their edge knows them
     /// by `entity`, which the leave names.
     fn leave_as(number: u128, entity: i32) -> PlayerChange {
-        PlayerChange::Leave(EDGE, player(number), Some(EntityId(entity)), None)
+        PlayerChange::Leave(EDGE, player(number), Some(EntityId(entity as u64)), None)
     }
 
     fn changes(player_changes: Vec<PlayerChange>) -> TickInputs {
@@ -3168,7 +3177,7 @@ mod tests {
 
     fn state(number: u128, entity: i32, position: Vec3) -> EntityState {
         EntityState {
-            entity: EntityId(entity),
+            entity: EntityId(entity as u64),
             kind: EntityKind::Player {
                 player: player(number),
                 name: format!("Player{number}"),
@@ -4329,7 +4338,7 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
-            entity_id: EntityId(entity),
+            entity_id: EntityId(entity as u64),
             name: format!("Player{number}"),
             pose: Pose {
                 position: Vec3::new(x, -60.0, 0.5),
@@ -5696,7 +5705,7 @@ mod tests {
     fn remote(number: u128, sequence: i32, step: RemoteStep) -> RemoteAction {
         RemoteAction {
             player: player(number),
-            entity: EntityId(i32::try_from(number).unwrap()),
+            entity: EntityId(u64::try_from(number).unwrap()),
             sequence,
             step,
         }
@@ -6940,7 +6949,7 @@ mod tests {
                     // Joined in this order, each has the entity of their number, in the
                     // single region as in the two.
                     let number = 1 + random(3);
-                    let (id, entity) = (player(u128::from(number)), EntityId(number as i32));
+                    let (id, entity) = (player(u128::from(number)), EntityId(number));
                     let route = routes.get_mut(&id).unwrap();
                     let input = match random(8) {
                         0 => PlayerInput::SelectSlot {
@@ -8232,7 +8241,7 @@ mod tests {
                         inputs.player_changes.push(arrive(number, &transfer));
                     }
                     3 => inputs.player_changes.push(PlayerChange::Discard {
-                        entity: EntityId(2000 + random(4) as i32),
+                        entity: EntityId(2000 + random(4)),
                         chunk: position,
                     }),
                     4 => inputs.tickets_added.push((position, Ticket::Viewer)),

@@ -63,14 +63,14 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
     }
 }
 
-pub(crate) fn entering(player: PlayerId, entity: i32) -> StayNote {
+pub(crate) fn entering(player: PlayerId, entity: u64) -> StayNote {
     StayNote::Entering {
         player,
         entity: EntityId(entity),
     }
 }
 
-pub(crate) fn has(player: PlayerId, entity: i32, hops: u32, place: Place) -> StayNote {
+pub(crate) fn has(player: PlayerId, entity: u64, hops: u32, place: Place) -> StayNote {
     StayNote::Has {
         player,
         entity: EntityId(entity),
@@ -113,7 +113,7 @@ fn committed(tick: u64) -> StoreReply {
     StoreReply::Committed { tick }
 }
 
-fn enter(player: PlayerId, entity: i32, place: Option<Place>, holder: Option<u32>) -> StoreReply {
+fn enter(player: PlayerId, entity: u64, place: Option<Place>, holder: Option<u32>) -> StoreReply {
     StoreReply::Enter {
         player,
         entity: EntityId(entity),
@@ -122,7 +122,7 @@ fn enter(player: PlayerId, entity: i32, place: Option<Place>, holder: Option<u32
     }
 }
 
-fn dead(stays: &[(PlayerId, i32, u32)]) -> StoreReply {
+fn dead(stays: &[(PlayerId, u64, u32)]) -> StoreReply {
     let stays = stays
         .iter()
         .map(|(player, stay, hops)| (*player, EntityId(*stay), *hops));
@@ -174,7 +174,7 @@ pub(crate) fn note_on_disk(note: &StayNote) -> LoggedStay {
 }
 
 /// The record of `player` as the store is to have it.
-pub(crate) fn kept(player: PlayerId, stay: i32, hops: u32, place: Option<Place>) -> PlayerRecord {
+pub(crate) fn kept(player: PlayerId, stay: u64, hops: u32, place: Option<Place>) -> PlayerRecord {
     PlayerRecord {
         player: player.0.as_u128(),
         stay,
@@ -188,8 +188,8 @@ pub(crate) fn kept(player: PlayerId, stay: i32, hops: u32, place: Option<Place>)
 /// has them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Model {
-    pub(crate) issued: i32,
-    pub(crate) records: BTreeMap<u128, (i32, u32, Option<LoggedPlace>)>,
+    pub(crate) issued: u64,
+    pub(crate) records: BTreeMap<u128, (u64, u32, Option<LoggedPlace>)>,
 }
 
 impl Model {
@@ -232,7 +232,7 @@ impl Model {
     }
 
     /// As [`Store::players`] says it.
-    pub(crate) fn kept(&self) -> (i32, Vec<PlayerRecord>) {
+    pub(crate) fn kept(&self) -> (u64, Vec<PlayerRecord>) {
         let records = self
             .records
             .iter()
@@ -561,7 +561,7 @@ fn what_the_record_calls_an_error_is_said_in_the_log_and_nothing_else_is() {
     }
 }
 
-fn entity_of(note: &StayNote) -> i32 {
+fn entity_of(note: &StayNote) -> u64 {
     let (StayNote::Entering { entity, .. } | StayNote::Has { entity, .. }) = note;
     entity.0
 }
@@ -1159,36 +1159,18 @@ fn the_players_file_is_written_when_only_the_notes_keep_the_first_segment() {
     assert_eq!(store.players().0, 6);
 }
 
-// Entity ids never go back.
-
-/// What the runner is to make of the store's block, of the next id of the state it
-/// restored and of `issued` (section 7, step 3), written down here to hold the store
-/// to what that rule needs of it.
-fn next_id(block: EntityIds, state_next: i32, issued: EntityId) -> i32 {
-    let inside = |id: i32| block.first.0 <= id && id < block.end.0;
-    let next = if inside(state_next) {
-        state_next
-    } else {
-        block.first.0
-    };
-    if inside(issued.0) {
-        next.max(issued.0 + 1)
-    } else {
-        next
-    }
-}
+// Entity keys never go back.
 
 fn block(index: u32) -> EntityIds {
     EntityIds::block(index).unwrap()
 }
 
-/// Section 7, step 1, with `end <= issued + 1` and not `end <= issued`: a block whose
-/// last id is the highest stay has no id left. And step 2: the opener is told
-/// `issued`. Between the new block and the next checkpoint every restore names the
-/// same block and the same highest stay, so that the runner's rule gives the same
-/// next id each time.
+/// ADR-0028, section 1: every hello is given a fresh block, so that the home region's
+/// next stay is above every stay ever given, whatever key its state had reached, also
+/// when the stay was the last key of its block; and every opener is told the highest
+/// stay. A restore after a crash gives a block above all of them again.
 #[test]
-fn a_block_whose_last_id_is_the_highest_stay_is_given_anew_and_is_the_same_at_every_restore() {
+fn every_hello_of_the_home_region_is_given_a_block_above_the_highest_stay() {
     let disk = Arc::new(MemoryDisk::default());
     let store = store_on(&disk, &division()).unwrap();
     let (p, q) = (player(7), player(8));
@@ -1199,98 +1181,62 @@ fn a_block_whose_last_id_is_the_highest_stay_is_given_anew_and_is_the_same_at_ev
         (restored.entity_ids, restored.issued),
         (block(0), EntityId(0))
     );
-    // The last id but one: the block has one id above it, and is kept.
-    commit(&home, 1, vec![entering(p, last - 1)]);
-    answers(&home);
-    let (home, restored) = store.open_region(hello(HOME, 2)).unwrap();
-    assert_eq!(
-        (restored.entity_ids, restored.issued),
-        (block(0), EntityId(last - 1))
-    );
-    // The last id, and a checkpoint, whose state names the old block from now on.
-    commit(&home, 2, vec![entering(q, last)]);
+    // The last key but one, and the last: the block has nothing left.
+    commit(&home, 1, vec![entering(p, last - 1), entering(q, last)]);
     home.request(StoreRequest::Checkpoint {
-        tick: 2,
+        tick: 1,
         state: b"a state that names block 0".to_vec(),
     });
     home.flush();
+    answers(&home);
 
-    // The home region is given the next block, which no region file names.
-    let (home, restored) = store.open_region(hello(HOME, 3)).unwrap();
+    // The next hello is given the next block, whatever the state names.
+    let (home, restored) = store.open_region(hello(HOME, 2)).unwrap();
     assert_eq!(
         (restored.entity_ids, restored.issued),
         (block(1), EntityId(last))
     );
-    let state_next = block(0).end.0;
-    assert_eq!(
-        next_id(restored.entity_ids, state_next, restored.issued),
-        block(1).first.0
-    );
     // A join in the new block, in a delta: the state on disk still names the old one.
-    commit(&home, 3, vec![entering(p, block(1).first.0)]);
+    let joined = block(1).first.0;
+    commit(&home, 2, vec![entering(p, joined)]);
     answers(&home);
     drop(home);
-    let issued = EntityId(block(1).first.0);
-    let same = |restored: &Restored, case: &str| {
-        assert_eq!(
-            (restored.entity_ids, restored.issued),
-            (block(1), issued),
-            "{case}"
-        );
-        assert_eq!(
-            restored.state.as_ref().map(|state| state.tick),
-            Some(2),
-            "{case}"
-        );
-        assert_eq!(restored.deltas.len(), 1, "{case}");
-        // Whether the runner goes by the state's next id, which is outside the block,
-        // or by the delta's, which is the one after the join.
-        for state_next in [5, block(1).first.0 + 1] {
-            let next = next_id(restored.entity_ids, state_next, restored.issued);
-            assert_eq!(next, block(1).first.0 + 1, "{case}");
-        }
+    let mut given = 1;
+    let mut fresh = |restored: &Restored, case: &str| {
+        let ids = restored.entity_ids;
+        assert!(ids.index() > given, "{case}: {ids:?} after block {given}");
+        assert!(ids.first.0 > joined, "{case}");
+        assert_eq!(restored.issued, EntityId(joined), "{case}");
+        given = ids.index();
     };
-    for epoch in 4..7 {
+    for epoch in 3..6 {
         let (_, restored) = store.open_region(hello(HOME, epoch)).unwrap();
-        same(&restored, &format!("epoch {epoch}"));
+        fresh(&restored, &format!("epoch {epoch}"));
+        assert_eq!(restored.state.as_ref().map(|state| state.tick), Some(1));
+        assert_eq!(restored.deltas.len(), 1);
     }
+    // A region that is not home is told the highest stay as well, and is given a
+    // block of its own.
+    let (_, west) = store.open_region(hello(WEST, 1)).unwrap();
+    fresh(&west, "the western region");
     for survival in SURVIVALS {
         let left = Arc::new(disk.crashed(survival));
         let store = store_on(&left, &division()).unwrap();
-        for epoch in 7..9 {
-            let (_, restored) = store.open_region(hello(HOME, epoch)).unwrap();
-            same(&restored, &format!("{survival:?}, epoch {epoch}"));
+        let mut given = given;
+        for (region, epoch) in [(HOME, 6), (HOME, 7), (WEST, 2)] {
+            let (_, restored) = store.open_region(hello(region, epoch)).unwrap();
+            let case = format!("{survival:?}, region {region}, epoch {epoch}");
+            let ids = restored.entity_ids;
+            assert!(ids.index() > given, "{case}: {ids:?} after block {given}");
+            assert_eq!(restored.issued, EntityId(joined), "{case}");
+            given = ids.index();
         }
-        // No other region is given the new block: it is in the home region's file.
-        let (_, west) = store.open_region(hello(WEST, 1)).unwrap();
-        assert_eq!(west.entity_ids, block(2), "{survival:?}");
-        assert_eq!(west.issued, issued, "{survival:?}");
     }
 }
 
-/// Only the home region gives stays out, so only its block has to lie above them: a
-/// pinned region keeps a block below the highest stay.
-#[test]
-fn a_region_that_is_not_home_keeps_its_block_whatever_was_given_out() {
-    let disk = Arc::new(MemoryDisk::default());
-    let store = store_on(&disk, &division()).unwrap();
-    let (_, west) = store.open_region(hello(WEST, 1)).unwrap();
-    let (home, restored) = store.open_region(hello(HOME, 1)).unwrap();
-    assert_eq!((west.entity_ids, restored.entity_ids), (block(0), block(1)));
-    commit(&home, 1, vec![entering(player(7), block(1).first.0 + 4)]);
-    answers(&home);
-    for epoch in 2..4 {
-        let (_, west) = store.open_region(hello(WEST, epoch)).unwrap();
-        assert_eq!(west.entity_ids, block(0));
-        assert_eq!(west.issued, EntityId(block(1).first.0 + 4));
-        let (_, home) = store.open_region(hello(HOME, epoch)).unwrap();
-        assert_eq!(home.entity_ids, block(1));
-    }
-}
-
-/// A world that is started with another division has another home region, whose
-/// block can be a lower one. The records are kept through the making over, and the
-/// home region's next stay is above every floor.
+/// A world that is started with another division has another home region. The
+/// records are kept through the making over, and the home region's block, and with it
+/// its next stay, is above every floor.
 #[test]
 fn a_world_started_with_another_division_gives_the_home_region_ids_above_every_floor() {
     let far = ChunkPos::new(20, 0);
@@ -1320,13 +1266,13 @@ fn a_world_started_with_another_division_gives_the_home_region_ids_above_every_f
         let left = Arc::new(disk.crashed(survival));
         let store = store_on(&left, &Division::open(far)).unwrap();
         assert_eq!(store.players(), (given, records.clone()), "{survival:?}");
-        // The one region there is now is region 0, whose file names the first block.
+        // The one region there is now is region 0, given a fresh block.
         let (home, restored) = store.open_region(hello(0, 2)).unwrap();
         assert_eq!(restored.issued, EntityId(given), "{survival:?}");
-        assert_eq!(restored.entity_ids, block(3), "{survival:?}");
+        assert!(restored.entity_ids.index() > 2, "{survival:?}");
         assert!(restored.entity_ids.first.0 > given, "{survival:?}");
-        // The player joins again in place, with a higher id.
-        let next = next_id(restored.entity_ids, 0, restored.issued);
+        // The player joins again in place, with the first key of the block.
+        let next = restored.entity_ids.first.0;
         commit(&home, 1, vec![entering(p, next)]);
         let entered = enter(p, next, Some(kept_place.clone()), Some(0));
         assert_eq!(
@@ -1340,7 +1286,7 @@ fn a_world_started_with_another_division_gives_the_home_region_ids_above_every_f
 // A group that fails.
 
 /// The records as they are before a group fails in these tests: one player, a place.
-fn before(p: PlayerId) -> (i32, Vec<PlayerRecord>) {
+fn before(p: PlayerId) -> (u64, Vec<PlayerRecord>) {
     (5, vec![kept(p, 5, 0, Some(place(1.0, 1.0)))])
 }
 
@@ -1570,7 +1516,7 @@ fn a_group_in_which_a_return_cannot_be_written_takes_its_notes_back() {
 
 /// A world of [`division`] with records of which some are in the players' file and
 /// some only in the log, and what the records are.
-pub(crate) fn lived_in() -> (Arc<MemoryDisk>, (i32, Vec<PlayerRecord>)) {
+pub(crate) fn lived_in() -> (Arc<MemoryDisk>, (u64, Vec<PlayerRecord>)) {
     let (disk, store, home, west) = two();
     let (p, q, r) = (player(1), player(2), player(3));
     commit(&home, 1, vec![entering(p, 5), entering(q, 6)]);
@@ -1682,10 +1628,10 @@ fn the_players_file_with_ten_thousand_records_is_written_in_this_time() {
         let batches = players.chunks(500).map(|batch| {
             let entering = batch
                 .iter()
-                .map(|number| entering(player(*number), *number as i32 + 1));
+                .map(|number| entering(player(*number), *number as u64 + 1));
             let has = batch
                 .iter()
-                .map(|number| has(player(*number), *number as i32 + 1, 0, full(*number as f64)));
+                .map(|number| has(player(*number), *number as u64 + 1, 0, full(*number as f64)));
             entering.chain(has).collect()
         });
         batches.collect()

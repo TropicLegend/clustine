@@ -165,7 +165,7 @@ fn scenario(store: &Store) -> Told {
 /// `disk`: the players' file, and on top of it the notes of every commit in a segment
 /// from the file's `from` on, in the order of the log, but for a commit with a tick
 /// above what a later opening of its region was restored up to.
-fn counted(disk: &MemoryDisk, home: u32) -> (i32, Vec<PlayerRecord>) {
+fn counted(disk: &MemoryDisk, home: u32) -> (u64, Vec<PlayerRecord>) {
     let file = players_file(disk).unwrap_or(PlayersFile {
         from: 0,
         issued: 0,
@@ -202,7 +202,7 @@ fn counted(disk: &MemoryDisk, home: u32) -> (i32, Vec<PlayerRecord>) {
 }
 
 /// The stay and the hand-overs the records have of `player`.
-fn floor(records: &[PlayerRecord], player: PlayerId) -> (i32, u32) {
+fn floor(records: &[PlayerRecord], player: PlayerId) -> (u64, u32) {
     let record = records
         .iter()
         .find(|record| record.player == player.0.as_u128());

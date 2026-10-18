@@ -46,8 +46,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use clustine_format::{
-    CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, PlayersFile,
-    RegionFile, StateFile, TableFile, read_log, read_log_with_offsets,
+    BlocksFile, CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH,
+    PlayersFile, RegionFile, StateFile, TableFile, read_log, read_log_with_offsets,
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
@@ -119,9 +119,12 @@ pub(crate) struct Lanes {
     table_last: Option<u64>,
     /// What is kept of every player who ever joined.
     players: Players,
-    /// The index of the next block of entity ids: above every block a region file has,
-    /// whatever has become of its region, so that none is issued twice.
+    /// The index of the next block of entity keys: above every block a region was ever
+    /// given, so that none is given twice (`docs/adr/0028-entities.md`, section 1).
     next_block: u32,
+    /// The first block not reserved in the blocks' file: blocks from `next_block` up to
+    /// it may be given without writing it.
+    reserved: u32,
     /// How many handles have been handed out.
     sessions: u64,
     /// Which region uses which chunk (`docs/adr/0025-effects-between-regions.md`,
@@ -358,11 +361,27 @@ impl Lanes {
                 _ => {}
             }
         }
+        // Above every block reserved, and, against a damaged or missing file of blocks,
+        // above every block a region file names. What was reserved and not given before
+        // the store stopped is never given.
+        let blocks_path = regions_directory.join("blocks");
+        let reserved = match disk.read(&blocks_path)? {
+            Some(bytes) => {
+                BlocksFile::decode(&bytes)
+                    .map_err(|error| StoreError::Damaged {
+                        path: blocks_path.clone(),
+                        error,
+                    })?
+                    .end
+            }
+            None => 0,
+        };
         let next_block = regions
             .values()
             .filter_map(|lane| lane.file)
             .filter(|file| !is_empty(file.entity_ids))
-            .map(|file| (file.entity_ids.first.0 / EntityIds::BLOCK_SIZE) as u32 + 1)
+            .map(|file| file.entity_ids.index().saturating_add(1))
+            .chain([reserved])
             .max()
             .unwrap_or(0);
 
@@ -641,6 +660,7 @@ impl Lanes {
             table_last,
             players,
             next_block,
+            reserved: next_block,
             sessions: 0,
             uses: Uses::default(),
             filed,
@@ -939,6 +959,24 @@ impl Lanes {
                 let _ = answer.send(rested);
             }
         }
+    }
+
+    /// The next block of entity keys, reserved in the blocks' file first: sixteen at a
+    /// time, so that most hellos sync only their region's file.
+    fn fresh_block(&mut self) -> Result<EntityIds, StoreError> {
+        let block = EntityIds::block(self.next_block).ok_or(StoreError::OutOfEntityIds)?;
+        if self.next_block >= self.reserved {
+            let end = self.next_block.saturating_add(BLOCKS_RESERVED);
+            replace(
+                self.disk.as_ref(),
+                &self.regions_directory().join("blocks"),
+                &BlocksFile { end }.encode(),
+            )?;
+            self.disk.sync_directory(&self.regions_directory())?;
+            self.reserved = end;
+        }
+        self.next_block += 1;
+        Ok(block)
     }
 
     fn regions_directory(&self) -> PathBuf {
@@ -2361,35 +2399,12 @@ impl Lanes {
                 seen: file.epoch,
             });
         }
-        // A region that is pinned or home gets a block of entity ids when it is first
-        // opened, and keeps it. A region that was split off another has none, unless
-        // its id has become that of a pinned or home region since.
-        //
-        // Entity ids never go back for the life of a world, by which the later of two
-        // stays is told: the home region, which alone gives stays out, gets a new
-        // block if the one it has holds no id above the highest stay ever given.
-        // That is so of a home region that changed with the division, whose block
-        // can be a lower one. `end <= issued` would take a block whose last id is the
-        // highest stay for good, and every join would be refused from then on
-        // (ADR-0020, section 7).
-        let highest = self.players.issued();
-        let issued = file
-            .map(|file| file.entity_ids)
-            .filter(|ids| !is_empty(*ids))
-            .filter(|ids| {
-                region != self.table.home_region || ids.end.0 > highest.saturating_add(1)
-            });
-        let entity_ids = match issued {
-            Some(entity_ids) => entity_ids,
-            None if !self.table.pinned(region).is_empty() || region == self.table.home_region => {
-                let block = EntityIds::block(self.next_block).ok_or(StoreError::OutOfEntityIds)?;
-                // Before it is written: if writing fails half way, the block may be on
-                // disk all the same, and must not be another region's as well.
-                self.next_block += 1;
-                block
-            }
-            None => NO_ENTITY_IDS,
-        };
+        // Every hello is given a fresh block, so that keys a lost tick gave out are never
+        // given again to another entity, and blocks only rise, so that the home region's
+        // stays come in the order of their keys (`docs/adr/0028-entities.md`, section
+        // 1). Before the region file is written: if writing fails half way, the block may
+        // be on disk all the same, and must not be another region's as well.
+        let entity_ids = self.fresh_block()?;
         let updated = RegionFile { epoch, entity_ids };
         let unwritten = self.regions.get(&region).is_some_and(|lane| lane.unwritten);
         if file != Some(updated) || unwritten {
@@ -2526,7 +2541,7 @@ impl Lanes {
             deltas,
             held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
-            issued: EntityId(highest),
+            issued: EntityId(self.players.issued()),
             spawn: self.spawn,
             world: self.world,
             in_use,
@@ -3114,6 +3129,9 @@ fn tell_copiers(
         group.stream(copier, Streamed::Reply(Box::new(reply)));
     }
 }
+
+/// How many blocks of entity keys the blocks' file is raised by at a time.
+const BLOCKS_RESERVED: u32 = 16;
 
 /// The block of entity ids of a region that has none.
 const NO_ENTITY_IDS: EntityIds = EntityIds {

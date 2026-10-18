@@ -62,6 +62,20 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// [`BEFORE_SEAMS`] as the format writes it now: a chunk's layout has not changed since,
+/// only the version in its first byte, and with it the checksum at its end.
+fn before_seams() -> String {
+    let mut bytes: Vec<u8> = (0..BEFORE_SEAMS.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&BEFORE_SEAMS[at..at + 2], 16).expect("hex"))
+        .collect();
+    bytes[0] = clustine_format::FORMAT_VERSION;
+    let body = bytes.len() - 4;
+    let checksum = crc32fast::hash(&bytes[..body]).to_be_bytes();
+    bytes[body..].copy_from_slice(&checksum);
+    hex(&bytes)
+}
+
 fn seam(at: BlockPos, direction: u8, kind: SeamKind, source: BlockState) -> Seam {
     Seam {
         at,
@@ -103,7 +117,7 @@ fn some_seams() -> Vec<Seam> {
 fn a_chunk_without_seams_is_written_byte_for_byte_as_before() {
     let file = file(chunk_without_seams());
     let bytes = file.encode();
-    assert_eq!(hex(&bytes), BEFORE_SEAMS);
+    assert_eq!(hex(&bytes), before_seams());
     assert_eq!(bytes[FLAGS] & WITH_SEAMS, 0);
     let (read, _) = ChunkFile::decode(&bytes).unwrap();
     assert_eq!(read, file);
@@ -116,7 +130,7 @@ fn a_chunk_whose_seams_are_gone_is_written_as_one_that_never_had_any() {
     let mut chunk = chunk_without_seams();
     chunk.set_seams(some_seams());
     chunk.set_seams(Vec::new());
-    assert_eq!(hex(&file(chunk).encode()), BEFORE_SEAMS);
+    assert_eq!(hex(&file(chunk).encode()), before_seams());
 }
 
 /// A chunk with seam entries says so in bit 1 of its flags and is read back with them,

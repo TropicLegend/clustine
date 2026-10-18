@@ -1243,7 +1243,7 @@ fn join(id: PlayerId) -> EdgeToWorker {
 /// spawned; a test that sends inputs behind a join without waiting for that knows the
 /// entity this way.
 fn nth_entity(runner: &RegionRunner, n: i32) -> EntityId {
-    EntityId(runner.region().state().entity_ids.first.0 + n - 1)
+    EntityId(runner.region().state().entity_ids.first.0 + n as u64 - 1)
 }
 
 fn input(id: PlayerId, entity: EntityId, number: u64, input: PlayerInput) -> EdgeToWorker {
@@ -2408,8 +2408,8 @@ fn a_player_who_walks_into_the_other_stripe_is_let_go_also_when_nothing_had_aske
 }
 
 /// An entity of another region's block of ids, as an arriving player brings it.
-const STRANGER: EntityId = EntityId(5_000_001);
-const STRANGER_TOO: EntityId = EntityId(5_000_002);
+const STRANGER: EntityId = EntityId(5 * clustine_world::EntityIds::BLOCK_SIZE + 1);
+const STRANGER_TOO: EntityId = EntityId(5 * clustine_world::EntityIds::BLOCK_SIZE + 2);
 
 fn arrive(id: PlayerId, transfer: &PlayerTransfer) -> EdgeToWorker {
     EdgeToWorker::PlayerArrive {

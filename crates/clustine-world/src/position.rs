@@ -84,9 +84,21 @@ impl Vec3 {
     }
 }
 
-/// Identifies an entity to clients. Ids are unique within a world.
+/// An entity's key: unique for the life of a world and never given twice
+/// (`docs/adr/0028-entities.md`, section 1). Clients know an entity by a wire id of
+/// their edge's instead, and the game's own `getId()` is [`EntityId::game_id`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EntityId(pub i32);
+pub struct EntityId(pub u64);
+
+impl EntityId {
+    /// What the game's `Entity.getId()` would be, which its rules read: an item at rest
+    /// moves on the ticks where `(tickCount + getId()) % 4 == 0`, and a mob weighs its
+    /// goals afresh by `tickCount + getId()`. The key's low half, which counts within
+    /// its block.
+    pub const fn game_id(self) -> i32 {
+        self.0 as u32 as i32
+    }
+}
 
 /// Identifies a player: the UUID of their profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -128,10 +140,11 @@ impl EdgeId {
     }
 }
 
-/// A block of entity ids: `first` up to, but not including, `end`.
+/// A block of entity keys: `first` up to, but not including, `end`.
 ///
-/// Ids must be unique within a world, so everything that hands them out gets a block of
-/// its own.
+/// Keys must be unique within a world, so everything that hands them out gets a block of
+/// its own. The store gives a region a fresh block at every hello, so that keys a lost
+/// tick gave out are never given again (`docs/adr/0028-entities.md`, section 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityIds {
     pub first: EntityId,
@@ -139,24 +152,32 @@ pub struct EntityIds {
 }
 
 impl EntityIds {
-    /// The number of ids in a block made by [`EntityIds::block`].
-    pub const BLOCK_SIZE: i32 = 1 << 20;
+    /// The number of keys in a block made by [`EntityIds::block`].
+    pub const BLOCK_SIZE: u64 = 1 << 32;
 
     /// The number of blocks [`EntityIds::block`] can make.
-    pub const BLOCK_COUNT: u32 = (i32::MAX / Self::BLOCK_SIZE) as u32;
+    pub const BLOCK_COUNT: u32 = u32::MAX;
 
     /// The block with the given index, or `None` if `index` is not below
-    /// [`EntityIds::BLOCK_COUNT`]. Blocks with different indices share no id, and no
-    /// block contains id 0, which clients reject.
+    /// [`EntityIds::BLOCK_COUNT`]. A key's high half is its block's index, so blocks with
+    /// different indices share no key, and no block contains key 0, which stands for
+    /// none.
     pub const fn block(index: u32) -> Option<Self> {
-        if index >= Self::BLOCK_COUNT {
+        // `BLOCK_COUNT` is `u32::MAX`, so the one index not below it is itself: that
+        // block's end would be 2^64.
+        if index == Self::BLOCK_COUNT {
             return None;
         }
-        let start = index as i32 * Self::BLOCK_SIZE;
+        let start = index as u64 * Self::BLOCK_SIZE;
         Some(Self {
             first: EntityId(if start == 0 { 1 } else { start }),
             end: EntityId(start + Self::BLOCK_SIZE),
         })
+    }
+
+    /// The index of the block this is, as [`EntityIds::block`] takes it.
+    pub const fn index(self) -> u32 {
+        (self.first.0 / Self::BLOCK_SIZE) as u32
     }
 
     pub const fn contains(self, id: EntityId) -> bool {

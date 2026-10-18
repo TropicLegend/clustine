@@ -74,7 +74,7 @@ const EASTERN: ChunkArea = ChunkArea {
 };
 
 /// The entity of a player who comes from elsewhere: above every id of [`ids`].
-const TRAVELLER: EntityId = EntityId(7_000_001);
+const TRAVELLER: EntityId = EntityId(7 * EntityIds::BLOCK_SIZE + 1);
 
 /// Points in the chunks around the spawn point.
 const IN_HOME: Vec3 = Vec3::new(12.5, 64.0, 8.5);
@@ -279,7 +279,7 @@ fn remotely(edge: EdgeId, action: RemoteAction) -> TickInputs {
 /// The entity of the `n`th player to enter a region that gives out [`ids`], counted
 /// from 1: what an edge is told when the player has spawned, and names in their inputs.
 fn entity(n: i32) -> EntityId {
-    EntityId(ids().first.0 + n - 1)
+    EntityId(ids().first.0 + n as u64 - 1)
 }
 
 /// A step to the point with these x and z coordinates, on the stone.
@@ -316,7 +316,7 @@ fn use_on(position: BlockPos, face: Face, sequence: i32) -> PlayerInput {
 
 /// The entity that `id` has in another region, as the remote actions here name it.
 fn elsewhere(id: PlayerId) -> EntityId {
-    EntityId(9000 + id.0.as_u128() as i32)
+    EntityId(9000 + id.0.as_u128() as u64)
 }
 
 fn remote(id: PlayerId, sequence: i32, step: RemoteStep) -> RemoteAction {
@@ -1858,7 +1858,8 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
                     .unwrap_or(model.next_entity_id);
                 // The entity the player has or will get, the one before, the one after,
                 // and one from elsewhere.
-                let named = EntityId(own.0 + random.pick(&[0, 0, 0, -1, 1, 3]));
+                let named =
+                    EntityId((own.0 as i64 + i64::from(random.pick(&[0, 0, 0, -1, 1, 3]))) as u64);
                 let edge = random.pick(&[E, E, E, F, F, STRANGER]);
                 let point = random.pick(&points);
                 match random.below(12) {
@@ -1882,7 +1883,7 @@ fn made_up_joins_arrivals_leaves_and_inputs_keep_to_what_the_record_says_of_stay
                         // entity is of two players (section 2.5), and none arrives
                         // that the region has yet to give out.
                         let named = if random.once_in(3) {
-                            EntityId(TRAVELLER.0 + random.below(6) as i32)
+                            EntityId(TRAVELLER.0 + random.below(6))
                         } else {
                             named
                         };
@@ -2303,7 +2304,7 @@ impl Random {
 /// A player of a state made by hand, standing in the middle of `chunk`, who differs
 /// from a player with another entity in everything a state says of a player.
 fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
-    let n = entity.0;
+    let n = entity.0 as i32;
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack {
         item: items::STONE,
@@ -2516,7 +2517,7 @@ fn absorbed_as_the_record_says(
 fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
     let mut state = RegionState::new(entity_ids);
     state.tick = 1 + random.below(500);
-    state.next_entity_id = EntityId(entity_ids.first.0 + random.below(40) as i32);
+    state.next_entity_id = EntityId(entity_ids.first.0 + random.below(40));
     for edge in 1..=4 {
         if random.once_in(3) {
             continue;
@@ -2548,7 +2549,7 @@ fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
         }
         // Few entities for many players, so that one player is in both states with the
         // lower, the same and the higher id, and two players have one id now and then.
-        let entity = EntityId(ids().first.0 + random.below(12) as i32);
+        let entity = EntityId(ids().first.0 + random.below(12));
         let edge = random.pick(&known);
         let chunk = random.pick(&chunks);
         // Handed on more or less often, so that two copies of a stay differ in it.
@@ -2563,7 +2564,7 @@ fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
     for n in 1..=6 {
         if random.once_in(5) {
             let entering = EnteringState {
-                entity_id: EntityId(ids().first.0 + 20 + random.below(12) as i32),
+                entity_id: EntityId(ids().first.0 + 20 + random.below(12)),
                 name: format!("entering-{n}"),
                 edge: random.pick(&known),
                 attempt: 100 + random.below(50),
@@ -2576,7 +2577,7 @@ fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
 
 fn made_up_entry(random: &mut Random) -> Durable {
     let n = u128::from(random.below(6)) + 1;
-    let entity = EntityId(ids().first.0 + random.below(12) as i32);
+    let entity = EntityId(ids().first.0 + random.below(12));
     match random.below(6) {
         0 => refused(n),
         1 => done(n, random.below(40) as i32),
@@ -3784,7 +3785,7 @@ fn numbers_of(state: &RegionState) -> Vec<i32> {
     state
         .players
         .values()
-        .map(|player| player.entity_id.0 - ids().first.0 + 1)
+        .map(|player| (player.entity_id.0 - ids().first.0 + 1) as i32)
         .collect()
 }
 

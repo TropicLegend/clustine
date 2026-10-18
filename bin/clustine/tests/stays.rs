@@ -193,7 +193,8 @@ fn kit_of(bot: &Bot) -> Kit {
 struct Left {
     name: String,
     uuid: Uuid,
-    /// The entity of that stay. Every later stay has a higher one.
+    /// The wire id its edge gave that stay, which says nothing of the order of stays:
+    /// that is in the keys, which no client sees (`docs/adr/0028-entities.md`, section 1).
     entity: i32,
     place: (f64, f64, f64),
     look: (f32, f32),
@@ -261,32 +262,48 @@ async fn is_back(bot: &mut Bot, left: &Left) {
     );
     assert_eq!(bot.hotbar, left.hotbar, "the hotbar of {name}");
     assert_eq!(bot.selected_slot, left.slot, "the selected slot of {name}");
-    assert!(
-        bot.info.login.entity_id > left.entity,
-        "{name} was entity {} and is now entity {}: a later stay has a higher id",
-        left.entity,
-        bot.info.login.entity_id
-    );
+    // Which stay is the later is told by the stays' keys, which no client sees: the wire
+    // ids an edge gives are its own (`docs/adr/0028-entities.md`, section 1).
 }
 
-/// Waits until `watcher` sees the player called `name` as `entity` at `place`, and
-/// has them in its list, which is how a bot finds a player by name.
-async fn sees(watcher: &mut Bot, name: &str, entity: i32, place: (f64, f64, f64)) {
+/// Waits until `watcher` sees the player called `name` at `place`, as one entity, and
+/// has them in its list, which is how a bot finds a player by name. Which wire id it
+/// is shown them by is its edge's own, and says nothing of the stay
+/// (`docs/adr/0028-entities.md`, section 1).
+async fn sees(watcher: &mut Bot, name: &str, place: (f64, f64, f64)) {
     let seen = watcher
         .wait_until(PATIENCE, |bot| {
-            let listed = bot.seen_player(name);
-            let shown = bot.entities.get(&entity);
-            listed.is_some_and(|seen| near(seen.position, place))
-                && shown.is_some_and(|seen| near(seen.position, place))
+            let Some(listed) = bot.seen_player(name) else {
+                return false;
+            };
+            let mut shown = bot
+                .entities
+                .values()
+                .filter(|seen| seen.uuid == listed.uuid);
+            shown.next().is_some_and(|seen| near(seen.position, place)) && shown.next().is_none()
         })
         .await;
     if let Err(error) = seen {
         panic!(
-            "{error:#}: {} was to see {name} as entity {entity} at {place:?}; it sees {:?} \
-             and lists {:?}",
+            "{error:#}: {} was to see {name} at {place:?}, once; it sees {:?} and lists {:?}",
             watcher.info.profile.name, watcher.entities, watcher.player_list
         );
     }
+}
+
+/// Fails unless `watcher` is shown one entity of the player with `uuid`: the entity of
+/// a stay before is gone from its screen, as the later is there.
+fn shown_once(watcher: &Bot, uuid: Uuid) {
+    let shown = watcher
+        .entities
+        .values()
+        .filter(|seen| seen.uuid == uuid)
+        .count();
+    assert_eq!(
+        shown, 1,
+        "{} is shown {shown} entities of one player: {:?}",
+        watcher.info.profile.name, watcher.entities
+    );
 }
 
 /// Waits until `watcher` sees no entity of the player with `uuid`.
@@ -579,13 +596,13 @@ async fn a_player_who_leaves_and_joins_again_is_where_they_left_with_their_look_
     let kit = furnish(&mut roamer).await;
     goes_to(&mut roamer, FAR, A_LOOK).await;
     let left = Left::of(&roamer, kit);
-    sees(&mut watcher, "Roamer", left.entity, FAR).await;
+    sees(&mut watcher, "Roamer", FAR).await;
     drop(roamer);
     sees_no_more(&mut watcher, left.uuid).await;
 
     let mut again = join(&address, "Roamer").await;
     is_back(&mut again, &left).await;
-    sees(&mut watcher, "Roamer", again.info.login.entity_id, FAR).await;
+    sees(&mut watcher, "Roamer", FAR).await;
 
     // On into the air, with another look, and out and in again at once.
     let aloft = (FAR.0 - 6.0, GROUND + 9.0, FAR.2 + 5.0);
@@ -596,11 +613,11 @@ async fn a_player_who_leaves_and_joins_again_is_where_they_left_with_their_look_
     drop(again);
     let mut third = join(&address, "Roamer").await;
     is_back(&mut third, &left).await;
-    sees(&mut watcher, "Roamer", third.info.login.entity_id, aloft).await;
+    sees(&mut watcher, "Roamer", aloft).await;
 
     // Whoever comes back can play: they are heard, and walk on from where they are.
     goes_to(&mut third, FAR, A_LOOK).await;
-    sees(&mut watcher, "Roamer", third.info.login.entity_id, FAR).await;
+    sees(&mut watcher, "Roamer", FAR).await;
     server.stop().await;
 }
 
@@ -739,12 +756,6 @@ async fn players_are_where_they_left_after_the_server_was_stopped_and_started_tw
     is_back(&mut leaver, &leaver_left).await;
     let mut stayer = join(&address, "Stayer").await;
     is_back(&mut stayer, &stayer_left).await;
-    // Entity ids never go back for the life of a world: whoever joined later in the
-    // first session was the higher entity, and both are higher still now.
-    let highest = leaver_left.entity.max(stayer_left.entity);
-    for bot in [&leaver, &stayer] {
-        assert!(bot.info.login.entity_id > highest, "{}", bot.report());
-    }
     goes_to(&mut leaver, second_far, ANOTHER_LOOK).await;
     goes_to(&mut stayer, second_hover, A_LOOK).await;
     leaver_left = Left::of(&leaver, kit);
@@ -804,23 +815,23 @@ async fn rows_2_and_3_a_second_login_puts_the_first_out_with_the_sentence_and_st
     let place = (FAR.0, GROUND + 4.0, FAR.2);
     goes_to(&mut first, place, A_LOOK).await;
     let left = Left::of(&first, kit);
-    sees(&mut bystander, "Twin", left.entity, place).await;
+    sees(&mut bystander, "Twin", place).await;
 
     let mut second = logs_in_over(&mut first, &address).await;
     is_back(&mut second, &left).await;
     // The bystander is answered by the edge after everything the edge sent when it
     // ended the first connection: what it has then is what it is left with.
     heard(&mut bystander).await;
-    sees(&mut bystander, "Twin", second.info.login.entity_id, place).await;
+    sees(&mut bystander, "Twin", place).await;
     heard(&mut bystander).await;
     assert!(bystander.seen_player("Twin").is_some());
-    assert!(!bystander.entities.contains_key(&left.entity));
+    shown_once(&bystander, left.uuid);
 
     // And a third time, over the second.
     let left = left.after(&second);
     let mut third = logs_in_over(&mut second, &address).await;
     is_back(&mut third, &left).await;
-    sees(&mut bystander, "Twin", third.info.login.entity_id, place).await;
+    sees(&mut bystander, "Twin", place).await;
     heard(&mut third).await;
     server.stop().await;
 }
@@ -855,12 +866,12 @@ async fn rows_13_and_14_a_second_login_while_the_first_is_still_entering_leaves_
         let outcomes = tokio::join!(one.outcome(), other.outcome());
         let stays = the_one_that_stays([outcomes.0, outcomes.1]).await;
         assert!(
-            near(stays.place(), FAR) && stays.entity > left.entity,
+            near(stays.place(), FAR),
             "round {round}: the one that stays is entity {} at {:?}",
             stays.entity,
             stays.position
         );
-        sees(&mut watcher, "Hasty", stays.entity, FAR).await;
+        sees(&mut watcher, "Hasty", FAR).await;
         left.entity = stays.entity;
         drop(stays);
         sees_no_more(&mut watcher, left.uuid).await;
@@ -868,7 +879,7 @@ async fn rows_13_and_14_a_second_login_while_the_first_is_still_entering_leaves_
 
     let mut back = join(&address, "Hasty").await;
     is_back(&mut back, &left).await;
-    sees(&mut watcher, "Hasty", back.info.login.entity_id, FAR).await;
+    sees(&mut watcher, "Hasty", FAR).await;
     drop(back);
     sees_no_more(&mut watcher, left.uuid).await;
     nobody_stands_there(&address, left.uuid, FAR).await;
@@ -901,7 +912,7 @@ async fn row_16_leaving_and_joining_again_many_times_quickly_leaves_one_player_w
                     panic!("round {round}: a login after a leave was not put into the world");
                 };
                 assert!(
-                    near(raw.place(), FAR) && raw.entity > left.entity,
+                    near(raw.place(), FAR),
                     "round {round}: entity {} at {:?}",
                     raw.entity,
                     raw.position
@@ -921,7 +932,7 @@ async fn row_16_leaving_and_joining_again_many_times_quickly_leaves_one_player_w
     let mut back = join(&address, "Restless").await;
     is_back(&mut back, &left).await;
     heard(&mut back).await;
-    sees(&mut watcher, "Restless", back.info.login.entity_id, FAR).await;
+    sees(&mut watcher, "Restless", FAR).await;
     drop(back);
     sees_no_more(&mut watcher, left.uuid).await;
     nobody_stands_there(&address, left.uuid, FAR).await;
@@ -982,7 +993,7 @@ async fn rows_13_to_15_of_two_logins_racing_exactly_one_stays_and_the_world_has_
         let mut stays = entered.pop().unwrap();
         is_back(&mut stays, &left).await;
         heard(&mut stays).await;
-        sees(&mut watcher, "Racer", stays.info.login.entity_id, FAR).await;
+        sees(&mut watcher, "Racer", FAR).await;
         left = left.after(&stays);
         drop(stays);
         sees_no_more(&mut watcher, left.uuid).await;
@@ -997,8 +1008,7 @@ async fn rows_13_to_15_of_two_logins_racing_exactly_one_stays_and_the_world_has_
 /// world's life has a higher entity than every stay before it, whichever region is
 /// the home region.
 #[tokio::test]
-async fn row_20_players_are_where_they_left_and_entity_ids_go_on_rising_when_the_world_is_started_with_other_pins()
- {
+async fn row_20_players_are_where_they_left_when_the_world_is_started_with_other_pins() {
     let directory = tempfile::tempdir().unwrap();
     let divided_at = |pins: &[i32]| Config {
         world: Some(directory.path().to_owned()),
@@ -1016,7 +1026,6 @@ async fn row_20_players_are_where_they_left_and_entity_ids_go_on_rising_when_the
         (90.5, GROUND, 6.5),
         (8.5, GROUND + 1.0, -3.5),
     ];
-    let mut highest = 0;
     let mut left: Option<Left> = None;
     for (session, (pins, place)) in divisions.into_iter().zip(places).enumerate() {
         let (server, address) = start_with(divided_at(pins)).await;
@@ -1028,21 +1037,10 @@ async fn row_20_players_are_where_they_left_and_entity_ids_go_on_rising_when_the
             }
             None => furnish(&mut traveller).await,
         };
-        // Someone new in every session, and the traveller: each is a later stay
-        // than any the world has had.
+        // Someone new in every session beside the traveller. That each is a later stay
+        // than any the world has had is in the keys, which no client sees
+        // (`docs/adr/0028-entities.md`, section 1); the store's tests hold it.
         let fresh = join(&address, &format!("Fresh{session}")).await;
-        for bot in [&traveller, &fresh] {
-            let entity = bot.info.login.entity_id;
-            assert!(
-                entity > highest,
-                "session {session} with the pins {pins:?}: {} is entity {entity}, and the \
-                 world has had entity {highest}",
-                bot.info.profile.name
-            );
-        }
-        highest = highest
-            .max(traveller.info.login.entity_id)
-            .max(fresh.info.login.entity_id);
         traveller.set_flying(place.1 > GROUND).await.unwrap();
         goes_to(&mut traveller, place, A_LOOK).await;
         left = Some(Left::of(&traveller, kit));
@@ -1096,7 +1094,7 @@ async fn a_player_who_left_in_another_region_than_the_home_region_enters_there_a
         goes_to(&mut settler, place, A_LOOK).await;
         let left = Left::of(&settler, kit);
         for watcher in [&mut westerner, &mut easterner] {
-            sees(watcher, "Settler", left.entity, place).await;
+            sees(watcher, "Settler", place).await;
         }
         drop(settler);
         for watcher in [&mut westerner, &mut easterner] {
@@ -1105,16 +1103,15 @@ async fn a_player_who_left_in_another_region_than_the_home_region_enters_there_a
 
         let mut back = join(&address, "Settler").await;
         is_back(&mut back, &left).await;
-        let entity = back.info.login.entity_id;
         for watcher in [&mut westerner, &mut easterner] {
-            sees(watcher, "Settler", entity, place).await;
+            sees(watcher, "Settler", place).await;
         }
         // The east answers them, and the west does when they have walked there.
         heard(&mut back).await;
         let home = (6.5, GROUND + 2.0, 4.5);
         goes_to(&mut back, home, ANOTHER_LOOK).await;
         for watcher in [&mut westerner, &mut easterner] {
-            sees(watcher, "Settler", entity, home).await;
+            sees(watcher, "Settler", home).await;
         }
         assert_eq!(back.stats.teleports_confirmed, 1);
         // And once more from the east, at once.
@@ -1149,8 +1146,8 @@ async fn row_2_a_second_login_while_the_first_stands_in_another_region_stands_th
         heard(&mut next).await;
         for watcher in [&mut westerner, &mut easterner] {
             heard(watcher).await;
-            sees(watcher, "Twin", next.info.login.entity_id, IN_THE_EAST).await;
-            assert!(!watcher.entities.contains_key(&left.entity));
+            sees(watcher, "Twin", IN_THE_EAST).await;
+            shown_once(watcher, left.uuid);
         }
         left = left.after(&next);
         current = next;
@@ -1184,13 +1181,7 @@ async fn row_16_a_player_who_leaves_while_entering_another_region_is_not_left_st
     let mut back = join(&address, "Fickle").await;
     is_back(&mut back, &left).await;
     heard(&mut back).await;
-    sees(
-        &mut easterner,
-        "Fickle",
-        back.info.login.entity_id,
-        IN_THE_EAST,
-    )
-    .await;
+    sees(&mut easterner, "Fickle", IN_THE_EAST).await;
     left = left.after(&back);
     drop(back);
     sees_no_more(&mut easterner, left.uuid).await;
@@ -1228,12 +1219,12 @@ async fn rows_4_and_18_a_player_enters_where_they_were_while_a_region_is_taken_o
             panic!("round {round}: the login during a takeover of {region:?} did not enter");
         };
         assert!(
-            near(raw.place(), IN_THE_EAST) && raw.entity > left.entity,
+            near(raw.place(), IN_THE_EAST),
             "round {round}: entity {} at {:?}",
             raw.entity,
             raw.position
         );
-        sees(&mut westerner, "Punctual", raw.entity, IN_THE_EAST).await;
+        sees(&mut westerner, "Punctual", IN_THE_EAST).await;
         left.entity = raw.entity;
         drop(raw);
         sees_no_more(&mut westerner, left.uuid).await;
@@ -1571,7 +1562,7 @@ async fn measured_a_player_who_joins_inside_a_friends_land_causes_no_merge_no_sp
     // answered beside the friend, has left, and the world is the home region and
     // the friend's again.
     heard(&mut guest).await;
-    sees(&mut friend, "Guest", guest.info.login.entity_id, beside).await;
+    sees(&mut friend, "Guest", beside).await;
     let left = Left::of(&guest, kit);
     drop(guest);
     sees_no_more(&mut friend, left.uuid).await;
@@ -1623,7 +1614,7 @@ async fn measured_a_player_who_joins_inside_a_friends_land_causes_no_merge_no_sp
         in_short(&after),
         in_numbers(&friend_waits)
     );
-    sees(&mut friend, "Guest", back.info.login.entity_id, beside).await;
+    sees(&mut friend, "Guest", beside).await;
     let ids = |list: &RegionList| {
         list.regions
             .iter()
@@ -1971,8 +1962,8 @@ impl Stage {
         let kit = furnish(&mut twin).await;
         goes_to(&mut twin, place, A_LOOK).await;
         let left = Left::of(&twin, kit);
-        sees(&mut self.friend, "Twin", left.entity, place).await;
-        sees(&mut self.onlooker, "Twin", left.entity, place).await;
+        sees(&mut self.friend, "Twin", place).await;
+        sees(&mut self.onlooker, "Twin", place).await;
         (twin, left)
     }
 
@@ -1995,11 +1986,11 @@ impl Stage {
     }
 
     /// Fails unless everybody who watches, on whichever edge is there, comes to see
-    /// the twin once, as `entity` at `place`, with the twin in their list, and no
-    /// longer as the entity `before`. The first connection has been ended by now, so
-    /// what the friend is answered next comes after everything its edge sent when
-    /// it removed the first connection.
-    async fn one_twin(&mut self, entity: i32, place: (f64, f64, f64), before: i32) {
+    /// the twin, whose UUID is `twin`, once at `place`, with the twin in their list,
+    /// and no longer as the entity of the stay before. The first connection has been
+    /// ended by now, so what the friend is answered next comes after everything its
+    /// edge sent when it removed the first connection.
+    async fn one_twin(&mut self, place: (f64, f64, f64), twin: Uuid) {
         let mut watchers = Vec::new();
         if self.cluster.edge.1.is_some() {
             watchers.push(&mut self.friend);
@@ -2009,7 +2000,7 @@ impl Stage {
         }
         for watcher in watchers {
             heard(watcher).await;
-            sees(watcher, "Twin", entity, place).await;
+            sees(watcher, "Twin", place).await;
             heard(watcher).await;
             assert!(
                 watcher.seen_player("Twin").is_some(),
@@ -2019,7 +2010,7 @@ impl Stage {
                 watcher.player_list,
                 watcher.entities
             );
-            assert!(!watcher.entities.contains_key(&before));
+            shown_once(watcher, twin);
         }
     }
 
@@ -2054,16 +2045,14 @@ async fn row_1_a_second_login_through_another_edge_puts_the_first_out_and_a_frie
         let mut next = logs_in_over(&mut current, &through).await;
         is_back(&mut next, &left).await;
         heard(&mut next).await;
-        stage
-            .one_twin(next.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-            .await;
+        stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
         left = left.after(&next);
         current = next;
     }
     // The one that stays walks home and is seen there by both.
     goes_to(&mut current, AT_HOME, ANOTHER_LOOK).await;
-    sees(&mut stage.friend, "Twin", left.entity, AT_HOME).await;
-    sees(&mut stage.onlooker, "Twin", left.entity, AT_HOME).await;
+    sees(&mut stage.friend, "Twin", AT_HOME).await;
+    sees(&mut stage.onlooker, "Twin", AT_HOME).await;
     stage.end().await;
 }
 
@@ -2077,9 +2066,7 @@ async fn row_3_a_second_login_through_another_edge_while_the_first_stands_in_the
     let mut second = logs_in_over(&mut first, &through).await;
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, AT_HOME, left.entity)
-        .await;
+    stage.one_twin(AT_HOME, left.uuid).await;
     stage.end().await;
 }
 
@@ -2123,9 +2110,7 @@ async fn row_4_a_second_login_while_the_region_of_the_first_has_no_worker_enters
     );
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     stage.end().await;
 }
 
@@ -2158,9 +2143,7 @@ async fn row_5_a_second_login_while_the_region_of_the_first_hangs_enters_at_once
     );
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     stage.end().await;
 }
 
@@ -2213,9 +2196,7 @@ async fn rows_8_and_9_a_second_login_while_the_first_is_in_the_middle_of_a_hand_
     );
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, BEYOND_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(BEYOND_THE_LINE, left.uuid).await;
     stage.end().await;
 }
 
@@ -2271,9 +2252,7 @@ async fn row_10_a_second_login_while_the_first_walks_on_stands_on_the_way_the_fi
     )
     .await;
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, place, left.entity)
-        .await;
+    stage.one_twin(place, left.uuid).await;
     stage.end().await;
 }
 
@@ -2295,10 +2274,9 @@ async fn row_11_a_second_login_while_the_first_edge_is_frozen_and_the_first_is_t
     let mut second = entered(entry);
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    let entity = second.info.login.entity_id;
     heard(&mut stage.onlooker).await;
-    sees(&mut stage.onlooker, "Twin", entity, EAST_OF_THE_LINE).await;
-    assert!(!stage.onlooker.entities.contains_key(&left.entity));
+    sees(&mut stage.onlooker, "Twin", EAST_OF_THE_LINE).await;
+    shown_once(&stage.onlooker, left.uuid);
 
     signal(edge, "CONT").await;
     let end = first.wait_for_end(LONG_PATIENCE).await;
@@ -2307,7 +2285,7 @@ async fn row_11_a_second_login_while_the_first_edge_is_frozen_and_the_first_is_t
         "the first connection was to be told the sentence when its edge woke: {end:?}\n{}",
         stage.cluster.all_logs()
     );
-    stage.one_twin(entity, EAST_OF_THE_LINE, left.entity).await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     heard(&mut second).await;
     stage.end().await;
 }
@@ -2329,8 +2307,7 @@ async fn row_12_a_second_login_after_the_first_edge_died_enters_at_the_place_and
     let mut second = entered(entry);
     is_back(&mut second, &left).await;
     heard(&mut second).await;
-    let entity = second.info.login.entity_id;
-    stage.one_twin(entity, EAST_OF_THE_LINE, left.entity).await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     drop(second);
     sees_no_more(&mut stage.onlooker, left.uuid).await;
     let through = stage.second.clone();
@@ -2366,14 +2343,12 @@ async fn rows_13_and_14_of_two_logins_through_two_edges_at_once_exactly_one_stay
         let outcomes = tokio::join!(one.outcome(), other.outcome());
         let stays = the_one_that_stays([outcomes.0, outcomes.1]).await;
         assert!(
-            near(stays.place(), EAST_OF_THE_LINE) && stays.entity > left.entity,
+            near(stays.place(), EAST_OF_THE_LINE),
             "round {round}: the one that stays is entity {} at {:?}",
             stays.entity,
             stays.position
         );
-        stage
-            .one_twin(stays.entity, EAST_OF_THE_LINE, left.entity)
-            .await;
+        stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
         left.entity = stays.entity;
         drop(stays);
         sees_no_more(&mut stage.friend, left.uuid).await;
@@ -2418,8 +2393,7 @@ async fn row_17_a_player_who_leaves_in_the_middle_of_a_hand_over_comes_back_wher
     let mut back = join(&through, "Twin").await;
     is_back(&mut back, &left).await;
     heard(&mut back).await;
-    let entity = back.info.login.entity_id;
-    stage.one_twin(entity, BEYOND_THE_LINE, left.entity).await;
+    stage.one_twin(BEYOND_THE_LINE, left.uuid).await;
     drop(back);
     sees_no_more(&mut stage.friend, left.uuid).await;
     sees_no_more(&mut stage.onlooker, left.uuid).await;
@@ -2454,14 +2428,12 @@ async fn row_18_a_player_enters_where_they_were_when_the_home_regions_worker_is_
             );
         };
         assert!(
-            near(raw.place(), EAST_OF_THE_LINE) && raw.entity > left.entity,
+            near(raw.place(), EAST_OF_THE_LINE),
             "round {round}: entity {} at {:?}",
             raw.entity,
             raw.position
         );
-        stage
-            .one_twin(raw.entity, EAST_OF_THE_LINE, left.entity)
-            .await;
+        stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
         left.entity = raw.entity;
         drop(raw);
         sees_no_more(&mut stage.friend, left.uuid).await;
@@ -2579,9 +2551,7 @@ async fn a_player_who_leaves_is_where_they_left_after_their_region_was_absorbed_
     let mut back = join(&through, "Twin").await;
     is_back(&mut back, &left).await;
     heard(&mut back).await;
-    stage
-        .one_twin(back.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     left = left.after(&back);
 
     // A companion in the twin's chunk, who is whom the split takes.
@@ -2600,16 +2570,8 @@ async fn a_player_who_leaves_is_where_they_left_after_their_region_was_absorbed_
     let mut back = join(&through, "Twin").await;
     is_back(&mut back, &left).await;
     heard(&mut back).await;
-    sees(
-        &mut companion,
-        "Twin",
-        back.info.login.entity_id,
-        EAST_OF_THE_LINE,
-    )
-    .await;
-    stage
-        .one_twin(back.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    sees(&mut companion, "Twin", EAST_OF_THE_LINE).await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     left = left.after(&back);
 
     // The part goes back into the home region under both, and the twin once more.
@@ -2631,13 +2593,7 @@ async fn a_player_who_leaves_is_where_they_left_after_their_region_was_absorbed_
     let mut again = join(&stage.first, "Twin").await;
     is_back(&mut again, &left).await;
     heard(&mut again).await;
-    sees(
-        &mut companion,
-        "Twin",
-        again.info.login.entity_id,
-        EAST_OF_THE_LINE,
-    )
-    .await;
+    sees(&mut companion, "Twin", EAST_OF_THE_LINE).await;
     stage.end().await;
 }
 
@@ -2669,9 +2625,7 @@ async fn rows_6_and_7_a_second_login_in_the_moment_the_region_of_the_first_is_ab
     let merged = merging.await.unwrap();
     println!("row 7: {}", merged.outcome());
     heard(&mut second).await;
-    stage
-        .one_twin(second.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     left = left.after(&second);
 
     // Row 6: split off a moment ago. Whatever the merge came to, the twin's chunk is
@@ -2696,9 +2650,7 @@ async fn rows_6_and_7_a_second_login_in_the_moment_the_region_of_the_first_is_ab
     }
     println!("row 6: {}", splitting.await.unwrap().outcome());
     heard(&mut third).await;
-    stage
-        .one_twin(third.info.login.entity_id, EAST_OF_THE_LINE, left.entity)
-        .await;
+    stage.one_twin(EAST_OF_THE_LINE, left.uuid).await;
     stage.end().await;
 }
 

@@ -342,6 +342,8 @@ impl Edge {
                 as_changed: as_changed(),
                 ..fanout::LightSettings::SERVER
             },
+            #[cfg(test)]
+            wire_ledger: fanout::WireLedger::default(),
         };
         Ok(Self {
             listener: TcpListener::bind(address).await?,

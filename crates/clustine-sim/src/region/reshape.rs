@@ -493,7 +493,7 @@ mod tests {
             count: entity,
         });
         PlayerState {
-            entity_id: EntityId(entity),
+            entity_id: EntityId(entity as u64),
             name: format!("Stay{entity}"),
             pose: Pose {
                 position: middle(chunk),
@@ -568,7 +568,7 @@ mod tests {
         RegionState {
             tick,
             entity_ids,
-            next_entity_id: EntityId(entity_ids.first.0 + given),
+            next_entity_id: EntityId(entity_ids.first.0 + given as u64),
             players: players
                 .into_iter()
                 .map(|(number, state)| (player(number), state))
@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(merged.edges.len(), 5);
 
         // The players of an edge are there unless their side of it was reset.
-        let stays: Vec<i32> = merged
+        let stays: Vec<u64> = merged
             .players
             .values()
             .map(|player| player.entity_id.0)
@@ -1105,7 +1105,13 @@ mod tests {
             region: PART,
             players: stays
                 .iter()
-                .map(|(number, entity)| (player(*number), EntityId(*entity), attempt_of(*entity)))
+                .map(|(number, entity)| {
+                    (
+                        player(*number),
+                        EntityId(*entity as u64),
+                        attempt_of(*entity),
+                    )
+                })
                 .collect(),
         };
         let mut expected = state(21, 0, 9, stayed, edges);
@@ -1511,7 +1517,7 @@ mod tests {
             on_ground: true,
         };
         TickInputs {
-            inputs: vec![(E, player(number), EntityId(entity), count, input)],
+            inputs: vec![(E, player(number), EntityId(entity as u64), count, input)],
             ..TickInputs::default()
         }
     }

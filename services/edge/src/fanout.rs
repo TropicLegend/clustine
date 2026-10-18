@@ -144,7 +144,15 @@ pub(crate) struct FanoutConfig {
     pub(crate) login: crate::LoginWorld,
     /// When a chunk whose light is not right gets its job.
     pub(crate) light: LightSettings,
+    /// Every wire id the edge gives, with its key, for tests to read what a client is
+    /// shown as keys.
+    #[cfg(test)]
+    pub(crate) wire_ledger: WireLedger,
 }
+
+/// See [`FanoutConfig::wire_ledger`]. Wire ids are never given twice, so it maps them.
+#[cfg(test)]
+pub(crate) type WireLedger = Arc<std::sync::Mutex<BTreeMap<i32, EntityId>>>;
 
 /// When a chunk whose light is not right gets its job
 /// (`docs/adr/0023-light-at-the-edge.md`, section 4). Settings and not constants:
@@ -773,6 +781,8 @@ pub(crate) struct Fanout {
     lit: Option<mpsc::UnboundedReceiver<FromThread>>,
     /// The entities in the chunks of the replica.
     entities: BTreeMap<EntityId, Shown>,
+    /// The ids this edge's clients know entities by.
+    wire: WireIds,
     /// The regions that are no more, each with the region it went into, as far as this
     /// edge has acted on it. Never a chain: a value is not itself a key. Written by
     /// [`Fanout::retire`] and by nothing else; see
@@ -785,6 +795,46 @@ pub(crate) struct Fanout {
     /// Where the seeds of the sounds this edge sends come from: any number will do,
     /// and none of the regions' rules draws it.
     sound_seeds: u64,
+}
+
+/// The ids by which this edge's clients know entities. An entity's key is unique for
+/// the life of the world and does not fit the protocol's `i32`, so each edge gives the
+/// entities it shows ids of its own, in order from 1 (`docs/adr/0028-entities.md`,
+/// section 1). A key keeps its id while the edge shows its entity to anyone or a
+/// connected player of the edge is that entity, whose own id the login told their
+/// client. Ids are not given again for the life of the edge: a client may still name an
+/// id it was told is removed, and until something a client sends names entities that is
+/// harmless, but no id is reused before that is designed.
+#[derive(Debug, Default)]
+struct WireIds {
+    of: BTreeMap<EntityId, i32>,
+    last: i32,
+    #[cfg(test)]
+    ledger: WireLedger,
+}
+
+impl WireIds {
+    /// The id clients know the entity `key` by, given now if it has none.
+    fn of(&mut self, key: EntityId) -> i32 {
+        if let Some(id) = self.of.get(&key) {
+            return *id;
+        }
+        self.last = self
+            .last
+            .checked_add(1)
+            .expect("an edge shows fewer than 2^31 entities in its life");
+        self.of.insert(key, self.last);
+        #[cfg(test)]
+        self.ledger
+            .lock()
+            .expect("nothing panics holding the ledger")
+            .insert(self.last, key);
+        self.last
+    }
+
+    fn forget(&mut self, key: EntityId) {
+        self.of.remove(&key);
+    }
 }
 
 /// An entity the edge shows, and the region that last introduced it: reported it
@@ -811,6 +861,11 @@ impl Fanout {
         (lighting, lit): (Lighting, mpsc::UnboundedReceiver<FromThread>),
     ) -> Self {
         let spawn_region = routing.home;
+        let wire = WireIds {
+            #[cfg(test)]
+            ledger: Arc::clone(&config.wire_ledger),
+            ..WireIds::default()
+        };
         // The messages of all regions are read from one queue, each link's in the order
         // they were sent.
         let (queue, messages) = mpsc::channel(REGION_QUEUE_CAPACITY);
@@ -847,6 +902,7 @@ impl Fanout {
             lighting,
             lit: Some(lit),
             entities: BTreeMap::new(),
+            wire,
             stands_for: BTreeMap::new(),
             carried: BTreeMap::new(),
             sound_seeds: 0,
@@ -2769,7 +2825,7 @@ impl Fanout {
         };
         let mut outgoing = Vec::new();
         for (player, view) in &mut self.players {
-            let packets = view.update_visibility(*player, &state, moved);
+            let packets = view.update_visibility(*player, &state, moved, &mut self.wire);
             if !packets.is_empty() {
                 outgoing.push((*player, packets));
             }
@@ -2777,6 +2833,7 @@ impl Fanout {
         if !self.replica.contains_key(&state.chunk()) {
             // It went where this edge does not watch.
             self.entities.remove(&entity);
+            self.release_wire(entity);
         }
         for (player, packets) in outgoing {
             self.send_to_player(player, packets).await;
@@ -2791,11 +2848,42 @@ impl Fanout {
             .iter_mut()
             .filter_map(|(player, view)| view.visible.remove(&entity).map(|_| *player))
             .collect();
+        // Only a packet that names the entity needs its id: one nobody was shown is
+        // not given one now.
         for player in viewers {
             let packet = encoded(&RemoveEntities {
-                entity_ids: vec![entity.0],
+                entity_ids: vec![self.wire.of(entity)],
             });
             self.send_to_player(player, [packet]).await;
+        }
+        self.release_wire(entity);
+    }
+
+    /// Lets the wire id of `entity` go if nothing needs it any more: nobody is shown the
+    /// entity, the edge does not keep it, and no connected player of the edge is it.
+    fn release_wire(&mut self, entity: EntityId) {
+        let needed = self.entities.contains_key(&entity)
+            || self
+                .players
+                .values()
+                .any(|view| view.entity == Some(entity) || view.visible.contains_key(&entity));
+        if !needed {
+            self.wire.forget(entity);
+        }
+    }
+
+    /// Forgets the entities in chunks the replica no longer has, which nobody sees any
+    /// more, and lets their wire ids go.
+    fn forget_unwatched_entities(&mut self) {
+        let unwatched: Vec<_> = self
+            .entities
+            .iter()
+            .filter(|(_, shown)| !self.replica.contains_key(&shown.state.chunk()))
+            .map(|(entity, _)| *entity)
+            .collect();
+        for entity in unwatched {
+            self.entities.remove(&entity);
+            self.release_wire(entity);
         }
     }
 
@@ -2894,7 +2982,7 @@ impl Fanout {
             CREATIVE_ABILITIES
         };
         let entered = [
-            encoded(&login_packet(entity, &self.config)),
+            encoded(&login_packet(self.wire.of(entity), &self.config)),
             encoded(&PlayerAbilities {
                 flags,
                 flying_speed: 0.05,
@@ -3051,7 +3139,7 @@ impl Fanout {
         view.wanted = wanted;
         // Entities in chunks that came into view appear, those left behind disappear.
         for shown in self.entities.values() {
-            packets.extend(view.update_visibility(player, &shown.state, false));
+            packets.extend(view.update_visibility(player, &shown.state, false, &mut self.wire));
         }
         // Who waits for what has changed, and how near they are: that moves entries
         // between the sets of light and sends or dispatches nothing.
@@ -3062,9 +3150,7 @@ impl Fanout {
         for position in pending {
             self.rerank(position, player);
         }
-        let replica = &self.replica;
-        self.entities
-            .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
+        self.forget_unwatched_entities();
 
         for chunk in left {
             self.unwant(region, chunk);
@@ -4263,7 +4349,7 @@ impl Fanout {
             // hidden here and now; the region's report then finds nothing left to do.
             self.entities.remove(&entity);
             let packet = encoded(&RemoveEntities {
-                entity_ids: vec![entity.0],
+                entity_ids: vec![self.wire.of(entity)],
             });
             for other in self.players.values_mut() {
                 if other.visible.remove(&entity).is_some() {
@@ -4271,6 +4357,7 @@ impl Fanout {
                     let _ = other.outbound.try_send(packet.clone());
                 }
             }
+            self.release_wire(entity);
         }
         // The entry in the player list is this edge's to remove. A client that shows
         // another entity of the player keeps it: that is a later stay, through another
@@ -4317,9 +4404,7 @@ impl Fanout {
         for position in &view.pending {
             self.requeue(*position);
         }
-        let replica = &self.replica;
-        self.entities
-            .retain(|_, shown| replica.contains_key(&shown.state.chunk()));
+        self.forget_unwatched_entities();
         for position in &view.wanted {
             self.unwant(view.region, *position);
         }
@@ -4390,7 +4475,13 @@ impl PlayerView {
     /// at once is a new entity, while the old one may still arrive in the region it
     /// was on its way to and be removed there a moment later. A client that is shown
     /// a player with its own UUID has two of itself.
-    fn update_visibility(&mut self, me: PlayerId, state: &EntityState, moved: bool) -> Vec<Bytes> {
+    fn update_visibility(
+        &mut self,
+        me: PlayerId,
+        state: &EntityState,
+        moved: bool,
+        wire: &mut WireIds,
+    ) -> Vec<Bytes> {
         let in_world = self.entity.is_some();
         let EntityKind::Player { player: of, .. } = &state.kind;
         let own = self.entity == Some(state.entity) || *of == me;
@@ -4406,7 +4497,7 @@ impl PlayerView {
                     .visible
                     .iter()
                     .filter(|(_, shown)| *shown == player)
-                    .map(|(entity, _)| entity.0)
+                    .map(|(entity, _)| wire.of(*entity))
                     .collect();
                 if !outdated.is_empty() {
                     self.visible.retain(|_, shown| shown != player);
@@ -4419,14 +4510,14 @@ impl PlayerView {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));
                 }
-                packets.extend(spawn_packets(state));
+                packets.extend(spawn_packets(state, wire.of(state.entity)));
                 packets
             }
-            (true, true) if moved => move_packets(state).into(),
+            (true, true) if moved => move_packets(state, wire.of(state.entity)).into(),
             (false, true) => {
                 self.visible.remove(&state.entity);
                 vec![encoded(&RemoveEntities {
-                    entity_ids: vec![state.entity.0],
+                    entity_ids: vec![wire.of(state.entity)],
                 })]
             }
             _ => Vec::new(),
@@ -4477,12 +4568,12 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 }
 
 /// The packets that make an entity appear on a client.
-fn spawn_packets(state: &EntityState) -> [Bytes; 2] {
+fn spawn_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
     let EntityKind::Player { player, .. } = &state.kind;
     let position = state.pose.position;
     [
         encoded(&SpawnEntity {
-            entity_id: state.entity.0,
+            entity_id: id,
             uuid: player.0,
             kind: entity_types::PLAYER,
             x: position.x,
@@ -4494,16 +4585,16 @@ fn spawn_packets(state: &EntityState) -> [Bytes; 2] {
             head_yaw: angle(state.pose.yaw),
             data: 0,
         }),
-        head_rotation(state),
+        head_rotation(state, id),
     ]
 }
 
 /// The packets that put an entity a client already shows where it is now.
-fn move_packets(state: &EntityState) -> [Bytes; 2] {
+fn move_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
     let position = state.pose.position;
     [
         encoded(&SyncEntityPosition {
-            entity_id: state.entity.0,
+            entity_id: id,
             path: PositionPath::Linear {
                 x: position.x,
                 y: position.y,
@@ -4513,15 +4604,15 @@ fn move_packets(state: &EntityState) -> [Bytes; 2] {
             pitch: state.pose.pitch,
             on_ground: state.pose.on_ground,
         }),
-        head_rotation(state),
+        head_rotation(state, id),
     ]
 }
 
 /// The head of a player looks where the player looks; the position packets only turn
 /// the body.
-fn head_rotation(state: &EntityState) -> Bytes {
+fn head_rotation(state: &EntityState, id: i32) -> Bytes {
     encoded(&SetHeadRotation {
-        entity_id: state.entity.0,
+        entity_id: id,
         head_yaw: angle(state.pose.yaw),
     })
 }
@@ -4595,12 +4686,12 @@ fn view_area(center: ChunkPos, view_distance: i32) -> BTreeSet<ChunkPos> {
     area
 }
 
-fn login_packet(entity_id: EntityId, config: &FanoutConfig) -> Login {
+fn login_packet(entity_id: i32, config: &FanoutConfig) -> Login {
     let dimension_type = synced_registry("minecraft:dimension_type")
         .and_then(|registry| registry.id_of(OVERWORLD))
         .expect("the overworld is a vanilla dimension type");
     Login {
-        entity_id: entity_id.0,
+        entity_id,
         hardcore: false,
         dimension_names: vec![OVERWORLD.to_owned()],
         max_players: config.max_players as i32,
@@ -4694,6 +4785,7 @@ mod tests {
                 region_patience,
                 login: crate::LoginWorld::FLAT,
                 light: LightSettings::AT_ONCE,
+                wire_ledger: WireLedger::default(),
             };
             let (commands, receiver) = mpsc::channel(64);
             // A job is done in the turn that dispatches it, so that everything a turn
@@ -6756,6 +6848,8 @@ mod scenarios {
     struct Harness {
         commands: mpsc::Sender<Command>,
         relinks: Relinks,
+        /// The keys of the wire ids the edge gives.
+        ledger: WireLedger,
         /// The workers' ends of the links to the regions; none where the test has
         /// given the edge no link, or has dropped it.
         links: Vec<Option<WorkerEnd>>,
@@ -6828,14 +6922,17 @@ mod scenarios {
                 region_patience,
                 login: crate::LoginWorld::FLAT,
                 light: LightSettings::AT_ONCE,
+                wire_ledger: WireLedger::default(),
             };
             let (commands, receiver) = mpsc::channel(64);
+            let ledger = Arc::clone(&config.wire_ledger);
             // A job is done in the turn that dispatches it, so that everything a turn
             // marks is lit before the turn ends.
             let task = tokio::spawn(Fanout::new(config, routing, receiver, Lighting::here()).run());
             let mut harness = Self {
                 commands,
                 relinks,
+                ledger,
                 links: ends,
                 heard: (0..PORTS).map(|_| Heard::default()).collect(),
                 task,
@@ -7048,7 +7145,7 @@ mod scenarios {
                 awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
             };
             self.commands.send(join).await.unwrap();
-            Client::new(player, session, packets)
+            Client::new(player, session, packets, Arc::clone(&self.ledger))
         }
 
         /// A player joins and the western region places them as `entity` where
@@ -7383,8 +7480,10 @@ mod scenarios {
         /// The blocks it was told have changed since their chunk was sent, each as it
         /// was told last.
         blocks: BTreeMap<BlockPos, i32>,
-        /// The entities it shows.
-        entities: BTreeSet<i32>,
+        /// The entities it shows, by their keys.
+        entities: BTreeSet<u64>,
+        /// The keys of the edge's wire ids.
+        ledger: WireLedger,
         /// Every action it was told was handled, in order.
         acknowledged: Vec<i32>,
         /// Batches of chunks it has been sent and has not confirmed.
@@ -7398,6 +7497,9 @@ mod scenarios {
         told: Vec<Told>,
         /// Every chunk it was told its view is centred on, in order.
         centres: Vec<ChunkPos>,
+        /// Every packet it was sent that names an entity, with the wire id it names,
+        /// in order.
+        named: Vec<(Naming, i32)>,
         /// How many packets it has taken, of whatever kind.
         taken: usize,
         /// Every level event it was told of (a block breaking), in order.
@@ -7415,23 +7517,40 @@ mod scenarios {
         Sound(Sound),
     }
 
+    /// A packet that names an entity by its wire id, in [`Client::named`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Naming {
+        /// The login, which names the client's own entity.
+        Login,
+        Spawn,
+        Position,
+        HeadRotation,
+        Removal,
+    }
+
     /// Something a client was told that changes whom it shows or lists.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Told {
         /// It was put into the world: the login packet.
         Entered,
-        Shown(i32),
-        Hidden(i32),
+        Shown(u64),
+        Hidden(u64),
         Listed(Uuid),
         Unlisted(Uuid),
     }
 
     impl Client {
-        fn new(player: PlayerId, session: SessionId, packets: mpsc::Receiver<Bytes>) -> Self {
+        fn new(
+            player: PlayerId,
+            session: SessionId,
+            packets: mpsc::Receiver<Bytes>,
+            ledger: WireLedger,
+        ) -> Self {
             Self {
                 player,
                 session,
                 packets,
+                ledger,
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
@@ -7445,10 +7564,41 @@ mod scenarios {
                 closed: false,
                 told: Vec::new(),
                 centres: Vec::new(),
+                named: Vec::new(),
                 taken: 0,
                 level_events: Vec::new(),
                 heard: Vec::new(),
             }
+        }
+
+        /// The key of the entity the edge gave the wire id `id`.
+        fn key(&self, id: i32) -> u64 {
+            let ledger = self
+                .ledger
+                .lock()
+                .expect("nothing panics holding the ledger");
+            ledger.get(&id).expect("the edge gave the id").0
+        }
+
+        /// The wire id its login gave its own entity.
+        fn own_id(&self) -> i32 {
+            let mut logins = self
+                .named
+                .iter()
+                .filter(|(naming, _)| *naming == Naming::Login);
+            let (_, id) = logins.next().expect("the client was put into the world");
+            assert!(logins.next().is_none(), "the client was logged in twice");
+            *id
+        }
+
+        /// The wire ids the client was told the entity `key` by, in order, each with
+        /// the packet that named it.
+        fn naming(&self, key: u64) -> Vec<(Naming, i32)> {
+            self.named
+                .iter()
+                .filter(|(_, id)| self.key(*id) == key)
+                .copied()
+                .collect()
         }
 
         /// Takes a packet as a client would.
@@ -7501,13 +7651,17 @@ mod scenarios {
                     self.light_updates.push((position, update.light));
                 }
                 ClientboundPlay::SpawnEntity(entity) => {
-                    self.entities.insert(entity.entity_id);
-                    self.told.push(Told::Shown(entity.entity_id));
+                    self.named.push((Naming::Spawn, entity.entity_id));
+                    let key = self.key(entity.entity_id);
+                    self.entities.insert(key);
+                    self.told.push(Told::Shown(key));
                 }
                 ClientboundPlay::RemoveEntities(removed) => {
                     for entity in removed.entity_ids {
-                        self.entities.remove(&entity);
-                        self.told.push(Told::Hidden(entity));
+                        self.named.push((Naming::Removal, entity));
+                        let key = self.key(entity);
+                        self.entities.remove(&key);
+                        self.told.push(Told::Hidden(key));
                     }
                 }
                 ClientboundPlay::AcknowledgeBlockChange(acknowledged) => {
@@ -7518,7 +7672,16 @@ mod scenarios {
                 ClientboundPlay::Disconnect(disconnect) => {
                     self.disconnected = Some(format!("{:?}", disconnect.reason));
                 }
-                ClientboundPlay::Login(_) => self.told.push(Told::Entered),
+                ClientboundPlay::Login(login) => {
+                    self.named.push((Naming::Login, login.entity_id));
+                    self.told.push(Told::Entered);
+                }
+                ClientboundPlay::SyncEntityPosition(moved) => {
+                    self.named.push((Naming::Position, moved.entity_id));
+                }
+                ClientboundPlay::SetHeadRotation(head) => {
+                    self.named.push((Naming::HeadRotation, head.entity_id));
+                }
                 ClientboundPlay::PlayerInfoUpdate(update) => {
                     if update.actions & player_info::ADD_PLAYER != 0 {
                         let listed = update.entries.iter().map(|entry| Told::Listed(entry.uuid));
@@ -9944,6 +10107,231 @@ mod scenarios {
         edge.end().await;
     }
 
+    // Wire ids (`docs/adr/0028-entities.md`, section 1).
+
+    /// A key of a block far into the world's life, which no packet's `i32` can hold.
+    fn far_key(n: u64) -> EntityId {
+        EntityId(3 * clustine_world::EntityIds::BLOCK_SIZE + n)
+    }
+
+    /// Someone who is not this edge's, as [`stranger`] has them, with a name a client
+    /// takes whatever the key.
+    fn far_stranger(entity: EntityId, chunk: ChunkPos) -> EntityState {
+        EntityState {
+            kind: EntityKind::Player {
+                player: player(u128::from(entity.0) + 1000),
+                name: format!("Stranger{}", entity.0 % 1000),
+            },
+            ..stranger(entity, chunk)
+        }
+    }
+
+    /// A region's word, in one tick, that `events` happened.
+    fn ticked(events: Vec<RegionEvent>) -> WorkerToEdge {
+        WorkerToEdge::TickDelta { tick: 2, events }
+    }
+
+    fn gone(entity: EntityId, chunk: ChunkPos) -> RegionEvent {
+        RegionEvent::EntityRemoved { entity, chunk }
+    }
+
+    /// Two players and a stranger in one chunk: each client is shown the others, the
+    /// stranger moves and is removed. Every packet about an entity names it by one id,
+    /// which is not its key, the same on both clients, and the one the login gave the
+    /// player who is that entity.
+    #[tokio::test]
+    async fn a_client_is_shown_entities_by_ids_that_are_not_their_keys_and_the_same_in_every_packet()
+     {
+        let (first_key, second_key, stranger_key) = (far_key(1000), far_key(1001), far_key(1002));
+        let mut edge = Harness::start().await;
+        let mut first = edge.joined(player(1), first_key).await;
+        let mut second = edge.joined(player(2), second_key).await;
+        edge.quiet().await;
+        let there = vec![
+            own(1, first_key.0, HOME),
+            own(2, second_key.0, HOME),
+            far_stranger(stranger_key, HOME),
+        ];
+        edge.tell(
+            WEST,
+            snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there),
+        );
+        let moved = RegionEvent::EntityMoved {
+            entity: stranger_key,
+            pose: Pose::at(Vec3::new(3.5, -60.0, 4.5)),
+            previous_chunk: HOME,
+        };
+        edge.tell(WEST, ticked(vec![moved]));
+        edge.tell(WEST, ticked(vec![gone(stranger_key, HOME)]));
+        edge.settle(WEST).await;
+        edge.sync(&mut first).await;
+        edge.sync(&mut second).await;
+
+        // One id for each entity, in every packet about it.
+        let one_id = |client: &Client, key: EntityId| {
+            let naming = client.naming(key.0);
+            let id = naming.first().expect("the client was told of the entity").1;
+            assert!(naming.iter().all(|(_, named)| *named == id), "{naming:?}");
+            assert_ne!(id, key.game_id(), "the client was told the key's low half");
+            id
+        };
+        let stranger_id = one_id(&first, stranger_key);
+        assert_eq!(one_id(&second, stranger_key), stranger_id);
+        use Naming::{HeadRotation, Login, Position, Removal, Spawn};
+        assert_eq!(
+            first.naming(stranger_key.0),
+            [
+                (Spawn, stranger_id),
+                (HeadRotation, stranger_id),
+                (Position, stranger_id),
+                (HeadRotation, stranger_id),
+                (Removal, stranger_id),
+            ]
+        );
+        // A player is known to the others by the id their own login gave them, and is
+        // never shown to themselves.
+        assert_eq!(one_id(&second, first_key), first.own_id());
+        assert_eq!(one_id(&first, second_key), second.own_id());
+        assert_eq!(first.naming(first_key.0), [(Login, first.own_id())]);
+        assert_eq!(second.naming(second_key.0), [(Login, second.own_id())]);
+        let ids = BTreeSet::from([first.own_id(), second.own_id(), stranger_id]);
+        assert_eq!(ids.len(), 3, "two entities were given one id");
+        edge.end().await;
+    }
+
+    /// A player's entity is removed from the only client that showed it, as when the
+    /// region it was in reports it gone on the way elsewhere: nobody is shown it and the
+    /// edge does not keep it, but the player is still connected, and their client
+    /// knows itself by the id of their login. Shown again, they are shown by that id.
+    #[tokio::test]
+    async fn a_players_own_login_id_stays_theirs_while_connected() {
+        let key = far_key(7);
+        let mut edge = Harness::start().await;
+        let mut player_one = edge.joined(player(1), key).await;
+        let mut watcher = edge.joined(player(2), far_key(8)).await;
+        edge.quiet().await;
+        let there = vec![own(1, key.0, HOME), own(2, far_key(8).0, HOME)];
+        edge.tell(
+            WEST,
+            snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut player_one).await;
+        edge.sync(&mut watcher).await;
+        let login = player_one.own_id();
+        assert_eq!(watcher.naming(key.0).first(), Some(&(Naming::Spawn, login)));
+
+        edge.tell(WEST, ticked(vec![gone(key, HOME)]));
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        assert_eq!(
+            watcher.naming(key.0).last(),
+            Some(&(Naming::Removal, login))
+        );
+        assert!(!watcher.entities.contains(&key.0), "{:?}", watcher.entities);
+
+        edge.tell(WEST, introduced(1, key.0, HOME));
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        edge.sync(&mut player_one).await;
+        assert!(watcher.entities.contains(&key.0), "{:?}", watcher.entities);
+        let since: Vec<_> = watcher.naming(key.0).into_iter().skip(3).collect();
+        assert_eq!(
+            since,
+            [(Naming::Spawn, login), (Naming::HeadRotation, login)],
+            "{:?}",
+            watcher.naming(key.0)
+        );
+        assert!(player_one.connected());
+        // Logged in once, by that id.
+        assert_eq!(player_one.own_id(), login);
+        edge.end().await;
+    }
+
+    /// Entities appear one after another and are removed: none is given an id an
+    /// entity had before, nor the id of a player's login.
+    #[tokio::test]
+    async fn an_id_is_not_given_to_another_entity_after_its_entity_was_removed() {
+        let mut edge = Harness::start().await;
+        let mut watcher = edge.joined(player(1), far_key(1)).await;
+        edge.quiet().await;
+        edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
+        edge.settle(WEST).await;
+        let mut ids = vec![];
+        for n in 0..4 {
+            let key = far_key(100 + n);
+            edge.tell(
+                WEST,
+                ticked(vec![RegionEvent::EntitySpawned(far_stranger(key, HOME))]),
+            );
+            edge.tell(WEST, ticked(vec![gone(key, HOME)]));
+            edge.settle(WEST).await;
+            edge.sync(&mut watcher).await;
+            let naming = watcher.naming(key.0);
+            assert_eq!(naming.first().map(|(how, _)| *how), Some(Naming::Spawn));
+            assert_eq!(naming.last().map(|(how, _)| *how), Some(Naming::Removal));
+            ids.push(naming[0].1);
+        }
+        ids.push(watcher.own_id());
+        let distinct: BTreeSet<_> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), ids.len(), "an id was given twice: {ids:?}");
+        assert!(watcher.entities.is_empty(), "{:?}", watcher.entities);
+        edge.end().await;
+    }
+
+    /// An entity that its only viewer walks away from leaves the replica with its
+    /// chunk, and the edge lets its id go; when the viewer comes back, it is shown by a
+    /// new one, and was hidden by the old.
+    #[tokio::test]
+    async fn an_entity_that_left_every_view_is_known_by_a_new_id_when_it_comes_back() {
+        let watcher_key = far_key(1);
+        let stranger_key = far_key(2);
+        let mut edge = Harness::start().await;
+        let mut watcher = edge.joined(player(1), watcher_key).await;
+        edge.quiet().await;
+        let there = vec![far_stranger(stranger_key, FAR)];
+        edge.tell(
+            WEST,
+            snapshot_of(FAR, edge.ask(WEST, FAR), empty_chunk(), there),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&stranger_key.0));
+        let before = watcher.naming(stranger_key.0)[0].1;
+
+        edge.tell(WEST, walked(watcher_key, HOME, STEP_EAST));
+        edge.quiet().await;
+        edge.sync(&mut watcher).await;
+        assert!(!watcher.entities.contains(&stranger_key.0));
+        assert_eq!(
+            watcher.naming(stranger_key.0).last(),
+            Some(&(Naming::Removal, before))
+        );
+
+        edge.tell(WEST, walked(watcher_key, STEP_EAST, HOME));
+        edge.settle(WEST).await;
+        let there = vec![far_stranger(stranger_key, FAR)];
+        edge.tell(
+            WEST,
+            snapshot_of(FAR, edge.ask(WEST, FAR), empty_chunk(), there),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&stranger_key.0));
+        let after = watcher
+            .naming(stranger_key.0)
+            .last()
+            .expect("it was shown")
+            .1;
+        let shown_again = watcher.naming(stranger_key.0)[3];
+        assert_eq!(shown_again, (Naming::Spawn, after));
+        assert_ne!(
+            after, before,
+            "the edge kept the id of an entity nobody sees"
+        );
+        edge.end().await;
+    }
+
     // Scenario 20: generated runs.
     //
     // A run is a sequence of small steps, each chosen by a generator of numbers that
@@ -10696,7 +11084,7 @@ mod scenarios {
                         });
                     }
                     played.entities += 1;
-                    let entity = EntityId(played.entities);
+                    let entity = EntityId(played.entities as u64);
                     let resident = Resident {
                         entity,
                         chunk: HOME,
@@ -13205,8 +13593,8 @@ mod scenarios {
     }
 
     /// The outbox entry of a region of which `region` was split off with `stays`.
-    fn split_off(region: RegionId, stays: &[(u128, i32)]) -> Durable {
-        let stay = |(who, entity): &(u128, i32)| (player(*who), EntityId(*entity), None);
+    fn split_off(region: RegionId, stays: &[(u128, u64)]) -> Durable {
+        let stay = |(who, entity): &(u128, u64)| (player(*who), EntityId(*entity), None);
         Durable::SplitOff {
             region,
             players: stays.iter().map(stay).collect(),
@@ -13224,7 +13612,7 @@ mod scenarios {
     }
 
     /// An input as the edge passes it on.
-    fn passed_on(who: u128, entity: i32, number: u64, input: PlayerInput) -> EdgeToWorker {
+    fn passed_on(who: u128, entity: u64, number: u64, input: PlayerInput) -> EdgeToWorker {
         EdgeToWorker::Input {
             player: player(who),
             entity: EntityId(entity),
@@ -13234,7 +13622,7 @@ mod scenarios {
     }
 
     /// The word that a player's stay has ended.
-    fn left(who: u128, entity: Option<i32>) -> EdgeToWorker {
+    fn left(who: u128, entity: Option<u64>) -> EdgeToWorker {
         EdgeToWorker::PlayerLeave {
             player: player(who),
             entity: entity.map(EntityId),
@@ -13333,7 +13721,7 @@ mod scenarios {
             self
         }
 
-        fn stay(mut self, who: u128, entity: i32, last_input: u64) -> Self {
+        fn stay(mut self, who: u128, entity: u64, last_input: u64) -> Self {
             self.stays.push((player(who), EntityId(entity), last_input));
             self
         }
@@ -13789,7 +14177,7 @@ mod scenarios {
         async fn settler(
             &mut self,
             who: u128,
-            entity: i32,
+            entity: u64,
             region: RegionId,
             chunk: ChunkPos,
         ) -> Client {
@@ -16384,7 +16772,7 @@ mod scenarios {
     }
 
     /// A player's own entity as a region has it in a snapshot.
-    fn own(who: u128, entity: i32, chunk: ChunkPos) -> EntityState {
+    fn own(who: u128, entity: u64, chunk: ChunkPos) -> EntityState {
         EntityState {
             entity: EntityId(entity),
             kind: EntityKind::Player {
@@ -16546,7 +16934,7 @@ mod scenarios {
     /// A stay as the home region lets it go without having placed it, or having
     /// placed it without an input applied since: one hand-over behind it, and the
     /// attempt of its join if it still carries one (section 4, step 7; section 4.3).
-    fn let_go(entity: i32, chunk: ChunkPos, attempt: Option<u64>) -> PlayerTransfer {
+    fn let_go(entity: u64, chunk: ChunkPos, attempt: Option<u64>) -> PlayerTransfer {
         PlayerTransfer {
             hops: 1,
             attempt,
@@ -16565,7 +16953,7 @@ mod scenarios {
 
     /// The outbox entry of a region of which `region` was split off with one stay,
     /// which carries `attempt`.
-    fn split_with(region: RegionId, who: u128, entity: i32, attempt: Option<u64>) -> Durable {
+    fn split_with(region: RegionId, who: u128, entity: u64, attempt: Option<u64>) -> Durable {
         Durable::SplitOff {
             region,
             players: vec![(player(who), EntityId(entity), attempt)],
@@ -16573,7 +16961,7 @@ mod scenarios {
     }
 
     /// The outbox entry that says the server has ended a stay (section 6, rule 5).
-    fn ended(who: u128, entity: i32, attempt: Option<u64>) -> Durable {
+    fn ended(who: u128, entity: u64, attempt: Option<u64>) -> Durable {
         Durable::Ended {
             player: player(who),
             entity: EntityId(entity),
@@ -16592,7 +16980,7 @@ mod scenarios {
     }
 
     /// A region's word that an entity of `who` has come into existence in `chunk`.
-    fn introduced(who: u128, entity: i32, chunk: ChunkPos) -> WorkerToEdge {
+    fn introduced(who: u128, entity: u64, chunk: ChunkPos) -> WorkerToEdge {
         WorkerToEdge::TickDelta {
             tick: 2,
             events: vec![RegionEvent::EntitySpawned(own(who, entity, chunk))],
@@ -16644,7 +17032,7 @@ mod scenarios {
     /// Goes through everything the client was told of entities and makes sure that
     /// it never showed `older` and `newer` at once and was never shown `older` after
     /// `newer` (section 6, rule 6).
-    fn never_both_and_never_the_older_again(client: &Client, older: i32, newer: i32) {
+    fn never_both_and_never_the_older_again(client: &Client, older: u64, newer: u64) {
         let mut shown = BTreeSet::new();
         let mut had_the_newer = false;
         for told in &client.told {
@@ -16715,7 +17103,7 @@ mod scenarios {
                 awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
             };
             self.commands.send(join).await.unwrap();
-            Client::new(player, session, packets)
+            Client::new(player, session, packets, Arc::clone(&self.ledger))
         }
 
         /// Makes sure that no region the test plays is asked for anything.

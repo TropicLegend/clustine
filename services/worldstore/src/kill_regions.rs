@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, blocks};
 use clustine_rpc::{RegionList, SplitPart};
-use clustine_world::{BlockPos, Chunk, ChunkPos};
+use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, EntityIds};
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
@@ -497,10 +497,22 @@ fn scenario(store: &Store, seen: &mut dyn FnMut(&Told, u32)) -> Told {
 
 /// What a store that starts on a disk says of the world on it: the list of regions,
 /// and what each is restored with.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct World {
     list: RegionList,
+    /// What each living region is restored with, but for its block of entity keys,
+    /// which is fresh at every hello and is in `blocks` instead.
     restored: Vec<(RegionId, Restored)>,
+    /// The block each living region was given, in the order of `restored`.
+    blocks: Vec<EntityIds>,
+}
+
+/// Two worlds are alike whatever blocks they were given: no two hellos are given the
+/// same one.
+impl PartialEq for World {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.list, &self.restored) == (&other.list, &other.restored)
+    }
 }
 
 /// Starts a store on `disk`, reads the list and opens every living region with `epoch`.
@@ -523,7 +535,30 @@ fn world(disk: &Arc<MemoryDisk>, epoch: u64, case: &str) -> (World, Store, Vec<S
         restored.push((info.region, region));
         handles.push(handle);
     }
-    (World { list, restored }, store, handles)
+    // Every hello is given a fresh block, each above the one before.
+    let none = EntityIds {
+        first: EntityId(0),
+        end: EntityId(0),
+    };
+    let blocks: Vec<EntityIds> = restored
+        .iter_mut()
+        .map(|(_, region)| std::mem::replace(&mut region.entity_ids, none))
+        .collect();
+    for block in &blocks {
+        assert_eq!(EntityIds::block(block.index()), Some(*block), "{case}");
+    }
+    assert!(
+        blocks
+            .windows(2)
+            .all(|pair| pair[0].index() < pair[1].index()),
+        "{case}: {blocks:?}"
+    );
+    let world = World {
+        list,
+        restored,
+        blocks,
+    };
+    (world, store, handles)
 }
 
 /// Checks what a crash left on `disk` against what the scenario was told.
@@ -672,6 +707,14 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     let case = format!("{case}, started again");
     let (same, _store, handles) = world(&again, 1001, &case);
     assert_eq!(same, found, "{case}");
+    // What the first start gave is never given again by the second.
+    let given = found.blocks.last().map_or(0, |block| block.index());
+    assert!(
+        same.blocks.iter().all(|block| block.index() > given),
+        "{case}: {:?} after {:?}",
+        same.blocks,
+        found.blocks
+    );
 
     // The chunks are as the commits of the world left them, as whoever holds each
     // loads it: every block change of a commit that counts, none of one that does not,

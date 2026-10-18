@@ -3004,8 +3004,8 @@ mod tests {
         let holding = [assignment(1, 30, 2), assignment(0, 12, 0)];
         assert_eq!(
             Holdings(&holding).to_string(),
-            "region 1 at epoch 30 with entity ids 2097152..3145728, \
-             region 0 at epoch 12 with entity ids 1..1048576"
+            "region 1 at epoch 30 with entity ids 8589934592..12884901888, \
+             region 0 at epoch 12 with entity ids 1..4294967296"
         );
         let table = RoutingTable {
             home: None,

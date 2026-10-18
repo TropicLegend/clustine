@@ -662,10 +662,11 @@ fn a_split_waits_for_four_syncs_of_its_own_behind_those_of_its_checkpoints() {
     // file with its name.
     assert_eq!(split, seen(&[COMMIT, LOG, REGION_FILE, REGIONS], Some(4)));
 
-    // The worker's hello for the part finds its file as the hello would write it.
+    // The worker's hello for the part writes its file again, with the block of entity
+    // keys it is given, before the answer, as any hello does (ADR-0028, section 1).
     let hello = hello_of(&gap(), 3, 7);
     let (opened, _part, _) = world.watch_open("a split: the hello for the part", hello);
-    assert_eq!(opened, seen(&[COMMIT], Some(0)));
+    assert_eq!(opened, seen(&[REGION_FILE, REGIONS, COMMIT], Some(2)));
 }
 
 /// A worker dies with commits of its region that no checkpoint covers; the next owner

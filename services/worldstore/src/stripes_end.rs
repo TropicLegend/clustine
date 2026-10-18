@@ -490,7 +490,8 @@ fn a_new_world_without_pins_is_the_same_in_memory_and_in_a_directory() {
     assert!(!says(&lines, "a world without pins, started again"));
     assert_eq!(again.regions().unwrap(), begun(&told, &[1], 1));
     let (_, restored) = again.open_region(hello_of(&told, 0, 2)).unwrap();
-    assert_eq!(restored.entity_ids, issued[1]);
+    // A fresh block, above the one the first start gave.
+    assert!(restored.entity_ids.index() > issued[1].index());
     assert_eq!(restored.held, [(HOME, 0)]);
 }
 
@@ -755,6 +756,17 @@ struct Before {
     next: u32,
     /// What the region file of each of its regions said, by id.
     files: Vec<RegionFile>,
+    /// The first block of entity keys above every block a hello was given in it.
+    given: u32,
+}
+
+/// The first block above every one of `blocks`.
+fn above(blocks: &[EntityIds]) -> u32 {
+    blocks
+        .iter()
+        .map(|block| block.index() + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 // The chunks of the world of two stripes: of the western stripe, of the part that is
@@ -800,7 +812,8 @@ fn lives_on_stripes(store: &Store) -> Before {
     };
     assert_eq!(split(&west, 2, &PART, 5, 2), split_off);
     let (part, was_part) = store.open_region(hello_of(&told, 2, 5)).unwrap();
-    assert_eq!(was_part.entity_ids, NO_ENTITY_IDS);
+    // A part is given a block at its hello as any region is.
+    assert!(has_ids(was_part.entity_ids));
     assert_eq!(was_part.held, [(PART[0], 2), (PART[1], 2)]);
 
     // The part that is absorbed again, with what it built under a checkpoint, which
@@ -879,8 +892,14 @@ fn lives_on_stripes(store: &Store) -> Before {
         files: vec![
             file(3, was_west.entity_ids),
             file(4, was_east.entity_ids),
-            file(5, NO_ENTITY_IDS),
+            file(5, was_part.entity_ids),
         ],
+        given: above(&[
+            was_west.entity_ids,
+            was_east.entity_ids,
+            was_part.entity_ids,
+            was_merged.entity_ids,
+        ]),
     }
 }
 
@@ -895,8 +914,8 @@ fn world_of_stripes() -> (Arc<MemoryDisk>, Before) {
 
 /// The world of [`lives_on_stripes`] is as it was left: the list with the epochs the
 /// regions were opened with and the absorbed pair, each region restored with its
-/// state, its commits since, its grants and its entity ids when it is opened with the
-/// epoch it had, the region that was absorbed refused as that, and every chunk as it
+/// state, its commits since, its grants and a fresh block of entity keys above every
+/// block given before when it is opened with the epoch it had, the region that was absorbed refused as that, and every chunk as it
 /// was built, as the region that holds it loads it. The hellos are those of a world
 /// divided as `from` says.
 fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &str) {
@@ -939,7 +958,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     let expected = [
         Restored {
             spawn: crate::tests::spawn_in(from.home),
-            entity_ids: before.files[0].entity_ids,
+            entity_ids: NO_ENTITY_IDS,
             state: state(5, "merged"),
             deltas: deltas(&[6]),
             held: vec![(MERGED, 5)],
@@ -961,7 +980,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
-            entity_ids: before.files[1].entity_ids,
+            entity_ids: NO_ENTITY_IDS,
             state: state(1, "east"),
             deltas: deltas(&[2]),
             held: Vec::new(),
@@ -996,11 +1015,19 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         },
     ];
     let mut handles = Vec::new();
+    let mut given = before.given;
     for (id, expected) in expected.iter().enumerate() {
         let hello = hello_of(from, id as u32, before.files[id].epoch);
-        let (handle, restored) = store
+        let (handle, mut restored) = store
             .open_region(hello)
             .unwrap_or_else(|error| panic!("{case}: region {id}: {error}"));
+        // A fresh block, above every one given before.
+        let block = std::mem::replace(&mut restored.entity_ids, NO_ENTITY_IDS);
+        assert!(
+            has_ids(block) && block.index() >= given,
+            "{case}: region {id} is given {block:?}"
+        );
+        given = block.index() + 1;
         assert_eq!(&restored, expected, "{case}: region {id}");
         handles.push(handle);
     }
@@ -1081,9 +1108,8 @@ fn lives_without_pins(store: &Store) -> Before {
     assert_eq!(split(&home, 3, &WEST_PART, 6, 2), split_off(2));
     let (east, was_east) = store.open_region(hello_of(&told, 1, 5)).unwrap();
     let (west, was_west) = store.open_region(hello_of(&told, 2, 6)).unwrap();
-    // Section 2.1: no other region of such a world ever has a block of entity ids.
-    assert_eq!(was_east.entity_ids, NO_ENTITY_IDS);
-    assert_eq!(was_west.entity_ids, NO_ENTITY_IDS);
+    // Every hello is given a block, a part's too (ADR-0028, section 1).
+    assert!(has_ids(was_east.entity_ids) && has_ids(was_west.entity_ids));
 
     let changes = [
         built.set(HOME, (3, 100, 4), blocks::GLASS),
@@ -1121,9 +1147,14 @@ fn lives_without_pins(store: &Store) -> Before {
         next: 3,
         files: vec![
             file(3, was_home.entity_ids),
-            file(5, NO_ENTITY_IDS),
-            file(6, NO_ENTITY_IDS),
+            file(5, was_east.entity_ids),
+            file(6, was_west.entity_ids),
         ],
+        given: above(&[
+            was_home.entity_ids,
+            was_east.entity_ids,
+            was_west.entity_ids,
+        ]),
     }
 }
 
@@ -1155,6 +1186,7 @@ fn world_from_before(layout: &[u8]) -> (Arc<MemoryDisk>, Before) {
         built: chunks_of(&built),
         next: 0,
         files: vec![file(3, 0), file(4, 1)],
+        given: 2,
     };
     (disk, before)
 }
@@ -1195,8 +1227,8 @@ fn divisions() -> Vec<Division> {
 ///   refused as for a region the table does not have (T9);
 /// - every region is opened with the epoch its id was last opened with (T9), and is
 ///   restored without a state, without commits and without grants but the home
-///   chunk, with the entity ids its id had, or with a block of its own that no other
-///   region has or had (ADR-0011, section 2);
+///   chunk, with a fresh block of entity keys above every block given before
+///   (ADR-0028, section 1);
 /// - every block that was confirmed is in its chunk, as the region that holds the
 ///   chunk loads it: region 0 once it has claimed it, in a world without pins.
 fn begun_anew(store: &Store, told: &Division, before: &Before, case: &str) {
@@ -1221,11 +1253,7 @@ fn begun_anew(store: &Store, told: &Division, before: &Before, case: &str) {
         );
     }
 
-    let had_ids = |id: usize| {
-        let ids = before.files.get(id).map(|file| file.entity_ids);
-        ids.filter(|ids| has_ids(*ids))
-    };
-    let mut issued: Vec<EntityIds> = (0..before.files.len()).filter_map(had_ids).collect();
+    let mut given = before.given;
     let mut handles = Vec::new();
     for info in &list.regions {
         let id = info.region.0 as usize;
@@ -1246,17 +1274,12 @@ fn begun_anew(store: &Store, told: &Division, before: &Before, case: &str) {
         assert_eq!(restored.held, held, "{case}: region {id}");
         let pinned: Vec<ChunkArea> = told.pinned.get(id).copied().into_iter().collect();
         assert_eq!(restored.pinned, pinned, "{case}: region {id}");
-        match had_ids(id) {
-            Some(ids) => assert_eq!(restored.entity_ids, ids, "{case}: region {id}"),
-            None => {
-                let ids = restored.entity_ids;
-                assert!(
-                    has_ids(ids) && !issued.contains(&ids),
-                    "{case}: region {id} is issued {ids:?}"
-                );
-                issued.push(ids);
-            }
-        }
+        let ids = restored.entity_ids;
+        assert!(
+            has_ids(ids) && ids.index() >= given,
+            "{case}: region {id} is issued {ids:?}"
+        );
+        given = ids.index() + 1;
         handles.push(handle);
     }
 
@@ -1444,7 +1467,11 @@ fn after_stripes_are_made_over_a_hello_for_stripe_1_is_refused_and_one_for_strip
     );
     assert_eq!(restored.held, [(HOME, 0)], "{case}");
     assert_eq!(restored.pinned, Vec::new(), "{case}");
-    assert_eq!(restored.entity_ids, before.files[0].entity_ids, "{case}");
+    let ids = restored.entity_ids;
+    assert!(
+        has_ids(ids) && ids.index() >= before.given,
+        "{case}: {ids:?}"
+    );
 }
 
 // T4, and T9 for the lines of its log: two pinned regions, ids 0 and 1, home the one
@@ -1714,8 +1741,8 @@ fn a_world_of_stripes_started_with_its_boundary_as_a_pin_and_another_home_chunk_
 
 /// Has region 0 of a world without pins claim a chunk far from home and splits it
 /// off under the next id of the list, as the epoch 1. The part has to be what a part
-/// is: opened with the epoch of its split (ADR-0011, section 3.7), without entity
-/// ids (section 2.1), holding its chunk from the tick of the split. Returns its id.
+/// is: opened with the epoch of its split (ADR-0011, section 3.7), given a block of
+/// entity keys at its hello as any region is (ADR-0028, section 1), holding its chunk from the tick of the split. Returns its id.
 fn splits_off_a_part(store: &Store, told: &Division, epoch: u64, case: &str) -> RegionId {
     let next = store.regions().unwrap().next;
     let (home, _) = store
@@ -1741,7 +1768,7 @@ fn splits_off_a_part(store: &Store, told: &Division, epoch: u64, case: &str) -> 
     let (_, restored) = store
         .open_region(hello_of(told, next.0, 1))
         .unwrap_or_else(|error| panic!("{case}: the part, region {next}: {error}"));
-    assert_eq!(restored.entity_ids, NO_ENTITY_IDS, "{case}: region {next}");
+    assert!(has_ids(restored.entity_ids), "{case}: region {next}");
     assert_eq!(restored.held, [(far, 2)], "{case}");
     let state = TickState {
         tick: 2,
@@ -2024,7 +2051,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
             "{survival:?}"
         );
         assert_eq!(restored[1].state, state("part"), "{survival:?}");
-        assert_eq!(restored[1].entity_ids, NO_ENTITY_IDS, "{survival:?}");
+        assert!(has_ids(restored[1].entity_ids), "{survival:?}");
         assert_eq!(restored[0].held, [(HOME, 0), (stays, 0)], "{survival:?}");
         assert_eq!(restored[0].state, state("rest"), "{survival:?}");
     }

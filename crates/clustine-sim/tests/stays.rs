@@ -107,7 +107,7 @@ fn ids() -> EntityIds {
 
 /// The entity of the `n`th stay the home region gives out, counted from 1.
 fn entity(n: i32) -> EntityId {
-    EntityId(ids().first.0 + n - 1)
+    EntityId(ids().first.0 + n as u64 - 1)
 }
 
 /// An entity that no region of these tests gives out.
@@ -3129,7 +3129,7 @@ fn made_up_inputs(
         // An entity of the player's, one before it, one after it, or one from
         // elsewhere.
         let own = present.map_or(state.next_entity_id, |present| present.entity_id);
-        let named = EntityId(own.0 + random.pick(&[0, 0, -1, 1, -3, 2]));
+        let named = EntityId((own.0 as i64 + i64::from(random.pick(&[0, 0, -1, 1, -3, 2]))) as u64);
         match random.below(14) {
             0 | 1 => inputs.change(join(edge, n, 100 + random.below(4))),
             2 => inputs.change(leave_as(edge, n, named)),
@@ -3163,7 +3163,8 @@ fn made_up_inputs(
                 inputs.change(PlayerChange::Arrive(edge, id, arriving));
             }
             6 => {
-                let stay = EntityId(named.0 + random.pick(&[0, 1, 1, 2]));
+                let stay =
+                    EntityId((named.0 as i64 + i64::from(random.pick(&[0, 1, 1, 2]))) as u64);
                 inputs.dead.push((id, stay, random.below(3) as u32));
             }
             _ => {
@@ -3205,7 +3206,7 @@ fn made_up_answers(random: &mut Random, output: &TickOutput) -> Vec<Entered> {
             }
             place
         });
-        let entity = EntityId(entity.0 - i32::from(random.once_in(8)));
+        let entity = EntityId(entity.0 - u64::from(random.once_in(8)));
         answers.push(Entered {
             player: *player,
             entity,
