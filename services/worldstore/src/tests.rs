@@ -584,6 +584,7 @@ fn commits_carry_the_region_and_the_epoch_of_the_owner() {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         },
     ];
     assert_eq!(logged(directory.path()), expected);

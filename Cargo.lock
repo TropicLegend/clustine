@@ -339,6 +339,7 @@ dependencies = [
  "crc32fast",
  "proptest",
  "thiserror",
+ "uuid",
  "zstd",
 ]
 

@@ -28,6 +28,7 @@
 //! | 12 | [`LogRecord::EffectsForward`] | filed effects |
 //! | 13 | [`LogRecord::Commit`] with block entities | the fields of kind 10, whose counts may all be 0, block entities |
 //! | 14 | [`LogRecord::Commit`] with block events | the fields of kind 13, whose counts may all be 0, events |
+//! | 15 | [`LogRecord::Commit`] with entity changes | the fields of kind 14, whose counts may all be 0, entity changes |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -54,7 +55,9 @@
 //! are the tick's changes in the order it made them. A commit is written as kind 14 if
 //! it carries the block events kept in chunks (the same record, section 4): `events` is
 //! a count of chunks (u32), followed per chunk by i32 x, i32 z and the chunk's events
-//! whole, as `kept_events.rs` writes them. Kind 11 says that effects untaken were dropped,
+//! whole, as `kept_events.rs` writes them. A commit is written as kind 15 if it carries
+//! changes of entities other than players (`docs/adr/0028-entities.md`, section 3), as
+//! `entities.rs` writes them, which are not none. Kind 11 says that effects untaken were dropped,
 //! and kind 12 carries untaken effects forward out of a segment that is let go, with
 //! their numbers. `effects`, `numbers` and `filed effects` are as `effects.rs` writes
 //! them.
@@ -95,8 +98,8 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, Change, ChunkPos, Due, Effect, EffectId, FiledEffect, InChunk, KeptEvent,
-    ScheduledTick, Seam, Ticked,
+    BlockPos, Change, ChunkPos, Due, Effect, EffectId, EntityChange, FiledEffect, InChunk,
+    KeptEvent, ScheduledTick, Seam, Ticked,
 };
 
 use crate::bytes::Input;
@@ -116,6 +119,7 @@ const KIND_EFFECTS_DROPPED: u8 = 11;
 const KIND_EFFECTS_FORWARD: u8 = 12;
 const KIND_COMMIT_WITH_ENTITIES: u8 = 13;
 const KIND_COMMIT_WITH_EVENTS: u8 = 14;
+const KIND_COMMIT_WITH_ENTITY_CHANGES: u8 = 15;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -244,6 +248,10 @@ pub enum LogRecord {
         /// The block events kept in each chunk whose kept events changed in the tick,
         /// whole, in their order, in ascending order of the chunks.
         events: Vec<(ChunkPos, Vec<KeptEvent>)>,
+        /// What the tick did to entities other than players, by chunk, in the order it
+        /// did it (`docs/adr/0028-entities.md`, section 3). A commit without any is
+        /// written as it was before there were entities.
+        entity_changes: Vec<(ChunkPos, EntityChange)>,
     },
     /// The effects of these numbers were dropped untaken: the chunk they act on stopped
     /// being used (`docs/adr/0025-effects-between-regions.md`, section 5).
@@ -326,14 +334,18 @@ impl LogRecord {
                 effects,
                 taken,
                 events,
+                entity_changes,
             } => {
                 let (blocks, entities) = split_changes(changes);
-                let with_events = !events.is_empty();
+                let with_entity_changes = !entity_changes.is_empty();
+                let with_events = with_entity_changes || !events.is_empty();
                 let with_entities = with_events || !entities.is_empty();
                 let effected = with_entities || !effects.is_empty() || !taken.is_empty();
                 let records =
                     effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if with_events {
+                payload.push(if with_entity_changes {
+                    KIND_COMMIT_WITH_ENTITY_CHANGES
+                } else if with_events {
                     KIND_COMMIT_WITH_EVENTS
                 } else if with_entities {
                     KIND_COMMIT_WITH_ENTITIES
@@ -375,6 +387,9 @@ impl LogRecord {
                             payload.extend_from_slice(&chunk.z.to_be_bytes());
                             crate::kept_events::put_events(&mut payload, of_chunk);
                         }
+                    }
+                    if with_entity_changes {
+                        crate::entities::put_entity_changes(&mut payload, entity_changes);
                     }
                 } else if !stays.is_empty() {
                     put_stays(&mut payload, stays);
@@ -476,6 +491,7 @@ impl LogRecord {
                 effects: Vec::new(),
                 taken: Vec::new(),
                 events: Vec::new(),
+                entity_changes: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -490,11 +506,13 @@ impl LogRecord {
                 effects: Vec::new(),
                 taken: Vec::new(),
                 events: Vec::new(),
+                entity_changes: Vec::new(),
             },
             kind @ (KIND_COMMIT_WITH_TICKS
             | KIND_COMMIT_WITH_EFFECTS
             | KIND_COMMIT_WITH_ENTITIES
-            | KIND_COMMIT_WITH_EVENTS) => {
+            | KIND_COMMIT_WITH_EVENTS
+            | KIND_COMMIT_WITH_ENTITY_CHANGES) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
                 let blocks = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
@@ -531,7 +549,7 @@ impl LogRecord {
                     blocks_only(blocks)
                 };
                 let mut events = Vec::new();
-                if kind == KIND_COMMIT_WITH_EVENTS {
+                if kind >= KIND_COMMIT_WITH_EVENTS {
                     let chunks = input.u32()? as usize;
                     // Each is eight bytes and a count at least.
                     events.reserve(chunks.min(input.0.len() / 12));
@@ -539,12 +557,17 @@ impl LogRecord {
                         let chunk = ChunkPos::new(input.i32()?, input.i32()?);
                         events.push((chunk, crate::kept_events::take_events(&mut input)?));
                     }
-                    if events.is_empty() {
+                    if kind == KIND_COMMIT_WITH_EVENTS && events.is_empty() {
                         return Err(FormatError::Corrupt(
                             "a commit with block events that has none",
                         ));
                     }
                 }
+                let entity_changes = if kind == KIND_COMMIT_WITH_ENTITY_CHANGES {
+                    crate::entities::take_entity_changes(&mut input)?
+                } else {
+                    Vec::new()
+                };
                 // A commit is written in one form only: without effects as kind 9, and
                 // without records of chunks as kind 2 or 8.
                 if kind == KIND_COMMIT_WITH_EFFECTS && effects.is_empty() && taken.is_empty() {
@@ -572,6 +595,7 @@ impl LogRecord {
                     effects,
                     taken,
                     events,
+                    entity_changes,
                 }
             }
             KIND_OPENED => Self::Opened {
@@ -983,6 +1007,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         }
     }
 
@@ -1001,6 +1026,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -1450,11 +1476,11 @@ mod tests {
 
     #[test]
     fn a_record_of_regions_that_checks_out_but_makes_no_sense_is_an_error() {
-        // Kinds there are none of. 8 to 14 were among them until a commit with stay
+        // Kinds there are none of. 8 to 15 were among them until a commit with stay
         // notes, one with the ticks of chunks, one with effects, the store's records
-        // of effects, a commit with block entities and one with block events became
-        // kinds of their own; 15 stands in for them.
-        for kind in [0, 15, 255] {
+        // of effects, a commit with block entities, one with block events and one with
+        // entity changes became kinds of their own; 16 stands in for them.
+        for kind in [0, 16, 255] {
             assert_eq!(
                 read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -1533,6 +1559,7 @@ mod tests {
                 effects: Vec::new(),
                 taken: Vec::new(),
                 events: Vec::new(),
+                entity_changes: Vec::new(),
             };
             let bytes = record.encode();
             assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TICKS);
@@ -1592,6 +1619,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         }
     }
 
@@ -1653,6 +1681,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
@@ -1696,6 +1725,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -1719,6 +1749,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let payload = [
             FORMAT_VERSION,
@@ -1919,6 +1950,7 @@ mod tests {
                 effects: Vec::new(),
                 taken: Vec::new(),
                 events: Vec::new(),
+                entity_changes: Vec::new(),
             },
             commit_with_stays(),
             LogRecord::Opened {
@@ -1979,6 +2011,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         }
     }
 
@@ -2095,6 +2128,159 @@ mod tests {
         }
     }
 
+    /// A commit with nothing but one entity change, as section 4 of
+    /// `docs/groundwork/n2-plan.md` lays it out: the fields of kind 14 with every count
+    /// 0, then the changes by chunk.
+    #[test]
+    fn known_answer_of_a_commit_with_entity_changes() {
+        let key = clustine_world::EntityId(0x2_0000_0001);
+        let record = LogRecord::Commit {
+            region: 1,
+            tick: 3,
+            epoch: 2,
+            changes: Vec::new(),
+            state: Vec::new(),
+            stays: Vec::new(),
+            ticks: Vec::new(),
+            marks_taken: Vec::new(),
+            seams: Vec::new(),
+            effects: Vec::new(),
+            taken: Vec::new(),
+            events: Vec::new(),
+            entity_changes: vec![
+                (
+                    ChunkPos::new(-2, 0),
+                    EntityChange::Set(
+                        key,
+                        vec![
+                            clustine_world::EntityField::OnGround(true),
+                            clustine_world::EntityField::Age(258),
+                        ],
+                    ),
+                ),
+                (ChunkPos::new(-2, 0), EntityChange::Gone(key)),
+            ],
+        };
+        let bytes = record.encode();
+        let mut payload = vec![FORMAT_VERSION, 15];
+        payload.extend_from_slice(&[0, 0, 0, 1]); // region
+        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 3]); // tick
+        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]); // epoch
+        payload.extend_from_slice(&[0, 0, 0, 0]); // no block changes
+        payload.extend_from_slice(&[0, 0, 0, 0]); // an empty state
+        // Stays, ticks, marks taken, seams, effects, taken, block entities, events.
+        for _ in 0..8 {
+            payload.extend_from_slice(&[0, 0, 0, 0]);
+        }
+        payload.extend_from_slice(&[0, 0, 0, 1]); // one chunk
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 0, 0]); // -2, 0
+        payload.extend_from_slice(&[0, 0, 0, 2]); // two changes
+        payload.push(3); // set
+        payload.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 1]); // the key
+        payload.extend_from_slice(&[0, 0, 0, 2]); // two fields
+        payload.extend_from_slice(&[4, 1]); // on the ground
+        payload.extend_from_slice(&[6, 0, 0, 1, 2]); // age 258
+        payload.push(2); // gone
+        payload.extend_from_slice(&[0, 0, 0, 2, 0, 0, 0, 1]); // the key
+        assert_eq!(bytes[FRAME_HEADER_LENGTH..], payload);
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+    }
+
+    /// Kind 15 reads the block entities and block events of kind 14, which may be none
+    /// there, and refuses a list of entity changes that is empty: a commit without any
+    /// is of the kinds it always was.
+    #[test]
+    fn a_commit_with_entity_changes_has_one_form() {
+        let change = (
+            ChunkPos::new(0, 0),
+            EntityChange::Gone(clustine_world::EntityId(9)),
+        );
+        let event = KeptEvent {
+            at: InChunk::new(3, -61, 9),
+            block: 1200,
+            kind: 0,
+            data: 4,
+        };
+        for (changes, events) in [
+            (Vec::new(), Vec::new()),
+            (
+                vec![Change::BlockEntity(
+                    BlockPos::new(1, 2, 3),
+                    b"chest".to_vec(),
+                )],
+                Vec::new(),
+            ),
+            (Vec::new(), vec![(ChunkPos::new(0, 0), vec![event])]),
+        ] {
+            let mut record = commit_with_entities(changes);
+            if let LogRecord::Commit {
+                events: with,
+                entity_changes,
+                ..
+            } = &mut record
+            {
+                *with = events;
+                *entity_changes = vec![change.clone()];
+            }
+            let bytes = record.encode();
+            assert_eq!(
+                bytes[FRAME_HEADER_LENGTH + 1],
+                KIND_COMMIT_WITH_ENTITY_CHANGES
+            );
+            assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+        }
+        // Without them, of the kind it always was.
+        assert_eq!(
+            commit_with_entities(Vec::new()).encode()[FRAME_HEADER_LENGTH + 1],
+            2
+        );
+        // The fields of kind 14 with every count 0, and no entity changes.
+        let mut payload = vec![FORMAT_VERSION, KIND_COMMIT_WITH_ENTITY_CHANGES];
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&7u64.to_be_bytes());
+        payload.extend_from_slice(&3u64.to_be_bytes());
+        for _ in 0..11 {
+            payload.extend_from_slice(&0u32.to_be_bytes());
+        }
+        assert!(LogRecord::decode(&payload).is_err());
+    }
+
+    /// Cut off or damaged anywhere, a commit with entity changes ends the log there.
+    #[test]
+    fn a_commit_with_entity_changes_cut_off_or_damaged_anywhere_ends_the_log() {
+        let first = record(1, 2);
+        let mut log = first.encode();
+        let start = log.len();
+        let mut with_entities = commit_with_entities(vec![Change::Block(
+            BlockPos::new(1, 2, 3),
+            BlockState(5544),
+        )]);
+        if let LogRecord::Commit { entity_changes, .. } = &mut with_entities {
+            *entity_changes = vec![(
+                ChunkPos::new(0, 0),
+                EntityChange::Whole(crate::entities::tests::item(4, [1.5, 3.0, 2.5], Some(1))),
+            )];
+        }
+        log.extend_from_slice(&with_entities.encode());
+        for length in start..log.len() {
+            assert_eq!(
+                read_log(&log[..length]),
+                Ok((vec![first.clone()], start)),
+                "cut at {length}"
+            );
+        }
+        for index in start..log.len() {
+            let mut damaged = log.clone();
+            damaged[index] ^= 0x10;
+            assert_eq!(
+                read_log(&damaged),
+                Ok((vec![first.clone()], start)),
+                "byte {index}"
+            );
+        }
+        assert_eq!(read_log(&log), Ok((vec![first, with_entities], log.len())));
+    }
+
     /// Cut off or damaged anywhere, a commit with block entities ends the log there.
     #[test]
     fn a_commit_with_block_entities_cut_off_or_damaged_anywhere_ends_the_log() {
@@ -2196,6 +2382,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         }
     }
 
@@ -2396,6 +2583,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [FORMAT_VERSION, KIND_COMMIT]);
@@ -2520,6 +2708,7 @@ mod tests {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -2660,6 +2849,7 @@ mod tests {
                 seams: Vec::new(),
                 effects: Vec::new(),
                 taken: Vec::new(), events: Vec::new(),
+                entity_changes: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();
@@ -2693,9 +2883,47 @@ mod tests {
                 seams: Vec::new(),
                 effects: Vec::new(),
                 taken: Vec::new(), events: Vec::new(),
+                entity_changes: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
+            prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
+        }
+
+        /// Commits with entity changes of any kind, among block changes, block entities
+        /// and block events or without them, are read back as they were written.
+        #[test]
+        fn commits_with_entity_changes_round_trip(
+            tick: u64,
+            entity_changes in crate::entities::tests::entity_changes(),
+            blocks in prop::collection::vec((any::<i32>(), any::<u16>()), 0..5),
+            with_block_entity: bool,
+            stays in stays(),
+        ) {
+            let mut changes: Vec<Change> = blocks
+                .into_iter()
+                .map(|(x, state)| (BlockPos::new(x, -60, 0), BlockState(state)).into())
+                .collect();
+            if with_block_entity {
+                changes.push(Change::BlockEntity(BlockPos::new(0, -60, 0), b"data".to_vec()));
+            }
+            let commit = LogRecord::Commit {
+                region: 1,
+                tick,
+                epoch: 3,
+                changes,
+                state: vec![1],
+                stays,
+                ticks: Vec::new(),
+                marks_taken: Vec::new(),
+                seams: Vec::new(),
+                effects: Vec::new(),
+                taken: Vec::new(),
+                events: Vec::new(),
+                entity_changes,
+            };
+            let bytes = commit.encode();
+            prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_ENTITY_CHANGES);
             prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
         }
 

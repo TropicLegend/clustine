@@ -12,6 +12,7 @@ clustine-data.workspace = true
 clustine-world.workspace = true
 crc32fast.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]

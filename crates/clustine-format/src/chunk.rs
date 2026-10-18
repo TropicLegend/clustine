@@ -33,6 +33,9 @@
 //! | Seams, with bit 1 of the flags only | as `seams.rs` says, which is not empty |
 //! | Block events, with bit 2 of the flags only | as `kept_events.rs` says, which is not empty |
 //!
+//! A chunk's entities other than players are not in this file but in one of their own
+//! beside it (`entities.rs`), so that an entity's step does not rewrite the blocks.
+//!
 //! The writer writes one form: palettes ascending with nothing unused, lists in
 //! order, light that is all 0 or all 15 as dark and full. The reader refuses what it
 //! cannot make sense of and nothing else: a palette that is not sorted or has an

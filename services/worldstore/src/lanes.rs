@@ -1143,6 +1143,7 @@ impl Lanes {
                         .collect(),
                     taken: taken.clone(),
                     events,
+                    entity_changes: Vec::new(),
                 }
                 .encode();
                 self.group.regions.insert(region);

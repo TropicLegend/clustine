@@ -16,12 +16,14 @@
 mod bytes;
 mod chunk;
 mod effects;
+mod entities;
 mod kept_events;
 mod log;
 mod region;
 mod seams;
 
 pub use chunk::{ChunkFile, KIND_CHUNK};
+pub use entities::{EntitiesFile, KIND_ENTITIES};
 pub use log::{
     INVENTORY_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH, read_log,
     read_log_with_offsets,

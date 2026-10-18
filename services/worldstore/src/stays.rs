@@ -942,6 +942,7 @@ fn a_commit_that_an_opening_passes_over_leaves_no_note() {
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     };
     let world = |restored: u64| {
         let disk = Arc::new(MemoryDisk::default());
