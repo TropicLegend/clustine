@@ -24,7 +24,9 @@ pub use biome_parameters::{BiomeParameterList, BiomeParameters};
 pub use block_physics::{BlockPhysics, OffsetType, block_physics};
 pub use block_states::{Face, FaceShape, FluidProps, PushReaction, Shape, StateProps, SupportType};
 pub use collisions::{Axis, EntityInsideShape, VoxelShape};
-pub use generated::block_classes::{BLOCK_ENTITY_TYPES, BLOCK_INFO, BlockClass, FLUIDS};
+pub use generated::block_classes::{
+    BLOCK_ENTITY_TYPES, BLOCK_INFO, BlockClass, FLUID_EXPLOSION_RESISTANCE, FLUIDS,
+};
 pub use generated::blocks::{BLOCK_STATE_COUNT, BLOCKS};
 pub use generated::dimension_types::DIMENSION_TYPES;
 pub use generated::entity_types::{ENTITY_TYPE_INFO, ENTITY_TYPES};

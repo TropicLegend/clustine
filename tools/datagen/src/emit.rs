@@ -650,6 +650,19 @@ fn block_classes(data: &GameData) -> Result<String> {
         writeln!(out, "    {name:?},")?;
     }
     writeln!(out, "];\n")?;
+    writeln!(
+        out,
+        "/// The explosion resistance of each fluid, by the game's ids (`getExplosionResistance`)."
+    )?;
+    writeln!(
+        out,
+        "pub static FLUID_EXPLOSION_RESISTANCE: [f32; {}] = [",
+        data.extract.fluid_resistance.len()
+    )?;
+    for bits in &data.extract.fluid_resistance {
+        writeln!(out, "    f32::from_bits({bits:#010x}),")?;
+    }
+    writeln!(out, "];\n")?;
     writeln!(out, "/// The block entity types by the game's ids.")?;
     writeln!(
         out,
@@ -985,7 +998,8 @@ fn block_physics(data: &GameData) -> Result<String> {
             "BlockPhysics {{ friction: f32::from_bits({:#010x}), speed_factor: f32::from_bits({:#010x}), \
              jump_factor: f32::from_bits({:#010x}), bounce_restitution: f32::from_bits({:#010x}), \
              fall_distance_reduction: f32::from_bits({:#010x}), offset_type: OffsetType::{offset_type}, \
-             max_horizontal_offset: f32::from_bits({:#010x}), max_vertical_offset: f32::from_bits({:#010x}) }}",
+             max_horizontal_offset: f32::from_bits({:#010x}), max_vertical_offset: f32::from_bits({:#010x}), \
+             explosion_resistance: f32::from_bits({:#010x}) }}",
             dumped.friction,
             dumped.speed_factor,
             dumped.jump_factor,
@@ -993,6 +1007,7 @@ fn block_physics(data: &GameData) -> Result<String> {
             dumped.fall_distance_reduction,
             dumped.max_horizontal_offset,
             dumped.max_vertical_offset,
+            dumped.explosion_resistance,
         );
         let number = match numbers.get(&row) {
             Some(&number) => number,

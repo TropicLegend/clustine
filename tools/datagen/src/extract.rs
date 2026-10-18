@@ -18,6 +18,8 @@ pub type ShapeBox = [u64; 6];
 pub struct Extract {
     /// The names of the fluids and of the block entity types by the game's ids.
     pub fluids: Vec<String>,
+    /// The explosion resistance of each fluid, by its id, as the float's bits.
+    pub fluid_resistance: Vec<u32>,
     pub block_entity_types: Vec<String>,
     /// One for each block state, by state id.
     pub states: Vec<StateDump>,
@@ -59,6 +61,8 @@ pub struct BlockPhysicsDump {
     pub offset_type: String,
     pub max_horizontal_offset: u32,
     pub max_vertical_offset: u32,
+    /// `getExplosionResistance`.
+    pub explosion_resistance: u32,
     /// The name of the block's loot table, which may be another block's.
     pub loot_table: Option<String>,
 }
@@ -268,8 +272,10 @@ impl Extract {
             });
         }
 
+        let fluids = fluids(&read("fluids.txt")?).context("reading fluids.txt")?;
         Ok(Self {
-            fluids: names_by_id(&read("fluids.txt")?).context("reading fluids.txt")?,
+            fluids: fluids.iter().map(|(name, _)| name.clone()).collect(),
+            fluid_resistance: fluids.iter().map(|(_, resistance)| *resistance).collect(),
             block_entity_types: names_by_id(&read("block_entity_types.txt")?)
                 .context("reading block_entity_types.txt")?,
             states: states(&read("block_states.txt")?).context("reading block_states.txt")?,
@@ -291,6 +297,27 @@ impl Extract {
                 .context("reading entity_types.txt")?,
         })
     }
+}
+
+/// The lines of `fluids.txt`: an id, a name and the bits of the explosion resistance;
+/// the ids have to count up from zero.
+fn fluids(text: &str) -> Result<Vec<(String, u32)>> {
+    let mut fluids = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [id, name, resistance] = fields[..] else {
+            bail!(
+                "a line has {} fields where three are expected",
+                fields.len()
+            );
+        };
+        ensure!(
+            integer::<usize>(id)? == fluids.len(),
+            "the ids have a gap at {id}"
+        );
+        fluids.push((name.to_owned(), float_bits(resistance)?));
+    }
+    Ok(fluids)
 }
 
 /// Lines of an id and a name; the ids have to count up from zero.
@@ -630,7 +657,7 @@ fn float_bits(text: &str) -> Result<u32> {
 pub fn block_physics(text: &str) -> Result<Vec<BlockPhysicsDump>> {
     let mut blocks = Vec::new();
     for line in text.lines() {
-        let fields = numbered_fields(line, 11, blocks.len())?;
+        let fields = numbered_fields(line, 12, blocks.len())?;
         ensure!(
             ["NONE", "XZ", "XYZ"].contains(&fields[7]),
             "{:?} is no offset type",
@@ -646,7 +673,8 @@ pub fn block_physics(text: &str) -> Result<Vec<BlockPhysicsDump>> {
             offset_type: fields[7].to_owned(),
             max_horizontal_offset: float_bits(fields[8])?,
             max_vertical_offset: float_bits(fields[9])?,
-            loot_table: match fields[10] {
+            explosion_resistance: float_bits(fields[10])?,
+            loot_table: match fields[11] {
                 "-" => None,
                 name => Some(name.to_owned()),
             },
@@ -917,12 +945,13 @@ mod tests {
     #[test]
     fn lines_of_block_physics_are_read_with_their_floats_as_bits() {
         let read = block_physics(
-            "0\tminecraft:stone\t3f19999a\t3f800000\t3f800000\t0\t0\tNONE\t0\t0\tminecraft:blocks/stone\n\
-             1\tminecraft:bamboo\t3f19999a\t3f800000\t3f800000\t0\t0\tXZ\t3e800000\t0\t-\n",
+            "0\tminecraft:stone\t3f19999a\t3f800000\t3f800000\t0\t0\tNONE\t0\t0\t40c00000\tminecraft:blocks/stone\n\
+             1\tminecraft:bamboo\t3f19999a\t3f800000\t3f800000\t0\t0\tXZ\t3e800000\t0\t3f800000\t-\n",
         )
         .unwrap();
         assert_eq!(f32::from_bits(read[0].friction), 0.6);
         assert_eq!(f32::from_bits(read[0].speed_factor), 1.0);
+        assert_eq!(f32::from_bits(read[0].explosion_resistance), 6.0);
         assert_eq!(
             read[0].loot_table.as_deref(),
             Some("minecraft:blocks/stone")
@@ -930,8 +959,12 @@ mod tests {
         assert_eq!(read[1].offset_type, "XZ");
         assert_eq!(f32::from_bits(read[1].max_horizontal_offset), 0.25);
         assert_eq!(read[1].loot_table, None);
-        assert!(block_physics("0\tminecraft:stone\t0\t0\t0\t0\t0\tSIDEWAYS\t0\t0\t-\n").is_err());
-        assert!(block_physics("1\tminecraft:stone\t0\t0\t0\t0\t0\tNONE\t0\t0\t-\n").is_err());
+        assert!(
+            block_physics("0\tminecraft:stone\t0\t0\t0\t0\t0\tSIDEWAYS\t0\t0\t0\t-\n").is_err()
+        );
+        assert!(block_physics("1\tminecraft:stone\t0\t0\t0\t0\t0\tNONE\t0\t0\t0\t-\n").is_err());
+        // A line of the physics before explosion resistance was written.
+        assert!(block_physics("0\tminecraft:stone\t0\t0\t0\t0\t0\tNONE\t0\t0\t-\n").is_err());
     }
 
     #[test]

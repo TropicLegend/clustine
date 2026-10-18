@@ -11,6 +11,15 @@ pub static FLUIDS: [&str; 5] = [
     "minecraft:lava",
 ];
 
+/// The explosion resistance of each fluid, by the game's ids (`getExplosionResistance`).
+pub static FLUID_EXPLOSION_RESISTANCE: [f32; 5] = [
+    f32::from_bits(0x00000000),
+    f32::from_bits(0x42c80000),
+    f32::from_bits(0x42c80000),
+    f32::from_bits(0x42c80000),
+    f32::from_bits(0x42c80000),
+];
+
 /// The block entity types by the game's ids.
 pub static BLOCK_ENTITY_TYPES: [&str; 49] = [
     "minecraft:furnace",

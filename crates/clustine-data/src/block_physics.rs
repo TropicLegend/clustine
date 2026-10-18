@@ -35,6 +35,9 @@ pub struct BlockPhysics {
     pub max_horizontal_offset: f32,
     /// `getMaxVerticalOffset`, which scales the shift down of [`OffsetType::Xyz`].
     pub max_vertical_offset: f32,
+    /// `getExplosionResistance`: what an explosion's ray loses in the block, 6 for stone,
+    /// 1200 for obsidian.
+    pub explosion_resistance: f32,
 }
 
 /// What an entity meets on the block of this id. Panics if there is no such block.
@@ -97,6 +100,34 @@ mod tests {
             (0.98f32 * physics("minecraft:blue_ice").friction).to_bits(),
             0x3f78_1ece
         );
+    }
+
+    #[test]
+    fn blocks_and_fluids_resist_explosions_as_the_brief_reads_the_game() {
+        // `docs/groundwork/n6-brief.md`, section 2.2, read from `Blocks`' properties.
+        for (name, resistance) in [
+            ("minecraft:stone", 6.0),
+            ("minecraft:oak_planks", 3.0),
+            ("minecraft:glass", 0.3),
+            ("minecraft:obsidian", 1200.0),
+            ("minecraft:bedrock", 3_600_000.0),
+            ("minecraft:water", 100.0),
+            ("minecraft:lava", 100.0),
+            ("minecraft:tnt", 0.0),
+            ("minecraft:air", 0.0),
+        ] {
+            assert_eq!(physics(name).explosion_resistance, resistance, "{name}");
+        }
+        let fluid = |name: &str| {
+            let id = crate::FLUIDS
+                .iter()
+                .position(|fluid| *fluid == name)
+                .expect("a fluid of the game");
+            crate::FLUID_EXPLOSION_RESISTANCE[id]
+        };
+        assert_eq!(fluid("minecraft:empty"), 0.0);
+        assert_eq!(fluid("minecraft:water"), 100.0);
+        assert_eq!(fluid("minecraft:flowing_lava"), 100.0);
     }
 
     #[test]

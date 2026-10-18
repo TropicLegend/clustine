@@ -196,7 +196,11 @@ public final class Extract {
         for (int id = 0; id < BuiltInRegistries.FLUID.size(); id++) {
             Fluid fluid = BuiltInRegistries.FLUID.byId(id);
             text.append(Integer.toString(id)).append('\t');
-            text.append(BuiltInRegistries.FLUID.getKey(fluid).toString()).append('\n');
+            text.append(BuiltInRegistries.FLUID.getKey(fluid).toString()).append('\t');
+            // What an explosion's ray loses in it (docs/groundwork/n6-brief.md, 2.0 item
+            // 10): the fluid's own, whatever its level.
+            text.append(floatBits(fluid.defaultFluidState().getExplosionResistance()))
+                .append('\n');
         }
         return text.toString();
     }
@@ -531,7 +535,9 @@ public final class Extract {
     /// (docs/groundwork/n4-brief.md, sections 1.8 and 11): friction, speed factor, jump
     /// factor, bounce restitution and fall-distance reduction as the bits of the floats
     /// the block holds; the offset type its properties gave it (`NONE`, `XZ` or `XYZ`)
-    /// and the largest horizontal and vertical offsets as float bits; and the name of
+    /// and the largest horizontal and vertical offsets as float bits; its explosion
+    /// resistance as float bits (`getExplosionResistance`, docs/groundwork/n6-brief.md,
+    /// 2.0 item 10); and the name of
     /// its loot table, or `-` for a block without one. A block that drops like another
     /// (a wall torch, a potted plant's pot) names the other's table.
     private static String blockPhysics() throws ReflectiveOperationException {
@@ -592,6 +598,7 @@ public final class Extract {
             field(text, offsetType);
             field(text, floatBits((Float) horizontal.invoke(block)));
             field(text, floatBits((Float) vertical.invoke(block)));
+            field(text, floatBits(block.getExplosionResistance()));
             field(text, block.getLootTable()
                 .map(key -> key.identifier().toString()).orElse("-"));
             text.append('\n');
