@@ -2984,6 +2984,9 @@ pub enum EntityDataValue {
     /// VarInt of the direction's 3D value (down 0, up 1, north 2, south 3, west 4,
     /// east 5); see [`direction`].
     Direction(i32),
+    /// `EntityDataSerializers.BLOCK_STATE`: the block primed TNT shows, as a VarInt of the
+    /// state's id (`docs/groundwork/n6-brief.md`, section 9.1).
+    BlockState(i32),
     /// `EntityDataSerializers.OPTIONAL_BLOCK_STATE`: a minecart's custom display block,
     /// as a VarInt of the state's id, with 0 for none. Air is state 0, so a cart told to
     /// show air shows none. The codec, `EntityDataSerializers$2`, is not dumped; this is
@@ -3013,6 +3016,7 @@ pub mod entity_data_serializer {
     pub const BLOCK_POS: i32 = 10;
     pub const OPTIONAL_BLOCK_POS: i32 = 11;
     pub const DIRECTION: i32 = 12;
+    pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const PAINTING_VARIANT: i32 = 34;
     pub const DYE_COLOR: i32 = 43;
@@ -3115,6 +3119,10 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::DIRECTION);
                     w.put_var_int(*direction);
                 }
+                EntityDataValue::BlockState(state) => {
+                    w.put_var_int(entity_data_serializer::BLOCK_STATE);
+                    w.put_var_int(*state);
+                }
                 EntityDataValue::OptionalBlockState(state) => {
                     w.put_var_int(entity_data_serializer::OPTIONAL_BLOCK_STATE);
                     w.put_var_int(*state);
@@ -3156,6 +3164,7 @@ impl Decode for SetEntityData {
                     EntityDataValue::OptionalBlockPos(r.option(Reader::position)?)
                 }
                 entity_data_serializer::DIRECTION => EntityDataValue::Direction(r.var_int()?),
+                entity_data_serializer::BLOCK_STATE => EntityDataValue::BlockState(r.var_int()?),
                 entity_data_serializer::OPTIONAL_BLOCK_STATE => {
                     EntityDataValue::OptionalBlockState(r.var_int()?)
                 }
@@ -4998,6 +5007,11 @@ mod tests {
         assert_eq!(
             one(8, EntityDataValue::Direction(direction::SOUTH)),
             with(&[8, 12, 3])
+        );
+        // `BLOCK_STATE`, 14: the state's id.
+        assert_eq!(
+            one(9, EntityDataValue::BlockState(2141)),
+            with(&[9, 14, 0xDD, 0x10])
         );
         // `OPTIONAL_BLOCK_STATE`, 15: the state's id, 0 for none.
         assert_eq!(

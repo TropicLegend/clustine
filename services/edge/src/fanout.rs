@@ -2725,6 +2725,59 @@ impl Fanout {
         }
     }
 
+    /// Sends an explosion to every player of this edge within 64 blocks of its centre,
+    /// whatever region they are in, each with the push `knockback` names for them or
+    /// none (`ServerLevel.explode`; `docs/groundwork/n6-brief.md`, finding 2.9).
+    async fn show_explosion(
+        &mut self,
+        centre: [f64; 3],
+        radius: f32,
+        blocks: i32,
+        knockback: &[(EntityId, [f64; 3])],
+        large: bool,
+        sound: bool,
+    ) {
+        use clustine_protocol::packets::play::{EXPLOSION_BLOCK_PARTICLES, Explode, particle};
+        let mut outgoing = Vec::new();
+        for (player, view) in &self.players {
+            let Some(entity) = view.entity else {
+                continue;
+            };
+            let Some(shown) = self.entities.get(&entity) else {
+                continue;
+            };
+            let at = shown.state.pose.position;
+            let distance = (at.x - centre[0]).powi(2)
+                + (at.y - centre[1]).powi(2)
+                + (at.z - centre[2]).powi(2);
+            if distance >= 4096.0 {
+                continue;
+            }
+            let push = knockback
+                .iter()
+                .find(|(hit, _)| *hit == entity)
+                .map(|(_, push)| *push);
+            let packet = Explode {
+                centre,
+                radius,
+                block_count: blocks,
+                knockback: push,
+                particle: if large {
+                    particle::EXPLOSION_EMITTER
+                } else {
+                    particle::EXPLOSION
+                },
+                sound: clustine_data::sounds::ENTITY_GENERIC_EXPLODE,
+                block_particles: EXPLOSION_BLOCK_PARTICLES.to_vec(),
+                play_sound: sound,
+            };
+            outgoing.push((*player, encoded(&packet)));
+        }
+        for (player, packet) in outgoing {
+            self.send_to_player(player, [packet]).await;
+        }
+    }
+
     /// Shows the client of `player` what the region `from` says of their menu
     /// (`crate::menus`). Only a region that stands for the player's own speaks of it: a
     /// region that let them go speaks of a menu that is closed (section 9 item 3).
@@ -3121,8 +3174,17 @@ impl Fanout {
             RegionEvent::Leashed { entity, holder, .. } => self.show_leash(entity, holder).await,
             // Shown from the steps of N5 that make them.
             RegionEvent::DataChanged { .. } | RegionEvent::EntitySound { .. } => {}
-            // Fanned out from step N6c (`docs/groundwork/n6-plan.md`, section 3).
-            RegionEvent::Explosion { .. } => {}
+            RegionEvent::Explosion {
+                centre,
+                radius,
+                blocks,
+                knockback,
+                large,
+                sound,
+            } => {
+                self.show_explosion(centre, radius, blocks, &knockback, large, sound)
+                    .await;
+            }
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
@@ -8124,6 +8186,7 @@ mod scenarios {
 
     mod block_destroyed;
     mod crossing_specification;
+    mod explosions;
     mod hanging;
     mod items;
     mod items_specification;
@@ -8933,6 +8996,8 @@ mod scenarios {
         /// Every packet of a menu's window it was sent, in order: openings, contents,
         /// slots, the cursor and closes.
         menus: Vec<ClientboundPlay>,
+        /// Every explosion it was sent, in order.
+        explosions: Vec<clustine_protocol::packets::play::Explode>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -9006,6 +9071,7 @@ mod scenarios {
                 teleports: Vec::new(),
                 tracking: Vec::new(),
                 menus: Vec::new(),
+                explosions: Vec::new(),
                 ids: Vec::new(),
             }
         }
@@ -9165,6 +9231,7 @@ mod scenarios {
                     self.tracking.push(decoded);
                 }
                 ClientboundPlay::AddTransientBlock(_) => self.tracking.push(decoded),
+                ClientboundPlay::Explode(explosion) => self.explosions.push(explosion),
                 ClientboundPlay::OpenScreen(_)
                 | ClientboundPlay::ContainerSetSlot(_)
                 | ClientboundPlay::SetCursorItem(_)

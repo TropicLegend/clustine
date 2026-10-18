@@ -62,6 +62,44 @@ const DIRTY_STACK: u16 = 2;
 const DIRTY_MINECART: u16 = 128;
 /// A boat's own values (`VehicleEntity`'s and `AbstractBoat`'s).
 const DIRTY_BOAT: u16 = 256;
+/// Primed TNT's fuse or block.
+const DIRTY_TNT: u16 = 512;
+
+/// Primed TNT's data (`docs/groundwork/n6-brief.md`, section 1.7): its fuse, an int that
+/// is 80 by default, and the block it shows, `tnt[unstable=false]` by default.
+const TNT_FUSE: u8 = 8;
+const TNT_BLOCK: u8 = 9;
+const TNT_DEFAULT_FUSE: i16 = 80;
+
+/// The default of primed TNT's value at `index`.
+fn tnt_default(index: u8) -> Option<EntityDataValue> {
+    match index {
+        TNT_FUSE => Some(EntityDataValue::Int(i32::from(TNT_DEFAULT_FUSE))),
+        TNT_BLOCK => Some(EntityDataValue::BlockState(i32::from(
+            clustine_data::blocks::TNT.0,
+        ))),
+        _ => None,
+    }
+}
+
+/// The values of primed TNT's data, each with whether it is its default.
+fn tnt_values(data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
+    let EntityData::PrimedTnt { fuse, block, .. } = data else {
+        return Vec::new();
+    };
+    vec![
+        (
+            TNT_FUSE,
+            EntityDataValue::Int(i32::from(*fuse)),
+            *fuse == TNT_DEFAULT_FUSE,
+        ),
+        (
+            TNT_BLOCK,
+            EntityDataValue::BlockState(i32::from(*block)),
+            *block == clustine_data::blocks::TNT.0,
+        ),
+    ]
+}
 
 /// The indices of a boat's data, after `Entity`'s eight (the brief's section 4.8): the
 /// hurt time, its direction and the damage (`VehicleEntity`), then the left and right
@@ -583,6 +621,13 @@ impl Tracker {
         {
             self.dirty |= DIRTY_BOAT;
         }
+        // The fuse goes down every tick, and is sent every tick (`sendChanges`).
+        if let (Some(new @ EntityData::PrimedTnt { .. }), EntityData::PrimedTnt { .. }) =
+            (&tracked.data, data)
+            && tnt_values(new) != tnt_values(data)
+        {
+            self.dirty |= DIRTY_TNT;
+        }
         if let Some(new) = &tracked.data {
             self.dirty |= hanging_changes(data, new);
             self.data_changed(data, new);
@@ -733,6 +778,22 @@ impl Tracker {
                         boat_data::HURT..=boat_data::BUBBLE_TIME,
                         boat_default,
                     ));
+                }
+            }
+            EntityData::PrimedTnt { .. } => {
+                for (index, value, default) in tnt_values(data) {
+                    // What clients were last sent of it: the value paired, or the
+                    // default where none was.
+                    let last = self
+                        .pairing
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, sent)| sent.clone())
+                        .or_else(|| tnt_default(index));
+                    let changed = self.dirty & DIRTY_TNT != 0 && last.as_ref() != Some(&value);
+                    if (pairing && !default) || (!pairing && changed) {
+                        values.push((index, value));
+                    }
                 }
             }
             // An armour stand's values are its living data's, above; the other kinds of
