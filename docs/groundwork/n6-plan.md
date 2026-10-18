@@ -1,7 +1,7 @@
 # Step N6: TNT, explosions, containers that open, and the redstone that waits for entities, planned
 
-Draft of 2026-10-18, revised the same day after an independent review (section 6, which
-overrides what it amends above it); to be reviewed again before it is built. Step N6 of the
+Draft of 2026-10-18, revised the same day after independent reviews (sections 6, 7 and
+8, each overriding what it amends above it and the sections before it); a third review of section 7 is answered in section 8, which overrides both. Step N6 of the
 [phase plan](n-plan.md): "TNT and explosions, and the redstone of ADR-0026 section 11
 that waits for entities (dispensers, droppers, hoppers, detector rails, pressure plates
 that count entities, tripwire)". The game's rules are in the [porting brief](n6-brief.md),
@@ -219,3 +219,201 @@ An independent review (2026-10-18) found these; each change overrides the text a
 structures' chests and barrels show empty when opened (no loot tables are stored, so
 nothing is lost by it, and a later step fills chests not yet opened); arrows and other
 projectiles in a dispenser drop as items until N9. Both are proposed as they are.
+
+## 7. The second review, and what it changed
+
+A second independent review (2026-10-18) read the plan with section 6 applied, the
+brief, ADR-0020 and ADR-0025 to ADR-0028, and the code they name. Each change below
+overrides what it amends above it.
+
+1. **The edge keeps the menu's real slots, and every click is answered** (H1). The edge
+   keeps a copy of the open menu's slots and carried stack, from `MenuOpened` and then the
+   changes, beside the client's remote slots. The region answers every click it takes in
+   a tick: one that changes something with the changes, one that changes nothing, is
+   refused or is passed over with an empty change set; every answer carries the menu's
+   serial and the number of the last input applied. The edge applies a click's kept
+   hashes only to an answer of the click's own serial, and then compares every slot those
+   hashes touched and the carried stack with its copy, and sends what differs, as
+   `broadcastChanges` (or `broadcastFullState` for a stale click) does after every click.
+   Kept hashes are dropped at a `MenuClosed` and at a `MenuOpened` of another serial. So
+   two players at one chest, one taking a stack a tick before the other clicks it, leave
+   no ghost stack on the second one's cursor.
+2. **The serial is the number of the input that opened the menu** (H2). The `UseItemOn`,
+   `Interact` or `OpenVehicleInventory` that opened it gives its input number, which is
+   unique within a connection and comes out the same when the edge replays its kept
+   inputs after a restore; no counter is kept in the state or the transfer.
+   `ContainerClick` and `CloseContainer` carry the serial the client's screen is of, and
+   the region refuses one that does not match its menu (the game's `containerId` test),
+   answering with its menu whole, or with none. The edge takes a menu event as true when
+   its last input applied is at least the edge's current serial, and drops it otherwise; a
+   whole report of the current serial is sent as `container_set_content`, not as a close
+   and an open. So a restore that reports an older menu while the client shows a newer
+   one, whose opening is replayed and fails, cannot run the client's clicks on the older
+   container.
+3. **A menu whose container is held and not loaded yet stays open** (H3). After a
+   restore, a merge or a split nothing is loaded at first. A menu whose container's
+   chunks are held and not all loaded is neither checked by `stillValid` nor closed; its
+   clicks are refused and answered with no slots; and in the tick its last chunk loads,
+   the region reports the menu whole (which the edge sends as `container_set_content`,
+   healing whatever the client guessed meanwhile) and counts its openers again. Only a
+   chunk not held closes a menu. This replaces section 6 item 1's "at the first tick
+   after any restore": a menu is reported whole at the first tick for a vehicle's
+   container (the vehicle's chunk is loaded with it) and for one that has none, and at its
+   chunk's load for a block's. The differential test of restores (`tests/stays.rs`,
+   which compares a restored region's outputs with one that ran on, except the first
+   tick's notes) also excepts these reports.
+4. **A container across a pinned line is lent at use time** (H4; for the owner, below).
+   Section 6 item 2 and decision 10 left a chest up to about five blocks across a pinned
+   line unopenable, while doors and levers there work, and section 6 item 4 made it
+   worse: a hopper borrowing the chunk of the chest in front of it would leave the
+   lender's own players unable to open that chest. A player's use of a container whose
+   chunks their region does not all hold asks for a lend of the chunks it lacks, as a
+   circuit's part asks at build time (ADR-0027, section 2), and the use is kept in the
+   player's state until the lend is granted, when the menu opens, or refused or 40 ticks
+   pass, when nothing opens (named). A lent chunk with a container that a player of the
+   borrower has open is kept (`must_keep_for_now`), as is one with a shulker box whose lid
+   moves (item 5). Where the lender's own player then uses that container, the same rule
+   asks for the chunk back the other way, which ADR-0027's one way per stretch refuses
+   while the lend stands: they cannot open it until it is given back (named). ADR-0027
+   section 2 is amended with a fourth asker, a use of a container.
+5. **The openers' count is saved** (M1). The typed container block entity holds its
+   openers' count, beyond what the game saves, so that a region restored, split or lent
+   to knows what it last reported. Chests, trapped chests, barrels and ender chests heal
+   through their 5-tick recheck, which compares the count found with the one saved and
+   runs the close, the sound and the neighbour updates (a trapped chest's signal goes);
+   a shulker box, which has no recheck, is corrected so when its chunk is loaded. A
+   shulker box whose lid is moving is on the lender's wait list, as a moving piston is.
+6. **The hand-over close comes in the player's tick** (M2). The region works out which of
+   its players depart before the block-event phase and `keep_events`, and closes their
+   menus in their player tick as the game's `stillValid` close is: the block events of
+   `stopOpen` are kept with their chunk, a barrel's `open=false` is set within a phase,
+   and what does not fit back into the inventory is dropped as an arrival at the player's
+   new region, not laid in a chunk that is not this region's. This is ordering at the
+   hand-over: N6b's hand-over and restore parts are mine, not delegated.
+7. **The edge closes a menu at every `Departed`, and resyncs after a resume** (M3).
+   Player events are not sent again on a link that resumes, while `Departed` is resent
+   from the outbox, so the edge closes the player's menu, with `container_close`, when it
+   handles a `Departed` (a hand-over always closes it). After a `Welcome::Resumed` the
+   edge sends each of its players' regions a numbered `PlayerInput::MenuResync`, which the
+   region answers with the menu whole or with none; as an input it keeps the region
+   deterministic.
+8. **The ender chest across a line is any other container** (M4). Section 6 item 12 is
+   withdrawn: the block, its lid, its openers and its recheck are its holder's, so it
+   opens as item 4 says, by a lend, and its slots are the player's own as decision 5 has
+   it.
+9. **The format is raised, not nested** (L1). The log's commit kinds nest, each holding
+   the fields of the one before, so a kind for stays with an ender chest would hold every
+   older kind's too. The format version is raised instead and the place's layout changed
+   everywhere, the players' file with it; worlds made before are refused and made again
+   (section 6 item 7). Section 6 item 8's "the old kinds read with an empty one" is
+   withdrawn.
+10. **Leaving with a carried stack drops it**, as the game does for a removed player
+    (`dropOrPlaceInInventory`, brief 3.18), at the player's position, before their place
+    is written. Section 6 item 2's "put back" is withdrawn for leaving; a hand-over still
+    puts it back, as the game's `closeContainer` does for a player who stays.
+11. **The explosion's effect** (L3) says whether the owner is a creative player, not only
+    a player (vehicles and hanging things read it, brief 2.0 item 7), and its explosion
+    id is the exploding entity's key and the tick, unique across regions, so two regions'
+    explosions in one tick never merge their drops.
+12. **A player across a line on a plate or a tripwire** (L4). Players are not in copies,
+    so the holder's recount would undo an "entity came in" effect for one at once. The
+    effect carries the player's box, sent by the player's region every tick they touch
+    the block, and the holder's recount counts the boxes it was sent for the tick before
+    as well as its own entities and its copies'. Named: a tick late.
+13. **A player logged in twice can duplicate items through a container** (L5), as through
+    a throw already: what a dead stay puts into a chest after the second login read its
+    place is not taken from the place the new stay has. Named, under ADR-0020 section 10.
+14. **Reach for dispensers, droppers and hoppers** (L6). Each of the new circuit parts
+    has its own reach in `lends.rs` (the block in front, the block below it, a double
+    chest's other half), not the two blocks every part has by default, so a hopper near a
+    line does not ask for lends it does not need. ADR-0027 section 7's "a circuit's part
+    changed" is amended: a hopper, dispenser or dropper whose contents change counts.
+15. **On closing, `container_close` goes first** (L7), then the `set_player_inventory`
+    packets for the slots the carried stack filled, as `closeContainer` sends them.
+16. **Who builds what**:
+    - N6a also fixes the openers' count field (item 5), the serial in `ContainerClick`
+      and `CloseContainer` (item 2), `PlayerInput::MenuResync` (item 7), the use kept
+      for a lend (item 4) and the explosion effect's fields (item 11).
+    - N6b's hand-over close, its restore and load reports (items 3 and 6) and the edge's
+      side (items 1, 2, 7 and 15) are mine; the menus' clicks, the containers, lids,
+      sounds, spilling and comparators are delegated.
+    - The lending changes (items 4 and 14, section 6 item 4) and the counting of copies'
+      entities and players' boxes (section 6 item 6, item 12) go to N6g, mine, beside the
+      explosion across a line.
+    - The order stays: a, b, c, then d and e in sequence or side by side, f last; c needs
+      b's spilling and typed block entities.
+
+**For the owner, from the second review**: a chest, a barrel, an ender chest or a
+hopper's container across a pinned line opens by lending its chunk to the user's region
+at the moment of use (item 4), which amends the owner's "lending at build time" of
+ADR-0027 with a use of a container as a fourth reason to lend. Without it, a container a
+few blocks across a pinned line does not open at all, which a player building a storage
+room at the line meets at once. Proposed as item 4 has it; the owner can overrule.
+
+## 8. The third review, and what it changed
+
+A third independent review (2026-10-18) read section 7 against sections 2, 3 and 6,
+ADR-0027 and the code. It found items 1 to 3 and 5 to 7 sound but for what follows, and
+item 4 not ready. Each change below overrides what it amends above it.
+
+1. **A lend for a use is given back** (item 4). The borrower looks at a lent chunk for
+   giving back only when a circuit's part near it goes (`part_gone_near`) or at a restore,
+   so a chunk lent for a chest would never go back. Now a use's ask is asked once, never
+   again every 20 ticks, and is dropped when the kept use ends; the chunk is put in
+   `lent_to_check` when a menu on a container in it closes, and when a grant comes with
+   no kept use for it; and `give_back_lent` (not `must_keep_for_now`, which is the
+   lender's test, as item 4 said wrongly) keeps a chunk while one of the borrower's menus
+   shows a container in it. So a lend for a use lasts while the menu is open.
+2. **The lender does not lend a container its own player has open** (item 4). The
+   lender's `must_keep_for_now` answers "wait" while any of its players' menus shows a
+   container with a block in the asked chunk, a double chest's other half among them.
+   Two friends at one chest by the line: the second waits for the first to close it.
+3. **The kept use** (item 4). A player has at most one. It is dropped by any later
+   `UseItemOn`, `Interact`, `OpenVehicleInventory` or `CloseContainer`, by their
+   hand-over, and by a merge, a split or a restore of their region; its block sequence is
+   acknowledged at once; and it is judged again, in the tick the lent chunks are loaded
+   (not at the grant, when they are held and not loaded: ADR-0027's lost lever), as a
+   use: still a container, within reach, not blocked. The worker does not hold a use's
+   ask in `waits_for_its_chunk`, since the region keeps the use itself, so a second click
+   meanwhile stalls nothing behind it on the link.
+4. **A use asks only from the region's own pinned land, and for a short while** (item 4).
+   A player standing in lent land does not borrow the next chunk (ADR-0027 section 2:
+   lends do not creep). A use is not refused by a "not lendable" note of a circuit's
+   (`NOT_LENDABLE_FOR`, a minute); a use refused is noted for 40 ticks only.
+5. **The hopper at the line is named** (item 4). A hopper of one region that borrowed the
+   chunk of the chest in front of it keeps that chunk while the hopper stands, so the
+   lender's players cannot open that chest from their side while it does. Named, and in
+   what to try with `--pin`.
+6. **Clicks are held, not refused, while their container's chunks load** (item 3). After a
+   merge, frequent where regions follow players, a refused click would undo the player's
+   sorting. The worker's `waits_for_its_chunk` counts a `ContainerClick` and a
+   `CloseContainer` as being about the chunks of the open menu's container (the runner
+   reads the region's player), and holds them as it holds a use, until they load. The
+   refusal with no slots stays only for a click that reaches the region anyway.
+7. **Departures are worked out after the drivers, before `keep_events`** (item 6). A
+   passenger's position changes in the entity phase, after the block-event phase, so
+   departures worked out before it would miss a rider whose vehicle crosses with their
+   menu open. The region works them out, and closes their menus, after `tick_drivers` and
+   before `keep_events`: every move is done, and the events of `stopOpen` are still kept
+   with their chunk.
+8. **The edge's copy stays true** (item 1). The region reports, every tick, the open
+   menu's slots that changed against what it last reported, as `broadcastChanges` does,
+   not only after clicks; and the edge maps a `PlayerEvent::InventorySlot` onto the menu's
+   slot for it while a menu is open, in the copy and the comparison. An answer is compared
+   on the slots its hashes touched and the slots it changed.
+9. **The edge's threshold** (items 2 and 7). The edge keeps the higher of the last
+   opening's and the last closing's input numbers; a menu event whose last input applied
+   is lower is dropped, so a restore to before a close cannot open the old menu again. At
+   a whole report the kept hashes up to its last input applied are dropped and the remote
+   slots set to the copy. `container_close` at a `Departed` is sent only while the edge
+   believes a menu open (it closes whatever screen the client shows, the player's own
+   inventory among them). `MenuResync`'s answer of none carries the inventory whole, as
+   a resume may have lost `MenuClosed`'s slots. Menu events are taken only from the
+   player's own region (`view.region`).
+10. **Plates' boxes are keyed by the effect's due tick** (item 12), not "the tick before",
+    so jitter in the coupling does not flicker a plate.
+11. **Stale text**: decision 10's and section 4's "a menu across a pinned line does not
+    open" are replaced by item 4 with these changes. Section 4 gains: a use across a
+    pinned line waits for its lend, up to 40 ticks; a container the lender's player has
+    open, or a hopper of the other side has borrowed, does not open from the other side;
+    a menu closes at a line; leaving drops the carried stack where the game does too.
