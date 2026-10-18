@@ -127,7 +127,7 @@ makes copies' bases from commits (`worldstore/src/chunks.rs:995-1030`): both rea
 entities by chunk.
 
 - **Stored apart from the blocks.** A chunk's entities are a record of their own in the
-  store, `entities/<x>.<z>`, beside its blocks, as the game keeps `entities/` apart from
+  store, `chunks/overworld/{x>>5}.{z>>5}/{x}.{z}.entities`, beside the file of its blocks, as the game keeps `entities/` apart from
   its region files (`EntityStorage`): a mob's step marks only the entities dirty, and a
   merge's or a split's saves of chunks, which are of blocks, do not grow with it. A chunk
   with no entities has no record.
