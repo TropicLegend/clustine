@@ -581,7 +581,6 @@ async fn two_edges_at_once_show_a_crossing_item_once_each() {
 /// viewer of this edge watches, is removed from the viewers that were shown it: the
 /// early return of a report outside the replica must not skip it (N3e).
 #[tokio::test]
-#[ignore = "finding: upsert_entity returns early for a report in a chunk outside the replica, so the item stays shown where it was (n3-plan N3e)"]
 async fn an_item_taken_in_a_chunk_outside_the_replica_is_removed_from_its_viewers() {
     let (mut edge, mut first, _second) = across_the_line().await;
     let far = [

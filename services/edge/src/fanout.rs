@@ -2905,7 +2905,21 @@ impl Fanout {
     /// known. The entity is that region's from now on.
     async fn upsert_entity(&mut self, from: RegionId, state: EntityState) {
         if !self.replica.contains_key(&state.chunk()) {
-            // Nobody watches where it is; this can be a snapshot that arrives late.
+            // Nobody watches where it is; this can be a snapshot that arrives late. An
+            // entity shown here that its new holder took in out there has left the
+            // viewers' sight, though, and is taken off them as a move out would be.
+            if let EntityKind::Other { hops, .. } = &state.kind
+                && self.entities.contains_key(&state.entity)
+                && !self.was_gone(state.entity, *hops)
+                && self.takes_word_of(from, state.entity, *hops)
+                && let Some(shown) = self.entities.get_mut(&state.entity)
+            {
+                let entity = state.entity;
+                shown.state = state;
+                shown.from = from;
+                shown.handed_on = None;
+                self.refresh_entity(entity, true).await;
+            }
             return;
         }
         let entity = state.entity;
