@@ -1189,7 +1189,6 @@ fn two_items_merge_by_the_game_s_rules_into_the_larger_with_the_larger_delay_and
 /// as the tick leaves them, so that what the commit says of the item is what the
 /// region has of it after the tick, and a replay of the log restores it so.
 #[test]
-#[ignore = "finding: a merge into an item that ticks after commits its age and delay as of the merge, a tick behind"]
 fn a_merge_commits_the_merged_age_and_delay_as_the_tick_leaves_them() {
     let mut wrong = Vec::new();
     for (low, high, lower_absorbs) in [(3, 5, false), (5, 3, true), (4, 4, false)] {

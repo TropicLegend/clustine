@@ -15,7 +15,7 @@
 use clustine_data::{ITEMS, entity_types};
 use clustine_noise::trig;
 use clustine_world::{
-    ChunkPos, Entity, EntityChange, EntityData, EntityId, MAX_CHUNK_ENTITIES, PlayerId,
+    ChunkPos, Entity, EntityChange, EntityData, EntityField, EntityId, MAX_CHUNK_ENTITIES, PlayerId,
 };
 use uuid::Uuid;
 
@@ -228,6 +228,33 @@ impl Region {
                     self.tick_falling_block(entity, position, output);
                 }
             }
+        }
+        // What took another in by a merge has its counters committed as the tick leaves
+        // them, where it is still in the chunk it merged in: a record's counters are as of
+        // its tick (`docs/groundwork/n2-plan.md`, section 11).
+        let mut merged = std::mem::take(&mut self.merged_into);
+        merged.sort();
+        merged.dedup();
+        for (position, key) in merged {
+            if self.entity_chunks.get(&key) != Some(&position) {
+                continue;
+            }
+            let Some(entity) = self.chunks.get(&position).and_then(|chunk| {
+                let entities = chunk.entities();
+                entities
+                    .binary_search_by_key(&key, |entity| entity.key)
+                    .ok()
+                    .map(|at| entities[at].clone())
+            }) else {
+                continue;
+            };
+            let fields = vec![
+                EntityField::Age(entity.age),
+                EntityField::Data(entity.data.clone()),
+            ];
+            output
+                .entity_changes
+                .push((position, EntityChange::Set(key, fields)));
         }
         output.entities_ageing.sort();
         output.entities_ageing.dedup();

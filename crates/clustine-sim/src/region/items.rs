@@ -517,6 +517,9 @@ impl Region {
                 loaded.apply_entity(&change);
             }
             output.entity_changes.push((chunk, change));
+            // It may tick later in this tick and count its age on, which commits nothing:
+            // its counters are committed again as the tick leaves them.
+            self.merged_into.push((chunk, other.key));
             output
                 .events
                 .push(RegionEvent::EntityTracked(tracked(&taken, 0, true)));

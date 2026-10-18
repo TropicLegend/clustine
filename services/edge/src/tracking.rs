@@ -143,8 +143,12 @@ pub(crate) struct Tracker {
     last_yaw: i8,
     last_pitch: i8,
     was_on_ground: bool,
-    /// Whether the last move sent had the entity on the ground.
-    sent_on_ground: bool,
+    /// Whether every client shown the entity holds it on the ground: the last move sent
+    /// said so, and no client has been shown it since. A spawn tells a client nothing of
+    /// the ground, so it holds the entity off it until a move says otherwise; a pairing
+    /// sets this false, so that a move that tells it is not passed over as one that
+    /// changes nothing when the edge catches up quiet ticks.
+    sent_on_ground: std::cell::Cell<bool>,
     /// The values of its data that differ from the type's defaults, as sent last.
     pairing: Vec<(u8, EntityDataValue)>,
     /// Where a falling block started (`DATA_START_POS`): the block it was in when this
@@ -200,7 +204,8 @@ impl Tracker {
             last_yaw: pack_degrees(seen.yaw),
             last_pitch: pack_degrees(seen.pitch),
             was_on_ground: seen.on_ground,
-            sent_on_ground: seen.on_ground,
+            // The clients it is first shown to are spawned with it, off the ground.
+            sent_on_ground: std::cell::Cell::new(false),
             pairing: Vec::new(),
             start,
             position: seen.position,
@@ -295,6 +300,7 @@ impl Tracker {
 
     /// What a client that is newly shown the entity is sent (`sendPairingData`).
     pub(crate) fn pairing(&self) -> Pairing {
+        self.sent_on_ground.set(false);
         Pairing {
             position: self.codec.base,
             motion: self.last_motion,
@@ -362,7 +368,7 @@ impl Tracker {
                 | Sent::Rot(MoveEntityRot { on_ground, .. })
                 | Sent::Sync(SyncEntityPosition { on_ground, .. }) = &packet
                 {
-                    self.sent_on_ground = *on_ground;
+                    self.sent_on_ground.set(*on_ground);
                 }
                 out.push(packet);
                 self.send_dirty(id, data, &mut out);
@@ -402,7 +408,7 @@ impl Tracker {
             if due {
                 let held = Held {
                     position: self.codec.base,
-                    on_ground: self.sent_on_ground,
+                    on_ground: self.sent_on_ground.get(),
                     angles: (self.last_yaw, self.last_pitch),
                 };
                 for sent in self.send_changes(id, data) {
@@ -1036,7 +1042,15 @@ mod tests {
         let data = stack(1);
         let mut caught = item_at([0.5, 64.0, 0.5], true);
         let mut every = caught.clone();
-        assert_eq!(caught.catch_up(ID, &data, 8100), []);
+        // The clients were spawned with it, which tells them nothing of the ground: the
+        // first update tells them it lies on it, and nothing is sent after that.
+        let told = caught.catch_up(ID, &data, 8100);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(
+            matches!(&told[0], Sent::Pos(moved) if moved.on_ground)
+                || matches!(&told[0], Sent::Sync(moved) if moved.on_ground),
+            "{told:?}"
+        );
         run(&mut every, &data, 8100);
         assert_eq!(caught, every);
         // A landing reported before the silence is sent at the first update in it.

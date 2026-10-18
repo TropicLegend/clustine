@@ -585,7 +585,6 @@ async fn an_item_shown_in_a_chunk_s_snapshot_is_sent_its_periodic_moves_though_n
 /// ground by the time the region next speaks, though the region was quiet for a while
 /// and the edge catches its ticks up late.
 #[tokio::test]
-#[ignore = "finding: the late update of a quiet spell passes over the move that tells the client the ground"]
 async fn a_client_shown_a_lying_item_is_told_it_lies_on_the_ground_after_a_quiet_spell() {
     let mut edge = Harness::start().await;
     let mut first = edge.joined(player(1), EntityId(5)).await;

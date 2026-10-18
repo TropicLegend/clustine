@@ -366,6 +366,10 @@ pub struct Region {
     /// How many draws each entity has taken from its stream in this tick
     /// (`entities.rs`); empty between ticks.
     entity_draws: BTreeMap<EntityId, u64>,
+    /// The items of this tick that took another in by a merge before they ticked
+    /// themselves, by chunk: their counters are committed again at the end of the
+    /// entities' phase, as the tick leaves them. Empty between ticks.
+    merged_into: Vec<(ChunkPos, EntityId)>,
     /// What the game keeps of an entity in memory and not in its record, by key
     /// (`items.rs`); forgotten at a take-in, so no part of the state.
     entity_memory: BTreeMap<EntityId, items::Memory>,
@@ -472,6 +476,7 @@ impl Region {
             circuit_changes: BTreeMap::new(),
             entity_chunks: BTreeMap::new(),
             entity_draws: BTreeMap::new(),
+            merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
