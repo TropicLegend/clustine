@@ -708,3 +708,71 @@ async fn an_item_thrown_beside_a_pinned_line_is_seen_from_both_sides_and_outlast
     }
     server.stop().await;
 }
+
+/// Whether any of `frames` spawns an item.
+fn spawns_an_item(frames: &[Vec<u8>]) -> usize {
+    frames
+        .iter()
+        .filter(|frame| {
+            matches!(
+                ClientboundPlay::decode(frame),
+                Ok(ClientboundPlay::SpawnEntity(spawn)) if spawn.kind == entity_types::ITEM
+            )
+        })
+        .count()
+}
+
+/// The plan, section 11, as the game's `handleSetCreativeModeSlot` has it: a throw out
+/// of the creative screen is taken if the item exists and the count is within its
+/// maximum stack, from the data; stone stacks to 64, so 65 of it are passed over and
+/// 64 thrown.
+///
+/// A finding: the edge holds a thrown stack to 99 of any item
+/// (`ABSOLUTE_MAX_STACK_SIZE`, `services/edge/src/play.rs`), as the data has no
+/// maximum per item yet, so 65 stone are thrown.
+#[tokio::test]
+#[ignore = "finding: a creative throw is held to 99 of any item, not to the item's own maximum"]
+async fn a_creative_throw_of_more_than_the_item_s_maximum_stack_is_passed_over() {
+    let (server, address) = start_with(config()).await;
+    let mut watcher = join(&address, "Watcher").await;
+    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    thrower
+        .throw_from_the_screen(ItemStack {
+            item: items::STONE,
+            count: 65,
+        })
+        .await;
+    let frames = thrower.round_trip(1).await;
+    assert_eq!(spawns_an_item(&frames), 0, "65 stone were thrown");
+    let full = ItemStack {
+        item: items::STONE,
+        count: 64,
+    };
+    thrower.throw_from_the_screen(full).await;
+    let shown = thrower.shown_an_item().await.unwrap();
+    assert_eq!(shown.stack, Some(full));
+    server.stop().await;
+}
+
+/// The plan, section 11: throws out of the creative screen go through the game's
+/// `dropSpamThrottler`, which lets 74 through at once (20 a throw, under 1480) and
+/// then about one a second; a hundred at once throw no more than that.
+#[tokio::test]
+async fn a_burst_of_creative_throws_is_held_to_the_game_s_throttle() {
+    let (server, address) = start_with(config()).await;
+    let mut watcher = join(&address, "Watcher").await;
+    let mut thrower = Thrower::join(&address, "Thrower", &mut watcher).await;
+    let started = Instant::now();
+    for _ in 0..100 {
+        thrower.throw_from_the_screen(STONE).await;
+    }
+    let frames = thrower.round_trip(1).await;
+    let thrown = spawns_an_item(&frames);
+    // One more for every tick of the game the burst took.
+    let ticks = started.elapsed().as_millis() / 50;
+    assert!(
+        (74..=74 + ticks as usize + 1).contains(&thrown),
+        "{thrown} of a hundred thrown in {ticks} ticks"
+    );
+    server.stop().await;
+}

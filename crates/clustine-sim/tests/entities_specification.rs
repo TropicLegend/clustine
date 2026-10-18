@@ -74,6 +74,11 @@ fn around(radius: i32) -> Vec<ChunkPos> {
 /// A region that knows the edge and holds the chunks near the origin, with the keys
 /// `keys`.
 fn region_with(keys: EntityIds) -> Region {
+    region_in(keys, ChunkArea::EVERYWHERE)
+}
+
+/// The same, pinned to `area`, holding those chunks near the origin that are in it.
+fn region_in(keys: EntityIds, area: ChunkArea) -> Region {
     let mut state = RegionState::new(keys);
     state.edges.insert(
         EDGE,
@@ -83,8 +88,11 @@ fn region_with(keys: EntityIds) -> Region {
         },
     );
     let holdings = Holdings {
-        held: around(3),
-        pinned: vec![ChunkArea::EVERYWHERE],
+        held: around(3)
+            .into_iter()
+            .filter(|chunk| area.contains(*chunk))
+            .collect(),
+        pinned: vec![area],
         lent: Vec::new(),
         lent_away: Vec::new(),
     };
@@ -613,4 +621,65 @@ fn a_loaded_item_is_taken_in_with_one_more_hop_and_then_commits_nothing_while_it
     let EntityData::Item { pick_up_delay, .. } = &kept.data;
     assert_eq!(u32::from(*pick_up_delay) + kept.age, 40, "{kept:?}");
     assert_eq!(kept.hops, 3);
+}
+
+/// ADR-0028, section 3: a copy of a neighbour's chunk is based with its entities and
+/// takes the entity changes of later commits in their order; the region reads them
+/// there, and never ticks or commits them.
+#[test]
+fn a_copy_of_a_neighbour_s_chunk_has_its_items_and_takes_their_changes_without_committing_them() {
+    let beyond = ChunkPos::new(3, 0);
+    // Pinned west of chunk x = 3, which is a neighbour's.
+    let mut region = region_in(
+        EntityIds::block(1).expect("block 1"),
+        ChunkArea {
+            min_x: None,
+            max_x: Some(3),
+        },
+    );
+    joined(&mut region);
+    load(&mut region, &around(2), floor());
+    let key = EntityId((6 << 32) + 4);
+    let mut item = lying(key, 0);
+    item.position = [56.5, -60.0, 8.5];
+    let mut base = floor();
+    base.set_entities(vec![item.clone()]);
+    let output = region.tick(&TickInputs {
+        copy_bases: vec![(beyond, base)],
+        ..TickInputs::default()
+    });
+    assert!(
+        output.entity_changes.is_empty(),
+        "{:?}",
+        output.entity_changes
+    );
+    let copied = region.copy(beyond).expect("the copy is kept");
+    assert_eq!(copied.entities(), [item.clone()]);
+
+    let moved = [57.25, -60.0, 8.5];
+    let output = region.tick(&TickInputs {
+        copy_entity_updates: vec![(
+            beyond,
+            vec![EntityChange::Set(
+                key,
+                vec![clustine_world::EntityField::Position(moved)],
+            )],
+        )],
+        ..TickInputs::default()
+    });
+    assert!(
+        output.entity_changes.is_empty(),
+        "{:?}",
+        output.entity_changes
+    );
+    let copied = region.copy(beyond).expect("the copy is kept");
+    assert_eq!(copied.entities().len(), 1);
+    assert_eq!(copied.entities()[0].position, moved);
+
+    let output = region.tick(&TickInputs {
+        copy_entity_updates: vec![(beyond, vec![EntityChange::Gone(key)])],
+        ..TickInputs::default()
+    });
+    assert!(output.entity_changes.is_empty());
+    assert!(region.copy(beyond).expect("kept").entities().is_empty());
 }

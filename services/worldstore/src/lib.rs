@@ -46,6 +46,8 @@ mod effects_by_the_record;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
+mod entities_specification;
+#[cfg(test)]
 mod entities_tests;
 #[cfg(test)]
 mod generation_tests;
