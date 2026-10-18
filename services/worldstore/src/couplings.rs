@@ -296,9 +296,12 @@ impl Couplings {
     }
 
     /// A region was opened: it is measured afresh if it is given up, and says again
-    /// which of its copies are beside chunks that tick.
+    /// which of its copies are beside chunks that tick. An owner that opens it is through
+    /// with whatever the last ended its couplings for: a region released for a move is
+    /// opened again where it went, and nothing else would let it couple again.
     pub(crate) fn opened(&mut self, region: RegionId, now: Duration) {
         self.beside.remove(&region);
+        self.reshaping.remove(&region);
         let from = self.tick(region);
         if let Some(earning) = self.given_up.get_mut(&region) {
             *earning = Earning { since: now, from };
@@ -964,6 +967,29 @@ mod tests {
         assert!(!couplings.of_region(B).given_up);
         let said = turn(&mut couplings, ms(10_251), &[], &uses);
         assert!(said.contains(&(B, StoreReply::CoupleWith { partner: A })));
+    }
+
+    #[test]
+    fn a_region_released_for_a_move_is_coupled_again_once_opened_where_it_went() {
+        let mut couplings = Couplings::default();
+        let mut uses = Uses::default();
+        needing(&mut couplings, &mut uses, A, B, 0);
+        let mut said = Said::default();
+        couplings.reshaping(A, &mut said);
+        let told = turn(&mut couplings, ms(0), &[], &uses);
+        assert!(
+            !told
+                .iter()
+                .any(|(_, reply)| matches!(reply, StoreReply::CoupleWith { .. }))
+        );
+        couplings.opened(A, ms(10));
+        // An opened region says again which copies are beside chunks that tick.
+        couplings.beside(A, &[ChunkPos::new(0, 0)], &[]);
+        let told = turn(&mut couplings, ms(20), &[], &uses);
+        assert!(
+            told.contains(&(A, StoreReply::CoupleWith { partner: B })),
+            "{told:?}"
+        );
     }
 
     #[test]

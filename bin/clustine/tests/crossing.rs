@@ -1241,7 +1241,10 @@ impl Crossings {
         self.cluster.kill().await;
         self.cluster.start().await;
         let address = self.cluster.edge.0.clone();
-        let mut auditor = join(&address, "Auditor").await;
+        // The thrower comes back to look, where it stood throughout and is put again: a
+        // newcomer at the spawn point would be within reach of items that lie less than
+        // two blocks east of the line, and pick them up, as the game's players do.
+        let mut auditor = join(&address, "Thrower").await;
         let uuids: Vec<Uuid> = lying.keys().copied().collect();
         auditor
             .wait_until(RECOVERY, |bot| {
@@ -1299,7 +1302,6 @@ async fn killed_around_crossings(victim: Victim) {
 /// one place in every durable state"): the worker of the sending region is killed at
 /// each moment of a crossing, and every item is there once.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: fails now and then, where the coordinator moves the holding region to even regions out after the kill (the finding of the test of a moved holder): an item hangs in mid-air; once, every item but one was gone after every process was killed and started again"]
 async fn an_item_crossing_a_line_is_there_once_however_the_sending_worker_is_killed() {
     if a_repetition() {
         return;
@@ -1309,7 +1311,6 @@ async fn an_item_crossing_a_line_is_there_once_however_the_sending_worker_is_kil
 
 /// As above, the worker of the region that takes the item in killed at each moment.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: fails now and then, where the coordinator moves the holding region to even regions out after the kill (the finding of the test of a moved holder): an item hangs in mid-air; once, every item but one was gone after every process was killed and started again"]
 async fn an_item_crossing_a_line_is_there_once_however_the_holding_worker_is_killed() {
     if a_repetition() {
         return;
@@ -1344,7 +1345,6 @@ async fn walk_tending(walker: &mut Bot, to: (f64, f64), speed: f64, tended: &mut
 /// the holder's hello"): the region that takes the item in is moved to another worker at
 /// each moment of a crossing, and every item is there once.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: once the region east of the line has been moved to another worker (released and restored), an item sent across into it is never taken: it hangs in mid-air for every viewer, a newcomer is shown it at the line, and only a restart of the whole server takes it in"]
 async fn an_item_crossing_a_line_is_there_once_however_the_holding_region_is_moved() {
     if a_repetition() {
         return;
@@ -1519,11 +1519,12 @@ async fn an_item_thrown_across_the_line_between_regions_that_follow_players_merg
 /// into the holder's land that none of its players uses is taken all the same, the chunk
 /// loaded for it with an arrival ticket that lasts until the arrival is taken and 100
 /// ticks more, "the chunk goes with its next save when the ticket ends". Nobody but the
-/// thrower, west of the line, is near: once the ticket has ended, a newcomer, who enters
-/// in the holder's land and so has it load the chunk again, is shown the item where it
-/// lay; and so is everyone after the server is stopped and started.
+/// thrower, west of the line, is near: once the ticket has ended, the thrower comes back
+/// and is shown the item where it lay; and so after the server is stopped and started.
+/// It is the thrower who comes back, put where it stood: a newcomer at the spawn point
+/// would be within reach of an item that lies less than two blocks east of the line,
+/// and pick it up, as the game's players do.
 #[tokio::test]
-#[ignore = "finding: an item taken by a holder that does not use its chunk (the arrival ticket) is lost once the chunk is let go: a newcomer is not shown it, and it is not there after a restart"]
 async fn an_item_thrown_into_land_its_holder_does_not_use_is_kept_when_the_chunk_is_let_go() {
     let directory = tempfile::tempdir().unwrap();
     let (server, address) = start_with(pinned(directory.path())).await;
@@ -1540,22 +1541,21 @@ async fn an_item_thrown_into_land_its_holder_does_not_use_is_kept_when_the_chunk
     for _ in 0..200 {
         thrower.round_trip().await;
     }
-    let mut newcomer = join(&address, "Newcomer").await;
-    newcomer
-        .wait_until(PATIENCE, |bot| shown(bot, uuid).len() == 1)
+    drop(thrower);
+    let mut back = join(&address, "Thrower").await;
+    back.wait_until(PATIENCE, |bot| shown(bot, uuid).len() == 1)
         .await
         .unwrap_or_else(|error| {
             panic!(
-                "{error:#}: the newcomer is never shown the item that lies at {lies:?}; it shows {:?}",
-                items_of(&newcomer)
+                "{error:#}: the thrower is never shown again the item that lies at {lies:?}; it shows {:?}",
+                items_of(&back)
             )
         });
-    assert_lies_at(shown(&newcomer, uuid)[0].position, lies);
-    drop(newcomer);
-    drop(thrower);
+    assert_lies_at(shown(&back, uuid)[0].position, lies);
+    drop(back);
     server.stop().await;
     let (server, address) = start_with(pinned(directory.path())).await;
-    let mut auditor = join(&address, "Auditor").await;
+    let mut auditor = join(&address, "Thrower").await;
     auditor
         .wait_until(PATIENCE, |bot| shown(bot, uuid).len() == 1)
         .await
@@ -1575,7 +1575,6 @@ async fn an_item_thrown_into_land_its_holder_does_not_use_is_kept_when_the_chunk
 /// line into it, and lies at rest east of the line, shown once, by one wire id; so it does
 /// after the region is moved once more.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "finding: once the region east of the line has been moved to another worker (released and restored), an item sent across into it is never taken: it hangs in mid-air for every viewer, a newcomer is shown it at the line, and only a restart of the whole server takes it in"]
 async fn an_item_thrown_into_a_region_moved_a_while_before_comes_to_rest_on_the_far_side() {
     if a_repetition() {
         return;
