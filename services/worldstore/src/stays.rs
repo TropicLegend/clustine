@@ -100,6 +100,7 @@ pub(crate) fn commit(handle: &StoreHandle, tick: u64, stays: Vec<StayNote>) {
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 

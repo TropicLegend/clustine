@@ -48,6 +48,7 @@ fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect], taken: &[EffectId
         effects: effects.to_vec(),
         taken: taken.to_vec(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 

@@ -107,6 +107,7 @@ fn save(handle: &StoreHandle, position: ChunkPos, tick: u64, chunk: Chunk) {
         position,
         tick,
         chunk,
+        parts: clustine_rpc::Parts::ALL,
     });
 }
 
@@ -410,6 +411,7 @@ fn effects_the_lender_had_not_taken_go_to_the_borrower_with_the_lend() {
         effects: vec![effect],
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
     lent(&lender, &borrower, marked());
     // Behind the grant, on the borrower's stream before a mark.

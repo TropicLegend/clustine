@@ -84,6 +84,7 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 
@@ -164,6 +165,7 @@ fn scenario(store: &Store) -> Told {
         position: ORIGIN,
         tick: 3,
         chunk,
+        parts: clustine_rpc::Parts::ALL,
     });
     commit(
         &first,
@@ -228,6 +230,7 @@ fn scenario(store: &Store) -> Told {
                 position: ORIGIN,
                 tick: from + 2,
                 chunk,
+                parts: clustine_rpc::Parts::ALL,
             });
             second.request(StoreRequest::Checkpoint {
                 tick: from + 1,

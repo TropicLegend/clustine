@@ -267,17 +267,20 @@ fn scenario(store: &Store) -> Vec<u64> {
             effects: Vec::new(),
             taken: Vec::new(),
             events: events(tick),
+            entity_changes: Vec::new(),
         });
         if tick == ORIGIN_SAVED_AS_OF {
             handle.request(StoreRequest::Save {
                 position: ORIGIN,
                 tick,
                 chunk: chunk_after(ORIGIN, 1..=tick),
+                parts: clustine_rpc::Parts::ALL,
             });
             handle.request(StoreRequest::Save {
                 position: EAST,
                 tick: EAST_SAVED_AS_OF,
                 chunk: chunk_after(EAST, 1..=EAST_SAVED_AS_OF),
+                parts: clustine_rpc::Parts::ALL,
             });
             handle.request(StoreRequest::Checkpoint {
                 tick: CHECKPOINT,

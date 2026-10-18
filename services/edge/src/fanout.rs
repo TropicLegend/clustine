@@ -2791,7 +2791,10 @@ impl Fanout {
         // two regions say of an earlier and a later stay reaches the edge in no order,
         // and a client must never be shown two entities of one player
         // (`docs/adr/0020-one-stay-per-player.md`, section 6, rule 6).
-        let EntityKind::Player { player, .. } = &state.kind;
+        // Entities other than players are shown from step N2c on.
+        let EntityKind::Player { player, .. } = &state.kind else {
+            return;
+        };
         let player = *player;
         if self
             .highest
@@ -2819,10 +2822,7 @@ impl Fanout {
             return Vec::new();
         }
         *highest = entity;
-        let of_player = |shown: &Shown| {
-            let EntityKind::Player { player: of, .. } = &shown.state.kind;
-            *of == player
-        };
+        let of_player = |shown: &Shown| matches!(&shown.state.kind, EntityKind::Player { player: of, .. } if *of == player);
         let earlier = self.entities.iter();
         let earlier = earlier.filter(|(known, shown)| **known < entity && of_player(shown));
         earlier.map(|(known, _)| *known).collect()
@@ -4501,14 +4501,17 @@ impl PlayerView {
         wire: &mut WireIds,
     ) -> Vec<Bytes> {
         let in_world = self.entity.is_some();
-        let EntityKind::Player { player: of, .. } = &state.kind;
-        let own = self.entity == Some(state.entity) || *of == me;
+        let own = self.entity == Some(state.entity)
+            || matches!(&state.kind, EntityKind::Player { player: of, .. } if *of == me);
         let in_view = in_world && !own && self.wanted.contains(&state.chunk());
         let shown = self.visible.contains_key(&state.entity);
         match (in_view, shown) {
             (true, false) => {
                 let mut packets = Vec::new();
-                let EntityKind::Player { player, name } = &state.kind;
+                // Entities other than players are shown from step N2c on.
+                let EntityKind::Player { player, name } = &state.kind else {
+                    return Vec::new();
+                };
                 // A client takes a player to be one entity. Should word of an entity
                 // the player was before still be around, it goes first.
                 let outdated: Vec<_> = self
@@ -4604,13 +4607,16 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 
 /// The packets that make an entity appear on a client.
 fn spawn_packets(state: &EntityState, id: i32) -> [Bytes; 2] {
-    let EntityKind::Player { player, .. } = &state.kind;
+    let (uuid, kind) = match &state.kind {
+        EntityKind::Player { player, .. } => (player.0, entity_types::PLAYER),
+        EntityKind::Other { uuid, kind, .. } => (*uuid, i32::from(*kind)),
+    };
     let position = state.pose.position;
     [
         encoded(&SpawnEntity {
             entity_id: id,
-            uuid: player.0,
-            kind: entity_types::PLAYER,
+            uuid,
+            kind,
             x: position.x,
             y: position.y,
             z: position.z,

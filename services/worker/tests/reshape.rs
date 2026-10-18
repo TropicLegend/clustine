@@ -422,6 +422,7 @@ impl Other {
             position,
             tick: 0,
             chunk: chunk.clone(),
+            parts: clustine_rpc::Parts::ALL,
         });
     }
 }

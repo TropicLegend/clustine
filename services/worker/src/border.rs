@@ -183,6 +183,8 @@ impl Border {
                 sequence,
                 previous,
                 changes,
+                // Handed to the sim from step N2b on.
+                entity_changes: _,
             } => {
                 let copy = self.copies.get_mut(&position)?;
                 let update = Update {
@@ -591,6 +593,7 @@ mod tests {
             sequence,
             previous,
             changes: vec![(BlockPos::new(16, 100, 0), blocks::STONE).into()],
+            entity_changes: Vec::new(),
         }
     }
 

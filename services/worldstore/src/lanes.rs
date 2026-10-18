@@ -1080,6 +1080,8 @@ impl Lanes {
                 effects,
                 taken,
                 events,
+                // Carried into the log by step N2b.
+                entity_changes: _,
             } => {
                 let region = session.region;
                 // An effect is filed if its chunk is in use, and left out otherwise:
@@ -1177,6 +1179,7 @@ impl Lanes {
                                     sequence: at,
                                     previous,
                                     changes: changes.clone(),
+                                    entity_changes: Vec::new(),
                                 };
                                 self.group.stream(copier, Streamed::Reply(Box::new(update)));
                             }
@@ -1282,6 +1285,8 @@ impl Lanes {
                 position,
                 tick,
                 chunk,
+                // Written by parts from step N2b on; until then every save writes both.
+                parts: _,
             } => Job::Save {
                 position,
                 tick,

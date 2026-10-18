@@ -6,8 +6,8 @@ use clustine_sim::api::{
     Pose, RegionEvent, RemoteAction, StayNote,
 };
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityId, EntityIds,
-    FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
+    BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, EntityChange, EntityId,
+    EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -317,6 +317,9 @@ pub enum StoreRequest {
         position: ChunkPos,
         tick: u64,
         chunk: Chunk,
+        /// Which of the chunk's files to write: those that changed since it was last
+        /// saved (`docs/groundwork/n2-plan.md`, sections 5 and 11).
+        parts: Parts,
     },
     /// Record the block changes of `tick` and what else changed in the region's state,
     /// so that neither is lost if the process dies before the chunks they are in have
@@ -353,6 +356,9 @@ pub enum StoreRequest {
         /// The effects the tick took, ran or kept as seam entries, ascending
         /// (the same record, section 5).
         taken: Vec<EffectId>,
+        /// What the tick did to entities other than players, by chunk, in the order it
+        /// did it (`docs/adr/0028-entities.md`, section 3).
+        entity_changes: Vec<(ChunkPos, EntityChange)>,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are
@@ -577,6 +583,8 @@ pub enum StoreReply {
         sequence: u64,
         previous: u64,
         changes: Vec<Change>,
+        /// The commit's changes to the chunk's entities, in order.
+        entity_changes: Vec<EntityChange>,
     },
     /// On the stream: who uses a chunk the region copies now (section 8 of the same
     /// record: a copy whose chunk comes to be used by a region not coupled to this one
@@ -1183,4 +1191,21 @@ pub enum FromCoordinator {
     /// To whoever asked for a merge or a split: what came of it. `region` is the
     /// region that absorbed the other or the one that was split off.
     Asked(Result<RegionId, String>),
+}
+
+/// The files of a chunk a save writes: its blocks (with everything a chunk keeps but its
+/// entities) and its entities, which are kept apart so that an entity's step does not
+/// rewrite the blocks (`docs/adr/0028-entities.md`, section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Parts {
+    pub blocks: bool,
+    pub entities: bool,
+}
+
+impl Parts {
+    /// Both files.
+    pub const ALL: Self = Self {
+        blocks: true,
+        entities: true,
+    };
 }

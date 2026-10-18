@@ -79,6 +79,7 @@ pub(crate) fn save(store: &StoreHandle, position: ChunkPos, chunk: &Chunk) {
         position,
         tick: 5,
         chunk: chunk.clone(),
+        parts: clustine_rpc::Parts::ALL,
     });
 }
 
@@ -144,6 +145,7 @@ pub(crate) fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, Blo
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 
@@ -328,6 +330,7 @@ fn a_chunk_file_has_the_tick_of_the_save_and_the_epoch_of_the_region_that_saved_
         position,
         tick: 31,
         chunk: edited(),
+        parts: clustine_rpc::Parts::ALL,
     });
     east.flush();
     let bytes = fs::read(directory.path().join("chunks/overworld/0.0/2.2.chunk")).unwrap();

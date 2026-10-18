@@ -342,6 +342,7 @@ fn save(handle: &StoreHandle, position: ChunkPos, chunk: &Chunk) {
         position,
         tick: 5,
         chunk: chunk.clone(),
+        parts: clustine_rpc::Parts::ALL,
     });
 }
 
@@ -1538,6 +1539,7 @@ fn commit_ticks(
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 

@@ -243,6 +243,7 @@ impl Actor {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         });
         self.ledger.push(commit);
     }
@@ -253,6 +254,7 @@ impl Actor {
                 position,
                 tick: self.tick,
                 chunk: chunk.clone(),
+                parts: clustine_rpc::Parts::ALL,
             });
         }
     }

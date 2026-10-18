@@ -181,6 +181,7 @@ fn seed(store: &Store, region: u32, chunks: &[ChunkPos]) {
             position,
             tick: 0,
             chunk: built(position),
+            parts: clustine_rpc::Parts::ALL,
         });
     }
     handle.flush();
@@ -578,6 +579,7 @@ impl Played {
             effects: Vec::new(),
             taken: Vec::new(),
             events: Vec::new(),
+            entity_changes: Vec::new(),
         });
         tick
     }
@@ -915,6 +917,7 @@ fn a_chunk_whose_load_is_unreadable_is_said_dropped() {
             position: OWN,
             tick: 0,
             chunk: generator().generate(OWN),
+            parts: clustine_rpc::Parts::ALL,
         });
         handle.flush();
     }

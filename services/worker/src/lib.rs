@@ -2628,6 +2628,8 @@ impl RegionRunner {
                 effects: self.border.take_for_commit(),
                 taken,
                 events,
+                // Taken from the tick's output from step N2b on.
+                entity_changes: Vec::new(),
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -3050,6 +3052,8 @@ impl RegionRunner {
                 position,
                 tick: self.region.tick_number(),
                 chunk,
+                // Saved by parts from step N2b on.
+                parts: clustine_rpc::Parts::ALL,
             });
         }
     }
@@ -4768,6 +4772,7 @@ mod tests {
                 position,
                 tick,
                 chunk,
+                ..
             } = &request
             {
                 let saved = (*position, *tick, chunk.clone());
@@ -9584,6 +9589,7 @@ mod tests {
             position: BESIDE,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
         neighbour.request(StoreRequest::Return {
             chunks: vec![BESIDE],

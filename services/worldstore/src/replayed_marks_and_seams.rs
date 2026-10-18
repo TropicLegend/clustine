@@ -78,6 +78,7 @@ fn stored(handle: &StoreHandle, position: ChunkPos, chunk: Chunk) {
         position,
         tick: 0,
         chunk,
+        parts: clustine_rpc::Parts::ALL,
     });
 }
 
@@ -104,6 +105,7 @@ fn commit(
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 
@@ -283,6 +285,7 @@ fn what_is_committed_after_a_save_replaces_what_the_chunk_was_saved_with() {
         position: A,
         tick: 1,
         chunk: saved.clone(),
+        parts: clustine_rpc::Parts::ALL,
     });
     commit(&east, 2, &[connected(A)], vec![A], vec![(A, vec![s3()])]);
     committed(&east, 2);

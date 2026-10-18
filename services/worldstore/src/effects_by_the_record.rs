@@ -277,6 +277,7 @@ fn commit_of(
         effects: effects.to_vec(),
         taken: taken.to_vec(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     }
 }
 
@@ -770,6 +771,7 @@ fn a_copy_is_based_on_the_committed_form_and_kept_up_by_a_chain_of_updates() {
                 sequence,
                 previous: before,
                 changes,
+                entity_changes: _,
             } => {
                 assert_eq!(position, ORIGIN);
                 assert_eq!(changes, [(at, state).into()]);
@@ -961,6 +963,7 @@ fn a_copy_of_a_stored_chunk_that_cannot_be_read_is_based_without_a_chunk() {
         position,
         tick: 0,
         chunk: generator().generate(position),
+        parts: clustine_rpc::Parts::ALL,
     });
     east.handle.flush();
     let file = directory.path().join("chunks/overworld/0.0/3.4.chunk");

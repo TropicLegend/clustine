@@ -1443,6 +1443,7 @@ mod tests {
                     position: origin,
                     tick: 5,
                     chunk: built,
+                    parts: clustine_rpc::Parts::ALL,
                 };
                 wire::blocking::write(&mut stranger, &request).unwrap();
                 stranger.write_all(garbage).unwrap();
@@ -1501,6 +1502,7 @@ mod tests {
                 position: *position,
                 tick: 5,
                 chunk: chunk.clone(),
+                parts: clustine_rpc::Parts::ALL,
             };
             let mut bytes = Vec::new();
             wire::blocking::write(&mut bytes, &request).unwrap();
@@ -1653,6 +1655,7 @@ mod tests {
             position: origin,
             tick: 5,
             chunk: motley(0),
+            parts: clustine_rpc::Parts::ALL,
         };
         wire::blocking::write(&mut deaf, &request).unwrap();
         for _ in 0..40 {
@@ -1709,6 +1712,7 @@ mod tests {
                 effects: Vec::new(),
                 taken: Vec::new(),
                 events: Vec::new(),
+                entity_changes: Vec::new(),
             });
         }
         committed(&owner, tick);

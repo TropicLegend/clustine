@@ -5,10 +5,11 @@
 
 use clustine_data::BlockState;
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityId, FiledEffect, PlayerId,
-    RegionId, Vec3,
+    BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, EntityChange, EntityData,
+    EntityId, FiledEffect, PlayerId, RegionId, Vec3,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::placement::Click;
 use crate::state::StateDelta;
@@ -216,7 +217,20 @@ pub enum PlayerChange {
 /// What kind of thing an entity is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntityKind {
-    Player { player: PlayerId, name: String },
+    Player {
+        player: PlayerId,
+        name: String,
+    },
+    /// An entity other than a player (`docs/adr/0028-entities.md`): its type, an index
+    /// into `clustine_data::ENTITY_TYPES`, its UUID, its motion, its changes of holder
+    /// and what it is beside that.
+    Other {
+        kind: u16,
+        uuid: Uuid,
+        motion: [f64; 3],
+        hops: u32,
+        data: EntityData,
+    },
 }
 
 /// Everything needed to show an entity to someone who has not seen it before.
@@ -578,6 +592,11 @@ pub struct TickInputs {
     /// The changes of later commits in copied chunks, blocks and block entities' data,
     /// in the order the store sent them, applied after the bases.
     pub copy_updates: Vec<(ChunkPos, Vec<Change>)>,
+    /// The entity changes of later commits in copied chunks, in the order the store
+    /// sent them, applied after the bases (`docs/adr/0028-entities.md`, section 3). They
+    /// touch other parts of a chunk than block changes, so their order among those does
+    /// not matter.
+    pub copy_entity_updates: Vec<(ChunkPos, Vec<EntityChange>)>,
     /// Copies the region no longer has: gone from its tickets' reach, withdrawn
     /// because their chunk came to be used by a region not coupled to this one, or
     /// loaded as the region's own.
@@ -986,4 +1005,8 @@ pub struct TickOutput {
     ///
     /// [`Region::restore`]: crate::Region::restore
     pub stays: Vec<StayNote>,
+    /// What the tick did to entities other than players, by chunk, in the order it did
+    /// it: to be committed with the tick (`docs/adr/0028-entities.md`, section 3). Only
+    /// for chunks the region has loaded.
+    pub entity_changes: Vec<(ChunkPos, EntityChange)>,
 }

@@ -138,12 +138,14 @@ fn scenario(store: &Store) -> Vec<u64> {
             events: events(tick)
                 .map(|events| vec![(ORIGIN, events)])
                 .unwrap_or_default(),
+            entity_changes: Vec::new(),
         });
         if tick == SAVED_AS_OF {
             handle.request(StoreRequest::Save {
                 position: ORIGIN,
                 tick,
                 chunk: chunk_after(1..=tick),
+                parts: clustine_rpc::Parts::ALL,
             });
             handle.request(StoreRequest::Checkpoint {
                 tick: CHECKPOINT,

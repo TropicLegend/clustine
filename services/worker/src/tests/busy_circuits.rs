@@ -172,6 +172,7 @@ fn world_with(line: bool) -> Divided {
             position,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
     }
     handle.flush();
@@ -203,6 +204,7 @@ fn logged_bytes(request: &StoreRequest) -> usize {
         effects,
         taken,
         events,
+        ..
     } = request
     else {
         panic!("{request:?} is not a commit");

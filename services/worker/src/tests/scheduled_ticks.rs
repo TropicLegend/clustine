@@ -68,6 +68,7 @@ fn world_with(ticks: &[ScheduledTick]) -> Divided {
         position: K,
         tick: 0,
         chunk,
+        parts: clustine_rpc::Parts::ALL,
     });
     handle.flush();
     world

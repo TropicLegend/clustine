@@ -376,6 +376,7 @@ impl Other {
             position,
             tick: 0,
             chunk: chunk.clone(),
+            parts: clustine_rpc::Parts::ALL,
         });
     }
 }
@@ -1121,8 +1122,8 @@ fn entity_spawn(log: &[WorkerToEdge], id: PlayerId) -> Option<usize> {
         .into_iter()
         .find_map(|(index, _, event)| match event {
             RegionEvent::EntitySpawned(state) => {
-                let EntityKind::Player { player, .. } = &state.kind;
-                (*player == id).then_some(index)
+                matches!(&state.kind, EntityKind::Player { player, .. } if *player == id)
+                    .then_some(index)
             }
             _ => None,
         })

@@ -668,6 +668,7 @@ mod tests {
                 position: changed,
                 tick: 0,
                 chunk,
+                parts: clustine_rpc::Parts::ALL,
             });
             east.flush();
         }

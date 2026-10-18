@@ -1778,6 +1778,7 @@ mod tests {
             position: C,
             tick: 1,
             chunk: changed.clone(),
+            parts: clustine_rpc::Parts::ALL,
         });
         load(&east, C);
         east.request(StoreRequest::Flush);
@@ -1786,6 +1787,7 @@ mod tests {
             position: WEST,
             tick: 1,
             chunk: edited(),
+            parts: clustine_rpc::Parts::ALL,
         });
         assert_eq!(flushed(&west), []);
         assert!(durable(&rig.disk, WEST));
@@ -1878,6 +1880,7 @@ mod tests {
                 position: WEST,
                 tick: 1,
                 chunk: edited(),
+                parts: clustine_rpc::Parts::ALL,
             });
             assert_eq!(flushed(&west), []);
             // The hello is answered only once the restore is through.

@@ -56,6 +56,7 @@ fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 
@@ -159,6 +160,7 @@ fn a_copy_is_based_on_its_chunk_with_the_holders_commits_and_kept_up_to_date() {
             sequence: second_sequence,
             previous: before_second,
             changes: second_changes,
+            entity_changes: _,
         },
         StoreReply::CopyUpdate {
             previous: before_third,
@@ -330,6 +332,7 @@ fn a_copy_is_what_its_holder_restores_with_after_saves_and_a_checkpoint() {
         position: WEST,
         tick: 1,
         chunk: with(WEST, &changes[..2]),
+        parts: clustine_rpc::Parts::ALL,
     });
     holder.request(StoreRequest::Checkpoint {
         tick: 1,
@@ -364,6 +367,7 @@ fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 

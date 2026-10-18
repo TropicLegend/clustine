@@ -13,7 +13,7 @@ clustine-data.workspace = true
 clustine-noise.workspace = true
 clustine-world.workspace = true
 serde.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 postcard.workspace = true
-uuid.workspace = true

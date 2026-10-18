@@ -74,6 +74,7 @@ fn commit(
         effects: Vec::new(),
         taken: Vec::new(),
         events: Vec::new(),
+        entity_changes: Vec::new(),
     });
 }
 
@@ -220,6 +221,7 @@ fn ticks_committed_after_a_save_replace_those_the_chunk_was_saved_with() {
         position: B,
         tick: 1,
         chunk: saved.clone(),
+        parts: clustine_rpc::Parts::ALL,
     });
     commit(&east, 2, &[], vec![(B, vec![tick(2, -1)])]);
     committed(&east, 2);

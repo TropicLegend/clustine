@@ -210,6 +210,7 @@ fn save(handle: &StoreHandle, built: &Built, position: ChunkPos, tick: u64) {
         position,
         tick,
         chunk: built.chunk(position),
+        parts: clustine_rpc::Parts::ALL,
     });
 }
 

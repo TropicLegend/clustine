@@ -69,6 +69,7 @@ fn world_with(marked: &[ChunkPos], plain: &[ChunkPos]) -> Divided {
             position: *position,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
     }
     for position in plain {
@@ -77,6 +78,7 @@ fn world_with(marked: &[ChunkPos], plain: &[ChunkPos]) -> Divided {
             position: *position,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
     }
     handle.flush();
@@ -419,6 +421,7 @@ async fn a_marked_chunks_snapshot_waits_while_its_neighbours_are_claimed() {
             position: IN_THE_GAP,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
         handle.flush();
     }

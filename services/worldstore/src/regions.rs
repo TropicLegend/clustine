@@ -1129,6 +1129,7 @@ fn what_a_later_holder_built_is_not_undone_by_an_earlier_holders_log() {
         position: FREE,
         tick: 1,
         chunk: built(FREE, blocks::STONE),
+        parts: clustine_rpc::Parts::ALL,
     });
     give_back(&first, &[FREE]);
     first.flush();
@@ -1140,6 +1141,7 @@ fn what_a_later_holder_built_is_not_undone_by_an_earlier_holders_log() {
         position: FREE,
         tick: 1,
         chunk: built(FREE, blocks::GLASS),
+        parts: clustine_rpc::Parts::ALL,
     });
     second.request(StoreRequest::Checkpoint {
         tick: 1,
@@ -1273,6 +1275,7 @@ fn a_return_that_was_called_off_frees_nothing_later() {
         position: FREE,
         tick: 2,
         chunk: built(FREE, blocks::GLASS),
+        parts: clustine_rpc::Parts::ALL,
     });
     give_back(&first, &[FREE]);
     first.request(StoreRequest::Flush);

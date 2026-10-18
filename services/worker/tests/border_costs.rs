@@ -125,6 +125,7 @@ fn world(root: &Path, slowed: Option<Duration>) -> Store {
             position,
             tick: 0,
             chunk,
+            parts: clustine_rpc::Parts::ALL,
         });
     }
     handle.flush();

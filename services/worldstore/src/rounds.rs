@@ -418,6 +418,7 @@ fn save_anew(west: &StoreHandle, east: &StoreHandle) {
             position: *position,
             tick: 2,
             chunk: after(index).clone(),
+            parts: clustine_rpc::Parts::ALL,
         });
     }
 }

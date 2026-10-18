@@ -366,6 +366,7 @@ impl World {
                     position: *position,
                     tick,
                     chunk: changed(*position, tick, index),
+                    parts: clustine_rpc::Parts::ALL,
                 });
             }
             handle.request(StoreRequest::Checkpoint {
@@ -526,6 +527,7 @@ fn a_claim_is_answered_with_its_groups_sync_and_a_return_waits_for_one_with_no_a
                 position: FREE,
                 tick: 1,
                 chunk: changed(FREE, 1, 0),
+                parts: clustine_rpc::Parts::ALL,
             });
             home.request(StoreRequest::Return { chunks: vec![FREE] });
         },
