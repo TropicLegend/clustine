@@ -234,6 +234,21 @@ impl Couplings {
     /// if the two are coupled and the maker had joined by then, and otherwise counted
     /// from its taking.
     pub(crate) fn due(&self, maker: RegionId, holder: RegionId, tick: u64, effect: &Effect) -> Due {
+        let delay = match effect.what {
+            Effected::Tick { delay, .. } => i64::from(delay),
+            _ => 0,
+        };
+        self.due_after(maker, holder, tick, delay)
+    }
+
+    /// When an entity `maker` sent across a line in its `tick` may be taken by `holder`:
+    /// as an effect with no delay, in the holder's tick after the one the sender's was,
+    /// where the two are coupled (`docs/groundwork/n3-plan.md`, sections 5 and 6).
+    pub(crate) fn due_of_arrival(&self, maker: RegionId, holder: RegionId, tick: u64) -> Due {
+        self.due_after(maker, holder, tick, 0)
+    }
+
+    fn due_after(&self, maker: RegionId, holder: RegionId, tick: u64, delay: i64) -> Due {
         let Some(coupled) = self.coupled.get(&pair(maker, holder)) else {
             return Due::FromTaking;
         };
@@ -246,10 +261,6 @@ impl Couplings {
         if tick < coupled.joined[side] {
             return Due::FromTaking;
         }
-        let delay = match effect.what {
-            Effected::Tick { delay, .. } => i64::from(delay),
-            _ => 0,
-        };
         let due = tick as i64 + of_maker - of_holder + delay;
         Due::At {
             tick: u64::try_from(due).unwrap_or(0),

@@ -25,6 +25,7 @@
 //! store over TCP, [`StoreHandle::connect`] opens a region of a store that is served,
 //! and [`regions`] reads its list of regions.
 
+mod arrivals;
 mod chunks;
 mod copies;
 mod couplings;

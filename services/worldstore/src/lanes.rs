@@ -55,11 +55,12 @@ use clustine_rpc::{
     StoreReply, StoreRequest, TickState,
 };
 use clustine_world::{
-    BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, EntityChange, EntityId,
-    EntityIds, FiledEffect, PlayerId,
+    Arrival, BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, Entity,
+    EntityChange, EntityId, EntityIds, FiledEffect, PlayerId,
 };
 use tracing::{error, info, warn};
 
+use crate::arrivals::{ArrivalUndo, FiledArrivals, KeptArrival};
 use crate::chunks::{Job, Jobs, Listed, Replayed};
 use crate::copies::Copies;
 use crate::couplings::{Couplings, Said};
@@ -85,6 +86,11 @@ const RECORD_CHUNKS: usize = 65_536;
 /// At most this many effects are dropped or written forward by one record of the log,
 /// for the same reason.
 const RECORD_EFFECTS: usize = 65_536;
+
+/// At most this many arrivals are written forward by one record of the log: an entity's
+/// record is some hundreds of bytes, of a few kilobytes at most, far below a record's
+/// room for this many.
+const RECORD_ARRIVALS: usize = 4_096;
 
 /// How often the commit thread looks at the time while regions are coupled or in a
 /// handshake, when nothing else wakes it.
@@ -133,6 +139,9 @@ pub(crate) struct Lanes {
     uses: Uses,
     /// The effects filed for chunks in use and not taken yet.
     filed: Filed,
+    /// The arrivals filed and not taken yet, for the regions that hold their chunks
+    /// (`docs/groundwork/n3-plan.md`).
+    arrivals: FiledArrivals,
     /// Who copies which chunk (the same record, section 3). Not in the log: a region
     /// asks for its copies again after every hello.
     copies: Copies,
@@ -178,6 +187,9 @@ struct Lane {
     /// with the number of that return. A chunk is freed only by the return it is noted
     /// with here, so that one that was called off frees nothing later.
     returning: BTreeMap<ChunkPos, u64>,
+    /// Chunks of returns asked for that the region found unreadable: arrivals filed for
+    /// them do not call their return off (`docs/groundwork/n3-plan.md`, section 6).
+    unreadable: BTreeSet<ChunkPos>,
     /// How many returns the session that opened the region last has asked for, from
     /// which their numbers come.
     returns: u64,
@@ -251,6 +263,8 @@ struct Group {
     /// What the group did to the effects filed, which is taken back if the group
     /// cannot be made durable.
     effects: Vec<effects::Undo>,
+    /// What the group did to the arrivals filed, taken back as `effects` is.
+    arrivals: Vec<ArrivalUndo>,
     /// What goes on each region's stream once the group is durable, in order.
     stream: BTreeMap<RegionId, Vec<Streamed>>,
     /// The copies asked for in the group, which are registered and based once it is
@@ -287,10 +301,24 @@ impl Group {
     }
 }
 
+/// What a record of the log does to the arrivals, as the store's start reads it.
+enum ArrivalStep {
+    File(EffectId, KeptArrival),
+    Take(EffectId),
+    /// A merge or a split: those filed before it are due at once, who held them before
+    /// not being known here.
+    DueAtOnceBelow(u64),
+}
+
 /// Something for a region's stream.
 enum Streamed {
     /// An effect filed, sent unless it was taken or dropped within the group.
     Effect(EffectId),
+    /// An arrival filed, sent unless it was taken within the group, or its chunk's holder
+    /// is another region by the group's end: resolved then, never sent as a copy, so that
+    /// one a later commit of the group took is not sent behind that commit's answer
+    /// (`docs/groundwork/n3-plan.md`, section 5, G4).
+    Arrival(EffectId),
     Reply(Box<StoreReply>),
 }
 
@@ -427,6 +455,12 @@ impl Lanes {
         };
         // The effects not taken yet, as the log has them.
         let mut filed = Filed::default();
+        // What the log does to the arrivals, in its order, each with the commit it is of
+        // if it is a commit's: a commit that a later `Opened` of its region leaves out of
+        // the region's history takes back what it did to them, which for an arrival
+        // would double or lose an entity (`docs/groundwork/n3-plan.md`, sections 5 and
+        // 6). Applied once the whole log is read.
+        let mut arrival_steps: Vec<(Option<(u32, u64)>, ArrivalStep)> = Vec::new();
         let mut segments: Vec<u64> = disk
             .list(&log.directory)?
             .iter()
@@ -459,8 +493,28 @@ impl Lanes {
                         stays,
                         effects,
                         taken,
+                        arrivals,
+                        arrivals_taken,
                         ..
                     } => {
+                        let of = Some((region, tick));
+                        let at = sequence(segment, offset as u64);
+                        for (index, (chunk, entity, due)) in arrivals.into_iter().enumerate() {
+                            let id = EffectId {
+                                sequence: at,
+                                index: index as u32,
+                            };
+                            let kept = KeptArrival {
+                                chunk,
+                                entity,
+                                due,
+                                segment,
+                            };
+                            arrival_steps.push((of, ArrivalStep::File(id, kept)));
+                        }
+                        for id in arrivals_taken {
+                            arrival_steps.push((of, ArrivalStep::Take(id)));
+                        }
                         // Whether or not the commit is part of its region's history
                         // any more: its effects were filed when it was appended. Only a
                         // make-over passes over commits that were answered, and it
@@ -508,8 +562,11 @@ impl Lanes {
                             lane.record.take_if(|record| record.tick > restored);
                         }
                         // A commit that is no part of the region's history has said
-                        // nothing of stays either.
+                        // nothing of stays either, nor of arrivals.
                         noted.retain(|(noting, tick, _)| *noting != region || *tick <= restored);
+                        arrival_steps.retain(|(of, _)| {
+                            !of.is_some_and(|(of, tick)| of == region && tick > restored)
+                        });
                     }
                     LogRecord::Changes { .. } => {
                         warn!(
@@ -561,6 +618,8 @@ impl Lanes {
                         regions.entry(RegionId(region)).or_default().whole(entry);
                         // Who used the chunks before is not known here.
                         filed.all_count_from_taking();
+                        let at = sequence(segment, offset as u64);
+                        arrival_steps.push((None, ArrivalStep::DueAtOnceBelow(at)));
                         if let Some(table) = changed_by(&mut stored, segment)? {
                             table.absorb(RegionId(region), RegionId(absorbed), tick)?;
                             table_last = Some(segment);
@@ -583,6 +642,8 @@ impl Lanes {
                         regions.entry(RegionId(region)).or_default().whole(entry);
                         // Who used the chunks before is not known here.
                         filed.all_count_from_taking();
+                        let at = sequence(segment, offset as u64);
+                        arrival_steps.push((None, ArrivalStep::DueAtOnceBelow(at)));
                         let made = regions.entry(RegionId(part)).or_default();
                         made.whole(entry);
                         // The record has the new region's epoch until its file does,
@@ -606,8 +667,30 @@ impl Lanes {
                             filed.remove(id);
                         }
                     }
-                    // Filed and dropped from step N3b on.
-                    LogRecord::ArrivalsDropped { .. } | LogRecord::ArrivalsForward { .. } => {}
+                    // In their place among the commits' steps, and never taken back: a
+                    // fold's or a segment's, not a region's.
+                    LogRecord::ArrivalsDropped { ids } => {
+                        for id in ids {
+                            arrival_steps.push((None, ArrivalStep::Take(id)));
+                        }
+                    }
+                    LogRecord::ArrivalsForward { arrivals } => {
+                        for Arrival {
+                            id,
+                            chunk,
+                            entity,
+                            due,
+                        } in arrivals
+                        {
+                            let kept = KeptArrival {
+                                chunk,
+                                entity,
+                                due,
+                                segment,
+                            };
+                            arrival_steps.push((None, ArrivalStep::File(id, kept)));
+                        }
+                    }
                     LogRecord::EffectsForward { effects } => {
                         for FiledEffect { id, effect, due } in effects {
                             filed.file(
@@ -624,6 +707,18 @@ impl Lanes {
             }
             log.segments.insert(segment);
             log.next = segment + 1;
+        }
+        let mut arrivals = FiledArrivals::default();
+        for (_, step) in arrival_steps {
+            match step {
+                ArrivalStep::File(id, kept) => arrivals.file(id, kept),
+                ArrivalStep::Take(id) => {
+                    arrivals.remove(id);
+                }
+                ArrivalStep::DueAtOnceBelow(sequence) => {
+                    arrivals.count_from_taking_below(sequence);
+                }
+            }
         }
         // Also when no segment is left: a record for the table in a segment below the
         // file's `from` would not be read at the next start.
@@ -666,6 +761,7 @@ impl Lanes {
             sessions: 0,
             uses: Uses::default(),
             filed,
+            arrivals,
             copies: Copies::default(),
             couplings: Couplings::default(),
             clock: real_clock(),
@@ -1030,6 +1126,37 @@ impl Lanes {
 
     /// The region has lost its owner: its couplings end at once, and its partners go on
     /// without it (`docs/adr/0025-effects-between-regions.md`, section 8).
+    /// Calls off the returns of `chunks`, each of the region named, which an arrival came
+    /// for: the chunk is no longer being returned, the region is answered `Claimed` for it
+    /// in the group, and its use begins again (`docs/groundwork/n3-plan.md`, sections 5
+    /// and 6). One the region found unreadable is returned all the same.
+    fn call_off_returns(&mut self, chunks: Vec<(RegionId, ChunkPos)>) {
+        for (holder, chunk) in chunks {
+            let Some(lane) = self.regions.get_mut(&holder) else {
+                continue;
+            };
+            if lane.unreadable.contains(&chunk) || lane.returning.remove(&chunk).is_none() {
+                continue;
+            }
+            if let Some(owner) = lane.owner.as_mut() {
+                owner.unsynced.push(StoreReply::Claimed {
+                    granted: vec![chunk],
+                    foreign: Vec::new(),
+                });
+            }
+            self.group.regions.insert(holder);
+            if self.uses.begin(holder, chunk) {
+                tell_copiers(
+                    &self.uses,
+                    &self.couplings,
+                    &self.copies,
+                    &mut self.group,
+                    chunk,
+                );
+            }
+        }
+    }
+
     fn owner_lost(&mut self, region: RegionId) {
         let mut said = Said::default();
         let why = clustine_rpc::Uncoupling::OwnerLost { region };
@@ -1083,11 +1210,102 @@ impl Lanes {
                 taken,
                 events,
                 entity_changes,
-                // Filed and taken from step N3b on.
-                arrivals: _,
-                arrivals_taken: _,
+                arrivals,
+                mut arrivals_taken,
             } => {
                 let region = session.region;
+                // What the commit took of the arrivals is looked at before anything is
+                // appended: each filed and held by the region, or the commit is refused,
+                // appending nothing, and the region is lost; a taking passed over would
+                // leave the entity in the commit and filed both
+                // (`docs/groundwork/n3-plan.md`, section 5, D1).
+                arrivals_taken.sort_unstable();
+                arrivals_taken.dedup();
+                let refused = arrivals_taken.iter().find(|id| {
+                    !self
+                        .arrivals
+                        .get(**id)
+                        .is_some_and(|kept| self.table.holder(kept.chunk) == Some(region))
+                });
+                if let Some(id) = refused {
+                    error!(
+                        %region,
+                        ?id,
+                        "a commit took an arrival that is not filed for a chunk the region holds; the region is lost"
+                    );
+                    lose(lane, &self.jobs);
+                    self.owner_lost(region);
+                    return;
+                }
+                // An entity sent into land nobody holds takes the land with it: granted to
+                // the sender before the commit is appended, so that a restart that reads
+                // the log, or keeps the first part of a torn group, files the arrival
+                // against its holder (ADR-0028, section 5).
+                let mut nobodys: Vec<ChunkPos> = arrivals
+                    .iter()
+                    .map(|(chunk, _)| *chunk)
+                    .filter(|chunk| self.table.holder(*chunk).is_none())
+                    .collect();
+                nobodys.sort_unstable();
+                nobodys.dedup();
+                if !nobodys.is_empty() {
+                    let at = lane.latest;
+                    for chunks in nobodys.chunks(RECORD_CHUNKS) {
+                        let record = LogRecord::Granted {
+                            region: region.0,
+                            tick: at,
+                            chunks: chunks.to_vec(),
+                        };
+                        match self.log.append(&record.encode()) {
+                            Ok((segment, _)) => self.table_last = Some(segment),
+                            Err(error) => {
+                                error!(%region, %error, "a grant could not be written to the log");
+                                self.fail_log();
+                                return;
+                            }
+                        }
+                    }
+                    self.table
+                        .grant(region, at, &nobodys)
+                        .expect("chunks nobody holds are granted to a region that is there");
+                    self.group.changed.push(Change::Granted {
+                        region,
+                        chunks: nobodys.clone(),
+                    });
+                    for chunk in &nobodys {
+                        if self.uses.begin(region, *chunk) {
+                            tell_copiers(
+                                &self.uses,
+                                &self.couplings,
+                                &self.copies,
+                                &mut self.group,
+                                *chunk,
+                            );
+                        }
+                    }
+                    // Ahead of the group's stream, and so of the arrivals.
+                    owner.unsynced.push(StoreReply::Claimed {
+                        granted: nobodys,
+                        foreign: Vec::new(),
+                    });
+                }
+                // When each is due in its holder's ticks: at once where the sender holds
+                // the chunk itself, which it was granted or which it had not loaded.
+                let arrivals: Vec<(ChunkPos, Entity, Due, RegionId)> = arrivals
+                    .into_iter()
+                    .map(|(chunk, entity)| {
+                        let holder = self
+                            .table
+                            .holder(chunk)
+                            .expect("an arrival's chunk is held: granted above if nobody held it");
+                        let due = if holder == region {
+                            Due::FromTaking
+                        } else {
+                            self.couplings.due_of_arrival(region, holder, tick)
+                        };
+                        (chunk, entity, due, holder)
+                    })
+                    .collect();
                 // An effect is filed if its chunk is in use, and left out otherwise:
                 // dropped as the game drops an update into a chunk that is not loaded
                 // (`docs/adr/0025-effects-between-regions.md`, section 5). Its use is
@@ -1159,11 +1377,15 @@ impl Lanes {
                     taken: taken.clone(),
                     events,
                     entity_changes,
-                    arrivals: Vec::new(),
-                    arrivals_taken: Vec::new(),
+                    arrivals: arrivals
+                        .iter()
+                        .map(|(chunk, entity, due, _)| (*chunk, entity.clone(), *due))
+                        .collect(),
+                    arrivals_taken: arrivals_taken.clone(),
                 }
                 .encode();
                 self.group.regions.insert(region);
+                let mut calls_off: Vec<(RegionId, ChunkPos)> = Vec::new();
                 match self.log.append(&record) {
                     Ok((segment, offset)) => {
                         let at = sequence(segment, offset);
@@ -1184,6 +1406,36 @@ impl Lanes {
                         for id in taken {
                             if let Some(kept) = self.filed.remove(id) {
                                 self.group.effects.push(effects::Undo::Removed(id, kept));
+                            }
+                        }
+                        // Filed for their chunks' holders, and on their streams. An
+                        // arrival for a chunk its holder is giving back calls the return
+                        // off, unless the release would leave it a pinned holder (a
+                        // borrower's return goes by `PinnedBack`) or the holder found it
+                        // unreadable (the plan, sections 5 and 6).
+                        for (index, (chunk, entity, due, holder)) in
+                            arrivals.into_iter().enumerate()
+                        {
+                            let id = EffectId {
+                                sequence: at,
+                                index: index as u32,
+                            };
+                            let kept = KeptArrival {
+                                chunk,
+                                entity,
+                                due,
+                                segment,
+                            };
+                            self.arrivals.file(id, kept);
+                            self.group.arrivals.push(ArrivalUndo::Filed(id));
+                            self.group.stream(holder, Streamed::Arrival(id));
+                            if self.table.pinned_holder(chunk).is_none() {
+                                calls_off.push((holder, chunk));
+                            }
+                        }
+                        for id in arrivals_taken {
+                            if let Some(kept) = self.arrivals.remove(id) {
+                                self.group.arrivals.push(ArrivalUndo::Removed(id, kept));
                             }
                         }
                         for (chunk, (changes, entity_changes)) in updates {
@@ -1214,6 +1466,7 @@ impl Lanes {
                         lane.latest = lane.latest.max(tick);
                         lane.named = lane.named.max(tick);
                         if notes.is_empty() {
+                            self.call_off_returns(calls_off);
                             return;
                         }
                         // Only now that the commit is taken: the notes of an owner
@@ -1256,6 +1509,7 @@ impl Lanes {
                         if !dead.is_empty() {
                             owner.unsynced.push(StoreReply::Dead { stays: dead });
                         }
+                        self.call_off_returns(calls_off);
                     }
                     Err(error) => {
                         error!(%region, %error, "a commit could not be written to the log");
@@ -1374,6 +1628,7 @@ impl Lanes {
                         }
                     }
                 }
+                let new_granted = new.clone();
                 if !new.is_empty() {
                     // At once, so that a later claim in the same group, of whatever
                     // region, is answered by it.
@@ -1398,6 +1653,16 @@ impl Lanes {
                         );
                     }
                 }
+                // What arrived for a chunk granted anew, or whose return the claim calls off
+                // (a worker drops what it kept for a chunk it returns), goes on its stream,
+                // due at once where the holder is new (`docs/groundwork/n3-plan.md`,
+                // section 6).
+                self.arrivals.count_from_taking(&new_granted);
+                for chunk in &granted {
+                    for id in self.arrivals.ids_of(*chunk) {
+                        self.group.stream(region, Streamed::Arrival(id));
+                    }
+                }
                 // Answered when the group ends, behind the commits asked for before:
                 // also a claim that granted nothing anew may rest on a grant of this
                 // group.
@@ -1407,14 +1672,47 @@ impl Lanes {
                 self.group.regions.insert(region);
                 return;
             }
-            StoreRequest::Return {
-                chunks,
-                // Kept from step N3b on.
-                unreadable: _,
-            } => {
+            StoreRequest::Return { chunks, unreadable } => {
                 let region = session.region;
                 let mut returned = Vec::new();
                 let mut asked = BTreeSet::new();
+                lane.unreadable.extend(unreadable);
+                // A chunk with arrivals filed for it, which the release would leave to
+                // nobody, is not given back: the arrivals keep it held, the region is
+                // answered `Claimed` for it, and they are sent again for it to take
+                // (`docs/groundwork/n3-plan.md`, sections 5 and 6). One the region found
+                // unreadable goes back all the same.
+                let kept_back: Vec<ChunkPos> = {
+                    let mut kept: Vec<ChunkPos> = chunks
+                        .iter()
+                        .copied()
+                        .filter(|chunk| {
+                            self.arrivals.has(*chunk)
+                                && self.table.granted_from(region, *chunk).is_some()
+                                && self.table.pinned_holder(*chunk).is_none()
+                                && !lane.unreadable.contains(chunk)
+                        })
+                        .collect();
+                    kept.sort_unstable();
+                    kept.dedup();
+                    kept
+                };
+                let chunks: Vec<ChunkPos> = chunks
+                    .into_iter()
+                    .filter(|chunk| !kept_back.contains(chunk))
+                    .collect();
+                if !kept_back.is_empty() {
+                    for chunk in &kept_back {
+                        for id in self.arrivals.ids_of(*chunk) {
+                            self.group.stream(region, Streamed::Arrival(id));
+                        }
+                    }
+                    owner.unsynced.push(StoreReply::Claimed {
+                        granted: kept_back,
+                        foreign: Vec::new(),
+                    });
+                    self.group.regions.insert(region);
+                }
                 // The region lets go of every chunk it names, also of one it holds by
                 // being pinned and was never granted, which no return frees: its use
                 // ends all the same (`docs/adr/0025-effects-between-regions.md`,
@@ -1637,27 +1935,49 @@ impl Lanes {
             };
             let mut told = false;
             let mut effects = Vec::new();
+            let mut arrivals = Vec::new();
+            // What is batched goes out in the order it was put on the stream.
+            let flush = |effects: &mut Vec<FiledEffect>, arrivals: &mut Vec<Arrival>| {
+                let mut told = false;
+                if !effects.is_empty() {
+                    let effects = mem::take(effects);
+                    owner.peer.answer(StoreReply::Effects { effects });
+                    told = true;
+                }
+                if !arrivals.is_empty() {
+                    let arrivals = mem::take(arrivals);
+                    owner.peer.answer(StoreReply::Arrivals { arrivals });
+                    told = true;
+                }
+                told
+            };
             for item in streamed {
                 match item {
                     Streamed::Effect(id) => {
+                        told |= flush(&mut Vec::new(), &mut arrivals);
                         effects.extend(self.filed.filed(id).filter(|filed| {
                             self.uses.user(filed.effect.at.chunk()) == Some(region)
-                        }))
+                        }));
+                    }
+                    // Only for the chunk's holder as the group ends: one whose holder
+                    // changed within the group is sent to the new holder by what
+                    // changed it.
+                    Streamed::Arrival(id) => {
+                        told |= flush(&mut effects, &mut Vec::new());
+                        arrivals.extend(
+                            self.arrivals
+                                .filed(id)
+                                .filter(|arrival| self.table.holder(arrival.chunk) == Some(region)),
+                        );
                     }
                     Streamed::Reply(reply) => {
-                        if !effects.is_empty() {
-                            let effects = mem::take(&mut effects);
-                            owner.peer.answer(StoreReply::Effects { effects });
-                        }
+                        flush(&mut effects, &mut arrivals);
                         owner.peer.answer(*reply);
                         told = true;
                     }
                 }
             }
-            if !effects.is_empty() {
-                owner.peer.answer(StoreReply::Effects { effects });
-                told = true;
-            }
+            told |= flush(&mut effects, &mut arrivals);
             if told {
                 owner.peer.answer(StoreReply::Mark { through });
             }
@@ -1748,6 +2068,9 @@ impl Lanes {
         self.players.undo(group.undo);
         // So do the effects it filed, took and dropped. Use is not in the log, and stays.
         self.filed.undo(group.effects);
+        // And the arrivals, with the grants of land nobody held that came with them,
+        // which the table's changes above took back.
+        self.arrivals.undo(group.arrivals);
         for lane in self.regions.values_mut() {
             if let Some((segment, durable)) = failed {
                 lane.live
@@ -1801,10 +2124,57 @@ impl Lanes {
             if !carried.is_empty() && self.write_forward(carried).is_err() {
                 return;
             }
+            // Arrivals too, which are never dropped untaken (`docs/groundwork/n3-plan.md`).
+            let carried = self.arrivals.living_in(..=last);
+            if !carried.is_empty() && self.write_arrivals_forward(carried).is_err() {
+                return;
+            }
         }
         let filed = &self.filed;
-        self.log
-            .remove_while(|segment| unneeded(segment) && !filed.lives_in(segment));
+        let arrivals = &self.arrivals;
+        self.log.remove_while(|segment| {
+            unneeded(segment) && !filed.lives_in(segment) && !arrivals.lives_in(segment)
+        });
+    }
+
+    /// Writes the arrivals forward, as [`Lanes::write_forward`] writes effects: records of
+    /// a group of their own in a segment of their own, made durable, which they live in
+    /// from then on.
+    fn write_arrivals_forward(&mut self, carried: Vec<Arrival>) -> Result<(), ()> {
+        let mut segment = None;
+        let written = carried.chunks(RECORD_ARRIVALS).try_for_each(|arrivals| {
+            let record = LogRecord::ArrivalsForward {
+                arrivals: arrivals.to_vec(),
+            };
+            let (at, _) = self.log.append(&record.encode())?;
+            segment = Some(at);
+            Ok(())
+        });
+        if let Err(error) = written.and_then(|()| self.log.sync()) {
+            error!(%error, "arrivals could not be written forward in the log");
+            self.fail_log();
+            return Err(());
+        }
+        self.log.close();
+        let segment = segment.expect("arrivals were written");
+        for Arrival {
+            id,
+            chunk,
+            entity,
+            due,
+        } in carried
+        {
+            self.arrivals.file(
+                id,
+                KeptArrival {
+                    chunk,
+                    entity,
+                    due,
+                    segment,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Writes the effects forward, as records of a group of their own, and makes them
@@ -1969,6 +2339,19 @@ impl Lanes {
                 let chunks = chunks.clone();
                 self.answer_now(party, StoreReply::LendCalledOff { lend, chunks });
             }
+            self.resend_arrivals(of.lender, &chunks);
+        }
+    }
+
+    /// Puts what arrived for `chunks` on `region`'s stream again, which takes them up
+    /// again after a lend called off: a worker drops what it kept for a chunk it lends
+    /// (`docs/groundwork/n3-plan.md`, sections 5 and 6). As numbers, resolved when the
+    /// group ends.
+    fn resend_arrivals(&mut self, region: RegionId, chunks: &[ChunkPos]) {
+        for chunk in chunks {
+            for id in self.arrivals.ids_of(*chunk) {
+                self.group.stream(region, Streamed::Arrival(id));
+            }
         }
     }
 
@@ -2128,6 +2511,7 @@ impl Lanes {
             }
         }
         if !off.is_empty() {
+            self.resend_arrivals(lender, &off);
             peer.answer(StoreReply::LendCalledOff { lend, chunks: off });
         }
         if given.is_empty() {
@@ -2181,6 +2565,7 @@ impl Lanes {
                 let chunks = taken;
                 self.answer_now(borrower, StoreReply::LendCalledOff { lend, chunks });
             }
+            self.resend_arrivals(lender, &bad);
             self.answer_now(lender, StoreReply::LendCalledOff { lend, chunks: bad });
         }
         let Some(borrower) = borrower else {
@@ -2222,6 +2607,14 @@ impl Lanes {
             self.uses.begin(borrower, *chunk);
         }
         self.filed.count_from_taking(&granted);
+        // And the arrivals filed for them go to the borrower, due at once: they are the
+        // borrower's to take, in its ticks (`docs/groundwork/n3-plan.md`, section 6).
+        self.arrivals.count_from_taking(&granted);
+        for chunk in &granted {
+            for id in self.arrivals.ids_of(*chunk) {
+                self.group.stream(borrower, Streamed::Arrival(id));
+            }
+        }
         for chunk in &granted {
             tell_copiers(
                 &self.uses,
@@ -2276,6 +2669,7 @@ impl Lanes {
             .collect();
         for chunk in &freed {
             lane.returning.remove(chunk);
+            lane.unreadable.remove(chunk);
         }
         for chunks in freed.chunks(RECORD_CHUNKS) {
             let record = LogRecord::Returned {
@@ -2309,6 +2703,14 @@ impl Lanes {
             }
         }
         for (pinned, chunks) in back {
+            // What arrived for them is the pinned region's to take, behind its
+            // `PinnedBack` and due at once (`docs/groundwork/n3-plan.md`, section 2, N3b).
+            self.arrivals.count_from_taking(&chunks);
+            for chunk in &chunks {
+                for id in self.arrivals.ids_of(*chunk) {
+                    self.group.stream(pinned, Streamed::Arrival(id));
+                }
+            }
             self.answer_in_group(pinned, StoreReply::PinnedBack { chunks });
         }
         if !grants.is_empty() {
@@ -2537,8 +2939,20 @@ impl Lanes {
         // opening is durable.
         let in_use = self.uses.of(region);
         let resent = self.filed.for_chunks(&in_use);
+        // And every arrival filed for a chunk it holds, its pinned land among them, which
+        // it may not use (`docs/groundwork/n3-plan.md`, section 2, N3b).
+        let table = &self.table;
+        let arrivals = self
+            .arrivals
+            .held(|chunk| table.holder(chunk) == Some(region));
+        let told = !resent.is_empty() || !arrivals.is_empty();
         if !resent.is_empty() {
             peer.answer(StoreReply::Effects { effects: resent });
+        }
+        if !arrivals.is_empty() {
+            peer.answer(StoreReply::Arrivals { arrivals });
+        }
+        if told {
             peer.answer(StoreReply::Mark { through });
         }
         let lane = self.regions.get_mut(&region).expect("made above");
@@ -2627,10 +3041,19 @@ impl Lanes {
         let pinned = self.table.pinned(absorbed).to_vec();
         self.call_off(region);
         self.call_off(absorbed);
+        // The arrivals the absorbed region held are the survivor's from here on, due at
+        // once: they were due in the absorbed region's ticks.
+        let table = &self.table;
+        let absorbed_arrivals: Vec<ChunkPos> = self
+            .arrivals
+            .chunks()
+            .filter(|chunk| table.holder(*chunk) == Some(absorbed))
+            .collect();
         let chunks = self
             .table
             .absorb(region, absorbed, tick)
             .expect("two living regions, as was looked at above");
+        self.arrivals.count_from_taking(&absorbed_arrivals);
         self.table_last = Some(entry.segment);
         self.tell_lenders(absorbed, region, &chunks);
         // The use moves with the holding, and the effects not taken with it; a tick
@@ -2686,10 +3109,22 @@ impl Lanes {
             in_use,
             lends: self.lends_of(region),
         });
-        // The survivor begins anew, and has its effects on its stream again.
+        // The survivor begins anew, and has its effects on its stream again, and every
+        // arrival filed for a chunk it holds now, due at once where it was the absorbed
+        // region's.
         let resent = self.filed.for_chunks(&self.uses.of(region));
+        let table = &self.table;
+        let arrivals = self
+            .arrivals
+            .held(|chunk| table.holder(chunk) == Some(region));
+        let told = !resent.is_empty() || !arrivals.is_empty();
         if !resent.is_empty() {
             peer.answer(StoreReply::Effects { effects: resent });
+        }
+        if !arrivals.is_empty() {
+            peer.answer(StoreReply::Arrivals { arrivals });
+        }
+        if told {
             peer.answer(StoreReply::Mark {
                 through: self.log.last,
             });
@@ -2813,6 +3248,14 @@ impl Lanes {
         // effects.
         let moved = self.uses.moved(region, new, Some(&chunks));
         self.filed.count_from_taking(&moved);
+        // The arrivals of the part's chunks are its own, sent at its hello, due at once.
+        let table = &self.table;
+        let parts_arrivals: Vec<ChunkPos> = self
+            .arrivals
+            .chunks()
+            .filter(|chunk| table.holder(*chunk) == Some(new))
+            .collect();
+        self.arrivals.count_from_taking(&parts_arrivals);
         self.couplings.reshaped(region);
         for chunk in &moved {
             tell_copiers(
@@ -2988,6 +3431,18 @@ impl Lanes {
                 }
             }
         }
+        // The arrivals left untaken go into their chunks with the rest, after every
+        // commit's changes and whoever holds the chunk, by key: a fold done again after a
+        // crash writes the same (`docs/groundwork/n3-plan.md`, sections 5 and 6). An
+        // arrival whose chunk the fold cannot read goes with the chunk, which is made
+        // again: a named loss, of a chunk lost already.
+        let folded = self.arrivals.all();
+        for arrival in &folded {
+            changes.push(Replayed::Entity(
+                arrival.chunk,
+                EntityChange::Whole(arrival.entity.clone()),
+            ));
+        }
         let (done, finished) = mpsc::channel();
         let _ = self.jobs.send(Job::Fold { changes, done });
         // No region is open before the store has started, so waiting here keeps no
@@ -2996,6 +3451,20 @@ impl Lanes {
             .recv()
             .map_err(|_| io::Error::other("the thread for chunks has gone"))??;
 
+        // The arrivals are taken, ahead of the records that leave the commits that filed
+        // them out of every history and in the same sync: the fold is safe because those
+        // records exclude the commits this drops the arrivals of, so that nothing relies on
+        // the dropping alone.
+        if !folded.is_empty() {
+            let ids: Vec<EffectId> = folded.iter().map(|arrival| arrival.id).collect();
+            for ids in ids.chunks(RECORD_EFFECTS) {
+                let dropped = LogRecord::ArrivalsDropped { ids: ids.to_vec() };
+                if let Err(error) = self.log.append(&dropped.encode()) {
+                    self.fail_log();
+                    return Err(error.into());
+                }
+            }
+        }
         // The commits are passed over from now on, and the states go. What is known
         // here is changed only once that is durable.
         for region in &left {
@@ -3013,6 +3482,9 @@ impl Lanes {
         if let Err(error) = self.log.sync() {
             self.fail_log();
             return Err(error.into());
+        }
+        for arrival in folded {
+            self.arrivals.remove(arrival.id);
         }
         for region in &left {
             let lane = self.regions.get_mut(region).expect("lanes that are left");
