@@ -332,3 +332,110 @@ fn an_item_s_data_is_its_stack_by_the_game_s_index_and_serializer() {
     assert_eq!(bytes[1..4], [9, 8, 7]);
     assert_eq!(bytes.last(), Some(&0xFF));
 }
+
+/// An item its region sends across a line goes on being shown where it was sent, by
+/// its wire id, until the region it went to reports it with one more change of holder,
+/// which continues it with no new spawn; an item the edge does not show is not
+/// introduced by a word that it was handed on (`docs/adr/0028-entities.md`, section 6;
+/// `docs/groundwork/n3-plan.md`, step N3e).
+#[tokio::test]
+async fn an_item_handed_on_across_a_line_is_shown_where_it_went_until_its_new_holder_reports_it() {
+    let (mut edge, mut first, _second) = two_at_home().await;
+    let key = 1 << 32;
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::EntitySpawned(item(key, HOME, 0))]),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    let id = of_item(&first, key)[0].1;
+
+    // Sent to the east with no change of holder yet: shown there, moved, not removed.
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::HandedOn {
+            entity: EntityId(key),
+            chunk: HOME,
+            hops: 0,
+            position: [2.5, -58.68, 0.5],
+            motion: [0.1, 0.0, 0.0],
+        }]),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert!(first.entities.contains(&key));
+    assert!(
+        of_item(&first, key)
+            .iter()
+            .all(|(naming, named)| *naming != Naming::Removal && *named == id)
+    );
+
+    // The east takes it, with one more change of holder: no new spawn, the same id.
+    let mut taken = item(key, HOME, 1);
+    taken.pose.position.x = 2.5;
+    edge.tell(EAST, ticked(vec![RegionEvent::EntitySpawned(taken)]));
+    edge.settle(EAST).await;
+    edge.sync(&mut first).await;
+    let spawns = of_item(&first, key)
+        .iter()
+        .filter(|(naming, _)| *naming == Naming::Spawn)
+        .count();
+    assert_eq!(spawns, 1);
+    assert!(first.entities.contains(&key));
+
+    // A word that an entity the edge does not show was handed on shows nothing.
+    let other = (1 << 32) + 1;
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::HandedOn {
+            entity: EntityId(other),
+            chunk: HOME,
+            hops: 0,
+            position: [3.5, -58.68, 0.5],
+            motion: [0.0; 3],
+        }]),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert!(!first.entities.contains(&other));
+    assert!(of_item(&first, other).is_empty());
+    edge.end().await;
+}
+
+/// The sender's own snapshot of the chunk it handed an item on from does not take the
+/// item off: it is no longer the sender's to show or to take off (the plan, section 5,
+/// G9). That another region's snapshot without it takes it off is tested end to end.
+#[tokio::test]
+async fn an_item_handed_on_is_not_taken_off_by_its_sender_s_own_snapshot() {
+    let (mut edge, mut first, _second) = two_at_home().await;
+    let key = 1 << 32;
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::EntitySpawned(item(key, HOME, 0))]),
+    );
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::HandedOn {
+            entity: EntityId(key),
+            chunk: HOME,
+            hops: 0,
+            position: [2.5, -58.68, 0.5],
+            motion: [0.0; 3],
+        }]),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert!(first.entities.contains(&key));
+
+    // The sender's snapshot of the chunk, without the item: kept.
+    let there = vec![own(1, EntityId(5)), own(2, EntityId(6))];
+    let ask = edge.ask(WEST, HOME);
+    let mut chunk = empty_chunk();
+    chunk.set(1, -61, 1, STONE);
+    edge.tell(WEST, snapshot_of(HOME, ask, chunk.clone(), there.clone()));
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert!(first.entities.contains(&key));
+
+    edge.end().await;
+}

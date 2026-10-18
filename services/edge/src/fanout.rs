@@ -41,7 +41,7 @@ use clustine_sim::api::{
     PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight,
+    BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight, Vec3,
     light_tells_apart, sky_light,
 };
 use tokio::sync::mpsc;
@@ -889,6 +889,10 @@ struct Shown {
     from: RegionId,
     /// What the edge sends of it as it moves, for an entity other than a player.
     tracker: Option<Tracker>,
+    /// For an entity other than a player that its region sent across a line, the changes
+    /// of holder it had then: it is shown where it was sent until the region it went to
+    /// reports it with more (`docs/adr/0028-entities.md`, section 6).
+    handed_on: Option<u32>,
 }
 
 impl Fanout {
@@ -2845,7 +2849,13 @@ impl Fanout {
                 ..
             } => self.show_taken(from, item, collector, count).await,
             // Shown as the plan of N3 says from step N3e on.
-            RegionEvent::HandedOn { .. } => {}
+            RegionEvent::HandedOn {
+                entity,
+                hops,
+                position,
+                motion,
+                ..
+            } => self.hand_on(from, entity, hops, position, motion).await,
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
@@ -2947,6 +2957,7 @@ impl Fanout {
                     state,
                     from,
                     tracker: Some(tracker),
+                    handed_on: None,
                 };
                 self.entities.insert(entity, shown);
                 self.refresh_entity(entity, false).await;
@@ -2967,6 +2978,7 @@ impl Fanout {
             state,
             from,
             tracker: None,
+            handed_on: None,
         };
         let moved = self
             .entities
@@ -3126,6 +3138,11 @@ impl Fanout {
             pitch: tracked.pitch,
             on_ground: tracked.on_ground,
         };
+        // A report with more changes of holder than it was handed on with is of where it
+        // went: it is handed on no longer.
+        if shown.handed_on.is_some_and(|handed| tracked.hops > handed) {
+            shown.handed_on = None;
+        }
         shown.from = from;
         self.refresh_entity(entity, false).await;
     }
@@ -3213,6 +3230,51 @@ impl Fanout {
             EntityKind::Player { .. } => return false,
         };
         hops > shown_hops || (hops == shown_hops && self.living(from) == self.living(shown.from))
+    }
+
+    /// The region `from` sent `entity` across a line with `hops` changes of holder behind
+    /// it, to `position` with `motion`: it goes on being shown there, as continuing what
+    /// was shown, until the region it went to reports it with more; one the edge does not
+    /// show is not introduced (`docs/adr/0028-entities.md`, section 6).
+    async fn hand_on(
+        &mut self,
+        from: RegionId,
+        entity: EntityId,
+        hops: u32,
+        position: [f64; 3],
+        motion: [f64; 3],
+    ) {
+        if self.was_gone(entity, hops) || !self.takes_word_of(from, entity, hops) {
+            return;
+        }
+        let Some(shown) = self.entities.get_mut(&entity) else {
+            return;
+        };
+        shown.handed_on = Some(hops);
+        let [x, y, z] = position;
+        shown.state.pose.position = Vec3::new(x, y, z);
+        if let EntityKind::Other {
+            motion: shown_motion,
+            kind,
+            ..
+        } = &mut shown.state.kind
+        {
+            *shown_motion = motion;
+            let seen = Seen {
+                kind: *kind,
+                position,
+                motion,
+                yaw: shown.state.pose.yaw,
+                pitch: shown.state.pose.pitch,
+                on_ground: shown.state.pose.on_ground,
+            };
+            if let Some(tracker) = shown.tracker.as_mut() {
+                tracker.moved(seen);
+            }
+        }
+        // Moved on the clients, or taken off those whose view it left: an entity handed
+        // into land the edge does not watch is removed through the same path.
+        self.refresh_entity(entity, true).await;
     }
 
     /// Shows the arm of the player `entity` swinging to everyone shown the player.
@@ -3674,6 +3736,8 @@ impl Fanout {
                 .filter(|(id, shown)| {
                     shown.state.chunk() == position
                         && shown.from == from
+                        // What the region handed on is no longer its to show or take off.
+                        && shown.handed_on.is_none()
                         && !self.entity_owners.contains_key(id)
                         && entities.iter().all(|present| present.entity != **id)
                 })
@@ -3681,6 +3745,33 @@ impl Fanout {
                 .collect();
             for entity in stale {
                 self.remove_entity(entity).await;
+            }
+            // What another region handed on into this chunk and the snapshot does not
+            // have was lost on its way (a sender's tick lost after the edge heard of it):
+            // taken off the clients, its key kept at the hops it was handed on with, so
+            // that a late word of it does not bring it back. A sender's own snapshot of
+            // its chunk does not take off what it handed on (`docs/adr/0028-entities.md`,
+            // section 6; `docs/groundwork/n3-plan.md`, section 5, G9).
+            let lost: Vec<(EntityId, u32)> = self
+                .entities
+                .iter()
+                .filter_map(|(id, shown)| {
+                    let hops = shown.handed_on?;
+                    (shown.state.chunk() == position
+                        && shown.from != from
+                        && entities.iter().all(|present| present.entity != *id))
+                    .then_some((*id, hops))
+                })
+                .collect();
+            for (entity, hops) in lost {
+                self.remove_entity(entity).await;
+                self.gone.insert(
+                    entity,
+                    Gone {
+                        hops,
+                        heard: BTreeMap::new(),
+                    },
+                );
             }
         }
         for state in entities {
