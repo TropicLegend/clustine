@@ -280,6 +280,7 @@ fn riding_transfer() -> PlayerTransfer {
         pose: Pose::at(Vec3::new(TAKEN[0], SEATED.y, TAKEN[2])),
         inventory: Inventory::default(),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 0,
         hops: 1,
         flying: false,

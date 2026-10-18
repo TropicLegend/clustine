@@ -1161,6 +1161,7 @@ impl Script {
             pose: Pose::at(within(chunk)),
             inventory: Inventory::default(),
             selected_slot: 0,
+            ender: Default::default(),
             last_input: 0,
             hops: 0,
             flying: false,

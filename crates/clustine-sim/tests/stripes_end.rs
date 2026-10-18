@@ -410,6 +410,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         },
         inventory: Inventory::with_hotbar(bar),
         selected_slot: (n % 9) as u8,
+        ender: Default::default(),
         last_input: n as u64 % 50 + 2,
         handled: Some(n % 30),
         edge,

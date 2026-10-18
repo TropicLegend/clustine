@@ -259,6 +259,7 @@ mod tests {
                 [Some(ItemStack { item: 1, count: 64 }); INVENTORY_SLOTS],
             )),
             selected_slot: 8,
+            ender: Default::default(),
             last_input: 77,
             hops: 3,
             flying: true,

@@ -369,6 +369,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         pose: Pose::at(position),
         inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
+        ender: Default::default(),
         last_input,
         hops: 0,
         flying: false,
@@ -388,6 +389,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         pose: state.pose,
         inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
+        ender: Default::default(),
         last_input: state.last_input,
         hops: state.hops + 1,
         flying: state.flying,
@@ -406,6 +408,7 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         pose: transfer.pose,
         inventory: transfer.inventory.clone(),
         selected_slot: transfer.selected_slot,
+        ender: Default::default(),
         last_input: transfer.last_input,
         handled: None,
         edge,
@@ -2331,6 +2334,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         },
         inventory: Inventory::with_hotbar(bar),
         selected_slot: (n % 9) as u8,
+        ender: Default::default(),
         last_input: n as u64 % 50 + 2,
         handled: Some(n % 30),
         edge,
@@ -4889,6 +4893,7 @@ fn place_of(state: &PlayerState) -> Place {
         flying: state.flying,
         inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
+        ender: Default::default(),
     }
 }
 

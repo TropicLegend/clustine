@@ -1042,6 +1042,13 @@ their stay with the place their vehicle lets them off at, so that they come back
 it rather than in a seat that is no longer theirs. It is harmless below the floor, as
 any `Has` note is, and is the one note a removal writes.
 
+**Amended with step N6 (2026-10-18; `docs/groundwork/n6-plan.md`, decision 5 and
+section 7 item 9).** A `Place` also holds the player's ender chest, 27 slots after the
+inventory's, in the log and in the players' file alike, which the format version 8
+writes; worlds of an older version are refused and made again. A change of the chest is
+a change of the player, so the tick writes a `Has` note, and the chest travels in the
+transfer. A player below the world keeps it, as they keep what they hold.
+
 ## Changes to earlier records
 
 Each gets a note under its own "Changes" heading that points here, with this text.

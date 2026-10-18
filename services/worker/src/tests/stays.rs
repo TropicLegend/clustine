@@ -347,6 +347,7 @@ fn place_at(x: f64) -> Place {
         flying: false,
         inventory: Inventory::default(),
         selected_slot: 0,
+        ender: Default::default(),
     }
 }
 
@@ -393,6 +394,7 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                     flying,
                     inventory,
                     selected_slot,
+                    ender: Default::default(),
                 };
                 Some((entity_id, place))
             }
@@ -613,6 +615,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         flying: true,
         inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 4,
+        ender: Default::default(),
     };
 
     let (second, entered) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 72);
@@ -732,6 +735,7 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         pose: standing(EAST_X + 1.0),
         inventory: Inventory::default(),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 0,
         hops: 1,
         flying: false,
@@ -848,6 +852,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
         flying: false,
         inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 2,
+        ender: Default::default(),
     };
     assert_eq!((second, entered), (EntityId(2), place));
     assert_eq!(e.entries().len(), 1, "only the first stay was let go");

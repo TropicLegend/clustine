@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use clustine_format::{LoggedPlace, LoggedStay, PlayerRecord, PlayersFile};
 use clustine_region::RegionId;
 use clustine_rpc::{ItemStack, Place, Pose, StayNote};
-use clustine_world::Inventory;
 use clustine_world::{ChunkPos, Vec3};
+use clustine_world::{EnderChest, Inventory};
 use tracing::error;
 
 /// The records, and what is kept beside them.
@@ -337,6 +337,10 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
             .inventory
             .0
             .map(|slot| slot.map(|stack| (stack.item, stack.count))),
+        ender: place
+            .ender
+            .0
+            .map(|slot| slot.map(|stack| (stack.item, stack.count))),
     }
 }
 
@@ -357,6 +361,11 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
                 .map(|slot| slot.map(|(item, count)| ItemStack { item, count })),
         )),
         selected_slot: logged.selected_slot,
+        ender: EnderChest(Box::new(
+            logged
+                .ender
+                .map(|slot| slot.map(|(item, count)| ItemStack { item, count })),
+        )),
     }
 }
 

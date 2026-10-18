@@ -38,7 +38,9 @@ impl Pose {
     }
 }
 
-pub use clustine_world::{HOTBAR_SLOTS, INVENTORY_SLOTS, Inventory, ItemStack, OFF_HAND};
+pub use clustine_world::{
+    ENDER_SLOTS, EnderChest, HOTBAR_SLOTS, INVENTORY_SLOTS, Inventory, ItemStack, OFF_HAND,
+};
 
 /// A side of a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub struct Place {
     pub flying: bool,
     pub inventory: Inventory,
     pub selected_slot: u8,
+    /// What their ender chest holds (`docs/groundwork/n6-plan.md`, decision 5).
+    pub ender: EnderChest,
 }
 
 /// What a region says to the world store about a stay, in the commit of a tick. See
@@ -138,6 +142,8 @@ pub struct PlayerTransfer {
     pub pose: Pose,
     pub inventory: Inventory,
     pub selected_slot: u8,
+    /// What their ender chest holds, which goes where they go.
+    pub ender: EnderChest,
     /// The number of the last input the region applied; see [`TickInputs::inputs`].
     pub last_input: u64,
     /// How often the stay has been handed on from one region to another, this time
@@ -163,6 +169,10 @@ pub struct PlayerTransfer {
 /// A player entering or leaving the region. Each but `Discard` names the edge it came
 /// from, which is not on the wire: the runner knows which edge a link belongs to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a tick has a few changes of players at most, and an arrival carries a whole player"
+)]
 pub enum PlayerChange {
     /// A player enters the world through the edge, and is that edge's from then on.
     ///

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use clustine_world::{ChunkPos, EdgeId, EntityId, EntityIds, PlayerId};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Durable, Inventory, Keys, Pose, VehicleMove};
+use crate::api::{Durable, EnderChest, Inventory, Keys, Pose, VehicleMove};
 
 /// Everything a region knows apart from its chunks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +61,8 @@ pub struct PlayerState {
     pub inventory: Inventory,
     /// The hotbar slot whose item the player holds.
     pub selected_slot: u8,
+    /// What their ender chest holds.
+    pub ender: EnderChest,
     /// The number of the last input that was applied.
     pub last_input: u64,
     /// The highest sequence number of the player's own actions on blocks of this region

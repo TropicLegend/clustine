@@ -5375,6 +5375,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         },
         inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 0,
         handled: None,
         edge,

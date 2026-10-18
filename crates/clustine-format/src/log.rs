@@ -88,6 +88,7 @@
 //! | Inventory | 41 times, in the order of the game's `Inventory` (0 to 8 the hotbar, 9 to
 //! 35 the rest, 36 to 39 armour from the feet up, 40 the off hand): u8 0 for an empty
 //! slot, or u8 1, i32 item, i32 count |
+//! | Ender chest | 27 times, as the inventory's slots |
 //!
 //! See `docs/adr/0020-one-stay-per-player.md`, section 8.
 //!
@@ -139,6 +140,9 @@ const STAY_LENGTH: usize = 25;
 
 /// The number of slots in a player's inventory, as the game's `Inventory` numbers them.
 pub const INVENTORY_SLOTS: usize = 41;
+
+/// The slots of a player's ender chest in a place.
+pub const ENDER_SLOTS: usize = 27;
 
 /// Bytes of the length and the checksum in front of every payload.
 const FRAME_HEADER_LENGTH: usize = 8;
@@ -193,6 +197,8 @@ pub struct LoggedPlace {
     pub selected_slot: u8,
     /// Each slot of the inventory: the item and how many, if there is anything in it.
     pub inventory: [Option<(i32, i32)>; INVENTORY_SLOTS],
+    /// Each slot of the ender chest, as the inventory's.
+    pub ender: [Option<(i32, i32)>; ENDER_SLOTS],
 }
 
 impl PartialEq for LoggedPlace {
@@ -204,6 +210,7 @@ impl PartialEq for LoggedPlace {
             && self.flying == other.flying
             && self.selected_slot == other.selected_slot
             && self.inventory == other.inventory
+            && self.ender == other.ender
     }
 }
 
@@ -976,7 +983,7 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     let flying = if place.flying { FLYING } else { 0 };
     out.push(on_ground | flying);
     out.push(place.selected_slot);
-    for slot in place.inventory {
+    for slot in place.inventory.iter().chain(&place.ender) {
         match slot {
             None => out.push(0),
             Some((item, count)) => {
@@ -998,7 +1005,8 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
     }
     let selected_slot = input.u8()?;
     let mut inventory = [None; INVENTORY_SLOTS];
-    for slot in &mut inventory {
+    let mut ender = [None; ENDER_SLOTS];
+    for slot in inventory.iter_mut().chain(&mut ender) {
         *slot = match input.u8()? {
             0 => None,
             1 => Some((input.i32()?, input.i32()?)),
@@ -1013,6 +1021,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         flying: flags & FLYING != 0,
         selected_slot,
         inventory,
+        ender,
     })
 }
 
@@ -2546,6 +2555,8 @@ mod tests {
         inventory[8] = Some((-2, 258));
         inventory[39] = Some((3, 1));
         inventory[40] = Some((5, 16));
+        let mut ender = [None; ENDER_SLOTS];
+        ender[0] = Some((6, 1));
         LoggedPlace {
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
@@ -2554,6 +2565,7 @@ mod tests {
             flying: true,
             selected_slot: 8,
             inventory,
+            ender,
         }
     }
 
@@ -2752,6 +2764,9 @@ mod tests {
         // The head and the off hand.
         payload.extend_from_slice(&[1, 0, 0, 0, 3, 0, 0, 0, 1]);
         payload.extend_from_slice(&[1, 0, 0, 0, 5, 0, 0, 0, 16]);
+        // The ender chest: one of item 6 in its first slot, and 26 empty.
+        payload.extend_from_slice(&[1, 0, 0, 0, 6, 0, 0, 0, 1]);
+        payload.extend_from_slice(&[0; 26]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -2933,9 +2948,10 @@ mod tests {
             any::<(f32, f32)>(),
             any::<(bool, bool, u8)>(),
             inventories(),
+            any::<[Option<(i32, i32)>; ENDER_SLOTS]>(),
         )
             .prop_map(
-                |(position, (yaw, pitch), (on_ground, flying, selected_slot), inventory)| {
+                |(position, (yaw, pitch), (on_ground, flying, selected_slot), inventory, ender)| {
                     LoggedPlace {
                         position,
                         yaw,
@@ -2944,6 +2960,7 @@ mod tests {
                         flying,
                         selected_slot,
                         inventory,
+                        ender,
                     }
                 },
             )

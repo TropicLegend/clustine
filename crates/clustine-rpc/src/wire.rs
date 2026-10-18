@@ -678,12 +678,14 @@ mod tests {
             flying: true,
             inventory,
             selected_slot: 8,
+            ender: Default::default(),
         };
         let standing = Place {
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,
             inventory: Inventory::default(),
             selected_slot: 0,
+            ender: Default::default(),
         };
 
         round_trip(StoreRequest::Commit {

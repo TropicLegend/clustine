@@ -58,6 +58,8 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
     inventory.set(20, Some(ItemStack { item: 2, count: 5 }));
     inventory.set(38, Some(ItemStack { item: 3, count: 1 }));
     inventory.set(OFF_HAND, Some(ItemStack { item: 4, count: 7 }));
+    let mut ender = clustine_world::EnderChest::default();
+    ender.set(26, Some(ItemStack { item: 6, count: 3 }));
     Place {
         pose: Pose {
             position: Vec3::new(x, 70.5, z),
@@ -68,6 +70,7 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
         flying: z < 0.0,
         inventory,
         selected_slot: 3,
+        ender,
     }
 }
 
@@ -148,6 +151,10 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
     for (slot, stack) in place.inventory.0.iter().enumerate() {
         inventory[slot] = stack.map(|stack| (stack.item, stack.count));
     }
+    let mut ender = [None; clustine_format::ENDER_SLOTS];
+    for (slot, stack) in place.ender.0.iter().enumerate() {
+        ender[slot] = stack.map(|stack| (stack.item, stack.count));
+    }
     LoggedPlace {
         position: [
             place.pose.position.x,
@@ -160,6 +167,7 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         flying: place.flying,
         selected_slot: place.selected_slot,
         inventory,
+        ender,
     }
 }
 

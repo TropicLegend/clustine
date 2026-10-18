@@ -10,10 +10,10 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack, Keys,
-    LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent, PlayerInput, PlayerJoin,
-    PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput,
-    Ticket,
+    Durable, EdgeEvent, EnderChest, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory,
+    ItemStack, Keys, LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent,
+    PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep, StayNote,
+    TickInputs, TickOutput, Ticket,
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{
@@ -251,6 +251,8 @@ struct Player {
     inventory: Inventory,
     /// The hotbar slot whose item the player holds.
     selected_slot: u8,
+    /// What their ender chest holds.
+    ender: EnderChest,
     /// The number of the last input that was applied.
     last_input: u64,
     /// The highest sequence number handled in any tick; see [`PlayerState::handled`].
@@ -972,6 +974,7 @@ impl Region {
                     flying: transfer.flying,
                     inventory: transfer.inventory.clone(),
                     selected_slot: transfer.selected_slot,
+                    ender: transfer.ender.clone(),
                 },
             };
             let_go.push((id, note));
@@ -1398,6 +1401,7 @@ impl Region {
             handled_sequence: None,
             inventory: transfer.inventory.clone(),
             selected_slot: transfer.selected_slot,
+            ender: transfer.ender.clone(),
             last_input: transfer.last_input,
             handled: None,
             edge,
@@ -1465,6 +1469,9 @@ impl Region {
         let lowest = f64::from(self.config.lowest_y);
         let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
         let at_spawn = self.spawn_pose();
+        // The ender chest is theirs wherever they are, below the world too.
+        let ender =
+            (answer.place.as_ref()).map_or_else(EnderChest::default, |place| place.ender.clone());
         let (pose, flying, inventory, selected_slot) = match kept {
             None => (at_spawn, false, self.config.starting_inventory.clone(), 0),
             Some((place, true)) => (
@@ -1484,6 +1491,7 @@ impl Region {
                         pose: place.pose,
                         inventory: place.inventory.clone(),
                         selected_slot: place.selected_slot,
+                        ender: ender.clone(),
                         last_input: 0,
                         hops: 1,
                         flying: place.flying,
@@ -1514,6 +1522,7 @@ impl Region {
             handled_sequence: None,
             inventory,
             selected_slot,
+            ender,
             last_input: 0,
             handled: None,
             edge,
@@ -2762,6 +2771,7 @@ impl Player {
             pose: self.pose,
             inventory: self.inventory.clone(),
             selected_slot: self.selected_slot,
+            ender: self.ender.clone(),
             last_input: self.last_input,
             handled: self.handled,
             edge: self.edge,
@@ -2783,6 +2793,7 @@ impl Player {
             handled_sequence: None,
             inventory: state.inventory,
             selected_slot: state.selected_slot,
+            ender: state.ender,
             last_input: state.last_input,
             handled: state.handled,
             edge: state.edge,
@@ -2802,6 +2813,7 @@ impl Player {
             flying: self.flying,
             inventory: self.inventory.clone(),
             selected_slot: self.selected_slot,
+            ender: self.ender.clone(),
         }
     }
 
@@ -2814,6 +2826,7 @@ impl Player {
             pose: self.pose,
             inventory: self.inventory,
             selected_slot: self.selected_slot,
+            ender: self.ender,
             last_input: self.last_input,
             hops: self.hops + 1,
             flying: self.flying,
@@ -4969,6 +4982,7 @@ mod tests {
             },
             inventory: Inventory::with_hotbar(hotbar),
             selected_slot: 6,
+            ender: Default::default(),
             last_input,
             hops: 0,
             flying: false,
@@ -5539,6 +5553,7 @@ mod tests {
                         pose,
                         inventory: Inventory::with_hotbar(carried),
                         selected_slot: 4,
+                        ender: Default::default(),
                         last_input: 4,
                         // Handed on for the first time.
                         hops: 1,
@@ -5848,6 +5863,7 @@ mod tests {
             pose: Pose::at(SPAWN),
             inventory: Inventory::with_hotbar(hotbar()),
             selected_slot: 0,
+            ender: Default::default(),
             last_input: 0,
             hops: 1,
             flying: false,
@@ -6922,6 +6938,50 @@ mod tests {
             })
             .collect();
         assert_eq!(kept, [full_inventory()], "the store keeps it for a rejoin");
+    }
+
+    /// The ender chest is the player's own (`docs/groundwork/n6-plan.md`, decision 5):
+    /// it goes with them as their inventory does, and the store keeps it for a rejoin.
+    #[test]
+    fn the_ender_chest_goes_with_a_player_who_arrives_is_restored_and_is_let_go() {
+        let mut ender = EnderChest::default();
+        ender.set(0, Some(ItemStack { item: 7, count: 64 }));
+        ender.set(26, Some(ItemStack { item: 9, count: 1 }));
+        let mut region = region_in(EAST);
+        let arriving = PlayerTransfer {
+            ender: ender.clone(),
+            ..transfer(5, 40, 2.5, 0)
+        };
+        region.tick(&changes(vec![arrive(5, &arriving)]));
+        assert_eq!(region.player_state(player(5)).unwrap().ender, ender);
+
+        let holdings = Holdings {
+            pinned: vec![EAST],
+            ..Holdings::default()
+        };
+        let restored = Region::restore(config(), region.state(), holdings);
+        assert_eq!(restored.player_state(player(5)).unwrap().ender, ender);
+
+        let step = as_entity(40, walk(5, -0.5, 0.5));
+        let output = region.tick(&moves(vec![with_number(1, step)]));
+        let let_go: Vec<_> = output
+            .durable
+            .iter()
+            .filter_map(|(_, _, entry)| match entry {
+                Durable::Departed { transfer, .. } => Some(transfer.ender.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(let_go, [ender.clone()]);
+        let kept: Vec<_> = output
+            .stays
+            .iter()
+            .filter_map(|note| match note {
+                StayNote::Has { place, .. } => Some(place.ender.clone()),
+                StayNote::Entering { .. } => None,
+            })
+            .collect();
+        assert_eq!(kept, [ender], "the store keeps it for a rejoin");
     }
 
     /// What a region hands on of a player has the stay's attempt, how often it was

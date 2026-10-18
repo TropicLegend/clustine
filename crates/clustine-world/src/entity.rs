@@ -483,6 +483,55 @@ impl<'de> Deserialize<'de> for Inventory {
     }
 }
 
+/// The slots of a player's ender chest (`PlayerEnderChestContainer`).
+pub const ENDER_SLOTS: usize = 27;
+
+/// A player's ender chest: [`ENDER_SLOTS`] slots, which every ender chest opens for them
+/// (`docs/groundwork/n6-plan.md`, decision 5). Boxed and serialised as [`Inventory`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnderChest(pub Box<[Option<ItemStack>; ENDER_SLOTS]>);
+
+impl Default for EnderChest {
+    fn default() -> Self {
+        Self(Box::new([None; ENDER_SLOTS]))
+    }
+}
+
+impl EnderChest {
+    /// The slot `slot`, if the chest has one so numbered.
+    pub fn get(&self, slot: usize) -> Option<Option<ItemStack>> {
+        self.0.get(slot).copied()
+    }
+
+    /// Puts `stack` into `slot`; false if there is no such slot.
+    pub fn set(&mut self, slot: usize, stack: Option<ItemStack>) -> bool {
+        match self.0.get_mut(slot) {
+            Some(place) => {
+                *place = stack;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Serialize for EnderChest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EnderChest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let slots = Vec::<Option<ItemStack>>::deserialize(deserializer)?;
+        let slots: Box<[Option<ItemStack>; ENDER_SLOTS]> =
+            slots.try_into().map_err(|slots: Vec<_>| {
+                serde::de::Error::invalid_length(slots.len(), &"the slots of an ender chest")
+            })?;
+        Ok(Self(slots))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

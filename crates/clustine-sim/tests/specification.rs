@@ -956,6 +956,7 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         pose: Pose::at(Vec3::new(12.5, 64.0, 8.5)),
         inventory: Inventory::with_hotbar(hotbar()),
         selected_slot: 0,
+        ender: Default::default(),
         last_input,
         hops: 0,
         flying: false,

@@ -147,6 +147,7 @@ fn place_in(chunk: ChunkPos) -> Place {
         flying: true,
         inventory: kept(),
         selected_slot: 5,
+        ender: Default::default(),
     }
 }
 
@@ -157,6 +158,7 @@ fn place_of(state: &PlayerState) -> Place {
         flying: state.flying,
         inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
+        ender: Default::default(),
     }
 }
 
@@ -167,6 +169,7 @@ fn place_from(transfer: &PlayerTransfer) -> Place {
         flying: transfer.flying,
         inventory: transfer.inventory.clone(),
         selected_slot: transfer.selected_slot,
+        ender: Default::default(),
     }
 }
 
@@ -264,6 +267,7 @@ fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -
         pose: Pose::at(position),
         inventory: kept(),
         selected_slot: 2,
+        ender: Default::default(),
         last_input: 0,
         hops,
         flying: false,
@@ -521,6 +525,7 @@ fn at_spawn() -> Place {
         flying: false,
         inventory: Inventory::with_hotbar(starting()),
         selected_slot: 0,
+        ender: Default::default(),
     }
 }
 
@@ -618,6 +623,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         pose: place.pose,
         inventory: place.inventory.clone(),
         selected_slot: place.selected_slot,
+        ender: Default::default(),
         last_input: 0,
         hops: 1,
         flying: true,
@@ -652,6 +658,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         pose: place.pose,
         inventory: place.inventory.clone(),
         selected_slot: place.selected_slot,
+        ender: Default::default(),
         last_input: 0,
         hops: 1,
         flying: place.flying,
@@ -688,6 +695,7 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
         flying: false,
         inventory: kept(),
         selected_slot: 5,
+        ender: Default::default(),
     };
     for holder in [None, Some(OTHER)] {
         for y in [-64.01, -70.0, -1.0e7] {
@@ -922,6 +930,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         pose: Pose::at(middle(EAST)),
         inventory: kept(),
         selected_slot: 2,
+        ender: Default::default(),
         last_input: 6,
         handled: None,
         edge: F,
@@ -1370,6 +1379,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         pose: Pose::at(NEARBY),
         inventory: kept(),
         selected_slot: 1,
+        ender: Default::default(),
         last_input: 4,
         handled: None,
         edge: F,
@@ -1452,6 +1462,7 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         pose: Pose::at(position),
         inventory: kept(),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 3,
         handled: None,
         edge,
@@ -1603,6 +1614,7 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         pose: Pose::at(SPAWN),
         inventory: kept(),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 0,
         handled: None,
         edge: E,

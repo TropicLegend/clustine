@@ -968,6 +968,8 @@ mod tests {
         let mut inventory = [None; crate::INVENTORY_SLOTS];
         inventory[1] = Some((7, 3));
         inventory[36] = Some((9, 1));
+        let mut ender = [None; crate::ENDER_SLOTS];
+        ender[26] = Some((11, 2));
         PlayersFile {
             from: 7,
             issued: 258,
@@ -990,6 +992,7 @@ mod tests {
                         flying: true,
                         selected_slot: 1,
                         inventory,
+                        ender,
                     }),
                 },
             ],
@@ -1137,6 +1140,9 @@ mod tests {
         body.extend_from_slice(&[0; 27]);
         body.extend_from_slice(&[1, 0, 0, 0, 9, 0, 0, 0, 1]);
         body.extend_from_slice(&[0; 4]);
+        // The ender chest: 26 empty slots, then the last holds two of item 11.
+        body.extend_from_slice(&[0; 26]);
+        body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1411,6 +1417,7 @@ mod tests {
                         any::<[f64; 3]>(),
                         any::<(f32, f32, bool, bool, u8)>(),
                         inventories(),
+                        any::<[Option<(i32, i32)>; crate::ENDER_SLOTS]>(),
                     )),
                 ),
                 0..12,
@@ -1426,7 +1433,12 @@ mod tests {
                         stay,
                         hops,
                         place: place.map(
-                            |(position, (yaw, pitch, on_ground, flying, selected_slot), inventory)| {
+                            |(
+                                position,
+                                (yaw, pitch, on_ground, flying, selected_slot),
+                                inventory,
+                                ender,
+                            )| {
                                 LoggedPlace {
                                     position,
                                     yaw,
@@ -1435,6 +1447,7 @@ mod tests {
                                     flying,
                                     selected_slot,
                                     inventory,
+                                    ender,
                                 }
                             },
                         ),

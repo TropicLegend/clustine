@@ -825,6 +825,7 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         pose: Pose::at(Vec3::new(3.5, -60.0, 0.5)),
         inventory: Inventory::default(),
         selected_slot: 0,
+        ender: Default::default(),
         last_input: 0,
         hops: 0,
         flying: false,
