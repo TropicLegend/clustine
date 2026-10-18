@@ -1,7 +1,7 @@
 # Step N5: vehicles, riding and what a creative player places, planned
 
-Draft of 2026-10-18, revised the same day after an independent review (section 7,
-which overrides what it amends above it); to be reviewed again before it is built. Step N5 of
+Draft of 2026-10-18, revised the same day after two independent reviews (sections 7 and 8, which override
+what they amend above them, the later the earlier); ready to build. Step N5 of
 [ADR-0028](../adr/0028-entities.md) (sections 2, 5, 6 and 7 as accepted) and of the
 [phase plan](n-plan.md): "minecarts on rails, boats driven by the client, riding, armour
 stands, item frames, paintings and the other hanging entities, leashes". The rules of
@@ -30,7 +30,8 @@ cites it by section (brief 3.6, brief 0.12) and decides what the brief leaves op
   as the game draws it. Cushions are placed and sat on.
 - A lead ties a boat to a player, to a fence (a knot) or to another boat; the boat is
   pulled as the game pulls it, and the lead snaps beyond 12 blocks.
-- Every one of these crosses a line between regions as an item does (N3), and a player
+- Every one of these crosses a line between regions as an item does (N3), but a leash
+  held across a line snaps (section 7, item 3); and a player
   riding a boat or a cart across a line goes on riding, with their vehicle and anyone
   else in it, without a jump back, a flicker or a dismount.
 - A player who leaves while sitting in a boat or a cart gets off as they leave, the
@@ -124,8 +125,7 @@ afterwards from the record, the brief and this plan by someone who built none of
   rider's own `player_position` and `set_passengers` (brief 0.11, 0.15), and the
   sounds the step makes (`sound_entity`).
 - `clustine-rpc`: the player's transfer (`PlayerTransfer`) gains the vehicle's key, its
-  chunk and the rider's place in the order (ADR-0028, section 5); a stay (ADR-0020)
-  gains an optional unit (decision 7). Effects gain `Effected::OnEntity { key, what }`
+  chunk and the rider's place in the order (ADR-0028, section 5). Effects gain `Effected::OnEntity { key, what }`
   for decision 10, with `what` an enum of the uses and hits above.
 - `clustine-protocol`: `interact`, `attack`, serverbound and clientbound `move_vehicle`,
   `paddle_boat`, `player_command`, `pick_item_from_entity`, `set_passengers`,
@@ -196,8 +196,8 @@ relays moves (mine).
 
 `Leashable` for boats (brief 7.1–7.3: the elastic pull and the wrench, the snap at 12),
 `LeadItem` and knots (brief 7.6), taking, giving and cutting a leash (brief 7.4), the
-restore by UUID or fence for 100 ticks (brief 0.36), `set_entity_link`. A player holding
-a leashed boat crosses by their own hand-over and the leash holds (brief 10.1).
+restore by UUID or fence for 100 ticks (brief 0.36), `set_entity_link`. A leash whose
+holder is in another region snaps (section 7, item 3).
 
 ### N5h, units crossing lines and riders handed over (mine)
 
@@ -234,10 +234,7 @@ crashes of each process at each step of a rider's crossing.
 5. **A driven boat's move crossing in a packet**: an accepted `MoveVehicle` puts the
    root at the client's position (brief 10.2), which may be in another chunk; the region
    judges the crossing after each packet as after a tick.
-6. **Logout in a boat alone** (decision 7): the unit leaves its chunk with the player's
-   stay record, in the same commit, as the game's `UNLOADED_WITH_PLAYER`; at login it
-   comes back where it was saved, the player seated. A login into land another region
-   holds hands the unit over with the player.
+6. **Logout in a vehicle**: withdrawn (section 7, item 1; section 8, item 6).
 7. **Effects on entities across a line** (decision 10): `Effected::OnEntity`, filed for
    the entity's chunk's user as effects are (ADR-0025), done in the tick it is due; one
    whose entity is gone by then does nothing. A mount through one becomes a hand-over of
@@ -363,3 +360,72 @@ An independent review (2026-10-18) found these; each change overrides the text a
     - the oracle's cart comparison reads the official server's cart by its position
       sent to a client from a known tick of placing, as the redstone comparisons read
       blocks.
+
+## 8. The second review, and what it changed
+
+A second independent review (2026-10-18) found the design sound and these to mend;
+each overrides what it amends above.
+
+1. **A take-in would have dropped every pending seat.** A pending player is by
+   definition not in the unit's region, and a restore, a merge, a split and a lend's load
+   all take chunks in. So each pending entry of a unit carries, saved with it, a countdown
+   (counted as N2 counts ages, relative to its record) and the edge it is of. At any
+   take-in an entry with time left is kept; player passengers neither present nor
+   pending are dropped; a fold drops them all. Every deadline and age of the riding (the
+   player's pending deadline, kept moves, `vehiclePositionLastResetAt`, the forwarding
+   entry's 100 ticks) is an age, never a region's tick, as regions number their ticks
+   apart and a merge keeps the survivor's.
+2. **The mount as a hand-over.** `apply_arrival` judges the chunk of the player's
+   position, and would bounce the mounting player back. So a transfer with a mount intent
+   counts the unit's chunk as its holding chunk while the unit is present, and the
+   intent is decided in `apply_arrival`, before the tick's inputs. The sending region
+   sets the player's holding chunk to the unit's as soon as it decides to send them, so
+   that their later inputs are not applied there and their last input is the interact
+   (as for a crossing within a packet, section 7 item 11). If the mount is refused (the
+   unit moved on or broke, the seat was taken) the player's holding chunk goes back to
+   their position's and they are handed back; their client is sent nothing either way.
+   A player who rides already and clicks a vehicle across a line is refused (named): the
+   game would keep the first vehicle until the second accepts.
+3. **The order of the parts left `main` broken at pinned lines.** A unit of several
+   members crosses as one arrival filed by its root's chunk from N5b on (before any
+   vehicle moves), and until N5h a unit with a player in it is held back at a line as
+   `View::may_hold` holds an entity, which the roadmap says while it lasts.
+4. **The player's word about riding in the contracts.** The player's reported state
+   (and the presence answers and snapshots at a hello or a resume, ADR-0020 section 6)
+   carries "rides K at index i". A vehicle's report lists every passenger key in order;
+   the edge shows a player in that list only where the player's own latest stay says
+   they ride K, and adds one it has the player's word for and the vehicle's report has
+   not yet named. So two sources never tie on an index.
+5. **The forwarding entry**, made when a unit with a pending seat is sent on, is
+   committed in that commit; survives merges (as a union) and splits (with the part that
+   holds the chunk it names); goes when the unit comes back. A player who comes naming a
+   vehicle the region has forwarded is handed on with the transfer's vehicle chunk
+   rewritten (the `NotMine` path); one who comes naming no vehicle, or another one,
+   drops any pending entry of theirs rather than be seated by it.
+6. **Where a leaving rider comes back.** ADR-0020 writes no stay note when a player is
+   removed, so their place would be their seat. The commit that removes a rider writes a
+   `Has` note with the place they are dismounted to (harmless below the floor): an
+   amendment of ADR-0020, section 3, made with N5b.
+7. **Pick-item** on an entity is answered by the player's own region from its copy of
+   the entity (its kind, a frame's item, a painting's variant), not as an effect. In
+   creative, putting an item on a stand across a line needs no answer and is an effect;
+   only taking from one does nothing across a line (named).
+8. **A rider departs exactly when and to where their unit is sent**, and otherwise
+   stays; a stale belief that a loaded chunk is another's sends neither.
+9. **Phantom pending seats**: the edge in each entry lets the unit's region drop the
+   entries of an edge that goes away (`drop_edge`), which a `Discard` does not cover.
+10. **Kept moves past the 20**: when moves were dropped, the first kept one is accepted
+    without the "too quickly" test, as the game never corrects a driver's first move.
+11. **ADR-0028 is amended with N5h**: section 5's "only seated players are reported
+    among a vehicle's passengers" and "the latest `MoveVehicle` is kept" give way to
+    items 4 above and section 7 item 4; the named difference of a rider riding nothing
+    until their vehicle comes goes; section 7's list of effects on entities gains N5's.
+12. **Delegation**: the comparison of carts with the official server is run by me (an
+    agent starts no server). N5f delivers the vehicle's move check as a pure function
+    of the connection's state, the root and the move, which N5h reuses for the kept
+    moves.
+
+The order of the parts, as amended: N5a (contracts), N5b (riding, entity collision, the
+shared pieces, cushions, units of several members crossing, the edge's riding), then
+N5c (hanging), N5d (stands) and N5e (carts) delegated in parallel, N5f (boats) after
+N5e, N5g (leashes) after N5c and N5f, N5h (riders crossing) after N5f, N5i and N5j.
