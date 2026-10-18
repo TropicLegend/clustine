@@ -388,7 +388,7 @@ async fn post_processing_and_seams_are_committed_and_outlive_the_runner_without_
         .collect();
     assert_eq!(saved, [], "neither chunk was saved");
     // Both are counted unsaved, to be saved where a stop is near.
-    assert!(runner.unsaved.contains(&K) && runner.unsaved.contains(&N));
+    assert!(runner.unsaved.contains_key(&K) && runner.unsaved.contains_key(&N));
     drop((runner, edge));
 
     let (handle, _) = world.open(RegionId(0), 3);

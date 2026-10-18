@@ -15,7 +15,7 @@ use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
 use clustine_sim::api::TickInputs;
 use clustine_world::{
-    Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, FiledEffect,
+    Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, EntityChange, FiledEffect,
 };
 
 /// At most this many ready effects go to one tick, the rest to the next (section 5).
@@ -39,6 +39,9 @@ struct Copy {
     handed: bool,
     /// Changes the sim has not had of a copy it has.
     unsent: Vec<Change>,
+    /// Entity changes the sim has not had of a copy it has, in their order
+    /// (`docs/adr/0028-entities.md`, section 3).
+    unsent_entities: Vec<EntityChange>,
 }
 
 struct Based {
@@ -51,6 +54,7 @@ struct Update {
     sequence: u64,
     previous: u64,
     changes: Vec<Change>,
+    entity_changes: Vec<EntityChange>,
 }
 
 /// What the runner asks the store for, from what came in.
@@ -171,6 +175,7 @@ impl Border {
                 // The sim takes the base anew, with what came before it applied.
                 copy.handed = false;
                 copy.unsent.clear();
+                copy.unsent_entities.clear();
                 let early = std::mem::take(&mut copy.early);
                 for update in early {
                     if update.sequence > sequence {
@@ -183,14 +188,14 @@ impl Border {
                 sequence,
                 previous,
                 changes,
-                // Handed to the sim from step N2b on.
-                entity_changes: _,
+                entity_changes,
             } => {
                 let copy = self.copies.get_mut(&position)?;
                 let update = Update {
                     sequence,
                     previous,
                     changes,
+                    entity_changes,
                 };
                 match &copy.base {
                     None => copy.early.push(update),
@@ -281,9 +286,14 @@ impl Border {
                     let _ = chunk.apply(change);
                 }
             }
+            // After the blocks, as the holder's tick made them.
+            for change in &update.entity_changes {
+                chunk.apply_entity(change);
+            }
         }
         if copy.handed {
             copy.unsent.extend(update.changes);
+            copy.unsent_entities.extend(update.entity_changes);
         }
     }
 
@@ -356,16 +366,25 @@ impl Border {
                     inputs.copy_bases.push((position, chunk));
                     copy.handed = true;
                     copy.unsent.clear();
+                    copy.unsent_entities.clear();
                 }
-                (true, true) if !copy.unsent.is_empty() => {
-                    inputs
-                        .copy_updates
-                        .push((position, std::mem::take(&mut copy.unsent)));
+                (true, true) => {
+                    if !copy.unsent.is_empty() {
+                        inputs
+                            .copy_updates
+                            .push((position, std::mem::take(&mut copy.unsent)));
+                    }
+                    if !copy.unsent_entities.is_empty() {
+                        inputs
+                            .copy_entity_updates
+                            .push((position, std::mem::take(&mut copy.unsent_entities)));
+                    }
                 }
                 (true, false) => {
                     inputs.copies_withdrawn.push(position);
                     copy.handed = false;
                     copy.unsent.clear();
+                    copy.unsent_entities.clear();
                 }
                 _ => {}
             }
@@ -557,6 +576,7 @@ impl Border {
         for copy in self.copies.values_mut() {
             copy.handed = false;
             copy.unsent.clear();
+            copy.unsent_entities.clear();
         }
         self.loaded = loaded.into_iter().collect();
     }
@@ -636,6 +656,78 @@ mod tests {
         take(&mut border, update(12, 9));
         assert_eq!(inputs(&mut border).copy_updates.len(), 1);
         let asks = take(&mut border, update(20, 15));
+        assert_eq!(asks.rebase, [C]);
+        assert_eq!(inputs(&mut border).copies_withdrawn, [C]);
+    }
+
+    fn item(key: u64, x: f64) -> clustine_world::Entity {
+        clustine_world::Entity {
+            key: clustine_world::EntityId(key),
+            kind: 71,
+            uuid: uuid::Uuid::from_u128(u128::from(key)),
+            position: [x, -60.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+            hops: 0,
+            age: 0,
+            data: clustine_world::EntityData::Item {
+                stack: clustine_world::ItemStack { item: 1, count: 1 },
+                pick_up_delay: 40,
+                thrower: None,
+            },
+        }
+    }
+
+    fn entity_update(sequence: u64, previous: u64, changes: Vec<EntityChange>) -> StoreReply {
+        StoreReply::CopyUpdate {
+            position: C,
+            sequence,
+            previous,
+            changes: Vec::new(),
+            entity_changes: changes,
+        }
+    }
+
+    /// `docs/adr/0028-entities.md`, section 3: a copy's updates carry the entity
+    /// changes of their commits, which go into a base that came after them and to the
+    /// sim in their order once it has the copy; an update of entities alone is a link
+    /// of the chain, whose gap is seen.
+    #[test]
+    fn a_copy_takes_entity_changes_in_order_and_sees_a_gap_in_them() {
+        use clustine_world::EntityId;
+        let mut border = Border::default();
+        border.want(&[C]);
+        take(
+            &mut border,
+            entity_update(7, 5, vec![EntityChange::Whole(item(1, 17.5))]),
+        );
+        take(&mut border, base(6, 5, CopyUse::Nobody));
+        let given = inputs(&mut border);
+        assert_eq!(given.copy_bases[0].1.entities(), [item(1, 17.5)]);
+        assert!(given.copy_entity_updates.is_empty());
+        let moved = EntityChange::Set(
+            EntityId(1),
+            vec![clustine_world::EntityField::Position([18.5, -60.0, 0.5])],
+        );
+        take(&mut border, entity_update(9, 7, vec![moved.clone()]));
+        take(
+            &mut border,
+            entity_update(11, 9, vec![EntityChange::Gone(EntityId(1))]),
+        );
+        let given = inputs(&mut border);
+        assert!(given.copy_updates.is_empty());
+        assert_eq!(
+            given.copy_entity_updates,
+            [(C, vec![moved, EntityChange::Gone(EntityId(1))])]
+        );
+        // The update of 13 is missed: the one of 15 names it, and the copy is based
+        // anew.
+        let asks = take(
+            &mut border,
+            entity_update(15, 13, vec![EntityChange::Whole(item(2, 20.0))]),
+        );
         assert_eq!(asks.rebase, [C]);
         assert_eq!(inputs(&mut border).copies_withdrawn, [C]);
     }

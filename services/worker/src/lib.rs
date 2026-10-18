@@ -53,8 +53,8 @@ use std::time::{Duration, Instant};
 
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{
-    Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Presence, Restored, SplitPart, StoreReply,
-    StoreRequest, Welcome, WorkerToEdge,
+    Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Parts, Presence, Restored, SplitPart,
+    StoreReply, StoreRequest, Welcome, WorkerToEdge,
 };
 use clustine_sim::api::{Entered, Inventory, PlayerInput, RegionEvent};
 use clustine_sim::{
@@ -870,8 +870,18 @@ pub struct RegionRunner {
     loads: BTreeMap<ChunkPos, u32>,
     /// [`Region::crowds`] after the last tick, to tell when it changes.
     crowds: Crowds,
-    /// Loaded chunks that have changed since they were loaded or last stored.
-    unsaved: BTreeSet<ChunkPos>,
+    /// Loaded chunks that have changed since they were loaded or last stored, with the
+    /// parts of them that changed: their blocks (with everything else a chunk keeps)
+    /// and their entities, which the store keeps apart (`docs/adr/0028-entities.md`,
+    /// section 2).
+    unsaved: BTreeMap<ChunkPos, Parts>,
+    /// Loaded chunks the runner has saved since it loaded them. A chunk's first save
+    /// writes every part, so that its files are of one save whatever the store had of
+    /// it: a note of the generator's that a restart lost, say, which would leave the
+    /// entities of a save of them alone without the blocks they are read beside
+    /// (`docs/groundwork/n2-plan.md`, section 5). Kept to the chunks loaded at each
+    /// checkpoint.
+    saved_once: BTreeSet<ChunkPos>,
     /// The chunks the region has asked the store to lend it and has had no answer for
     /// yet: subscriptions to them wait, so that the edge is not sent back and forth
     /// while a grant is on its way (`docs/adr/0027-lending-at-a-line.md`, section 5).
@@ -933,6 +943,10 @@ pub struct RegionRunner {
     max_reshape_bytes: usize,
     /// [`FEW_UNSAVED`], unless a test has lowered it.
     few_unsaved: usize,
+    /// Entity changes a test has the next tick make, beside the sim's: the sim of step
+    /// N2b makes none (`docs/groundwork/n2-plan.md`, section 2).
+    #[cfg(test)]
+    injected_entity_changes: Vec<(ChunkPos, clustine_world::EntityChange)>,
     /// The tick at which the checkpoint of the last [`Reshape::Prepare`] was asked for.
     prepared_at: u64,
     /// [`FRESH_FOR`], unless a test has lowered it.
@@ -1098,7 +1112,8 @@ impl RegionRunner {
             parted: BTreeMap::new(),
             loads: BTreeMap::new(),
             crowds: Crowds::new(),
-            unsaved: BTreeSet::new(),
+            unsaved: BTreeMap::new(),
+            saved_once: BTreeSet::new(),
             lends_in_flight: BTreeSet::new(),
             ageing: BTreeSet::new(),
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
@@ -1116,6 +1131,8 @@ impl RegionRunner {
             command,
             max_reshape_bytes: MAX_RESHAPE_BYTES,
             few_unsaved: FEW_UNSAVED,
+            #[cfg(test)]
+            injected_entity_changes: Vec::new(),
             prepared_at: 0,
             fresh_for: FRESH_FOR,
             pace: TICK,
@@ -1396,7 +1413,11 @@ impl RegionRunner {
             unsaved = self.unsaved.len(),
             // Saved at the stop too, though nothing changed in them but their ticks'
             // delays: how many says what a stop's checkpoint costs (B8).
-            ageing = self.ageing.difference(&self.unsaved).count(),
+            ageing = self
+                .ageing
+                .iter()
+                .filter(|position| !self.unsaved.contains_key(position))
+                .count(),
             "the store has the first checkpoint of a release, a merge or a split; \
              the region stops ticking"
         );
@@ -1413,7 +1434,12 @@ impl RegionRunner {
     /// saved beforehand.
     fn little_since_prepared(&self) -> bool {
         let since = self.region.tick_number().saturating_sub(self.prepared_at);
-        let unsaved = self.unsaved.union(&self.ageing).count();
+        let unsaved = self.unsaved.len()
+            + self
+                .ageing
+                .iter()
+                .filter(|position| !self.unsaved.contains_key(position))
+                .count();
         unsaved <= self.few_unsaved || since <= self.fresh_for
     }
 
@@ -2461,6 +2487,13 @@ impl RegionRunner {
             .collect();
         self.discards.clear();
         let output = self.region.tick(&inputs);
+        #[cfg(test)]
+        let output = {
+            let mut output = output;
+            let injected = mem::take(&mut self.injected_entity_changes);
+            output.entity_changes.extend(injected);
+            output
+        };
         for edge in self.edges.values_mut() {
             edge.settled = true;
         }
@@ -2594,7 +2627,19 @@ impl RegionRunner {
             .filter(|position| self.region.chunk(**position).is_some())
             .map(|position| (*position, self.region.kept_events(*position)))
             .collect();
+        // What the tick did to entities other than players, in its order. The sim makes
+        // none for a chunk it does not have loaded (`docs/groundwork/n2-plan.md`,
+        // section 11).
+        let entity_changes = output.entity_changes;
+        for (position, change) in &entity_changes {
+            assert!(
+                self.region.chunk(*position).is_some(),
+                "the tick changed an entity of the chunk {position:?}, which is not loaded: \
+                 {change:?}"
+            );
+        }
         let unchanged = changes.is_empty()
+            && entity_changes.is_empty()
             && ticks.is_empty()
             && marks_taken.is_empty()
             && seams.is_empty()
@@ -2608,15 +2653,30 @@ impl RegionRunner {
             || self.border.has_made()
             || self.border.commits_every_tick();
         if needs_commit {
-            self.unsaved
-                .extend(changes.iter().map(|change| change.position().chunk()));
-            self.unsaved
-                .extend(ticks.iter().map(|(position, _)| *position));
-            self.unsaved.extend(marks_taken.iter().copied());
-            self.unsaved
-                .extend(seams.iter().map(|(position, _)| *position));
-            self.unsaved
-                .extend(events.iter().map(|(position, _)| *position));
+            let blocks = changes
+                .iter()
+                .map(|change| change.position().chunk())
+                .chain(ticks.iter().map(|(position, _)| *position))
+                .chain(marks_taken.iter().copied())
+                .chain(seams.iter().map(|(position, _)| *position))
+                .chain(events.iter().map(|(position, _)| *position));
+            for position in blocks {
+                self.unsaved_part(position, Parts::BLOCKS);
+            }
+            for (position, _) in &entity_changes {
+                // A chunk still as generated is saved with its blocks too, so that the
+                // store does not make it again over its entities.
+                let generated = self
+                    .region
+                    .chunk(*position)
+                    .is_some_and(|chunk| chunk.generated() != 0);
+                let parts = if generated {
+                    Parts::ALL
+                } else {
+                    Parts::ENTITIES
+                };
+                self.unsaved_part(*position, parts);
+            }
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
                 changes,
@@ -2628,8 +2688,7 @@ impl RegionRunner {
                 effects: self.border.take_for_commit(),
                 taken,
                 events,
-                // Taken from the tick's output from step N2b on.
-                entity_changes: Vec::new(),
+                entity_changes,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -3039,21 +3098,51 @@ impl RegionRunner {
         progress
     }
 
+    /// Notes that `parts` of the loaded chunk at `position` changed.
+    fn unsaved_part(&mut self, position: ChunkPos, parts: Parts) {
+        let unsaved = self.unsaved.entry(position).or_insert(Parts::NONE);
+        *unsaved = unsaved.with(parts);
+    }
+
     /// Hands the chunk at `position` to the store if it has unsaved changes or ticks
-    /// that aged since it was saved.
+    /// that aged since it was saved, with the parts of it that changed.
     fn save(&mut self, position: ChunkPos) {
-        let ageing = self.ageing.remove(&position);
-        if (self.unsaved.remove(&position) || ageing)
-            && let Some(chunk) = self.region.saved_chunk(position)
-        {
+        self.save_parts(position, Parts::NONE);
+    }
+
+    /// Does what [`RegionRunner::save`] does, with `also` among the parts written if it
+    /// is saved at all.
+    fn save_parts(&mut self, position: ChunkPos, also: Parts) {
+        // Ticks are kept with the blocks.
+        let ageing = self.ageing.remove(&position).then_some(Parts::BLOCKS);
+        let Some(mut parts) = self.unsaved.remove(&position).or(ageing) else {
+            return;
+        };
+        parts = parts.with(also);
+        if let Some(ageing) = ageing {
+            parts = parts.with(ageing);
+        }
+        if let Some(mut chunk) = self.region.saved_chunk(position) {
+            if self.saved_once.insert(position) {
+                parts = Parts::ALL;
+            }
+            // A chunk as generated is saved whole: what the store has of it may be a
+            // note of the generator's, or nothing (`docs/groundwork/n2-plan.md`,
+            // section 5). One with entities is saved as no longer as generated, so that
+            // the store does not make it again over them.
+            if chunk.generated() != 0 {
+                parts = Parts::ALL;
+                if !chunk.entities().is_empty() {
+                    chunk.clear_generated();
+                }
+            }
             // The commit of the region's last tick has been sent, which the store has
             // on disk before it writes the chunk. The chunk goes with its ticks.
             self.store.request(StoreRequest::Save {
                 position,
                 tick: self.region.tick_number(),
                 chunk,
-                // Saved by parts from step N2b on.
-                parts: clustine_rpc::Parts::ALL,
+                parts,
             });
         }
     }
@@ -3061,9 +3150,17 @@ impl RegionRunner {
     /// Hands every chunk with unsaved changes and the region's whole state to the store,
     /// which keeps them in place of the commits up to here.
     fn checkpoint(&mut self) {
-        for position in self.unsaved.clone() {
+        let unsaved: Vec<ChunkPos> = self.unsaved.keys().copied().collect();
+        for position in unsaved {
             self.save(position);
         }
+        let region = &self.region;
+        self.saved_once
+            .retain(|position| region.chunk(*position).is_some());
+        self.request_checkpoint();
+    }
+
+    fn request_checkpoint(&mut self) {
         self.store.request(StoreRequest::Checkpoint {
             tick: self.region.tick_number(),
             state: stored(&self.region.state()),
@@ -3072,10 +3169,15 @@ impl RegionRunner {
 
     /// The checkpoint at which the region stops ticking: the chunks with ageing ticks
     /// are saved too, so that the store has every tick's delay left as the region
-    /// leaves it, which a merge or a split hands on and a resume starts from.
+    /// leaves it, which a merge or a split hands on and a resume starts from. Each is
+    /// saved whole, both its files written as the region leaves it.
     fn checkpoint_at_stop(&mut self) {
-        self.unsaved.append(&mut self.ageing);
-        self.checkpoint();
+        let mut stopping: BTreeSet<ChunkPos> = self.unsaved.keys().copied().collect();
+        stopping.extend(self.ageing.iter().copied());
+        for position in stopping {
+            self.save_parts(position, Parts::ALL);
+        }
+        self.request_checkpoint();
     }
 
     /// Ticks 20 times per second until `stop` is set, then stores what has not been
@@ -4557,6 +4659,8 @@ mod tests {
         committed: Mutex<Vec<StoreRequest>>,
         /// The saves asked for, in that order: the chunk, the tick and what was saved.
         saved: Mutex<Vec<(ChunkPos, u64, Chunk)>>,
+        /// The parts each save asked for named, in that order.
+        saved_parts: Mutex<Vec<(ChunkPos, Parts)>>,
     }
 
     /// A commit that carried the ticks of chunks, as [`GateControl`] notes it: its
@@ -4772,11 +4876,13 @@ mod tests {
                 position,
                 tick,
                 chunk,
-                ..
+                parts,
             } = &request
             {
                 let saved = (*position, *tick, chunk.clone());
                 self.control.saved.lock().unwrap().push(saved);
+                let parts = (*position, *parts);
+                self.control.saved_parts.lock().unwrap().push(parts);
             }
             if request == StoreRequest::Flush {
                 self.control.flushes.fetch_add(1, Ordering::SeqCst);
@@ -15198,6 +15304,7 @@ mod tests {
     }
 
     mod busy_circuits;
+    mod entities;
     mod generation;
     mod lends;
     mod scheduled_ticks;

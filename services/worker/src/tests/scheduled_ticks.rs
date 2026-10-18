@@ -161,7 +161,7 @@ async fn a_tick_in_which_only_ticks_change_is_committed_with_the_delays_left() {
     assert_eq!(ticked, [expected]);
     assert_eq!(left(LONG, started, ran), LONG - 4);
     assert!(gate.commits().contains(&ran));
-    assert!(runner.unsaved.contains(&K));
+    assert!(runner.unsaved.contains_key(&K));
     assert!(!saved_k(&gate));
 
     drop(runner);
