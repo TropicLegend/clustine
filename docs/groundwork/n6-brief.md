@@ -4,10 +4,10 @@ Read from `server-26.3.jar` with `javap -p -c -constants` (names are Mojang's), 
 per class, and from `target/datagen/26.3/generated/`. Every rule below is the bytecode's
 unless marked **Inferred** (reasoning, to test) or **Client** (client code, not in the
 server jar). Method names are the game's; "line" ranges, where given, are of the `javap`
-output of that class ("ServerExplosion.txt" is
-`net.minecraft.world.level.ServerExplosion`'s,
-and so on), so a porter can go straight to them. The step's own dump is
-`reference/n6-javap/` (158 classes); the N5 dump, `reference/n5-javap/`, has the rest
+output of that class ("ServerExplosion.txt" is `net.minecraft.world.level.
+ServerExplosion`'s, and so on), so a porter can go straight to them. The step's own dump
+is `reference/n6-javap/`: 158 classes first, then 171 more that the first reading's
+section 12 named (`more.txt` lists them), from which the brief was completed; the N5 dump, `reference/n5-javap/`, has the rest
 quoted here (`LivingEntity`, `Player`, `ServerPlayer`, `ServerLevel`, `Level`,
 `AbstractMinecart`, `Containers`, `ItemStack`, …):
 
@@ -37,8 +37,8 @@ container packets, `HashedStack`, `HashedPatchMap`, `ServerGamePacketListenerImp
 depends on and nobody has read is in section 12. `invokedynamic` targets (lambdas and
 method references) are not shown by `javap -c`; where a rule depends on which method one
 is, it is marked **Inferred**. SteelMC's 26.3 extraction is quoted only where 26.3 keeps
-a value in a class not dumped (game rules' defaults, level event names, fluids'
-resistance), and says so where it is.
+a value in a class not dumped (level event names, fluids' resistance), and says so where
+it is.
 
 Conventions throughout (as in `docs/groundwork/n4-brief.md` and `n5-brief.md`): `double`
 is `f64`, `float` is `f32`; a `float` constant used in `double` arithmetic is widened
@@ -66,14 +66,17 @@ between regions and what was not read.
    through its menu, and today a click on a chest does nothing (no menu is opened
    anywhere in `services/edge`). The menus are a protocol of their own: `open_screen`,
    the click with its seven kinds (`ClickType` is now `ContainerInput`, wire ids 0 to 6
-   **Inferred**), hashed stacks, a state id, `container_set_content`/`_slot`/`_data`,
-   `set_cursor_item`, closing (3.0 items 15–26; 3.10–3.21). Chests, barrels and shulker
+   as a VarInt; an unknown id reads as `PICKUP`), hashed stacks (the client's hashes
+   are CRC32C over a tagged encoding of each component, `HashOps`, 3.16), a state id,
+   `container_set_content`/`_slot`/`_data`, `set_cursor_item`, closing (3.0 items 15–26; 3.10–3.21). Chests, barrels and shulker
    boxes come with them at little more cost, with their openers' count, lids, block
    events and sounds (3.1–3.5).
 2. **The split between the edge and the region falls on the game's own seam,
    `ContainerSynchronizer`** (ADR-0005): the region runs `AbstractContainerMenu`'s rules
    on the container and inventory it holds; the edge keeps the container id (1 to 100),
-   the state id (15 bits), the remote slots and their hashes, and sends every packet
+   the state id (15 bits; moved only by `container_set_content` and
+   `container_set_slot`, while `set_cursor_item` and `container_set_data` carry none),
+   the remote slots and their hashes, and sends every packet
    (3.0 items 17, 19; 3.21). A click whose state id is stale still runs, and the whole
    menu is sent again after it; a click on another container id, a menu no longer
    valid or a slot out of range is refused without an answer (3.0 item 16).
@@ -81,7 +84,9 @@ between regions and what was not read.
    sensors (section 8) need them posted from each place the game makes one: steps,
    landings, splashes, riding, N5's entities placed, item frames, levers, buttons,
    doors, pistons, note blocks, plates, tripwire, containers opening and closing, TNT
-   primed, explosions, blocks broken and placed. The protocol crate's `GameEvent` is the
+   primed, explosions, blocks broken and placed. Items and falling blocks post
+   `hit_ground` when they land (neither overrides `checkFallDamage`), so items need a
+   fall distance; a wool item's events are dampened. The protocol crate's `GameEvent` is the
    unrelated "change game state" packet; the simulation's need another name (8.0 items
    1, 2). Players' steps and falls are heard only if the region runs them on the moves
    the edge reports, and **sneaking has to become region state** (`region/pressed.rs`
@@ -91,9 +96,12 @@ between regions and what was not read.
 **What the data lacks**
 
 4. **Block explosion resistance is missing** from Clustine's data and from
-   `reports/blocks.json`; the datagen's `Extract.java` has to write
-   `getExplosionResistance()` per block beside the physics it writes; fluids' are 100 for
-   water and lava (SteelMC's 26.3 extraction) (2.0 item 10).
+   `reports/blocks.json`. The second dump gives every value (2.2's table, read from
+   `Blocks`: stone 6, planks 3, glass 0.3, obsidian 1200, TNT 0); the datagen's
+   `Extract.java` should still write `getExplosionResistance()` per block, since a block
+   class may change its properties in its constructor (the infested blocks,
+   **Inferred**), and the table is its check. Fluids' (100 for water and lava) are still
+   SteelMC's, so a waterlogged block resists 100 (2.0 item 10; 2.2).
 5. **Item stacks have no components** (`clustine_world::entity::ItemStack`). Menus work
    without them, but a shulker box keeps its contents in its item (`container`
    component, `copy_components` in its loot), so a shulker box broken by a creative
@@ -101,7 +109,9 @@ between regions and what was not read.
    stacks lose their components through a menu, and a client's hash with components
    never matches, so the slot is resent at each click. **A decision for the plan**:
    components in stacks in N6, or shulker boxes named as a difference (3.0 item 18; 2.6;
-   3.5).
+   3.5). A shulker box item destroyed as an entity (by an explosion or fire) spills its
+   contents in the game (`BlockItem.onDestroyed`); without components there is nothing
+   to spill.
 6. **Container loot tables are missing**: structure chests, barrels, dispensers and
    hoppers keep `LootTable`/`LootTableSeed`, unpacked when first opened, read by a
    comparator, pulled from by a hopper, dispensed from or broken; Clustine generates only
@@ -109,15 +119,17 @@ between regions and what was not read.
 
 **What 26.3 is**
 
-7. **There is no `onCaughtFire`** (a Forge hook): fire primes TNT from `FireBlock`'s
-   burning out, which Clustine's `region/random_ticks/fire.rs` already marks. Every
+7. **There is no `onCaughtFire`** (a Forge hook): fire burns TNT in
+   `FireBlock.checkBurnOut`, which first replaces the TNT with fire or air (the TNT's
+   burn odds are 100 against `nextInt(300)`, 250 above and below) and then primes it
+   with no owner; Clustine's `region/random_ticks/fire.rs` already marks the place. Every
    priming draws one `nextDouble` of the level's random for the motion's angle (turned by
    `Math.sin`/`Math.cos`); a TNT primed by an explosion draws `nextInt(20)` too, for a
    fuse of 10 to 29 ticks. `PrimedTnt` has no `baseTick` (no void check, no burning);
    its fuse is synched data that changes every tick, so it is sent every tick; it
    explodes with radius 4 at `y + 0.06125` (1.0 items 1–5).
 8. **TNT drops everything it breaks**: its interaction is `DESTROY` while the game rule
-   `tnt_explosion_drop_decay` is false (its default, from SteelMC's extraction), so the
+   `tnt_explosion_drop_decay` is false (its default, GameRules.txt 790–800), so the
    loot has no radius and draws nothing for `survives_explosion` or `explosion_decay`; the
    loot has the TNT as `THIS_ENTITY`, so chorus flowers and snow layers drop; drops are
    merged across blocks into stacks of at most 16, each laid at its first block, after
@@ -130,8 +142,13 @@ between regions and what was not read.
 10. **The owner decides what entities drop**: a creative player's TNT discards vehicles
     and breaks frames, paintings and cushions without their items; TNT lit by redstone
     or fire has no owner and they drop. Blocks drop either way (2.0 item 7).
-11. **New game rule `tnt_explodes`** gates `PrimedTnt.explode`, `TntBlock.prime` and the
-    dispenser's TNT; its default is not dumped (**Inferred** true) (4.0; section 12).
+11. **New game rule `tnt_explodes`** (default true, GameRules.txt 777–787) gates
+    `PrimedTnt.explode`, `TntBlock.prime` and the dispenser's TNT; when it is off a flint
+    and steel on TNT answers with the overlay `block.minecraft.tnt.disabled`, and fire
+    still burns the TNT away without priming it (1.1; 4.0 item 8). The other defaults
+    the brief relies on are read too: `tnt_explosion_drop_decay` false,
+    `block_explosion_drop_decay` and `mob_explosion_drop_decay` true, `mob_griefing`
+    true, `block_drops` true (2.1).
 12. **Dispensers and droppers fire 4 ticks after a rising edge** of
     `hasNeighborSignal(pos) || hasNeighborSignal(pos.above())` and do not look at the
     power again; the slot is one level `nextInt(n)` per non-empty slot (reservoir
@@ -141,7 +158,11 @@ between regions and what was not read.
     A dropper puts one item into the container in front silently and keeps it when it
     does not fit. Several fallbacks play the click and smoke twice. Shears cut N5's
     leashes. The sulfur cube (a stable 26.3 mob) is N7's, but its tag is checked on every
-    dispense of a block (4.0; 4.4–4.18).
+    dispense of a block. A dispensed shulker box is placed through `BlockItem.place` with
+    a context of no player looking `DOWN`, and not into an entity's box. A dropped item
+    takes seven draws of the level's random (`triangle` is two `nextDouble`); sounds take
+    none, since their seeds come from a generator of their own (4.0; 4.3; 4.4–4.18;
+    9.4).
 13. **Hoppers move items in the entity phase as well as their own**: an item entity's
     block walk meeting a hopper runs the hopper's whole `tryMoveItems` (eject, then take
     that entity). Clustine's item walk (`physics/item.rs`) is pure and has to hand
@@ -150,11 +171,15 @@ between regions and what was not read.
     ticked this game tick (`tickedGameTime`, not saved). A hopper's choice among
     container entities is a draw of the level's random. A hopper cart has no cooldown,
     never pushes, and keeps an `Enabled` flag (saved, not synched) that Clustine's
-    minecart record lacks (5.0).
+    minecart record lacks. The composter is a hopper's source and target through its
+    `LEVEL` alone: a hopper above composts one item per move, a hopper below takes the
+    bone meal (and loses it if it cannot hold it), and a composter above a hopper stops
+    it sucking items (5.0; 5.6).
 14. **Plates count every entity but spectators and marker armour stands** (stone plates
     living ones only, so in N6 only players and armour stands); a weighted plate counts
-    entities, not items, `ceil(min(n, max)/max · 15)`; which plates are `MOBS` is in
-    `BlockSetType`, not dumped (**Inferred** stone and polished blackstone). Tripwire is
+    entities, not items, `ceil(min(n, max)/max · 15)`; only the stone and polished
+    blackstone plates are `MOBS`; every wooden plate (poplar included) and both weighted
+    plates are `EVERYTHING` (`BlockSetType`, 6.2). Tripwire is
     pressed by the entity that walked in and kept by any entity. A detector rail needs
     only that any entity entering it tells comparators (6.0).
 15. **Containers**: every container block consumes the click, opening or not; a chest
@@ -164,7 +189,11 @@ between regions and what was not read.
     a scheduled block tick and send the block event each time; the shulker box's lid is
     simulated on the server, changes its shape and pushes entities; breaking any
     container but a shulker box spills its contents, in creative too; no container sends
-    `block_entity_data` (3.0 items 1–14).
+    `block_entity_data`. Copper chests join any copper chest, both halves becoming the
+    less oxidised block, which N1's placement does not do yet; the trapped chest is a
+    signal source of its openers' count (0 to 15, strong downwards); the ender chest
+    opens the player's own 27 slots, which N2's player data has to keep; a lock also
+    opens for any spectator (3.0 items 1–14).
 16. **The crafter needs the whole crafting recipe matcher** (1 266 recipes of 14 types
     in the generated data); leaving it to the step that brings crafting is recommended
     (7.0).
@@ -197,7 +226,8 @@ between regions and what was not read.
     5. **Blocks**, one at a time in the shuffled order: **reads** the block and its block
        entity; its loot (the table's own draws, none of the explosion's for TNT);
        **writes** air with flag 3 and runs that change's updates at once (falling blocks,
-       fluids, attached blocks popping off); a container **spills** its contents; a TNT
+       fluids, attached blocks popping off); a container **spills** its contents (per stack a `nextInt(21)` and six
+       `nextDouble`, `triangle` being two draws, then the item's own); a TNT
        **primes** (one `nextDouble`, one `nextInt(20)`).
     6. **Drops**, per merged stack, laid by `popResource` at its first block (three
        `nextDouble`, then the item's own draws, N4 brief 8.4), possibly across the line
@@ -220,7 +250,9 @@ between regions and what was not read.
     holder, and the copy has the blocks alone. So the block effect has to carry the
     call, not only the expected state: "broken by an explosion of this radius and
     interaction, from this entity, with this owner", and the holder evaluates the loot,
-    spills the container, primes TNT and lays the drops, which **cannot be merged with
+    spills the container, primes TNT (a TNT burnt by fire across the line
+    likewise: the fire's effect carries "burnt" and the holder primes it after the set)
+    and lays the drops, which **cannot be merged with
     the near side's** (a named difference: more, smaller stacks at a line). ADR-0028
     section 7 lists "an explosion's damage and knockback, with its blocks as block
     effects (`SetIf`)"; this is what it has to add. Where regions follow players, an
@@ -242,9 +274,10 @@ between regions and what was not read.
     by blocks (the hopper's source is above it, in its own column), only by entities.
 23. **Plates, tripwire and sculk sensors at a line** see only the region's own entities
     today; an entity across the line on a plate needs an effect to the plate's holder,
-    and a vibration within 8 blocks of a sensor across the line has to go as an effect
-    carrying the event, its tick, the source's flags (spectator, sneaking, wool) and the
-    affected block; the occlusion reads up to 8 blocks into the far side, within the
+    and a vibration within 8 blocks (16 for a calibrated sensor) of a sensor across the
+    line has to go as an effect carrying the event, its tick, the source's flags
+    (spectator, sneaking, wool) and the affected block, since the game's dispatch finds
+    listeners only in loaded chunks and a copy has none; the occlusion reads up to 8 blocks into the far side, within the
     copies. A sensor's "3×3 chunks ticking" test has to read "its chunk ticks" at a line,
     or a sensor next to a line never fires (8.0; 11.5, 11.6).
 
@@ -262,10 +295,13 @@ Line numbers in this section are of those files unless another is named.
 1. **There is no `onCaughtFire` in 26.3.** `TntBlock` has `onPlace`, `neighborChanged`,
    `playerWillDestroy`, `wasExploded`, the two `prime`s, `useItemOn`, `onProjectileHit`
    and `dropFromExplosion` (false), and nothing else (lines 21–356). `onCaughtFire` is a
-   Forge hook, not the game's. Fire primes TNT from `FireBlock`'s burning out, which
-   calls `TntBlock.prime(level, pos)` itself after it has replaced the block (FireBlock
-   is not dumped; Clustine's port says where: `region/random_ticks/fire.rs`, "Burnt TNT
-   would be primed here"). The ways TNT is primed are, then: redstone (placed powered,
+   Forge hook, not the game's. Fire primes TNT from `FireBlock.checkBurnOut` (FireBlock
+   .txt 651–712; 1.1), which calls `TntBlock.prime(level, pos)` itself **after** it has
+   replaced the TNT with fire or air. TNT's burn odds are 100 (`setFlammable(TNT, 15,
+   100)`, FireBlock.txt 1471–1474), so a fire beside it burns it when its `nextInt(300)`
+   (`nextInt(250)` above or below) is under 100. Clustine's port says where:
+   `region/random_ticks/fire.rs`, "Burnt TNT would be primed here". The ways TNT is
+   primed are, then: redstone (placed powered,
    or a neighbour change while powered), fire burning it, a flint and steel or a fire
    charge used on it, a burning projectile (N9), an explosion (`wasExploded`, with a
    short random fuse), a dispenser's flint and steel facing it and a dispensed TNT item
@@ -382,14 +418,43 @@ return SUCCESS
 ```
 
 For a creative player neither the flint and steel's durability nor the fire charge's
-count changes (**Inferred**: `hurtAndBreak` and `consume` skip a player with infinite
-materials; `ItemStack` of the n5 dump has them, not reread here). The set is flag 11,
+count changes: `consume(n, entity)` shrinks the stack only when the entity is null or
+has no infinite materials (ItemStack.txt 2486–2496), and `hurtAndBreak(n, entity,
+slot)` (859–886) → `hurtAndBreak(n, level, player, onBreak)` (744–762) →
+`processDurabilityChange` (764–790) answers 0 for a `ServerPlayer` with infinite
+materials, before any enchantment (Unbreaking) draw. The set is flag 11,
 not `removeBlock`'s 3: the neighbours are updated and the client sent the change, and the
 set is immediate. The order is: entity, sound, game event, then the block goes. Whether
 the block's `useItemOn` is reached at all with a flint and steel follows
 `ServerPlayerGameMode.useItemOn` (N5 brief 2.9): a sneaking player holding an item skips
 the block and uses the item, so a flint and steel then sets fire beside the TNT (which
 primes it only when the fire burns it).
+
+**Burnt by fire: `FireBlock.checkBurnOut(level, pos, chance, random, age)`** (FireBlock
+.txt 651–712). The fire's tick (`tick`, 247–) calls it for its six neighbours in the
+order east, west, below, above, north, south, with `chance` 300, 300, 250, 250, 300,
+300, less 50 each where the environment attribute `increased_fire_burnout` holds at the
+fire (FireBlock.txt 386–404), `random` the level's and `age` the fire's:
+
+```
+odds = getBurnOdds(level.getBlockState(pos))          // 0 if waterlogged; TNT 100
+if random.nextInt(chance) < odds:                     // draw 1
+    old = level.getBlockState(pos)
+    if random.nextInt(age + 10) < 5 && !level.isRainingAt(pos):     // draw 2
+        newAge = min(age + random.nextInt(5) / 4, 15)                // draw 3
+        level.setBlockAndUpdate(pos, getStateWithAge(level, pos, newAge))   // fire, flag 3
+    else:
+        level.removeBlock(pos, false)                                // air, flag 3
+    if old.getBlock() is TntBlock:
+        TntBlock.prime(level, pos)                    // no owner; draws as 1.3
+```
+
+So the TNT's place is already fire or air (with its updates run) when the entity is
+made; `prime` does not remove anything itself, and a `false` answer (the game rule
+`tnt_explodes` off) leaves the TNT burnt and gone. `getStateWithAge` sets the fire's
+`age` only if `getState(level, pos)` is fire (it may be soul fire, which has none).
+Clustine's `region/random_ticks/fire.rs` ports the rest of the fire; the priming goes
+where it marks.
 
 **`onProjectileHit(level, state, hit, projectile)`** (lines 301–351), N9: on the server,
 if the projectile is on fire and `mayInteract(level, pos)`, `prime(level, pos, owner if
@@ -452,12 +517,10 @@ updates).
 
 ```
 handlePortal()                                              // portals: later
-applyGravity()                                              // motion.y -= 0.04
-(Entity.txt 3924–3942; 0 with NoGravity)
+applyGravity()                                              // motion.y -= 0.04 (Entity.txt 3924–3942; 0 with NoGravity)
 move(SELF, getDeltaMovement())                              // N4's Entity.move
 applyEffectsFromBlocks()                                    // N4's: cobweb, honey, fire, …
-setDeltaMovement(getDeltaMovement().scale((double) getAirDrag()))   // 0.98f widened:
-0.9800000190734863
+setDeltaMovement(getDeltaMovement().scale((double) getAirDrag()))   // 0.98f widened: 0.9800000190734863
 if onGround(): setDeltaMovement(getDeltaMovement().multiply(0.7, -0.5, 0.7))
 fuse = getFuse() - 1
 setFuse(fuse)
@@ -600,7 +663,8 @@ file is named.
    `Optional`, and are recorded while the ray is positive, lines 413–454): they take
    part in the shuffle, count in the packet's `blockCount`, and are skipped when broken.
 4. **TNT drops everything it breaks**: the `TNT` interaction is `DESTROY` unless the
-   game rule `tnt_explosion_drop_decay` is true (default false); only
+   game rule `tnt_explosion_drop_decay` is true (default false, GameRules.txt 790–800);
+   only
    `DESTROY_WITH_DECAY` gives the loot `EXPLOSION_RADIUS`, and without it
    `survives_explosion` holds without a draw and `explosion_decay` keeps every item
    (N4 brief 8.3; Clustine's `clustine_blocks::loot` already answers so). So TNT's drops
@@ -609,9 +673,10 @@ file is named.
    flower and a snow layer drop** (they drop nothing when broken by a rule), and the
    stacks are **merged across blocks** before they are laid (item 5). Block explosions
    (beds, respawn anchors) and mobs' decay by default (`block_explosion_drop_decay`,
-   `mob_explosion_drop_decay` true), with `1/radius` per item. (**Inferred**:
-   `BlockBehaviour.onExplosionHit`, which builds the loot parameters, is not dumped;
-   the rule is the 1.21 one, 2.6.)
+   `mob_explosion_drop_decay` true), with `1/radius` per item. The loot parameters are
+   built by `BlockBehaviour.onExplosionHit` (BlockBehaviour.txt 164–249, 2.6): `ORIGIN`
+   the block's centre, `TOOL` empty, `BLOCK_ENTITY` and `THIS_ENTITY` (the TNT) when
+   present, and `EXPLOSION_RADIUS` only with decay.
 5. **Drops are merged into stacks of at most 16 and laid at the first block of each
    stack**, after all the blocks are broken (`addOrAppendStack`, lines 887–915;
    `StackCollector.tryMerge`, `ItemEntity.areMergable` and `ItemEntity.merge(a, b, 16)`).
@@ -626,14 +691,15 @@ file is named.
    sees them (each `addFreshEntity` is at once). Exposure (`getSeenPercent`) is
    computed on the blocks as they were before this explosion.
 7. **What the explosion does to an entity depends on the igniter**: the damage source is
-   `explosion(tnt, owner)` (**Inferred**: `player_explosion` when there is an owner,
-   `explosion` otherwise; `DamageSources` is not dumped); a vehicle hurt by the
+   `explosion(tnt, owner)`, whose type is `player_explosion` when both the TNT and its
+   owner are there (an owner of any kind, not only a player) and `explosion` otherwise,
+   with the TNT as the direct entity and the owner as the cause (DamageSources.txt
+   543–555); a vehicle hurt by the
    explosion of a creative player's TNT is discarded without its item, and a frame,
    painting or cushion broken by it drops nothing, since their `hurtServer` reads the
    source's entity, the owner (N5 brief 3.14, section 6, 5.8). TNT lit by redstone or
-   fire has
-   no owner: the vehicle breaks with its item when its damage passes 40, and hanging
-   things drop. Blocks drop either way (item 4).
+   fire has no owner: the vehicle breaks with its item when its damage passes 40, and
+   hanging things drop. Blocks drop either way (item 4).
 8. **Creative players are not hurt but are knocked back** unless they fly: every
    player not a spectator and not flying in creative is put in `hitPlayers` with its
    push, which goes to that player in the explosion packet; the client applies it
@@ -643,12 +709,17 @@ file is named.
    (ServerLevel.txt 2640–2686: `distanceToSqr(center) < 4096`), not to the trackers of
    an entity or a chunk, each with its own knockback or none. In Clustine that is the
    edge's to fan out to players of any region (section 9).
-10. **Block resistance is not in Clustine's data.** `Block.getExplosionResistance()` (a
-    property of the block from `Blocks`' `strength`) and `FluidState.
-    getExplosionResistance()` (100 for water and lava, 0 for empty: SteelMC's 26.3
-    `fluids.json`, for orientation) are needed for every block; `reports/blocks.json`
-    has none. The datagen's `Extract.java` can write `getExplosionResistance()` per block
-    beside the physics it already writes (section 12).
+10. **Block resistance is not in Clustine's data.** `Block.getExplosionResistance()` is
+    the `explosionResistance` of the block's `Properties` (`strength(d, r)` sets it to
+    `max(0, r)`, `strength(f)` to `f`, `instabreak()` to 0, default 0), and every ray
+    point needs it with `FluidState.getExplosionResistance()` (the fluid's: 100 for
+    water and lava, 0 for empty, from SteelMC's 26.3 `fluids.json`; the fluid classes
+    are not dumped). Read from `Blocks`' static initialiser, 2.2 gives every value
+    (stone 6, planks 3, glass 0.3, obsidian 1200, bedrock 3 600 000, water and lava
+    blocks 100, TNT 0). `reports/blocks.json` has none; the datagen's `Extract.java`
+    should write `getExplosionResistance()` per block beside the physics it already
+    writes, which also catches a block class that changes its properties in its
+    constructor (2.2), and 2.2's table is the check of that extract.
 
 ### 2.1 How an explosion starts: `ServerLevel.explode`
 
@@ -658,8 +729,9 @@ file is named.
 `entity.generic.explode` (703). The default block particles (Level.txt 2162–2178): a
 `WeightedList` of `ExplosionParticleInfo(poof, 0.5f, 1.0f)` and
 `ExplosionParticleInfo(smoke, 1.0f, 1.0f)`, each added with the builder's default
-weight (**Inferred**: 1; `WeightedList` is not dumped). `ExplosionParticleInfo`'s two
-floats are **Inferred** to be a scaling and a speed (the class is not dumped).
+weight, 1 (`WeightedList$Builder.add(E)` = `add(E, 1)`, WeightedList$Builder.txt
+14–20). `ExplosionParticleInfo`'s two floats are **Inferred** to be a scaling and a
+speed (the class is not in either dump).
 
 `ServerLevel.explode(…, smallParticle, largeParticle, blockParticles, sound)`
 (ServerLevel.txt 2566–2686):
@@ -672,12 +744,10 @@ blockInteraction = switch interaction:
     TNT     -> getDestroyType(tnt_explosion_drop_decay)
     TRIGGER -> TRIGGER_BLOCK
 center = Vec3(x, y, z)
-e = new ServerExplosion(this, source, damageSource, calculator, center, radius, fire,
-blockInteraction)
+e = new ServerExplosion(this, source, damageSource, calculator, center, radius, fire, blockInteraction)
 count = e.explode()
 particle = e.isSmall() ? smallParticle : largeParticle
-for player in this.players:                                  // the level's list, in its
-order
+for player in this.players:                                  // the level's list, in its order
     if player.distanceToSqr(center) < 4096.0:
         knock = Optional.ofNullable(e.getHitPlayers().get(player))
         player.connection.send(ClientboundExplodePacket(center, radius, count, knock,
@@ -685,14 +755,18 @@ order
 ```
 
 `getDestroyType(rule)` (2688–2700): the rule true → `DESTROY_WITH_DECAY`, false →
-`DESTROY`. The case labels' order is **Inferred** from the switch map (the enum
-`Level$ExplosionInteraction` and `ServerLevel$1` are not dumped), and agrees with the
-names of the rules each case reads.
+`DESTROY`. The switch map (`ServerLevel$1`, its static initialiser) numbers the cases
+by the enum's ordinals as `Level$ExplosionInteraction` declares them, `NONE` 0, `BLOCK`
+1, `MOB` 2, `TNT` 3, `TRIGGER` 4 (Level$ExplosionInteraction.txt 77–110), to the labels
+1 to 5 in that order: the mapping above is the bytecode's.
 
-Game rule defaults (SteelMC's 26.3 `game_rules.json`, orientation only; the game's
-`GameRules` is not dumped): `tnt_explodes` true, `tnt_explosion_drop_decay` **false**,
-`block_explosion_drop_decay` true, `mob_explosion_drop_decay` true, `mob_griefing` true.
-All five are in the 26.3 registry `minecraft:game_rule` (`reports/registries.json`).
+Game rule defaults (`GameRules`' static initialiser, `registerBoolean(name, category,
+default)`): `tnt_explodes` true (GameRules.txt 777–787, category misc),
+`tnt_explosion_drop_decay` **false** (790–800, drops), `block_explosion_drop_decay` true
+(478–), `mob_explosion_drop_decay` true (619–), `mob_griefing` true (624–), and
+`block_drops` true (473–; `Block.popResource` lays nothing when it is off, Block.txt
+1000, 1022). They agree with SteelMC's 26.3 extraction. All are in the 26.3 registry
+`minecraft:game_rule` (`reports/registries.json`).
 
 `Explosion$BlockInteraction` (lines 69–101): `KEEP` (ordinal 0,
 `shouldAffectBlocklikeEntities` false), `DESTROY` (1, true), `DESTROY_WITH_DECAY` (2,
@@ -757,14 +831,86 @@ have `scaling: always` and exhaustion 0.1; both are in `#is_explosion`.
 inherited. Only `MinecartTNT` overrides the two among the entities met so far (1.6).
 For a primed TNT the result is the plain calculator's.
 
+**The resistance of blocks.** `Block.getExplosionResistance()` returns the field
+`explosionResistance` (Block.txt 1034–1038), copied from the block's
+`BlockBehaviour$Properties`. In `Properties` (BlockBehaviour$Properties.txt):
+`strength(d, r)` (403–409) = `destroyTime(d).explosionResistance(r)`; `strength(f)`
+(419–426) = `strength(f, f)`; `instabreak()` (412–417) = `strength(0)`;
+`explosionResistance(r)` (588–596) stores `Math.max(0.0f, r)`; the default is 0 (the
+constructor, 70–139, sets no resistance); `ofFullCopy(block)` and `ofLegacyCopy(block)`
+(147–, 190–) copy the other block's destroy time and resistance (stairs, slabs and
+walls are made so from their full block). Every value below was read from `Blocks`'
+static initialiser (Blocks.txt 6372–) and its helpers (`logProperties`,
+`leavesProperties`, `buttonProperties`, `pistonProperties`, `shulkerBoxProperties`,
+`registerStair`, `registerSlab`, `registerWall`, …, 1875–2142) by following each
+block's `Properties` from `of()` or the copy to `register`, with a script; the coloured
+and copper families are built in lambdas (`ColorCollection.registerBlocks`, the
+weathering families), whose values were read from the lambdas' bodies and matched to
+their families by sound and value (**Inferred** which lambda is which family where
+two families share a value; the 1.21 values agree).
+
+| Resistance (`float`) | Blocks |
+|---|---|
+| 0 | air, cave air, void air, fire and soul fire, every sapling, flower, crop, stem, mushroom, coral and coral fan (live and dead), grass, fern, bush, vine-like plants (kelp, cave vines, hanging roots, roots, sprouts, pale hanging moss), lily pad, sugar cane, sweet berry bush, torches (all, incl. copper and redstone), redstone wire, repeater, comparator, tripwire, tripwire hook, scaffolding, slime block, honey block, flower pots and every potted plant, decorated pot, end rod, frogspawn, moving piston, nether portal, structure void, **TNT**, bubble column, the infested blocks as `Blocks` builds them (but see below), dried ghast, leaf litter, pink petals, … (194 in all) |
+| 0.1 | candle and the coloured candles, big dripleaf and its stem, moss block and moss carpet (and the pale ones), snow layer; carpets (all colours) |
+| 0.2 | leaves (all), mushroom blocks and stem, daylight detector, glow lichen, sculk, sculk vein, snow block, straw bed, vine; beds (all colours) |
+| 0.25 | powder snow, suspicious sand and gravel |
+| 0.3 | glass, glass pane, tinted glass, glowstone, sea lantern, redstone lamp, froglights, bee nest; stained glass and stained glass panes (all colours) |
+| 0.4 | cactus, chorus flower and plant, netherrack, crimson and warped nylium, ladder |
+| 0.5 | dirt, coarse dirt, podzol, rooted dirt, mud, sand, red sand, soul sand, soul soil, ice, packed ice, frosted ice, magma block, hay bale, cake and candle cakes, brewing stand, every button and every pressure plate (wood, stone, polished blackstone, both weighted), lever, target, turtle egg, sniffer egg; concrete powder (all colours) |
+| 0.6 | grass block, mycelium, farmland, gravel, clay, sponge, wet sponge, composter, beehive, honeycomb block |
+| 0.65 | dirt path |
+| 0.7 | rail, powered, detector and activator rails, mangrove roots, muddy mangrove roots |
+| 0.75 | calcite (**Inferred**: and the infested blocks, below) |
+| 0.8 | sandstone and red sandstone (plain, chiseled, cut, their stairs, slabs but cut, walls), quartz block, pillar, bricks, chiseled quartz, quartz stairs and slab, note block; wool, and the new wool stairs and slabs (all colours) |
+| 1.0 | signs, wall signs, hanging signs and wall hanging signs (all woods), heads and skulls (all), pumpkin, carved pumpkin, jack o'lantern, melon, bamboo, bamboo sapling, dripstone block, nether and warped wart blocks, shroomlight; banners and wall banners (all colours) |
+| 1.4 | glazed terracotta (all colours) |
+| 1.5 | piston, sticky piston, piston head, bookshelf, chiseled bookshelf, amethyst block, budding amethyst, amethyst buds and cluster, sculk sensor, calibrated sculk sensor |
+| 1.8 | concrete, and its new stairs and slabs (all colours) |
+| 2.0 | logs, woods, stems, hyphae (stripped or not, all kinds), bamboo block, bone block, campfire and soul campfire, cauldrons (all four), shulker box and the coloured shulker boxes |
+| 2.5 | chest, trapped chest, barrel, crafting table, cartography, fletching and smithing tables, loom, lectern, dried kelp block |
+| 2.8 | blue ice |
+| 3.0 | planks, wooden stairs, slabs, fences, gates, doors, trapdoors, shelves (all woods), the ores and deepslate ores (coal, copper, iron, gold, redstone, lapis, diamond, emerald), nether gold and quartz ores, lapis block, mud bricks (and their stairs, slab, wall), beacon, conduit, sculk catalyst and shrieker, cocoa, … (139 in all); **Inferred** (lambdas not resolved): copper doors and trapdoors (1.21: `strength(3.0f)`) |
+| 3.5 | furnace, blast furnace, smoker, dispenser, dropper, crafter, lantern, soul lantern, lodestone, stonecutter; **Inferred**: the copper lanterns (a copy of the lantern in 1.21) |
+| 4.0 | cobweb |
+| 4.2 | terracotta, and the dyed terracotta (all colours); basalt, polished basalt, smooth basalt |
+| 4.8 | hopper |
+| 5.0 | iron door, iron trapdoor, bell, spawner |
+| 6.0 | stone and its kinds (granite, diorite, andesite and the polished ones, smooth stone), cobblestone, mossy cobblestone, stone bricks and their kinds, bricks, deepslate and its kinds, tuff, blackstone, nether bricks, prismarine, purpur, resin bricks, the new cinnabar and sulfur blocks, smooth sandstone, coral blocks, the blocks of iron, gold, diamond, emerald, redstone, coal and the raw ores, iron bars, iron chain, jukebox, and every stairs, slab and wall of these (sandstone slabs too), … (189 in all); the copper blocks, cut copper, chiseled copper, copper grates, bulbs, golem statues and the cut copper stairs and slabs (3/6), copper bars and chains (5/6), every weathering stage and waxed; **Inferred** (lambdas not resolved): lightning rods 6 (1.21: `strength(3.0f, 6.0f)`) |
+| 9.0 | end stone, end stone bricks and their stairs, slab and wall, dragon egg |
+| 10.0 | creaking heart |
+| 50.0 | trial spawner, vault |
+| 100.0 | water, lava (the blocks; their fluids too) |
+| 600.0 | ender chest |
+| 1200.0 | obsidian, crying obsidian, ancient debris, netherite block, anvil (all three), enchanting table, respawn anchor, reinforced deepslate, heavy core |
+| 3 600 000.0 | bedrock, end portal, end portal frame, end gateway, command blocks (all three), structure block, jigsaw, test block, test instance block |
+| 3 600 000.8 | barrier, light |
+
+Notes:
+- The dyed terracotta's lambda is `strength(1.25f, 4.2f)`: hardness 1.25, resistance
+  4.2, as plain terracotta.
+- **The infested blocks** get no strength from `Blocks` (`Properties.of().mapColor(…)`,
+  Blocks.txt 10512–10518); `InfestedBlock`'s constructor (not dumped) sets
+  `destroyTime(host / 2)` and `explosionResistance(0.75f)` in 1.21 (**Inferred**, to be
+  checked by the datagen extract). Any other block class whose constructor changes its
+  properties is caught only by an extract of `getExplosionResistance()` from the live
+  block, which is why the extract is the source and this table its check.
+- Fluids: `FluidState.getExplosionResistance()` = `getType().getExplosionResistance()`
+  (FluidState.txt 232–237); `WaterFluid`, `LavaFluid` and `EmptyFluid` are not dumped
+  (100, 100, 0 by SteelMC's extraction and 1.21). The calculator takes `max(block,
+  fluid)`, so **a waterlogged block resists 100** whatever the block.
+- A ray loses `(r + 0.3f) · 0.3f` in `float` at each point: with `r` 0 a point costs
+  `0.09f` plus the step's `0.22500001f`; with 1200 the ray ends at once. So a TNT can
+  break a block of resistance up to about 17 at its centre (`5.2/0.3 − 0.3`), and
+  nothing of 100 or more.
+
 ### 2.3 `explode()` (lines 849–885), in order
 
 ```
 level.gameEvent(source, GameEvent.EXPLODE, center)     // section 8: game event 23
 positions = calculateExplodedPositions()               // 2.4: 1352 level-random floats
 hurtEntities()                                         // 2.5
-if interactsWithBlocks(): interactWithBlocks(positions) // 2.6: the shuffle, the blocks,
-the drops
+if interactsWithBlocks(): interactWithBlocks(positions) // 2.6: the shuffle, the blocks, the drops
 if fire: createFire(positions)                         // 2.7
 return positions.size()
 ```
@@ -815,10 +961,8 @@ return new ObjectArrayList(set)
 ```
 if radius < 1.0E-5f: return
 f = radius * 2.0f                                                    // float
-x0 = Mth.floor(center.x - (double)f - 1.0); x1 = Mth.floor(center.x + (double)f + 1.0)
-(y0, y1, z0, z1 alike)
-for e in level.getEntities(source, AABB(x0, y0, z0, x1, y1, z1)):    // not the source;
-no spectators
+x0 = Mth.floor(center.x - (double)f - 1.0); x1 = Mth.floor(center.x + (double)f + 1.0)   // y0, y1, z0, z1 alike
+for e in level.getEntities(source, AABB(x0, y0, z0, x1, y1, z1)):    // not the source; no spectators
     if e.ignoreExplosion(this): continue
     d = Math.sqrt(e.distanceToSqr(center)) / (double) f
     if d > 1.0: continue
@@ -829,7 +973,7 @@ no spectators
     seen = (damages || kb != 0.0f) ? getSeenPercent(center, e) : 0.0f
     if damages && (source == null || source.doTeamsAllowDamage(e)):
         e.hurtServer(level, damageSource, calculator.getEntityDamageAmount(this, e, seen))
-    res = e is LivingEntity ? e.getAttributeValue(EXPLOSION_KNOCKBACK_RESISTANCE) : 0.0
+    res = e is LivingEntity ? e.getAttributeValue(EXPLOSION_KNOCKBACK_RESISTANCE) : 0.0   // default 0, range 0..1 (Attributes.txt 249–260); every living entity has it (LivingEntity.createLivingAttributes, n5 LivingEntity.txt 435–)
     k = (1.0 - d) * (double) seen * (double) kb * (1.0 - res)
     push = dir.scale(k)
     e.pushFromExplosion(push)                                         // Entity: push(push): motion += push; needsSync (Entity.txt 5299–5328)
@@ -840,9 +984,18 @@ no spectators
     e.onExplosionHit(source)                                          // ServerPlayer: notes the impact (fall damage of wind charges)
 ```
 
-- `getEntities(except, box)` (EntityGetter.txt 19–26) uses `NO_SPECTATORS`; the order is
-  the entity sections' (`LevelEntityGetter` is not dumped). The order matters only for
-  which of two entities' deaths drops first; each entity is hurt and pushed once.
+- `getEntities(except, box)` (EntityGetter.txt 19–26) uses `NO_SPECTATORS`;
+  `Level.getEntities(except, box, predicate)` (Level.txt 1261–) asks
+  `LevelEntityGetter.get(box, consumer)` and then the ender dragon's parts. The order is
+  `EntitySectionStorage.forEachAccessibleNonEmptySection` (EntitySectionStorage.txt
+  37–148): the box widened by 2 in x and z and by 4 below (sections of 16), then section
+  columns by **x ascending**, and within one x the existing sections in the order of
+  their `SectionPos.asLong` key (z, then y, each as the key's unsigned bits, so 0, 1, …
+  before the negative ones), only those whose y and z lie in range, non-empty and
+  accessible; within a section the entities in the section's own order (`EntitySection`
+  and `ClassInstanceMultiMap` are not dumped; **Inferred** insertion order, and the box
+  test there, `AABB.intersects`, strict). The order matters only for which of two
+  entities' deaths drops first; each entity is hurt and pushed once.
 - The box is in whole blocks: for TNT at `(x, y, z)` from `floor(x − 9)` to
   `floor(x + 9)`; the distance test (`d ≤ 1`, i.e. within `2r` = 8 of the feet) is the
   real limit.
@@ -888,9 +1041,9 @@ return (float) seen / (float) total
 
 | Entity | `ignoreExplosion` | `hurtServer` with an explosion |
 |---|---|---|
-| item | no (Entity) | health 5 minus the amount (`(int)` of the float difference, `physics/item.rs` `hurt`); 0 or less destroys it; a stack whose `damage_resistant` is `#is_explosion` (the nether star) is untouched (**Inferred**: `ItemEntity.hurtServer` is not in these dumps; N4 ported its fire branch) |
+| item | `!shouldAffectBlocklikeEntities()`, else `Entity`'s false (ItemEntity.txt 787–797): an item is hit by TNT | `ItemEntity.hurtServer` (ItemEntity.txt 732–785): refused if `isInvulnerableToBase`; refused if `mob_griefing` is off and the cause is a `Mob`; refused if the stack's `damage_resistant` covers the source (`ItemStack.canBeHurtBy`, ItemStack.txt 2567–2583: the nether star's `#is_explosion`); else `markHurt`, `health = (int)((float) health − amount)` (`f2i`, towards zero; health starts at 5), the game event `entity_damage` with the cause, and at 0 or less `ItemStack.onDestroyed(item)` then `discard()`. **A destroyed shulker box item spills its contents**: `BlockItem.onDestroyed` (BlockItem.txt 404–419) empties the `container` component and drops its stacks (`ItemUtils.onContainerDestroyed`, not dumped; **Inferred** each as an item at the entity) — with no components in Clustine's stacks there is nothing to spill (section 0 item 5) |
 | primed TNT | no | refuses (false); pushed from its feet |
-| falling block | no | **Inferred**: refuses (not dumped); pushed |
+| falling block | no (`Entity`'s, Entity.txt 10072–10075) | refuses: `hurtServer` only `markHurt`s unless invulnerable and answers false (FallingBlockEntity.txt 149–162); pushed |
 | minecart, boat | `VehicleEntity`: true only when the cause is a `Mob` and `mob_griefing` is off | `damage += amount·10`; > 40 breaks it with its item, unless the cause (the TNT's owner) is a creative player, which discards it at any amount (N5 brief 3.14); a TNT minecart primes (1.6) |
 | armour stand | `!shouldAffectBlocklikeEntities() ‖ isInvisible()` (ArmorStand.txt 1175–1185) | `#is_explosion` → `brokenByAnything` (its equipment drops, not the stand), `kill` (N5 brief 5.4, rule 5) |
 | item frame, painting, knot, cushion | `BlockAttachedEntity`: true if the direct source is in water; else `!shouldAffectBlocklikeEntities()` (BlockAttachedEntity.txt 193–213) | broken at any amount; the item dropped unless the cause is a creative player (N5 brief section 6, 5.8) |
@@ -904,8 +1057,7 @@ A TNT in water ignores frames and paintings; it still hurts and pushes everythin
 
 ```
 drops = new ArrayList<StackCollector>()
-Util.shuffle(positions, level.random)                    // n − 1 draws: nextInt(n), …,
-nextInt(2)
+Util.shuffle(positions, level.random)                    // n − 1 draws: nextInt(n), …, nextInt(2)
 for pos in positions:
     level.getBlockState(pos).onExplosionHit(level, pos, this, (stack, p) -> addOrAppendStack(drops, stack, p))
 for c in drops:
@@ -915,53 +1067,70 @@ for c in drops:
 `Util.shuffle(list, random)` (Util.txt 1957–1987): `for i = size; i > 1; i--: j =
 random.nextInt(i); swap(list[i−1], list[j])`.
 
-**`BlockBehaviour.onExplosionHit(state, level, pos, explosion, onDrop)`** — not dumped;
-**Inferred** from 1.21, to be read:
+**`BlockBehaviour.onExplosionHit(state, level, pos, explosion, onDrop)`**
+(BlockBehaviour.txt 164–249; `BlockStateBase.onExplosionHit`, BlockStateBase.txt 915–,
+passes its state to the block's):
 
 ```
 if state.isAir() || explosion.getBlockInteraction() == TRIGGER_BLOCK: return
 block = state.getBlock()
 byPlayer = explosion.getIndirectSourceEntity() instanceof Player
-if block.dropFromExplosion(explosion):                     // true but for TNT (and a few
-others)
+if block.dropFromExplosion(explosion):                     // Block's true (Block.txt 1208–1211); TNT's false
     blockEntity = state.hasBlockEntity() ? level.getBlockEntity(pos) : null
-    params = LootParams(level)
-        .with(ORIGIN, Vec3.atCenterOf(pos)).with(TOOL, ItemStack.EMPTY)
-        .withOptional(BLOCK_ENTITY, blockEntity).withOptional(THIS_ENTITY, explosion.getDirectSourceEntity())
+    params = LootParams.Builder(level)
+        .withParameter(ORIGIN, Vec3.atCenterOf(pos)).withParameter(TOOL, ItemStack.EMPTY)
+        .withOptionalParameter(BLOCK_ENTITY, blockEntity)
+        .withOptionalParameter(THIS_ENTITY, explosion.getDirectSourceEntity())
     if explosion.getBlockInteraction() == DESTROY_WITH_DECAY:
-        params.with(EXPLOSION_RADIUS, explosion.radius())
-    state.spawnAfterBreak(level, pos, ItemStack.EMPTY, byPlayer)     // ores' experience, infested blocks' silverfish
-    for stack in state.getDrops(params): onDrop.accept(stack, pos)
-level.setBlock(pos, AIR, 3)
-block.wasExploded(level, pos, explosion)
+        params.withParameter(EXPLOSION_RADIUS, explosion.radius())    // a Float
+    state.spawnAfterBreak(level, pos, ItemStack.EMPTY, byPlayer)  // ores' experience, infested blocks' silverfish
+    state.getDrops(params).forEach(stack -> onDrop.accept(stack, pos))
+level.setBlockAndUpdate(pos, AIR)                          // flag 3
+block.wasExploded(level, pos, explosion)                   // Block's does nothing (Block.txt 1040–1042)
 ```
 
-- Blocks that override it for `canTriggerBlocks` (buttons, levers, bells, doors and the
-  like, for wind charges) do nothing different for TNT (**Inferred**).
+This is the 1.21 rule the first reading assumed, now read. The order within one block
+is: experience and other `spawnAfterBreak` effects, the loot (collected, not laid), the
+set to air with its updates and, inside the set, the container's spill (below), then
+`wasExploded`. The loot reads the block entity before the set removes it.
+
+- Blocks that override `onExplosionHit` for `canTriggerBlocks` (buttons, levers, bells,
+  doors and the like, for wind charges) do nothing different for TNT (**Inferred**:
+  their classes are not dumped; `Block`, `BlockBehaviour` and `TntBlock` are, and only
+  `BlockBehaviour` defines it).
 - The set is flag 3 (neighbours and clients): each block's removal updates its
   neighbours and their shapes before the next block of the shuffled list is handled, so
   sand above falls, water flows in, torches pop (their own drops, by `popResource`, at
   once and not merged), and a block that a neighbour's update has already removed is
   air when its turn comes (skipped). Clustine's updates do this through `updates.rs`.
 - A block with a container (chest, barrel, dispenser, hopper, …) spills its contents as
-  it is set to air: `BlockEntity.preRemoveSideEffects` → `Containers.dropContents(level,
-  pos, container)` (BlockEntity.txt 557–575; N5 brief 3.18 for the draws: per slot three
-  `nextDouble` of the level's random, then per part `nextInt(21)` and the item's
-  `triangle`s). These items are laid at once, before the collected drops. A shulker box
-  overrides it (ShulkerBoxBlockEntity.txt 342–) and keeps its contents in its item
-  (`copy_components`), which Clustine's loot cannot carry (`clustine_blocks::loot`):
-  **an exploded shulker box's contents would be lost** unless N6 gives items their
-  components (section 3's matter).
-- `wasExploded` is `TntBlock`'s (1.2) for TNT; other blocks' are not read (**Inferred**:
-  none of the blocks a creative player meets does anything there).
+  it is set to air: `LevelChunk.setBlockState` (LevelChunk.txt 488–; the test at lines
+  627–685) calls `BlockEntity.preRemoveSideEffects` when the
+  block changes to another block, the old one has a block entity that the new state does
+  not keep, the level is the server's and the flags lack 256
+  (`UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`), then removes the block entity; the base
+  `preRemoveSideEffects` is `Containers.dropContents(level, pos, container)` for a
+  `Container` (BlockEntity.txt 557–575; N5 brief 3.18 for the draws: per slot three
+  `nextDouble` of the level's random, then per part `nextInt(21)` and
+  `triangle(0, b)`, `triangle(0.2, b)`, `triangle(0, b)` with `b =
+  0.11485000171139836` (Containers.txt 124–145), each `a + b·(nextDouble −
+  nextDouble)`, two draws (RandomSource.txt 77–88)). These items are laid at once, before
+  the collected drops. A shulker box overrides it with nothing (ShulkerBoxBlockEntity.txt
+  342–344) and keeps its contents in its item (`copy_components`), which Clustine's loot
+  cannot carry (`clustine_blocks::loot`): **an exploded shulker box's contents would be
+  lost** unless N6 gives items their components (section 3's matter).
+- `wasExploded` is `TntBlock`'s (1.2) for TNT; `Block`'s does nothing; other blocks'
+  overrides are in classes not dumped (**Inferred**: none of the blocks a creative
+  player meets does anything there).
 - **`addOrAppendStack(drops, stack, pos)`** (lines 887–915): for each collector in order,
   `tryMerge(stack)`; stop as soon as `stack` is empty; if any is left, a new collector
   `(pos, stack)` at the end.
 - **`StackCollector.tryMerge(other)`** (StackCollector.txt 19–33): if
-  `ItemEntity.areMergable(this.stack, other)` (`other.count + this.count ≤
-  other.maxStackSize` and the same item and components, N4 brief 3.4), `this.stack =
-  ItemEntity.merge(this.stack, other, 16)`: `moved = min(min(this.max, 16) −
-  this.count, other.count)`, `this.stack` grows by `moved`, `other` shrinks by it. A
+  `ItemEntity.areMergable(this.stack, other)` (ItemEntity.txt 602–617: `other.count +
+  this.count ≤ other.maxStackSize`, then `ItemStack.isSameItemSameComponents`),
+  `this.stack = ItemEntity.merge(this.stack, other, 16)` (619–640): `moved =
+  min(min(this.max, 16) − this.count, other.count)`, `this.stack` becomes a copy with
+  `count + moved`, `other` shrinks by `moved`. A
   collector that already holds more than 16 (a block's single drop above 16; none of the
   block tables gives that) would give items back (`moved` negative): port the formula
   as it is.
@@ -1020,7 +1189,8 @@ Classes read: `ChestBlock` (and `$1`, `$2`, `$2$1`; ChestBlock.txt, 728 lines),
 `HopperBlock` and `CrafterBlock`, the constructors and `removed` of the five menus;
 from the N5 dump `ServerPlayer.openMenu`, `ServerPlayerGameMode.useItemOn`,
 `Player.hasContainerOpen`/`isWithinBlockInteractionRange`, `Level.playSound`,
-`Level.updateNeighbourForOutputSignal`, `CollisionGetter.noCollision`, `Mth.lerpDiscrete`,
+`Level.updateNeighbourForOutputSignal`, `CollisionGetter.noCollision`,
+`Mth.lerpDiscrete`,
 `ContainerEntity`, `MinecartChest`, `AbstractChestBoat`. Ids are from
 `generated/reports/registries.json`.
 
@@ -1030,13 +1200,16 @@ from the N5 dump `ServerPlayer.openMenu`, `ServerPlayerGameMode.useItemOn`,
    the block's `useWithoutItem`**, reached from `ServerPlayerGameMode.useItemOn`
    (ServerPlayerGameMode.txt 1029–1171) whenever the player is not sneaking with
    something in a hand: `BlockState.useItemOn` answers `TRY_WITH_EMPTY_HAND` for these
-   blocks (none overrides `useItemOn`; **Inferred** from `BlockBehaviour`, not read), and
-   the main hand then runs `useWithoutItem`. Every one answers `SUCCESS` on the server
-   whatever happens, so **the click is consumed even when nothing opens** (a blocked chest,
+   blocks (none overrides `useItemOn`, and `BlockBehaviour.useItemOn` answers
+   `TRY_WITH_EMPTY_HAND`, BlockBehaviour.txt 255–258), and the main hand then runs
+   `useWithoutItem`. Every one answers `SUCCESS` on the server
+   whatever happens, so **the click is consumed even when nothing opens** (a blocked
+   chest,
    a shulker box that cannot open, a locked container): no block is placed against it.
    Today `placement.rs` (`is_used`, `use_block`) already treats these blocks as used and
    does nothing; N6 replaces that nothing with opening a menu.
-2. **Opening is `ServerPlayer.openMenu(provider)`** (ServerPlayer.txt 3191–3248, N5 dump),
+2. **Opening is `ServerPlayer.openMenu(provider)`** (ServerPlayer.txt 3191–3248, N5
+dump),
    and its order matters to the packets: close the open menu if any (not the inventory)
    → `containerCounter = containerCounter % 100 + 1` (3179–3189; 1 to 100, advanced even
    when nothing opens) → `provider.createMenu(counter, inventory, player)`, whose menu
@@ -1044,18 +1217,21 @@ from the N5 dump `ServerPlayer.openMenu`, `ServerPlayerGameMode.useItemOn`,
    block event, the game event) → if null: a spectator is told
    `container.spectatorCantOpen` (red, overlay), and nothing else → else
    `ClientboundOpenScreenPacket(containerId, menu type, provider.getDisplayName())` →
-   `initMenu(menu)` (the synchroniser's first full send, 3.10 on) → `containerMenu = menu`.
+   `initMenu(menu)` (the synchroniser's first full send, 3.10 on) → `containerMenu =
+   menu`.
 3. **The menus and titles** (`minecraft:menu` protocol ids): chest, trapped chest, copper
    chests and barrel `generic_9x3` (2); a double chest `generic_9x6` (5); shulker boxes
    `shulker_box` (20); dispenser and dropper `generic_3x3` (6); hopper `hopper` (16);
    crafter `crafter_3x3` (7). The title is the custom name if set, else the translatable
-   `container.chest`, `container.chestDouble`, `container.barrel`, `container.shulkerBox`,
+   `container.chest`, `container.chestDouble`, `container.barrel`,
+   `container.shulkerBox`,
    `container.dispenser`, `container.dropper`, `container.hopper`, `container.crafter`. A
    double chest takes the first half's custom name, else the second's, else
    `container.chestDouble` (3.3).
 4. **A double chest is a `CompoundContainer(first, second)` where `first` is the half
    whose `type` is `right`**: slots 0–26 are that half's, 27–53 the `left` half's.
-   `ChestBlock.getBlockType`: `right` → `FIRST`, `left` → `SECOND` (ChestBlock.txt 56–75).
+   `ChestBlock.getBlockType`: `right` → `FIRST`, `left` → `SECOND` (ChestBlock.txt
+   56–75).
    Both halves count openers, queue block events, schedule rechecks and send game events
    of their own; only the `right` (or single) half plays the sound, at the double chest's
    centre (3.3, 3.4).
@@ -1095,11 +1271,17 @@ from the N5 dump `ServerPlayer.openMenu`, `ServerPlayerGameMode.useItemOn`,
    consumed and nothing opens; any other status opens at once (3.5).
 10. **Breaking a container spills its contents, in creative too.** `BlockEntity
     .preRemoveSideEffects` (BlockEntity.txt 557–576) calls `Containers.dropContents` for
-    every block entity that is a `Container` when its block is removed (**Inferred**: by
-    `LevelChunk.setBlockState` unless the flags skip block entity side effects; not read),
-    whoever breaks it: the N4 rule "a creative player's break drops nothing" covers the
-    block's own loot only. Each slot drops as items of 10 to 30 at a time with two
-    `triangle` draws a stack (3.6, section 10). A chest with an unopened loot table
+    every block entity that is a `Container` when its block is removed: `LevelChunk
+    .setBlockState` (LevelChunk.txt 636–688) calls it on the server when the block
+    changes
+    to another block, the old state has a block entity that the new state does not keep
+    (`shouldChangedStateKeepBlockEntity`), and the flags lack 256
+    (`UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`), then removes the block entity; whoever
+    breaks
+    it: the N4 rule "a creative player's break drops nothing" covers the
+    block's own loot only. Each slot drops as items of 10 to 30 at a time, each stack
+    with one `nextInt(21)` and three `triangle`s of two `nextDouble` each (3.6, section
+    10). A chest with an unopened loot table
     unpacks it first (`getItem` unpacks), so **breaking a structure's chest spills its
     loot**. The shulker box overrides `preRemoveSideEffects` to nothing (its contents go
     in its item), and a creative player breaking a non-empty shulker box gets the box as
@@ -1109,29 +1291,38 @@ from the N5 dump `ServerPlayer.openMenu`, `ServerPlayerGameMode.useItemOn`,
     `LootTableSeed`) in their data, which Clustine's structures already write
     (`crates/clustine-structures/src/resave.rs`). Opening one, reading it through a
     comparator (`getItem`), a hopper pulling, or breaking it, runs `unpackLootTable`:
-    the table filled into the container with the seed's random (**Inferred**: the
-    `RandomizableContainer` interface and `LootTable.fill` are not read). Clustine has
+    the table filled into the container with the seed (`RandomizableContainer
+    .unpackLootTable`, RandomizableContainer.txt 102–168; how `LootTable.fill` turns the
+    seed into a random is not read). Clustine has
     only block loot tables (`clustine-data`'s `loot_tables.rs`: 1201 `blocks/…`, no
     `chests/…`); the 31 `chests/…`, `barrels/…` and `dispensers/…` tables are in
     `generated/data/minecraft/loot_table/`. A spectator cannot open a container with a
     loot table still set.
 12. **Locks** (`BaseContainerBlockEntity.canOpen`: `lockKey.canUnlock(player)`): a
     container with a `lock` component opens only for a player whose main hand matches
-    its predicate (**Inferred**: `LockCode` not read). A refused player is sent
+    its predicate, **or for any spectator** (`LockCode.canUnlock`, LockCode.txt 40–54:
+    `isSpectator() || predicate.test(mainHand)`; an absent lock is `NO_LOCK`, an empty
+    item predicate, which any stack passes, **Inferred**: `ItemPredicate` is not read). A
+    refused player is sent
     `container.isLocked` with the container's name as an overlay message, and
     `block.chest.locked` (348) plays at the block's centre at volume and pitch 1. Only
     `/data` or an item with the component makes a lock; a creative player meets one in a
     map that has one.
 13. **Copper chests, trapped chests and the ender chest are chests of their own
-    classes**, not read: the copper chests (eight blocks, `CopperChestBlock` and
+    classes** (3.3): the copper chests (eight blocks, `CopperChestBlock` and
     `WeatheringCopperChestBlock`) share the `chest` block entity type (BlockEntityTypes
-    .txt 171–178) and differ in their sounds (`block.copper_chest*.open/close`) and, by
-    **Inference**, in joining any copper chest; the trapped chest (`trapped_chest`
-    block entity, 2) gives a redstone signal of its openers' count; the ender chest opens
-    the player's own ender inventory (`generic_9x3`, `container.enderchest`), which N2's
-    player data does not keep yet (section 12).
+    .txt 171–178), sound by their oxidation (`block.copper_chest*.open/close`; the
+    exposed ones the plain copper sounds) and **join any copper chest**, both halves
+    becoming the less oxidised block (N1's placement does not do that yet); the trapped
+    chest (`trapped_chest` block entity, 2) is a signal source of its half's openers'
+    count, 0 to 15, strongly downwards, and updates its neighbours and those below it
+    when the count changes; the ender chest opens the player's own ender inventory (27
+    slots, `generic_9x3`, `container.enderchest`, blocked by a conductor above), which
+    N2's player data does not keep yet, and counts openers through its own block entity
+    (`EnderChestBlockEntity`, not dumped).
 14. **No container block sends `block_entity_data`.** `BlockEntity.getUpdatePacket` is
-    null and `getUpdateTag` an empty compound (BlockEntity.txt 525–535), and none of these
+    null and `getUpdateTag` an empty compound (BlockEntity.txt 525–535), and none of
+    these
     block entities overrides either: a client learns nothing of a container's contents
     or name except through a menu. The chunk packet lists them with an empty tag.
 
@@ -1141,11 +1332,13 @@ Items 15 to 26 are the findings of 3.10 to 3.21 (the menus, the clicks and the
 synchroniser); items 1 to 14 above are those of the container blocks.
 
 15. **`ClickType` is now `ContainerInput`** (`net.minecraft.world.inventory.ContainerInput`,
-   not dumped). `AbstractContainerMenu.clicked(slot, button, ContainerInput, player)` names
-   its seven values `PICKUP`, `QUICK_MOVE`, `SWAP`, `CLONE`, `THROW`, `QUICK_CRAFT`,
-   `PICKUP_ALL`; the wire ids 0 to 6 in that order are **Inferred** (the enum is not read;
-   SteelMC's 26.3 reader agrees). `ClickAction` (`PRIMARY` for button 0, `SECONDARY` for 1)
-   picks left or right within `PICKUP` and `QUICK_MOVE` (3.14).
+   ContainerInput.txt): `PICKUP` 0, `QUICK_MOVE` 1, `SWAP` 2, `CLONE` 3, `THROW` 4,
+   `QUICK_CRAFT` 5, `PICKUP_ALL` 6 (each constructed with its id, `static {}` 91–137). Its
+   `STREAM_CODEC` is `ByteBufCodecs.idMapper(BY_ID, id)`, a VarInt (`ByteBufCodecs$31`), and
+   `BY_ID` is `ByIdMap.continuous(id, values, ZERO)`: **an id outside 0–6 decodes as
+   `PICKUP`**, not as an error (**Inferred** from the strategy's name: `ByIdMap` is not
+   dumped). `ClickAction` (ClickAction.txt) is `PRIMARY` (ordinal 0) and `SECONDARY` (1),
+   chosen from the button (0 or 1) by `getClickAction`; it has no wire form (3.14).
 16. **A click whose state id is stale is still carried out.** `handleContainerClick`
    (SGPLI 5900–6052) compares the packet's `stateId` with the menu's only to choose, after
    the click, between `broadcastFullState` (stale: everything sent again) and
@@ -1159,8 +1352,10 @@ synchroniser); items 1 to 14 above are those of the container blocks.
    into its *remote* slots (what it believes the client shows), runs the click with
    sending suppressed, and then `broadcastChanges` sends `container_set_slot` only for a
    slot whose real stack does not match the client's hash, and `set_cursor_item` only if
-   the carried stack does not (**Inferred**: the synchroniser `ServerPlayer$1` is not
-   read). A client that predicted right is sent nothing (3.15, 3.16).
+   the carried stack does not (the synchroniser, `ServerPlayer$1.txt` 29–126). A client
+   that predicted right is sent nothing (3.15, 3.16). A component's hash is the CRC32C of
+   the component's value encoded through `HashOps` (a tagged byte stream), as an `int`
+   (3.16).
 18. **Clustine's stacks have no components** (`clustine_world::entity::ItemStack` is `item`
    and `count`). For the menus that is enough to compare stacks the game's way
    (`isSameItemSameComponents` reduces to the item) and to match a client's hash whose
@@ -1205,8 +1400,11 @@ synchroniser); items 1 to 14 above are those of the container blocks.
    `player.isWithinBlockInteractionRange(pos, 4.0)`: the squared distance from the eyes to
    the block's unit box is below `(blockInteractionRange + 4.0)²` (Player.txt 4883–4905).
    So a menu closes on the next player tick after its block is broken or replaced, or when
-   its player is about 8.5 blocks away (9 in creative, **Inferred**: the creative bonus of
-   the attribute is not read). A click in between is refused silently (item 2).
+   its player is 8.5 blocks away, 9 in creative: `block_interaction_range` is 4.5
+   (Attributes.txt 199–209, a ranged attribute of 0 to 64), and a creative player has the
+   transient modifier `creative_mode_block_range` of +0.5 (`ADD_VALUE`, ServerPlayer.txt
+   5962–5973, put on and taken off by `updatePlayerAttributes`, 1022–1060). A click in
+   between is refused silently (item 16).
 23. **The crafter's slot toggles are not clicks**: `container_slot_state_changed`
    (serverbound 20) reaches `CrafterBlockEntity.setSlotState` (SGPLI 2824–2869) with only a
    spectator check and a container id check: no `stillValid`, no slot range check here
@@ -1215,8 +1413,10 @@ synchroniser); items 1 to 14 above are those of the container blocks.
 24. **`set_creative_mode_slot` reaches slots 1 to 45 of the inventory menu** (SGPLI
     6226–6329), the crafting grid's 1 to 4 included, even while another menu is open; the
     edge keeps only 5 to 45 today (`Inventory::from_container`). The 2×2 grid's items live
-    on the server in the game and come back to the inventory when the inventory menu is
-    "closed" (not read: `InventoryMenu`). A small named difference, or the grid kept.
+    on the server in the game and are put back into the inventory (or dropped) only when
+    the inventory menu is `removed`, which is at the player's removal (`Player.remove`,
+    n5 Player.txt 3095–3112; `InventoryMenu.removed`, InventoryMenu.txt 169–188). A small
+    named difference, or the grid kept (3.21).
 25. **Malformed clicks crash the game's handler**; the port refuses them instead.
     `isValidSlotIndex` lets `-999` and `-1` through, and `SWAP` and `QUICK_CRAFT`'s
     continue (`status 1`) then call `slots.get(slot)` with no check, which throws (the
@@ -1232,7 +1432,8 @@ synchroniser); items 1 to 14 above are those of the container blocks.
 | Block (class) | `useWithoutItem` (lines) | Block entity (type id) | Size | Menu (id) | Default title | Opens when |
 |---|---|---|---|---|---|---|
 | chest, copper chests (`ChestBlock`, `CopperChestBlock`, `WeatheringCopperChestBlock`) | ChestBlock.txt 380–409 | `ChestBlockEntity` (`chest`, 1) | 27, or 54 joined | `generic_9x3` (2) / `generic_9x6` (5) | `container.chest` / `container.chestDouble` | not blocked; both halves' lock passes |
-| trapped chest (`TrappedChestBlock`, not read) | inherited (**Inferred**) | `TrappedChestBlockEntity` (`trapped_chest`, 2) | as chest | as chest | as chest (**Inferred**) | as chest |
+| trapped chest (`TrappedChestBlock`) | inherited | `TrappedChestBlockEntity` (`trapped_chest`, 2) | as chest | as chest | as chest | as chest |
+| ender chest (`EnderChestBlock`) | EnderChestBlock.txt 69–127 | `EnderChestBlockEntity` (`ender_chest`; not dumped) | 27, the player's own | `generic_9x3` (2) | `container.enderchest` | no conductor above |
 | barrel (`BarrelBlock`) | BarrelBlock.txt 29–59 | `BarrelBlockEntity` (`barrel`, 26) | 27 | `generic_9x3` (2) | `container.barrel` | lock passes |
 | shulker boxes, 17 (`ShulkerBoxBlock`) | ShulkerBoxBlock.txt 50–86 | `ShulkerBoxBlockEntity` (`shulker_box`, 24) | 27 | `shulker_box` (20) | `container.shulkerBox` | `canOpen` (3.5) and lock |
 | dispenser (`DispenserBlock`) | DispenserBlock.txt 61–89 | `DispenserBlockEntity` (`dispenser`, 5) | 9 | `generic_3x3` (6) | `container.dispenser` | lock passes |
@@ -1243,11 +1444,10 @@ synchroniser); items 1 to 14 above are those of the container blocks.
 Each `useWithoutItem`, on the server only:
 
 ```
-chest:   provider = getMenuProvider(state, level, pos)            // 3.3; null when
-blocked or no block entity
+chest:   provider = getMenuProvider(state, level, pos)            // 3.3; null when blocked or no block entity
          if provider != null:
              player.openMenu(provider)
-             player.awardStat(Stats.CUSTOM, OPEN_CHEST)           // the trapped chest: TRIGGER_TRAPPED_CHEST (Inferred)
+             player.awardStat(getOpenChestStat())                 // OPEN_CHEST; the trapped chest's TRIGGER_TRAPPED_CHEST
              PiglinAi.angerNearbyPiglins(level, player, true)     // N7 or later
          return SUCCESS
 barrel:  if level.getBlockEntity(pos) is BarrelBlockEntity be:
@@ -1263,7 +1463,23 @@ hopper:  if be is HopperBlockEntity: openMenu(be); awardStat(INSPECT_HOPPER)
          return SUCCESS
 crafter: if be is CrafterBlockEntity: openMenu(be)                // no stat
          return SUCCESS
+ender:   inv = player.getEnderChestInventory(); be = level.getBlockEntity(pos)
+         if inv == null || be is not EnderChestBlockEntity: return SUCCESS
+         if level.getBlockState(pos.above()).isRedstoneConductor(level, pos.above()): return SUCCESS
+         if server: inv.setActiveChest(be)
+                    player.openMenu(SimpleMenuProvider((id, i, p) -> ChestMenu.threeRows(id, i, inv),
+                                                       "container.enderchest"))
+                    awardStat(OPEN_ENDERCHEST); angerNearbyPiglins(…, true)
+         return SUCCESS
 ```
+
+`PlayerEnderChestContainer` (PlayerEnderChestContainer.txt, 141 lines) is a
+`SimpleContainer(27)` kept with the player; `startOpen`/`stopOpen` pass to the active
+chest's block entity, which counts openers and moves its lid as a chest does
+(`EnderChestBlock.tick` runs its `recheckOpen`, 331–345; the block entity is not
+dumped), and `stillValid` is the active chest's `stillValid` (94–110). Its contents are
+saved with the player (`fromSlots`/`storeAsSlots`, the `ItemStackWithSlot` list), so the
+ender chest needs a field in N2's player data.
 
 Statistics and piglins are not Clustine's yet and can be left out (statistics are
 named in `ServerPlayer` data no step keeps).
@@ -1272,7 +1488,7 @@ named in `ServerPlayer` data no step keeps).
 click on any block asks `state.getMenuProvider(level, pos)` and, if not null, opens it
 and answers `CONSUME`, without the block's `useWithoutItem` (no statistic, no piglins).
 For a chest that is the combiner's provider (3.3); for the others `BaseEntityBlock`'s,
-the block entity when it is a `MenuProvider` (**Inferred**, `BaseEntityBlock` not read).
+the block entity when it is a `MenuProvider`, else null (BaseEntityBlock.txt 34–50).
 A spectator never counts as an opener (`startOpen` and `stopOpen` return at once for a
 spectator, in each block entity), so no lid moves, no sound plays and no game event is
 sent; a spectator cannot open a container whose loot table is still set
@@ -1329,14 +1545,16 @@ are N1's and built; restated for the combiner: a half's partner lies at
 `getConnectedDirection(state)` = `facing.getClockWise()` for `left`,
 `facing.getCounterClockWise()` for `right` (191–208). Two chests join only when the
 neighbour is the same block (`chestCanConnectTo`: `state.is(this)`, 154–159; the copper
-chests override it, **Inferred**).
+chests override it: any block of the tag `copper_chests` that has `type`,
+CopperChestBlock.txt 50–63; see below).
 
 **The combiner** (`combine(state, level, pos, ignoreBlocked)`, 442–463):
 `DoubleBlockCombiner.combineWithNeigbour(blockEntityType, ChestBlock::getBlockType,
 ChestBlock::getConnectedDirection, FACING, state, level, pos, blockedTest)`, the test
 being always false when `ignoreBlocked` and `isChestBlockedAt` otherwise (**Inferred**
 which `invokedynamic` is which: `lambda$combine$0` returns false, lines 693–697, and is
-the first). `DoubleBlockCombiner` is not read; **Inferred** from its source:
+the first; no `javap -v` was read). `DoubleBlockCombiner.combineWithNeigbour`
+(DoubleBlockCombiner.txt 9–124):
 
 ```
 be = level's block entity at pos of the chest type;  none → NONE
@@ -1344,8 +1562,8 @@ if blockedTest(level, pos) → NONE
 kind = getBlockType(state)                 // SINGLE, FIRST (right), SECOND (left)
 if kind == SINGLE → SINGLE(be)
 partner = pos.relative(getConnectedDirection(state)); ps = its state
-if ps is the same block && getBlockType(ps) != SINGLE && != kind && ps.facing ==
-state.facing:
+if ps.is(state.getBlock()) && getBlockType(ps) != SINGLE && != kind
+        && ps.facing == state.facing:
     if blockedTest(level, partner) → NONE
     pbe = block entity at partner; if pbe != null:
         → DOUBLE(kind == FIRST ? be : pbe, kind == FIRST ? pbe : be)
@@ -1389,11 +1607,12 @@ unless removed or the user is a spectator; `triggerEvent(1, n)` sets the lid con
 `signalOpenCount(level, pos, state, old, new)` = `level.blockEvent(pos, state.getBlock(),
 1, new)` (332–345); `recheckOpen()` (316–330) runs the counter's `recheckOpeners` unless
 removed; `getOpenCount(getter, pos)` (268–292) is the counter's count where the block
-there has a `ChestBlockEntity`, else 0 (the trapped chest's signal, **Inferred**);
+there has a `ChestBlockEntity`, else 0 (the trapped chest's signal);
 `swapContents` (294–306) swaps two chests' lists (used by nothing read). Its counter
 (`ChestBlockEntity$1`): `onOpen`/`onClose` play the block's `getOpenChestSound`/
 `getCloseChestSound` (the constructor's, so the copper chests' own) through `playSound`;
-`openerCountChanged` → `signalOpenCount`; `isOwnContainer(player)`: `player.containerMenu`
+`openerCountChanged` → `signalOpenCount`; `isOwnContainer(player)`:
+`player.containerMenu`
 is a `ChestMenu` whose container is this block entity, or a `CompoundContainer` that
 `contains` it.
 
@@ -1416,19 +1635,44 @@ seed from `soundSeedGenerator.nextLong()`, a random apart from the level's.
 **Sounds by block** (`minecraft:sound_event` ids): chest and trapped chest
 `block.chest.open` (349) / `block.chest.close` (347); copper chests
 `block.copper_chest.open/close` (406/405), weathered (408/407), oxidized (410/409); the
-exposed ones **Inferred** to use the plain copper sounds (no `exposed` sound exists);
-`block.chest.locked` (348).
+unaffected and exposed ones the plain copper sounds (`CopperChestBlock.getHingeSound`,
+CopperChestBlock.txt 20–48, switched by `$1`: weathered and oxidized have their own,
+everything else the plain ones; Blocks.txt 2419–2448 passes `getHingeSound(state, true)`
+as the open sound and `false` as the close); `block.chest.locked` (348).
 
-**The trapped chest** (`TrappedChestBlock`, `TrappedChestBlockEntity`, not read):
-**Inferred** from the game's source: its `signalOpenCount` also updates the neighbours
-of its position and of the block below, and it is a signal source of
-`clamp(getOpenCount, 0, 15)` on every side and that strongly downwards. It is the one
+**Copper chests joining** (CopperChestBlock.txt 50–193). `chestCanConnectTo(other)` is
+`other.is(#copper_chests) && other.hasProperty(type)`, so any two copper chests, of any
+oxidation, waxed or not, join. Placing one (`getStateForPlacement` →
+`getLeastOxidizedChestOfConnectedBlocks`, 65–168): when `ChestBlock`'s placement made
+it a half and the partner is a copper chest, both are compared unwaxed if exactly one is
+waxed (`unwaxBlock`), and the placed chest becomes the block of lower `weatherState`
+ordinal (the placed one on a tie), keeping its own properties
+(`withPropertiesOf`). `updateShape` (156–193): after `ChestBlock.updateShape`, if the
+neighbour in the update's direction is a copper chest and the result is a half whose
+connected direction is that direction, the chest becomes the neighbour's block with its
+own properties. So the two halves of a copper double chest are always the same block,
+which `DoubleBlockCombiner`'s `is(state.getBlock())` needs; N1's placement and shape
+updates join only the same block and have to learn this.
+
+**The trapped chest** (TrappedChestBlock.txt, 62 lines; TrappedChestBlockEntity.txt,
+48): `isSignalSource` true; `ownSignal` (the weak signal on every side, since
+`BlockBehaviour.getSignal` is `ownSignal`, BlockBehaviour.txt 575–587) =
+`Mth.clamp(ChestBlockEntity.getOpenCount(level, pos), 0, 15)`; `getDirectSignal` = that
+signal when the direction asked is `UP` (the block below is strongly powered), else 0;
+its stat is `TRIGGER_TRAPPED_CHEST`; the sounds and title are the chest's. Its entity's
+`signalOpenCount(level, pos, state, old, new)` runs the chest's (the block event), then,
+when `old != new`, `orientation = ExperimentalRedstoneUtils.initialOrientation(level,
+facing.getOpposite(), UP)` and `level.updateNeighborsAt(pos, block, orientation)`, then
+`level.updateNeighborsAt(pos.below(), block, orientation)`. Each half counts its own
+openers, and a double chest's menu opens both, so both halves give the signal. It is the
+one
 container block whose openers are redstone, so the one that needs the openers' count
 in the simulation for the circuit's sake.
 
 ### 3.4 The openers' count (ContainerOpenersCounter.txt, 274 lines)
 
-State: `openCount` (int) and `maxInteractionRange` (double), neither saved (a chest loaded
+State: `openCount` (int) and `maxInteractionRange` (double), neither saved (a chest
+loaded
 has no openers; players who had it open had their menus closed when they left).
 
 ```
@@ -1474,13 +1718,18 @@ Notes for the porter:
   ticker, so it goes through the region's tick list and is durable with it. A chest
   with openers is ticked every 5 ticks; each recheck queues the chest's block event
   again (`openerCountChanged` is called unconditionally), so a client is sent the
-  `block_event` every 5 ticks while the chest is open (**Inferred** from the code:
-  `ServerLevel.doBlockEvent` sends it whenever `triggerEvent` answers true, which the
-  chest's does for event 1).
+  `block_event` every 5 ticks while the chest is open: `ServerLevel.runBlockEvents`
+  (ServerLevel.txt 2717–2785) sends `block_event` to every player of the dimension
+  within 64 blocks of the position's corner whenever `doBlockEvent` (2786–2810: the
+  block still there, then `triggerEvent`) answers true, which the chest's does for event
+  1. Block events are queued in a linked set (`blockEvent`, 2702–2716), so the same
+  position, block and parameters queued twice in a tick run once; an event at a
+  position that does not tick (`shouldTickBlocksAt`) is put back for the next tick.
 - `getContainerInteractionRange` is the player's `blockInteractionRange()` (Player.txt
-  4815–4819), the attribute `block_interaction_range`: 4.5, and 5.0 in creative
-  (**Inferred**: the attribute's default and the creative modifier are not read; the
-  repository uses the same for entities, `uses.rs`). The recheck's box is the block's
+  4815–4819), the attribute `block_interaction_range`: 4.5 (Attributes.txt 206–231,
+  range 0 to 64), and 5.0 in creative (`creative_mode_block_range`, +0.5 `ADD_VALUE`,
+  added by `ServerPlayer.updatePlayerAttributes` while creative, ServerPlayer.txt
+  1022–1040, 5962–5973). The recheck's box is the block's
   box inflated by 9 in creative.
 - `isOwnContainer` is the kind's: the chest's (above) and the barrel's
   (`BarrelBlockEntity$1`, 49–69: a `ChestMenu` whose container is this barrel). A player
@@ -1501,8 +1750,7 @@ Notes for the porter:
 onOpen:  playSound(state, BARREL_OPEN);  updateBlockState(state, true)
 onClose: playSound(state, BARREL_CLOSE); updateBlockState(state, false)
 openerCountChanged: nothing
-updateBlockState(state, open): level.setBlockAndUpdate(worldPosition,
-state.setValue(OPEN, open))   // flags 3
+updateBlockState(state, open): level.setBlockAndUpdate(worldPosition, state.setValue(OPEN, open))   // flags 3
 playSound(state, sound):
     v = state.facing.getUnitVec3i()
     x = worldPosition.x + 0.5 + v.x / 2.0  (and y, z alike)       // the centre of the facing face
@@ -1526,15 +1774,15 @@ the items, name, lock and loot table is saved.
 
 ```
 if be.getAnimationStatus() != CLOSED: return true
-box = Shulker.getProgressDeltaAabb(1.0f, state.facing, 0.0f, 0.5f,
-Vec3.atBottomCenterOf(pos)).deflate(1.0E-6)
+box = Shulker.getProgressDeltaAabb(1.0f, state.facing, 0.0f, 0.5f, Vec3.atBottomCenterOf(pos)).deflate(1.0E-6)
 return level.noCollision(box)
 ```
 
 `Shulker.getProgressDeltaAabb` is not read. **Inferred** from the game's source: the
 unit box at the block, stretched in `facing` from progress 0 to 0.5 and kept to the
 part beyond the block, so the half block just beyond the facing face (for `up`:
-`x..x+1, y+1..y+1.5, z..z+1`). `noCollision(AABB)` (CollisionGetter.txt 45–92) is no block
+`x..x+1, y+1..y+1.5, z..z+1`). `noCollision(AABB)` (CollisionGetter.txt 45–92) is no
+block
 collision (block shapes, not fluids), no entity that blocks (`noEntityCollision`: the
 entities whose `canBeCollidedWith` is true, boats and shulkers, **Inferred**) and no
 world border.
@@ -1610,10 +1858,8 @@ progress step:
 ```
 if state's block is not a ShulkerBoxBlock: return
 dir = state.facing
-box = Shulker.getProgressDeltaAabb(1.0f, dir, progressOld, progress,
-Vec3.atBottomCenterOf(pos))
-for e in level.getEntities((Entity) null, box):            // getEntities(Entity, AABB):
-every entity, no predicate
+box = Shulker.getProgressDeltaAabb(1.0f, dir, progressOld, progress, Vec3.atBottomCenterOf(pos))
+for e in level.getEntities((Entity) null, box):            // getEntities(Entity, AABB): every entity, no predicate
     if e.getPistonPushReaction() == IGNORE_ENTITY: continue
     e.move(MoverType.SHULKER_BOX, new Vec3((box.getXsize() + 0.01) * dir.getStepX(),
                                            (box.getYsize() + 0.01) * dir.getStepY(),
@@ -1626,14 +1872,18 @@ Entity.txt 1546–1569). A player is moved by its client, which runs the same ti
 position, as N4's pistons found).
 
 **Shapes from the block entity**: `getShape` (268–286) is `Shapes.create(be
-.getBoundingBox(state))` where `getBoundingBox` (192–213) is `Shulker.getProgressAabb(1.0f,
+.getBoundingBox(state))` where `getBoundingBox` (192–213) is
+`Shulker.getProgressAabb(1.0f,
 facing, 0.5f * getProgress(1.0f), Vec3(0.5, 0, 0.5))` (the block grows by up to half a
 block towards `facing`), and `Shapes.block()` without a block entity; the collision
-shape follows it (**Inferred**: `getCollisionShape` defaults to `getShape`).
+shape follows it (`BlockBehaviour.getCollisionShape`, BlockBehaviour.txt 474–485, is
+`getShape` for a block with collision, and `ShulkerBoxBlock` does not override it).
 `getBlockSupportShape` (241–266) is the full block when closed and, while not closed,
 `SHAPES_OPEN_SUPPORT.get(facing.getOpposite())` (a 16 × 16 × 1 slab against the face
-opposite the lid, **Inferred** from `Block.boxZ(16, 0, 1)` rotated): what is attached to
-the box's sides loses support when it opens (`doNeighborUpdates`). `propagatesSkylightDown`
+opposite the lid: `Block.boxZ(16, 0, 1)` is `box(0, 0, 0, 16, 16, 1)`, Block.txt
+257–302, rotated): what is attached to
+the box's sides loses support when it opens (`doNeighborUpdates`).
+`propagatesSkylightDown`
 is false.
 
 **Faces** (for hoppers): every face reaches all 27 slots (`getSlotsForFace`); nothing
@@ -1658,7 +1908,8 @@ super.playerWillDestroy(…)
 table is set) (BaseContainerBlockEntity.txt 272–299, RandomizableContainerBlockEntity.txt
 163–182). Its loot table (`blocks/shulker_box.json`) has **no `survives_explosion`
 condition** and copies `custom_name`, `container`, `lock` and `container_loot` from the
-block entity; `getDrops` (208–231) also offers a dynamic drop `contents` (each slot) which
+block entity; `getDrops` (208–231) also offers a dynamic drop `contents` (each slot)
+which
 the table does not use. An empty box broken by a creative player drops nothing; in
 survival the table drops the box with its contents. The shulker box's
 `preRemoveSideEffects` (342–344) does nothing, so its contents never spill. Placing a
@@ -1672,14 +1923,14 @@ shulker boxes is the dispenser's section.
 **`Container`** (Container.txt, 190 lines), defaults: `getMaxStackSize()` 99;
 `getMaxStackSize(stack)` = `min(getMaxStackSize(), stack.getMaxStackSize())`;
 `startOpen`/`stopOpen` nothing; `getEntitiesWithContainerOpen` empty; `canPlaceItem`
-and `canTakeItem` true; `countItem`, `hasAnyOf`, `hasAnyMatching` over the slots in order.
+and `canTakeItem` true; `countItem`, `hasAnyOf`, `hasAnyMatching` over the slots in
+order.
 `stillValidBlockEntity(be, player)` (116–148) with the buffer `4.0f`:
 
 ```
 level = be.getLevel(); pos = be.getBlockPos()
 if level == null: false
-if level.getBlockEntity(pos) != be: false               // the block was replaced or its
-chunk unloaded
+if level.getBlockEntity(pos) != be: false               // the block was replaced or its chunk unloaded
 player.isWithinBlockInteractionRange(pos, 4.0)          // Player.txt 4883–4905:
     // new AABB(pos).distanceToSqr(player.getEyePosition()) < (blockInteractionRange() + 4.0)^2
 ```
@@ -1688,7 +1939,8 @@ So a menu over a block stays valid while the player's eyes are within 8.5 (9 in
 creative) of the block's box. Who asks and when (every tick, closing the menu) is 3.10
 on.
 
-**`CompoundContainer`** (CompoundContainer.txt, 245 lines): size the sum; slot `i < size1`
+**`CompoundContainer`** (CompoundContainer.txt, 245 lines): size the sum; slot `i <
+size1`
 is `container1`'s `i`, else `container2`'s `i − size1`, for `getItem`, `removeItem`,
 `removeItemNoUpdate`, `setItem`, `canPlaceItem`; `isEmpty` both; `getMaxStackSize` the
 first's; `setChanged`, `startOpen`, `stopOpen`, `clearContent` the first, then the
@@ -1704,11 +1956,9 @@ this section uses it on the server.
 ```
 isEmpty: every slot empty
 getItem(i): items[i]
-removeItem(i, n): r = ContainerHelper.removeItem(items, i, n)   // items[i].split(n),
-EMPTY when i out of range, empty or n <= 0
+removeItem(i, n): r = ContainerHelper.removeItem(items, i, n)   // items[i].split(n), EMPTY when i out of range, empty or n <= 0
                   if !r.isEmpty(): setChanged()
-removeItemNoUpdate(i): ContainerHelper.takeItem(items, i)       // items[i], replaced by
-EMPTY; no setChanged
+removeItemNoUpdate(i): ContainerHelper.takeItem(items, i)       // items[i], replaced by EMPTY; no setChanged
 setItem(i, s): items[i] = s; s.limitSize(getMaxStackSize(s)); setChanged()
 stillValid(player): Container.stillValidBlockEntity(this, player)
 clearContent: items.clear()                                       // no setChanged
@@ -1718,23 +1968,33 @@ getName: custom name or getDefaultName(); getDisplayName = getName
 `RandomizableContainerBlockEntity` (lines 45–94) makes `isEmpty`, `getItem`,
 `removeItem`, `removeItemNoUpdate` and `setItem` unpack the loot table first
 (`unpackLootTable(null)`); so does anything that reads a slot (a comparator, a hopper,
-breaking). `unpackLootTable(player)` belongs to the `RandomizableContainer` interface,
-not read; **Inferred** from the game's source:
+breaking). `unpackLootTable(player)` is the `RandomizableContainer` interface's default
+(RandomizableContainer.txt 102–168):
 
 ```
-if lootTable != null && level is server:
-    table = server.reloadableRegistries().getLootTable(lootTable)
-    (a ServerPlayer: the generate-loot criterion)
-    lootTable = null; setChanged()
-    params = LootParams(level).withParameter(ORIGIN, Vec3.atCenterOf(pos))
+level = getLevel(); pos = getBlockPos(); key = getLootTable()
+if key != null && level != null && level.getServer() != null:
+    table = server.reloadableRegistries().getLootTable(key)
+    if player is ServerPlayer: CriteriaTriggers.GENERATE_LOOT.trigger(player, key)
+    setLootTable(null)                                  // a plain field write: no setChanged here
+    params = LootParams.Builder(level).withParameter(ORIGIN, Vec3.atCenterOf(pos))
     if player != null: params.withLuck(player.getLuck()).withParameter(THIS_ENTITY, player)
-    table.fill(this, params.create(LootContextParamSets.CHEST), lootTableSeed)
+    table.fill(this, params.create(LootContextParamSets.CHEST), getLootTableSeed())
 ```
+
+The rolled stacks reach the slots through `setItem`, which calls `setChanged` per slot
+(**Inferred**: `LootTable.fill` is not read). `tryLoadLootTable` (48–73) reads
+`LootTable` (a loot table key) and `LootTableSeed` (default 0) and answers whether a
+table was set; `trySaveLootTable` (74–101) writes `LootTable` when set and
+`LootTableSeed` only when not 0, answering whether it wrote; `setBlockEntityLootTable`
+(29–47), used by structures, sets the table with a seed of `random.nextLong()`.
 
 (The same shape as `ContainerEntity.unpackChestVehicleLootTable`, read: ContainerEntity
-.txt 125–181, with the entity's position as the origin.) `LootTable.fill` (not read) takes
-its random from the seed (**Inferred**: the level's random when the seed is 0, else a
-fresh random of that seed) and spreads the rolled stacks over the empty slots at random
+.txt 125–181, with the entity's position as the origin.) `LootTable.fill` (not read)
+takes
+its random from the seed (**Inferred**, not read: the level's random when the seed is
+0, else a fresh random of that seed) and spreads the rolled stacks over the empty slots
+at random
 (the shuffle and splitting draw from that random).
 
 **`setChanged`** (BlockEntity.txt 484–511): `level.blockEntityChanged(pos)` (the chunk
@@ -1764,12 +2024,15 @@ while !stack.isEmpty():
 
 (the `y` term has no `off`, lines 92–100; the random is the level's; `ItemEntity`'s
 constructor here is the five-argument one, which draws its own motion that the
-`setDeltaMovement` then replaces, **Inferred** from N4's reading of `ItemEntity`). The
+`setDeltaMovement` then replaces: ItemEntity.txt 33–98, two `nextFloat` (bob, yaw) and
+two `nextDouble` (the x and z motion), all of **the item's own random**, not the
+level's). The
 repository has this already for container vehicles (`region/vehicles.rs`,
 `drop_contents`). `updateNeighboursAfterDestroy(state, level, pos)` (153–160) is
 `level.updateNeighbourForOutputSignal(pos, state.getBlock())`, called by each of these
 blocks' `affectNeighborsAfterRemoval` (ChestBlock.txt 372–378, BarrelBlock.txt 61–67,
-ShulkerBoxBlock.txt 233–239; the others likewise, **Inferred**).
+ShulkerBoxBlock.txt 233–239, DispenserBlock.txt 296–303, HopperBlock.txt 253–260,
+CrafterBlock.txt 263–270).
 
 ### 3.7 What is saved, and what the client is sent
 
@@ -1778,10 +2041,10 @@ Each block entity's data, as the game saves it (`saveWithoutMetadata` adds
 
 | Key | Written by | When |
 |---|---|---|
-| `lock` | `LockCode.addToTag` (BaseContainerBlockEntity.txt 35–50) | **Inferred** when locked (`LockCode` not read; the key from `removeComponentsFromTag`, 301–312) |
+| `lock` | `LockCode.addToTag` (BaseContainerBlockEntity.txt 35–50; LockCode.txt 28–39: the item predicate's codec) | when not `NO_LOCK` |
 | `CustomName` | `storeNullable("CustomName", ComponentSerialization.CODEC, name)` | when named |
-| `LootTable` | `trySaveLootTable` (**Inferred**, the interface not read) | while a table is set |
-| `LootTableSeed` (long) | `trySaveLootTable` (**Inferred**) | while a table is set and the seed is not 0 |
+| `LootTable` | `trySaveLootTable` (RandomizableContainer.txt 74–101) | while a table is set |
+| `LootTableSeed` (long) | `trySaveLootTable` | while a table is set and the seed is not 0 |
 | `Items` | `ContainerHelper.saveAllItems` (ContainerHelper.txt 54–100): `ItemStackWithSlot` entries (`Slot` byte and the stack), non-empty slots in order | when no table is set; chests and barrels always (`alwaysPutTag`), so an empty `Items: []`; shulker boxes pass `false`, so no `Items` when empty |
 | `components` | `BlockEntity.saveWithoutMetadata` | always (the kept components, usually `{}`) |
 
@@ -1836,9 +2099,11 @@ reading goes, beside the detector rail's.
 **Chest and hopper carts, chest boats and chest rafts** exist since N5 and open nothing
 (the N5 brief's 3.18; `ContainerEntity.interactWithContainerVehicle`, lines 116–123:
 `player.openMenu(this)`; `SUCCESS`). To open them N6 needs, beside the menu: the
-entity's display name as the title (its custom name or its type's name, **Inferred**:
-`Entity.getDisplayName`), `createMenu` (a chest cart and a chest boat `ChestMenu
-.threeRows`, a hopper cart `HopperMenu`; `null` for a spectator while a loot table is set,
+entity's display name as the title (`Entity.getDisplayName`, Entity.txt 9517–9527: the
+team-formatted `getName`, which is the custom name, stripped of click actions, or the
+type's description, 8424–8444), `createMenu` (a chest cart and a chest boat `ChestMenu
+.threeRows`, a hopper cart `HopperMenu`; `null` for a spectator while a loot table is
+set,
 AbstractChestBoat.txt 214–245), `stillValid` = `isChestVehicleStillValid` (not removed,
 and within the entity interaction range + 4.0 of its box, ContainerEntity.txt 300–314),
 the `CONTAINER_OPEN` game event at the entity on opening (`MinecartChest.interact`,
@@ -1895,28 +2160,34 @@ openMenu(provider):
 
 - `containerCounter` starts at 0 (a field never set before), so the first menu is 1, the
   hundredth 100, the next 1 again. A menu's construction calls `container.startOpen(player)`
-  (the openers' count and the lid, 3.1–3.9) before the open screen packet is sent, so the
-  lid's block event can precede `open_screen` in the tick's packets (**Inferred** order on
-  the wire: the block event goes out with the chunk's broadcasts at the end of the tick,
-  the screen at once).
+  (the openers' count and the lid, 3.1–3.9) before the open screen packet is sent; but the
+  lid's block event is only queued there (`ServerLevel.blockEvent`, ServerLevel.txt
+  2702–2716, into an `ObjectLinkedOpenHashSet`, so the same event twice in a tick is one)
+  and sent when the level runs its block events (`runBlockEvents`, 2717–2785, called from
+  `ServerLevel.tick` at 575), to every player within 64 blocks of the block. So
+  `open_screen` and the content go first, at once, and the lid's `block_event` later, in
+  the level's next block-event phase (**Inferred** only for where packet handling falls
+  against the level's tick, which is `MinecraftServer`'s, not dumped).
 - `initMenu(menu)` (858–868): `menu.addSlotListener(containerListener)` (which calls
   `broadcastChanges()` at once, 336–352, with no synchroniser yet, so it only fills
-  `lastSlots` and tells the listener: advancements, `ServerPlayer$2`, not read), then
+  `lastSlots` and tells the listener: `ServerPlayer$2.slotChanged`, ServerPlayer$2.txt,
+  which triggers the advancement criterion `INVENTORY_CHANGED` when the slot is not a
+  `ResultSlot` and its container is the player's inventory, and nothing else), then
   `menu.setSynchronizer(containerSynchronizer)` (353–369): the remote carried slot and every
   remote slot become `synchronizer.createSlot()`, and `sendAllDataToRemote()` (371–452):
   - every slot's stack is copied into a list and forced into its remote slot;
   - the carried stack is forced into the remote carried slot;
   - every data slot's value is copied into `remoteDataSlots`;
   - `synchronizer.sendInitialData(menu, items, carried.copy(), remoteDataSlots)`.
-- What `sendInitialData` sends (**Inferred**, `ServerPlayer$1` not read; as 1.21's):
+- What `sendInitialData` sends (ServerPlayer$1.txt 29–60):
   `ClientboundContainerSetContentPacket(containerId, menu.incrementStateId(), items,
-  carried)`, then for each data slot `i` `ClientboundContainerSetDataPacket(containerId, i,
-  value)`.
+  carried)`, then for each data slot `i` in order `ClientboundContainerSetDataPacket(
+  containerId, i, value)` (`broadcastDataValue`, 98–113).
 - `initInventoryMenu()` (870–876) does the same for `inventoryMenu` (container id 0) at
   join: the content the edge sends at join today (`fanout.rs`, `SetContainerContent` with
-  window 0, state id 0) is that packet; the game's state id there is 1 (the first
-  `incrementStateId`, **Inferred**). The client takes any state id; the edge's 0 is fine as
-  long as later packets count from it.
+  window 0, state id 0) is that packet; the game's state id there is 1 (`sendInitialData`
+  calls `incrementStateId` on a menu whose state id is 0). The client takes any state id;
+  the edge's 0 is fine as long as later packets count from it.
 
 ### 3.11 The menus and their slots
 
@@ -1955,10 +2226,11 @@ Wire ids are from `generated/reports/registries.json` (`minecraft:menu`).
 - **`HopperMenu`** (HopperMenu.txt 19–61): over the hopper's (or hopper minecart's) 5 slots
   at (44 + i*18, 20); inventory at (8, 51).
 - **`ShulkerBoxMenu`** (ShulkerBoxMenu.txt 19–80): 27 `ShulkerBoxSlot`s at (8 + col*18,
-  18 + row*18); inventory at (8, 84). `ShulkerBoxSlot` is not dumped: its `mayPlace` refuses
-  what cannot go inside a container item (**Inferred**:
-  `stack.getItem().canFitInsideContainerItems()`,
-  false for shulker boxes and bundles with contents, as in 1.21). Clicks, drags, swaps and
+  18 + row*18); inventory at (8, 84). `ShulkerBoxSlot.mayPlace(stack)` is
+  `stack.getItem().canFitInsideContainerItems()` (ShulkerBoxSlot.txt): true by `Item`'s
+  default (n5 Item.txt 590–593), false for a `BlockItem` whose block is a
+  `ShulkerBoxBlock` (BlockItem.txt 393–402). So only shulker boxes are refused among the
+  classes read (whether `BundleItem` overrides it is not read). Clicks, drags, swaps and
   quick moves all ask `mayPlace` before putting into an empty slot; merging into a slot that
   already holds the same item asks only `isSameItemSameComponents` (3.14.3), which cannot
   happen for a box in a box.
@@ -1972,6 +2244,12 @@ Wire ids are from `generated/reports/registries.json` (`minecraft:menu`).
   container.asCraftInput())` mapped to `recipe.assemble(input)`, or `EMPTY`, into the
   result container), so the client sees what the crafter would make. `setSlotState(slot,
   enabled)` (157–176) sets data `slot.index` to `enabled ? 0 : 1` and `broadcastChanges`.
+  A `CrafterSlot` (CrafterSlot.txt) takes a stack only while enabled
+  (`!menu.isSlotDisabled(index) && super.mayPlace(stack)`), and its `setChanged` also
+  calls `menu.slotsChanged(container)`. The result slot is a `NonInteractiveResultSlot`
+  (NonInteractiveResultSlot.txt), which refuses everything: `mayPickup`, `mayPlace` and
+  `allowModification` false, `tryRemove` empty, `safeTake` and `remove` `EMPTY`,
+  `safeInsert` gives the stack back, `isFake` true.
   **The crafter menu has no `removed` override**: `stopOpen` is never called on its
   container (CrafterBlockEntity keeps no openers' count; section 7). `stillValid` (277–283)
   is the crafting container's.
@@ -2065,8 +2343,7 @@ end come with slot −999 (**Client**).
 ```
 prev = quickcraftStatus
 quickcraftStatus = header
-if !(prev == 1 && quickcraftStatus == 2) && prev != quickcraftStatus: resetQuickCraft();
-return
+if !(prev == 1 && quickcraftStatus == 2) && prev != quickcraftStatus: resetQuickCraft(); return
 if getCarried().isEmpty(): resetQuickCraft(); return
 if quickcraftStatus == 0:                                   // start
   quickcraftType = type
@@ -2112,8 +2389,8 @@ else: resetQuickCraft()
   else `isSameItemSameComponents(stack, slot item) && slot.count + 0 <=
   stack.getMaxStackSize()`
   (with `false` the stack's count is added).
-- `canDragTo(slot)` (2218–2221): true (result slots' menus override; none of N6's do,
-  **Inferred** for `CrafterMenu`, which does not override it in its dump).
+- `canDragTo(slot)` (2218–2221): true (result slots' menus override; none of N6's do:
+  `CrafterMenu` extends `AbstractContainerMenu` directly and does not override it).
 - `resetQuickCraft()` (2144–2152): `status = 0`, slots cleared (the type is kept).
 - The one-slot case re-enters as `PICKUP` with `button = quickcraftType`: 0 a left click, 1
   a right click, and 2 (a middle drag over one slot) is no click button at all, so it does
@@ -2163,8 +2440,10 @@ s.setChanged()                                               // always
 `c.overrideStackedOnOther(s, action, player)` says so, or the slot's item is enabled and
 `here.overrideOtherStackedOnMe(c, s, action, player, carriedAccess)` says so, the click is
 the item's (bundles; `AbstractContainerMenu$1` is the carried slot's access: `get` and `set`
-the carried stack). Not read (`ItemStack.overrideStackedOnOther` and the bundle); with no
-bundles in N6 it can be treated as false.
+the carried stack). `ItemStack.overrideStackedOnOther` and `overrideOtherStackedOnMe`
+(ItemStack.txt 938–960) ask the item, whose default is false (n5 Item.txt 344–352); only
+the bundle overrides them among items (`BundleItem` is not dumped), so with no bundles in
+N6 it is false.
 
 #### 3.14.4 `QUICK_MOVE` (shift-click), button 0 or 1 (1196–1232)
 
@@ -2193,8 +2472,7 @@ if stack.isStackable():                                  // pass 1: merge
       if total <= max: stack.setCount(0); t.setCount(total); s.setChanged(); moved = true
       elif t.count < max: stack.shrink(max - t.count); t.setCount(max); s.setChanged(); moved = true
     i += reverse ? -1 : 1
-if !stack.isEmpty():                                     // pass 2: the first empty slot
-that takes it
+if !stack.isEmpty():                                     // pass 2: the first empty slot that takes it
   i = reverse ? end - 1 : start
   while reverse ? i >= start : i < end:
     s = slots[i]
@@ -2250,8 +2528,7 @@ s = slots[slot]
 n = button == 0 ? 1 : s.getItem().count
 if !player.canDropItems(): return                    // true for a player (Player.txt 3206)
 t = s.safeTake(n, Integer.MAX_VALUE, player)
-player.drop(t, true, PREDICTED); player.handleCreativeModeItemDrop(t)   // the latter
-does nothing
+player.drop(t, true, PREDICTED); player.handleCreativeModeItemDrop(t)   // the latter does nothing
 if button == 1:
   while !t.isEmpty() && isSameItem(s.getItem(), t):   // a result slot that makes more
     if !player.canDropItems(): return
@@ -2274,8 +2551,7 @@ throw
 ```
 if slot < 0: return
 s = slots[slot]; c = getCarried()
-if c.isEmpty() || (s.hasItem() && s.mayPickup(player)): return   // the first click
-picked it up
+if c.isEmpty() || (s.hasItem() && s.mayPickup(player)): return   // the first click picked it up
 start = button == 0 ? 0 : slots.size() - 1; step = button == 0 ? 1 : -1
 for pass in 0..2:
   for i = start; 0 <= i < slots.size() && c.count < c.getMaxStackSize(); i += step:
@@ -2311,7 +2587,7 @@ If the move returns false the method returns `EMPTY` at once (nothing changed). 
 shift-click from a chest goes to the hotbar's right end first and then up the inventory
 (reverse), and from the inventory into the chest's first slots. The crafter's result slot 45
 is index ≥ 9, so its quick move would try the grid; `NonInteractiveResultSlot.mayPickup` is
-false (**Inferred**, not read), which stops `QUICK_MOVE` before it.
+false (NonInteractiveResultSlot.txt), which stops `QUICK_MOVE` before it.
 
 ### 3.15 Synchronising: `broadcastChanges`, `broadcastFullState`, remote slots
 
@@ -2345,30 +2621,49 @@ broadcastFullState() (555–607):
   sendAllDataToRemote()                           // 3.10: everything, forced
 ```
 
-- `RemoteSlot` and `RemoteSlot$Synchronized` are not dumped. **Inferred** (as 1.21.5's): a
-  synchronised remote slot holds either the last stack forced into it (`force(stack)`, a
-  copy) or the last hash the client reported (`receive(hashed)`, which drops the stack);
-  `matches(stack)` compares a held stack with `ItemStack.matches`, or a held hash with
-  `HashedStack.matches(stack, generator)`; `copyFrom` copies both (used by
-  `transferState`). `PLACEHOLDER` matches everything and forces nothing.
-- What the synchroniser sends (**Inferred**, `ServerPlayer$1` not read):
-  `sendSlotChange` → `ClientboundContainerSetSlotPacket(containerId,
-  menu.incrementStateId(), slot, stack)`; `sendCarriedChange` →
-  `ClientboundSetCursorItemPacket(stack)` (`set_cursor_item`, 98); `sendDataChange` →
-  `ClientboundContainerSetDataPacket(containerId, id, value)`; `createSlot` → a
-  `RemoteSlot.Synchronized` with the connection's hash generator.
+- **Remote slots** (RemoteSlot.txt, RemoteSlot$1.txt, RemoteSlot$Synchronized.txt). A
+  `Synchronized` slot holds a `remoteStack` and a `remoteHash`, both null at first, and its
+  hash generator:
+  - `force(stack)` (24–34): `remoteStack = stack.copy()`, `remoteHash = null`;
+  - `receive(hashed)` (35–44): `remoteStack = null`, `remoteHash = hashed`;
+  - `matches(stack)` (45–73): if `remoteStack` is set, `ItemStack.matches(remoteStack,
+    stack)`; else if `remoteHash` is set and `remoteHash.matches(stack, hasher)`, **it
+    then keeps `remoteStack = stack.copy()`** (so the next comparisons are by stack) and
+    answers true; else false. A slot never forced nor told anything matches nothing;
+  - `copyFrom(other)` (74–85): takes the other's `remoteStack` and `remoteHash` (the same
+    objects), used by `transferState`.
+  `PLACEHOLDER` (`RemoteSlot$1`) matches everything and ignores `force` and `receive`; it
+  is every remote slot until a synchroniser is set.
+- What the synchroniser sends (`ServerPlayer$1`, ServerPlayer$1.txt, one per player):
+  - `sendInitialData` (29–60): `container_set_content(containerId,
+    menu.incrementStateId(), items, carried)`, then one `container_set_data(containerId,
+    i, value)` per data slot;
+  - `sendSlotChange` (61–77): `container_set_slot(containerId, menu.incrementStateId(),
+    slot, stack)`;
+  - `sendCarriedChange` (78–89): `set_cursor_item(stack)` (98), with no container id and
+    **no state id: the state id does not move**;
+  - `sendDataChange` (90–97): `container_set_data(containerId, id, value)`, **no state id
+    either**;
+  - `createSlot` (114–126): a `RemoteSlot.Synchronized` whose hash generator is the
+    synchroniser's cache (`cache::getUnchecked`, **Inferred** from the lambda's
+    signature): a Guava `LoadingCache<TypedDataComponent, Integer>` of at most 256 entries
+    (constructor 7–28), whose loader is `ServerPlayer$1$1` (not dumped).
+  So the state id goes up once per `container_set_content` and once per
+  `container_set_slot`, and nothing else moves it on the server.
 - `incrementStateId()` (2443–2455): `stateId = (stateId + 1) & 32767`, returned. So it
   runs 1
   to 32767 and then 0. `setItem(slot, stateId, stack)` (1889–1899) and
   `initializeContents(stateId, items, carried)` (1901–1925) are the client's side.
-- Listeners: `ServerPlayer`'s `containerListener` (`$2`, not read: advancements'
-  `INVENTORY_CHANGED` on the player's own slots); `CrafterMenu` (3.11).
+- Listeners: `ServerPlayer`'s `containerListener` (`ServerPlayer$2.txt`: advancements'
+  `INVENTORY_CHANGED` for a change in one of the player's own slots that is not a
+  `ResultSlot`; `dataChanged` does nothing); `CrafterMenu` (3.11).
 - **When `broadcastChanges` runs**: every `ServerPlayer.tick` for `containerMenu` (939–940);
   after every click (3.17); in `addSlotListener` (336–352); `slotsChanged(container)`
   (1883–1887,
-  called by containers that notify their menu: `SimpleContainer`'s listeners, the crafting
-  grid; **Inferred** that block entities' containers do not call it, their `setChanged` only
-  marking the chunk); `ServerPlayer.take` (pick-up, 2716–2725); a successful
+  called by containers that notify their menu: in the classes dumped only by
+  `CrafterSlot.setChanged`, and by the 2×2 grid's container, `TransientCraftingContainer`,
+  not dumped; no block entity's container calls it, its `setChanged` marking the chunk
+  and updating comparators, BlockEntity.txt 484–515); `ServerPlayer.take` (pick-up, 2716–2725); a successful
   `clickMenuButton` (SGPLI 6216–6223); `CrafterMenu.setSlotState`; `openItemGui`. So a
   hopper or a dispenser changing an open chest's contents reaches its viewers at the next
   player tick.
@@ -2392,11 +2687,52 @@ broadcastFullState() (555–607):
   for every added component of the real stack the client's map has its type and the hash
   `g.apply(component)` equals the client's integer.
 - `HashGenerator` (HashedPatchMap$HashGenerator.txt) is a `Function<TypedDataComponent,
-  Integer>`; its implementation (the connection's, a CRC32C over the component encoded with
-  `HashOps`, **Inferred** from SteelMC's 26.3 code) is not read.
+  Integer>`. The server's is the synchroniser's cache (3.15), whose loader
+  (`ServerPlayer$1$1`) is not dumped: **Inferred** (as SteelMC's 26.3 code and 1.21.5's
+  source) that it encodes the component's value with the component type's codec through
+  `HashOps.CRC32C_INSTANCE` and takes the result's `asInt()`.
+- **`HashOps`** (HashOps.txt, 1130 lines) is a `DynamicOps<HashCode>` over a Guava hash
+  function; `CRC32C_INSTANCE` is `new HashOps(Hashing.crc32c())` (`static {}` 1052–1130).
+  Every value is hashed as a tagged byte stream, and a compound's hash is made of its parts'
+  hashes:
+
+  | Value | Bytes fed to CRC32C | Lines |
+  |---|---|---|
+  | empty (`empty()`, a missing value) | `01` | 73–106, 1052–1059 |
+  | byte | `06`, the byte | 200–212 |
+  | short | `07`, `putShort` | 213–225 |
+  | int | `08`, `putInt` | 226–238 |
+  | long | `09`, `putLong` | 239–251 |
+  | float | `0A`, `putFloat` | 252–264 |
+  | double | `0B`, `putDouble` | 265–277 |
+  | string | `0C`, `putInt(length in chars)`, `putUnencodedChars` | 278–292 |
+  | boolean | `0D 00` (false) or `0D 01` (true), hashed once at construction | 293–303 |
+  | map | `02`, then for each entry, sorted by key hash then value hash, the key's hash bytes and the value's hash bytes, then `03`; empty: `02 03` | 304–363 |
+  | list | `04`, each element's hash bytes in order, `05`; empty: `04 05` | 364–385 |
+  | byte array | `0E`, the bytes, `0F` | 386–407 |
+  | int array | `10`, each `putInt`, `11` | 408–432 |
+  | long array | `12`, each `putLong`, `13` | 433–457 |
+
+  `createNumeric` (125–199) dispatches on the boxed type (byte, short, int, long, double,
+  float), anything else as a double. A map built field by field (`mapBuilder`,
+  `HashOps$MapHashBuilder.txt`) collects the pairs and hashes them as a map, sorted; a list
+  builder (`HashOps$ListHashBuilder.txt`) feeds `04`, the elements, `05`. The sort's
+  `HASH_COMPARATOR` is `Comparator.comparingLong` of a method reference not shown
+  (**Inferred** `HashCode::padToLong`, the CRC as an unsigned 32-bit value). What the
+  bytes of `putShort`, `putInt`, `putLong`, `putFloat`, `putDouble`, `putUnencodedChars`
+  and `asBytes` are is Guava's, not the game's: little-endian, a char as two bytes, a
+  float or double by its raw bits, and a CRC32C `HashCode` as its four bytes little-endian
+  (**Inferred** from Guava's documented behaviour; to be checked against a real client).
+- **What the client sends.** An empty stack is `HashedStack.EMPTY`, on the wire a single
+  `false` (the optional's flag). Any other stack is its item's registry id, its count, the
+  map of its *added* components (component type id → that component's hash as an `int`)
+  and the set of its *removed* components (type ids only, no hash): the patch against the
+  item's default components, not the whole component map. A stack whose components are all
+  its item's defaults sends two empty collections.
 - For Clustine's stacks without components the patch is empty: a client's hash matches a
   stack exactly when it is `EMPTY` and the stack is empty, or it is an item with the same id
-  and count and both component maps empty (4.0 item 4).
+  and count and both component collections empty (3.0 item 18). To match any other, the
+  edge needs components in stacks, each component's codec and the hashing above.
 
 ### 3.17 `handleContainerClick` (ServerGamePacketListenerImpl.txt 5900–6052)
 
@@ -2404,20 +2740,17 @@ broadcastFullState() (555–607):
 ensureRunningOnSameThread
 player.resetLastActionTime()
 if player.containerMenu.containerId != packet.containerId: return              // silently
-if player.isSpectator() || player.isDeadOrDying(): containerMenu.sendAllDataToRemote();
-return
+if player.isSpectator() || player.isDeadOrDying(): containerMenu.sendAllDataToRemote(); return
 if !containerMenu.stillValid(player): log; return                               // silently
 slot = packet.slotNum
 if !containerMenu.isValidSlotIndex(slot): log; return                           // 253–269
 stale = packet.stateId != containerMenu.getStateId()
-containerMenu.suppressRemoteUpdates()                                            //
-2296–2301
+containerMenu.suppressRemoteUpdates()                                            // 2296–2301
 containerMenu.clicked(slot, packet.buttonNum, packet.containerInput, player)
 for (i, hashed) in packet.changedSlots: containerMenu.setRemoteSlotUnsafe(i, hashed)
   // 774–800: an index outside the remote slots is logged and skipped; else remoteSlots[i].receive(hashed)
 containerMenu.setRemoteCarried(packet.carriedItem)                               // 802–808
-containerMenu.resumeRemoteUpdates()                                              //
-2303–2308
+containerMenu.resumeRemoteUpdates()                                              // 2303–2308
 if stale: containerMenu.broadcastFullState() else containerMenu.broadcastChanges()
 ```
 
@@ -2442,16 +2775,34 @@ if stale: containerMenu.broadcastFullState() else containerMenu.broadcastChanges
 - `closeContainer()` (ServerPlayer.txt 3388–3401), the server's own closing: send
   `ClientboundContainerClosePacket(containerMenu.containerId)`, then `doCloseContainer()`.
   Called by `openMenu` (another menu), by `tick`/`doTick` when `stillValid` fails (939–951,
-  1085–1094), and by others not in N6 (sleeping, dimension change, death: **Inferred**).
+  1085–1094), and by `openHorseInventory` and `openNautilusInventory` (N7); nothing else in
+  `ServerPlayer` calls it. A player removed from the level (`Player.remove`, n5 Player.txt
+  3095–3112: logout, and any other removal) runs `inventoryMenu.removed(player)` and, if a
+  container is open, `doCloseContainer()`, without the close packet.
 - `doCloseContainer()` (3403–3418): `containerMenu.removed(player)`;
   `inventoryMenu.transferState(containerMenu)`; `containerMenu = inventoryMenu`.
 - `AbstractContainerMenu.removed(player)` (1806–1824): only for a `ServerPlayer`: if the
   carried stack is not empty, `dropOrPlaceInInventory(player, carried)` and carried =
   `EMPTY`. `dropOrPlaceInInventory` (1826–1864): if the player is removed (for any reason
   but `CHANGED_DIMENSION`) or has disconnected, `player.drop(stack, false, SERVER_ONLY)`;
-  else `inventory.placeItemBackInInventory(stack, SERVER_ONLY)` (not read: **Inferred** as
-  1.21's, the selected slot if it can take it, else the first slot that can, merging first,
-  and what is left dropped).
+  else `inventory.placeItemBackInInventory(stack, SERVER_ONLY)`.
+- `Inventory.placeItemBackInInventory(stack, prediction)` (Inventory.txt 715–723) is
+  `placeItemBackInInventory(stack, true, prediction)` (724–784), a loop while the stack is
+  not empty:
+  ```
+  slot = getSlotWithRemainingSpace(stack)  // 494–538: the selected hotbar slot, then the
+                                           // off hand (40), then 0..35 in order: the first
+                                           // holding the same item and components, stackable
+                                           // and not full (hasRemainingSpaceForItem, 101–123)
+  if slot == -1: slot = getFreeSlot()      // 124–146: the first empty slot of 0..35
+  if slot == -1: player.drop(stack, false, prediction); stop
+  n = stack.getMaxStackSize() - getItem(slot).count
+  if add(slot, stack.split(n)) && sendPacket && player is a ServerPlayer:
+    send set_player_inventory(slot, getItem(slot).copy())   // createInventoryUpdatePacket, 785–796
+  ```
+  So a stack put back at closing reaches the client as `set_player_inventory` packets, one
+  per slot it goes into, and the empty off hand is never chosen (only a partly filled
+  one).
 - Then the menu's own `removed` calls `container.stopOpen(player)` (ChestMenu.txt 271–280,
   DispenserMenu.txt 170–179, HopperMenu.txt 133–142, ShulkerBoxMenu.txt 152–161): the
   openers'
@@ -2481,13 +2832,19 @@ elif drop && valid:
   else log "dropping items too fast in creative mode, ignoring"
 ```
 
-- The slots are the inventory menu's (`InventoryMenu`, not read): 0 the 2×2 result
-  (refused: `slotNum >= 1`), 1–4 the 2×2 grid, 5–8 armour (head first), 9–35 the main
-  inventory, 36–44 the hotbar, 45 the off hand. The edge maps 5–45 to the inventory today
+- The slots are the inventory menu's (InventoryMenu.txt 51–127): 0 the 2×2 result
+  (refused: `slotNum >= 1`), 1–4 the 2×2 grid, 5–8 armour (`ArmorSlot`s for `HEAD`,
+  `CHEST`, `LEGS`, `FEET`, over inventory slots 39, 38, 37, 36), 9–35 the main inventory
+  (inventory 9–35), 36–44 the hotbar (inventory 0–8), 45 the off hand (inventory 40, the
+  anonymous `InventoryMenu$1`). The edge maps 5–45 to the inventory today
   (`Inventory::from_container`) and ignores 1–4 (3.0 item 24).
-- `setByPlayer` on an armour slot (`ArmorSlot`, not read) runs its equip logic
-  (**Inferred**: `onEquipItem` and the equip sound, as a stand's equipment does); `mayPlace`
-  is not asked.
+- `setByPlayer(stack)` (Slot.txt 90–97) is `setByPlayer(stack, getItem())`; on an armour
+  slot (ArmorSlot.txt) that runs `owner.onEquipItem(slot, old, stack)` (the equip sound and
+  equipment change, n5 LivingEntity) before the set. `ArmorSlot` also has
+  `getMaxStackSize` 1, `mayPlace` = `owner.isEquippableInSlot(stack, slot)`, and
+  `mayPickup` false for a non-empty slot whose item has the `prevent_armor_change`
+  enchantment effect (the curse of binding) unless the player is creative. The creative
+  packet asks none of these: it sets the slot.
 - The creative screen sends this packet for its own inventory tab and for the hotbar while
   any creative tab is shown (**Client**); with a chest open, a creative player's clicks are
   `container_click`s like anyone's, with `CLONE` and type-2 drags allowed
@@ -2509,8 +2866,21 @@ elif drop && valid:
 
 ### 3.21 The player's own inventory menu and what the edge and the region each keep
 
-- `inventoryMenu` (container id 0, `InventoryMenu`, not dumped) is always there and is
-  `containerMenu` when nothing else is open. Its 46 slots are as 3.19's list. A survival
+- `inventoryMenu` (container id 0, `InventoryMenu`, InventoryMenu.txt) is always there and
+  is `containerMenu` when nothing else is open. Its 46 slots are as 3.19's list; slot 0 is
+  a `ResultSlot` (ResultSlot.txt: `mayPlace` false; taking from it crafts) over a
+  `ResultContainer`, and the grid is a `CraftingContainer` of 2×2. `stillValid` is always
+  true (189–193). `removed` (169–188) clears the result and, on the server, puts the
+  grid's items back with `clearContainer` (each `dropOrPlaceInInventory`, 3.18); it runs
+  only when the player is removed. `quickMoveStack` (194–390), in this order of tests: from
+  the result (0) to 9–44 from the end (`moveItemStackTo(stack, 9, 45, true)`, then
+  `onQuickCraft`); from the grid (1–4) or armour (5–8) to 9–44; an item whose equipment
+  slot is a humanoid armour slot to that armour slot (menu slot `8 − slot.getIndex()`,
+  so 5 for `HEAD`) if it is empty; an off-hand item (a shield) to 45 if empty; from the
+  main inventory (9–35) to the hotbar (36–44); from the hotbar (36–44) to the main
+  inventory (9–35); anything else (the off hand) to 9–44. Then, as the others, `EMPTY` if
+  nothing moved, else `onTake`; from the result, what is left in it is dropped
+  (`player.drop(stack, false, PREDICTED)`, 374–388). A survival
   player's clicks in it are `container_click`s with id 0 (all of 3.14 applies, over the
   inventory and the 2×2 grid); a creative player's own inventory goes by
   `set_creative_mode_slot` (**Client**). N6's players are creative: clicks with id 0 can be
@@ -2601,7 +2971,8 @@ names are quoted from SteelMC's extraction
    here (4.4 rule 2, 4.10, 4.11).
 8. **A dispensed TNT is primed only if the game rule `tnt_explodes` is on**; off, it stays
    in the dispenser with the failure click (`$6`, lines 9–30). The rule is new; its
-   default is in `GameRules`, not read (**Inferred** true). The PrimedTnt is made at the
+   default is true (`registerBoolean("tnt_explodes", MISC, true)`, GameRules.txt
+   777–787). The PrimedTnt is made at the
    front block's `(x + 0.5, y, z + 0.5)` with `owner = null`, one level draw for its
    direction (4.10). Flint and steel primes a TNT *block* in front by `TntBlock.prime`
    and removes it (4.11).
@@ -2625,7 +2996,7 @@ names are quoted from SteelMC's extraction
     and wither checks are N7's), honeycomb waxing copper, glass bottles filled from water
     (no block change), water bottles making mud, glowstone charging a respawn anchor,
     shears cutting leashes (N5's leashes) and harvesting beehives. Waiting for later steps:
-    every projectile (N9), spawn eggs (N7), bone meal (its growth, not read: 4.12), the
+    every projectile (N9), spawn eggs (N7), bone meal (its growth is each block's: 4.12), the
     brush on armadillos and shears on sheep and the like (N7), chests on llamas and donkeys
     (N7), golems and withers (N7/N10), sulfur cubes (N7).
 
@@ -2663,23 +3034,33 @@ names are quoted from SteelMC's extraction
 - **`insertItem(stack)`** (72–132): what a behaviour gives back that does not replace the
   slot (a filled bottle, a bucket of water from an empty one, ...). For each slot in
   order: if it is empty or the same item with the same components, move
-  `min(stack.count, max − slot.count)` (with `max = getMaxStackSize(stack)`,
-  **Inferred** `min(container max 99, stack max)`, `Container.getMaxStackSize` not
-  read): into an empty slot by `setItem(i, stack.split(k))`, into a matching one by
+  `min(stack.count, max − slot.count)` (with `max = getMaxStackSize(stack)`, which is
+  `Math.min(getMaxStackSize(), stack.getMaxStackSize())` with the container's default
+  99, Container.txt 17–29, not overridden by the dispenser): into an empty slot by
+  `setItem(i, stack.split(k))`, into a matching one by
   shrinking `stack` and growing the slot; stop once `stack` is empty. Returns what is
   left.
 - **Loot tables**: a dispenser made by a structure (`chests/jungle_temple_dispenser`:
   1–2 rolls of 2–7 arrows) unpacks its table the first time a slot is chosen
-  (`getRandomSlot` calls `unpackLootTable(null)` first) or the menu is opened. The unpack
-  is in `RandomizableContainer`, not dumped (section 12).
+  (`getRandomSlot` calls `unpackLootTable(null)` first) or the menu is opened.
+  `RandomizableContainer.unpackLootTable(player)` (RandomizableContainer.txt 102–167): if
+  a table is set and the level has a server, (a `ServerPlayer` gets the `generate_loot`
+  trigger), the table is cleared **before** it is filled (`setLootTable(null)`), then
+  `LootTable.fill(container, params, getLootTableSeed())` with the `CHEST` parameter set:
+  `ORIGIN` the block's centre and, with a player, `withLuck(player.getLuck())` and
+  `THIS_ENTITY`. It draws nothing from the level itself; the loot's draws come from the
+  seed (`LootTable.fill` is not read: what a seed of 0 means, section 12). The seed was
+  drawn when the structure placed the table (`setBlockEntityLootTable`, lines 21–47:
+  one `nextLong` of the generator's random). `tryLoadLootTable` (48–73) reads
+  `LootTable` and `LootTableSeed` (0 if absent) and answers whether a table was there;
+  `trySaveLootTable` (74–101) writes `LootTable` and `LootTableSeed` only when not 0.
 
 ### 4.2 The tick: `dispenseFrom(level, state, pos)` (DispenserBlock.txt 91–156)
 
 ```
 be = level.getBlockEntity(pos, DISPENSER) or return (a warning)
 source = BlockSource(level, pos, state, be)      // state: the tick's state, as passed
-slot = be.getRandomSlot(level.getRandom())        // 4.0 item 2: unpack, then one nextInt
-per non-empty slot
+slot = be.getRandomSlot(level.getRandom())        // 4.0 item 2: unpack, then one nextInt per non-empty slot
 if slot < 0:
     levelEvent(1001, pos, 0)                      // SOUND_DISPENSER_FAIL
     gameEvent(BLOCK_ACTIVATE, pos, Context.of(be.getBlockState()))
@@ -2717,12 +3098,11 @@ one. `setItem` marks the entity changed (the comparator's update, section 3).
 ```
 x = p.x; y = p.y; z = p.z
 y -= (dir.axis == Y) ? 0.125 : 0.15625
-item = new ItemEntity(level, x, y, z, stack)         // its own random: uuid (2
-nextLong), bob, yaw, motion (n4 8.4)
+item = new ItemEntity(level, x, y, z, stack)         // its own random: uuid (2 nextLong), bob, yaw, motion (n4 8.4)
 r = level.getRandom()
 s = r.nextDouble() * 0.1 + 0.2                        // level draw 1
 item.setDeltaMovement(
-    r.triangle(dir.stepX * s, 0.0172275 * accuracy),  // level draws 2-3 (Inferred two nextDouble)
+    r.triangle(dir.stepX * s, 0.0172275 * accuracy),  // level draws 2-3 (two nextDouble)
     r.triangle(0.2,           0.0172275 * accuracy),  // level draws 4-5
     r.triangle(dir.stepZ * s, 0.0172275 * accuracy))  // level draws 6-7
 level.addFreshEntity(item)
@@ -2732,8 +3112,10 @@ The constructor's motion is replaced; its draws are made all the same (Clustine'
 `spawn_item_as` with a `motion` does this, `region/drops.rs` 136–175). No
 `setDefaultPickUpDelay`: the item keeps the constructor's delay (0, as
 `Containers.dropItemStack`'s, `drops.rs`). `0.0172275 * 6` is a `double` product computed
-at run time (`ldc2_w 0.0172275`, `i2d`, `dmul`). `triangle(a, b)` is **Inferred**
-`a + b · (nextDouble() − nextDouble())` (RandomSource not read, as in N5). Then
+at run time (`ldc2_w 0.0172275`, `i2d`, `dmul`). `triangle(a, b)` is
+`a + b · (nextDouble() − nextDouble())` with the two draws in that order
+(RandomSource.txt 77–88): each `triangle` is two `nextDouble`, so `spawnItem` makes seven
+level draws. Then
 `dispense` plays 1000 and 2000 (4.0 item 4).
 
 `consumeWithRemainder(source, stack, remainder)` (173–188): `stack.shrink(1)`; if now
@@ -2783,10 +3165,47 @@ each `execute` before `playSound` reads it (`$2` never sets it, so it stays at i
 cube released, N7) and `consumeWithRemainder(source, stack, new ItemStack(BUCKET))`
 (the empty bucket takes the slot if it was the last; otherwise goes into the dispenser
 or is dropped). If false: the inner default's whole `dispense(source, stack)` (drop one,
-1000 + 2000), then the outer `dispense` plays 1000 + 2000 again. `emptyContents` is
-`BucketItem`'s (not read: placing the fluid as a player's bucket does, waterlogging,
-evaporation in an ultrawarm dimension, the empty sound, `FLUID_PLACE`); Clustine's
+1000 + 2000), then the outer `dispense` plays 1000 + 2000 again. Clustine's
 `placement/bucket.rs` has the player's version to share.
+
+`BucketItem.emptyContents(user = null, level, pos, hit = null)` (BucketItem.txt
+212–425), as a dispenser calls it:
+
+```
+if content is not a FlowingFluid: return false           // the empty bucket
+state = level.getBlockState(pos); block = state.getBlock()
+replaceable = state.canBeReplaced(content)
+sneaking = user != null && user.isShiftKeyDown()          // false here
+canPlace = replaceable || (block is LiquidBlockContainer
+                           && block.canPlaceLiquid(user, level, pos, state, content))
+if !(state.isAir() || (canPlace && (!sneaking || hit == null))):
+    return hit != null && emptyContents(user, level, hit.pos.relative(hit.dir), null)
+                                                          // hit is null: false
+if level.environmentAttributes().getValue(WATER_EVAPORATES, pos) && content is #water:
+    playSound(user, pos, FIRE_EXTINGUISH, BLOCKS, 0.5f,
+              2.6f + (r.nextFloat() - r.nextFloat()) * 0.8f)   // two level draws, float
+    sendParticles(LARGE_SMOKE, (double) x, (double) y, (double) z,   // the block's corner
+                  8, 1.0, 1.0, 1.0, 0.0, ALTERNATIVE)
+    return true                                           // nothing placed
+if block is LiquidBlockContainer && content == WATER:     // waterlogging
+    block.placeLiquid(level, pos, state, WATER.getSource(false)); playEmptySound; true
+if !level.isClientSide() && replaceable && !state.liquid():
+    level.destroyBlock(pos, true)                         // drops the replaced block
+if level.setBlock(pos, content.defaultFluidState().createLegacyBlock(), 11)
+   || state.getFluidState().isSource():
+    playEmptySound(user, level, pos); return true
+return false
+```
+
+`playEmptySound` (427–452): `bucket.empty_lava` for `#lava`, else `bucket.empty`, at the
+block, `BLOCKS`, volume and pitch 1, then `gameEvent(user, FLUID_PLACE, pos)`. A water
+bucket into a source of water still answers true (the set fails, the old state is a
+source): the dispenser keeps an empty bucket and the water stays.
+`BlockState.canBeReplaced(Fluid)` is the block's `canBeReplaced(state, fluid)`
+(BlockBehaviour$BlockStateBase.txt 1115–1123), by default `state.canBeReplaced() ||
+!state.isSolid()` (BlockBehaviour.txt 352–364); `LiquidBlock`'s own override, if any, is
+not dumped. `checkExtraContent` is empty in
+`BucketItem` (208–211); the mob buckets override it (N7).
 
 **The empty bucket** (`$4`, 9–73): `target = pos + facing`; `b =
 level.getBlockState(target)`;
@@ -2794,11 +3213,12 @@ if its block is a `BucketPickup`: `filled = pickupBlock(null, level, target, b)`
 result → the default `execute` (drop the bucket, one item); else
 `gameEvent(null, FLUID_PICKUP, target)` and `consumeWithRemainder(source, stack, new
 ItemStack(filled.getItem()))`. Not a `BucketPickup` → the default `execute` (drops the
-bucket). `pickupBlock` (liquid blocks' source check, waterlogged blocks drained, powder
-snow) is not read (section 12); the sound of filling is the block's
-`getPickupSound`, played by `BucketItem` for a player but **not here** (**Inferred** from
-this code: no `playSound` in `$4`). Only one 1000 + 2000 here (`$4` calls `super.execute`,
-not `dispense`).
+bucket). `BucketPickup` is an interface of two abstract methods (`pickupBlock(user,
+level, pos, state)` and `getPickupSound()`, BucketPickup.txt 3–5); its implementations
+(the liquid block's source check, waterlogged blocks drained, powder snow) are not
+dumped (section 12). The sound of filling is the block's `getPickupSound`, played by
+`BucketItem.use` for a player but **not here**: `$4` has no `playSound`. Only one
+1000 + 2000 here (`$4` calls `super.execute`, not `dispense`).
 
 ### 4.6 Armour stand (`$1`, DispenseItemBehavior$1.txt 9–56)
 
@@ -2811,8 +3231,10 @@ nextFloat() * 360f), 0)` (**one level draw**, discarded by the processor's yaw);
 `Mob`; then the processor: the stack's default config (custom name, entity data:
 N5's 5.1) and `setYRot(facing.toYRot())`. `spawn` (194–220) adds it with its passengers.
 **No collision or space check**: the stand is placed into whatever is in front, solid
-blocks included. `toYRot` of `up`/`down` is **Inferred** `(get2DDataValue() & 3) * 90`
-(`Direction` not read). Sound and smoke: the default's 1000 + 2000.
+blocks included. `toYRot` is `(float)((data2d & 3) * 90)` (Direction.txt 898–908), and
+`up` and `down` have `data2d = −1` (the enum's `<clinit>`, 1269–; south 0, west 1,
+north 2, east 3), so a stand or boat from a vertical dispenser gets **270°**, the yaw of
+`east`. Sound and smoke: the default's 1000 + 2000.
 
 ### 4.7 Boats (`BoatDispenseItemBehavior`, 153 lines)
 
@@ -2826,10 +3248,8 @@ y  = c.y + (double)((float) stepY * 1.125f)            // float product, widened
 z  = c.z + stepZ * k
 front = pos + facing
 if level.getFluidState(front).is(#water):          lift = 1.0
-elif level.getBlockState(front).isAir() and
-level.getFluidState(front.below()).is(#water): lift = 0.0
-else: return inner.dispense(source, stack)              // drop one: 1000 + 2000 twice in
-all
+elif level.getBlockState(front).isAir() and level.getFluidState(front.below()).is(#water): lift = 0.0
+else: return inner.dispense(source, stack)              // drop one: 1000 + 2000 twice in all
 boat = type.create(level, DISPENSER)
 if boat != null:
     boat.setInitialPos(x, y + lift, z)
@@ -2852,8 +3272,7 @@ needs its own path with the same entity data.
 
 ```
 x = c.x + stepX * 1.125
-y = Math.floor(c.y) + stepY                            // the dispenser's own y plus the
-step
+y = Math.floor(c.y) + stepY                            // the dispenser's own y plus the step
 z = c.z + stepZ * 1.125
 front = pos + facing; b = getBlockState(front)
 if b.is(#rails):            off = railShape(b).isSlope() ? 0.6 : 0.1
@@ -2884,8 +3303,7 @@ list = level.getEntitiesOfClass(LivingEntity, new AABB(front), e ->
 e.canEquipWithDispenser(stack))
 if list.isEmpty(): return false
 e = list.getFirst()
-slot = e.getEquipmentSlotForItem(stack)               // the equippable's slot if
-e.canUseSlot(it), else MAINHAND
+slot = e.getEquipmentSlotForItem(stack)               // the equippable's slot if e.canUseSlot(it), else MAINHAND
 e.setItemSlot(slot, stack.split(1))
 if e is Mob: setGuaranteedDrop(slot); setPersistenceRequired()
 return true
@@ -2908,13 +3326,10 @@ stand's as N5's `SetEquipment`.
 ### 4.10 TNT (`$6`, 91 lines) and swallowable blocks
 
 ```
-if !level.gameRules.get(TNT_EXPLODES): setSuccess(false); return stack     // 1001, item
-kept
+if !level.gameRules.get(TNT_EXPLODES): setSuccess(false); return stack     // 1001, item kept
 front = pos + facing
-if SulfurCubeBlockDispenseItemBehavior.dispenseBlock(level, front, stack): return stack
-// a cube took it (success stays as last set!)
-t = new PrimedTnt(level, front.x + 0.5, front.y, front.z + 0.5, null)     //
-PrimedTnt.txt 43-90: one level nextDouble
+if SulfurCubeBlockDispenseItemBehavior.dispenseBlock(level, front, stack): return stack // a cube took it (success stays as last set!)
+t = new PrimedTnt(level, front.x + 0.5, front.y, front.z + 0.5, null)     // PrimedTnt.txt 43-90: one level nextDouble
 level.addFreshEntity(t)
 level.playSound(null, t.x, t.y, t.z, TNT_PRIMED, BLOCKS, 1f, 1f)
 level.gameEvent(null, ENTITY_PLACE, front)
@@ -2947,7 +3362,10 @@ drop. With no cubes it is the default drop.
 2. else if `BaseFireBlock.canBePlacedAt(level, front, facing)`:
    `setBlockAndUpdate(front, BaseFireBlock.getState(level, front))` (fire or soul fire)
    and `gameEvent(null, BLOCK_PLACE, front)`. Fire's own `onPlace` (its scheduled tick,
-   a nether portal) follows as for any fire (Clustine's `random_ticks/fire.rs`).
+   a nether portal) follows as for any fire: `FireBlock.onPlace` (FireBlock.txt
+   818–836) runs `BaseFireBlock.onPlace` (not dumped: the portal) and then
+   `scheduleTick(pos, fire, 30 + level.random.nextInt(10))` (`getFireTickDelay`,
+   837–845; **one level draw**), as Clustine's `random_ticks/fire.rs` has it.
 3. else if `CampfireBlock.canLight(b) || CandleBlock.canLight(b) ||
    CandleCakeBlock.canLight(b)`: `setBlockAndUpdate(front, b.setValue(LIT, true))` and
    `gameEvent(null, BLOCK_CHANGE, front)`.
@@ -2958,10 +3376,16 @@ drop. With no cubes it is the default drop.
    `setSuccess(false)`.
 5. else nothing (`success` stays true: **the click is 1000 though nothing happened**).
 
-Then if `success`: `stack.hurtAndBreak(1, level, null, onBreak)` (one point of
-durability; breaks at the end, `ItemStack.hurtAndBreak` not read: **Inferred** no draw
-without Unbreaking). Sound by success (1000/1001); smoke 2000. The flint and steel stays
-in the slot until broken. `canBePlacedAt`, `getState` and the `canLight`s are not read
+Then if `success`: `stack.hurtAndBreak(1, level, null, onBreak)` (ItemStack.txt
+744–762): `processDurabilityChange` (764–786) answers 0 for an item that cannot be
+damaged and for a player with infinite materials (the player is null here, so never),
+else, for an amount above 0, `EnchantmentHelper.processDurabilityChange(level, stack,
+amount)` (not dumped: Unbreaking's chance, a draw only with that enchantment,
+**Inferred**); a non-zero result sets `damage + n` and, once `damage ≥ max_damage`,
+shrinks the stack by one (a copy goes to `onBreak`, here nothing) (`applyDamage`,
+788–). So a plain flint and steel takes one point per success and draws nothing.
+Sound by success (1000/1001); smoke 2000. The flint and steel stays in the slot until
+broken. `BaseFireBlock.canBePlacedAt`/`getState` and the `canLight`s are not dumped
 (section 12); Clustine's fire code knows the fire's state.
 
 ### 4.12 Bone meal (`$5`, 51 lines)
@@ -2969,8 +3393,29 @@ in the slot until broken. `canBePlacedAt`, `getState` and the `canLight`s are no
 `setSuccess(true)`; `front = pos + facing`; if `BoneMealItem.growCrop(stack, level,
 front)` or `BoneMealItem.growWaterPlant(stack, level, front, null)`: `levelEvent(1505,
 front, 15)` (`PARTICLES_AND_SOUND_PLANT_GROWTH`, data 15); else `setSuccess(false)`.
-`BoneMealItem` is not dumped: what grows, how (crops, saplings by their tree features,
-grass, flowers, coral, sea grass: the `BonemealableBlock`s) and its draws are unknown here.
+`BoneMealItem` (BoneMealItem.txt):
+
+- `growCrop(stack, level, pos)` (92–144): the block must be a `BonemealableBlock` with
+  `isValidBonemealTarget(level, pos, state)`; on the server, `if
+  isBonemealSuccess(level, level.random, pos, state)` then `performBonemeal(level,
+  level.random, pos, state)`; then **`stack.shrink(1)` whether or not it grew**, and
+  true. (The success's and the growth's draws are each block's; the
+  `BonemealableBlock`s are not dumped.)
+- `growWaterPlant(stack, level, pos, null)` (145–357): only at a `water` block whose
+  fluid is full (a source); then 128 attempts `i = 0..127`, each a walk of `i / 16`
+  steps (0 to 7) from `pos` by `offset(nextInt(3) − 1, (nextInt(3) − 1) · nextInt(3) / 2,
+  nextInt(3) − 1)` (**four level draws a step**, in that order, `int` division); an
+  attempt whose walk meets a full collision cube is abandoned; at the end of a walk: in a
+  biome of `#produces_corals_from_bonemeal`, with `i ≠ 0` or the dispenser's null face,
+  one `nextInt(4) == 0`
+  chooses a random block of `#underwater_bonemeals` (`getRandomElementOf`, one more
+  draw); a wall coral is turned by `Plane.HORIZONTAL.getRandomDirection` until it
+  survives (up to four tries); then, if the end block is full water, it is set
+  (`setBlockAndUpdate`), else if it is seagrass that can be grown, one `nextInt(10) == 0`
+  grows it (`performBonemeal`). The stack shrinks once and the answer is true, grown or
+  not. Hundreds of level draws per use.
+- The particles and sound of 1505 are the client's (`addGrowthParticles`, 358–419).
+
 Recommendation: leave to the step that brings bone meal to the player (a creative player
 uses it by hand far more than by dispenser); until then a dispenser with bone meal fails
 (1001, item kept), which is `$5`'s behaviour where nothing can grow (**a named
@@ -3030,10 +3475,38 @@ exception is logged and counts as failure). **A box that cannot be placed stays 
 dispenser** (1001; not dropped). `BlockItem.place` runs the ordinary placement (its
 `canPlace`, the block's `getStateForPlacement` with the context's face `dir` →
 `ShulkerBoxBlock`'s facing, the block entity's data from the stack, the place sound, the
-item shrunk). `DirectionalPlaceContext` is not read (**Inferred**: replaces only
-replaceable blocks, `getNearestLookingDirection` = `facing`, clicked face = `dir`).
-Clustine's block placing (`placement`) is the player's; the dispenser's needs a context
-without a player.
+item shrunk).
+
+`DirectionalPlaceContext(level, pos, direction, stack, face)` (DirectionalPlaceContext.txt
+5–262) is a `BlockPlaceContext` with no player, the main hand, and a hit at
+`Vec3.atBottomCenterOf(pos)` on face `face` of `pos` itself (not inside). So
+`getClickedPos` is `pos` (26–32), `canPlace` is `level.getBlockState(pos).canBeReplaced(
+this)` (33–44), `replacingClickedOnBlock` is `canPlace` (45–50), `getClickedFace` is
+`face` (= `dir`), `getNearestLookingDirection` is **`DOWN`** (51–55, not `facing`: the
+earlier reading's guess was wrong), `getNearestLookingDirections` an order from the
+`$1` switch on `direction` (56–234), `getHorizontalDirection` is `direction`, or `NORTH`
+when vertical (235–247), `isSecondaryUseActive` false, `getRotation` `data2d · 90` (no
+`& 3`: −90 for a vertical dispenser; 253–262). The shulker box takes its facing from
+the clicked face, so it faces `facing`, or up when the block under the front is not
+empty.
+
+`BlockItem.place(ctx)` (BlockItem.txt 55–184), in order: the block not enabled by the
+level's features → `FAIL`; `!ctx.canPlace()` → `FAIL`; `updatePlacementContext` (null →
+`FAIL`); `getPlacementState` (212–230: the block's `getStateForPlacement`, kept only if
+`canPlace(ctx, state)`, 260–288: `canSurvive` where `mustSurvive()` (true), and
+`isUnobstructed(state, pos, CollisionContext.placementContext(player))`: **a box is not
+placed into an entity's box**) (null → `FAIL`); `placeBlock` (294–304: `setBlock(pos,
+state, 11)`; false → `FAIL`); then, if the block at `pos` is still the placed block:
+`updateBlockStateFromTag` (the `block_state` component), `updateCustomBlockEntityTag`
+(the `block_entity_data` component), `updateBlockEntityComponents` (197–211:
+`applyComponentsFromItemStack`, so the box's `container` and name, then `setChanged`),
+`setPlacedBy`, the advancement for a player; then the place sound
+`playSound(player, pos, soundType.getPlaceSound(), BLOCKS, (volume + 1) / 2, pitch ·
+0.8f)` (heard by everyone, the player being null), `gameEvent(BLOCK_PLACE, pos,
+Context.of(player, state))`, `stack.consume(1, player)`, `SUCCESS`. Clustine's block
+placing (`placement`) is the player's; the dispenser's needs this context without a
+player. Without components in Clustine's stacks (section 0) a dispensed box is placed
+empty.
 
 ### 4.16 Shears, brush, chest on a horse, spawn eggs (mostly later steps)
 
@@ -3045,8 +3518,13 @@ without a player.
   a leashed boat in front is let go, the lead dropped); else a live `Shearable` ready
   for shearing → `shear(level, BLOCKS, stack)` and `SHEAR` (N7). Success → one point of
   durability. **The leash part is N6's** (N5's `Leashable` is built).
-  `Entity.shearOffAllLeashConnections` is in Entity.txt (not read for this section:
-  section 12).
+  `Entity.shearOffAllLeashConnections(player)` (Entity.txt 6681–6713):
+  `dropAllLeashConnections(player)` (6714–): the entities leashed to this one
+  (`Leashable.leashableLeashedTo(this)`), and this one itself if it is a `Leashable`
+  that is leashed, each `dropLeash()` (the lead dropped as an item, N5 7); if any was,
+  `gameEvent(SHEAR, player)` and true. Then, on the server, `playSound(null,
+  blockPosition(), shears.snip, the player's sound source or else the entity's)`.
+  So shears free a knot's boats and a boat that holds others, not only a leashed boat.
 - **Brush** (`$11`): the first armadillo in `AABB(front)` whose `brushOffScute(null,
   stack)` is true; 16 durability. N7. Without one: failure (1001, item kept).
 - **Chest** (`$2`): a tamed `AbstractChestedHorse` without a chest in `AABB(front)` gets
@@ -3064,7 +3542,13 @@ override of the launch level event. `execute` (36–84): `p =
 config.positionFunction().getDispensePosition(source, facing)`;
 `Projectile.spawnProjectileUsingShoot(item.asProjectile(level, p, stack, facing), level,
 stack, stepX, stepY, stepZ, power, uncertainty)`; shrink. `playSound` (86–102):
-`levelEvent(override or 1002, pos, 0)`. The items: arrow, tipped_arrow, spectral_arrow,
+`levelEvent(override or 1002, pos, 0)`. `ProjectileItem$DispenseConfig` (DispenseConfig
+.txt) holds `positionFunction`, `uncertainty` (float), `power` (float) and
+`overrideDispenseEvent` (`Optional<Integer>`); `DEFAULT` is `builder().build()`, whose
+defaults are in `DispenseConfig$Builder` (not dumped), and each item's own config is in
+its item class (not dumped). `ProjectileItem.shoot` by default is
+`projectile.shoot(x, y, z, power, uncertainty)` (ProjectileItem.txt 10–). The items:
+arrow, tipped_arrow, spectral_arrow,
 egg, blue_egg, brown_egg, snowball, experience_bottle, splash_potion, lingering_potion,
 firework_rocket, fire_charge, wind_charge. Until N9 a dispenser with any of these could
 drop it as an item (**a named difference**: a creative player notices at once, since
@@ -3101,7 +3585,10 @@ container (`getBlockContainer`, 888–938): a `WorldlyContainerHolder` block's
 (the composter), else a block entity that is a `Container` (a chest's through
 `ChestBlock.getContainer(…, true)`: the double chest as one container); if none, the
 container entities (`EntitySelector.CONTAINER_ENTITY_SELECTOR`: chest and hopper carts,
-chest boats and rafts, **Inferred** alive) whose box meets the box of half-size 0.5
+chest boats and rafts; the predicate is `entity instanceof Container &&
+entity.isAlive()`, EntitySelector.txt 206–218, `lambda$static$2`, the fourth predicate
+made in `<clinit>`, 257: the lambda's order, not a `javap -v`) whose box meets the box of
+half-size 0.5
 around `p`'s centre (939–982); several → `list.get(level.random.nextInt(size))` (**a
 level draw**). `addItem(from, to, stack, face)` (588–645): a `WorldlyContainer` tries the
 slots `getSlotsForFace(face)` in order, others all slots in order, until the stack is
@@ -3126,8 +3613,11 @@ and makes no sound**. Section 5 has the hopper's side; section 3 the containers'
   (nine `ItemStack`s, the name, `LootTable`/`LootTableSeed`; the crafter's extra state,
   7.3), read from and written to the chunk's block-entity data in the game's NBT
   (`Items` with `Slot`), as section 3's containers need.
+- **Entities added**: `ServerLevel.addFreshEntity` → `addEntity` (ServerLevel.txt
+  2015–2120) only adds the entity (refused if removed) to the entity manager; it posts
+  no game event, so the `ENTITY_PLACE` posts above are the behaviours' own.
 - **Items**: `region/drops.rs` `spawn_item_as` (149) with an explicit motion and a delay
-  of 0 is `spawnItem` once the four level draws are drawn from the block's stream (n4
+  of 0 is `spawnItem` once the seven level draws are drawn from the block's stream (n4
   8.5's proposal); `region/items.rs` has the item's tick and pick-up.
 - **Boats and carts**: `region/boats.rs` `place_boat` (333) and `region/minecarts.rs`
   `place_minecart` (274) make the entities from a player's click; the dispenser's paths
@@ -3136,7 +3626,7 @@ and makes no sound**. Section 5 has the hopper's side; section 3 the containers'
 - **Buckets**: `placement/bucket.rs` has the player's bucket use (empty and filled); the
   dispenser's needs `emptyContents` and `pickupBlock` at a block without a ray.
 - **Fire**: `region/random_ticks/fire.rs` has fire's ticks and `onPlace`'s parts; the
-  dispenser needs `canBePlacedAt` and `getState`.
+  dispenser needs `BaseFireBlock.canBePlacedAt` and `getState` (not dumped).
 - **Armour stands** (`region/stands.rs`) and the player's inventory
   (`region/items.rs` `add_to_inventory`, `clustine_world::ARMOUR_START`) for equipment.
 - **Level events**: `api.rs` has `RegionEvent::LevelEvent` (928); 1000, 1001, 1002, 2000,
@@ -3204,7 +3694,11 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
 7. **Pulling from a chest with a loot table generates its loot.** `RandomizableContainer
    BlockEntity.getItem`/`removeItem`/`setItem` call `unpackLootTable(null)` first, so
    a hopper under an unopened structure chest fills it from its loot table with no
-   player (draws from `LootTableSeed`; section 3 has the unpacking).
+   player. `RandomizableContainer.unpackLootTable(null)` (RandomizableContainer.txt
+   102–167) clears the table first (`setLootTable(null)`), then
+   `LootTable.fill(container, params, LootTableSeed)` with `ORIGIN` the block's centre
+   and the `CHEST` parameter set, without luck or `THIS_ENTITY` (those come only with a
+   player); `fill` itself is not dumped (section 12).
 8. **A hopper block entity sends nothing to clients.** `HopperBlockEntity` overrides
    neither `getUpdatePacket` nor `getUpdateTag`; its contents reach a client only
    through the menu (section 3). Its block state changes only for `ENABLED` and is sent
@@ -3212,14 +3706,20 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
 9. **`ENABLED` is set with flag 2 only** (clients, no neighbour or shape updates) on
    every `neighborChanged` and on `onPlace` when the block was not already a hopper:
    `ENABLED = !hasNeighborSignal(pos)` (5.1).
-10. **A hopper cart has no cooldown, never pushes, and takes once a tick.** It sucks after
-    its move each tick (and, under the new behaviour only, after each step along the
-    track), at most once per tick (`consumedItemThisFrame`), only while `enabled`, which
-    an activator rail sets to `!powered` every tick the cart is on one. It is emptied
-    only by a hopper below or beside it pulling or pushing through the entity search.
-    Its `Enabled` is saved (default true) and not synched; Clustine's `EntityData::
-    Minecart` has no field for it yet (5.9).
-11. **Stack sizes**: a container's limit is `min(99, item's max stack size)`
+10. **A hopper cart has no cooldown, never pushes, and takes once a tick.** It sucks
+    after its move each tick (and, under the new behaviour only, after each step along
+    the track), at most once per tick (`consumedItemThisFrame`), only while `enabled`,
+    which an activator rail sets to `!powered` every tick the cart is on one. It is
+    emptied only by a hopper below or beside it pulling or pushing through the entity
+    search. Its `Enabled` is saved (default true) and not synched; Clustine's
+    `EntityData::Minecart` has no field for it yet (5.9).
+11. **The composter is a hopper's source and target** through `WorldlyContainerHolder`:
+    a hopper above it (facing down) composts one compostable item per move, a hopper
+    below takes the bone meal when it is ready, and a hopper beside it does nothing. A
+    composter above a hopper always counts as its source, so that hopper never sucks
+    item entities. A hopper that cannot hold the bone meal still empties the composter,
+    and the bone meal is lost (5.6).
+12. **Stack sizes**: a container's limit is `min(99, item's max stack size)`
     (`Container.getMaxStackSize`, Container.txt 17–29); `setItem` truncates a stack to
     it (`ItemStack.limitSize`), and the hopper's empty-slot path hands the whole
     incoming stack to `setItem`, so an over-size stack from an item entity loses its
@@ -3229,8 +3729,8 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
 ### 5.1 The block: `HopperBlock`
 
 - **Properties**: `FACING` = `BlockStateProperties.FACING_HOPPER` (down, north, south,
-  west, east: no up), `ENABLED` (static, 357–363). Default `FACING = DOWN, ENABLED = true`
-  (constructor, 11–59).
+  west, east: no up), `ENABLED` (static, 357–363). Default `FACING = DOWN, ENABLED =
+  true` (constructor, 11–59).
 - **Placing** (`getStateForPlacement`, 127–150): `dir = clickedFace.getOpposite()`;
   `FACING = dir.getAxis() == Y ? DOWN : dir`, `ENABLED = true` (so a click on a top or
   bottom face gives a hopper facing down; on a side, facing into that block).
@@ -3261,12 +3761,14 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
   `getEntityInsideCollisionShape`, so the walk calls it for every entity whose deflated
   box is in the hopper's block (N4 brief, `checkInsideBlocks`).
 - **Shapes** (makeShapes 61–105, lambda 342–355; units of 1/16): `Block.column(w, y0,
-  y1)` is a column `w` wide centred in the block from `y0` to `y1` (**Inferred** from
-  its use; `Block` not read). Base = `column(16, 10, 16) ∪ column(8, 4, 10)`, less
-  the bowl `column(12, 11, 16)` (`ONLY_FIRST`); the spout `boxZ(4, 4, 8, 0, 8)` (4 wide,
-  y 4–8, z 0–8: **Inferred** argument order) rotated to `FACING` about (8, 6, 8)/16
-  (`rotateAll`), cut to the block (`AND Shapes.block()`) and added. `getShape` ignores
-  `ENABLED` (`getShapeForEachState(…, ENABLED)` lists it as ignored). Interaction shape
+  y1)` is a column `w` wide centred in the block from `y0` to `y1`: `column(w, w, y0,
+  y1)` = `box(8 − w/2, y0, 8 − w/2, 8 + w/2, y1, 8 + w/2)`, each coordinate then divided
+  by 16 (Block.txt 161–188, 221–255). Base = `column(16, 10, 16) ∪ column(8, 4, 10)`,
+  less the bowl `column(12, 11, 16)` (`ONLY_FIRST`); the spout `boxZ(4, 4, 8, 0, 8)` (4
+  wide, y 4–8, z 0–8: `boxZ(w, y0, y1, z0, z1)` = `box(8 − w/2, y0, z0, 8 + w/2, y1,
+  z1)`, Block.txt 284–310) rotated to `FACING` about (8, 6, 8)/16 (`rotateAll`), cut to
+  the block (`AND Shapes.block()`) and added. `getShape` ignores `ENABLED`
+  (`getShapeForEachState(…, ENABLED)` lists it as ignored). Interaction shape
   (`getInteractionShape`, 116–125): the bowl `column(12, 11, 16)` plus, for a side
   facing, `boxZ(4, 8, 10, 0, 4)` rotated horizontally; for `DOWN` the bowl alone. The
   collision shape is the block shape (not overridden), so an item rests on the bowl's
@@ -3283,8 +3785,8 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
 - **Load** (44–69): items cleared to 5 empty; unless `tryLoadLootTable` (a `LootTable`
   key), `ContainerHelper.loadAllItems`; `cooldownTime = TransferCooldown` or −1.
 - **Save** (71–89): unless `trySaveLootTable`, `ContainerHelper.saveAllItems`; always
-  `TransferCooldown` (int). Name: `container.hopper` (static, 1141–1149), or a custom name
-  (`BaseContainerBlockEntity`, section 3).
+  `TransferCooldown` (int). Name: `container.hopper` (static, 1141–1149), or a custom
+  name (`BaseContainerBlockEntity`, section 3).
 - **`removeItem(slot, n)`** (98–108): `unpackLootTable(null)`, then
   `ContainerHelper.removeItem(items, slot, n)` (a split of the stack in place: the stack
   in the slot keeps the same object with its count lowered). **No `setChanged`**.
@@ -3303,7 +3805,7 @@ Classes read: `HopperBlock` (HopperBlock.txt, 364 lines), `HopperBlockEntity`
 - **Worldly containers met**: `ShulkerBoxBlockEntity` (every face: all 27 slots;
   `canPlaceItemThroughFace` false for an item whose block is a `ShulkerBoxBlock`;
   `canTakeItemThroughFace` true; ShulkerBoxBlockEntity.txt 527–547), the composter
-  (by `WorldlyContainerHolder`, not dumped), furnaces and the brewing stand (not dumped).
+  (by `WorldlyContainerHolder`, 5.6), furnaces and the brewing stand (not dumped).
   `CrafterBlockEntity.canPlaceItem` (CrafterBlockEntity.txt 109–) refuses a disabled
   slot, a full one, and a slot when a later enabled slot holds a smaller stack of the
   same item (section 7).
@@ -3320,14 +3822,20 @@ In order, every tick in the block entities' phase:
 ### 5.4 `tryMoveItems(level, pos, state, hopper, sucker)` (175–221)
 
 1. Client: false. If `isOnCooldown()` or not `state.ENABLED`: false (`state` is the
-   ticker's or the walk's state; **Inferred** the ticker passes the chunk's current
-   state, `LevelChunk$BoundTickingBlockEntity` not read).
+   ticker's or the walk's state). The ticker is called by
+   `LevelChunk$BoundTickingBlockEntity.tick` (LevelChunk$BoundTickingBlockEntity.txt
+   29–120) only when the block entity is not removed, has a level and its chunk
+   `isTicking(pos)`, with the chunk's **current** state at `pos`, and only if
+   `type.isValid(state)` (the block entity type admits that block); otherwise it logs
+   "invalid for ticking" once and skips. So a hopper whose block was replaced by
+   another while its block entity remains is not ticked.
 2. `moved = false`. If the hopper is not `isEmpty()`
    (`RandomizableContainerBlockEntity.isEmpty`, 45–52: `unpackLootTable(null)`, then
    every slot empty, BaseContainerBlockEntity.txt 135–156):
    `moved = ejectItems(level, pos, hopper)`.
-3. If not `inventoryFull()` (223–248: some slot empty or below its item's max stack size):
-   `moved |= sucker.getAsBoolean()` (the `|` evaluates the sucker whatever `moved` is).
+3. If not `inventoryFull()` (223–248: some slot empty or below its item's max stack
+   size): `moved |= sucker.getAsBoolean()` (the `|` evaluates the sucker whatever `moved`
+   is).
 4. If `moved`: `setCooldown(8)`; `setChanged(level, pos, state)`; true. Else false.
 
 ### 5.5 Sucking: `suckInItems(level, hopper)` (415–507)
@@ -3339,14 +3847,14 @@ position with `y + 0.5`, MinecartHopper.txt 69–87):
 1. `above = BlockPos.containing(X, Y + 1, Z)`, `aboveState` its state.
 2. `source = getSourceContainer(level, hopper, above, aboveState)` (804–818) =
    `getContainerAt(level, above, aboveState, X, Y + 1, Z)` (5.6).
-3. **With a source**: `face = DOWN`; for each `slot` of `getSlots(source, DOWN)` in order:
-   if `tryTakeInItemFromSlot(hopper, source, slot, DOWN)`: return true. Return false
-   (item entities are not looked at).
-4. **Without**: `blocked = hopper.isGridAligned() && aboveState.isCollisionShapeFullBlock(
-   level, above) && !aboveState.is(#does_not_block_hoppers)` (block hoppers are grid
-   aligned, 1029–1032; carts are not). If not `blocked`: for each item entity of
-   `getItemsAtAndAbove(level, hopper)` in order: if `addItem(hopper, entity)`: return
-   true. Return false.
+3. **With a source**: `face = DOWN`; for each `slot` of `getSlots(source, DOWN)` in
+   order: if `tryTakeInItemFromSlot(hopper, source, slot, DOWN)`: return true. Return
+   false (item entities are not looked at).
+4. **Without**: `blocked = hopper.isGridAligned() &&
+   aboveState.isCollisionShapeFullBlock( level, above) &&
+   !aboveState.is(#does_not_block_hoppers)` (block hoppers are grid aligned, 1029–1032;
+   carts are not). If not `blocked`: for each item entity of `getItemsAtAndAbove(level,
+   hopper)` in order: if `addItem(hopper, entity)`: return true. Return false.
 
 **`tryTakeInItemFromSlot(hopper, source, slot, face)`** (509–555):
 `stack = source.getItem(slot)`; if not empty and `canTakeItemFromContainer(hopper,
@@ -3361,12 +3869,21 @@ if `count == 1`, `source.setItem(slot, stack)`. False.
 (Hopper.txt static) = the first box of `column(16, 11, 32)`: `(0, 11/16, 0)` to
 `(1, 2, 1)`. For a block hopper the box is the block's column from `y + 0.6875` to
 `y + 2`; for a cart, `x − 0.5 .. x + 0.5`, `y + 0.6875 .. y + 2`, `z − 0.5 .. z + 0.5`
-(its own `y` + 0.5 − 0.5). Order: `getEntitiesOfClass`'s (**Inferred** sections, then
-insertion; not read).
+(its own `y` + 0.5 − 0.5). Order: `getEntitiesOfClass`'s, which is the sections'
+order of `EntitySectionStorage.forEachAccessibleNonEmptySection`
+(EntitySectionStorage.txt 37–148), then each section's own order (5.6, "The order of entity queries").
 
 **`addItem(container, itemEntity)`** (557–586): `copy = entity.getItem().copy()`;
 `rest = addItem(null, container, copy, null)`; if `rest` empty: `entity.setItem(EMPTY)`,
-`entity.discard()`, true; else `entity.setItem(rest)`, false.
+`entity.discard()`, true; else `entity.setItem(rest)`, false. `ItemEntity.setItem`
+(ItemEntity.txt 998–1006) only sets the synched `DATA_ITEM`, so a partial take is an
+entity-data change sent to trackers (a new stack object each time, so marked dirty:
+**Inferred**, `SynchedEntityData.set` not dumped); `discard` removes the entity at once.
+Nothing here or in `ItemEntity` looks at the item's `pickupDelay` (ItemEntity.txt
+173–200 lowers it in the item's own tick; `playerTouch`, 893–948, and the merging,
+535–564 and 657–683, read it): a
+hopper takes an item just thrown or dropped, whatever its delay, and also an item that
+can never be picked up (`pickupDelay` 32767).
 
 ### 5.6 Finding containers: `getContainerAt` (845–937), `getEntityContainer` (939–981)
 
@@ -3374,25 +3891,79 @@ insertion; not read).
   `(x + 0.5, y + 0.5, z + 0.5)` (ints widened, then added).
 - `getContainerAt(level, pos, state, x, y, z)` (870–886): `getBlockContainer(level, pos,
   state)`, else `getEntityContainer(level, x, y, z)`.
-- **`getBlockContainer`** (888–937): a block that is a `WorldlyContainerHolder` (the
-  composter) gives `getContainer(state, level, pos)`; else, if `state.hasBlockEntity()`
-  and the block entity is a `Container`: if it is a `ChestBlockEntity` and the block a
-  `ChestBlock`, `ChestBlock.getContainer(block, state, level, pos, true)` (the double
-  chest's compound, **ignoring what blocks it**: a cat or a block above does not stop a
-  hopper; section 3), else the block entity. Else null.
-  Block entities that are `Container`s in 26.3 (**Inferred** for the classes not
-  dumped): chest and trapped chest (and copper chests, which use `CHEST`), barrel,
-  dispenser, dropper, hopper, shulker boxes, crafter (all read); furnace, blast furnace,
-  smoker, brewing stand, chiseled bookshelf, decorated pot, jukebox, shelf (not read).
-  The lectern and the ender chest are not.
+- **`getBlockContainer`** (888–937): a block that is a `WorldlyContainerHolder` (in 26.3
+  only `ComposterBlock` implements it, ComposterBlock.txt 1) gives `getContainer(state,
+  level, pos)` (the composter's, below); else, if `state.hasBlockEntity()` and the block
+  entity is a `Container`: if it is a `ChestBlockEntity` and the block a `ChestBlock`,
+  `ChestBlock.getContainer(block, state, level, pos, true)` (the double chest's compound,
+  **ignoring what blocks it**: a cat or a block above does not stop a hopper; section 3),
+  else the block entity. Else null. Block entities that are `Container`s in 26.3
+  (**Inferred** for the classes not dumped, section 12): chest and trapped chest (and
+  copper chests, which use `CHEST`), barrel, dispenser, dropper, hopper, shulker boxes,
+  crafter (all read); furnace, blast furnace, smoker, brewing stand, chiseled bookshelf,
+  decorated pot, jukebox, shelf (not read). The lectern and the ender chest are not.
 - **`getEntityContainer(level, x, y, z)`** (939–981): `list = level.getEntities(null,
-  AABB(x − 0.5, y − 0.5, z − 0.5, x + 0.5, y + 0.5, z + 0.5), CONTAINER_ENTITY_SELECTOR)`;
-  empty: null; else `list.get(level.getRandom().nextInt(list.size()))`.
-  `CONTAINER_ENTITY_SELECTOR` is `e instanceof Container && e.isAlive()`
-  (EntitySelector.txt `lambda$static$2`, 206–218; **Inferred** which lambda belongs to
-  which field, by the order of the static initialiser, 245–272). Among N5's entities:
-  `MinecartChest`, `MinecartHopper`, `ChestBoat`, `ChestRaft`. The box is tested by
-  intersection (strict, **Inferred** `AABB.intersects`).
+  AABB(x − 0.5, y − 0.5, z − 0.5, x + 0.5, y + 0.5, z + 0.5),
+  CONTAINER_ENTITY_SELECTOR)`; empty: null; else
+  `list.get(level.getRandom().nextInt(list.size()))`. `CONTAINER_ENTITY_SELECTOR` is `e
+  instanceof Container && e.isAlive()` (EntitySelector.txt `lambda$static$2`, 206–218;
+  **Inferred** which lambda belongs to which field, by the order of the static
+  initialiser, 245–272). Among N5's entities: `MinecartChest`, `MinecartHopper`,
+  `ChestBoat`, `ChestRaft`. The box is tested by intersection (`AABB.intersects` is
+  strict, AABB.txt 923–970 in the N5 dump; **Inferred** that the section's test is
+  `intersects`, `EntitySection` not dumped).
+- **The composter** (`ComposterBlock.getContainer`, ComposterBlock.txt 512–548) is a
+  fresh container object made for each lookup, by `LEVEL`:
+  - `LEVEL` 8 (ready): an `OutputContainer` holding one bone meal
+    (ComposterBlock$OutputContainer.txt): slot 0 on face `DOWN` only, max stack 1,
+    nothing placed through any face, bone meal taken through `DOWN` while not yet
+    `changed`. Its `setChanged` calls `ComposterBlock.empty(null, state, level, pos)`
+    (351–374: `LEVEL` 0 by `setBlockAndUpdate`, game event `block_change` with the
+    composter's state) and sets `changed`.
+  - `LEVEL` 0 to 6: an `InputContainer` (ComposterBlock$InputContainer.txt), one empty
+    slot, max stack 1, slot 0 on face `UP` only, an item placed through `UP` when it has
+    the `compostable` component and the container is not yet `changed`, nothing taken.
+    Its `setChanged`, when slot 0 holds a compostable item and the level is a server
+    level: `changed = true`; `new = addLayer(null, state, level, pos, compostable)`;
+    `levelEvent(1500, pos, new != state ? 1 : 0)` (the composter's fill: sound and
+    particles, **Client**); slot 0 emptied (`removeItemNoUpdate`).
+  - `LEVEL` 7: an `EmptyContainer` (size 0, no slots on any face, nothing in or out).
+  - `addLayer` (375–452): `layers = compostable.layers().get(ctx, 0)` with a loot
+    context of the block state, the origin and the (null) entity (`BLOCK_INTERACT`);
+    the item's layers may be a chance (a draw, of the loot context's random, which with
+    no seed is the level's: **Inferred**, `LootContext$Builder` not dumped). If `layers
+    > 0`: `LEVEL = clamp(old + layers, 0, 7)` by `setBlockAndUpdate`, game event
+    `block_change`, and at 7 `scheduleTick(pos, composter, 20)`; the tick (453–479)
+    turns 7 into 8 and plays `composter_ready` (1, 1). Else the state is unchanged.
+  - **A hopper above a composter (facing down) feeds it**: the face is `UP`; the hopper
+    hands one item to `setItem(0, …)` (`SimpleContainer.setItem` calls `setChanged`,
+    SimpleContainer.txt 223–238), which composts it at once; the move counts as
+    successful whether or not a layer was added (the item is gone either way). A
+    hopper beside a composter finds no slot on its face (`isFullContainer` of an empty
+    slot list is true) and does nothing.
+  - **A hopper below a composter pulls the bone meal** at `LEVEL` 8: `removeItem(0, 1)`
+    (`SimpleContainer.removeItem` calls `setChanged` on a non-empty removal, 70–84)
+    empties the composter at once; the hopper's success calls `setChanged` again, which
+    sets `LEVEL` 0 once more (no change) and posts a second `block_change`. If the bone
+    meal does not fit (every hopper slot taken by other items, some not full), the hopper
+    puts the stack back with `setItem`, which runs `empty` a second time (a second
+    `block_change`): **the composter is emptied and the bone meal is lost**. A composter
+    above a hopper is always a source (even at `LEVEL` 0 to 7, with no slot on `DOWN`),
+    so a hopper under a composter never sucks item entities.
+- **The order of entity queries** (`Level.getEntities`, Level.txt 1261–1340;
+  `EntitySectionStorage.forEachAccessibleNonEmptySection`, EntitySectionStorage.txt
+  37–148): the sections visited are those from `floor(minX − 2) >> 4` to `floor(maxX +
+  2) >> 4` in x, `floor(minY − 4) >> 4` to `floor(maxY) >> 4` in y, and `floor(minZ −
+  2) >> 4` to `floor(maxZ + 2) >> 4` in z (an entity is filed by its position's
+  section, so a box reaching up to 2 blocks across in x and z, and 4 below, is caught);
+  x ascending as an `int`; for each x, the existing sections in the order of the sorted
+  set of section keys (`SectionPos.asLong`: **Inferred** the usual packing, x in the
+  top 22 bits, z in the next 22, y in the low 20, each two's complement in its field,
+  so within one x the order is by z, then y, each with 0 and positive first, then
+  negative), skipping sections that are empty or not accessible
+  (`Visibility.isAccessible`); within a section, the section's own order (**Inferred**
+  insertion order, `EntitySection`/`ClassInstanceMultiMap` not dumped). Ender dragon
+  parts are added after, in `getEntities(Entity, AABB, Predicate)` only.
 
 ### 5.7 Ejecting: `ejectItems(level, pos, hopper)` (250–317) and `addItem` (588–792)
 
@@ -3440,9 +4011,9 @@ If `entity` is an `ItemEntity` with a non-empty stack and `entity.getBoundingBox
 −x, −y, −z)` (the block's ints negated, then widened) intersects `getSuckAabb()` (the
 unmoved `SUCK_AABB`): `tryMoveItems(level, pos, state, hopper, () -> addItem(hopper,
 entity))` (lambda 1127–1132). No cooldown decrement, no `tickedGameTime` stamp: those are
-the ticker's. The walk runs in the item's tick (`applyEffectsFromBlocks`, after its move),
-so the item enters the hopper in the entities' phase; Clustine's phases are block events,
-entities, block entities (ADR-0026, "Found while building"), the same order.
+the ticker's. The walk runs in the item's tick (`applyEffectsFromBlocks`, after its
+move), so the item enters the hopper in the entities' phase; Clustine's phases are block
+events, entities, block entities (ADR-0026, "Found while building"), the same order.
 
 ### 5.9 `MinecartHopper` (MinecartHopper.txt)
 
@@ -3454,8 +4025,8 @@ entities, block entities (ADR-0026, "Found while building"), the same order.
 - **`activateMinecart(level, x, y, z, powered)`** (39–54): `enabled = !powered` if it
   differs. Called every tick the cart is on an activator rail (N5 brief 3.7; the repo's
   `activate_minecart` in `minecarts.rs` leaves it out today).
-- **`tick()`** (94–103): `consumedItemThisFrame = false`; `super.tick()` (the cart's whole
-  tick, its move included); `tryConsumeItems()`.
+- **`tick()`** (94–103): `consumedItemThisFrame = false`; `super.tick()` (the cart's
+  whole tick, its move included); `tryConsumeItems()`.
 - `makeStepAlongTrack` (105–116) also calls `tryConsumeItems()` after each step: only
   `NewMinecartBehavior` calls it, so not under the old behaviour Clustine runs.
 - **`tryConsumeItems()`** (118–141): server, alive, `enabled`, and not
@@ -3479,12 +4050,14 @@ entities, block entities (ADR-0026, "Found while building"), the same order.
 - Nothing of the hopper exists beyond its block class (`BlockClass::HopperBlock`, its
   block entity type 18, `clustine_blocks::signal` counting it among blocks that read
   signals). `ENABLED` is not updated today.
-- Needed: a typed block entity `Hopper { items: [ItemStack; 5], cooldown: i32,
-  ticked: u64 }` (`ticked` in memory only, 0 after a load, as the game's), durable as
-  the game saves it (`Items`, `TransferCooldown`, an optional `LootTable`), a ticker in
-  the list of `block_entities.rs`, and container access for the other block entities
-  (section 3's typed containers): chest (with its double), barrel, dispenser, dropper,
-  shulker box, crafter, and a fallback that leaves an unported container (furnace…)
+- Needed: a typed block entity `Hopper { items: [ItemStack; 5], cooldown: i32, ticked:
+  u64 }` (`ticked` in memory only, 0 after a load, as the game's), durable as the game
+  saves it (`Items`, `TransferCooldown`, an optional `LootTable`), a ticker in the list
+  of `block_entities.rs`, and container access for the other block entities (section 3's
+  typed containers): chest (with its double), barrel, dispenser, dropper, shulker box,
+  crafter, the composter's three made-up containers by its `LEVEL` (no block entity:
+  built from the state at each lookup, its moves block changes with game events and the
+  fill's level event 1500), and a fallback that leaves an unported container (furnace…)
   alone rather than mis-filling it.
 - The hopper's moves change block entities in two chunks at once (its own and its
   target's or source's) and, for an item entity, an entity: all in one commit.
@@ -3517,11 +4090,12 @@ Classes read: `BasePressurePlateBlock` (BasePressurePlateBlock.txt, 314 lines),
 2. **A weighted plate counts entities, not items**: each item entity is one, whatever its
    stack. `power = ceil(min(n, max) / (float) max × 15f)` with `max` 15 for the light
    (gold) plate and 150 for the heavy (iron); n = 1 gives 1 on each (6.3).
-3. **Which plates are `MOBS` is in `BlockSetType`, not read.** **Inferred** (from the
-   game's registrations, `Blocks` and `BlockSetType` not dumped): stone and polished
-   blackstone plates are `MOBS`; every wooden plate (oak to cherry, bamboo, crimson,
-   warped, pale oak, mangrove) is `EVERYTHING`. Clustine's plates treat all alike, as
-   only players pressed them so far.
+3. **Only the stone and polished blackstone plates are `MOBS`** (`BlockSetType`, static
+   initialiser, BlockSetType.txt 260–500): every wooden plate (the eleven woods of the
+   one-argument constructor, BlockSetType.txt 71–90, and cherry, crimson, warped and
+   bamboo with their own sounds) and both weighted plates are `EVERYTHING`; the poplar
+   plate (`poplar_pressure_plate`) is among the wooden ones. Clustine's plates treat all
+   alike, as only players pressed them so far (6.2).
 4. **Tripwire is pressed by the entity that walked in alone, and kept by all of them.**
    `entityInside` calls `checkPressed(level, pos, List.of(entity))`: the entity itself,
    if it does not ignore triggers. The scheduled re-check (every 10 ticks while powered)
@@ -3554,16 +4128,17 @@ Classes read: `BasePressurePlateBlock` (BasePressurePlateBlock.txt, 314 lines),
    keep it.
 8. **Shears disarm tripwire** (`playerWillDestroy`, 209–246), which Clustine does not do:
    a player breaking tripwire with shears in the main hand first sets `DISARMED = true`
-   with flags 260 (`UPDATE_INVISIBLE | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`, **Inferred**
-   the flag names) and emits `GameEvent.SHEAR`, then breaks it as usual: the hooks
-   recalculate with a disarmed wire and do not click on. In creative too
-   (`playerWillDestroy` runs for every break, **Inferred** from `ServerPlayerGameMode`,
-   N5 brief).
-9. **Game events.** A plate's change emits `BLOCK_ACTIVATE` or `BLOCK_DEACTIVATE` with the
-   entity that pressed it (null from its scheduled tick); the hooks' `emitState` emits
-   `BLOCK_ACTIVATE`, `BLOCK_DEACTIVATE`, `BLOCK_ATTACH`, `BLOCK_DETACH` (null entity);
-   tripwire shorn emits `SHEAR` with the player. They matter only to sculk sensors
-   (section 8).
+   with flags 260 (`UPDATE_NONE`, that is `UPDATE_INVISIBLE` and
+   `UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`, Block$UpdateFlags.txt 11–37) and emits `GameEvent.SHEAR`, then breaks it
+   as usual: the hooks recalculate with a disarmed wire and do not click on. In creative
+   too: `ServerPlayerGameMode.destroyBlock` (N5 dump, ServerPlayerGameMode.txt 788–)
+   calls `playerWillDestroy` for every break that `ItemStack.canDestroyBlock` allows,
+   before `removeBlock`.
+9. **Game events.** A plate's change emits `BLOCK_ACTIVATE` or `BLOCK_DEACTIVATE` with
+   the entity that pressed it (null from its scheduled tick); the hooks' `emitState`
+   emits `BLOCK_ACTIVATE`, `BLOCK_DEACTIVATE`, `BLOCK_ATTACH`, `BLOCK_DETACH` (null
+   entity); tripwire shorn emits `SHEAR` with the player. They matter only to sculk
+   sensors (section 8).
 10. The only random draw here is a hook's detach sound's pitch, `1.2f / (level.random
     .nextFloat() × 0.2f + 0.9f)` (TripWireHookBlock.txt 538–551, already built). Plates,
     tripwire and detector rails draw nothing.
@@ -3613,9 +4188,29 @@ All of this but the entity count is in `pressed.rs` (`check_plate`, `plate_stren
   (`$1`'s switch map: `EVERYTHING` → 1, `MOBS` → 2; anything else throws
   `MatchException`): `cls = Entity` for `EVERYTHING`, `LivingEntity` for `MOBS`;
   `getEntityCount(level, TOUCH_AABB.move(pos), cls) > 0 ? 15 : 0`.
+- **The block set of each plate** (`Blocks`, the plates' constructors in
+  `lambda$static$131` to `$143`, `$250`, `$251`, `$336`, `$337`, `$356`; `BlockSetType`
+  static initialiser, BlockSetType.txt 260–500; sounds are the set's
+  `pressurePlateClickOn`/`Off`, played at volume 1, pitch 1):
+
+  | Plate | Set | Sensitivity | Click on / off |
+  |---|---|---|---|
+  | `stone_pressure_plate` | `stone` | `MOBS` | `block.stone_pressure_plate.click_on` / `_off` |
+  | `polished_blackstone_pressure_plate` | `polished_blackstone` | `MOBS` | the stone plate's |
+  | `oak`, `spruce`, `birch`, `jungle`, `acacia`, `dark_oak`, `pale_oak`, `mangrove`, `poplar` `_pressure_plate` | the wood's (one-argument constructor) | `EVERYTHING` | `block.wooden_pressure_plate.click_on` / `_off` |
+  | `cherry_pressure_plate` | `cherry` | `EVERYTHING` | `block.cherry_wood_pressure_plate.click_on` / `_off` |
+  | `crimson_pressure_plate`, `warped_pressure_plate` | `crimson`, `warped` | `EVERYTHING` | `block.nether_wood_pressure_plate.click_on` / `_off` |
+  | `bamboo_pressure_plate` | `bamboo` | `EVERYTHING` | `block.bamboo_wood_pressure_plate.click_on` / `_off` |
+  | `light_weighted_pressure_plate` | `gold` | (weighted) | `block.metal_pressure_plate.click_on` / `_off` |
+  | `heavy_weighted_pressure_plate` | `iron` | (weighted) | `block.metal_pressure_plate.click_on` / `_off` |
+
+  (The `copper` set, also `EVERYTHING` with the metal plate's sounds, has no plate. The
+  sound ids are the `SoundEvents` fields' usual names, **Inferred**: `SoundEvents` is not
+  dumped; all twelve ids are in `reports/registries.json`'s `sound_event`.)
 - Entities and what they press (`EVERYTHING` / `MOBS`), with the rule that the box must
-  meet the touch box strictly (**Inferred** `AABB.intersects` is strict, as the repo's
-  `overlaps`):
+  meet the touch box strictly (`AABB.intersects`, strict, AABB.txt 923–970 in the N5
+  dump; **Inferred** that the section's test is `intersects`, `EntitySection` not
+  dumped; 5.6 has the order of the query):
 
   | Entity in Clustine | wooden, gold, iron | stone, polished blackstone |
   |---|---|---|
@@ -3631,9 +4226,10 @@ All of this but the entity count is in `pressed.rs` (`check_plate`, `plate_stren
 
 ### 6.3 `WeightedPressurePlateBlock` (WeightedPressurePlateBlock.txt)
 
-- `POWER` 0–15 (default 0); `maxWeight` from the constructor (7–27): **Inferred** 15
-  (light, gold) and 150 (heavy, iron), from `Blocks`, not read (the repo's
-  `plate_weight` has them).
+- `POWER` 0–15 (default 0); `maxWeight` from the constructor (7–27): 15 for the light
+  plate (set `gold`, `Blocks.lambda$static$250`, `bipush 15`) and 150 for the heavy
+  (set `iron`, `lambda$static$251`, `sipush 150`), as the repo's `plate_weight` has
+  them.
 - **`getSignalStrength(level, pos)`** (29–58): `n = min(getEntityCount(level,
   TOUCH_AABB.move(pos), Entity), maxWeight)`; if `n > 0`: `f = (float) min(maxWeight, n)
   / (float) maxWeight`; return `Mth.ceil(f × 15f)` (float multiply, `Mth.ceil(float)`:
@@ -3674,8 +4270,8 @@ Built in R3b (`hook_calculate_state`, `hook_notifies_neighbours`, `hook_sounds`)
 facing back; a powered, non-disarmed tripwire on the line powers both hooks;
 `scheduleTick(pos, this, 10)` (315–316) when attached and powered; `emitState` (481–563)
 plays `TRIPWIRE_CLICK_ON` (0.4, 0.6), `TRIPWIRE_CLICK_OFF` (0.4, 0.5), `TRIPWIRE_ATTACH`
-(0.4, 0.7), `TRIPWIRE_DETACH` (0.4, `1.2f / (nextFloat() × 0.2f + 0.9f)`, a draw) with their
-game events; `notifyNeighbors` (564–587). Nothing in the hook depends on entities.
+(0.4, 0.7), `TRIPWIRE_DETACH` (0.4, `1.2f / (nextFloat() × 0.2f + 0.9f)`, a draw) with
+their game events; `notifyNeighbors` (564–587). Nothing in the hook depends on entities.
 
 ### 6.6 What changes in Clustine
 
@@ -3689,8 +4285,8 @@ game events; `notifyNeighbors` (564–587). Nothing in the hook depends on entit
   loaded chunks (and of copies, 11) whose boxes meet the box, skipping marker armour
   stands, with `LivingEntity` only (players and armour stands until N7) for `MOBS`
   plates. The box test stays strict.
-- **Block set data**: a plate's sensitivity (`MOBS` or `EVERYTHING`) from the block, in
-  `clustine-data` (by block name until `BlockSetType` is read).
+- **Block set data**: a plate's sensitivity (`MOBS` or `EVERYTHING`) and its click
+  sounds from the block, in `clustine-data`, by the table of 6.2 (poplar included).
 - **Shears**: `DISARMED` set before a tripwire is broken by a player holding shears.
 
 ## 7. The crafter (optional for N6)
@@ -3700,8 +4296,9 @@ Read: `CrafterBlock` (CrafterBlock.txt, 611 lines) and `CrafterBlock$1` (its swi
 `ContainerData`), `CrafterMenu` (its slots, `setSlotState`, `quickMoveStack`,
 `refreshRecipeResult`), `ServerGamePacketListenerImpl.handleContainerSlotStateChanged`
 (ServerGamePacketListenerImpl.txt 2824–2861) and `HopperBlockEntity.getContainerAt`/
-`addItem` (4.18). Not dumped: `RecipeCache`, `CraftingInput`, the recipe classes,
-`CrafterSlot`, `NonInteractiveResultSlot`, `ResultContainer`, `ItemStack.onCraftedBySystem`.
+`addItem` (4.18), `CrafterSlot`, `NonInteractiveResultSlot`, `ResultContainer` and
+`ServerboundContainerSlotStateChangedPacket` (second dump). Not dumped: `RecipeCache`,
+`CraftingInput`, the recipe classes, `ItemStack.onCraftedBySystem`.
 
 ### 7.0 Findings of this section
 
@@ -3778,8 +4375,7 @@ if recipe.isEmpty(): levelEvent(1050, pos, 0); return     // SOUND_CRAFTER_FAIL
 result = recipe.value().assemble(input)
 if result.isEmpty(): levelEvent(1050, pos, 0); return
 be.setCraftingTicksRemaining(6)
-level.setBlock(pos, state.setValue(CRAFTING, true), 2)    // the tick's state, with its
-TRIGGERED
+level.setBlock(pos, state.setValue(CRAFTING, true), 2)    // the tick's state, with its TRIGGERED
 result.onCraftedBySystem(level)
 dispenseItem(level, pos, be, result, state, recipe)
 for rem in recipe.value().getRemainingItems(input):        // in grid order
@@ -3859,12 +4455,25 @@ trigger is not Clustine's (no advancements).
   285–319, 326–331: the same `getPotentialResults` and `assemble`, empty when none).
 - `quickMoveStack` (212–276): from the grid (index < 9) to 9..45 backwards; from the
   inventory into 0..9 forwards (`moveItemStackTo`, section 3; it respects `mayPlace` of the
-  `CrafterSlot`, **Inferred** `!menu.isSlotDisabled` and the container's `canPlaceItem`).
+  `CrafterSlot`).
+- `CrafterSlot` (CrafterSlot.txt): `mayPlace(stack)` is `!menu.isSlotDisabled(index) &&
+  Slot.mayPlace(stack)`; `setChanged()` is `Slot.setChanged()` then
+  `menu.slotsChanged(container)` (the shown result refreshed). The result slot is a
+  `NonInteractiveResultSlot` (NonInteractiveResultSlot.txt) over a `ResultContainer`:
+  `mayPickup`, `mayPlace` and `allowModification` false, `tryRemove` empty, `safeTake`
+  and `remove` give `EMPTY`, `safeInsert` gives the stack back, `onTake` and
+  `onQuickCraft` do nothing, `isFake` true: a click on slot 45 changes nothing.
+  `ResultContainer` (ResultContainer.txt) is one slot, `stillValid` true, `setChanged`
+  nothing, and keeps the `RecipeHolder` used (`setRecipeUsed`/`getRecipeUsed`).
 - `handleContainerSlotStateChanged(packet)` (ServerGamePacketListenerImpl.txt 2824–2861):
   not a spectator, `packet.containerId == player.containerMenu.containerId`, the menu is a
   `CrafterMenu` whose container is a `CrafterBlockEntity`: `be.setSlotState(packet.slotId,
   packet.newState)`. The change reaches the client as a `container_set_data` from the
-  menu's `broadcastChanges` (section 3). The packet's codec is not dumped (section 12).
+  menu's `broadcastChanges` (section 3). The packet (serverbound
+  `container_slot_state_changed`) is a record `(slotId, containerId, newState)` written
+  as `slotId` (VarInt), `containerId` (`FriendlyByteBuf.writeContainerId`, the codec of
+  `ByteBufCodecs.CONTAINER_ID`, 9.3), `newState` (boolean)
+  (ServerboundContainerSlotStateChangedPacket.txt 9–55): **the slot comes first**.
 - `CrafterMenu.setSlotState` (157–177) is the client's path (it calls
   `broadcastChanges` on its own menu); `isPowered()` reads data slot 9.
 
@@ -3872,7 +4481,7 @@ trigger is not Clustine's (no advancements).
 
 A craft draws only where something is dropped: per dropped stack, `getContainerAt`'s
 possible `nextInt` (container entities in front, when no block container) and then
-`spawnItem`'s four level draws (4.3) and the item's own six. A craft that fills a
+`spawnItem`'s seven level draws (4.3) and the item's own six. A craft that fills a
 container draws only the possible `nextInt` per `dispenseItem` call. Recipe matching
 draws nothing (**Inferred**; special recipes such as the firework star read no random).
 
@@ -3886,16 +4495,18 @@ calls of `Entity` (n6 dump) and of the n5 dump (`Level`, `ServerLevel`, `LivingE
 that posts a game event (listed in 8.1), the tags `data/minecraft/tags/game_event/*` and
 `tags/block/{occludes_vibration_signals, dampens_vibrations, vibration_resonators,
 wool}`, and `reports/registries.json` (`minecraft:game_event`, `particle_type`,
-`position_source_type`). Not dumped and needed: `GameEvent` (the registry and each
-event's notification radius), `GameEventDispatcher`, `GameEventListener` (its
-`DeliveryMode`), `EuclideanGameEventListenerRegistry`, `VibrationSelector`,
-`VibrationInfo`, `BlockPositionSource`, `EntityPositionSource`,
-`VibrationParticleOption`, `CalibratedSculkSensorBlockEntity` (and its user),
-`SculkShriekerBlock(Entity)`, `LevelAccessor`/`LevelWriter` (the `gameEvent` overloads),
-`LevelChunk` (how listeners are registered), `ClientboundLevelParticlesPacket`, and the
-blocks already built that post events (levers, buttons, doors, pistons, note blocks,
-bells, `Block.playerWillDestroy`, `BlockItem.place`). What those say is marked
-**Inferred** below, from the 1.20–1.21 sources' shape, and listed in section 12.
+`position_source_type`); from the second dump `GameEvent` (and `$Context`,
+`$ListenerInfo`), `GameEventDispatcher`, `GameEventListener` (and `$DeliveryMode`,
+`$Provider`), `VibrationSelector` (and `$VibrationEvent`), `VibrationInfo`,
+`CalibratedSculkSensorBlockEntity` and its `$VibrationUser`, `ItemEntity`,
+`FallingBlockEntity`, `LevelChunk`, `Level`, `ServerLevel`, `Block`, `BlockItem`,
+`BucketItem`, `BoneMealItem`, `ComposterBlock`, and the n5 dump's `BlockGetter`
+(`isBlockInLine`). Still not dumped: `EuclideanGameEventListenerRegistry`,
+`BlockPositionSource`, `EntityPositionSource`, `VibrationParticleOption`,
+`SculkShriekerBlock(Entity)`, `LevelAccessor` (the `gameEvent` overloads),
+`ClientboundLevelParticlesPacket`, and the blocks already built that post events
+(levers, buttons, doors, pistons, note blocks, bells). What those say is marked
+**Inferred** below and listed in section 12.
 
 ### 8.0 Findings of this section
 
@@ -3918,9 +4529,11 @@ bells, `Block.playerWillDestroy`, `BlockItem.place`). What those say is marked
    `block_deactivate`, `block_open`, `block_close`, `note_block_play`,
    `block_change` (**Inferred**: those blocks' classes are not dumped). The N4 brief
    marked every one of these "skip" (n4-brief 1.0 item 14, 342, 456, 656, 918, 1258);
-   N6 has to go back and post them. Breaking and placing blocks by hand post
-   `block_destroy` and `block_place` (**Inferred**: `Block.playerWillDestroy`,
-   `BlockItem.place`).
+   N6 has to go back and post them. Breaking a block by hand posts `block_destroy`
+   (`Block.playerWillDestroy`, Block.txt 1172–1200: context `(player, old state)` at
+   the position) and placing one `block_place` (`BlockItem.place`, BlockItem.txt 55–,
+   at 239–250: `(player, placed state)`, after the place sound); an item or a falling
+   block landing posts `hit_ground` (8.1).
 3. **A sensor hears a player's steps only when the server moves the player.** A
    player's step posts `step` from `Entity.move` (`applyMovementEmissionAndPlaySound`,
    Entity.txt 2032–2142, `vibrationAndSoundEffectsFromBlock` 2406–2456), which the
@@ -3948,22 +4561,25 @@ bells, `Block.playerWillDestroy`, `BlockItem.place`). What those say is marked
 6. **The vibration is heard a tick late at the earliest, and its travel is
    `floor(distance)` ticks.** The listener adds a candidate with the game time;
    `VibrationSelector.chosenCandidate(now)` returns it only once `now` is past its tick
-   (**Inferred**, the selector is not dumped), so the sensor's ticker takes it on the
+   (VibrationSelector.txt 98–123: held tick `< now`), so the sensor's ticker takes it on the
    next tick, sets the travel time to `Mth.floor(distance)` (User.txt 26–30), sends
    the vibration particle, and receives when the travel time reaches 0 after the
    decrement of that same tick or a later one: received at tick `T + max(1,
    floor(d))` for an event at tick `T` at distance `d`. While the sensor holds a
    vibration it hears nothing else (Listener.txt 40–44).
 7. **Several events in one tick: the closest wins, then the higher frequency**
-   (**Inferred**, `VibrationSelector.shouldReplaceVibration`, not dumped): a later
-   candidate of the same tick replaces the held one if it is strictly closer, or as
-   close and of a strictly higher frequency; a candidate of a later tick than the held
-   one does not replace it. The distance compared is the float `eventPos.distanceTo(
-   listenerPos)`.
+   (`VibrationSelector.shouldReplaceVibration`, VibrationSelector.txt 45–97, now read:
+   confirmed): a later candidate of the same tick replaces the held one if it is
+   strictly closer, or as close and of a strictly higher frequency (at equal distance
+   and frequency the first is kept); a candidate of another tick than the held one
+   never replaces it. The distance compared is the float `eventPos.distanceTo(
+   listenerPos)` (`fcmpg`/`fcmpl`, so a NaN distance never replaces).
 8. **Power is by block distance; the comparator reads the frequency.** On receipt the
    power is `max(1, 15 − floor(15.0 / radius × d))` (VibrationSystem.txt 43–59) with
    `d = (float) sqrt(BlockPos.containing(eventPos).distSqr(sensorPos))`
-   (Listener.txt 131–138), radius 8 (16 calibrated, **Inferred**). The comparator
+   (Listener.txt 131–138), `r = getListenerRadius()`: 8, or 16 for a calibrated
+   sensor (CalibratedSculkSensorBlockEntity$VibrationUser.txt 19–22; the plain user
+   passes its own radius, SculkSensorBlockEntity$VibrationUser.txt 92–95). The comparator
    reads `lastVibrationFrequency` while the sensor is `active`, else 0
    (SculkSensorBlock.txt 611–634): the sensor needs a typed block entity.
 9. **The sensor waits for its 3×3 chunks to tick before it receives**
@@ -3974,18 +4590,19 @@ bells, `Block.playerWillDestroy`, `BlockItem.place`). What those say is marked
    (ADR-0025, section 3: a chunk along a border ticks when its 3×3 is loaded or
    copied), or a sensor beside a line would hold its vibration for ever (11).
 10. **A vibration's source may be across a line, and so may the listener.** The
-    dispatcher looks for listeners in every section within the event's notification
-    radius (16, **Inferred**) and the sensor tests its own radius (8 or 16) by block
+    dispatcher looks for listeners in every loaded section within the event's
+    notification radius (16 for all but `jukebox_play`/`jukebox_stop_play` 10 and
+    `shriek` 32, GameEvent.txt 151–157, static 189–) and the sensor tests its own
+    radius (8 or 16) by block
     distance; the listener reads the source entity's flags (spectator, shift,
     `dampensVibrations`), the affected block's tags and, for occlusion, up to six
     straight lines of blocks between the two positions (8.5). Section 11 of this
     brief has what an event effect has to carry.
-11. **Calibrated sensors depend on a class not dumped.**
-    `CalibratedSculkSensorBlock` (dumped) says only: `facing` from the player's
+11. **Calibrated sensors are now fully read** (8.10): `facing` from the player's
     horizontal direction, active for 10 ticks, no signal out of the side named by
-    `facing` (54–68). The frequency filter from the back input and the radius 16 are
-    in `CalibratedSculkSensorBlockEntity$VibrationUser`, not dumped (**Inferred**).
-    Optional for N6; the plain sensor does not need it.
+    `facing`, radius 16, and a frequency filter: while the signal into its back (the
+    side opposite `facing`) is above 0, only events of exactly that frequency are
+    heard. Optional for N6; the plain sensor does not need it.
 12. **No packet of a sensor's own**: its block entity has no update packet
     (`BlockEntity.getUpdatePacket` returns null, BlockEntity.txt; `SculkSensorBlockEntity`
     does not override it). The client sees the block state (phase, power, waterlogged)
@@ -3998,10 +4615,11 @@ bells, `Block.playerWillDestroy`, `BlockItem.place`). What those say is marked
 
 `Entity.gameEvent(e)` = `level.gameEvent(this, e, this.position)` (Entity.txt
 3571–3591); the `(Holder, BlockPos, Context)` and `(Entity, Holder, BlockPos)` overloads
-post at `Vec3.atCenterOf(pos)` (**Inferred**: `LevelAccessor`, not dumped). On the
-server they all reach `ServerLevel.gameEvent(e, Vec3, Context)` →
-`gameEventDispatcher.post(e, pos, ctx)` (ServerLevel.txt n5 2372–2380). The context is
-a source entity (or null) and an affected block state (or null).
+post at `Vec3.atCenterOf(pos)` (**Inferred**: they are defaults of `LevelAccessor`,
+still not dumped; `Level` and `ServerLevel` do not override them). On the server they
+all reach `ServerLevel.gameEvent(e, Vec3, Context)` → `gameEventDispatcher.post(e, pos,
+ctx)` (ServerLevel.txt 2372–2380). The context (`GameEvent$Context`) is a source entity
+(or null) and an affected block state (or null).
 
 Posted by entities (`Entity.txt`, n6 dump, unless said):
 
@@ -4043,7 +4661,7 @@ Posted by N6's classes (n6 dump):
 | `shear` | `TripWireBlock.playerWillDestroy` 209– (236) | tripwire broken with shears | player |
 | `container_open`, `container_close` | `ContainerOpenersCounter.incrementOpeners` 23– (42), `decrementOpeners` 65– (85), `recheckOpeners` 151– (211, 224) | first opener / last closer; recheck finds the count went to or from 0 | the user (open/close), null (recheck) |
 | `container_open`, `container_close` | `ShulkerBoxBlockEntity.startOpen` 346– (386), `stopOpen` 409– (442) | first opener / last closer | the user |
-| `fluid_place`, `fluid_pickup` | `DispenseItemBehavior$13` 104; `$4` 53, `$9` 14 | buckets dispensed | null (**Inferred**: dispensers post with no entity) |
+| `fluid_place`, `fluid_pickup` | `DispenseItemBehavior$13` 104; `$4` 53, `$9` 14 | buckets dispensed | null entity (`aconst_null` before the post: read) |
 | `entity_place` | `DispenseItemBehavior$6` 80, `SpawnEggItemBehavior` 65 | armour stand, spawn egg dispensed | |
 | `block_place` | `DispenseItemBehavior$7` 48, `$8` 46, `FlintAndSteelDispenseItemBehavior` 51 | a block placed by a dispenser; fire lit | |
 | `block_change` | `FlintAndSteelDispenseItemBehavior` 76 | a block lit (candle, campfire, TNT?) | |
@@ -4051,40 +4669,72 @@ Posted by N6's classes (n6 dump):
 | `sculk_sensor_tendrils_clicking` | `SculkSensorBlock.activate` 380–452 (63–69) | a sensor activates | the vibration's entity, at the sensor; frequency 0 and not in `#vibrations`: only shriekers hear it |
 | `resonate_1`…`resonate_15` | `SculkSensorBlock.tryResonateVibration` 453–504 | an amethyst block beside an activating sensor | `(entity, amethyst state)` at the amethyst block |
 
+Posted by the other classes of the second dump: `block_destroy` by
+`Block.playerWillDestroy` (Block.txt 1172–1200, `(player, state)`), `block_place` by
+`BlockItem.place` (BlockItem.txt 239–250, `(player, placed state)`), `fluid_pickup` by
+`BucketItem.use` (159) and `fluid_place` by `BucketItem.playEmptySound` (448),
+`item_interact_finish` by `BoneMealItem.useOn` (43, 80), `block_change` by the
+composter's `addLayer` (433) and `empty` (366), `entity_damage` by
+`ItemEntity.hurtServer` (732–786, at 771: the damage source's entity, so an item hurt
+by a TNT posts it with the TNT's owner or none), `entity_die` by `ServerPlayer.die`
+(1777).
+
 Not posted: a successful dispense of an item (the default behaviour posts nothing),
 blocks broken by an explosion (only the one `explode`), a sensor's own state changes
-(`setBlockAndUpdate` posts nothing). Arrows, snowballs, eggs and other projectiles
-post `projectile_shoot`/`projectile_land` (N9). Items (`ItemEntity`) and falling
-blocks have `MovementEmission.NONE` (n4-brief 1.0 item 14) and post no steps, but
-`checkFallDamage` is not gated by the emission, so an item landing after a fall posts
-`hit_ground` (**Inferred**: `ItemEntity` not dumped; it would need to override
-`checkFallDamage` not to) and one entering water `splash`. Clustine's items keep no
-fall distance today (`region/items.rs`); `hit_ground` for items needs it. `PrimedTnt`
-has `MovementEmission.NONE` (PrimedTnt.txt), so TNT makes no steps; it lands
-(`hit_ground`) as an item does. Minecarts and boats have `EVENTS` (n5
-`AbstractMinecart`, `AbstractBoat`): they post steps and swims but play no step sound.
+(`setBlockAndUpdate` posts nothing), a falling block's landing set (only its
+`hit_ground`). Arrows, snowballs, eggs and other projectiles post
+`projectile_shoot`/`projectile_land` (N9). Items (`ItemEntity.getMovementEmission`
+154–158) and falling blocks (FallingBlockEntity.txt 178) have `MovementEmission.NONE`
+and post no steps, but `Entity.checkFallDamage` (3990–4042) is not gated by the
+emission and neither class overrides it (read: `FallingBlockEntity` overrides only
+`causeFallDamage`), so **an item or a falling block landing after a fall posts
+`hit_ground`** (context: the entity and the block it lands on) and one entering water
+`splash`. Clustine's items keep no fall distance today (`region/items.rs`);
+`hit_ground` for items needs it. `PrimedTnt` has `MovementEmission.NONE`
+(PrimedTnt.txt), so TNT makes no steps; it lands (`hit_ground`) as an item does.
+Minecarts and boats have `EVENTS` (n5 `AbstractMinecart`, `AbstractBoat`): they post
+steps and swims but play no step sound.
 
-### 8.2 The dispatcher (**Inferred**: `GameEventDispatcher`,
-`EuclideanGameEventListenerRegistry`, `GameEventListener` not dumped)
+### 8.2 The dispatcher (`GameEventDispatcher`, `GameEvent`, `GameEventListener`, `LevelChunk`)
 
-`post(event, pos, ctx)`:
+`GameEvent` is a record of one `int`, `notificationRadius` (GameEvent.txt 2–3, 131–149).
+`register(name)` gives 16 (`DEFAULT_NOTIFICATION_RADIUS`, 151–157); the static block
+(189–) registers every event so but `jukebox_play` and `jukebox_stop_play` (10) and
+`shriek` (32). The registration order is the registry's (ids in 9.6).
 
-1. `r = event.notificationRadius()` (16 for every event, **Inferred**);
-   `b = BlockPos.containing(pos)`.
-2. For section x from `(b.x − r) >> 4` to `(b.x + r) >> 4`, then z likewise, the chunk
-   if loaded now (`getChunkNow`), then section y from `(b.y − r) >> 4` to
-   `(b.y + r) >> 4`: each listener registered in that section, in the order
-   registered. A listener is registered by its chunk when its block entity is added
-   to a `ServerLevel` chunk, in its own position's section.
-3. For each, the listener's position (`BlockPositionSource`: the block's centre,
-   **Inferred**) `p`; if `BlockPos.containing(p).distSqr(b) > listenerRadius²` it is
-   skipped. (The distances are between block positions, corner to corner, so the
-   test is `dx² + dy² + dz² ≤ 64` in whole blocks for a sensor.)
-4. A listener with `DeliveryMode.BY_DISTANCE` is queued and handled after, nearest
-   first; every other is handled at once with `handleGameEvent(level, event, ctx,
-   pos)`. `VibrationSystem$Listener` does not override `getDeliveryMode`
-   (Listener.txt), so sensors are `UNSPECIFIED` and handled at once, in the visit
-   order. For sensors the order does not matter: each has its own selector.
+`post(event, pos, ctx)` (GameEventDispatcher.txt 14–135):
+
+1. `r = event.notificationRadius()`; `b = BlockPos.containing(pos)`; the section
+   bounds `blockToSectionCoord(b.x − r)` … `(b.x + r)`, likewise y and z (14–96).
+2. Loops (120–216): section x outermost, then z; the chunk by
+   `getChunkSource().getChunkNow(x, z)` (a chunk not fully loaded is skipped); then
+   section y innermost: `chunk.getListenerRegistry(y).visitInRangeListeners(event,
+   pos, ctx, visitor)`, the results or-ed. The registry of a section is made on demand
+   for a `ServerLevel` (`LevelChunk.getListenerRegistry` 287–310, an
+   `EuclideanGameEventListenerRegistry`, lambda 1893–).
+3. Within a section's registry (**Inferred**: `EuclideanGameEventListenerRegistry`
+   still not dumped): each listener in the order registered; the listener's position
+   (`BlockPositionSource`: the block's centre, **Inferred**) `p`; it is visited only
+   if `BlockPos.containing(p).distSqr(b) ≤ listenerRadius²` (between block positions,
+   so `dx² + dy² + dz² ≤ 64` in whole blocks for a sensor).
+4. The visitor (lambda 167–194): a listener whose `getDeliveryMode()` is
+   `BY_DISTANCE` is put in a list as a `GameEvent$ListenerInfo` (with
+   `distanceToRecipient` a `distanceToSqr` as a double, ListenerInfo.txt); every other
+   is handled at once with `handleGameEvent(level, event, ctx, pos)`. After the loops,
+   if the list is not empty it is sorted by that distance (`Collections.sort`, stable,
+   `Double.compare`) and each handled in turn (`handleGameEventMessagesInQueue`
+   136–165). `GameEventListener.getDeliveryMode` defaults to `UNSPECIFIED`
+   (GameEventListener.txt) and `VibrationSystem$Listener` does not override it, so
+   **sensors are handled at once, in the visit order** (confirmed). For sensors the
+   order does not matter: each has its own selector.
+5. A listener is registered when its block entity is added to a chunk of a
+   `ServerLevel` (`LevelChunk.addAndRegisterBlockEntity` 896–925 →
+   `addGameEventListener` 1638–1658: `EntityBlock.getListener(level, be)`, registered
+   in the section of the block entity's y) and for every block entity when a chunk
+   is loaded (`registerAllBlockEntitiesAfterLevelLoad` 1628–, lambda 1739–1756); it is
+   unregistered by `removeBlockEntity` (1128–1164 → `removeGameEventListener`
+   1165–1197). An unloaded chunk takes its registries with it; `getChunkNow` no longer
+   finds it.
 
 ### 8.3 `VibrationSystem$Listener.handleGameEvent(level, event, ctx, pos)` (Listener.txt 30–92)
 
@@ -4119,8 +4769,10 @@ In order, returning false at the first that fails:
    and the event is in `#ignore_vibrations_sneaking` → false (and, for a sensor,
    `canTriggerAvoidVibration` is true, so a `ServerPlayer` gets the `avoid_vibration`
    advancement trigger, VibrationUser.txt 43–46); if `dampensVibrations()` → false
-   (false for every entity but an item of wool, **Inferred**: `ItemEntity` overrides
-   it; `Entity.dampensVibrations` 3954 is false).
+   (false for every entity but an item: `ItemEntity.dampensVibrations`, ItemEntity.txt
+   120–127, is the stack in the item tag `#dampens_vibrations` = `#wool`,
+   `#wool_carpets`, `#wool_slabs`, `#wool_stairs`; `Entity.dampensVibrations` 3954 is
+   false). So a dropped wool item falling makes no `hit_ground` a sensor hears.
 3. If there is an affected state: false if it is in `#dampens_vibrations` (`#wool`,
    `#wool_carpets`, `#wool_slabs`, `#wool_stairs`): stepping on wool or carpet, or
    breaking or placing one, is not heard.
@@ -4135,8 +4787,9 @@ double constant) and `level.isBlockInLine(new ClipBlockStateContext(a', b, state
 state.is(#occludes_vibration_signals)))`; if that hit is not `BLOCK`, the vibration is
 **not** occluded (return false at once). Occluded only if all six lines hit. The tag is
 `#wool` (16 wools; not carpets). `isBlockInLine` walks the blocks along the segment as
-`BlockGetter.traverseBlocks` does (n5 dump `BlockGetter`; **Inferred**: the predicate
-is tested on the block state alone, no shape) and stops at the first that matches. The
+`BlockGetter.traverseBlocks` does (n5 BlockGetter.txt 44–56, lambdas 1039–1075: the
+predicate is tested on the block state alone, no shape; a match is a `BLOCK` hit at
+`to`, the walk's end without one a `MISS`) and stops at the first that matches. The
 six nudges are what lets a vibration pass along a wool wall's edge.
 
 ### 8.6 The ticker: `VibrationSystem$Ticker.tick(level, data, user)` (Ticker.txt 3–51)
@@ -4171,12 +4824,15 @@ the block-entity phase:
    true.
 7. If `changed`, `user.onDataChanged()`.
 
-`VibrationSelector` (**Inferred**, not dumped): it holds at most one `(info, tick)`.
-`addCandidate(info, tick)` replaces it if none is held; else only if the held tick
-equals `tick` and `info.distance < held.distance`, or equal distance and
-`frequency(info) > frequency(held)`. `chosenCandidate(now)` gives the held info if its
-tick `< now`. `startOver()` empties it. Its codec: `event` (optional `VibrationInfo`),
-`tick` (long).
+`VibrationSelector` (VibrationSelector.txt, read): it holds at most one
+`VibrationEvent(info, tick)` (`currentVibrationData`, an `Optional`).
+`addCandidate(info, tick)` (28–44) replaces it when `shouldReplaceVibration` (45–97):
+true if none is held; false if the held tick differs from `tick`; true if
+`info.distance < held.distance`; false if it is greater; else true only if
+`frequency(info) > frequency(held)`. `chosenCandidate(now)` (98–123) gives the held
+info if its tick `< now`, else none. `startOver()` (124–130) empties it. Its codec
+(lambda 140–158): `event` (lenient optional `VibrationInfo`), `tick` (long; written as
+−1 when empty).
 
 ### 8.7 Frequencies: `VIBRATION_FREQUENCY_FOR_EVENT` (VibrationSystem.txt 61–326)
 
@@ -4263,8 +4919,17 @@ Saved (`saveAdditional` 81–97, `loadAdditional` 59–79):
 optional (the current vibration), `selector`, `event_delay` (the travel time, default 0,
 always written). A load builds the data with `reloadVibrationParticle = true`; a
 missing `listener` gives a fresh `Data` (no vibration, empty selector, not reloading).
-`VibrationInfo`'s codec (**Inferred**): `game_event` (registry id), `distance` (float),
-`pos` (three doubles), `source` (UUID, optional), `projectile_owner` (UUID, optional).
+`VibrationInfo` (VibrationInfo.txt) is a record `(gameEvent, distance, pos, uuid,
+projectileOwnerUuid, entity)`; its codec (static 279–, lambda 211–245): `game_event`
+(`GameEvent.CODEC` = `RegistryCodecs.holder(Registries.GAME_EVENT)`, GameEvent.txt
+377–379: the registry name, **Inferred**), `distance` (`Codec.floatRange(0,
+3.4028235E38)`), `pos` (`Vec3.CODEC`, a list of three doubles), `source` (UUID,
+lenient optional), `projectile_owner` (UUID, lenient optional); the entity is not
+saved. The constructor from an entity (29–46) takes its UUID and, if it is a
+`Projectile` with an owner, the owner's UUID (`getProjectileOwner`, 71–88).
+`getEntity(level)` (89–99) is the held entity, else `level.getEntity(uuid)`;
+`getProjectileOwner(level)` (100–116) the held entity's owner if it is a projectile,
+else `level.getEntity(projectileOwnerUuid)`.
 
 The user (`SculkSensorBlockEntity$VibrationUser`): `LISTENER_RANGE = 8`
 (`getListenerRadius` 32–35); position source `BlockPositionSource(blockPos)` (11–30);
@@ -4290,11 +4955,15 @@ d < 0.5333…, 1 from d ≥ 7.4666…; the distance is between block positions, 
   (54–68); `getDirectSignal` is inherited (strong power downwards only).
 - `getActiveTicks()` 10 (112–115); the ticker is the same `Ticker.tick` (117–125) on a
   `CalibratedSculkSensorBlockEntity`.
-- **Not dumped** (`CalibratedSculkSensorBlockEntity$VibrationUser`, **Inferred** from
-  1.20): radius 16; `canReceiveVibration` additionally refuses an event whose frequency
-  differs from the back input `getBackSignal` when that is above 0, the back input
-  being `level.getSignal(pos.relative(facing), facing)` (the side the player faced);
-  its `getRedstoneStrengthForDistance` uses 16.
+- `CalibratedSculkSensorBlockEntity` (type `minecraft:calibrated_sculk_sensor`)
+  makes a `CalibratedSculkSensorBlockEntity$VibrationUser`, which extends the plain
+  user (now read): `getListenerRadius()` 16 (19–22), so the power is
+  `getRedstoneStrengthForDistance(d, 16)`; `canReceiveVibration` (24–50) first reads
+  `back = getBackSignal(level, blockPos, state)` and refuses when `back ≠ 0` and
+  `getGameEventFrequency(event) ≠ back`, then the plain user's test; `getBackSignal`
+  (51–) is `level.getSignal(pos.relative(d), d)` with `d = facing.getOpposite()`:
+  the signal coming in from the side opposite `facing` (the first reading had
+  `facing` itself: wrong).
 
 What N6 needs for it: the block entity type with that user, the back-signal read, and
 `facing` in `getSignal`.
@@ -4322,7 +4991,7 @@ entity.position())`. Then `super.stepOn`. No `isValidVibration` (sneaking, spect
 wool), no occlusion and no check of a held vibration: if the sensor holds one still in
 travel, the candidate waits in the selector, is chosen once the held one is received,
 and is then refused at its own receipt by `canActivate` (the sensor is active by then)
-(**Inferred**: the selector). `stepOn` runs from `Entity.applyEffectsFromBlocks`
+(the selector as read, 8.6). `stepOn` runs from `Entity.applyEffectsFromBlocks`
 (2294–2376) while the entity is on the ground, for the block at `getOnPosLegacy()` (0.2
 below the feet, 2523–2529), every tick: an entity standing on an inactive sensor sets
 it off again every 30 + 10 ticks and a tick for the selection. The entity stands at the
@@ -4376,10 +5045,10 @@ registries) for protocol 777.
 | 1 | `center` | `Vec3` | `Vec3.STREAM_CODEC`: three `double`s, x, y, z (**Inferred**: `Vec3$1` is not dumped; the reference servers write three doubles) |
 | 2 | `radius` | `float` | `ByteBufCodecs.FLOAT` (4 bytes) |
 | 3 | `blockCount` | `int` | `ByteBufCodecs.INT` (**4 bytes, not a VarInt**) |
-| 4 | `playerKnockback` | `Optional<Vec3>` | `Vec3.STREAM_CODEC.apply(ByteBufCodecs::optional)` (**Inferred**: a boolean, then the three doubles when present; the operation is a method reference not shown by `javap -c`) |
+| 4 | `playerKnockback` | `Optional<Vec3>` | `Vec3.STREAM_CODEC.apply(ByteBufCodecs::optional)`: a boolean, then the three doubles when present (`ByteBufCodecs.optional`, ByteBufCodecs.txt 177–183, is `ByteBufCodecs$25`, which writes `writeBoolean(isPresent)` and then the value; that the method reference is `optional` is **Inferred**, `javap -c` not showing it) |
 | 5 | `explosionParticle` | `ParticleOptions` | `ParticleTypes.STREAM_CODEC`: VarInt particle type id, then the type's options (none for `explosion` 30 and `explosion_emitter` 29) |
 | 6 | `explosionSound` | `Holder<SoundEvent>` | `SoundEvent.STREAM_CODEC` (a holder: VarInt `id + 1` for a registered sound, 0 then an inline event; `entity.generic.explode` 703 → 704) (**Inferred** holder layout, as `sound` packets elsewhere in the edge) |
-| 7 | `blockParticles` | `WeightedList<ExplosionParticleInfo>` | `WeightedList.streamCodec(ExplosionParticleInfo.STREAM_CODEC)` (**Inferred**: a VarInt count, then per entry the info — particle (as 5), a float scaling, a float speed — and a VarInt weight; neither class is dumped). The default list: `poof` (69) `0.5f, 1.0f`; `smoke` (72) `1.0f, 1.0f`; weights 1 |
+| 7 | `blockParticles` | `WeightedList<ExplosionParticleInfo>` | `WeightedList.streamCodec(c)` (WeightedList.txt, `streamCodec`): `Weighted.streamCodec(c)` through `ByteBufCodecs.list()`, so a VarInt count (`writeCount`, ByteBufCodecs.txt 185–220) and then the entries. Each entry is `Weighted`'s codec, **Inferred** the value then a VarInt weight (`Weighted` is not dumped); the value is `ExplosionParticleInfo.STREAM_CODEC`, **Inferred** the particle (as 5), a float scaling, a float speed (not dumped). The default list: `poof` (69) `0.5f, 1.0f`; `smoke` (72) `1.0f, 1.0f`; weights 1 (`WeightedList$Builder.add(E)`, 14–20) |
 | 8 | `playSound` | `boolean` | `ByteBufCodecs.BOOL`: `source == null || !source.isSilent()` |
 
 Sent per player (ServerLevel.txt 2640–2686) to every player of the level whose
@@ -4388,7 +5057,8 @@ Sent per player (ServerLevel.txt 2640–2686) to every player of the level whose
 damage range) or empty.
 
 **Primed TNT** (`minecraft:tnt`, entity type 136): spawned by `add_entity` (1) with data
-0 (**Inferred**: `PrimedTnt` does not override `getAddEntityPacket`) and the initial
+0 (`PrimedTnt` does not override `getAddEntityPacket`; `Entity`'s, Entity.txt
+10682–10689, builds `ClientboundAddEntityPacket(entity, serverEntity)`) and the initial
 motion; its synched data (`set_entity_data`, 101):
 
 | Index | Field | Serializer id | Wire | Default |
@@ -4420,6 +5090,11 @@ the R-steps' encoder):
 | chest, trapped chest, copper chests (each half of a double chest for itself) | 1 (`EVENT_SET_OPEN_COUNT`) | the half's new openers' count | on every change of the count, and on every recheck (every 5 ticks while open) |
 | shulker boxes | 1 | the new `openCount` | on every `startOpen` and `stopOpen` |
 
+A block event is run at the end of the tick's block events phase and sent only when the
+block's `triggerEvent` answers true, to every player of the dimension within 64 blocks of
+the position's corner (`ServerLevel.runBlockEvents`, ServerLevel.txt 2717–2785); the
+queue is a linked set, so an identical event queued twice in a tick goes once.
+
 The barrel sends none: its `open` property changes (a block update, flags 3).
 
 **Sounds** (`ClientboundSoundPacket`, built for other sounds; source `blocks`, at the
@@ -4432,22 +5107,25 @@ position given, the seed from `soundSeedGenerator.nextLong()`):
 | `block.shulker_box.open` 1469 / `.close` 1468 | block centre | 0.5 | `nextFloat() * 0.1f + 0.9f` |
 | `block.chest.locked` 348 | the container's centre (a double chest: the pair's centre) | 1.0 | 1.0 |
 
-**System chat, overlay** (`ClientboundSystemChatPacket`, overlay true): `container.isLocked`
+**System chat, overlay** (`ClientboundSystemChatPacket`, overlay true):
+`container.isLocked`
 with the container's display name as its argument; `container.spectatorCantOpen` in red.
 
 **Open screen** (`ClientboundOpenScreenPacket`, field by field in 3.10 on): container id
 (1 to 100), menu type (`generic_9x3` 2, `generic_9x6` 5, `generic_3x3` 6, `crafter_3x3`
 7, `hopper` 16, `shulker_box` 20), title (the custom name, or `container.chest`,
-`container.chestDouble`, `container.barrel`, `container.shulkerBox`, `container.dispenser`,
+`container.chestDouble`, `container.barrel`, `container.shulkerBox`,
+`container.dispenser`,
 `container.dropper`, `container.hopper`, `container.crafter`; a vehicle's display name).
 
 **Block entity data** saved (the store's and the chunk's form; never sent):
-`lock` (when locked, **Inferred**), `CustomName` (a text component, when named),
+`lock` (when not `NO_LOCK`), `CustomName` (a text component, when named),
 `LootTable` (identifier string) and `LootTableSeed` (long, when not 0) while a table is
 set, else `Items` (list of `{Slot: byte, id, count, components}` for non-empty slots;
 always written by chests and barrels, omitted when empty by shulker boxes),
 `components` (always). Block entity type ids: `chest` 1, `trapped_chest` 2,
-`ender_chest` 3, `dispenser` 5, `dropper` 6, `hopper` 18, `shulker_box` 24, `barrel` 26,
+`ender_chest` 3 (its contents are the player's), `dispenser` 5, `dropper` 6, `hopper` 18,
+`shulker_box` 24, `barrel` 26,
 `crafter` 42.
 
 **Game events** (section 8): `container_open` (11) and `container_close` (10), at the
@@ -4458,8 +5136,17 @@ position.
 ### 9.3 Menus and clicks (3.10 to 3.21)
 
 All ids from `generated/reports/packets.json` (play). `CONTAINER_ID` is
-`ByteBufCodecs.CONTAINER_ID` (`ByteBufCodecs$24`, not read; a VarInt, **Inferred**, as the
-edge's `SetContainerContent` writes it today and as SteelMC reads it).
+`ByteBufCodecs.CONTAINER_ID` (`ByteBufCodecs$24.txt`: `FriendlyByteBuf.readContainerId` and
+`writeContainerId`; `FriendlyByteBuf` is not dumped, so that this is a VarInt is still
+**Inferred**, as the edge's `SetContainerContent` writes it today and as SteelMC reads
+it). Other codecs, read in `ByteBufCodecs` and its nested classes: `idMapper` is a VarInt
+(`$31`); `registry(key)` and `holderRegistry(key)` are a VarInt registry id (`$32`;
+`holderRegistry` is `registry(key, Registry::asHolderIdMap)`, ByteBufCodecs.txt 360–384,
+so a plain id, not the "id + 1 or inline" of `holder`, `$33`), and an unknown id fails the
+decoding (`byIdOrThrow`); `optional(codec)` is a Boolean, then the value if true (`$25`);
+`map(factory, k, v, max)` is a VarInt count (`writeCount`/`readCount` with the maximum,
+refused above it), then each key and value, the map made with room for `min(count,
+65536)` (`$28`).
 `ItemStack.OPTIONAL_STREAM_CODEC` is the stack with its components (count VarInt, 0 for
 empty; item VarInt; added components count, removed count, then each added as type VarInt
 and
@@ -4474,18 +5161,18 @@ components).
 | | `stateId` | VarInt | |
 | | `slotNum` | Short (signed 16 bits) | −999 outside, −1 margin |
 | | `buttonNum` | Byte (signed 8 bits) | 3.14 per kind |
-| | `containerInput` | `ContainerInput.STREAM_CODEC` | **Inferred** VarInt id 0–6 |
+| | `containerInput` | `ContainerInput.STREAM_CODEC`: VarInt (`idMapper`) | 0 `PICKUP` … 6 `PICKUP_ALL`; any other id reads as `PICKUP` (`ByIdMap` strategy `ZERO`) |
 | | `changedSlots` | `ByteBufCodecs.map(Int2ObjectOpenHashMap::new, SHORT→int, HashedStack.STREAM_CODEC, 128)`: VarInt count (refused above 128, `readCount`, n5 ByteBufCodecs.txt 185–202), then per entry Short slot and `HashedStack` | the client's view after its prediction |
 | | `carriedItem` | `HashedStack` | |
 | `HashedStack` | present | Boolean (`ByteBufCodecs.optional`) | false = `EMPTY` |
-| | item | `ByteBufCodecs.holderRegistry(ITEM)`: VarInt registry id (**Inferred**: not read) | HashedStack$ActualItem.txt 88–100 |
+| | item | `ByteBufCodecs.holderRegistry(ITEM)`: VarInt registry id | HashedStack$ActualItem.txt 88–100 |
 | | count | VarInt | |
-| | added components | VarInt count ≤ 256, then per entry: component type (`ByteBufCodecs.registry(DATA_COMPONENT_TYPE)`, VarInt id) and Int (4 bytes, big-endian) | HashedPatchMap.txt 150–168 |
+| | added components | VarInt count ≤ 256, then per entry: component type (`ByteBufCodecs.registry(DATA_COMPONENT_TYPE)`, VarInt id) and Int (4 bytes, big-endian): the component's hash (3.16) | HashedPatchMap.txt 150–168 |
 | | removed components | VarInt count ≤ 256, then component type VarInt each | |
 | `container_close` (19) | `containerId` | `CONTAINER_ID` | ServerboundContainerClosePacket.txt 16–32 |
-| `container_button_click` (17) | `containerId`, `buttonId` | not read (**Inferred** VarInt, VarInt) | ignored in N6 |
-| `container_slot_state_changed` (20) | `slotId`, `containerId`, `newState` | not read (**Inferred** VarInt, VarInt, Boolean) | the crafter |
-| `set_creative_mode_slot` (57) | `slotNum`, `itemStack` | not read (**Inferred** Short, then `ItemStack.OPTIONAL_UNTRUSTED_STREAM_CODEC`: components length-prefixed, as `Reader::untrusted_item_stack` reads) | already decoded by the edge |
+| `container_button_click` (17) | `containerId`, `buttonId` | `CONTAINER_ID`, VarInt (ServerboundContainerButtonClickPacket.txt 72–80) | ignored in N6 |
+| `container_slot_state_changed` (20) | `slotId`, `containerId`, `newState` | VarInt, `readContainerId`, Boolean, in that order (ServerboundContainerSlotStateChangedPacket.txt 11–22, 38–55) | the crafter |
+| `set_creative_mode_slot` (57) | `slotNum`, `itemStack` | Short, then `ItemStack.OPTIONAL_UNTRUSTED_STREAM_CODEC` (ServerboundSetCreativeModeSlotPacket.txt 81–90; components length-prefixed, as `Reader::untrusted_item_stack` reads) | already decoded by the edge |
 
 **Clientbound**
 
@@ -4506,7 +5193,7 @@ components).
 | | `id` | Short | the data slot |
 | | `value` | Short | written as 16 bits: values above 32767 are cut (the crafter's are 0 or 1) |
 | `container_close` (17) | `containerId` | `CONTAINER_ID` | ClientboundContainerClosePacket.txt 26–32 |
-| `set_cursor_item` (98) | `contents` | not read (**Inferred** `ItemStack.OPTIONAL_STREAM_CODEC`) | the carried stack, sent by the synchroniser's `sendCarriedChange` (**Inferred**) |
+| `set_cursor_item` (98) | `contents` | `ItemStack.OPTIONAL_STREAM_CODEC` (ClientboundSetCursorItemPacket.txt 61–67) | the carried stack, sent by the synchroniser's `sendCarriedChange` (ServerPlayer$1.txt 78–89); no container id, no state id |
 | `set_player_inventory` (110) | slot, stack | as the edge has it | not used by the menus; the edge's way for region-made changes |
 
 When each goes:
@@ -4517,7 +5204,10 @@ When each goes:
   whose
   real stack no longer matches the remote slot: after every click, at every player tick, and
   the other callers of 3.15.
-- `set_cursor_item`: when the carried stack does not match the remote carried one.
+- `set_cursor_item`: when the carried stack does not match the remote carried one (the
+  state id does not move).
+- `container_set_data` from `broadcastChanges`: when a data slot's value differs from the
+  remote one (the state id does not move).
 - `container_set_content` again: after a click with a stale state id, and to a spectator
   or a
   dying player who clicked.
@@ -4542,33 +5232,47 @@ names from SteelMC's `level_events.json`, `LevelEvent` not dumped):
 | `SOUND_CRAFTER_FAIL` | 1050 | 0 | the crafter | no recipe or empty result |
 | `PARTICLES_SHOOT_WHITE_SMOKE` | 2010 | `front.get3DDataValue()` | the crafter | after 1049 |
 
-**Sounds** (`ClientboundSound`, source `blocks`, volume 1, pitch 1, the seed the level's:
-the packet's seed is `level.random.nextLong()` in `ServerLevel.playSeededSound`,
-**Inferred**, not read: one more level draw per sound): `entity.tnt.primed` at the
+**Sounds** (`ClientboundSound`, source `blocks`, volume 1, pitch 1). The packet's seed is
+**not** a draw of the level's random: `Level.playSound` takes it from the level's own
+`soundSeedGenerator` (`RandomSource.createThreadSafe()`, Level.txt 96–97; the
+`nextLong` at 746–762 and in the other overloads, 685–808) and passes it to
+`ServerLevel.playSeededSound` (ServerLevel.txt 2222–2328). So sounds never shift the
+level's stream; Clustine may seed them from anything: `entity.tnt.primed` at the
 PrimedTnt's position (dispensed TNT, `TntBlock.prime`); `item.honeycomb.wax_on` at the
 front block; `item.bottle.empty` at the dispenser (water potion to mud); `block.beehive.
-shear` at the beehive (shears). The bucket's, the shulker box's place sound and fire's
-come from the code those behaviours call (not read).
+shear` at the beehive (shears); `item.shears.snip` at the sheared entity's block
+position (leashes cut, 4.16); `item.bucket.empty`/`item.bucket.empty_lava` at the block
+(volume 1, pitch 1; `BucketItem.playEmptySound`), `block.fire.extinguish` (volume 0.5,
+pitch `2.6 + (f1 − f2) · 0.8`, two **level** `nextFloat`, where water evaporates) with
+eight `large_smoke` particles at the block's corner (offset 1, speed 0, `ALTERNATIVE`);
+the shulker box's place sound is its sound type's (`(volume + 1) / 2`, `pitch · 0.8`,
+`BlockItem.place`, 4.15).
 
 **Particles** (`ClientboundLevelParticles`): `splash`, five packets of count 1, offset 0,
 speed 1, at `(pos.x + nextDouble(), pos.y + 1, pos.z + nextDouble())` of the dispenser
 (water potion to mud).
 
 **Block states**: `dispenser`/`dropper` `facing` (6) × `triggered` (2); `crafter`
-`orientation` (12: `down_east`, … `west_up`, **Inferred** names `FrontAndTop`'s) ×
-`triggered` × `crafting`. No block events.
+`orientation` (12, in `reports/blocks.json`'s order: `down_east`, `down_north`,
+`down_south`, `down_west`, `up_east`, `up_north`, `up_south`, `up_west`, `west_up`,
+`east_up`, `north_up`, `south_up`: the front first, then the top) × `triggered` ×
+`crafting`. No block events.
 
 **Block-entity data** (chunk NBT; none of these is sent to the client in the chunk
-packet, **Inferred**: the dispenser's and crafter's `getUpdateTag` not overridden in what
-was read): `dispenser`/`dropper`: `CustomName`, `lock`, `Items` (`Slot` byte + the item)
-or `LootTable` + `LootTableSeed`. `crafter`: the same plus `crafting_ticks_remaining`
+packet: neither `getUpdateTag` nor `getUpdatePacket` is overridden by the dispenser's,
+dropper's or crafter's entities or their bases, so `BlockEntity`'s null packet and empty
+tag stand, 3.0 item 14): `dispenser`/`dropper`: `CustomName`, `lock`, `Items` (`Slot`
+byte + the item) or `LootTable` + `LootTableSeed` (the seed written only when not 0,
+`trySaveLootTable`). `crafter`: the same plus `crafting_ticks_remaining`
 (int), `disabled_slots` (int array), `triggered` (int).
 
 **Menus**: `generic_3x3` for dispensers and droppers (9 slots + 36), `crafter_3x3` for the
 crafter (9 + 36 + the result slot 45, and ten data slots: 0–8 the slot states, 9
 `triggered`, each sent as `container_set_data(id, index, value)`). Serverbound
-`container_slot_state_changed`: container id (varint, **Inferred**), slot id (varint,
-**Inferred**), new state (boolean); its codec not dumped.
+`container_slot_state_changed`: slot id (VarInt), then the container id
+(`writeContainerId`, as every menu packet's, 9.3), then the new state (boolean)
+(ServerboundContainerSlotStateChangedPacket.txt 9–55; the earlier guess had the
+container id first).
 
 **Entities made** (their spawn packets as for any): item entities (motion as 4.3, data
 the stack), `tnt` (fuse 80, the block state data: section 1), boats and chest boats,
@@ -4582,12 +5286,17 @@ Hoppers, plates and tripwire add no packet of their own:
 - **Block changes**: `ENABLED` of a hopper (flag 2), `POWERED` / `POWER` of plates (flag
   2), `POWERED` of tripwire (`setBlockAndUpdate`, flag 3), `DISARMED` (flag 260): each
   is a `block_update` (or a section update) as today.
-- **Sounds**: plates' `pressurePlateClickOn`/`Off` of their block set (`sound`, source
-  `BLOCKS`, volume 1, pitch 1, the seed); hooks' four sounds (6.5).
+- **Sounds**: plates' `pressurePlateClickOn`/`Off` of their block set (the table of
+  6.2; `sound`, source `BLOCKS`, volume 1, pitch 1, the seed); hooks' four sounds (6.5).
 - **Hopper block entity**: no `block_entity_data` (`getUpdatePacket` is
   `BlockEntity`'s, null, BlockEntity.txt 525–528); in a chunk's data its entry carries
-  `getUpdateTag` (**Inferred** empty for a hopper: not overridden, `BlockEntity.
-  getUpdateTag` not read). Its contents travel only in the menu's packets (section 3).
+  `getUpdateTag`, `BlockEntity`'s empty compound (BlockEntity.txt 530–535), which the
+  hopper does not override. Its contents travel only in the menu's packets (section 3).
+- **Composter fed or emptied by a hopper**: a `block_update` of `LEVEL` (flag 3); a
+  `level_event` 1500 at its position with data 1 when a layer was added, 0 when not
+  (the fill's sound and particles, **Client**), sent for each item composted; at
+  `LEVEL` 7 a scheduled tick 20 later turns it to 8 with the sound
+  `block.composter.ready` (`BLOCKS`, 1, 1). Emptying sends no level event.
 - **Item entity partly taken**: `set_entity_data` with `ItemEntity.DATA_ITEM` (the
   stack left); wholly taken: `remove_entities`.
 - **Hopper cart**: no synched data of its own (`Enabled` is not synched); its contents
@@ -4625,20 +5334,25 @@ note table, at an amethyst block beside an activating sensor.
 `last_vibration_frequency` (int), `listener` (compound: `event` optional
 `VibrationInfo` {`game_event` id, `distance` float, `pos` [d, d, d], `source` UUID?,
 `projectile_owner` UUID?}, `selector` {`event`? `VibrationInfo`, `tick` long},
-`event_delay` int ≥ 0, always written). **Inferred**: the inner codecs of
-`VibrationInfo` and `VibrationSelector` (not dumped).
+`event_delay` int ≥ 0, always written). The inner codecs are now read (8.9, 8.6):
+`VibrationInfo` writes `game_event` by `RegistryCodecs.holder(GAME_EVENT)`, the
+registry name (`"minecraft:step"`; **Inferred**: `RegistryCodecs` not dumped), not the
+id; `distance` a float in [0, 3.4028235E38]; `pos` a list of three doubles;
+`source` and `projectile_owner` UUIDs (int arrays), each left out when absent; the
+selector's `tick` is −1 when it holds nothing.
 
-**Game event ids** (`registries.json`, `minecraft:game_event`, for the codec of
-`VibrationInfo` and any debug packet): block_activate 0, block_attach 1, block_change
-2, block_close 3, block_deactivate 4, block_destroy 5, block_detach 6, block_open 7,
-block_place 8, bounce 9, container_close 10, container_open 11, drink 12, eat 13,
-elytra_glide 14, entity_damage 15, entity_die 16, entity_dismount 17, entity_interact
-18, entity_mount 19, entity_place 20, entity_action 21, equip 22, explode 23, flap 24,
-fluid_pickup 25, fluid_place 26, hit_ground 27, instrument_play 28,
-item_interact_finish 29, item_interact_start 30, jukebox_play 31, jukebox_stop_play
-32, lightning_strike 33, note_block_play 34, prime_fuse 35, projectile_land 36,
-projectile_shoot 37, sculk_sensor_tendrils_clicking 38, shear 39, shriek 40, splash
-41, step 42, swim 43, teleport 44, unequip 45, resonate_1 … resonate_15 46 … 60.
+**Game event ids** (`registries.json`, `minecraft:game_event`, for the wire; the saved
+`VibrationInfo` uses the names; radius 16 for each but `jukebox_play` and
+`jukebox_stop_play` 10 and `shriek` 32, GameEvent.txt static 189–): block_activate 0,
+block_attach 1, block_change 2, block_close 3, block_deactivate 4, block_destroy 5,
+block_detach 6, block_open 7, block_place 8, bounce 9, container_close 10, container_open
+11, drink 12, eat 13, elytra_glide 14, entity_damage 15, entity_die 16, entity_dismount
+17, entity_interact 18, entity_mount 19, entity_place 20, entity_action 21, equip 22,
+explode 23, flap 24, fluid_pickup 25, fluid_place 26, hit_ground 27, instrument_play 28,
+item_interact_finish 29, item_interact_start 30, jukebox_play 31, jukebox_stop_play 32,
+lightning_strike 33, note_block_play 34, prime_fuse 35, projectile_land 36,
+projectile_shoot 37, sculk_sensor_tendrils_clicking 38, shear 39, shriek 40, splash 41,
+step 42, swim 43, teleport 44, unequip 45, resonate_1 … resonate_15 46 … 60.
 
 ## 10. Random draws, in order, of each
 
@@ -4656,6 +5370,12 @@ deterministic stream in the same order.
    `+ 10`.
 (The priming sound's seed is the sound seed generator's `nextLong`, not the level's.)
 
+**A TNT burnt by fire** (`FireBlock.checkBurnOut`, 1.1), all the level's: `nextInt(300)`
+(`nextInt(250)` above or below; 50 less with `increased_fire_burnout`); when it is
+under 100, `nextInt(age + 10)`; when that is under 5 and it does not rain there,
+`nextInt(5)` (the new fire's age); then the priming's `nextDouble` (and the entity's own
+UUID draws). No fuse draw: the fuse is 80.
+
 **The TNT minecart**:
 1. `destroy` (priming by destruction): the cart's own random `nextInt(20)`, then
    `nextInt(20)` (fuse = sum).
@@ -4670,9 +5390,12 @@ deterministic stream in the same order.
    own conditions by default; `survives_explosion` and each `explosion_decay` item one
    `nextFloat` each when the interaction is `DESTROY_WITH_DECAY`); the updates' own
    draws (a falling block's, a popped torch's `popResource`: three `nextDouble` and
-   the item's own); a container's spill (per slot three `nextDouble`; per part one
-   `nextInt(21)` and six `nextDouble` for the `triangle`s, **Inferred**; the item's own
-   draws); a TNT's priming (as above: `nextDouble`, `nextInt(20)`).
+   the item's own); a container's spill, at the set (per slot three `nextDouble`; per
+   part one `nextInt(21)` and six `nextDouble` for the three `triangle`s, two each,
+   RandomSource.txt 77–88; the item's own draws); a TNT's priming (as above:
+   `nextDouble`, `nextInt(20)`). Within one block the order is `spawnAfterBreak`'s
+   draws (experience from ores, a silverfish from an infested block), the loot, the set
+   (its updates and the spill), then `wasExploded` (2.6).
 5. Per collected stack: `popResource`'s three level `nextDouble`, then the item's own
    two `nextLong`, `nextFloat` (bob), `nextFloat` (yaw), two `nextDouble` (motion).
 6. Fire (not TNT): per position one `nextInt(3)`.
@@ -4696,15 +5419,21 @@ In order, per action (the level's random unless said):
 - **A lock's refusal**: one seed (pitch 1, no draw).
 - **Breaking a container** (`Containers.dropContents`, per non-empty slot in slot
   order): `nextDouble()` × 3 (x, y, z), then per stack split off: `nextInt(21)` (the
-  split's size), the `ItemEntity` constructor's own motion draws (**Inferred**: two
-  `nextDouble()`), `triangle` × 3 (x, y, z motion; **Inferred** one `nextDouble()`
-  each, `RandomSource.triangle` not read). An unopened loot table is first rolled by
+  split's size), then of **the new item's own random** (not the level's) the
+  `ItemEntity` constructor's two `nextFloat()` (bob, yaw) and two `nextDouble()` (a
+  motion that is then replaced; ItemEntity.txt 33–98), then of the level's random
+  `triangle` × 3 (x, y, z motion), each **two** `nextDouble()`: `triangle(a, b) = a + b
+  · (nextDouble() − nextDouble())` (RandomSource.txt 77–89). So six level draws of
+  motion per stack, after its `nextInt(21)`. An unopened loot table is first rolled by
   `LootTable.fill` with the seed's random (not read).
-- **A creative player breaking a non-empty shulker box**: the `ItemEntity` constructor's
-  motion draws (**Inferred**: two `nextDouble()`), at the block's centre.
+- **A creative player breaking a non-empty shulker box**: only the new item's own
+  draws (two `nextFloat()`, two `nextDouble()` of its own random), at the block's
+  centre; none of the level's.
 - **Unpacking a loot table** (opening, reading, pulling, breaking): `LootTable.fill`'s
   rolls and its shuffle over the empty slots, all from the random of the seed
-  (**Inferred**; not read). With a seed of 0 they come from the level's random, which
+  (**Inferred**: `LootTable.fill` is not read; the seed is `LootTableSeed`,
+  RandomizableContainer.txt 102–168). With a seed of 0 they come from the level's random,
+  which
   the oracle cannot repeat.
 - The shulker box's animation and entity push draw nothing.
 
@@ -4714,52 +5443,62 @@ In order, per action (the level's random unless said):
   iteration order follows the slots' identity hashes; the result does not depend on it
   (3.14.1), so a port may use the slots' order.
 - Items thrown out of a menu (`PICKUP`/`QUICK_MOVE` at −999, `THROW`, a `SWAP` whose
-  stack does
-  not fit back, and a carried stack dropped at closing by a removed or disconnected
-  player) are
-  `Player.drop(stack, includeThrower, prediction)` → `LivingEntity.drop` →
-  `createItemStackToDrop(stack, false, includeThrower)` (n5 LivingEntity.txt 1657–1695):
-  the N2
-  throw from the eyes, with its draws from the player's random, in the order the items are
-  thrown (`THROW` with button 1 over a result slot throws several, one after another). The
-  closing drop (`includeThrower` false) is the same throw without the thrower recorded
-  (**Inferred**: `Player.createItemStackToDrop` is N2's).
-- `placeItemBackInInventory` draws only if it has to drop what does not fit (not read).
+  stack does not fit back, and a carried stack dropped at closing by a removed or
+  disconnected player) are `Player.drop(stack, includeThrower, prediction)` →
+  `LivingEntity.drop` → `createItemStackToDrop(stack, false, includeThrower)` (n5
+  LivingEntity.txt 1657–1695): the N2 throw from the eyes, with its draws from the
+  player's random, in the order the items are thrown (`THROW` with button 1 over a result
+  slot throws several, one after another). The closing drop (`includeThrower` false) is
+  the same throw without the thrower recorded: `createItemStackToDrop` is
+  `LivingEntity`'s (n5 LivingEntity.txt 9318–), overridden neither by `Player` nor by
+  `ServerPlayer`, whose `drop` (ServerPlayer.txt 4985–) only adds the statistics.
+- `placeItemBackInInventory` (Inventory.txt 724–784) draws only when no slot can take the
+  rest, which it then drops with `player.drop(stack, false, prediction)`: the same throw.
 
 ### 10.4 Dispensers, droppers and the crafter (sections 4 and 7)
 
 **A dispenser's tick**, in order (the level's random unless "own"):
 
-1. `unpackLootTable(null)` where a loot table is set (the table's own seeded random; not
-   the level's: **Inferred**, `RandomizableContainer` not read).
+1. `unpackLootTable(null)` where a loot table is set: no draw of the level's random in
+   `RandomizableContainer.unpackLootTable` (RandomizableContainer.txt 102–167); the
+   loot's draws are `LootTable.fill`'s with the saved seed (not dumped: what a seed of 0
+   draws from).
 2. `getRandomSlot`: one `nextInt(n)` per non-empty slot in slot order, `n` = 1, 2, 3, …
    (DispenserBlockEntity.txt 37–70).
 3. The behaviour:
    - **drop** (default, and every fallback): the new `ItemEntity`'s own draws (two
      `nextLong` for the UUID, `nextFloat` bob, `nextFloat` yaw, two `nextDouble` motion:
-     n4 8.4), then the level's `nextDouble` (speed) and three `triangle` (**Inferred** two
-     `nextDouble` each): **7 level draws**. A fallback that dispenses twice (4.0 item 4)
+     n4 8.4), then the level's `nextDouble` (speed) and three `triangle`, each two
+     `nextDouble` (`a + b · (d1 − d2)`, RandomSource.txt 77–88): **7 level draws**. A
+     fallback that dispenses twice (4.0 item 4)
      still drops once.
    - **remainder that does not fit**: another drop (7 level draws and the item's own six).
    - **TNT** (`$6`) and **flint and steel on TNT** (`TntBlock.prime`): the PrimedTnt's
-     own UUID draws, then **one level `nextDouble`** (its direction); then the sound's
-     seed (**Inferred**, `playSound` → one level `nextLong`).
+     own UUID draws, then **one level `nextDouble`** (its direction). The sound's seed is
+     the level's separate `soundSeedGenerator` (Level.txt 96–97, 746–762), not the
+     level's random: no sound in this list shifts the level's stream.
    - **armour stand**: one level `nextFloat` (the discarded yaw, EntityType.txt 221–316),
      the stand's own UUID draws.
    - **boat, minecart**: their own UUID draws only.
-   - **water potion to mud**: ten level `nextDouble` (five particle positions, x then z),
-     then the sound's seed.
-   - **honeycomb, beehive shear, glass bottle on a hive**: the sound's seed; the hive's
+   - **water potion to mud**: ten level `nextDouble` (five particle positions, x then z).
+   - **honeycomb, beehive shear, glass bottle on a hive**: no level draw; the hive's
      `dropHoneycomb` → `Block.popResource` (n4 8.3's draws) for N7's case.
    - **flint and steel making fire**: fire's `onPlace` schedules its tick with
-     `30 + nextInt(10)` (**Inferred**, Clustine's fire code: `random_ticks/fire.rs`);
-     `hurtAndBreak` draws nothing without Unbreaking (**Inferred**).
-   - **equipment, glowstone, shulker box, skull/pumpkin, empty bucket, full bucket**: no
-     draw in what was read (the bucket's fluid sounds and the shulker box's place sound
-     have seeds, **Inferred**; `emptyContents` in an ultrawarm dimension draws for its
-     smoke: not read).
+     `30 + nextInt(10)`, one level draw (`FireBlock.onPlace`, FireBlock.txt 818–845);
+     `hurtAndBreak` draws nothing for a plain item (ItemStack.txt 744–786; only
+     `EnchantmentHelper.processDurabilityChange`, for an enchanted one, may: not dumped).
+   - **full bucket where water evaporates**: two level `nextFloat` (the extinguish
+     sound's pitch, BucketItem.txt 241–276), before the particles.
+   - **bone meal** (if built): `growCrop` is the block's `isBonemealSuccess` and
+     `performBonemeal` with the level's random (each block's own draws, not dumped);
+     `growWaterPlant` at a water source: per attempt `i` (0–127), `4 · (i / 16)` level
+     `nextInt(3)` for the walk, then in a coral biome one `nextInt(4)` (and on success a
+     `getRandomElementOf`), and at seagrass one `nextInt(10)` (BoneMealItem.txt 145–357).
+   - **equipment, glowstone, shulker box, skull/pumpkin, empty bucket, other full
+     buckets, shears on leashes**: no level draw (sounds are seeded apart, above).
    - **projectiles** (N9): `Projectile.shoot`'s inaccuracy (`triangle`, the projectile's
-     own random, **Inferred**); **spawn eggs** (N7): the mob's `finalizeSpawn`.
+     own random, **Inferred**: `Projectile` not dumped); **spawn eggs** (N7): the mob's
+     `finalizeSpawn`.
 
 **A dropper's tick**: 1–2 as above; then `getContainerAt` on the front block: if no block
 container and k ≥ 1 container entities meet the box, **one level `nextInt(k)`**; then
@@ -4782,8 +5521,13 @@ In the order they are drawn:
 - **Hopper tick** (`pushItemsTick` → `tryMoveItems`), off cooldown and enabled:
   1. when the hopper is not empty, `ejectItems` → `getContainerAt(facing block)`: if no
      block container is there and at least one container entity's box meets the box of
-     the facing block, `level.random.nextInt(count)` (one draw; with one entity too,
-     **Inferred** that `LegacyRandomSource.nextInt(1)` draws, not read);
+     the facing block, `level.random.nextInt(count)` (one draw; with one entity too:
+     the hopper makes the call whatever the count, HopperBlockEntity.txt 939–981; that
+     the level's random advances on `nextInt(1)` is **Inferred**, `RandomSource.nextInt`
+     being abstract, RandomSource.txt 52, and `LegacyRandomSource` not dumped);
+     when the target is a composter below `LEVEL` 7, composting the item draws what its
+     `compostable` layers draw (a chance, from the loot context's random, **Inferred**
+     the level's, 5.6);
   2. when not full, `suckInItems` → `getContainerAt(block above)`: the same, for the
      block above.
 - **Item entity meeting a hopper** (`HopperBlockEntity.entityInside` → `tryMoveItems`):
@@ -4791,8 +5535,9 @@ In the order they are drawn:
 - **Hopper cart** (`tryConsumeItems` → `HopperBlockEntity.suckInItems`): draw 2 above for
   the position `containing(x, y + 1.5, z)` (a container entity centred there); the
   fallback over item entities draws nothing.
-- **Loot tables**: a hopper reading a source with a loot table unpacks it (draws from its
-  `LootTableSeed`; section 3), before anything else of that source.
+- **Loot tables**: a hopper reading a source with a loot table unpacks it
+  (`LootTable.fill` with the `LootTableSeed`, its own random, not the level's;
+  RandomizableContainer.txt 102–167), before anything else of that source.
 - **Plates, tripwire, detector rails**: none. **Hooks**: the detach sound's pitch,
   `nextFloat()` (TripWireHookBlock.txt 538–551), built.
 
@@ -4841,7 +5586,14 @@ Section 0 items 17 to 23 summarise it.
   with its fuse, owner, block state and power in its record). It explodes in whichever
   region holds it when its fuse ends.
 - TNT primed by redstone or fire at a line: the block's own region primes it; a signal
-  across the line is read from the copy (ADR-0026 section 10).
+  across the line is read from the copy (ADR-0026 section 10). A fire across the line
+  from a TNT burns it through the fire's own effect (ADR-0025 section 4, "fire
+  spreading, a block removed by a rule"): `checkBurnOut` removes or replaces the TNT
+  and then primes it, so the effect has to carry "burnt" and the holder primes it after
+  the conditional set succeeds; the priming's draws are then the holder's.
+- An exploded container across the line spills on the far side: the spill happens
+  inside the far side's set (`LevelChunk.setBlockState`), from the block entity the
+  holder alone has.
 - The game event `explode` reaches sculk sensors across the line (section 8's
   matter).
 - Where regions follow players, an explosion near a line is entities working at the line
@@ -4879,6 +5631,14 @@ Section 0 items 17 to 23 summarise it.
   chunk edge: entities in the band that another region has are moved by an entity effect
   (a push, ADR-0028 section 7) or not at all; the box's neighbour updates cross as
   updates already do.
+- **A trapped chest's signal follows its openers' count**, and its change updates the
+  neighbours of the chest and of the block below (3.3): when either lies across a line
+  the update crosses as an update effect does today; the count itself is the chest's
+  region's, so a trapped chest is pressed only by the players its own region runs.
+- **The ender chest's contents are the player's**, not the block's: its menu reads and
+  writes only the player's own data (and the active chest's openers' count), so of all
+  containers it alone could open across a line without moving items between regions;
+  the lid and sound are still the chest's region's (**Inferred**, for the plan).
 - **The cat on a chest** (N7) is an entity query in the block above, always in the
   chest's own chunk column.
 - **Sounds and block events** are broadcast by the region that holds the block, as
@@ -4891,50 +5651,42 @@ Section 0 items 17 to 23 summarise it.
 
 ### 11.3 Menus and clicks (3.10 to 3.21)
 
-- **Opening across a line.** A chest, barrel, dispenser, dropper, hopper, crafter or shulker
-  box opens by `useWithoutItem` on its block, which ADR-0026 section 7 refuses on land the
-  player's region does not hold. To open it, the menu would need the container's holder
-  to run
-  the clicks (it changes the container's slots) and the player's region to change the
-  inventory, in one step, which two regions cannot do without lending. Proposal: keep the
-  refusal (the click does nothing) and name it; where regions follow players they merge when
-  players work at a line (ADR-0028), so the seam remains only at pinned lines. A player sees
-  it within minutes only if a pinned line runs through a storage room: the plan should
-  say so.
+- **Opening across a line.** A chest, barrel, dispenser, dropper, hopper, crafter or
+  shulker box opens by `useWithoutItem` on its block, which ADR-0026 section 7 refuses on
+  land the player's region does not hold. To open it, the menu would need the container's
+  holder to run the clicks (it changes the container's slots) and the player's region to
+  change the inventory, in one step, which two regions cannot do without lending.
+  Proposal: keep the refusal (the click does nothing) and name it; where regions follow
+  players they merge when players work at a line (ADR-0028), so the seam remains only at
+  pinned lines. A player sees it within minutes only if a pinned line runs through a
+  storage room: the plan should say so.
 - **A double chest across a line** (its halves in two regions): the `CompoundContainer`
-  reads
-  both halves; opening needs both in the player's region (3.1–3.9 say what the block does);
-  with one half foreign, refuse as above (**Inferred** proposal: open neither, rather than a
-  single chest's menu, which would show the half differently from the game).
-- **A player whose region changes with a menu open** (riding a minecart or a boat, pushed,
-  falling; a creative player cannot walk with a screen open, **Client**): in the game the
-  menu
-  stays while `stillValid` (within reach + 4 of the block) holds. Across a transfer the old
-  region keeps the container and the new one the inventory. Proposal: the leaving region
-  closes
-  the menu as the game's `closeContainer` does (the carried stack put back into the
-  inventory
-  before the inventory goes with the transfer, `stopOpen` run so the lid closes and the
-  openers'
-  count falls), and the edge sends `container_close`. A named difference that shows only
-  to a
-  player riding with a chest open.
+  reads both halves; opening needs both in the player's region (3.1–3.9 say what the
+  block does); with one half foreign, refuse as above (**Inferred** proposal: open
+  neither, rather than a single chest's menu, which would show the half differently from
+  the game).
+- **A player whose region changes with a menu open** (riding a minecart or a boat,
+  pushed, falling; a creative player cannot walk with a screen open, **Client**): in the
+  game the menu stays while `stillValid` (within reach + 4 of the block) holds. Across a
+  transfer the old region keeps the container and the new one the inventory. Proposal:
+  the leaving region closes the menu as the game's `closeContainer` does (the carried
+  stack put back into the inventory before the inventory goes with the transfer,
+  `stopOpen` run so the lid closes and the openers' count falls), and the edge sends
+  `container_close`. A named difference that shows only to a player riding with a chest
+  open.
 - **A container entity crossing with a menu open on it** (a chest or hopper minecart, a
-  chest
-  boat, N5's): in the game the menu lives while the cart is within reach + 4
-  (`ContainerEntity.isChestVehicleStillValid`, N5 brief 3.18). Proposal: a cart's transfer
-  closes every menu open on it in the region it leaves, as `stillValid` failing would;
-  viewers
-  in the cart's new region then reopen it.
-- **The carried stack and duplication.** A click moves items between the container and the
-  inventory; both must change in the same commit of one region, as they do when the region
-  holds both. The carried stack is not durable in the game (lost if the server stops);
-  here it
-  is lost if the region restarts with a menu open, as in the game, but at a transfer, a
-  split or
-  a merge it must be put back into the inventory first (closing the menu), never copied.
-- **Two viewers of one container in two regions** cannot happen with the refusal above; with
-  it, the openers' count (and the lid) is the holder's alone.
+  chest boat, N5's): in the game the menu lives while the cart is within reach + 4
+  (`ContainerEntity.isChestVehicleStillValid`, N5 brief 3.18). Proposal: a cart's
+  transfer closes every menu open on it in the region it leaves, as `stillValid` failing
+  would; viewers in the cart's new region then reopen it.
+- **The carried stack and duplication.** A click moves items between the container and
+  the inventory; both must change in the same commit of one region, as they do when the
+  region holds both. The carried stack is not durable in the game (lost if the server
+  stops); here it is lost if the region restarts with a menu open, as in the game, but at
+  a transfer, a split or a merge it must be put back into the inventory first (closing
+  the menu), never copied.
+- **Two viewers of one container in two regions** cannot happen with the refusal above;
+  with it, the openers' count (and the lid) is the holder's alone.
 
 ### 11.4 Dispensers, droppers and the crafter (sections 4 and 7)
 
@@ -4995,8 +5747,8 @@ block (the front `F = pos + f`):
   stalls at a pinned line; a player watching a hopper chain across a line would notice
   within minutes); (b) an offer: the hopper takes the item out and sends it as an effect
   "insert this stack at pos from face"; the holder inserts what fits by its own rules
-  (`addItem`, its own cooldown hand-over with `k = 0`) and returns what does not fit as an
-  effect back, which the hopper puts back into the same slot or, if that is no longer
+  (`addItem`, its own cooldown hand-over with `k = 0`) and returns what does not fit as
+  an effect back, which the hopper puts back into the same slot or, if that is no longer
   possible, the first slot that takes it, else drops it at the hopper. (b) keeps the
   chain moving at a tick or two of delay per crossing and is exact in count; it changes
   timing (a full target is learnt a tick late, so the hopper's cooldown is set as if it
@@ -5011,6 +5763,14 @@ block (the front `F = pos + f`):
   across the line is not taken until it or the hopper's region holds it (as ADR-0028
   section 7 says for pick-ups), and a cart across the line is not pulled from or pushed
   into (it is skipped as if absent, which also changes the draw's count).
+- **The composter across a line** is block state only (no block entity), so a hopper
+  feeding it or emptying it changes another region's block: the same options as above,
+  with option (b)'s effect the composter's own rule run by its holder (compost one item,
+  or hand the bone meal back as an offer). Its draw (the compostable chance) is the
+  holder's then.
+- **The entity queries' reach**: the sections searched extend 2 blocks beyond the box in
+  x and z and 4 below it (5.6), but only entities whose boxes meet the box are kept, so
+  what crosses is set by the boxes, not by the sections.
 - **A hopper cart crossing** carries its contents, `enabled` and nothing else (no
   cooldown, `consumedItemThisFrame` is per tick).
 - **Plates and tripwire at a line.** The touch box and tripwire's shape lie within their
@@ -5034,7 +5794,8 @@ block (the front `F = pos + f`):
 ### 11.6 Sculk sensors and vibrations (section 8)
 
 - **An event and a listener on two sides of a line.** The dispatcher visits every
-  section within the event's radius (16, **Inferred**) of the event's block, so a post
+  loaded section within the event's radius (16 for every event a sensor hears,
+  GameEvent.txt 151–157) of the event's block, so a post
   in one region reaches sensors whose block is within 8 (by `distSqr` of block
   positions) in another. What the listener reads: its own state (held vibration,
   phase), the event (id, position as a `Vec3`, game time), the context (the source
@@ -5046,7 +5807,10 @@ block (the front `F = pos + f`):
   simpler, to every foreign chunk the dispatch would visit within 8 blocks (sensor
   radius; 16 if calibrated sensors are built), carrying (event, position, tick,
   source entity key and those three flags, affected state); the holder runs
-  `handleGameEvent` on its own land and copies. The occlusion's segments reach at most
+  `handleGameEvent` on its own land and copies. In the game the dispatch reads only
+  chunks that `getChunkNow` finds (GameEventDispatcher.txt 145–163), and a border copy
+  is no `LevelChunk` with a listener registry: a sensor across the line is found only
+  through the holder. The occlusion's segments reach at most
   8 (16) blocks into the poster's side, inside the border copies (ADR-0025 section 3:
   the 3×3 of a viewer's chunk), and a block the holder can read neither in its land
   nor a copy should count as not occluding (**Inferred** choice). The candidate's tick
@@ -5075,273 +5839,206 @@ block (the front `F = pos + f`):
 ## 12. Not read
 
 What a rule still depends on and nobody has read, with what it is needed for, by subject.
-Read by more than one part, and so first to dump: `RandomSource.triangle` (spilled
-contents, dispensed items), `GameRules` (the defaults of `tnt_explodes` and the
-drop-decay rules), `RandomizableContainer` (container loot),
-`LevelEntityGetter`/`EntitySectionStorage` (the order of entity queries: who is hurt,
-sucked or counted first), `ItemEntity` (explosion damage, merging, `hit_ground`, hoppers
-taking items), `Attributes` (`block_interaction_range` for menus' validity, explosion
-knockback resistance), `CrafterSlot`/`NonInteractiveResultSlot`/`ResultContainer` (the
-crafter's menu), `ByteBufCodecs.optional` (packet bytes) and `ItemStack.hurtAndBreak`
-(flint and steel, shears).
-
+This is what is still unread after the second dump (`more.txt`); what that dump
+settled is said where it is used. Asked for by more than one part: `LootTable.fill` (how
+container loot is spread over slots, what a seed of 0 means), `EntitySection`/
+`ClassInstanceMultiMap`/`LevelEntityGetterAdapter` (the order of entities within a
+section and the per-entity box test), the fluid classes `WaterFluid`/`LavaFluid`/
+`EmptyFluid` (fluid resistance), `FriendlyByteBuf` (whether the container id is a
+VarInt), `LevelEvent` (level event names), `LevelAccessor`'s `gameEvent` defaults (the
+position a block's post uses) and `javap -v` dumps of `Blocks`, `ChestBlock`,
+`HopperBlock`, `EntitySelector`, `ServerPlayer$1` and `HashOps` (the method references
+behind lambdas).
 ### 12.1 TNT and the explosion (sections 1 and 2)
 
-- Not read: `BlockBehaviour.onExplosionHit` (and `BlockStateBase.onExplosionHit`),
-  needed for the loot parameters of a block broken by an explosion (`THIS_ENTITY`,
-  `EXPLOSION_RADIUS` only with decay, `BLOCK_ENTITY`), `spawnAfterBreak`, the set's
-  flags and the call of `wasExploded` (2.6 is **Inferred** from 1.21).
-- Not read: `Block.getExplosionResistance` with `Blocks` (each block's `strength` /
-  `explosionResistance`) and `FluidState.getExplosionResistance` (`WaterFluid`,
-  `LavaFluid`, `EmptyFluid`), needed for every ray step; Clustine's data has no
-  resistance; the datagen's `Extract.java` can write it.
-- Not read: `FireBlock` (`checkBurnOut`), needed for the order of fire's replacing the
-  TNT and priming it (Clustine's `fire.rs` ports the rest).
-- Not read: `GameRules`, needed for the defaults of `tnt_explodes`,
-  `tnt_explosion_drop_decay`, `block_explosion_drop_decay`, `mob_explosion_drop_decay`,
-  `mob_griefing` (taken from SteelMC's 26.3 extraction: true, false, true, true, true).
-- Not read: `DamageSources.explosion(Entity, Entity)` and `explosion(Explosion)`,
-  needed for which damage type (`explosion` or `player_explosion`) a TNT with or without
-  an owner gives, and which of the two entities is the cause.
-- Not read: `ItemEntity.hurtServer`, `ItemEntity.areMergable` and `ItemEntity.merge`
-  (in this dump's era), needed for an item's explosion damage (`damage_resistant`) and
-  the drops' merging (taken from the N4 brief).
-- Not read: `FallingBlockEntity.hurtServer` and `ignoreExplosion`, needed for what an
-  explosion does to a falling block.
-- Not read: `Vec3$1` (`Vec3.STREAM_CODEC`), `WeightedList` (its stream codec and the
-  builder's default weight), `ExplosionParticleInfo` (its fields and codec),
-  `ByteBufCodecs.optional`, needed for the exact bytes of the explode packet.
-- Not read: `Level$ExplosionInteraction` and `ServerLevel$1` (the switch map), needed
-  to confirm which interaction maps to which block interaction.
-- Not read: `LevelEntityGetter` / `EntitySectionStorage`, needed for the order in which
-  the explosion's entities are hurt (and whether the box test is strict).
-- Not read: `ClipContext` and `BlockGetter.traverseBlocks` in 26.3 form (the latter is
-  in the n5 dump, BlockGetter.txt 154–), needed for the exposure's clip with
-  `COLLIDER` and `Fluid.NONE` and the entity's collision context.
-- Not read: `ItemStack.hurtAndBreak` and `consume` for a creative player (in the n5
-  dump's `ItemStack`, not reread), needed for a flint and steel's and fire charge's use
-  on TNT in creative.
-- Not read: `ShulkerBoxBlockEntity.preRemoveSideEffects` (dumped, section 3's), needed
-  for what an exploded shulker box keeps.
-- Not read: `Attributes` (the default of `explosion_knockback_resistance`, **Inferred**
-  0), needed for the knockback of living entities (N7).
-- Not read: `RandomSource.triangle`, needed for the draws of a spilled container.
+The second dump settled the rest of what this part needed (`BlockBehaviour`,
+`Block`, `Blocks`, `FluidState`, `FireBlock`, `GameRules`, `DamageSources`,
+`ItemEntity`, `FallingBlockEntity`, `WeightedList`, `ByteBufCodecs`,
+`Level$ExplosionInteraction`, `ServerLevel$1`, `ClipContext`, `EntitySectionStorage`,
+`LevelEntityGetter`, `RandomSource`, `Attributes`, `ItemStack`, `LevelChunk`). Still
+not read:
+
+- Not read: `WaterFluid`, `LavaFluid`, `EmptyFluid` (or `Fluid.getExplosionResistance`
+  in each), needed for the fluids' resistance (100, 100, 0 from SteelMC's extraction),
+  which decides that a waterlogged block resists 100.
+- Not read: `InfestedBlock` (its constructor), needed for the infested blocks'
+  resistance (**Inferred** 0.75 from 1.21; `Blocks` gives them none); and a `javap -v`
+  of `Blocks` (its bootstrap methods), needed to tie each lambda of
+  `ColorCollection.registerBlocks` and of the weathering copper families to its family
+  (the values are read; which family is which is matched by sound and value). The
+  datagen's extract of `getExplosionResistance()` per block would settle both and is the
+  recommended source.
+- Not read: `Weighted` (its `streamCodec`), `ExplosionParticleInfo` and `Vec3$1`, needed
+  for the order of the weight and the value in the explode packet's block particles,
+  the particle info's two floats, and `Vec3.STREAM_CODEC` (**Inferred** three doubles);
+  and a `javap -v` of `ClientboundExplodePacket`, to confirm that the knockback's
+  operation is `ByteBufCodecs::optional`.
+- Not read: `EntitySection`, `ClassInstanceMultiMap` and `LevelEntityGetterAdapter`,
+  needed for the order of entities within one section and the box test there
+  (**Inferred** insertion order and a strict `AABB.intersects`): which of two entities
+  hurt by one explosion is handled first.
+- Not read: `ItemUtils.onContainerDestroyed`, needed for where and with which draws a
+  destroyed shulker box item spills its contents (matters only once stacks carry
+  components).
+- Not read: the block classes that override `onExplosionHit` (buttons, levers, bells,
+  doors, trapdoors, gates, candles and the like, for `canTriggerBlocks`), needed only
+  for wind charges (N9); TNT never triggers blocks.
 
 ### 12.2 Container blocks (3.1 to 3.9)
 
-- Not read: `DoubleBlockCombiner` (and its `NeighborCombineResult`, `Combiner`), needed
-  for the exact pairing of chest halves and when a blocked half makes the whole chest
-  open nothing (3.3; **Inferred** from source).
-- Not read: `TrappedChestBlock` and `TrappedChestBlockEntity`, needed for the trapped
-  chest's signal, its neighbour updates on a change of openers, and its statistic.
-- Not read: `CopperChestBlock` and `WeatheringCopperChestBlock`, needed for which copper
-  chests join, their sounds by oxidation (the exposed ones) and their weathering.
-- Not read: `EnderChestBlock`, `EnderChestBlockEntity` and `PlayerEnderChestContainer`,
-  needed for the ender chest's menu (the player's own 27 slots, `container.enderchest`),
-  its lid and its blocked test.
-- Not read: `RandomizableContainer` (the interface: `unpackLootTable`,
-  `tryLoadLootTable`, `trySaveLootTable`), needed for exactly when a loot table is rolled
-  and how `LootTable`/`LootTableSeed` are written.
 - Not read: `LootTable.fill` (and `getAvailableSlots`, `shuffleAndSplitItems`), needed
-  for how container loot is spread over the slots and which random it draws from.
-- Not read: `LockCode` (and `ItemPredicate`), needed for what unlocks a lock and the
-  `lock` key's form.
-- Not read: `BaseEntityBlock` (`getMenuProvider`, `triggerEvent`), needed for the
-  spectator's path to non-chest containers and for forwarding block events to the block
-  entity (**Inferred**).
-- Not read: `BlockBehaviour.useItemOn` (its `TRY_WITH_EMPTY_HAND` default) and
-  `getCollisionShape`, needed for a click with an item in hand reaching `useWithoutItem`
-  and for the shulker box's collision shape.
+  for how a container's loot is spread over its slots and which random the seed gives
+  (**Inferred**: the level's when the seed is 0).
+- Not read: `EnderChestBlockEntity`, needed for the ender chest's openers' count, lid,
+  sounds and `stillValid`.
+- Not read: `WeatheringCopperChestBlock`, needed only for the copper chests' weathering
+  by random ticks (their joining and sounds are read, 3.3).
+- Not read: `ItemPredicate` (and its codec), needed for what a `lock` matches and the
+  form of the `lock` key (**Inferred**: `NO_LOCK`, the empty predicate, passes any
+  stack).
 - Not read: `Shulker.getProgressAabb` and `getProgressDeltaAabb`, needed for the shulker
   box's shapes, the room its lid needs and the band whose entities it pushes.
-- Not read: `LevelChunk.setBlockState`, needed for when `preRemoveSideEffects` (the
-  spilling of contents) runs and which flags skip it.
-- Not read: `LevelAccessor.gameEvent(Entity, Holder, BlockPos)`, needed for the game
-  event's position (**Inferred** the block's centre).
-- Not read: `ServerLevel.doBlockEvent` / `runBlockEvents`, needed to confirm a block
-  event is sent whenever `triggerEvent` answers true (the chest's every recheck).
-- Not read: `Attributes` (and the creative mode's attribute modifiers), needed for
-  `block_interaction_range` (4.5, and 5.0 in creative), which sets the menus' validity
-  and the recheck's box.
-- Not read: `ItemStackWithSlot` and the item stack's codec, needed for the `Items`
-  entries' exact NBT.
-- Not read: `RandomSource.triangle` and the five-argument `ItemEntity` constructor,
-  needed for the draws of spilled contents.
+- Not read: `LevelAccessor.gameEvent(Entity, Holder, BlockPos)` (the interface's
+  default, which `Level` does not override), needed for the game event's position
+  (**Inferred** the block's centre).
+- Not read: `ClientboundBlockEventPacket`, needed to confirm the block event's field
+  order (taken from the R-steps' encoder).
+- Not read: `ItemStackWithSlot`, needed for the `Items` entries' exact NBT (the slot's
+  key and type).
+- Not read: `ExperimentalRedstoneUtils.initialOrientation`, needed for the orientation
+  the trapped chest's updates carry (**Inferred**: none without the redstone
+  experiment, as for every other block Clustine updates).
+- Not read: a `javap -v` of `ChestBlock`, needed to confirm which lambda of `combine` is
+  the "never blocked" test.
 - Not read: `Cat.isInSittingPose`, needed (N7) for the cat's blocking.
-- Not read: `Entity.getDisplayName` for vehicles, needed for a container vehicle's menu
-  title.
-
 ### 12.3 Menus and clicks (3.10 to 3.21)
 
-- Not read: `net.minecraft.world.inventory.ContainerInput` (its order and `STREAM_CODEC`),
-  needed for the wire ids of the click kinds (**Inferred** 0–6 in the order of 3.0 item 15).
-- Not read: `ClickAction`, needed only to confirm `PRIMARY`/`SECONDARY` (trivially from
-  `getClickAction`).
-- Not read: `RemoteSlot` and `RemoteSlot$Synchronized`, needed for exactly how a remote slot
-  compares a forced stack and a received hash (`matches`, `force`, `receive`, `copyFrom`).
-- Not read: `ServerPlayer$1` (the `ContainerSynchronizer`) and `ServerPlayer$2` (the
-  `ContainerListener`), needed for which packets `sendInitialData`, `sendSlotChange`,
-  `sendCarriedChange` and `sendDataChange` send and when each increments the state id, and
-  for the hash generator the remote slots use.
-- Not read: the `HashGenerator`'s implementation (`HashOps` and the CRC32C over a
-  component's
-  encoding), needed to match a client's hash of a stack with components.
-- Not read: `ByteBufCodecs$24` (`CONTAINER_ID`), `ByteBufCodecs.holderRegistry`,
-  `ByteBufCodecs.optional` and `ByteBufCodecs$28` (`map`), needed for the exact bytes of the
-  container id, the hashed stack's item and the changed-slot map.
-- Not read: `ServerboundContainerButtonClickPacket`,
-  `ServerboundContainerSlotStateChangedPacket`,
-  `ServerboundSetCreativeModeSlotPacket` and `ClientboundSetCursorItemPacket`, needed for
-  their
-  fields and codecs.
-- Not read: `InventoryMenu`, `ArmorSlot` (or the inventory menu's armour slot class),
-  `ResultSlot`, `CraftingContainer`/`TransientCraftingContainer`, needed for the player's
-  own
-  menu (the 2×2 grid's items, `removed`, the armour slots' `mayPlace`/`setByPlayer`).
-- Not read: `ShulkerBoxSlot`, needed for its `mayPlace` (which items a shulker box's menu
-  refuses).
-- Not read: `CrafterSlot`, `NonInteractiveResultSlot`, `ResultContainer`,
-  `SimpleContainerData`,
-  `DataSlot`, needed for the crafter menu's slots (a disabled slot's `mayPlace`, the result
-  slot's `mayPickup`) and data slots' update flags.
-- Not read: `Inventory.placeItemBackInInventory`, `Inventory.add`,
-  `Inventory.getItem`/`setItem`,
-  needed for where a carried stack goes at closing and for `SWAP`'s overflow.
-- Not read: `ItemStack.overrideStackedOnOther`, `overrideOtherStackedOnMe` and `BundleItem`,
-  needed for bundles in menus (not N6's).
-- Not read: `MenuProvider`/`SimpleMenuProvider`, needed for the providers' display names
-  (the titles of `open_screen`).
-- Not read: `Attributes` (the `block_interaction_range` default) and the game mode's
-  attribute
-  modifiers, needed for `stillValid`'s distance (4.5 + 4, and creative's, **Inferred** 5
-  + 4).
-- Not read: `PacketUtils.ensureRunningOnSameThread` and the handling of a
-  `ReportedException`
-  from a packet, needed only to say what the game does with a malformed `SWAP` or drag (the
-  port refuses it either way).
+Read since the first draft: `ContainerInput`, `ClickAction`, `RemoteSlot` (and `$1`,
+`$Synchronized`), `ServerPlayer$1`, `$2` and `$3`, `HashOps` (and its builders),
+`ByteBufCodecs` and its nested codecs, the four packets, `InventoryMenu` (and `$1`),
+`ArmorSlot`, `ResultSlot`, `ShulkerBoxSlot`, `CrafterSlot`, `NonInteractiveResultSlot`,
+`Inventory`, `MenuProvider`, `SimpleMenuProvider`, `Attributes`. Still not read:
 
+- Not read: `ServerPlayer$1$1` (the synchroniser's cache loader), needed for exactly how
+  a component is hashed (**Inferred**: its value encoded with the type's codec through
+  `HashOps.CRC32C_INSTANCE`, then `asInt()`), and a `javap -v` of `ServerPlayer$1` and
+  `HashOps`, needed for the method references (`cache::getUnchecked`, the
+  `HASH_COMPARATOR`'s `HashCode::padToLong`, **Inferred**).
+- Not read (a library, not the game): Guava's `Crc32cHashFunction`, `AbstractHasher` and
+  `HashCode`, needed for the byte order of the hasher's `putShort`/`putInt`/`putLong`/
+  `putFloat`/`putDouble`/`putUnencodedChars` and of `HashCode.asBytes` (**Inferred**
+  little-endian, as Guava documents); a test against a real client settles it.
+- Not read: `FriendlyByteBuf` (`readContainerId`/`writeContainerId`), needed to confirm
+  that the container id is a VarInt (**Inferred**).
+- Not read: `ByIdMap` (`continuous` with `OutOfBoundsStrategy.ZERO`), needed to confirm
+  that a click kind outside 0–6 decodes as `PICKUP` (**Inferred**).
+- Not read: `TransientCraftingContainer`, needed for the 2×2 grid's notifying its menu
+  (`slotsChanged`) and so when its result is recomputed.
+- Not read: `BundleItem`, needed for bundles in menus (`overrideStackedOnOther`,
+  `overrideOtherStackedOnMe`, `canFitInsideContainerItems`); not N6's.
+- Not read: `MenuConstructor` and the blocks' `getMenuProvider` lambdas, needed only for
+  which constructor a `SimpleMenuProvider` calls (3.1–3.9 name the menus from the
+  blocks).
+- Not read: `PacketUtils.ensureRunningOnSameThread` and the handling of a
+  `ReportedException` from a packet, needed only to say what the game does with a
+  malformed `SWAP` or drag (the port refuses it either way); and `MinecraftServer`,
+  needed for where packet handling falls against the level's tick (the order of
+  `open_screen` and the lid's block event, 3.10).
 ### 12.4 Dispensers, droppers and the crafter (sections 4 and 7)
 
-- Not read: `RandomizableContainer` (the interface's `unpackLootTable`,
-  `tryLoadLootTable`, `trySaveLootTable`), needed for when and with what random a
-  dispenser's structure loot is unpacked (4.1).
-- Not read: `Container.getMaxStackSize(ItemStack)`, needed for `insertItem`'s limit (4.1)
-  and the crafter's one-at-a-time rule (7.2).
-- Not read: `RandomSource.triangle`, needed for how many draws `spawnItem` makes (4.3).
-- Not read: `GameRules` (`TNT_EXPLODES`'s default), needed for whether dispensers prime
-  TNT by default (4.10).
-- Not read: `BucketItem.emptyContents`/`checkExtraContent` and `BucketPickup.pickupBlock`
-  of `LiquidBlock`, `SimpleWaterloggedBlock` and `PowderSnowBlock`, needed for what a
-  dispenser's bucket places or picks up, and its sounds and game events (4.5).
-- Not read: `BaseFireBlock.canBePlacedAt`/`getState`, `CampfireBlock.canLight`,
-  `CandleBlock.canLight`, `CandleCakeBlock.canLight`, needed for flint and steel (4.11).
-- Not read: `BoneMealItem.growCrop`/`growWaterPlant` and the `BonemealableBlock`s, needed
-  for bone meal from a dispenser (4.12).
+Read in the second dump and settled here: `RandomizableContainer`,
+`Container.getMaxStackSize`, `RandomSource.triangle`, `GameRules` (`tnt_explodes` true),
+`BucketItem`, `BucketPickup`, `BoneMealItem`, `BlockItem.place`, `DirectionalPlaceContext`,
+`Direction`, `ProjectileItem` and `DispenseConfig`, `CrafterSlot`,
+`NonInteractiveResultSlot`, `ResultContainer`, `ItemStack.hurtAndBreak`,
+`Entity.shearOffAllLeashConnections`, `Level.playSound`/`ServerLevel.playSeededSound` and
+`addFreshEntity`, `FireBlock.onPlace`, `EntitySelector.CONTAINER_ENTITY_SELECTOR` (by its
+lambda's order), `ServerboundContainerSlotStateChangedPacket`, the default
+`BlockBehaviour.canBeReplaced(state, fluid)`. Still unread:
+
+- Not read: `LootTable.fill` (with `getAvailableSlots`, `shuffleAndSplitItems`), needed
+  for how a dispenser's structure loot is spread and what a seed of 0 draws from (4.1).
+- Not read: `BucketPickup.pickupBlock` of `LiquidBlock`, `SimpleWaterloggedBlock` and
+  `PowderSnowBlock`, and `LiquidBlock.canBeReplaced(state, fluid)` if it overrides the
+  default, needed for what a dispenser's empty bucket takes and where a full one may
+  pour (4.5).
+- Not read: `BaseFireBlock` (`canBePlacedAt`, `getState`, `onPlace`), `CampfireBlock`,
+  `CandleBlock` and `CandleCakeBlock` (`canLight`), needed for flint and steel (4.11).
+- Not read: the `BonemealableBlock`s (`isValidBonemealTarget`, `isBonemealSuccess`,
+  `performBonemeal` of crops, saplings, grass, flowers, seagrass, …), needed for bone
+  meal's growth and its draws (4.12).
+- Not read: `EnchantmentHelper.processDurabilityChange`, needed for Unbreaking's draw
+  on an enchanted flint and steel or shears (4.11, 4.16).
 - Not read: `WitherSkullBlock.canSpawnMob`/`checkSpawn`, `CarvedPumpkinBlock.
   canSpawnGolem`, `RotationSegment.convertToSegment`, needed for the skull's rotation and
   the golem and wither patterns (4.13).
 - Not read: `HoneycombItem.getWaxed`, `RespawnAnchorBlock.charge`, `BeehiveBlock.
   releaseBeesAndResetHoneyLevel`/`dropHoneycomb`, needed for honeycomb, glowstone and
   bottles on hives (4.14).
-- Not read: `BlockItem.place` and `DirectionalPlaceContext`, needed for a shulker box
-  placed by a dispenser (4.15).
-- Not read: `Entity.shearOffAllLeashConnections`, needed for shears cutting leashes from a
-  dispenser (4.16; it is in the dumped Entity.txt but was not read for this section).
-- Not read: `ItemStack.hurtAndBreak`, needed for flint and steel's and shears' wear and
-  whether it draws (4.11, 4.16).
-- Not read: `Direction.toYRot` and `get3DDataValue`, needed for the armour stand's and
-  boat's yaw from a vertical dispenser and the smoke's data (4.6, 4.7; **Inferred** the
-  usual 0–5 and `(get2DDataValue & 3) · 90`).
-- Not read: `EntitySelector.CONTAINER_ENTITY_SELECTOR` (a `javap -v` for the lambda),
-  needed for which entities a dropper or crafter can put into (4.18).
-- Not read: `ProjectileItem` and its `DispenseConfig` for each projectile, and
-  `Projectile.spawnProjectileUsingShoot`, needed for N9's dispensed projectiles (4.17).
+- Not read: `ProjectileItem$DispenseConfig$Builder` (the defaults), each projectile
+  item's `createDispenseConfig` and `asProjectile`, and `Projectile.
+  spawnProjectileUsingShoot`/`shoot`, needed for N9's dispensed projectiles (4.17).
 - Not read: `SulfurCube` (`equipItem`, `primeTime`) and `SpawnEggItem`, needed for N7's
   cubes and eggs from dispensers (4.10, 4.16).
 - Not read: `RecipeCache`, `CraftingInput`, `RecipeManager`, the crafting recipe classes
   (`ShapedRecipe`, `ShapelessRecipe`, `TransmuteRecipe` and the special ones),
   `CraftingRecipe.getRemainingItems`, `ItemStack.onCraftedBySystem`, needed for the
   crafter's craft (7.2).
-- Not read: `CrafterSlot`, `NonInteractiveResultSlot`, `ResultContainer`, and
-  `ServerboundContainerSlotStateChangedPacket`'s codec, needed for the crafter's menu
-  (7.4).
-- Not read: `FrontAndTop` (its value names and `fromFrontAndTop`), needed for the
-  crafter's `orientation` values (7.1).
-- Not read: `LevelEvent`, needed for the level events' names (quoted from SteelMC's
-  extraction).
-- Not read: `ServerLevel.playSound`/`playSeededSound` and `addFreshEntity`, needed for
-  whether a sound's seed is a level draw and whether adding an entity makes a game event.
+- Not read: `FriendlyByteBuf.writeContainerId`/`readContainerId`, needed for the exact
+  bytes of the container id in `container_slot_state_changed` (as in every menu packet,
+  12.3).
+- Not read: `LevelEvent`, needed only to confirm the level events' names (quoted from
+  SteelMC's extraction; the numbers are the bytecode's).
+- Not read: a `javap -v` of `DispenseItemBehavior` and `EntitySelector`, needed to tie
+  the lambdas to their fields for certain (`NOOP`, `CONTAINER_ENTITY_SELECTOR`).
 
 ### 12.5 Hoppers, plates and tripwire (sections 5 and 6)
 
-- Not read: `BlockSetType` (and `BlockSetType$PressurePlateSensitivity`), needed for which
-  plates are `MOBS` and which `EVERYTHING`, and for their click sounds.
-- Not read: `Blocks`, needed for the weighted plates' `maxWeight` (15 and 150, as
-  `pressed.rs` has them) and for which blocks are hoppers' containers by class.
-- Not read: `WorldlyContainer`, `WorldlyContainerHolder`, `ComposterBlock` (and its
-  `InputContainer`/`OutputContainer`/`EmptyContainer`), needed for the composter as a
-  hopper's source and target.
 - Not read: `AbstractFurnaceBlockEntity`, `BrewingStandBlockEntity`,
   `ChiseledBookShelfBlockEntity`, `DecoratedPotBlockEntity`, `JukeboxBlockEntity`,
   `ShelfBlockEntity`, needed for which other block entities are containers to a hopper
   and their faces' slots and `canPlaceItem` rules (a creative player meets them all).
-- Not read: `LevelChunk$BoundTickingBlockEntity`, needed for which state the ticker
-  passes (the chunk's current state, **Inferred**) and that a block entity whose state no
-  longer fits is not ticked.
-- Not read: `ItemEntity` (in neither dump), needed for `setItem`'s and `discard`'s effect on
-  the entity's data and whether a hopper may take an item with a pick-up delay (it does
-  not look at it: **Inferred** it may).
+- Not read: `EntitySection` (and `ClassInstanceMultiMap`), `LevelEntityGetterAdapter`
+  and `SectionPos.asLong`, needed for the order of entities within a section, the
+  per-entity box test (**Inferred** `AABB.intersects`) and the exact order of sections
+  within one x (5.6).
+- Not read: `SynchedEntityData.set`, needed to confirm that a hopper's partial take of an
+  item entity always marks its `DATA_ITEM` dirty.
 - Not read: `LegacyRandomSource.nextInt`, needed only to know that `nextInt(1)` draws
   (the oracle cannot compare the level's random anyway).
-- Not read: `Block.column` and `Block.boxZ`, needed for the argument order of the
-  hopper's and plates' shapes (**Inferred** from their values; the repo's constants agree
-  for plates and tripwire).
-- Not read: `LevelEntityGetter` and `EntitySectionStorage`, needed for the order of
-  `getEntitiesOfClass` and `getEntities` (which item a hopper takes first, the list the
-  draw indexes).
-- Not read: `ServerPlayerGameMode.destroyBlock` for creative breaking's call of
-  `playerWillDestroy` (shears disarming tripwire): in the N5 dump, not re-read here.
-- Not read: `RandomizableContainer.unpackLootTable` (interface default) and
-  `RandomizableContainer.tryLoadLootTable`, needed for a loot chest's unpacking by a
-  hopper (section 3 may have it).
-
+- Not read: `LootTable.fill` and `LootContext$Builder.create`, needed for how a loot
+  chest's loot is spread over slots (section 3) and which random the composter's chance
+  draws from.
+- Not read: a `javap -v` of `HopperBlock` and `EntitySelector`, needed to confirm the
+  ticker's method reference and which lambda is `CONTAINER_ENTITY_SELECTOR`.
+- Not read: `SoundEvents`, needed to confirm the plates' sound fields' ids (all twelve
+  are in the registry by their usual names).
 ### 12.6 Sculk sensors and vibrations (section 8)
 
-- Not read: `GameEvent` (the registry entries and `notificationRadius` of each event),
-  needed for the dispatcher's search radius (**Inferred** 16 for all).
-- Not read: `GameEventDispatcher.post`, needed for the sections searched, the order of
-  listeners and the queue of `BY_DISTANCE` listeners.
-- Not read: `GameEventListener` (`getDeliveryMode`'s default) and
-  `GameEventListenerRegistry`/`EuclideanGameEventListenerRegistry`, needed for whether
-  sensors are handled at once (**Inferred** `UNSPECIFIED`) and for the range test
-  (**Inferred** `distSqr` of block positions ≤ radius²).
-- Not read: `LevelChunk.addGameEventListener`/`removeGameEventListener` (and
-  `getListenerRegistry`), needed for when a sensor starts and stops listening (placed,
-  loaded, unloaded, removed) and in which section.
-- Not read: `VibrationSelector`, needed for which of several events in a tick is chosen
-  and when (`addCandidate`, `chosenCandidate`, `startOver`, its codec).
-- Not read: `VibrationInfo`, needed for its codec (saved in the sensor's `listener`)
-  and `getEntity`/`getProjectileOwner`.
+Read since the first version, and settled there: `GameEvent` (each event's radius),
+`GameEventDispatcher`, `GameEventListener` (`UNSPECIFIED` by default), `LevelChunk`
+(when listeners are registered), `VibrationSelector`, `VibrationInfo`,
+`CalibratedSculkSensorBlockEntity` and its user, `ItemEntity` (`hit_ground`, wool),
+`FallingBlockEntity`, `BlockGetter.isBlockInLine`, `Block.playerWillDestroy`,
+`BlockItem.place`, `BucketItem`. Still not read:
+
+- Not read: `EuclideanGameEventListenerRegistry` (and `GameEventListenerRegistry`),
+  needed for the order of listeners within a section and the range test
+  (**Inferred** `distSqr` of block positions ≤ radius², in the order registered).
 - Not read: `BlockPositionSource`, `EntityPositionSource`, `PositionSource(Type)` and
   `VibrationParticleOption`, needed for the listener's position (**Inferred** the
   block's centre) and the particle's wire format.
 - Not read: `ClientboundLevelParticlesPacket` (and its `RandomizationType`), needed for
   the particle packet's fields in 26.3.
-- Not read: `LevelAccessor`/`LevelWriter` `gameEvent` overloads, needed for the
-  position a block-position post uses (**Inferred** `Vec3.atCenterOf`) and the
-  `ResourceKey` overload used by resonance.
-- Not read: `Level.isBlockInLine` and `ClipBlockStateContext`, needed for the walk of
-  the occlusion's segments (which blocks a segment visits, whether the start block
-  counts).
-- Not read: `CalibratedSculkSensorBlockEntity` and its `VibrationUser`, needed for the
-  calibrated sensor's radius, its frequency filter and its back input.
-- Not read: `ItemEntity`, needed for whether items post `hit_ground` on landing and
-  whether a wool item `dampensVibrations`.
-- Not read: `Block.playerWillDestroy`, `BlockItem.place`, `LeverBlock`, `ButtonBlock`,
-  `DoorBlock`, `TrapDoorBlock`, `FenceGateBlock`, `NoteBlock`, `PistonBaseBlock`,
-  `BellBlock`, `RepeaterBlock`, `ComparatorBlock` (only for its posts; it has none in
-  the dump), `BucketItem`, `FlintAndSteelItem`, `FallingBlockEntity`: needed for the
-  game events the blocks and items already built post (all **Inferred** in 8.1).
+- Not read: `LevelAccessor` (its `gameEvent` defaults), needed for the position a
+  block-position post uses (**Inferred** `Vec3.atCenterOf`) and the `ResourceKey`
+  overload used by resonance.
+- Not read: `RegistryCodecs.holder`, needed to confirm that a saved vibration names its
+  event by registry name.
+- Not read: `LeverBlock`, `ButtonBlock`, `DoorBlock`, `TrapDoorBlock`,
+  `FenceGateBlock`, `NoteBlock`, `PistonBaseBlock`, `BellBlock`, `RepeaterBlock`,
+  `FlintAndSteelItem`: needed for the game events the blocks and items already built
+  post (**Inferred** in 8.0 item 2 and 8.1).
 - Not read: `Entity.playStepSound`/`walkingStepSound`'s sound-type lookup, needed only
   if step sounds are sent as well.
 - Not read: `SculkShriekerBlock`, `SculkShriekerBlockEntity`, `Warden`, `Allay`: the
