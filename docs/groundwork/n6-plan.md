@@ -1,6 +1,7 @@
 # Step N6: TNT, explosions, containers that open, and the redstone that waits for entities, planned
 
-Draft of 2026-10-18, to be reviewed before it is built. Step N6 of the
+Draft of 2026-10-18, revised the same day after an independent review (section 6, which
+overrides what it amends above it); to be reviewed again before it is built. Step N6 of the
 [phase plan](n-plan.md): "TNT and explosions, and the redstone of ADR-0026 section 11
 that waits for entities (dispensers, droppers, hoppers, detector rails, pressure plates
 that count entities, tripwire)". The game's rules are in the [porting brief](n6-brief.md),
@@ -134,3 +135,87 @@ this plan and the brief by someone who built none of it.
 2. Should game events and sculk (decision 9) be a step of their own?
 3. Does the explosion's effect (decision 10) carry enough for the holder to do the game's
    order (updates at once per block, spills, chained TNT, then drops)?
+
+## 6. The first review, and what it changed
+
+An independent review (2026-10-18) found these; each change overrides the text above.
+
+1. **An open menu across a restore, a merge, a split or a move.** The menu goes into the
+   player's state (the container's place or entity key, its kind, the carried stack,
+   the drag in progress and a serial), and the state's format is raised. At the first
+   tick after any restore the region reports every player's menu whole, or that they
+   have none; what it last reported is kept out of the state, so a restore reports
+   everything and the edge's comparison heals the client. Openers' counts are worked out
+   again from the restored menus, and the block event sent again. At the edge a
+   `MenuClosed` is idempotent, and a `MenuOpened` while one is open is the game's
+   `openMenu`: `container_close`, then the new id.
+2. **A menu at a hand-over.** The region that lets a player go closes their menu in that
+   tick, before the transfer is built: `closeContainer` puts the carried stack into the
+   inventory, which travels in the transfer, `stopOpen` runs, and `MenuClosed` is
+   reported, with the slots the stack filled; a tick's player events reach the edge
+   before its outbox's `Departed`. A menu also closes when its container vehicle crosses
+   a line, when `stillValid` finds a chunk of the container not held (splits, lends, a
+   double chest's half), and when the player leaves (the carried stack put back, the
+   place written). A remote click on a container and a use of a container vehicle as an
+   effect consume the click and open nothing. Named: the menu closes at a line, not at
+   8.5 blocks. So no menu spans two regions, and the opener counted by another region
+   (decision 10) never arises.
+3. **The edge lines up a click with the region's answer.** Menu events carry the menu's
+   serial and the number of the last input applied. The edge keeps each forwarded
+   click's hashes and its stale flag by input number and applies them to the remote
+   slots (the game's `setRemoteSlotUnsafe`, `setRemoteCarried`) when an answer covering
+   that number arrives, then compares, as brief 3.17 orders it; it drops events of
+   another serial than the current one, and sends `container_close` only for the
+   current menu. A region with no menu passes a click over.
+4. **Dispensers, droppers and hoppers at a pinned line borrow, not wait.** They join
+   ADR-0027's circuit parts (their reach: the block in front, the block below it, a
+   double chest's other half), and are reported for the merging of regions that follow
+   players as circuits are. "Waits" is kept only for what is out of reach still, and a
+   waiting dispenser fails (its click) rather than firing minutes later. A drop or a
+   primed TNT made in a foreign block is made in the dispenser's region and crosses as
+   an arrival.
+5. **Shulker boxes keep their contents** until stacks have components: one broken, by a
+   player, an explosion or a piston (it is popped), spills its contents as a chest does
+   (named), in every path of its removal.
+6. **Plates and tripwire at a line**: their recounts and rechecks count the holder's
+   entities and its copies' entities, so an entity across the line keeps a plate
+   pressed without the 20-tick recheck letting it go; ADR-0026 section 10's "the region's
+   own players" is amended so.
+7. **N6a's contracts in full**: the effects (the explosion's block, its hit on an entity
+   as an `EntityUse`, an entity come in for plates and tripwire, a vibration, a step on a
+   sensor, TNT burnt by fire across a line); `EntityData::PrimedTnt` (fuse, owner, block,
+   power), the TNT cart's fuse and the hopper cart's `enabled` (the minecart record's
+   layout, here and not in N6e); typed container block entities; the item walk's
+   hand-back for hoppers, plates, tripwire and sensors; the menu and the ender chest in
+   the player's state; `PlayerInput` variants at the end; `PlayerInput::OpenVehicleInventory`
+   for `player_command`'s `OPEN_INVENTORY` (a chest boat's inventory key). Worlds made
+   before are refused and made again, as at N5.
+8. **The ender chest in the store**: a new commit kind for stays with an ender chest, the
+   old kinds read with an empty one, the players' file versioned; a click that changes
+   its slots counts as a change of the player, so the tick writes a `Has` note; it is in
+   the transfer. ADR-0020 section 2 is amended.
+9. **The explosion's effect** is one per far block (`Effect` stays `Copy`): the expected
+   state; the interaction (destroy, or destroy with decay, and the radius); whether a
+   direct source exists; the owner's UUID and whether a player; an explosion id. The
+   holder breaks each block in turn with its updates, spills, primes TNT, and after all of
+   one explosion's blocks taken in that tick lays the drops, merged within that
+   explosion's id only; effects of one explosion split across ticks lay apart (named).
+   TNT burnt by fire across a line carries "burnt", and the holder primes it after the
+   set. Where regions follow players, a TNT primed within 8 blocks of a line counts as
+   work there, so that the regions merge within its 80 ticks and the explosion is whole.
+10. **The order of the parts**: a, b, c, d, e in sequence, f last, g's edge fan-out of the
+    explosion packet with c; or, where N6a has fixed the typed block entities, the
+    tickers' slots and the item walk's hook, d and e side by side.
+11. **Comparisons with the official server** for the new packets: open a chest, click,
+    quick move, drag, close; the explosion packet's fields (N6h, N6j).
+12. **Smaller points**: the edges are not sent a container's data on every hopper move (it
+    is never shown); an ender chest opens across a line too (it touches the player's data
+    alone); N6h measures on the disk without its cache as well, saying which number is
+    which; a TNT cart is primed by a hit only while it moves at speed² ≥ 0.01, or by fire
+    or an explosion; the plan amends ADR-0020 section 2, ADR-0026 section 10, ADR-0027
+    section 2 and ADR-0028 section 7.
+
+**For the owner** (decisions 4 and 7, which the review says a player meets at once):
+structures' chests and barrels show empty when opened (no loot tables are stored, so
+nothing is lost by it, and a later step fills chests not yet opened); arrows and other
+projectiles in a dispenser drop as items until N9. Both are proposed as they are.
