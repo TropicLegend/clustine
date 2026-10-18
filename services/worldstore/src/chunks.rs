@@ -518,7 +518,7 @@ pub(crate) enum Job {
     /// Applies block changes to the stored chunks and makes them durable.
     Fold {
         changes: Vec<Replayed>,
-        done: Sender<Result<(), StoreError>>,
+        done: Sender<Result<BTreeSet<ChunkPos>, StoreError>>,
     },
     /// Everything before it is done, of whatever handle, and what there was to say of
     /// it to the commit thread is said: tells that thread so, through `reply_to`,
@@ -1301,8 +1301,9 @@ impl ChunkService {
 
     /// Applies block changes while a world is made over, and makes them durable. It
     /// keeps the thread until it is done, waiting for the generator on a way of its
-    /// own: no region is open then.
-    fn fold(&mut self, changes: &[Replayed]) -> Result<(), StoreError> {
+    /// own: no region is open then. It answers the chunks it could neither read nor make,
+    /// which it left as they were.
+    fn fold(&mut self, changes: &[Replayed]) -> Result<BTreeSet<ChunkPos>, StoreError> {
         let touched = touched(changes);
         let mut bases = BTreeMap::new();
         let (made, arriving) = mpsc::channel();
@@ -1345,10 +1346,16 @@ impl ChunkService {
         for position in wanted.into_keys() {
             lost(position, touched[&position], &"the generator let go of it");
         }
+        let unmade = touched
+            .keys()
+            .filter(|position| !bases.contains_key(position))
+            .copied()
+            .collect();
         // The tick and the epoch of a saved chunk are only for whoever looks at the
         // files, and no region saves these.
         apply(self.chunks.as_mut(), bases, changes, 0, NO_REGION)?;
-        self.chunks.sync()
+        self.chunks.sync()?;
+        Ok(unmade)
     }
 
     fn work(&mut self, job: Job) {

@@ -3435,7 +3435,9 @@ impl Lanes {
         // commit's changes and whoever holds the chunk, by key: a fold done again after a
         // crash writes the same (`docs/groundwork/n3-plan.md`, sections 5 and 6). An
         // arrival whose chunk the fold cannot read goes with the chunk, which is made
-        // again: a named loss, of a chunk lost already.
+        // An arrival whose chunk the fold could not read or make stays filed, written
+        // forward ahead of the records below, for whoever is granted the chunk next (the
+        // ADR, section 5; the plan, section 6).
         let folded = self.arrivals.all();
         for arrival in &folded {
             changes.push(Replayed::Entity(
@@ -3447,9 +3449,15 @@ impl Lanes {
         let _ = self.jobs.send(Job::Fold { changes, done });
         // No region is open before the store has started, so waiting here keeps no
         // commit waiting.
-        finished
+        let unmade = finished
             .recv()
             .map_err(|_| io::Error::other("the thread for chunks has gone"))??;
+        let (kept, folded): (Vec<Arrival>, Vec<Arrival>) = folded
+            .into_iter()
+            .partition(|arrival| unmade.contains(&arrival.chunk));
+        if !kept.is_empty() && self.write_arrivals_forward(kept).is_err() {
+            return Err(io::Error::other("arrivals could not be written forward").into());
+        }
 
         // The arrivals are taken, ahead of the records that leave the commits that filed
         // them out of every history and in the same sync: the fold is safe because those

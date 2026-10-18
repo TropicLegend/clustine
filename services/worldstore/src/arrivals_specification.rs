@@ -1766,7 +1766,6 @@ fn a_fold_stopped_at_any_point_and_done_again_leaves_the_arrival_in_its_chunk_on
 /// or make stays filed", written forward before the `Opened` records that take back
 /// every earlier commit's arrivals, and goes to whoever holds the chunk.
 #[test]
-#[ignore = "finding: the fold drops an arrival whose chunk it cannot read instead of keeping it filed as ArrivalsForward (n3-plan section 6, item 2)"]
 fn a_fold_that_cannot_read_an_arrivals_chunk_keeps_the_arrival_filed() {
     let disk = sent_and_not_taken();
     let path = FileChunks::new(disk.clone(), Path::new("/world")).chunk_path(W);
