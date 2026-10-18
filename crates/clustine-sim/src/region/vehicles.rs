@@ -172,6 +172,7 @@ impl Region {
         };
         let data = with_hurt(&record.data, after);
         let record = record.clone();
+        let data_after = data.clone();
         // The new data are sent before any removal, and `markHurt` sends the motion.
         self.commit_entity(chunk, key, vec![EntityField::Data(data.clone())], output);
         output.events.push(RegionEvent::DataChanged {
@@ -180,7 +181,11 @@ impl Region {
             hops: record.hops,
             data,
         });
-        let mut report = super::items::tracked(&record, Tracked::SYNC_VELOCITY, false);
+        // The report carries the new hurt data, which the edge sends as it sends a
+        // change of the data of any tick's report.
+        let mut shown = record.clone();
+        shown.data = data_after;
+        let mut report = super::items::tracked(&shown, Tracked::SYNC_VELOCITY, true);
         report.chunk = chunk;
         output.events.push(RegionEvent::EntityTracked(report));
         if !creative && after.damage.0 > BREAKING_DAMAGE {

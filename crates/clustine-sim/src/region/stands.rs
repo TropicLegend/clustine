@@ -588,6 +588,7 @@ impl Region {
                 stuck_speed: living.body.stuck_speed,
                 no_physics: living.no_physics,
                 ticks_since_check: 0,
+                cart: Default::default(),
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {
@@ -680,15 +681,22 @@ impl Region {
     }
 
     /// `AbstractMinecart.push(entity)` of the cart `cart` by the entity `by`, an armour
-    /// stand: the minecarts' step fills it (N5e; `docs/groundwork/n5-plan.md`, section 7
-    /// item 10), and until then a stand finds the carts it would push and pushes none.
+    /// stand: the cart is pushed away from it, and the stand is given its share the other
+    /// way (`Entity.push(x, y, z)`, which asks nothing of whether it is pushable).
     pub(crate) fn minecart_pushed_by(
         &mut self,
         cart: EntityId,
         by: EntityId,
         output: &mut TickOutput,
     ) {
-        let _ = (cart, by, output);
+        let Some((_, stand)) = self.find_entity(by) else {
+            return;
+        };
+        let at = stand.position;
+        // A cart does not push what it carries (`hasPassenger`).
+        if let Some(push) = self.push_minecart(cart, at, Some(by), output) {
+            self.push_entity(by, push, output);
+        }
     }
 
     /// A player's hit on, or use of, the stand `entity`: made here, or by another

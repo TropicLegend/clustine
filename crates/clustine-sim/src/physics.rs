@@ -15,6 +15,7 @@ pub(crate) mod collide;
 pub(crate) mod entities;
 pub(crate) mod fluids;
 pub(crate) mod item;
+pub(crate) mod minecart;
 pub(crate) mod piston;
 pub(crate) mod voxel;
 pub(crate) mod walk;

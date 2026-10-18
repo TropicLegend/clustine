@@ -76,6 +76,13 @@ pub trait BlockView {
     fn item_frame_signal(&mut self, _at: BlockPos, _facing: Face) -> Option<u8> {
         None
     }
+
+    /// `getAnalogOutputSignal` of the block `state` at `at`, which a comparator reads
+    /// behind it: what the state alone gives ([`signal::analog_output`]), but where the
+    /// caller counts what entities on the block hold (a detector rail's minecarts).
+    fn analog_output(&mut self, _at: BlockPos, state: BlockState) -> u8 {
+        signal::analog_output(state).unwrap_or(0)
+    }
 }
 
 /// The callers whose copies of these rules disagreed before they were made one, each

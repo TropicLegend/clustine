@@ -379,6 +379,9 @@ impl Region {
         if self.pressed_tick(pos, state, output) {
             return true;
         }
+        if self.detector_rail_tick(pos, state, output) {
+            return true;
+        }
         if self.diode_tick(pos, state, output) {
             return true;
         }

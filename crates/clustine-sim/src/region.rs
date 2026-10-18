@@ -878,8 +878,11 @@ impl Region {
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
         self.run_block_entities(&mut output);
-        // The players pick up what lies around them as the game's connections tick
-        // after its levels, block entities and all (`items.rs`).
+        // The players push the carts they stand in and pick up what lies around them,
+        // as the game's connections tick after its levels, block entities and all
+        // (`minecarts.rs`, `items.rs`): `LivingEntity.aiStep` pushes before the
+        // player's own `aiStep` touches items.
+        self.players_push_minecarts(&mut output);
         self.pick_up_items(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
@@ -2872,6 +2875,7 @@ mod tests {
     mod item_physics;
     mod lends;
     mod lends_by_the_record;
+    mod minecarts;
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;

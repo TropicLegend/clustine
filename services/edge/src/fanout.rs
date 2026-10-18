@@ -5483,8 +5483,12 @@ fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
                 EntityDataValue::ItemStack(Some(protocol_stack(*stack))),
             )],
         },
-        // A falling block's start, its index 8, comes with step N4d; N5's kinds' data
-        // with the steps that bring them.
+        EntityData::Minecart { .. } => SetEntityData {
+            entity_id: id,
+            values: crate::tracking::minecart_values(data),
+        },
+        // A falling block's start, its index 8, comes with step N4d; N5's other kinds'
+        // data with the steps that bring them.
         _ => SetEntityData {
             entity_id: id,
             values: Vec::new(),

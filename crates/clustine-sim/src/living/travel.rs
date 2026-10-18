@@ -206,6 +206,7 @@ impl Living {
             air_drag: self.air_drag(),
             own: self.attributes.bounciness,
             living: true,
+            rails_keep_speed: false,
         };
         let before = self.body.position;
         let mut refreshed = None;

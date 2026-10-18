@@ -19,15 +19,18 @@
 //! - a rail taken away tells the blocks around it and the one above a slope
 //!   (`BaseRailBlock.affectNeighborsAfterRemoval`).
 //!
-//! A detector rail tells comparators of its state (`DetectorRailBlock.checkPressed`),
-//! which without minecarts never changes.
+//! A detector rail is pressed by a minecart whose box meets the middle of its block
+//! (`DetectorRailBlock`, with `minecarts.rs`): any entity inside it makes it look, it
+//! looks again by its own tick every 20 ticks while pressed, it powers what is around
+//! it and, directly, the block below, tells the rails it leads to and the comparators
+//! beside it, and a comparator reads the fill of a chest or hopper cart on it.
 //!
 //! A rail's rules read signals, so they run only where its chunk ticks (section 1 of
 //! the record), where every block they read is loaded or copied.
 
-use clustine_blocks::data::{in_tag, is_class, relative};
+use clustine_blocks::data::{flag, in_tag, is_class, relative, same_block, set_flag, tick_id};
 use clustine_data::{BlockClass, BlockState, Face, SupportType};
-use clustine_world::BlockPos;
+use clustine_world::{BlockPos, Ticked};
 
 use super::Region;
 use super::updates::RegionView;
@@ -59,6 +62,9 @@ impl clustine_blocks::BlockView for ReadOnly<'_> {
     }
     fn comparator_output(&mut self, at: BlockPos) -> u8 {
         self.0.comparator_output(at)
+    }
+    fn analog_output(&mut self, at: BlockPos, state: BlockState) -> u8 {
+        self.0.analog_output_at(at, state)
     }
 }
 
@@ -229,6 +235,102 @@ impl Region {
         if placed.straight {
             self.neighbour_changed_at(pos, Face::Down, placed.state, false, output);
         }
+        // `DetectorRailBlock.onPlace`: then it looks for carts, with the state
+        // `updateState` left it.
+        if is_class(state, BlockClass::DetectorRailBlock) && self.ticks_chunk(pos.chunk()) {
+            let now = self.own_block(pos).unwrap_or(placed.state);
+            self.detector_rail_check(pos, now, output);
+        }
+    }
+
+    /// `DetectorRailBlock.checkPressed(level, pos, state)`: a detector rail that can
+    /// stay takes whether a minecart's box meets its search box, set with every update,
+    /// and then tells the rails it leads to, the blocks around it and those around the
+    /// block below; while pressed it looks again 20 ticks on; and every look tells the
+    /// comparators beside it. Run only where its chunk ticks.
+    pub(super) fn detector_rail_check(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
+        if !self.supports_rigid(relative(pos, Face::Down)) {
+            return;
+        }
+        if !self
+            .own_block(pos)
+            .is_some_and(|here| same_block(here, state))
+        {
+            return;
+        }
+        let was = flag(state, "powered");
+        let now = !self
+            .minecarts_meeting(&super::minecarts::detector_search_box(pos))
+            .is_empty();
+        let mut told = state;
+        if now != was {
+            told = set_flag(state, "powered", now);
+            self.set_block(pos, told, output);
+            self.detector_power_to_connected(pos, told, output);
+            self.update_neighbours_at(pos, told, output);
+            self.update_neighbours_at(relative(pos, Face::Down), told, output);
+        }
+        if now {
+            self.schedule_tick(pos, Ticked::Block(tick_id(state)), 20, 0);
+        }
+        self.update_neighbour_for_output_signal(pos, told, output);
+    }
+
+    /// `DetectorRailBlock.updatePowerToConnected`: each block the rail leads to by its
+    /// shape (`RailState.getConnections`) is told that it, its own block, changed, as
+    /// `Level.neighborChanged` with no orientation tells it; here from the side of the
+    /// detector rail.
+    fn detector_power_to_connected(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let rail = Rail::new(pos, state);
+        for connection in rail.connections {
+            let Some(there) = self.block(connection) else {
+                continue;
+            };
+            let from = match (pos.x - connection.x, pos.z - connection.z) {
+                (1, _) => Face::East,
+                (-1, _) => Face::West,
+                (_, 1) => Face::South,
+                _ => Face::North,
+            };
+            self.neighbour_changed_at(connection, from, there, false, output);
+        }
+    }
+
+    /// `DetectorRailBlock.tick`: a pressed detector rail looks again. Whether `state` is
+    /// a detector rail.
+    pub(super) fn detector_rail_tick(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) -> bool {
+        if !is_class(state, BlockClass::DetectorRailBlock) {
+            return false;
+        }
+        if flag(state, "powered") {
+            self.detector_rail_check(pos, state, output);
+        }
+        true
+    }
+
+    /// `getAnalogOutputSignal` of the block `state` at `pos`, as a comparator reads it:
+    /// a detector rail's from the carts on it (`minecarts.rs`), any other block's from
+    /// its state.
+    pub(crate) fn analog_output_at(&self, pos: BlockPos, state: BlockState) -> u8 {
+        if is_class(state, BlockClass::DetectorRailBlock) {
+            return self.detector_rail_output(pos, state);
+        }
+        signal::analog_output(state).unwrap_or(0)
     }
 
     /// `BaseRailBlock.neighborChanged`: a rail goes where nothing rigid holds it, or

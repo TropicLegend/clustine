@@ -1037,6 +1037,10 @@ impl BlockView for RegionView<'_> {
     fn comparator_output(&mut self, at: BlockPos) -> u8 {
         self.0.comparator_output(at)
     }
+
+    fn analog_output(&mut self, at: BlockPos, state: BlockState) -> u8 {
+        self.0.analog_output_at(at, state)
+    }
 }
 
 /// `FluidState.createLegacyBlock`: what a block leaves when it goes, water where it held

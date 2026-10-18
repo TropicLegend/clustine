@@ -96,7 +96,7 @@ pub fn input_signal<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos:
     let at = relative(pos, direction);
     let block = view.block(at);
     if block.props().has_analog_output_signal() {
-        return signal::analog_output(block).unwrap_or(0);
+        return view.analog_output(at, block);
     }
     if input < MAX_SIGNAL && is_conductor(block) {
         let far = relative(at, direction);
@@ -106,7 +106,7 @@ pub fn input_signal<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos:
         let block_output = beyond
             .props()
             .has_analog_output_signal()
-            .then(|| signal::analog_output(beyond).unwrap_or(0));
+            .then(|| view.analog_output(far, beyond));
         if let Some(read) = frame.max(block_output) {
             return read;
         }

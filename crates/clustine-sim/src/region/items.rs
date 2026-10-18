@@ -50,6 +50,18 @@ pub(crate) struct Memory {
     /// A block-attached entity's `ticksSinceLastCheck`, which starts again at a
     /// take-in as at the game's load (`docs/groundwork/n5-plan.md`, section 7 item 7).
     pub(crate) ticks_since_check: u32,
+    /// What a minecart keeps beyond its record (`minecarts.rs`).
+    pub(crate) cart: CartMemory,
+}
+
+/// What the game keeps of a minecart in memory and does not save: whether its box was
+/// in water at its last fluid update (`isInWater`, which its next tick reads before it
+/// looks again), and the height of a furnace cart's push, which the game saves only
+/// along x and z.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub(crate) struct CartMemory {
+    pub(crate) in_water: bool,
+    pub(crate) push_y: f64,
 }
 
 /// The region as the physics of one entity read it: its loaded and copied chunks, and
@@ -358,6 +370,7 @@ impl Region {
                 stuck_speed: item.body.stuck_speed,
                 no_physics: item.no_physics,
                 ticks_since_check: 0,
+                cart: CartMemory::default(),
             },
         );
         let mut after = after;

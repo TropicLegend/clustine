@@ -58,6 +58,81 @@ const ONCE: u8 = Tracked::NEEDS_SYNC | Tracked::SYNC_POSITION | Tracked::SYNC_VE
 /// Values of [`Tracker::dirty`]: which of the entity's data changed since it was sent.
 const DIRTY_FLAGS: u8 = 1;
 const DIRTY_STACK: u8 = 2;
+/// A minecart's own values (`VehicleEntity`'s, `AbstractMinecart`'s, a furnace cart's).
+const DIRTY_MINECART: u8 = 128;
+
+/// The indices of a minecart's data, after `Entity`'s eight (the brief's section 3.13):
+/// the hurt time, its direction and the damage (`VehicleEntity`), the block shown and
+/// how high (`AbstractMinecart`), and a furnace cart's fuel (`MinecartFurnace`).
+mod cart_data {
+    pub(super) const HURT: u8 = 8;
+    pub(super) const HURT_DIRECTION: u8 = 9;
+    pub(super) const DAMAGE: u8 = 10;
+    pub(super) const DISPLAY_BLOCK: u8 = 11;
+    pub(super) const DISPLAY_OFFSET: u8 = 12;
+    pub(super) const FUEL: u8 = 13;
+}
+
+/// The values of a minecart's data that are not their defaults: the hurt data while it
+/// wobbles or is damaged, a block shown other than its kind's and its height, and, for
+/// a furnace cart, that it burns. A furnace cart is the only kind with fuel, so no other
+/// kind is ever sent the furnace's index; a block or height shown is sent only where the
+/// record keeps one of its own, which a world's cart may, whatever its kind's default.
+/// The game's `has fuel` flag is not saved and is set again at the cart's next tick;
+/// here it is whether the cart has fuel, so a cart taken in with fuel is shown burning
+/// a tick sooner.
+pub(crate) fn minecart_values(data: &EntityData) -> Vec<(u8, EntityDataValue)> {
+    let EntityData::Minecart {
+        hurt,
+        display,
+        display_offset,
+        fuel,
+        ..
+    } = data
+    else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    if hurt.time != 0 {
+        values.push((cart_data::HURT, EntityDataValue::Int(hurt.time)));
+    }
+    if hurt.direction != 1 {
+        values.push((
+            cart_data::HURT_DIRECTION,
+            EntityDataValue::Int(hurt.direction),
+        ));
+    }
+    if hurt.damage.0.to_bits() != 0.0_f32.to_bits() {
+        values.push((cart_data::DAMAGE, EntityDataValue::Float(hurt.damage.0)));
+    }
+    if let Some(state) = display {
+        values.push((
+            cart_data::DISPLAY_BLOCK,
+            EntityDataValue::OptionalBlockState(i32::from(*state)),
+        ));
+    }
+    if let Some(offset) = display_offset {
+        values.push((cart_data::DISPLAY_OFFSET, EntityDataValue::Int(*offset)));
+    }
+    if *fuel > 0 {
+        values.push((cart_data::FUEL, EntityDataValue::Boolean(true)));
+    }
+    values
+}
+
+/// The default of the minecart's value at `index`, as a change back to it is sent;
+/// none for the height of the block shown, whose default is its kind's, and which no
+/// rule of the step changes back.
+fn minecart_default(index: u8) -> Option<EntityDataValue> {
+    match index {
+        cart_data::HURT => Some(EntityDataValue::Int(0)),
+        cart_data::HURT_DIRECTION => Some(EntityDataValue::Int(1)),
+        cart_data::DAMAGE => Some(EntityDataValue::Float(0.0)),
+        cart_data::DISPLAY_BLOCK => Some(EntityDataValue::OptionalBlockState(0)),
+        cart_data::FUEL => Some(EntityDataValue::Boolean(false)),
+        _ => None,
+    }
+}
 /// A hanging entity's direction, a frame's rotation, a painting's variant.
 const DIRTY_DIRECTION: u8 = 4;
 const DIRTY_ROTATION: u8 = 8;
@@ -406,6 +481,12 @@ impl Tracker {
         {
             self.dirty |= DIRTY_STACK;
         }
+        if let (Some(new @ EntityData::Minecart { .. }), EntityData::Minecart { .. }) =
+            (&tracked.data, data)
+            && minecart_values(new) != minecart_values(data)
+        {
+            self.dirty |= DIRTY_MINECART;
+        }
         if let Some(new) = &tracked.data {
             self.dirty |= hanging_changes(data, new);
             self.data_changed(data, new);
@@ -528,6 +609,29 @@ impl Tracker {
                         PAINTING_VARIANT,
                         EntityDataValue::PaintingVariant(i32::from(*variant)),
                     ));
+                }
+            }
+            EntityData::Minecart { .. } => {
+                let now = minecart_values(data);
+                if pairing {
+                    values.extend(now);
+                } else if self.dirty & DIRTY_MINECART != 0 {
+                    // What differs from what the clients were sent last, as the game
+                    // sends the values it marked dirty.
+                    let find = |list: &[(u8, EntityDataValue)], index: u8| {
+                        list.iter()
+                            .find(|(at, _)| *at == index)
+                            .map(|(_, value)| value.clone())
+                    };
+                    for index in cart_data::HURT..=cart_data::FUEL {
+                        let current = find(&now, index);
+                        if current == find(&self.pairing, index) {
+                            continue;
+                        }
+                        if let Some(value) = current.or_else(|| minecart_default(index)) {
+                            values.push((index, value));
+                        }
+                    }
                 }
             }
             // An armour stand's values are its living data's, above; the other kinds of
@@ -892,6 +996,111 @@ mod tests {
             drop_item: true,
             cancel_drop: false,
         }
+    }
+
+    fn minecart(hurt: clustine_world::Hurt, fuel: i32) -> EntityData {
+        EntityData::Minecart {
+            hurt,
+            display: None,
+            display_offset: None,
+            flipped: false,
+            contents: Vec::new(),
+            fuel,
+            push: [clustine_world::Double(0.0); 2],
+        }
+    }
+
+    fn hurt(time: i32, direction: i32, damage: f32) -> clustine_world::Hurt {
+        clustine_world::Hurt {
+            time,
+            direction,
+            damage: clustine_world::Float(damage),
+        }
+    }
+
+    /// A newly shown client is sent a cart's hurt data that are not their defaults
+    /// (time 0, direction 1, damage 0) and a burning furnace cart's fuel, by index.
+    #[test]
+    fn a_carts_hurt_data_and_a_furnace_carts_fuel_are_sent_at_pairing() {
+        let seen = Seen {
+            kind: entity_types::FURNACE_MINECART as u16,
+            position: [0.5, 64.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let data = minecart(hurt(5, -1, 12.0), 100);
+        let tracker = Tracker::new(seen, &data, 0);
+        assert_eq!(
+            tracker.pairing().values,
+            [
+                (8, EntityDataValue::Int(5)),
+                (9, EntityDataValue::Int(-1)),
+                (10, EntityDataValue::Float(12.0)),
+                (13, EntityDataValue::Boolean(true)),
+            ]
+        );
+        // A plain cart at rest has nothing of its own to send.
+        let plain = Tracker::new(seen, &minecart(hurt(0, 1, 0.0), 0), 0);
+        assert!(plain.pairing().values.is_empty());
+    }
+
+    /// A hit sends the three hurt values; as the wobble and the damage fall, each tick
+    /// sends only what changed, and their return to the defaults sends the defaults.
+    #[test]
+    fn a_carts_hurt_data_are_sent_as_they_change() {
+        let seen = Seen {
+            kind: entity_types::MINECART as u16,
+            position: [0.5, 64.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let whole = minecart(hurt(0, 1, 0.0), 0);
+        let mut tracker = Tracker::new(seen, &whole, 0);
+        tracker.send_changes(ID, &whole);
+        let data_of = |sent: &[Sent]| -> Vec<(u8, EntityDataValue)> {
+            sent.iter()
+                .filter_map(|sent| match sent {
+                    Sent::Data(data) => Some(data.values.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+        let report = |tracker: &mut Tracker, before: &EntityData, after: EntityData| {
+            let mut tracked = tick([0.5, 64.0, 0.5], [0.0; 3], false, 0);
+            tracked.data = Some(after.clone());
+            tracker.report(&tracked, before);
+            data_of(&tracker.send_changes(ID, &after))
+        };
+        let hit = minecart(hurt(10, -1, 10.0), 0);
+        assert_eq!(
+            report(&mut tracker, &whole, hit.clone()),
+            [
+                (8, EntityDataValue::Int(10)),
+                (9, EntityDataValue::Int(-1)),
+                (10, EntityDataValue::Float(10.0)),
+            ]
+        );
+        let fallen = minecart(hurt(9, -1, 9.0), 0);
+        assert_eq!(
+            report(&mut tracker, &hit, fallen.clone()),
+            [
+                (8, EntityDataValue::Int(9)),
+                (10, EntityDataValue::Float(9.0)),
+            ]
+        );
+        let still = minecart(hurt(0, -1, 0.0), 0);
+        assert_eq!(
+            report(&mut tracker, &fallen, still),
+            [
+                (8, EntityDataValue::Int(0)),
+                (10, EntityDataValue::Float(0.0)),
+            ]
+        );
     }
 
     fn item_at(position: [f64; 3], on_ground: bool) -> Tracker {

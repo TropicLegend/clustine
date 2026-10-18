@@ -29,6 +29,8 @@ pub(crate) struct Bounce {
     pub(crate) air_drag: f32,
     pub(crate) own: f64,
     pub(crate) living: bool,
+    /// Whether a rail under it keeps its speed (`AbstractMinecart.getBlockSpeedFactor`).
+    pub(crate) rails_keep_speed: bool,
 }
 
 /// The bounce of items and falling blocks, which are not living and bounce of
@@ -38,6 +40,7 @@ pub(crate) const NOT_LIVING: Bounce = Bounce {
     air_drag: AIR_DRAG,
     own: 0.0,
     living: false,
+    rails_keep_speed: false,
 };
 
 /// One move of the tick (`Entity.Movement`): where from and to, and, for a move the
@@ -260,7 +263,14 @@ impl Body {
         if (moved_y && self.vertical_collision) || self.horizontal_collision {
             self.restitute(below, x_collision, z_collision, out, bounce);
         }
-        let factor = f64::from(self.speed_factor(world));
+        // `AbstractMinecart.getBlockSpeedFactor`: a cart on a rail keeps its speed.
+        let on_rails = bounce.rails_keep_speed
+            && clustine_blocks::data::in_tag(world.state(self.block_position()), "minecraft:rails");
+        let factor = if on_rails {
+            1.0
+        } else {
+            f64::from(self.speed_factor(world))
+        };
         self.motion = [
             self.motion[0] * factor,
             self.motion[1] * 1.0,

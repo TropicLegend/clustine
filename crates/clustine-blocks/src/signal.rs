@@ -168,6 +168,10 @@ pub fn own_signal(state: BlockState) -> u8 {
     if is_class(state, BlockClass::TripWireHookBlock) && flag(state, "powered") {
         return MAX_SIGNAL;
     }
+    // `DetectorRailBlock.ownSignal`: while a minecart presses it.
+    if is_class(state, BlockClass::DetectorRailBlock) && flag(state, "powered") {
+        return MAX_SIGNAL;
+    }
     // `RedstoneTorchBlock.ownSignal`, the wall torch's too.
     if crate::diode::is_torch(state) {
         return if flag(state, "lit") { MAX_SIGNAL } else { 0 };
@@ -314,8 +318,9 @@ pub fn block_signal<V: BlockView + ?Sized>(
 
 /// A block's `getDirectSignal`: the signal `state` at `pos` gives directly, through a
 /// conductor, to the block that asks it towards `direction`. A lever, a button or a
-/// tripwire hook powers the block it hangs on, a pressure plate the block below it;
-/// wire powers what it gives a signal to; the rest give none.
+/// tripwire hook powers the block it hangs on, a pressure plate and a pressed detector
+/// rail the block below them; wire powers what it gives a signal to; the rest give
+/// none.
 pub fn block_direct_signal<V: BlockView + ?Sized>(
     view: &mut V,
     state: BlockState,
@@ -330,6 +335,11 @@ pub fn block_direct_signal<V: BlockView + ?Sized>(
     // A plate powers the block it lies on, which asks it upwards.
     if let Some(signal) = plate_signal(state) {
         return if direction == Face::Up { signal } else { 0 };
+    }
+    // A pressed detector rail powers the block below it, which asks it upwards.
+    if is_class(state, BlockClass::DetectorRailBlock) {
+        let pressed = flag(state, "powered") && direction == Face::Up;
+        return if pressed { MAX_SIGNAL } else { 0 };
     }
     // A hook powers the block it hangs on, which asks it the way the hook faces.
     if is_class(state, BlockClass::TripWireHookBlock) {
