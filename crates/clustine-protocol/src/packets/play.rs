@@ -3722,6 +3722,8 @@ packet_set! {
         SetEntityLink,
         SoundEntity,
         SwingAnimation,
+        DamageEvent,
+        UpdateAttributes,
     }
 }
 
@@ -3745,6 +3747,37 @@ mod tests {
         );
         assert_eq!(SetEquipment::ID, 104);
         assert_round_trip(worn, ClientboundPlay::decode, ClientboundPlay::SetEquipment);
+    }
+
+    #[test]
+    fn a_damage_event_and_attributes_are_written_as_the_game_writes_them() {
+        let hurt = DamageEvent {
+            entity_id: 9,
+            damage_type: 3,
+            cause: Some(0),
+            direct: None,
+            position: Some([1.5, -2.0, 0.25]),
+        };
+        let bytes = crate::packets::encode(&hurt);
+        // The id, the entity, the type, the cause plus one, no direct entity, a position.
+        assert_eq!(&bytes[..6], [DamageEvent::ID as u8, 9, 3, 1, 0, 1]);
+        assert_eq!(DamageEvent::ID, 25);
+        assert_round_trip(hurt, ClientboundPlay::decode, ClientboundPlay::DamageEvent);
+
+        let attributes = UpdateAttributes {
+            entity_id: 9,
+            attributes: vec![AttributeSnapshot {
+                attribute: 13,
+                base: 16.0,
+                modifiers: vec![("minecraft:random_spawn_bonus".to_owned(), 0.05, 1)],
+            }],
+        };
+        assert_eq!(UpdateAttributes::ID, 134);
+        assert_round_trip(
+            attributes,
+            ClientboundPlay::decode,
+            ClientboundPlay::UpdateAttributes,
+        );
     }
 
     #[test]
@@ -5387,5 +5420,127 @@ mod tests {
             Client::decode,
             Client::SetEntityData,
         );
+    }
+}
+
+/// A hurt that counts, which the client shows (`ClientboundDamageEventPacket`): the
+/// entity, the damage type by its id in the registry the server sent, the entities that
+/// caused it and dealt it (each its id plus one, 0 for none), and the position the
+/// source names, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DamageEvent {
+    pub entity_id: i32,
+    pub damage_type: i32,
+    pub cause: Option<i32>,
+    pub direct: Option<i32>,
+    pub position: Option<[f64; 3]>,
+}
+
+impl Packet for DamageEvent {
+    const ID: i32 = clientbound::DAMAGE_EVENT;
+}
+
+impl Encode for DamageEvent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.damage_type);
+        w.put_var_int(self.cause.map_or(0, |id| id + 1));
+        w.put_var_int(self.direct.map_or(0, |id| id + 1));
+        w.put_bool(self.position.is_some());
+        if let Some([x, y, z]) = self.position {
+            w.put_f64(x);
+            w.put_f64(y);
+            w.put_f64(z);
+        }
+    }
+}
+
+impl Decode for DamageEvent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let damage_type = r.var_int()?;
+        let optional = |id: i32| (id > 0).then(|| id - 1);
+        let cause = optional(r.var_int()?);
+        let direct = optional(r.var_int()?);
+        let position = if r.bool()? {
+            Some([r.f64()?, r.f64()?, r.f64()?])
+        } else {
+            None
+        };
+        Ok(Self {
+            entity_id,
+            damage_type,
+            cause,
+            direct,
+            position,
+        })
+    }
+}
+
+/// One attribute of [`UpdateAttributes`]: its id in the game's registry, its base value
+/// and its modifiers (id, amount, the operation's id).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttributeSnapshot {
+    pub attribute: i32,
+    pub base: f64,
+    pub modifiers: Vec<(String, f64, i32)>,
+}
+
+/// The attributes a client keeps of a living entity
+/// (`ClientboundUpdateAttributesPacket`): the entity, then each attribute.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateAttributes {
+    pub entity_id: i32,
+    pub attributes: Vec<AttributeSnapshot>,
+}
+
+impl Packet for UpdateAttributes {
+    const ID: i32 = clientbound::UPDATE_ATTRIBUTES;
+}
+
+/// The longest identifier the game reads (`Identifier.STREAM_CODEC`, a string of up to
+/// 32767 characters).
+const IDENTIFIER_LENGTH: usize = 32767;
+
+impl Encode for UpdateAttributes {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.attributes.len() as i32);
+        for snapshot in &self.attributes {
+            w.put_var_int(snapshot.attribute);
+            w.put_f64(snapshot.base);
+            w.put_var_int(snapshot.modifiers.len() as i32);
+            for (id, amount, operation) in &snapshot.modifiers {
+                w.put_string(id);
+                w.put_f64(*amount);
+                w.put_var_int(*operation);
+            }
+        }
+    }
+}
+
+impl Decode for UpdateAttributes {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let entity_id = r.var_int()?;
+        let count = r.var_int()?;
+        let mut attributes = Vec::new();
+        for _ in 0..count {
+            let attribute = r.var_int()?;
+            let base = r.f64()?;
+            let modifiers = r.var_int()?;
+            let mut list = Vec::new();
+            for _ in 0..modifiers {
+                list.push((r.string(IDENTIFIER_LENGTH)?, r.f64()?, r.var_int()?));
+            }
+            attributes.push(AttributeSnapshot {
+                attribute,
+                base,
+                modifiers: list,
+            });
+        }
+        Ok(Self {
+            entity_id,
+            attributes,
+        })
     }
 }

@@ -20,17 +20,19 @@ use bytes::Bytes;
 use clustine_data::{BlockState, Swing, entity_types, synced_registry};
 use clustine_protocol::codec::Position;
 use clustine_protocol::item as protocol;
+use clustine_protocol::item::ItemStack as WireStack;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, AddTransientBlock, BlockEvent, BlockUpdate, ChunkBatchFinished,
-    ChunkBatchStart, ClientboundMoveVehicle, ClockState, Disconnect, EntityDataValue, EntityEvent,
-    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
-    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
-    SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk,
-    abilities, angle, entity_data, game_event, game_mode, inventory as protocol_inventory,
-    level_event, player_info, relative,
+    AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
+    ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState, DamageEvent,
+    Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities,
+    PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
+    SectionBlocksUpdate, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
+    SetEntityData, SetEntityLink, SetEquipment, SetHeadRotation, SetHeldSlot, SetPassengers,
+    SetPlayerInventory, SetTime, Sound, SpawnEntity, SwingAnimation, SyncEntityPosition,
+    SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, UpdateAttributes, abilities, angle,
+    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
+    relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -38,8 +40,9 @@ use clustine_region::RegionId;
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
-    Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected, PlayerEvent, PlayerInput,
-    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked, WorldClock,
+    AttributeShown, Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected,
+    PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked,
+    WorldClock,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight, Vec3,
@@ -964,6 +967,16 @@ struct Shown {
     /// of holder it had then: it is shown where it was sent until the region it went to
     /// reports it with more (`docs/adr/0028-entities.md`, section 6).
     handed_on: Option<u32>,
+    /// What clients were last sent of a mob's attributes and equipment, which a client
+    /// that comes to see it is sent with its spawn (`sendPairingData`).
+    living: LivingShown,
+}
+
+/// A mob's attributes, by their ids, and what it wears, by slot, as last sent.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LivingShown {
+    attributes: BTreeMap<i32, AttributeSnapshot>,
+    equipment: BTreeMap<u8, WireStack>,
 }
 
 impl Fanout {
@@ -3248,12 +3261,61 @@ impl Fanout {
             RegionEvent::Leashed { entity, holder, .. } => self.show_leash(entity, holder).await,
             // Shown from the steps of N5 that make them.
             RegionEvent::DataChanged { .. } | RegionEvent::EntitySound { .. } => {}
-            // A mob's living packets are shown from the edge's part of N7
-            // (`docs/groundwork/n7-plan.md`, part N7b's edge, the lead's).
-            RegionEvent::DamageEvent { .. }
-            | RegionEvent::AttributesChanged { .. }
-            | RegionEvent::EquipmentChanged { .. }
-            | RegionEvent::Animated { .. } => {}
+            // A mob's living packets (`docs/groundwork/n7-brief.md`, section 9.1), from
+            // the region whose word of it counts.
+            RegionEvent::DamageEvent {
+                entity,
+                damage_type,
+                cause,
+                direct,
+                position,
+                ..
+            } => {
+                if self.is_of(entity, from) {
+                    let packet = DamageEvent {
+                        entity_id: self.wire.of(entity),
+                        damage_type,
+                        cause: cause.map(|cause| self.wire.of(cause)),
+                        direct: direct.map(|direct| self.wire.of(direct)),
+                        position,
+                    };
+                    self.show_to_watchers(entity, encoded(&packet)).await;
+                }
+            }
+            RegionEvent::AttributesChanged {
+                entity, attributes, ..
+            } => {
+                if self.is_of(entity, from) {
+                    self.show_attributes(entity, attributes).await;
+                }
+            }
+            RegionEvent::EquipmentChanged { entity, slots, .. } => {
+                if self.is_of(entity, from) {
+                    self.show_equipment(entity, slots).await;
+                }
+            }
+            // A critical hit's sparks on the target, seen by those who see the attacker
+            // and by the attacker (`Player.crit`, `ServerChunkCache.sendToTrackingPlayersAndSelf`).
+            RegionEvent::Animated {
+                target,
+                attacker,
+                action,
+                ..
+            } => {
+                let packet = encoded(&Animate {
+                    entity_id: self.wire.of(target),
+                    action,
+                });
+                self.show_to_watchers(attacker, packet.clone()).await;
+                let own = self
+                    .players
+                    .iter()
+                    .find(|(_, view)| view.entity == Some(attacker))
+                    .map(|(player, _)| *player);
+                if let Some(player) = own {
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
             RegionEvent::Explosion {
                 centre,
                 radius,
@@ -3415,11 +3477,18 @@ impl Fanout {
                     EntityKind::Other { riding, .. } => riding.clone(),
                     EntityKind::Player { .. } => clustine_world::Riding::default(),
                 };
+                // What it was shown with goes on with it, wherever it was reported from.
+                let living = self
+                    .entities
+                    .get(&entity)
+                    .map(|known| known.living.clone())
+                    .unwrap_or_default();
                 let shown = Shown {
                     state,
                     from,
                     tracker: Some(tracker),
                     handed_on: None,
+                    living,
                 };
                 self.entities.insert(entity, shown);
                 // Before it is shown, so that a client shown it is told who rides it and
@@ -3444,6 +3513,7 @@ impl Fanout {
             from,
             tracker: None,
             handed_on: None,
+            living: LivingShown::default(),
         };
         let moved = self
             .entities
@@ -3984,6 +4054,76 @@ impl Fanout {
     /// Tells every client that shows `entity` of the event `event`
     /// (`ClientboundEntityEventPacket`, which the game broadcasts to the entity's
     /// trackers).
+    /// Sends `packet` to every player shown `entity`.
+    async fn show_to_watchers(&mut self, entity: EntityId, packet: Bytes) {
+        let watching: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .map(|(player, _)| *player)
+            .collect();
+        for player in watching {
+            self.send_to_player(player, [packet.clone()]).await;
+        }
+    }
+
+    /// A mob's attributes that changed or that it made: remembered for those who come
+    /// to see it, and sent to those who see it.
+    async fn show_attributes(&mut self, entity: EntityId, attributes: Vec<AttributeShown>) {
+        let snapshots: Vec<AttributeSnapshot> = attributes
+            .into_iter()
+            .map(|shown| AttributeSnapshot {
+                attribute: i32::from(shown.attribute),
+                base: shown.base,
+                modifiers: shown
+                    .modifiers
+                    .into_iter()
+                    .map(|(id, amount, operation)| (id, amount, i32::from(operation)))
+                    .collect(),
+            })
+            .collect();
+        if let Some(shown) = self.entities.get_mut(&entity) {
+            for snapshot in &snapshots {
+                shown
+                    .living
+                    .attributes
+                    .insert(snapshot.attribute, snapshot.clone());
+            }
+        }
+        let packet = encoded(&UpdateAttributes {
+            entity_id: self.wire.of(entity),
+            attributes: snapshots,
+        });
+        self.show_to_watchers(entity, packet).await;
+    }
+
+    /// What a mob wears and holds changed: remembered, and sent to those who see it.
+    async fn show_equipment(&mut self, entity: EntityId, slots: Vec<(u8, Option<ItemStack>)>) {
+        let slots: Vec<(u8, Option<WireStack>)> = slots
+            .into_iter()
+            .map(|(slot, stack)| {
+                let stack = stack.map(|stack| WireStack {
+                    item: stack.item,
+                    count: stack.count,
+                });
+                (slot, stack)
+            })
+            .collect();
+        if let Some(shown) = self.entities.get_mut(&entity) {
+            for (slot, stack) in &slots {
+                match stack {
+                    Some(stack) => shown.living.equipment.insert(*slot, *stack),
+                    None => shown.living.equipment.remove(slot),
+                };
+            }
+        }
+        let packet = encoded(&SetEquipment {
+            entity_id: self.wire.of(entity),
+            slots,
+        });
+        self.show_to_watchers(entity, packet).await;
+    }
+
     async fn show_entity_event(&mut self, entity: EntityId, event: u8) {
         let watching: Vec<PlayerId> = self
             .players
@@ -5803,6 +5943,7 @@ impl PlayerView {
         wire: &mut WireIds,
     ) -> Vec<Bytes> {
         let state = &shown.state;
+        let living = &shown.living;
         let pairing = shown.tracker.as_ref().map(Tracker::pairing);
         let in_world = self.entity.is_some();
         let own = self.entity == Some(state.entity)
@@ -5814,7 +5955,9 @@ impl PlayerView {
                 let mut packets = Vec::new();
                 let EntityKind::Player { player, name } = &state.kind else {
                     self.visible.insert(state.entity, None);
-                    return spawn_packets(state, wire.of(state.entity), pairing.as_ref());
+                    let mut packets = spawn_packets(state, wire.of(state.entity), pairing.as_ref());
+                    packets.extend(living_packets(living, wire.of(state.entity)));
+                    return packets;
                 };
                 // A client takes a player to be one entity. Should word of an entity
                 // the player was before still be around, it goes first.
@@ -5914,6 +6057,28 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 /// with the motion and angles sent last, its head at 0 and, for a falling block, its
 /// block as the spawn's data; and then the values of its data that are not the
 /// defaults, if any (the game's `ServerEntity.sendPairingData`).
+/// A mob's pairing beyond its spawn and data: its attributes, and what it wears.
+fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
+    let mut packets = Vec::new();
+    if !living.attributes.is_empty() {
+        packets.push(encoded(&UpdateAttributes {
+            entity_id: id,
+            attributes: living.attributes.values().cloned().collect(),
+        }));
+    }
+    if !living.equipment.is_empty() {
+        packets.push(encoded(&SetEquipment {
+            entity_id: id,
+            slots: living
+                .equipment
+                .iter()
+                .map(|(slot, stack)| (*slot, Some(*stack)))
+                .collect(),
+        }));
+    }
+    packets
+}
+
 fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec<Bytes> {
     let position = state.pose.position;
     if let (
@@ -9108,6 +9273,8 @@ mod scenarios {
         spawns: Vec<SpawnEntity>,
         entity_data: Vec<SetEntityData>,
         swings: Vec<SwingAnimation>,
+        /// Every damage event and attribute update it was sent, in order.
+        living: Vec<ClientboundPlay>,
         /// Every list of a vehicle's passengers and every teleport it was sent, in order.
         passengers: Vec<SetPassengers>,
         /// Every leash it was told of, in order.
@@ -9191,6 +9358,7 @@ mod scenarios {
                 spawns: Vec::new(),
                 entity_data: Vec::new(),
                 swings: Vec::new(),
+                living: Vec::new(),
                 passengers: Vec::new(),
                 links: Vec::new(),
                 teleports: Vec::new(),
@@ -9309,6 +9477,10 @@ mod scenarios {
                 ClientboundPlay::SwingAnimation(swing) => {
                     self.named.push((Naming::Swing, swing.entity_id));
                     self.swings.push(swing);
+                }
+                packet @ (ClientboundPlay::DamageEvent(_)
+                | ClientboundPlay::UpdateAttributes(_)) => {
+                    self.living.push(packet);
                 }
                 ClientboundPlay::RemoveEntities(removed) => {
                     for entity in removed.entity_ids {
@@ -12088,6 +12260,94 @@ mod scenarios {
         assert!(player_one.connected());
         // Logged in once, by that id.
         assert_eq!(player_one.own_id(), login);
+        edge.end().await;
+    }
+
+    /// A cow standing in `chunk`, its record as a mob's with nothing in it.
+    fn a_cow(entity: EntityId, chunk: ChunkPos) -> EntityState {
+        EntityState {
+            entity,
+            kind: EntityKind::Other {
+                kind: entity_types::COW as u16,
+                uuid: Uuid::from_u128(u128::from(entity.0)),
+                motion: [0.0, 0.0, 0.0],
+                hops: 0,
+                data: EntityData::Mob {
+                    body: Vec::new(),
+                    mind: Vec::new(),
+                    state: Default::default(),
+                },
+                riding: Default::default(),
+            },
+            pose: Pose::at(within(chunk)),
+        }
+    }
+
+    /// A mob's hurt and attributes go to those who see it, with the edge's ids for it
+    /// and for who hurt it; a client that comes to see it later is sent its attributes
+    /// with its spawn (`docs/groundwork/n7-brief.md`, section 9.1).
+    #[tokio::test]
+    async fn a_mob_s_hurt_and_attributes_are_shown_and_its_attributes_paired() {
+        let mut edge = Harness::start().await;
+        let watcher_key = far_key(1);
+        let mut watcher = edge.joined(player(1), watcher_key).await;
+        edge.quiet().await;
+        edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
+        edge.settle(WEST).await;
+        let key = far_key(100);
+        let chunk = HOME;
+        let speed = AttributeShown {
+            attribute: 20,
+            base: 0.2,
+            modifiers: vec![("minecraft:random_spawn_bonus".to_owned(), 0.05, 1)],
+        };
+        edge.tell(
+            WEST,
+            ticked(vec![
+                RegionEvent::EntitySpawned(a_cow(key, HOME)),
+                RegionEvent::AttributesChanged {
+                    entity: key,
+                    chunk,
+                    attributes: vec![speed],
+                },
+                RegionEvent::DamageEvent {
+                    entity: key,
+                    chunk,
+                    damage_type: 7,
+                    cause: Some(watcher_key),
+                    direct: Some(watcher_key),
+                    position: None,
+                },
+            ]),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        assert!(watcher.entities.contains(&key.0), "{:?}", watcher.entities);
+        let id = watcher.naming(key.0)[0].1;
+        let own = watcher.own_id();
+        let [
+            ClientboundPlay::UpdateAttributes(attributes),
+            ClientboundPlay::DamageEvent(hurt),
+        ] = &watcher.living[..]
+        else {
+            panic!("{:?}", watcher.living);
+        };
+        assert_eq!(attributes.entity_id, id);
+        assert_eq!(attributes.attributes[0].attribute, 20);
+        assert_eq!(
+            (hurt.entity_id, hurt.damage_type, hurt.cause, hurt.direct),
+            (id, 7, Some(own), Some(own))
+        );
+
+        let mut newcomer = edge.joined(player(2), far_key(2)).await;
+        edge.quiet().await;
+        edge.sync(&mut newcomer).await;
+        assert!(newcomer.entities.contains(&key.0));
+        assert!(
+            matches!(&newcomer.living[..], [ClientboundPlay::UpdateAttributes(paired)] if paired.attributes == attributes.attributes),
+            "{:?}",
+            newcomer.living
+        );
         edge.end().await;
     }
 
