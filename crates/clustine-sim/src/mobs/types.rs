@@ -109,6 +109,14 @@ pub(crate) trait MobType: Sync {
         false
     }
 
+    /// The type's own synced values (`defineSynchedData`), each with its index and
+    /// whether it is the default: an ageable type's baby (16), a sheep's wool (18) and
+    /// the like (`crate::shown`). None for a type that adds none.
+    fn shown(&self, mob: &Mob) -> Vec<(u8, crate::shown::DataShown, bool)> {
+        let _ = mob;
+        Vec::new()
+    }
+
     /// What its loot table asks of it that is its type's (a sheep's colour).
     fn loot_facts(&self, mob: &Mob) -> loot::Facts {
         let _ = mob;

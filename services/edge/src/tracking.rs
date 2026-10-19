@@ -29,6 +29,7 @@ use clustine_protocol::packets::{
     },
 };
 use clustine_sim::api::Tracked;
+use clustine_sim::shown::DataShown;
 use clustine_world::EntityData;
 
 /// How far an entity has to be from where it was sent last for a move to be sent, the
@@ -327,7 +328,22 @@ const STAND_INVISIBLE: u8 = 32;
 /// every entity, the health (1, which the stand's constructor sets to its most, so that
 /// it is always sent), the stand's flags and its six rotations. Anything else's are
 /// none.
-pub(crate) fn living_values(data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
+pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
+    // A mob's are read from its record by the sim, which knows its parts.
+    if let EntityData::Mob { .. } = data {
+        let values = clustine_sim::shown::mob_values(kind, data).into_iter();
+        return values
+            .map(|(index, value, default)| {
+                let value = match value {
+                    DataShown::Byte(byte) => EntityDataValue::Byte(byte),
+                    DataShown::Int(int) => EntityDataValue::Int(int),
+                    DataShown::Float(float) => EntityDataValue::Float(float),
+                    DataShown::Boolean(boolean) => EntityDataValue::Boolean(boolean),
+                };
+                (index, value, default)
+            })
+            .collect();
+    }
     let EntityData::ArmorStand {
         flags,
         pose,
@@ -512,6 +528,8 @@ pub(crate) struct Tracker {
     /// The indices of a living entity's data beyond the shared flags that changed since
     /// they were sent, a bit each.
     dirty_values: u32,
+    /// The entity's type, by id, which a mob's values are read by.
+    kind: u16,
     /// Where a falling block started (`DATA_START_POS`): the block it was in when this
     /// edge first heard of it.
     start: Option<Position>,
@@ -574,6 +592,7 @@ impl Tracker {
             pairing: Vec::new(),
             worn: equipment_of(data),
             dirty_values: 0,
+            kind: seen.kind,
             start,
             position: at,
             motion: seen.motion,
@@ -637,8 +656,8 @@ impl Tracker {
     /// Marks what a living entity's data `new` changed of `old` beyond the shared flags:
     /// each value whose index's value differs, and what it wears.
     fn data_changed(&mut self, old: &EntityData, new: &EntityData) {
-        let before = living_values(old);
-        for (index, value, _) in living_values(new) {
+        let before = living_values(self.kind, old);
+        for (index, value, _) in living_values(self.kind, new) {
             let same = before
                 .iter()
                 .any(|(was, earlier, _)| *was == index && *earlier == value);
@@ -690,7 +709,7 @@ impl Tracker {
         if (pairing && shared != 0) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
             values.push((entity_data::SHARED_FLAGS, EntityDataValue::Byte(shared)));
         }
-        for (index, value, default) in living_values(data) {
+        for (index, value, default) in living_values(self.kind, data) {
             let changed = self.dirty & DIRTY_VALUES != 0 && self.dirty_values & (1 << index) != 0;
             if (pairing && !default) || (!pairing && changed) {
                 values.push((index, value));

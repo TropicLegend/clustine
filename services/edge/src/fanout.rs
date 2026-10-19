@@ -6204,7 +6204,7 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
                 head_yaw: 0,
                 data: 0,
             }),
-            encoded(&entity_data_packet(id, data)),
+            encoded(&entity_data_packet(id, *kind, data)),
         ],
     }
 }
@@ -6212,11 +6212,11 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
 /// The data of an entity other than a player that a client is told with its spawn:
 /// for an item, its stack (`ItemEntity.DATA_ITEM`); for an armour stand, the values of
 /// its data that are not the defaults.
-fn entity_data_packet(id: i32, data: &EntityData) -> SetEntityData {
+fn entity_data_packet(id: i32, kind: u16, data: &EntityData) -> SetEntityData {
     match data {
-        EntityData::ArmorStand { .. } => SetEntityData {
+        EntityData::ArmorStand { .. } | EntityData::Mob { .. } => SetEntityData {
             entity_id: id,
-            values: crate::tracking::living_values(data)
+            values: crate::tracking::living_values(kind, data)
                 .into_iter()
                 .filter(|(_, _, default)| !default)
                 .map(|(index, value, _)| (index, value))

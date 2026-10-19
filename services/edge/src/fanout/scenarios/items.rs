@@ -319,6 +319,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
 fn an_item_s_data_is_its_stack_by_the_game_s_index_and_serializer() {
     let data = entity_data_packet(
         9,
+        entity_types::ITEM as u16,
         &EntityData::Item {
             stack: STACK,
             pick_up_delay: 0,

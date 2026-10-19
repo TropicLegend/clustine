@@ -30,6 +30,7 @@ pub mod path_harness;
 mod physics;
 pub mod placement;
 mod region;
+pub mod shown;
 mod state;
 
 pub use api::{
