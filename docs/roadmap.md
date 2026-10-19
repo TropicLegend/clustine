@@ -214,8 +214,8 @@ while a seat is kept loses its forwarding entry if that region crashes, merges o
 within those ticks.
 
 **N6, TNT, explosions, containers that open and the redstone that waits for entities**
-(2026-10-19, under way: [plan](groundwork/n6-plan.md), reviewed five times;
-[brief](groundwork/n6-brief.md) read from the jar). Built and on `main`:
+(2026-10-19, built: [plan](groundwork/n6-plan.md), reviewed five times;
+[brief](groundwork/n6-brief.md) read from the jar):
 - every ender chest opens the player's own 27 slots, carried, restored and stored with
   them (the store's format raised to 9; worlds made before are refused and made again);
 - chests, double chests, barrels, shulker boxes, ender chests, dispensers, droppers,
@@ -235,22 +235,35 @@ within those ticks.
 - dispensers and droppers with the game's behaviours (drops, buckets, flint and steel,
   TNT, boats, minecarts, armour, shulker boxes, bottles and more); hoppers and hopper
   carts moving items; plates and tripwire pressed by items, carts, boats, falling blocks,
-  TNT and armour stands.
+  TNT and armour stands;
+- game events and sculk sensors, plain and calibrated: what players, blocks, redstone,
+  containers, TNT and dispensers do is heard at the game's distances and times, wool
+  occludes and dampens, a sneaking player is not heard, and the vibration is shown
+  travelling;
+- at a pinned line: dispensers, droppers and hoppers borrow the land they act on, a
+  lender waits while its own player has a menu open there, and a plate or tripwire
+  counts what stands on it from the other side, a player of the other region among it.
 
 Compared with the official server (2026-10-19): a chest's window, packet by packet and
 state id by state id, through an open, a right guess, a wrong guess, a shift-click and a
-close; TNT's entity and its explosion packet. Still to come in N6: game events and sculk
-sensors (N6f, under way), dispensers, droppers and hoppers lending land at a pinned line
-and plates counting the entities of the other side (N6g), the crater of 64 TNT measured
-(N6h), and the tests from the specification (N6j, under way). Named differences so far:
+close; TNT's entity and its explosion packet; a sculk sensor's vibration. Measured: a
+crater of 64 TNT goes off over 1.6 s with no tick over its 50 ms, in memory and on the
+real disk with its cache. Tests from the plan and the brief by someone who built none of
+it (N6j, 221 tests) found five defects, mended: a comparator behind one half of a
+double chest not told of a change a menu made to the other (found from both halves, and
+the first fix of it made an ordering mistake the second test caught), a dispenser at a
+line asking for no lend, a dropper not resetting a hopper's cooldown, and the game events
+of dispensers and of placed entities not posted; and a passage of the plan too unclear
+to test, now made clear.
+Named differences:
 a container a step across a pinned line opens only from its own side (the owner's choice
 of 2026-10-18), and two chests across one stay single; structures' chests are empty (no
 loot tables); projectiles in a dispenser drop as items until N9, and what acts on mobs
 waits for N7; a shulker box drops empty when broken (no item components yet) and spills
-what it held instead; a dispenser, dropper or hopper facing across a pinned line does
-nothing for now.
+what it held instead; a sculk sensor does not hear an event across a line between
+regions; an explosion's drops at a line are not merged across it.
 
-**Next in phase N:** the rest of N6, then N7 (animals and the structures' entities).
+**Next in phase N:** N7 (animals and the structures' entities).
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
@@ -309,6 +322,10 @@ nothing for now.
     inventory.
 18. Without pins: stand far apart from a second player until the region splits, and
     light TNT near the line between them: the coordinator merges the two at once.
+19. Place a sculk sensor and break or place a block within eight blocks: it clicks and
+    gives a signal, weaker the farther the block was, and a comparator behind it gives
+    the kind of event. Walk past it sneaking: nothing; walk normally: it hears your steps.
+    Stand on it: it goes off, even sneaking. Put wool between: it hears nothing through it.
 
 What to say if it is not so: which step, what was seen, and the log of the world
 store, the coordinator and the workers.
