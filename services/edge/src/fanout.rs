@@ -2778,6 +2778,43 @@ impl Fanout {
         }
     }
 
+    /// Shows a vibration a sculk sensor took up to every player of this edge whose block's
+    /// centre is within 32 blocks of where it starts, whatever region they are in
+    /// (`ServerLevel.sendParticles`; `docs/groundwork/n6-brief.md`, section 9.6).
+    async fn show_vibration(&mut self, from: [f64; 3], to: BlockPos, ticks: i32) {
+        use clustine_protocol::packets::play::{LevelParticles, Particle};
+        let packet = encoded(&LevelParticles {
+            particle: Particle::Vibration {
+                to: Position {
+                    x: to.x,
+                    y: to.y,
+                    z: to.z,
+                },
+                arrival: ticks,
+            },
+            override_limiter: false,
+            always_show: false,
+            position: from,
+            spread: [0.0; 3],
+            max_speed: [0.0; 3],
+            count: 1,
+            randomization: 0,
+        });
+        let near: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter_map(|(player, view)| {
+                let at = self.entities.get(&view.entity?)?.state.pose.position;
+                let centre = [at.x.floor() + 0.5, at.y.floor() + 0.5, at.z.floor() + 0.5];
+                let distance: f64 = (0..3).map(|axis| (centre[axis] - from[axis]).powi(2)).sum();
+                (distance < 32.0 * 32.0).then_some(*player)
+            })
+            .collect();
+        for player in near {
+            self.send_to_player(player, [packet.clone()]).await;
+        }
+    }
+
     /// Shows the client of `player` what the region `from` says of their menu
     /// (`crate::menus`). Only a region that stands for the player's own speaks of it: a
     /// region that let them go speaks of a menu that is closed (section 9 item 3).
@@ -3188,8 +3225,9 @@ impl Fanout {
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
-            // Shown by the edge's step that brings the vibration particle.
-            RegionEvent::Vibration { .. } => {}
+            RegionEvent::Vibration { from, to, ticks } => {
+                self.show_vibration(from, to, ticks).await;
+            }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;

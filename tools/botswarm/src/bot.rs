@@ -362,6 +362,9 @@ pub struct Bot {
     pub menus_closed: Vec<i32>,
     /// Every explosion the server showed, in order.
     pub explosions: Vec<clustine_protocol::packets::play::Explode>,
+    /// Every particle the server showed (`level_particles`: a sculk sensor's vibration),
+    /// in order.
+    pub particles: Vec<clustine_protocol::packets::play::LevelParticles>,
     /// Every packet of a menu's window the server sent, in order: openings, a window's
     /// contents (not the inventory's own, window 0), slots, the cursor and closes.
     pub menu_log: Vec<ClientboundPlay>,
@@ -583,6 +586,7 @@ impl Bot {
             cursor: None,
             menus_closed: Vec::new(),
             explosions: Vec::new(),
+            particles: Vec::new(),
             menu_log: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
@@ -1789,6 +1793,7 @@ impl Bot {
             // No menu of N6 has data slots but the crafter's.
             ClientboundPlay::ContainerSetData(_) => {}
             ClientboundPlay::Explode(packet) => self.explosions.push(packet),
+            ClientboundPlay::LevelParticles(packet) => self.particles.push(packet),
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

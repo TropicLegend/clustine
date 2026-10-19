@@ -2926,6 +2926,98 @@ impl Decode for Explode {
     }
 }
 
+/// The id of the `minecraft:vibration` particle type, and of the `minecraft:block`
+/// position source a vibration travels to.
+pub const PARTICLE_VIBRATION: i32 = 58;
+pub const POSITION_SOURCE_BLOCK: i32 = 0;
+
+/// A particle a `level_particles` packet shows, with its options. Only the vibration a
+/// sculk sensor takes up is sent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Particle {
+    /// `VibrationParticleOption`: travelling to the block `to` (a `BlockPositionSource`)
+    /// and arriving in `arrival` ticks.
+    Vibration { to: Position, arrival: i32 },
+}
+
+/// Particles shown at a point (`level_particles`, read from
+/// `ClientboundLevelParticlesPacket`'s codec: the particle, two flags, the position, the
+/// spread and the most speed along each axis, the count and how they are scattered).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelParticles {
+    pub particle: Particle,
+    pub override_limiter: bool,
+    pub always_show: bool,
+    pub position: [f64; 3],
+    pub spread: [f32; 3],
+    pub max_speed: [f32; 3],
+    pub count: i32,
+    /// `RandomizationType`, by its id: 0 `DEFAULT`.
+    pub randomization: i32,
+}
+
+impl Packet for LevelParticles {
+    const ID: i32 = clientbound::LEVEL_PARTICLES;
+}
+
+impl Encode for LevelParticles {
+    fn encode(&self, w: &mut Writer) {
+        match self.particle {
+            Particle::Vibration { to, arrival } => {
+                w.put_var_int(PARTICLE_VIBRATION);
+                w.put_var_int(POSITION_SOURCE_BLOCK);
+                w.put_position(to);
+                w.put_var_int(arrival);
+            }
+        }
+        w.put_bool(self.override_limiter);
+        w.put_bool(self.always_show);
+        for coordinate in self.position {
+            w.put_f64(coordinate);
+        }
+        for part in self.spread.iter().chain(&self.max_speed) {
+            w.put_f32(*part);
+        }
+        w.put_var_int(self.count);
+        w.put_var_int(self.randomization);
+    }
+}
+
+impl Decode for LevelParticles {
+    /// Reads what [`LevelParticles::encode`] writes: a vibration to a block, which is the
+    /// one particle a server sends here.
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let kind = r.var_int()?;
+        if kind != PARTICLE_VIBRATION {
+            return Err(DecodeError::InvalidValue {
+                what: "vibration particle",
+                value: i64::from(kind),
+            });
+        }
+        let source = r.var_int()?;
+        if source != POSITION_SOURCE_BLOCK {
+            return Err(DecodeError::InvalidValue {
+                what: "block position source",
+                value: i64::from(source),
+            });
+        }
+        let particle = Particle::Vibration {
+            to: r.position()?,
+            arrival: r.var_int()?,
+        };
+        Ok(Self {
+            particle,
+            override_limiter: r.bool()?,
+            always_show: r.bool()?,
+            position: [r.f64()?, r.f64()?, r.f64()?],
+            spread: [r.f32()?, r.f32()?, r.f32()?],
+            max_speed: [r.f32()?, r.f32()?, r.f32()?],
+            count: r.var_int()?,
+            randomization: r.var_int()?,
+        })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -3528,6 +3620,7 @@ packet_set! {
         SetCursorItem,
         ClientboundContainerClose,
         Explode,
+        LevelParticles,
         SetHeldSlot,
         SetPlayerInventory,
         SetEntityData,
@@ -3867,6 +3960,31 @@ mod tests {
             ClientboundContainerClose { window_id: 100 },
             Client::decode,
             Client::ClientboundContainerClose,
+        );
+    }
+
+    #[test]
+    fn a_vibrations_particle_round_trips() {
+        assert_round_trip(
+            LevelParticles {
+                particle: Particle::Vibration {
+                    to: Position {
+                        x: -3,
+                        y: -60,
+                        z: 17,
+                    },
+                    arrival: 6,
+                },
+                override_limiter: false,
+                always_show: false,
+                position: [0.5, -59.0, 12.25],
+                spread: [0.0; 3],
+                max_speed: [0.0; 3],
+                count: 1,
+                randomization: 0,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::LevelParticles,
         );
     }
 
