@@ -882,3 +882,27 @@ fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
     assert!(output.player_events.iter().any(|(id, event)| *id == player(1)
         && matches!(event, PlayerEvent::InventorySlot { stack: Some(given), .. } if *given == stew)));
 }
+
+/// `ItemUtils.createFilledResult` for a creative player whose inventory is full: what
+/// duplicates are kept out of is not given, and anything else is thrown.
+#[test]
+fn a_full_inventory_throws_what_is_given_unless_duplicates_are_kept_out() {
+    let mut region = on_ticking_floor_with(&[]);
+    let own = player_entity(&region);
+    let stone = ItemStack {
+        item: items::STONE,
+        count: 1,
+    };
+    for slot in &mut region.players.get_mut(&player(1)).unwrap().inventory.0[..36] {
+        *slot = Some(stone);
+    }
+    let bucket = ItemStack {
+        item: items::MILK_BUCKET,
+        count: 1,
+    };
+    let mut output = TickOutput::default();
+    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
+    assert!(items_lying(&region).is_empty());
+    region.give_to_player(own, bucket, false, [0.5, -60.0, 0.5], &mut output);
+    assert_eq!(items_lying(&region), [bucket]);
+}

@@ -39,7 +39,10 @@ impl Region {
 
     /// `ItemUtils.createFilledResult` for the region's creative player `id`: `stack` put
     /// into the first empty slot of the hotbar and the main inventory, unless
-    /// `no_duplicates` and a slot holds one already; nowhere if the inventory is full.
+    /// `no_duplicates` (the game's `limitCreativeStackSize`) and a slot holds one
+    /// already. A full inventory keeps out what duplicates are kept out of, and throws
+    /// anything else as the player's drop does (`Player.drop`), as a stew from a
+    /// mooshroom.
     pub(crate) fn take_given(
         &mut self,
         id: PlayerId,
@@ -55,6 +58,14 @@ impl Region {
             return;
         }
         let Some(slot) = slots[..ARMOUR_START].iter().position(Option::is_none) else {
+            if !no_duplicates {
+                let thrown = super::entities::Thrown {
+                    player: id,
+                    stack,
+                    crouching: false,
+                };
+                self.throw(thrown, output);
+            }
             return;
         };
         slots[slot] = Some(stack);
