@@ -1029,6 +1029,72 @@ impl Bot {
         Ok(self.sequence)
     }
 
+    /// Clicks the slot `slot` of the window shown (`container_click`) with `button` and
+    /// the kind of click `input`, saying what the client guesses the slots it changed
+    /// (`changed`) and the cursor (`carried`) hold now, as a vanilla client does; the bot
+    /// shows its guess at once, as a client does, until the server says otherwise.
+    pub async fn click_window(
+        &mut self,
+        slot: i16,
+        button: i8,
+        input: i32,
+        changed: Vec<(i16, Option<ItemStack>)>,
+        carried: Option<ItemStack>,
+    ) -> Result<()> {
+        let Some(menu) = self.menu.as_mut() else {
+            bail!("no window is shown");
+        };
+        let hashed = |stack: Option<ItemStack>| {
+            stack.map(|stack| clustine_protocol::packets::play::HashedStack {
+                item: stack.item,
+                count: stack.count,
+                added: Vec::new(),
+                removed: Vec::new(),
+            })
+        };
+        let packet = clustine_protocol::packets::play::ContainerClick {
+            window_id: menu.window_id,
+            state_id: menu.state_id,
+            slot,
+            button,
+            input,
+            changed: changed
+                .iter()
+                .map(|(slot, stack)| (*slot, hashed(*stack)))
+                .collect(),
+            carried: hashed(carried),
+        };
+        for (at, stack) in &changed {
+            if let Some(place) = usize::try_from(*at)
+                .ok()
+                .and_then(|at| menu.slots.get_mut(at))
+            {
+                *place = *stack;
+            }
+        }
+        self.cursor = carried;
+        self.connection.write(&packet).await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Closes the window shown (`container_close`), as a client does when its player
+    /// presses escape.
+    pub async fn close_window(&mut self) -> Result<()> {
+        let Some(menu) = self.menu.take() else {
+            bail!("no window is shown");
+        };
+        self.connection
+            .write(
+                &clustine_protocol::packets::play::ServerboundContainerClose {
+                    window_id: menu.window_id,
+                },
+            )
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
     /// Selects a hotbar slot, from 0 to 8.
     pub async fn select_slot(&mut self, slot: i16) -> Result<()> {
         self.connection.write(&SetHeldItem { slot }).await?;
