@@ -362,6 +362,9 @@ pub struct Bot {
     pub menus_closed: Vec<i32>,
     /// Every explosion the server showed, in order.
     pub explosions: Vec<clustine_protocol::packets::play::Explode>,
+    /// Every packet of a menu's window the server sent, in order: openings, a window's
+    /// contents (not the inventory's own, window 0), slots, the cursor and closes.
+    pub menu_log: Vec<ClientboundPlay>,
 }
 
 /// A menu's window as a client shows it: what `open_screen` said, then the slots and the
@@ -580,6 +583,7 @@ impl Bot {
             cursor: None,
             menus_closed: Vec::new(),
             explosions: Vec::new(),
+            menu_log: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1122,6 +1126,25 @@ impl Bot {
         Ok(())
     }
 
+    /// Puts `stack` into a hotbar slot, from 0 to 8, the way a creative-mode client does
+    /// when its player takes a stack of it from the creative inventory.
+    pub async fn put_in_hotbar(&mut self, slot: i16, stack: ItemStack) -> Result<()> {
+        self.connection
+            .write(&SetCreativeModeSlot {
+                slot: inventory::HOTBAR_START as i16 + slot,
+                stack: Some(stack),
+            })
+            .await?;
+        if let Some(held) = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.own_hotbar.get_mut(slot))
+        {
+            *held = Some(stack);
+        }
+        self.has_sent();
+        Ok(())
+    }
+
     /// Empties a hotbar slot, from 0 to 8, the way a creative-mode client does when the
     /// player puts its stack back into the creative inventory. Each server fills a new
     /// player's hotbar its own way, so a test that wants an empty hand empties a slot.
@@ -1521,6 +1544,19 @@ impl Bot {
             _ => {}
         }
 
+        let of_a_menu = match &packet {
+            ClientboundPlay::OpenScreen(_)
+            | ClientboundPlay::ContainerSetSlot(_)
+            | ClientboundPlay::SetCursorItem(_)
+            | ClientboundPlay::ClientboundContainerClose(_) => true,
+            ClientboundPlay::SetContainerContent(content) => {
+                content.window_id != inventory::PLAYER_WINDOW
+            }
+            _ => false,
+        };
+        if of_a_menu {
+            self.menu_log.push(packet.clone());
+        }
         match packet {
             ClientboundPlay::ClientboundKeepAlive(packet) => {
                 self.connection
