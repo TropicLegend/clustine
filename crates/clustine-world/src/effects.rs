@@ -128,6 +128,19 @@ pub enum EntityUse {
         push: [Double; 3],
         blast: Blast,
     },
+    /// An animal in love, `asker`, asks the entity to breed with it
+    /// (`docs/groundwork/n7-plan.md`, sections 8.5, 9.4 and 10.7): only the higher key
+    /// asks, and the partner's region breeds, as the game's `this` of `breed`, if the
+    /// partner can. `number` is the asker's, which the answer names.
+    BreedAsk { asker: EntityId, number: u32 },
+    /// The answer to the entity's request `number` to `partner`: accepted, the asker
+    /// takes its part of the breeding (its age and its love reset); refused, it is free
+    /// to ask again.
+    BreedAnswer {
+        partner: EntityId,
+        number: u32,
+        accepted: bool,
+    },
 }
 
 impl Effect {

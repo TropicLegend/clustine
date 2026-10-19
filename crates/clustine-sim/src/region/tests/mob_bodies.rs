@@ -4,7 +4,10 @@
 //! its inputs.
 
 use clustine_data::{entity_types, items, sounds};
-use clustine_world::{Entity, EntityChange, EntityData, EntityField, EntityId, Entry, LeashHolder};
+use clustine_world::{
+    Due, Effect, EffectId, Effected, Entity, EntityChange, EntityData, EntityField, EntityId,
+    EntityUse, Entry, FiledEffect, LeashHolder,
+};
 
 use super::*;
 use crate::living::MAX_AIR;
@@ -638,4 +641,96 @@ fn a_leashed_mob_is_tied_to_a_fence_its_holder_uses_and_kept_home_there() {
     checked(&mut region, &TickInputs::default());
     let home = mob(&region, COW_KEY).body.home;
     assert_eq!((home.centre, home.radius), (Some(fence), 5));
+}
+
+/// `docs/groundwork/n7-plan.md`, sections 9.4 and 10.7: a request to breed goes to a
+/// partner that only a copy shows as an effect on it, and a request taken from across
+/// a line is answered back the same way (refused, until the animals of N7e decide).
+#[test]
+fn a_request_to_breed_crosses_a_line_as_an_effect_and_its_answer_comes_back() {
+    // A region of the land west of chunk x = 2, with the floor about its spawn.
+    let west = ChunkArea {
+        min_x: None,
+        max_x: Some(1),
+    };
+    let mut region = joined_in(west, &[1]);
+    let around: Vec<ChunkPos> = (-1..=1)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .collect();
+    region.tick(&tickets(around.clone(), vec![]));
+    let chunks = around.iter().map(|position| (*position, floor())).collect();
+    region.tick(&TickInputs {
+        chunks_loaded: chunks,
+        ..TickInputs::default()
+    });
+    lay(&mut region, &cow([3.5, -60.0, 0.5], true));
+    let beyond = ChunkPos::new(40, 0);
+    let partner = mob_of(
+        EntityId(1 << 34),
+        entity_types::COW,
+        [645.5, -60.0, 2.5],
+        true,
+    );
+    let mut base = crate::region::tests::floor();
+    base.set_entities(vec![partner.clone()]);
+    region.tick(&TickInputs {
+        foreign: vec![(beyond, RegionId(1))],
+        copy_bases: vec![(beyond, base)],
+        ..TickInputs::default()
+    });
+    let mut output = TickOutput::default();
+    region.ask_to_breed(COW_KEY, partner.key, 7, &mut output);
+    assert_eq!(
+        region.made,
+        [Effect {
+            at: BlockPos::new(645, -60, 2),
+            what: Effected::OnEntity {
+                key: partner.key,
+                by: EntityUse::BreedAsk {
+                    asker: COW_KEY,
+                    number: 7,
+                },
+            },
+        }]
+    );
+    region.made.clear();
+
+    // The partner's side: the request comes as an effect on the region's own cow, from
+    // the animal beyond, which a copy shows; the answer goes back on it.
+    let asked = TickInputs {
+        effects: vec![FiledEffect {
+            id: EffectId {
+                sequence: 9,
+                index: 0,
+            },
+            effect: Effect {
+                at: BlockPos::new(3, -60, 0),
+                what: Effected::OnEntity {
+                    key: COW_KEY,
+                    by: EntityUse::BreedAsk {
+                        asker: partner.key,
+                        number: 3,
+                    },
+                },
+            },
+            due: Due::FromTaking,
+        }],
+        ..TickInputs::default()
+    };
+    let output = region.tick(&asked);
+    assert!(
+        output.effects.contains(&Effect {
+            at: BlockPos::new(645, -60, 2),
+            what: Effected::OnEntity {
+                key: partner.key,
+                by: EntityUse::BreedAnswer {
+                    partner: COW_KEY,
+                    number: 3,
+                    accepted: false,
+                },
+            },
+        }),
+        "{:?}",
+        output.effects
+    );
 }

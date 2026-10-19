@@ -166,6 +166,9 @@ impl Region {
         for local in out.local {
             match local {
                 Local::Push { key: pushed, by } => self.push_mob(pushed, by, output),
+                Local::BreedAsk { partner, number } => {
+                    self.ask_to_breed(key, partner, number, output);
+                }
             }
         }
         for event in out.events {
@@ -355,6 +358,14 @@ impl Region {
             // An explosion's hit is the same from within and across a line
             // (`explosions.rs`).
             EntityUse::Blasted { .. } => {}
+            EntityUse::BreedAsk { asker, number } => {
+                self.breed_asked(entity.key, asker, number, output);
+            }
+            EntityUse::BreedAnswer {
+                partner,
+                number,
+                accepted,
+            } => self.bred(entity.key, partner, number, accepted, output),
         }
     }
 

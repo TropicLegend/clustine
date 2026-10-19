@@ -45,6 +45,8 @@ const PLAYER_INSIDE: u8 = 8;
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
 const USE_BLASTED: u8 = 3;
+const USE_BREED_ASK: u8 = 4;
+const USE_BREED_ANSWER: u8 = 5;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -154,6 +156,21 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     out.extend_from_slice(&damage.0.to_be_bytes());
                     put_doubles(out, push);
                     put_blast(out, &blast);
+                }
+                EntityUse::BreedAsk { asker, number } => {
+                    out.push(USE_BREED_ASK);
+                    out.extend_from_slice(&asker.0.to_be_bytes());
+                    out.extend_from_slice(&number.to_be_bytes());
+                }
+                EntityUse::BreedAnswer {
+                    partner,
+                    number,
+                    accepted,
+                } => {
+                    out.push(USE_BREED_ANSWER);
+                    out.extend_from_slice(&partner.0.to_be_bytes());
+                    out.extend_from_slice(&number.to_be_bytes());
+                    out.push(u8::from(accepted));
                 }
             }
         }
@@ -325,6 +342,19 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                     damage: Float(input.f32()?),
                     push: take_doubles(input)?,
                     blast: take_blast(input)?,
+                },
+                USE_BREED_ASK => EntityUse::BreedAsk {
+                    asker: EntityId(input.u64()?),
+                    number: input.u32()?,
+                },
+                USE_BREED_ANSWER => EntityUse::BreedAnswer {
+                    partner: EntityId(input.u64()?),
+                    number: input.u32()?,
+                    accepted: match input.u8()? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(FormatError::Corrupt("a breeding answer's flag")),
+                    },
                 },
                 _ => return Err(FormatError::Corrupt("an entity use's kind")),
             };
@@ -638,6 +668,36 @@ mod entity_uses {
         // and the attacker (8).
         out[30] = 4;
         assert!(take_effect(&mut Input(&out)).is_err());
+    }
+
+    #[test]
+    fn a_request_to_breed_and_its_answer_are_read_back_as_written() {
+        let at = BlockPos::new(15, -60, 2);
+        let uses = [
+            EntityUse::BreedAsk {
+                asker: EntityId(u64::MAX - 1),
+                number: u32::MAX,
+            },
+            EntityUse::BreedAnswer {
+                partner: EntityId(1 << 40),
+                number: 3,
+                accepted: true,
+            },
+            EntityUse::BreedAnswer {
+                partner: EntityId(7),
+                number: 0,
+                accepted: false,
+            },
+        ];
+        for by in uses {
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by,
+                },
+            });
+        }
     }
 
     fn blast(owner: Option<u128>) -> Blast {

@@ -43,6 +43,9 @@ pub(crate) enum Local {
     /// `Entity.push(x, y, z)` of the region's entity `key` (another mob a mob pushes in
     /// its `pushEntities`).
     Push { key: EntityId, by: [f64; 3] },
+    /// An animal asks `partner` to breed, its request `number` (`region/breeding.rs`).
+    #[allow(dead_code, reason = "what the breeding goal of N7e asks")]
+    BreedAsk { partner: EntityId, number: u32 },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

@@ -25,6 +25,7 @@ mod attached;
 mod block_entities;
 mod block_events;
 mod boats;
+mod breeding;
 mod colliders;
 mod containers;
 mod cushions;

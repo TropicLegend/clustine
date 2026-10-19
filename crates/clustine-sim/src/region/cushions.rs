@@ -203,7 +203,10 @@ impl Region {
                 self.mount_player(player, entity.key, output);
             }
             // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).
-            EntityUse::Blasted { .. } => {}
+            // Only animals breed.
+            EntityUse::Blasted { .. }
+            | EntityUse::BreedAsk { .. }
+            | EntityUse::BreedAnswer { .. } => {}
         }
     }
 
