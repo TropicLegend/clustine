@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-18)
+## Where the work stands (2026-10-19)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -43,13 +43,11 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: animals, monsters and
-TNT (entities, below); chests and other containers that open; what needs light, crops and saplings
-growing, grass spreading, ice and snow melting (light in the simulation); the
-redstone that waits for entities (TNT, dispensers, droppers, hoppers, crafters, sculk,
-detector rails, arrows, plates pressed by mobs or items, pistons pushing anything but
-blocks, comparators reading containers, the daylight detector); the Nether and the End; survival mode, inventories
-beyond the hotbar, and crafting.
+**What a player will miss within minutes**, all of it planned: animals and monsters
+(entities, below); what needs light, crops and saplings growing, grass spreading, ice
+and snow melting (light in the simulation); sculk sensors, crafters, arrows, plates
+pressed by mobs and the daylight detector; the Nether and the End; survival mode and
+crafting.
 
 **Built since M3:**
 
@@ -215,8 +213,44 @@ across a line does nothing; containers do not open; a unit sent on to a third re
 while a seat is kept loses its forwarding entry if that region crashes, merges or splits
 within those ticks.
 
-**Next in phase N:** N6 (TNT and the redstone that waits for entities), then N7 (animals
-and the structures' entities).
+**N6, TNT, explosions, containers that open and the redstone that waits for entities**
+(2026-10-19, under way: [plan](groundwork/n6-plan.md), reviewed five times;
+[brief](groundwork/n6-brief.md) read from the jar). Built and on `main`:
+- every ender chest opens the player's own 27 slots, carried, restored and stored with
+  them (the store's format raised to 9; worlds made before are refused and made again);
+- chests, double chests, barrels, shulker boxes, ender chests, dispensers, droppers,
+  hoppers, chest carts, hopper carts and chest boats open their menus, with every kind
+  of click, drag and shift-click by the game's rules; lids, their block events and
+  sounds, the openers' count saved and rechecked, a trapped chest's signal, comparators
+  reading containers, containers spilling when broken;
+- the edge's side of a menu as the game's synchroniser: every click answered and the
+  client's guess corrected, so two players at one chest see the same; a menu closes at
+  a hand-over, and a restored, merged or split region reports it whole once its chest is
+  loaded;
+- TNT primed by redstone, flint and steel, fire charges, fire and other explosions;
+  primed TNT falling and burning; the explosion's rays, its damage and push, its drops
+  merged into stacks of 16, chained TNT; the TNT cart; flint and steel lighting fire,
+  campfires and candles; an explosion at a line finished by the region beyond it, and
+  burning TNT merging regions that follow players;
+- dispensers and droppers with the game's behaviours (drops, buckets, flint and steel,
+  TNT, boats, minecarts, armour, shulker boxes, bottles and more); hoppers and hopper
+  carts moving items; plates and tripwire pressed by items, carts, boats, falling blocks,
+  TNT and armour stands.
+
+Compared with the official server (2026-10-19): a chest's window, packet by packet and
+state id by state id, through an open, a right guess, a wrong guess, a shift-click and a
+close; TNT's entity and its explosion packet. Still to come in N6: game events and sculk
+sensors (N6f, under way), dispensers, droppers and hoppers lending land at a pinned line
+and plates counting the entities of the other side (N6g), the crater of 64 TNT measured
+(N6h), and the tests from the specification (N6j, under way). Named differences so far:
+a container a step across a pinned line opens only from its own side (the owner's choice
+of 2026-10-18), and two chests across one stay single; structures' chests are empty (no
+loot tables); projectiles in a dispenser drop as items until N9, and what acts on mobs
+waits for N7; a shulker box drops empty when broken (no item components yet) and spills
+what it held instead; a dispenser, dropper or hopper facing across a pinned line does
+nothing for now.
+
+**Next in phase N:** the rest of N6, then N7 (animals and the structures' entities).
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
@@ -254,6 +288,27 @@ and the structures' entities).
     fence.
 12. With pins: drive a boat or ride a cart across x = 64 and on: you go on riding, with no
     jump, no getting out and no flicker; a player on the far side sees you arrive seated.
+13. Place a chest and open it; put things in by every kind of click: a click, a right
+    click, a shift-click, a drag with each button, a number key over a slot, a double
+    click. Close it and open it again: everything is where you left it. A second player
+    opening it at the same time sees each change as you make it, and its lid opens and
+    shuts for both. Put a second chest beside it: a double chest of six rows. Break it:
+    what it held spills out.
+14. Open a barrel, a shulker box, a dispenser, a dropper and a hopper; an ender chest in
+    two places shows the same things, and after you leave and come back. A chest cart,
+    a hopper cart and a chest boat (sneak and click) open too.
+15. Light TNT with flint and steel, with redstone and with fire: it falls, flashes, and
+    explodes after four seconds, breaking the ground, dropping what it broke, pushing you
+    back. Chain several. Ride a TNT cart onto a powered activator rail.
+16. Fill a dispenser with water buckets, TNT, boats or armour and power it with a button;
+    a dropper into a chest; a hopper under a chest feeding another. Stand items, a boat
+    or a cart on a wooden plate, an armour stand on a stone one.
+17. With pins: light TNT a block or two west of x = 64: the hole goes across the line,
+    with the drops of the far side on the far side. Walk across the line with a chest's
+    window open: it closes as you cross, and what you carried on the cursor is in your
+    inventory.
+18. Without pins: stand far apart from a second player until the region splits, and
+    light TNT near the line between them: the coordinator merges the two at once.
 
 What to say if it is not so: which step, what was seen, and the log of the world
 store, the coordinator and the workers.
