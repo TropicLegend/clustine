@@ -26,13 +26,46 @@ impl Region {
         }
         // TNT lit by a flint and steel or a fire charge (`TntBlock.useItemOn`), then
         // fire either sets (`FlintAndSteelItem.useOn`, `FireChargeItem.useOn`).
-        self.light_tnt(click, player, output)
-            || self.fire_item_used_on(click, player, output)
-            || self.place_minecart(click, player, output)
+        if self.light_tnt(click, player, output) || self.fire_item_used_on(click, player, output) {
+            return true;
+        }
+        let spawned = output.events.len();
+        let placed = self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)
             || self.place_hanging(click, player, output)
-            || self.place_cushion(click, player, output)
-            || self.lead_used_on(click, player, output)
+            || self.place_cushion(click, player, output);
+        if placed {
+            self.entity_placed(player, spawned, output);
+            return true;
+        }
+        self.lead_used_on(click, player, output)
+    }
+
+    /// `gameEvent(player, ENTITY_PLACE, …)` of the item that placed an entity: at the
+    /// entity made since the event `since` of the tick's output, by the player
+    /// (`docs/groundwork/n6-brief.md`, section 8.1). One sent across a line as it was
+    /// made is heard by nothing here.
+    fn entity_placed(&mut self, player: PlayerId, since: usize, output: &TickOutput) {
+        let made = output.events[since..]
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                crate::api::RegionEvent::EntitySpawned(state) => Some(state.pose.position),
+                _ => None,
+            });
+        let Some(at) = made else {
+            return;
+        };
+        let source = self
+            .players
+            .get(&player)
+            .map(|own| super::vibrations::Source::of(own.entity_id));
+        let context = super::vibrations::Context::of(source, None);
+        self.vibrate(
+            super::vibrations::Vibration::ENTITY_PLACE,
+            [at.x, at.y, at.z],
+            context,
+        );
     }
 
     /// `Item.use` of the held item in the air by the player `player`: whether an entity's
@@ -46,6 +79,11 @@ impl Region {
         if used.held.is_none() {
             return false;
         }
-        self.place_boat(used, player, output)
+        let spawned = output.events.len();
+        let placed = self.place_boat(used, player, output);
+        if placed {
+            self.entity_placed(player, spawned, output);
+        }
+        placed
     }
 }

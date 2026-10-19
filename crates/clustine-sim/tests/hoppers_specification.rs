@@ -144,7 +144,6 @@ fn a_hopper_fed_while_it_holds_something_keeps_its_own_pace() {
 /// this as a difference to be joined with the hoppers' `addItem`; neither the plan nor
 /// the roadmap names it.)
 #[test]
-#[ignore = "finding: a dropper's insertion hands an empty hopper no cooldown; it passes the item on at once"]
 fn a_hopper_fed_by_a_dropper_waits_its_cooldown_before_passing_the_item_on() {
     let dropper = BlockPos::new(4, -60, 6);
     let fed = BlockPos::new(5, -60, 6);

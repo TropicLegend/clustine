@@ -44,6 +44,7 @@
 //! its waxed block of the same name (`HoneycombItem.getWaxed`); shears take three
 //! honeycombs from a full hive (`BeehiveBlock.dropHoneycomb`).
 
+use super::super::vibrations::Vibration;
 use clustine_blocks::data::{
     face_name, flag, has_lava, has_water, in_tag, is_block, is_class, number, relative, set,
     set_flag,
@@ -268,7 +269,9 @@ impl Region {
         match behaviour {
             Behaviour::Drop => self.default_dispense(dispense, output),
             Behaviour::ArmourStand => {
-                self.dispense_armour_stand(dispense, output);
+                if self.dispense_armour_stand(dispense, output) {
+                    self.post(Vibration::ENTITY_PLACE, dispense.front());
+                }
                 self.click_and_smoke(dispense, DISPENSED, output);
                 dispense.stack()
             }
@@ -281,6 +284,7 @@ impl Region {
             }
             Behaviour::FullBucket(item) => {
                 let left = if self.empty_contents(item, dispense.front(), output) {
+                    self.post(Vibration::FLUID_PLACE, dispense.front());
                     let bucket = ItemStack {
                         item: items::BUCKET,
                         count: 1,
@@ -295,6 +299,7 @@ impl Region {
             Behaviour::EmptyBucket => {
                 let left = match self.pickup_block(dispense.front(), output) {
                     Some(filled) => {
+                        self.post(Vibration::FLUID_PICKUP, dispense.front());
                         let filled = ItemStack {
                             item: filled,
                             count: 1,
@@ -311,7 +316,8 @@ impl Region {
                 self.optional_click(dispense, lit, output)
             }
             Behaviour::Tnt => {
-                let primed = self.prime_tnt(dispense.front(), None, output);
+                let primed =
+                    self.prime_tnt_posting(dispense.front(), None, Vibration::ENTITY_PLACE, output);
                 if primed {
                     dispense.shrink(1);
                 }
@@ -332,6 +338,9 @@ impl Region {
             }
             Behaviour::ShulkerBox => {
                 let placed = self.dispense_shulker_box(dispense, output);
+                if placed {
+                    self.post(Vibration::BLOCK_PLACE, dispense.front());
+                }
                 self.optional_click(dispense, placed, output)
             }
             Behaviour::GlassBottle => self.dispense_glass_bottle(dispense, output),
@@ -384,7 +393,7 @@ impl Region {
     /// way the dispenser faces, placed into whatever is there (no check of room). The
     /// level's draw of a yaw that `EntityType.create` makes and the facing turns over is
     /// drawn from the dispenser's stream.
-    fn dispense_armour_stand(&mut self, dispense: &mut Dispense, output: &mut TickOutput) {
+    fn dispense_armour_stand(&mut self, dispense: &mut Dispense, output: &mut TickOutput) -> bool {
         let front = dispense.front();
         let position = [
             f64::from(front.x) + 0.5,
@@ -400,7 +409,7 @@ impl Region {
             self.take_key()
         };
         let Some(key) = key else {
-            return;
+            return false;
         };
         // The stand's own draws: its UUID, then `LivingEntity`'s yaw, turned over.
         let mut own = Random::of_entity(self.config.seed, key, self.tick);
@@ -438,6 +447,13 @@ impl Region {
             self.send_made(entity, output);
         }
         dispense.shrink(1);
+        true
+    }
+
+    /// `Level.gameEvent(null, event, pos)`: what a dispenser does, heard by the sculk
+    /// sensors near (`vibrations.rs`), with no entity as its source.
+    fn post(&mut self, event: Vibration, pos: BlockPos) {
+        self.vibrate_at(event, pos, super::super::vibrations::Context::default());
     }
 
     /// `BoatDispenseItemBehavior.execute`: a boat of `kind` a block and a quarter out of
@@ -747,11 +763,13 @@ impl Region {
             let fire = clustine_blocks::shape::fire_state(&mut RegionView(self), front);
             if can_survive(fire, front, &mut RegionView(self)) {
                 self.set_block(front, fire, output);
+                self.post(Vibration::BLOCK_PLACE, front);
                 return true;
             }
         }
         if super::super::tnt::can_light(state) {
             self.set_block(front, set_flag(state, "lit", true), output);
+            self.post(Vibration::BLOCK_CHANGE, front);
             return true;
         }
         if is_class(state, BlockClass::TntBlock) {
@@ -931,12 +949,15 @@ impl Region {
         let (left, success) = if full_hive(state) {
             // `releaseBeesAndResetHoneyLevel`: the bees are N7's.
             self.set_block(front, set(state, "honey_level", "0"), output);
+            // `takeLiquid`: at the dispenser, not in front.
+            self.post(Vibration::FLUID_PICKUP, dispense.pos);
             let honey = ItemStack {
                 item: items::HONEY_BOTTLE,
                 count: 1,
             };
             (self.consume_with_remainder(dispense, honey, output), true)
         } else if has_water(state) {
+            self.post(Vibration::FLUID_PICKUP, dispense.pos);
             let water = ItemStack {
                 item: items::POTION,
                 count: 1,

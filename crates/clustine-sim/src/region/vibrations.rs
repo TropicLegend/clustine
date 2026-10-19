@@ -133,6 +133,7 @@ const FREQUENCIES: [u8; 61] = [
 impl Vibration {
     pub(crate) const BLOCK_ACTIVATE: Vibration = Vibration(0);
     pub(crate) const BLOCK_ATTACH: Vibration = Vibration(1);
+    pub(crate) const BLOCK_CHANGE: Vibration = Vibration(2);
     pub(crate) const BLOCK_CLOSE: Vibration = Vibration(3);
     pub(crate) const BLOCK_DEACTIVATE: Vibration = Vibration(4);
     pub(crate) const BLOCK_DESTROY: Vibration = Vibration(5);
@@ -142,6 +143,7 @@ impl Vibration {
     pub(crate) const CONTAINER_CLOSE: Vibration = Vibration(10);
     pub(crate) const CONTAINER_OPEN: Vibration = Vibration(11);
     pub(crate) const ENTITY_DISMOUNT: Vibration = Vibration(17);
+    pub(crate) const ENTITY_PLACE: Vibration = Vibration(20);
     pub(crate) const ENTITY_MOUNT: Vibration = Vibration(19);
     pub(crate) const EXPLODE: Vibration = Vibration(23);
     pub(crate) const FLUID_PICKUP: Vibration = Vibration(25);

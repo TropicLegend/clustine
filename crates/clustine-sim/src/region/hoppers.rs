@@ -706,6 +706,20 @@ impl Region {
     /// where given (a loot table, which the game would have unpacked to read them, gone)
     /// and a hopper's cooldown; nothing where that is what its data says already. The
     /// comparators are not told: the caller tells them as the game's `setChanged` does.
+    /// The hopper at `pos`, empty before, was fed by something that is no hopper (a
+    /// dropper, `tryMoveInItem`): it takes the cooldown of eight, so that it waits before
+    /// it moves the item on, unless one of its own is longer. Its data is kept with it.
+    pub(super) fn hopper_fed_from_outside(&mut self, pos: BlockPos, output: &mut TickOutput) {
+        let Some(timer) = self.hopper_timer_mut(pos) else {
+            return;
+        };
+        if timer.cooldown > MOVE_ITEM_SPEED {
+            return;
+        }
+        timer.cooldown = MOVE_ITEM_SPEED;
+        self.keep_block(pos, None, output);
+    }
+
     fn keep_block(
         &mut self,
         pos: BlockPos,

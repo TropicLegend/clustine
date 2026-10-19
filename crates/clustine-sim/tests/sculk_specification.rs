@@ -534,7 +534,6 @@ fn what_a_player_does_is_heard_with_its_frequency() {
 /// `BoatItem`, `ArmorStandItem`"; "N6 has to go back and post them"): an armour stand
 /// placed, and a minecart placed on a rail, are heard with frequency 14.
 #[test]
-#[ignore = "finding: an armour stand or a minecart placed by a player posts no entity_place"]
 fn placing_an_armour_stand_or_a_minecart_is_heard_as_an_entity_placed() {
     let at = BlockPos::new(4, -60, 8);
     for (what, blocks, item, clicked, kind) in [
@@ -1263,7 +1262,6 @@ fn a_plate_pressed_by_an_item_is_heard_as_the_plate() {
 /// the dispenser, 12). The dispenser stands 8 blocks south of the sensor facing it, and
 /// is fired by a redstone block placed beyond the sensor's reach.
 #[test]
-#[ignore = "finding: a dispenser's behaviours post no game events; its TNT posts prime_fuse, not entity_place"]
 fn what_a_dispenser_does_is_heard_with_its_frequency() {
     let at = BlockPos::new(4, -60, 12);
     let front = BlockPos::new(4, -60, 11);

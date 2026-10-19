@@ -26,11 +26,9 @@
 //! item dropped, a TNT primed, an armour stand) makes it in this region and sends it as
 //! an arrival, as a throw does.
 //!
-//! Named differences: the game events (`block_activate`, `entity_place`,
-//! `fluid_place`, ...) wait for step N6f; a structure's loot table is cleared as the
-//! game unpacks it but rolls nothing (decision 4); the game rule `tnt_explodes` is always
-//! true; a dropper's insertion into a hopper does not set the hopper's cooldown, which
-//! joins with the hoppers' own `addItem` (step N6e) at their merge; a dropper facing a
+//! Named differences: a structure's loot table is cleared as the game unpacks it but
+//! rolls nothing (decision 4); the game rule `tnt_explodes` is always true; a dropper
+//! facing a
 //! container block whose slots Clustine does not keep (a furnace, a brewing stand, a
 //! composter, a crafter, a chiseled bookshelf, a decorated pot, a jukebox, a shelf)
 //! keeps its item as it would facing a full one. The rest are the behaviours' own
@@ -500,8 +498,12 @@ impl Region {
                 // `addItem` asks the slots, which unpacks the table first.
                 container.unpack();
             }
+            let was_empty = container.slots.iter().all(Option::is_none);
             if insert_one(&mut container.slots, item) {
                 self.set_container(*pos, container, output);
+                if was_empty && is_class(state, BlockClass::HopperBlock) {
+                    self.hopper_fed_from_outside(*pos, output);
+                }
                 // `CompoundContainer.setChanged` tells both halves: the comparators of the
                 // other read the change too.
                 for other in halves.iter().filter(|other| *other != pos) {

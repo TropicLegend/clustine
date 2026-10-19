@@ -155,6 +155,19 @@ impl Region {
         owner: Option<Uuid>,
         output: &mut TickOutput,
     ) -> bool {
+        self.prime_tnt_posting(pos, owner, super::vibrations::Vibration::PRIME_FUSE, output)
+    }
+
+    /// [`Region::prime_tnt`], posting `event` at the block where the TNT block's priming
+    /// posts `prime_fuse`: a dispenser's TNT is made as an entity placed (`$6`,
+    /// `gameEvent(null, ENTITY_PLACE, front)`), never through `TntBlock.prime`.
+    pub(crate) fn prime_tnt_posting(
+        &mut self,
+        pos: BlockPos,
+        owner: Option<Uuid>,
+        event: super::vibrations::Vibration,
+        output: &mut TickOutput,
+    ) -> bool {
         let mut random = self
             .block_streams
             .remove(&pos)
@@ -176,7 +189,7 @@ impl Region {
         // Then `prime_fuse` at the block, of the igniter, whom the region knows only by
         // the UUID it saves, which no sensor reads (`vibrations.rs`).
         let context = super::vibrations::Context::default();
-        self.vibrate_at(super::vibrations::Vibration::PRIME_FUSE, pos, context);
+        self.vibrate_at(event, pos, context);
         true
     }
 
