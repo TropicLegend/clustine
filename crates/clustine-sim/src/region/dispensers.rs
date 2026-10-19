@@ -478,7 +478,8 @@ impl Region {
     /// `HopperBlockEntity.addItem` of one `item` into the container block of `halves`:
     /// the first slot, the right half's before the left's, that is empty or holds the same
     /// item below its most, takes it; a shulker box takes no shulker box. Whether one
-    /// took it. The dropper's own port, which joins the hoppers' at their merge (N6e).
+    /// took it. One item put by a dropper follows the same rules as the hoppers' whole
+    /// `addItem` (`hoppers.rs`), which this need not share.
     fn insert_one_into_blocks(
         &mut self,
         halves: &[BlockPos],
@@ -501,6 +502,13 @@ impl Region {
             }
             if insert_one(&mut container.slots, item) {
                 self.set_container(*pos, container, output);
+                // `CompoundContainer.setChanged` tells both halves: the comparators of the
+                // other read the change too.
+                for other in halves.iter().filter(|other| *other != pos) {
+                    if let Some(unchanged) = self.container_at(*other) {
+                        self.set_container(*other, unchanged, output);
+                    }
+                }
                 return true;
             }
         }
