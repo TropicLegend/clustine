@@ -108,7 +108,44 @@ pub struct ItemComponents {
     /// `minecraft:attack_animation`: its kind's id and its duration, `None` where the
     /// component has the codec's defaults (`SwingAnimation.DEFAULT`).
     pub attack_animation: Option<(u8, u8)>,
+    /// The entity type `minecraft:entity_data` names: what a spawn egg makes.
+    pub entity: Option<String>,
+    /// `minecraft:attribute_modifiers`, in the item's order.
+    pub modifiers: Vec<ModifierReport>,
+    /// `minecraft:weapon`: the durability an attack costs and the seconds it disables a
+    /// shield for.
+    pub weapon: Option<(u32, u32)>,
+    /// `minecraft:damage_type`: the damage type an attack with it deals, by name.
+    pub damage_type: Option<String>,
+    /// `minecraft:minimum_attack_charge`, as the float's bits.
+    pub minimum_attack_charge: Option<u32>,
+    /// `minecraft:attack_range`: the least and greatest reach, for a survival and a
+    /// creative player, the margin added to a target's box, and the factor for a mob
+    /// that wields it, each as the float's bits.
+    pub attack_range: Option<[u32; 6]>,
 }
+
+/// One of an item's attribute modifiers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModifierReport {
+    pub attribute: String,
+    pub id: String,
+    /// The amount's double bits.
+    pub amount: u64,
+    /// The ordinal of `AttributeModifier.Operation`.
+    pub operation: u8,
+    /// The ordinal of `EquipmentSlotGroup`.
+    pub slot: u8,
+}
+
+/// `AttributeModifier.Operation`'s serialised names, by ordinal.
+const OPERATIONS: [&str; 3] = ["add_value", "add_multiplied_base", "add_multiplied_total"];
+
+/// `EquipmentSlotGroup`'s serialised names, by ordinal.
+const SLOT_GROUPS: [&str; 11] = [
+    "any", "mainhand", "offhand", "hand", "feet", "legs", "chest", "head", "armor", "body",
+    "saddle",
+];
 
 /// The game's `SwingAnimationType`s by their serialised names, in the order of their
 /// ids.
@@ -232,12 +269,123 @@ pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
             Some((kind, duration)).filter(|swing| *swing != DEFAULT_SWING)
         }
     };
+    let entity = match components.get("minecraft:entity_data") {
+        None => None,
+        Some(value) => Some(
+            value
+                .get("id")
+                .and_then(Value::as_str)
+                .context("entity data without the id of a type")?
+                .to_owned(),
+        ),
+    };
+    let mut modifiers = Vec::new();
+    for modifier in components
+        .get("minecraft:attribute_modifiers")
+        .and_then(Value::as_array)
+        .context("no attribute modifiers")?
+    {
+        let text = |key: &str| {
+            modifier
+                .get(key)
+                .and_then(Value::as_str)
+                .with_context(|| format!("an attribute modifier without its {key}"))
+        };
+        let operation = text("operation")?;
+        let slot = modifier
+            .get("slot")
+            .and_then(Value::as_str)
+            .unwrap_or("any");
+        modifiers.push(ModifierReport {
+            attribute: text("type")?.to_owned(),
+            id: text("id")?.to_owned(),
+            amount: modifier
+                .get("amount")
+                .and_then(Value::as_f64)
+                .context("an attribute modifier without its amount")?
+                .to_bits(),
+            operation: OPERATIONS
+                .iter()
+                .position(|name| *name == operation)
+                .with_context(|| format!("an operation {operation}"))? as u8,
+            slot: SLOT_GROUPS
+                .iter()
+                .position(|name| *name == slot)
+                .with_context(|| format!("a slot group {slot}"))? as u8,
+        });
+    }
+    // A float a report writes as a decimal, which the game's codec read into a float.
+    let float = |value: &Value, what: &str| -> Result<u32> {
+        Ok((value
+            .as_f64()
+            .with_context(|| format!("{what} that is not a number"))? as f32)
+            .to_bits())
+    };
+    let weapon = match components.get("minecraft:weapon") {
+        None => None,
+        Some(weapon) => {
+            let damage = weapon
+                .get("item_damage_per_attack")
+                .map_or(Ok(1), |value| {
+                    value
+                        .as_u64()
+                        .and_then(|value| u32::try_from(value).ok())
+                        .context("a weapon's damage per attack")
+                })?;
+            let seconds = match weapon.get("disable_blocking_for_seconds") {
+                None => 0.0_f32.to_bits(),
+                Some(value) => float(value, "a weapon's seconds")?,
+            };
+            Some((damage, seconds))
+        }
+    };
+    let damage_type = components
+        .get("minecraft:damage_type")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .context("a damage type that is not a name")
+        })
+        .transpose()?;
+    let minimum_attack_charge = components
+        .get("minecraft:minimum_attack_charge")
+        .map(|value| float(value, "a minimum attack charge"))
+        .transpose()?;
+    let attack_range = match components.get("minecraft:attack_range") {
+        None => None,
+        Some(range) => {
+            let mut values = [0; 6];
+            for (value, key) in values.iter_mut().zip([
+                "min_reach",
+                "max_reach",
+                "min_creative_reach",
+                "max_creative_reach",
+                "hitbox_margin",
+                "mob_factor",
+            ]) {
+                *value = float(
+                    range
+                        .get(key)
+                        .with_context(|| format!("an attack range without its {key}"))?,
+                    key,
+                )?;
+            }
+            Some(values)
+        }
+    };
     Ok(ItemComponents {
         max_stack_size: max_stack_size as u8,
         max_damage,
         damage_resistant,
         equippable,
         attack_animation,
+        entity,
+        modifiers,
+        weapon,
+        damage_type,
+        minimum_attack_charge,
+        attack_range,
     })
 }
 

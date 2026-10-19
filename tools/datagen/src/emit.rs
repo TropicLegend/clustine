@@ -145,6 +145,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         "mod.rs",
         modules(&[
             "block_classes",
+            "attributes",
             "block_physics",
             "block_properties",
             "blocks",
@@ -153,6 +154,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "item_components",
             "items",
             "loot_tables",
+            "path_types",
             "registries",
             "sound_events",
             "sound_types",
@@ -166,6 +168,8 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "block_classes.rs", block_classes(data)?);
     add(DATA_DIR, "items.rs", items(data)?);
     add(DATA_DIR, "entity_types.rs", entity_types(data)?);
+    add(DATA_DIR, "attributes.rs", attributes(data)?);
+    add(DATA_DIR, "path_types.rs", path_types(data)?);
     add(DATA_DIR, "block_physics.rs", block_physics(data)?);
     add(DATA_DIR, "item_components.rs", item_components(data)?);
     add(DATA_DIR, "loot_tables.rs", loot_tables(data)?);
@@ -182,6 +186,10 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     outputs.push(Output {
         path: PathBuf::from(DATA_DIR).join("state_sound_types.bin"),
         content: of_states,
+    });
+    outputs.push(Output {
+        path: PathBuf::from(DATA_DIR).join("state_path_types.bin"),
+        content: state_path_types(data)?,
     });
     outputs.push(Output {
         path: PathBuf::from(DATA_DIR).join("block_states.bin"),
@@ -956,6 +964,154 @@ fn entity_types(data: &GameData) -> Result<String> {
     Ok(out)
 }
 
+/// `attributes.rs`: every attribute by its id, with its default and bounds, the ids as
+/// constants, and the default attributes of each living type
+/// (`docs/groundwork/n7-plan.md`, section 11.3, item 10).
+fn attributes(data: &GameData) -> Result<String> {
+    let dumped = &data.extract.attributes;
+    let mut out = String::new();
+    writeln!(out, "use crate::Attribute;\n")?;
+    writeln!(
+        out,
+        "/// By attribute id, the game's own: the attribute registry is not sent to clients."
+    )?;
+    writeln!(
+        out,
+        "pub static ATTRIBUTES: [Attribute; {}] = [",
+        dumped.len()
+    )?;
+    for attribute in dumped {
+        writeln!(
+            out,
+            "    Attribute {{ name: {:?}, default: f64::from_bits({:#018x}), min: f64::from_bits({:#018x}), \
+             max: f64::from_bits({:#018x}), syncable: {} }},",
+            attribute.name, attribute.default, attribute.min, attribute.max, attribute.syncable
+        )?;
+    }
+    writeln!(out, "];\n")?;
+    writeln!(
+        out,
+        "/// By entity type id: the base value of each attribute a living type has, by \
+         attribute id, ascending (`DefaultAttributes`); `None` for a type that is not living."
+    )?;
+    writeln!(
+        out,
+        "pub static DEFAULT_ATTRIBUTES: [Option<&[(u16, f64)]>; {}] = [",
+        data.entity_types.len()
+    )?;
+    let mut living = data.extract.default_attributes.iter().peekable();
+    for (id, name) in data.entity_types.iter().enumerate() {
+        let short = name.strip_prefix("minecraft:").unwrap_or(name);
+        match living.next_if(|(type_id, _)| *type_id == id) {
+            None => writeln!(out, "    None, // {short}")?,
+            Some((_, values)) => {
+                let values: Vec<String> = values
+                    .iter()
+                    .map(|(attribute, bits)| {
+                        ensure!(
+                            usize::from(*attribute) < dumped.len(),
+                            "{short} has an attribute {attribute} beyond the registry"
+                        );
+                        Ok(format!("({attribute}, f64::from_bits({bits:#018x}))"))
+                    })
+                    .collect::<Result<_>>()?;
+                writeln!(out, "    Some(&[{}]), // {short}", values.join(", "))?;
+            }
+        }
+    }
+    ensure!(
+        living.next().is_none(),
+        "default attributes of an entity type beyond the registry"
+    );
+    writeln!(out, "];\n")?;
+    let names: Vec<&str> = dumped
+        .iter()
+        .map(|attribute| attribute.name.as_str())
+        .collect();
+    out.push_str(&id_constants(names.into_iter())?);
+    Ok(out)
+}
+
+/// `path_types.rs`: the game's path types as an enum in the order of their ordinals,
+/// and each one's malus.
+fn path_types(data: &GameData) -> Result<String> {
+    let list = &data.extract.path_type_list;
+    let mut out = String::new();
+    writeln!(
+        out,
+        "/// The game's `PathType`, in the order of its ordinals: what a cell is to a mob's path."
+    )?;
+    writeln!(
+        out,
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]"
+    )?;
+    writeln!(out, "#[repr(u8)]")?;
+    writeln!(out, "pub enum PathType {{")?;
+    for (name, _) in list {
+        writeln!(out, "    {},", camel(name))?;
+    }
+    writeln!(out, "}}\n")?;
+    writeln!(out, "impl PathType {{")?;
+    writeln!(out, "    /// Every path type, by its ordinal.")?;
+    writeln!(out, "    pub const ALL: [PathType; {}] = [", list.len())?;
+    for (name, _) in list {
+        writeln!(out, "        PathType::{},", camel(name))?;
+    }
+    writeln!(out, "    ];\n")?;
+    writeln!(
+        out,
+        "    /// What a mob pays to step on it unless it says otherwise (`getMalus`)."
+    )?;
+    writeln!(out, "    pub fn malus(self) -> f32 {{")?;
+    writeln!(out, "        match self {{")?;
+    for (name, malus) in list {
+        writeln!(
+            out,
+            "            PathType::{} => f32::from_bits({malus:#010x}),",
+            camel(name)
+        )?;
+    }
+    writeln!(out, "        }}\n    }}\n}}")?;
+    Ok(out)
+}
+
+/// `UPPER_SNAKE` becomes `UpperSnake`.
+fn camel(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut letters = word.chars();
+            match letters.next() {
+                Some(first) => {
+                    first.to_ascii_uppercase().to_string() + &letters.as_str().to_ascii_lowercase()
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// `state_path_types.bin`: a byte a block state, by state id: its base path type's
+/// ordinal in the low five bits, then whether it may be pathed through on land (bit 5),
+/// in water (bit 6) and in the air (bit 7).
+fn state_path_types(data: &GameData) -> Result<Vec<u8>> {
+    let states = data.blocks.last().map_or(0, |block| block.last_state + 1);
+    let dumped = &data.extract.path_types;
+    ensure!(
+        u64::try_from(dumped.len()).ok() == Some(states),
+        "the extract program wrote the path types of {} states, the report has {states}",
+        dumped.len()
+    );
+    Ok(dumped
+        .iter()
+        .map(|state| {
+            state.kind
+                | u8::from(state.land) << 5
+                | u8::from(state.water) << 6
+                | u8::from(state.air) << 7
+        })
+        .collect())
+}
+
 /// Attachment points as Rust: `[x, y, z]` of `f64::from_bits`, joined by commas.
 fn points(points: &[[u64; 3]]) -> String {
     points
@@ -1058,7 +1214,10 @@ fn item_components(data: &GameData) -> Result<String> {
         data.items.len()
     );
     let mut out = String::new();
-    writeln!(out, "use crate::{{Equippable, ItemComponents, Swing}};\n")?;
+    writeln!(
+        out,
+        "use crate::{{AttackRange, Equippable, ItemComponents, ItemModifier, Swing, Weapon}};\n"
+    )?;
     writeln!(out, "/// By item id.")?;
     writeln!(
         out,
@@ -1089,9 +1248,61 @@ fn item_components(data: &GameData) -> Result<String> {
             Some((kind, duration)) => format!("Swing {{ kind: {kind}, duration: {duration} }}"),
             None => "Swing::DEFAULT".to_owned(),
         };
+        let entity = match &components.entity {
+            None => "None".to_owned(),
+            Some(name) => {
+                let id = data
+                    .entity_types
+                    .iter()
+                    .position(|known| known == name)
+                    .with_context(|| format!("the entity data names {name}, no entity type"))?;
+                format!("Some({id})")
+            }
+        };
+        let modifiers: Vec<String> = components
+            .modifiers
+            .iter()
+            .map(|modifier| {
+                let attribute = data
+                    .extract
+                    .attributes
+                    .iter()
+                    .position(|known| known.name == modifier.attribute)
+                    .with_context(|| format!("a modifier of {}, no attribute", modifier.attribute))?;
+                Ok(format!(
+                    "ItemModifier {{ attribute: {attribute}, id: {:?}, amount: f64::from_bits({:#018x}), operation: {}, slot: {} }}",
+                    modifier.id, modifier.amount, modifier.operation, modifier.slot
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let modifiers = modifiers.join(", ");
+        let weapon = match components.weapon {
+            None => "None".to_owned(),
+            Some((damage, seconds)) => format!(
+                "Some(Weapon {{ item_damage_per_attack: {damage}, disable_blocking_for_seconds: f32::from_bits({seconds:#010x}) }})"
+            ),
+        };
+        let damage_type = match &components.damage_type {
+            None => "None".to_owned(),
+            Some(name) => format!("Some({name:?})"),
+        };
+        let charge = match components.minimum_attack_charge {
+            None => "None".to_owned(),
+            Some(bits) => format!("Some(f32::from_bits({bits:#010x}))"),
+        };
+        let range = match components.attack_range {
+            None => "None".to_owned(),
+            Some(values) => {
+                let [min, max, min_creative, max_creative, margin, mob] =
+                    values.map(|bits| format!("f32::from_bits({bits:#010x})"));
+                format!(
+                    "Some(AttackRange {{ min_reach: {min}, max_reach: {max}, min_creative_reach: {min_creative}, max_creative_reach: {max_creative}, hitbox_margin: {margin}, mob_factor: {mob} }})"
+                )
+            }
+        };
         writeln!(
             out,
-            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable}, attack_animation: {attack_animation} }}, // {}",
+            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable}, attack_animation: {attack_animation}, entity: {entity}, modifiers: &[{modifiers}], weapon: {weapon}, damage_type: {damage_type}, minimum_attack_charge: {charge}, attack_range: {range} }}, // {}",
             components.max_stack_size,
             item.name.strip_prefix("minecraft:").unwrap_or(&item.name)
         )?;

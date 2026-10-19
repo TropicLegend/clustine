@@ -46,6 +46,40 @@ pub struct Extract {
     pub state_collisions: Vec<StateCollisionDump>,
     /// One for each entity type, by its id.
     pub entity_types: Vec<EntityTypeDump>,
+    /// One for each attribute, by its id.
+    pub attributes: Vec<AttributeDump>,
+    /// The default attributes of each entity type that has them, ascending by type id.
+    pub default_attributes: Vec<DefaultAttributes>,
+    /// The game's path types in the order of their ordinals: the name and the malus's
+    /// float bits.
+    pub path_type_list: Vec<(String, u32)>,
+    /// One for each block state, by state id.
+    pub path_types: Vec<PathTypeDump>,
+}
+
+/// An attribute: its name, its default, least and greatest values as double bits, and
+/// whether clients are sent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributeDump {
+    pub name: String,
+    pub default: u64,
+    pub min: u64,
+    pub max: u64,
+    pub syncable: bool,
+}
+
+/// The default attributes of an entity type: its id, and the base value's bits of each
+/// attribute it has, ascending by attribute id.
+pub type DefaultAttributes = (usize, Vec<(u16, u64)>);
+
+/// A block state's base path type, by its ordinal, and whether it may be pathed through
+/// on land, in water and in the air.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PathTypeDump {
+    pub kind: u8,
+    pub land: bool,
+    pub water: bool,
+    pub air: bool,
 }
 
 /// What an entity meets on a block: the floats the block holds, as their bits.
@@ -273,6 +307,8 @@ impl Extract {
         }
 
         let fluids = fluids(&read("fluids.txt")?).context("reading fluids.txt")?;
+        let path_type_list =
+            path_type_list(&read("path_type_list.txt")?).context("reading path_type_list.txt")?;
         Ok(Self {
             fluids: fluids.iter().map(|(name, _)| name.clone()).collect(),
             fluid_resistance: fluids.iter().map(|(_, resistance)| *resistance).collect(),
@@ -295,6 +331,12 @@ impl Extract {
                 .context("reading state_collisions.txt")?,
             entity_types: entity_types(&read("entity_types.txt")?)
                 .context("reading entity_types.txt")?,
+            attributes: attributes(&read("attributes.txt")?).context("reading attributes.txt")?,
+            default_attributes: default_attributes(&read("default_attributes.txt")?)
+                .context("reading default_attributes.txt")?,
+            path_types: path_types(&read("path_types.txt")?, &path_type_list)
+                .context("reading path_types.txt")?,
+            path_type_list,
         })
     }
 }
@@ -646,6 +688,99 @@ fn numbered_fields(line: &str, count: usize, expected_id: usize) -> Result<Vec<&
         fields[0]
     );
     Ok(fields)
+}
+
+/// The lines of `attributes.txt`.
+pub fn attributes(text: &str) -> Result<Vec<AttributeDump>> {
+    let mut attributes = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 6, attributes.len())?;
+        attributes.push(AttributeDump {
+            name: fields[1].to_owned(),
+            default: double_bits(fields[2])?,
+            min: double_bits(fields[3])?,
+            max: double_bits(fields[4])?,
+            syncable: flag(fields[5])?,
+        });
+    }
+    Ok(attributes)
+}
+
+/// The lines of `default_attributes.txt`: an entity type's id, then `attribute=bits`
+/// for each attribute it has, ascending.
+pub fn default_attributes(text: &str) -> Result<Vec<DefaultAttributes>> {
+    let mut types: Vec<DefaultAttributes> = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.split('\t');
+        let id: usize = integer(fields.next().context("an empty line")?)?;
+        ensure!(
+            types.last().is_none_or(|(last, _)| *last < id),
+            "the entity types are not ascending at {id}"
+        );
+        let mut values: Vec<(u16, u64)> = Vec::new();
+        for field in fields {
+            let (attribute, bits) = field
+                .split_once('=')
+                .with_context(|| format!("{field:?} is no attribute's value"))?;
+            let attribute: u16 = integer(attribute)?;
+            ensure!(
+                values.last().is_none_or(|(last, _)| *last < attribute),
+                "the attributes of {id} are not ascending"
+            );
+            values.push((attribute, double_bits(bits)?));
+        }
+        types.push((id, values));
+    }
+    Ok(types)
+}
+
+/// The lines of `path_type_list.txt`.
+pub fn path_type_list(text: &str) -> Result<Vec<(String, u32)>> {
+    let mut types = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 3, types.len())?;
+        types.push((fields[1].to_owned(), float_bits(fields[2])?));
+    }
+    ensure!(
+        types.len() < 32,
+        "{} path types do not fit five bits",
+        types.len()
+    );
+    Ok(types)
+}
+
+/// The lines of `path_types.txt`, each type by its name in `kinds`, the list of
+/// `path_type_list.txt`.
+pub fn path_types(text: &str, kinds: &[(String, u32)]) -> Result<Vec<PathTypeDump>> {
+    let mut states = Vec::new();
+    for line in text.lines() {
+        let fields = numbered_fields(line, 5, states.len())?;
+        let kind = kinds
+            .iter()
+            .position(|(name, _)| name == fields[1])
+            .with_context(|| format!("{:?} is no path type", fields[1]))?;
+        states.push(PathTypeDump {
+            kind: u8::try_from(kind).context("a path type's ordinal")?,
+            land: flag(fields[2])?,
+            water: flag(fields[3])?,
+            air: flag(fields[4])?,
+        });
+    }
+    Ok(states)
+}
+
+/// The bits of a double, in hexadecimal.
+fn double_bits(text: &str) -> Result<u64> {
+    u64::from_str_radix(text, 16).with_context(|| format!("{text:?} is not a double's bits"))
+}
+
+/// A flag written as 1 or 0.
+fn flag(text: &str) -> Result<bool> {
+    match text {
+        "1" => Ok(true),
+        "0" => Ok(false),
+        _ => bail!("{text:?} is no flag"),
+    }
 }
 
 /// The bits of a float, in hexadecimal.

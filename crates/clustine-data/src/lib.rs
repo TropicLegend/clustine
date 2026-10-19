@@ -24,6 +24,7 @@ pub use biome_parameters::{BiomeParameterList, BiomeParameters};
 pub use block_physics::{BlockPhysics, OffsetType, block_physics};
 pub use block_states::{Face, FaceShape, FluidProps, PushReaction, Shape, StateProps, SupportType};
 pub use collisions::{Axis, EntityInsideShape, VoxelShape};
+pub use generated::attributes::{ATTRIBUTES, DEFAULT_ATTRIBUTES};
 pub use generated::block_classes::{
     BLOCK_ENTITY_TYPES, BLOCK_INFO, BlockClass, FLUID_EXPLOSION_RESISTANCE, FLUIDS,
 };
@@ -32,6 +33,7 @@ pub use generated::dimension_types::DIMENSION_TYPES;
 pub use generated::entity_types::{ENTITY_TYPE_INFO, ENTITY_TYPES};
 pub use generated::item_components::ITEM_COMPONENTS;
 pub use generated::items::{ITEMS, ItemClass};
+pub use generated::path_types::PathType;
 pub use generated::registries::SYNCED_REGISTRIES;
 pub use generated::sound_events::SOUND_EVENTS;
 pub use generated::tags::TAGS;
@@ -59,6 +61,12 @@ pub mod entity_types {
     pub use crate::generated::entity_types::ids::*;
 }
 
+/// The id of every attribute, by name: the game's own, as clients are not sent the
+/// registry.
+pub mod attributes {
+    pub use crate::generated::attributes::ids::*;
+}
+
 /// The ids of the sound events, named as the game's `SoundEvents` names them.
 pub mod sounds {
     pub use crate::generated::sound_events::ids::*;
@@ -72,6 +80,29 @@ pub struct BlockState(pub u16);
 /// The index of each state's sound type in `generated::sound_types::SOUND_TYPES`, one
 /// byte a state, which `cargo datagen` takes from the game.
 static STATE_SOUND_TYPES: &[u8] = include_bytes!("generated/state_sound_types.bin");
+
+/// A byte a block state: its base path type's ordinal, then whether it may be pathed
+/// through on land, in water and in the air.
+static STATE_PATH_TYPES: &[u8] = include_bytes!("generated/state_path_types.bin");
+
+/// What a mob's path is computed for (`PathComputationType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathComputation {
+    Land,
+    Water,
+    Air,
+}
+
+/// An attribute of a living entity: its default, its bounds, which every value of it is
+/// kept within (`RangedAttribute.sanitizeValue`), and whether clients are sent it.
+#[derive(Debug, PartialEq)]
+pub struct Attribute {
+    pub name: &'static str,
+    pub default: f64,
+    pub min: f64,
+    pub max: f64,
+    pub syncable: bool,
+}
 
 /// A block's `SoundType`: the volume and pitch its sounds are played at and its five
 /// sounds, by their ids in [`SOUND_EVENTS`].
@@ -120,6 +151,26 @@ impl BlockState {
     /// What the game's code says of the block this state belongs to: its class, its
     /// block entity type, whether a click uses it. `None` if the id is not a block
     /// state.
+    /// The path type the walking evaluator gives the state before it looks at its
+    /// neighbours (`WalkNodeEvaluator.getPathTypeFromState`), a function of the state
+    /// alone.
+    pub fn path_type(self) -> Option<PathType> {
+        let byte = *STATE_PATH_TYPES.get(usize::from(self.0))?;
+        PathType::ALL.get(usize::from(byte & 0x1F)).copied()
+    }
+
+    /// Whether a mob may path through the state for `computation` (`isPathfindable`).
+    pub fn is_pathfindable(self, computation: PathComputation) -> bool {
+        let bit = match computation {
+            PathComputation::Land => 5,
+            PathComputation::Water => 6,
+            PathComputation::Air => 7,
+        };
+        STATE_PATH_TYPES
+            .get(usize::from(self.0))
+            .is_some_and(|byte| byte & 1 << bit != 0)
+    }
+
     pub fn block_info(self) -> Option<&'static BlockInfo> {
         BLOCK_INFO.get(self.block_id()?)
     }
@@ -317,7 +368,7 @@ pub struct Item {
 /// What the default components of an item say that the game's items read
 /// (`docs/groundwork/n4-brief.md`, section 11, item 7). Indexed by item id in
 /// [`ITEM_COMPONENTS`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct ItemComponents {
     /// `minecraft:max_stack_size`: how many make a full stack. Merging, picking up and
     /// splitting a drop read it.
@@ -335,6 +386,57 @@ pub struct ItemComponents {
     /// `minecraft:attack_animation`: how others see the player's arm swing when they
     /// punch with the item in hand (`ItemStack.getAttackAnimation`). A spear stabs.
     pub attack_animation: Swing,
+    /// The entity type `minecraft:entity_data` names, by its id: what a spawn egg makes.
+    pub entity: Option<u16>,
+    /// `minecraft:attribute_modifiers`: what the item adds to its holder's attributes
+    /// in the slots it names (a sword's attack damage and speed in the main hand).
+    pub modifiers: &'static [ItemModifier],
+    /// `minecraft:weapon`, for an item that is one.
+    pub weapon: Option<Weapon>,
+    /// `minecraft:damage_type`: the damage type of an attack with it, by name, where it
+    /// is not the player's own.
+    pub damage_type: Option<&'static str>,
+    /// `minecraft:minimum_attack_charge`: the attack strength below which it does not
+    /// attack.
+    pub minimum_attack_charge: Option<f32>,
+    /// `minecraft:attack_range`: how far its attacks reach.
+    pub attack_range: Option<AttackRange>,
+}
+
+/// One of an item's attribute modifiers (`ItemAttributeModifiers.Entry`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemModifier {
+    /// The attribute it modifies, by its id in [`ATTRIBUTES`].
+    pub attribute: u16,
+    /// The modifier's own id, by which a second of the same id replaces it.
+    pub id: &'static str,
+    pub amount: f64,
+    /// `AttributeModifier.Operation`'s ordinal: 0 adds the amount, 1 adds the base times
+    /// it, 2 multiplies the total by one and it.
+    pub operation: u8,
+    /// `EquipmentSlotGroup`'s ordinal: 0 any, 1 the main hand, 2 the off hand, 3 either
+    /// hand, 4 to 7 the feet to the head, 8 any armour, 9 an animal's body, 10 a saddle.
+    pub slot: u8,
+}
+
+/// An item's `minecraft:weapon`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Weapon {
+    /// What an attack with it costs of its durability.
+    pub item_damage_per_attack: u32,
+    /// How long an attack with it disables a shield it meets.
+    pub disable_blocking_for_seconds: f32,
+}
+
+/// An item's `minecraft:attack_range`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AttackRange {
+    pub min_reach: f32,
+    pub max_reach: f32,
+    pub min_creative_reach: f32,
+    pub max_creative_reach: f32,
+    pub hitbox_margin: f32,
+    pub mob_factor: f32,
 }
 
 /// A swing of the arm, as `ClientboundSwingAnimationPacket` shows it: the game's
@@ -482,6 +584,88 @@ pub struct Tag {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cow's defaults are the game's (`Cow.createAttributes`): 10 health, 0.2 speed as a
+    /// float widened, the follow range of 16; an item has none; and every attribute's
+    /// default lies within its bounds.
+    #[test]
+    fn a_cow_has_the_game_s_default_attributes_and_an_item_none() {
+        let base = |kind: i32, attribute: i32| {
+            DEFAULT_ATTRIBUTES[kind as usize]
+                .and_then(|values| values.iter().find(|(id, _)| i32::from(*id) == attribute))
+                .map(|(_, value)| *value)
+        };
+        assert_eq!(base(entity_types::COW, attributes::MAX_HEALTH), Some(10.0));
+        assert_eq!(
+            base(entity_types::COW, attributes::MOVEMENT_SPEED),
+            Some(f64::from(0.2_f32))
+        );
+        assert_eq!(
+            base(entity_types::COW, attributes::FOLLOW_RANGE),
+            Some(16.0)
+        );
+        assert_eq!(DEFAULT_ATTRIBUTES[entity_types::ITEM as usize], None);
+        for attribute in &ATTRIBUTES {
+            assert!(
+                attribute.min <= attribute.default && attribute.default <= attribute.max,
+                "{attribute:?}"
+            );
+        }
+        assert_eq!(
+            ATTRIBUTES[attributes::MOVEMENT_SPEED as usize].name,
+            "minecraft:movement_speed"
+        );
+    }
+
+    /// A spawn egg names the type it makes, and a sword its damage and speed in the main
+    /// hand, as the item's components report them.
+    #[test]
+    fn a_spawn_egg_names_its_type_and_a_sword_its_attack() {
+        assert_eq!(
+            ItemComponents::of(items::COW_SPAWN_EGG).entity,
+            Some(entity_types::COW as u16)
+        );
+        let sword = ItemComponents::of(items::IRON_SWORD);
+        let damage = sword
+            .modifiers
+            .iter()
+            .find(|modifier| i32::from(modifier.attribute) == attributes::ATTACK_DAMAGE)
+            .expect("a sword adds attack damage");
+        assert_eq!(
+            (damage.amount, damage.operation, damage.slot, damage.id),
+            (5.0, 0, 1, "minecraft:base_attack_damage")
+        );
+        assert_eq!(
+            sword.weapon,
+            Some(Weapon {
+                item_damage_per_attack: 1,
+                disable_blocking_for_seconds: 0.0
+            })
+        );
+        assert_eq!(ItemComponents::of(items::STONE).entity, None);
+        assert!(ItemComponents::of(items::STONE).modifiers.is_empty());
+        assert_eq!(
+            ItemComponents::of(items::IRON_SPEAR).damage_type,
+            Some("minecraft:spear")
+        );
+    }
+
+    /// The walking evaluator's base types of a few states, from the state alone.
+    #[test]
+    fn a_state_has_the_game_s_base_path_type() {
+        assert_eq!(blocks::AIR.path_type(), Some(PathType::Open));
+        assert_eq!(blocks::STONE.path_type(), Some(PathType::Blocked));
+        assert_eq!(blocks::OAK_FENCE.path_type(), Some(PathType::Fence));
+        assert_eq!(blocks::WATER.path_type(), Some(PathType::Water));
+        assert_eq!(blocks::LAVA.path_type(), Some(PathType::Lava));
+        assert!(blocks::AIR.is_pathfindable(PathComputation::Land));
+        assert!(!blocks::STONE.is_pathfindable(PathComputation::Land));
+        assert!(blocks::WATER.is_pathfindable(PathComputation::Water));
+        assert!(!blocks::LAVA.is_pathfindable(PathComputation::Land));
+        assert_eq!(PathType::Blocked.malus(), -1.0);
+        assert_eq!(PathType::Walkable.malus(), 0.0);
+        assert_eq!(BlockState(u16::MAX).path_type(), None);
+    }
 
     #[test]
     fn version_is_26_3() {

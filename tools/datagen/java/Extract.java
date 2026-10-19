@@ -40,6 +40,16 @@ import it.unimi.dsi.fastutil.doubles.DoubleList;
 import net.minecraft.SharedConstants;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.pathfinder.WalkNodeEvaluator;
+import net.minecraft.world.level.pathfinder.PathType;
+import net.minecraft.world.level.pathfinder.PathComputationType;
+import net.minecraft.world.entity.ai.attributes.RangedAttribute;
+import net.minecraft.world.entity.ai.attributes.DefaultAttributes;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.core.Holder;
 import net.minecraft.core.Direction;
 import net.minecraft.core.HolderGetter;
 import net.minecraft.core.HolderLookup;
@@ -174,6 +184,14 @@ public final class Extract {
         write(out, "voxel_shapes.txt", collisions.shapes.toString());
         write(out, "state_collisions.txt", collisions.states.toString());
         write(out, "entity_types.txt", entityTypes());
+        write(out, "attributes.txt", attributes());
+        write(out, "default_attributes.txt", defaultAttributes());
+        // A path type reads block and fluid tags, which hold only once the vanilla data
+        // pack is loaded and bound to the built-in registries; what is written above
+        // reads none.
+        bindTags();
+        write(out, "path_type_list.txt", pathTypeList());
+        write(out, "path_types.txt", pathTypes());
         for (Map.Entry<String, String> list : biomeParameters().entrySet()) {
             write(out, "biome_parameters_" + list.getKey() + ".txt", list.getValue());
         }
@@ -833,6 +851,162 @@ public final class Extract {
             field(text, type.getCategory().getSerializedName());
             field(text, attachmentPoints(dimensions.attachments(), EntityAttachment.PASSENGER));
             field(text, attachmentPoints(dimensions.attachments(), EntityAttachment.VEHICLE));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line an attribute, in id order: its id, its name, its default, least and
+    /// greatest values (double bits), and whether clients are sent it. Every attribute of
+    /// the game is a `RangedAttribute`.
+    private static String attributes() {
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.ATTRIBUTE.size(); id++) {
+            Attribute attribute = BuiltInRegistries.ATTRIBUTE.byId(id);
+            if (!(attribute instanceof RangedAttribute ranged)) {
+                throw new IllegalStateException("an attribute that is not ranged at " + id);
+            }
+            text.append(Integer.toString(id));
+            field(text, BuiltInRegistries.ATTRIBUTE.getKey(attribute).toString());
+            field(text, bits(ranged.getDefaultValue()));
+            field(text, bits(ranged.getMinValue()));
+            field(text, bits(ranged.getMaxValue()));
+            field(text, ranged.isClientSyncable() ? "1" : "0");
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line an entity type that has default attributes (`DefaultAttributes`), in id
+    /// order: its id, then for each attribute it has, by attribute id, `id=base` with the
+    /// base value's double bits.
+    @SuppressWarnings("unchecked")
+    private static String defaultAttributes() {
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < BuiltInRegistries.ENTITY_TYPE.size(); id++) {
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(id);
+            if (!DefaultAttributes.hasSupplier(type)) {
+                continue;
+            }
+            AttributeSupplier supplier =
+                DefaultAttributes.getSupplier((EntityType<? extends LivingEntity>) type);
+            text.append(Integer.toString(id));
+            for (int attribute = 0; attribute < BuiltInRegistries.ATTRIBUTE.size(); attribute++) {
+                Holder<Attribute> holder =
+                    BuiltInRegistries.ATTRIBUTE.wrapAsHolder(BuiltInRegistries.ATTRIBUTE.byId(attribute));
+                if (supplier.hasAttribute(holder)) {
+                    field(text, attribute + "=" + bits(supplier.getBaseValue(holder)));
+                }
+            }
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// A level that holds one state at one position and air elsewhere, and remembers
+    /// any other position it was asked of.
+    private static final class OneState implements BlockGetter {
+        private final BlockState state;
+        private final BlockPos at;
+        boolean elsewhere;
+
+        OneState(BlockState state, BlockPos at) {
+            this.state = state;
+            this.at = at;
+        }
+
+        @Override
+        public BlockEntity getBlockEntity(BlockPos pos) {
+            elsewhere = true;
+            return null;
+        }
+
+        @Override
+        public BlockState getBlockState(BlockPos pos) {
+            if (pos.equals(at)) {
+                return state;
+            }
+            elsewhere = true;
+            return Blocks.AIR.defaultBlockState();
+        }
+
+        @Override
+        public FluidState getFluidState(BlockPos pos) {
+            if (pos.equals(at)) {
+                return state.getFluidState();
+            }
+            elsewhere = true;
+            return Fluids.EMPTY.defaultFluidState();
+        }
+
+        @Override
+        public int getHeight() {
+            return 384;
+        }
+
+        @Override
+        public int getMinY() {
+            return -64;
+        }
+    }
+
+    /// Loads the vanilla data pack as a dedicated server does and binds its tags to the
+    /// built-in registries, so that `BlockState.is(tag)` answers as it does in a game.
+    private static void bindTags() throws Exception {
+        PackRepository packs = ServerPacksSource.createVanillaTrustedRepository();
+        WorldLoader.PackConfig packConfig =
+            new WorldLoader.PackConfig(packs, WorldDataConfiguration.DEFAULT, false, true);
+        WorldLoader.InitConfig init = new WorldLoader.InitConfig(
+            packConfig, Commands.CommandSelection.DEDICATED, PermissionSet.NO_PERMISSIONS);
+        WorldLoader.<Object, Loaded>load(
+            init,
+            context -> new WorldLoader.DataLoadOutput<>(null, context.datapackDimensions()),
+            (resources, serverResources, layers, unused) -> {
+                serverResources.updateComponentsAndStaticRegistryTags();
+                return new Loaded(layers.compositeAccess());
+            },
+            Util.backgroundExecutor(), Runnable::run).get();
+        if (!Blocks.OAK_FENCE.defaultBlockState().is(BlockTags.FENCES)) {
+            throw new IllegalStateException("the block tags are not bound");
+        }
+    }
+
+    /// One line a path type, in the order of its ordinal: the ordinal, its name and its
+    /// malus (float bits), what a mob pays to step on it unless it says otherwise.
+    private static String pathTypeList() {
+        StringBuilder text = new StringBuilder();
+        for (PathType type : PathType.values()) {
+            text.append(Integer.toString(type.ordinal()));
+            field(text, type.name());
+            field(text, floatBits(type.getMalus()));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line a block state, in id order: its id, the path type the walking evaluator
+    /// gives it before its neighbours are looked at (`WalkNodeEvaluator.
+    /// getPathTypeFromState`), and whether it may be pathed through on land, in water
+    /// and in the air (`isPathfindable`), each 1 or 0. Both are a function of the state
+    /// alone, which asking at two places and of nothing else shows.
+    private static String pathTypes() throws ReflectiveOperationException {
+        Method base = WalkNodeEvaluator.class.getDeclaredMethod(
+            "getPathTypeFromState", BlockGetter.class, BlockPos.class);
+        base.setAccessible(true);
+        StringBuilder text = new StringBuilder();
+        for (int id = 0; id < Block.BLOCK_STATE_REGISTRY.size(); id++) {
+            BlockState state = Block.BLOCK_STATE_REGISTRY.byId(id);
+            OneState first = new OneState(state, FIRST);
+            OneState second = new OneState(state, SECOND);
+            PathType type = (PathType) base.invoke(null, first, FIRST);
+            if (first.elsewhere || base.invoke(null, second, SECOND) != type || second.elsewhere) {
+                throw new IllegalStateException("a path type that is not the state's at " + id);
+            }
+            text.append(Integer.toString(id));
+            field(text, type.name());
+            field(text, state.isPathfindable(PathComputationType.LAND) ? "1" : "0");
+            field(text, state.isPathfindable(PathComputationType.WATER) ? "1" : "0");
+            field(text, state.isPathfindable(PathComputationType.AIR) ? "1" : "0");
             text.append('\n');
         }
         return text.toString();

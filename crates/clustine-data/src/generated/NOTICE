@@ -4,6 +4,7 @@ NOTICE.md at the root of the repository.
 
 The files, of which the packed tables (*.bin) can carry no such line themselves:
 
+  attributes.rs
   biome_parameters.bin
   block_classes.rs
   block_physics.rs
@@ -17,9 +18,11 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   items.rs
   loot_tables.rs
   mod.rs
+  path_types.rs
   registries.rs
   sound_events.rs
   sound_types.rs
+  state_path_types.bin
   state_sound_types.bin
   tags.rs
   version.rs
