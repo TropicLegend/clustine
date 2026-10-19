@@ -170,6 +170,26 @@ impl Region {
         inside: &[f64; 6],
         output: &mut TickOutput,
     ) {
+        // A plate or tripwire of another region's land, which the region reads in a copy:
+        // the player's box goes to its holder, which counts it as one of its own for the
+        // tick (players are not in copies; `docs/groundwork/n6-plan.md`, section 7 item
+        // 12).
+        if !self.chunks.contains_key(&pos.chunk()) {
+            let pressable = self.block(pos).is_some_and(|state| {
+                signal::plate_signal(state).is_some() || is_class(state, BlockClass::TripWireBlock)
+            });
+            if pressable && self.sends_to(pos.chunk()) {
+                let box_of = |at: usize| clustine_world::Double(inside[at]);
+                self.made.push(clustine_world::Effect {
+                    at: pos,
+                    what: clustine_world::Effected::PlayerInside {
+                        min: [box_of(0), box_of(1), box_of(2)],
+                        max: [box_of(3), box_of(4), box_of(5)],
+                    },
+                });
+            }
+            return;
+        }
         if !self.ticks_chunk(pos.chunk()) {
             return;
         }
@@ -357,9 +377,11 @@ impl Region {
     /// `LivingEntity` only where `living_only` (players and armour stands until N7's
     /// mobs). `toucher`, in whose tick this counts, is counted where its walk has it.
     ///
-    /// Step N6g adds here the entities of copies and the boxes of other regions'
-    /// players sent across a line (`docs/groundwork/n6-plan.md`, section 6 item 6 and
-    /// section 7 item 12).
+    /// With them count the entities of the region's copies, so that one across a line
+    /// keeps a plate pressed, and the boxes of other regions' players sent across it for
+    /// this tick or the one before, so that an effect a tick late does not let go of
+    /// one (`docs/groundwork/n6-plan.md`, section 6 item 6, section 7 item 12 and section
+    /// 8 item 10).
     pub(super) fn pressing(
         &self,
         area: &[f64; 6],
@@ -383,7 +405,68 @@ impl Region {
         let touching = toucher.is_some_and(|toucher| {
             toucher.bounds.intersects(bounds) && (!living_only || toucher.living)
         });
-        players + others + usize::from(touching)
+        let copied = self
+            .copies
+            .values()
+            .flat_map(|copy| copy.entities().iter())
+            .filter(|record| !ignores_triggers(&record.data))
+            .filter(|record| !living_only || i32::from(record.kind) == entity_types::ARMOR_STAND)
+            .filter(|record| self.entity_box(record).intersects(bounds))
+            .count();
+        let foreign = self
+            .foreign_boxes
+            .iter()
+            .filter(|(due, _)| due.saturating_add(1) >= self.tick)
+            .filter(|(_, bounds_of)| overlaps(bounds_of, area))
+            .count();
+        players + others + usize::from(touching) + copied + foreign
+    }
+
+    /// A player of another region stands in the box `min` to `max` on the block at `at`,
+    /// which this region holds, for the tick `due` (`Effected::PlayerInside`): kept for
+    /// the counts of this tick and the next, and the block's `entityInside` run for them
+    /// as for a player of the region's own.
+    pub(super) fn take_player_inside(
+        &mut self,
+        at: BlockPos,
+        due: u64,
+        min: [clustine_world::Double; 3],
+        max: [clustine_world::Double; 3],
+        output: &mut TickOutput,
+    ) {
+        let bounds = [min[0].0, min[1].0, min[2].0, max[0].0, max[1].0, max[2].0];
+        self.foreign_boxes.push((due, bounds));
+        if !self.ticks_chunk(at.chunk()) {
+            return;
+        }
+        let Some(state) = self.own_block(at) else {
+            return;
+        };
+        if let Some(power) = signal::plate_signal(state) {
+            if power == 0 {
+                self.check_plate(at, state, None, output);
+            }
+        } else if is_class(state, BlockClass::TripWireBlock) {
+            let shape = if flag(state, "attached") {
+                TRIPWIRE_ATTACHED
+            } else {
+                TRIPWIRE_LOOSE
+            };
+            let tripwire = Ticked::Block(tick_id(state));
+            if !flag(state, "powered")
+                && !self.has_scheduled_tick(at, tripwire)
+                && overlaps(&moved(shape, at), &bounds)
+            {
+                self.tripwire_pressed(at, true, output);
+            }
+        }
+    }
+
+    /// Lets go of the boxes of other regions' players older than the tick before.
+    pub(super) fn forget_foreign_boxes(&mut self) {
+        let tick = self.tick;
+        self.foreign_boxes
+            .retain(|(due, _)| due.saturating_add(1) >= tick);
     }
 
     /// `TripWireBlock.updateSource`: the hooks facing back along the line to the south

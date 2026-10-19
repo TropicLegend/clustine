@@ -986,9 +986,15 @@ impl Region {
                 self.take_exploded(at, expected, blast, output);
             }
             Effected::Burnt { expected } => self.take_burnt(at, expected, output),
-            // A player of another region on a plate or a tripwire is counted with the
-            // plates' entities (`docs/groundwork/n6-plan.md`, section 7 item 12).
-            Effected::PlayerInside { .. } => {}
+            // A player of another region on a plate or a tripwire, counted for the tick
+            // the effect is for (`pressed.rs`).
+            Effected::PlayerInside { min, max } => {
+                let due = match filed.due {
+                    clustine_world::Due::At { tick } => tick,
+                    clustine_world::Due::FromTaking => self.tick,
+                };
+                self.take_player_inside(at, due, min, max, output);
+            }
         }
     }
 

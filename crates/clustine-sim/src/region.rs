@@ -422,6 +422,10 @@ pub struct Region {
     /// The drops of the blocks each explosion across a line broke in this tick, by the
     /// explosion, merged as they come (`explosions.rs`). Empty between ticks.
     blast_drops: BTreeMap<(EntityId, u64), Vec<(BlockPos, ItemStack)>>,
+    /// The boxes of other regions' players standing on this region's plates and
+    /// tripwire, each with the tick it is for (`pressed.rs`). Not in the state: a box
+    /// counts for two ticks, and is sent again every tick the player stands there.
+    foreign_boxes: Vec<(u64, [f64; 6])>,
     /// The player whose input is being applied, and its number, which is the serial of
     /// a menu it opens (`menu_play.rs`). `None` between inputs.
     applying: Option<(PlayerId, u64)>,
@@ -548,6 +552,7 @@ impl Region {
             forwarded: BTreeMap::new(),
             dismounted: Vec::new(),
             applying: None,
+            foreign_boxes: Vec::new(),
             blast_drops: BTreeMap::new(),
             reported: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
@@ -910,8 +915,10 @@ impl Region {
         self.pistons_may_retry |= !inputs.granted.is_empty() || self.chunks_started_ticking();
         self.run_seams(&inputs.effects, &mut output);
         // The drops of the blocks explosions across a line broke, each explosion's
-        // together (`explosions.rs`).
+        // together (`explosions.rs`); and what other regions' players stood on here no
+        // longer than a tick ago (`pressed.rs`).
         self.lay_blast_drops(&mut output);
+        self.forget_foreign_boxes();
         self.pistons_may_retry = false;
         // The entities sent into the region's chunks, with the effects of their group and
         // before the entities tick (`arrivals.rs`).

@@ -779,3 +779,81 @@ mod across {
         );
     }
 }
+
+/// Plates and tripwire at a line (`docs/groundwork/n6-plan.md`, section 6 item 6, section
+/// 7 item 12, section 8 item 10): a player of one region on a plate of the other's land
+/// is counted there by an effect each tick, and an entity in a copy is counted by the
+/// holder's own count.
+mod plates_across {
+    use clustine_world::{Double, Due, Effect, EffectId, FiledEffect};
+
+    use super::super::super::tnt::tests::add_player;
+    use super::*;
+    use crate::api::TickInputs;
+
+    fn plate() -> clustine_data::BlockState {
+        state("minecraft:oak_pressure_plate[powered=false]")
+    }
+
+    #[test]
+    fn a_player_on_a_plate_across_a_line_sends_their_box_to_its_holder() {
+        // The plate is at x = 16, beyond the line; the player stands at x = 15.8, their
+        // box reaching over it.
+        let at_plate = at(16, -60, 4);
+        let mut region = west_of_a_line(7, |pos| (pos == at_plate).then_some(plate()));
+        add_player(&mut region, 1, [15.8, -60.0, 4.5], false);
+        let output = idle(&mut region);
+        let sent: Vec<&Effect> = output
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect.what, Effected::PlayerInside { .. }))
+            .collect();
+        assert!(
+            matches!(&sent[..], [effect] if effect.at == at_plate),
+            "{:?}",
+            output.effects
+        );
+    }
+
+    #[test]
+    fn a_plate_pressed_by_another_regions_player_stays_down_while_their_box_comes() {
+        let at_plate = at(2, -60, 4);
+        let mut region = world(7, |pos| (pos == at_plate).then_some(plate()));
+        let player_box = |id: u32, tick: u64| FiledEffect {
+            id: EffectId {
+                sequence: tick,
+                index: id,
+            },
+            effect: Effect {
+                at: at_plate,
+                what: Effected::PlayerInside {
+                    min: [Double(2.2), Double(-60.0), Double(4.2)],
+                    max: [Double(2.8), Double(-58.2), Double(4.8)],
+                },
+            },
+            due: Due::At { tick },
+        };
+        let powered = |region: &Region| {
+            region
+                .own_block(at_plate)
+                .is_some_and(|state| state.property("powered") == Some("true"))
+        };
+        // The box comes every tick for 30 ticks, past the plate's look 20 ticks on.
+        for _ in 0..30 {
+            let tick = region.tick + 1;
+            region.tick(&TickInputs {
+                effects: vec![player_box(0, tick)],
+                ..TickInputs::default()
+            });
+        }
+        assert!(
+            powered(&region),
+            "still pressed while the player stands there"
+        );
+        // Then it stops coming: by the plate's next look it is let go.
+        for _ in 0..25 {
+            idle(&mut region);
+        }
+        assert!(!powered(&region), "let go once the player has gone");
+    }
+}
