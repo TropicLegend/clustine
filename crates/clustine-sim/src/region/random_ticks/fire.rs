@@ -15,8 +15,10 @@
 //! - the difficulty: normal, the game's default;
 //! - the environment attribute `increased_fire_burnout`: by the biome at the block,
 //!   those whose files in the 26.3 jar set it;
-//! - TNT that fire reaches is primed (`TntBlock.prime`): Clustine has no entities, so
-//!   the TNT is only burnt away like any block;
+//! - TNT that fire burns is primed after it is gone (`TntBlock.prime` in
+//!   `FireBlock.checkBurnOut`, `tnt.rs`); TNT across a line is burnt by an effect that
+//!   says so, and its holder removes and primes it, without the fire the burn may leave
+//!   on this side (named);
 //! - fire in a frame of obsidian makes a nether portal (`BaseFireBlock.onPlace`):
 //!   there are no portals yet.
 
@@ -237,18 +239,30 @@ impl Region {
         age: i32,
         output: &mut TickOutput,
     ) {
-        let odds = burn_odds(self.read(pos));
+        let old = self.read(pos);
+        let odds = burn_odds(old);
         if (random.next_int(chance as u32) as i32) >= odds {
             return;
         }
+        // TNT the region reads in a copy is burnt by an effect that primes it where it
+        // is held (`docs/groundwork/n6-plan.md`, section 6 item 9).
+        let tnt = is_class(old, BlockClass::TntBlock);
+        let across = tnt && !self.chunks.contains_key(&pos.chunk());
         if (random.next_int((age + 10) as u32) as i32) < 5 {
             let fire_age = (age + random.next_int(5) as i32 / 4).min(15);
             let fire = fire_state_with_age(&mut RegionView(self), pos, fire_age as u8);
-            self.place_fire(pos, fire, UPDATE_ALL, output);
-        } else {
+            if !across {
+                self.place_fire(pos, fire, UPDATE_ALL, output);
+            }
+        } else if !across {
             self.remove_block(pos, output);
         }
-        // Burnt TNT would be primed here; with no entities it is only gone.
+        if across {
+            self.tnt_burnt_across(pos, old);
+        } else if tnt {
+            // `TntBlock.prime(level, pos)`, with the TNT gone already: no owner.
+            self.prime_tnt(pos, None, output);
+        }
     }
 
     /// `FireBlock.getIgniteOdds` of a place: nought where it is not empty, else the best

@@ -99,7 +99,7 @@ impl Region {
 /// The block an effect on `entity` of the chunk `chunk` is addressed to: its own, or for
 /// a passenger, whose position may be in another chunk, the block of its unit's chunk
 /// below it, as the store files an effect by its block's chunk.
-fn block_in(chunk: ChunkPos, entity: &Entity) -> BlockPos {
+pub(super) fn block_in(chunk: ChunkPos, entity: &Entity) -> BlockPos {
     let at = BlockPos::new(
         entity.position[0].floor() as i32,
         entity.position[1].floor() as i32,

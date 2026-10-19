@@ -7,7 +7,7 @@ use clustine_data::loot::{IntProvider, LootEntry, LootModifier, LootPool, LootTa
 use clustine_data::{BLOCK_STATE_COUNT, BlockState, items};
 use clustine_world::{BlockPos, ItemStack};
 
-use super::{LootDraws, block_drops, table_drops};
+use super::{Broken, LootDraws, block_drops, block_drops_as, table_drops};
 
 /// A draw the test gives, and the kind the evaluator has to ask for there.
 #[derive(Clone, Copy, Debug)]
@@ -401,4 +401,56 @@ fn every_block_state_evaluates() {
             assert!(usize::try_from(dropped.item).unwrap() < clustine_data::ITEMS.len());
         }
     }
+}
+
+/// What `text` drops broken as `broken` says, with these draws, all of which it has to
+/// take.
+fn drops_as(text: &str, broken: Broken, draws: &[Draw]) -> Vec<ItemStack> {
+    let mut draws = Scripted::new(draws);
+    let dropped = block_drops_as(state(text), AT, broken, &mut draws, &mut air);
+    draws.assert_used_up();
+    dropped
+}
+
+/// TNT's blast: the TNT as `this_entity`, and no radius, as `tnt_explosion_drop_decay`
+/// is false (`docs/groundwork/n6-brief.md`, finding 2.0 item 4).
+const BY_TNT: Broken = Broken {
+    this_entity: true,
+    explosion_radius: None,
+};
+
+#[test]
+fn a_chorus_flower_drops_to_an_explosion_and_not_to_a_rule() {
+    let flower = ItemStack {
+        item: items::CHORUS_FLOWER,
+        count: 1,
+    };
+    assert_eq!(drops("minecraft:chorus_flower[age=0]", &[]), []);
+    assert_eq!(
+        drops_as("minecraft:chorus_flower[age=0]", BY_TNT, &[]),
+        [flower]
+    );
+}
+
+#[test]
+fn an_explosion_that_decays_keeps_a_block_one_time_in_its_radius() {
+    let decaying = Broken {
+        this_entity: true,
+        explosion_radius: Some(4.0),
+    };
+    let cobblestone = ItemStack {
+        item: items::COBBLESTONE,
+        count: 1,
+    };
+    // `survives_explosion` holds for a draw at or below a quarter.
+    assert_eq!(
+        drops_as("minecraft:stone", decaying, &[Draw::Float(0.25)]),
+        [cobblestone]
+    );
+    assert_eq!(
+        drops_as("minecraft:stone", decaying, &[Draw::Float(0.26)]),
+        []
+    );
+    // TNT's own blast keeps everything, without a draw.
+    assert_eq!(drops_as("minecraft:stone", BY_TNT, &[]), [cobblestone]);
 }

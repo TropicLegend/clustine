@@ -109,7 +109,7 @@ impl Region {
     /// `Block.popResource(level, pos, stack)`: three draws put the item within a
     /// quarter of a block of the block's centre each way, its feet half its height
     /// below, and drawn for an empty stack too; then the item, if there is one.
-    fn pop_resource(
+    pub(super) fn pop_resource(
         &mut self,
         pos: BlockPos,
         stack: ItemStack,

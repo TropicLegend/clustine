@@ -18,7 +18,10 @@
 //! apply), `table_bonus` and `apply_bonus` see an enchantment level of 0,
 //! `survives_explosion` holds and `explosion_decay` keeps every item, and
 //! `entity_properties` fails without an entity (a chorus flower and a snow layer broken
-//! by a rule drop nothing, in the game too). Where a table needs what Clustine does not
+//! by a rule drop nothing, in the game too). A block broken by an explosion
+//! (`BlockBehaviour.onExplosionHit`) is evaluated with what that gives the table
+//! ([`Broken`]): the exploding entity as `this_entity`, and the explosion's radius where
+//! its drops decay. Where a table needs what Clustine does not
 //! keep, the evaluator gives less than the game, and these are named differences:
 //!
 //! - `copy_components` (containers, banners, heads, shulker boxes, beehives, the
@@ -55,6 +58,26 @@ pub trait LootDraws {
     fn next_int(&mut self, bound: i32) -> i32;
 }
 
+/// What the loot of a broken block is given beside the block and its place: by a rule
+/// nothing ([`Broken::BY_A_RULE`]); by an explosion its direct source, which the table
+/// sees as `this_entity`, and, where its drops decay (`DESTROY_WITH_DECAY`), its radius
+/// (`EXPLOSION_RADIUS`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Broken {
+    /// Whether there is a `this_entity`: the entity that exploded.
+    pub this_entity: bool,
+    /// The explosion's radius, given only where its drops decay.
+    pub explosion_radius: Option<f32>,
+}
+
+impl Broken {
+    /// A block broken by a rule, with no entity and no explosion.
+    pub const BY_A_RULE: Self = Self {
+        this_entity: false,
+        explosion_radius: None,
+    };
+}
+
 /// What the block `state` at `at` drops, broken by a rule: by its own table or the
 /// table of the block it drops like (a wall torch by the torch's), nothing for a block
 /// without one. `block_at` answers for the blocks a `location_check` reads (the other
@@ -66,10 +89,23 @@ pub fn block_drops(
     draws: &mut impl LootDraws,
     block_at: &mut impl FnMut(BlockPos) -> BlockState,
 ) -> Vec<ItemStack> {
+    block_drops_as(state, at, Broken::BY_A_RULE, draws, block_at)
+}
+
+/// [`block_drops`] of a block broken as `broken` says: by an explosion, a chorus flower
+/// and a snow layer drop (their `entity_properties` see the exploding entity), and
+/// `survives_explosion` and `explosion_decay` draw where the drops decay.
+pub fn block_drops_as(
+    state: BlockState,
+    at: BlockPos,
+    broken: Broken,
+    draws: &mut impl LootDraws,
+    block_at: &mut impl FnMut(BlockPos) -> BlockState,
+) -> Vec<ItemStack> {
     let Some(table) = state.block_id().and_then(block_table) else {
         return Vec::new();
     };
-    table_drops(table, state, at, draws, block_at)
+    table_drops_as(table, state, at, broken, draws, block_at)
 }
 
 /// What `table` gives for the block `state` at `at` broken by a rule: the game's
@@ -82,9 +118,22 @@ pub fn table_drops(
     draws: &mut impl LootDraws,
     block_at: &mut impl FnMut(BlockPos) -> BlockState,
 ) -> Vec<ItemStack> {
+    table_drops_as(table, state, at, Broken::BY_A_RULE, draws, block_at)
+}
+
+/// [`table_drops`] of a block broken as `broken` says.
+pub fn table_drops_as(
+    table: &'static LootTable,
+    state: BlockState,
+    at: BlockPos,
+    broken: Broken,
+    draws: &mut impl LootDraws,
+    block_at: &mut impl FnMut(BlockPos) -> BlockState,
+) -> Vec<ItemStack> {
     let mut context = Context {
         state,
         at,
+        broken,
         draws,
         block_at,
         drops: Vec::new(),
@@ -124,6 +173,7 @@ impl Stack {
 struct Context<'a, D, W> {
     state: BlockState,
     at: BlockPos,
+    broken: Broken,
     draws: &'a mut D,
     block_at: &'a mut W,
     drops: Vec<ItemStack>,
@@ -282,8 +332,21 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 }
                 stack.count = count;
             }
-            // Without an explosion's radius, nothing.
-            LootModifier::ExplosionDecay { .. } => {}
+            // `ApplyExplosionDecay.run`: each item kept by a draw at or below one in the
+            // radius; without a radius, nothing. **Inferred**: the class is not in the
+            // dumps; this is the game's rule as SteelMC's 26.3 port has it.
+            LootModifier::ExplosionDecay { .. } => {
+                if let Some(radius) = self.broken.explosion_radius {
+                    let chance = 1.0 / radius;
+                    let mut kept = 0_i32;
+                    for _ in 0..stack.count() {
+                        if self.draws.next_float() <= chance {
+                            kept += 1;
+                        }
+                    }
+                    stack.count = kept;
+                }
+            }
             // Components a stack here does not carry (the module's documentation).
             LootModifier::CopyComponents { .. } | LootModifier::CopyState { .. } => {}
         }
@@ -320,8 +383,12 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
     /// for a block broken by a rule.
     fn test(&mut self, number: u16) -> bool {
         match condition(number) {
-            // No explosion: true without a draw.
-            LootCondition::SurvivesExplosion => true,
+            // `ExplosionCondition.test`: without a radius true without a draw, with one a
+            // draw at or below one in the radius (**Inferred**, as the decay above).
+            LootCondition::SurvivesExplosion => match self.broken.explosion_radius {
+                None => true,
+                Some(radius) => self.draws.next_float() <= 1.0 / radius,
+            },
             LootCondition::MatchBlock(predicate) => matches(self.state, predicate),
             // `LocationCheck`: from the centre of the block plus the offset, floored,
             // which is the block's position plus the offset.
@@ -357,8 +424,11 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 self.draws.next_float() < chance
             }
             LootCondition::RandomChance { chance } => self.draws.next_float() < *chance,
-            // `EntityPredicate.matches` fails at once without an entity.
-            LootCondition::EntityProperties { .. } => false,
+            // `EntityPredicate.matches` fails at once without an entity, and an empty
+            // predicate holds of any: only `this` is ever given, by an explosion.
+            LootCondition::EntityProperties { entity } => {
+                *entity == "this" && self.broken.this_entity
+            }
             // The empty tool is no item and has no enchantment.
             LootCondition::MatchToolItems { .. } | LootCondition::MatchToolEnchantment { .. } => {
                 false

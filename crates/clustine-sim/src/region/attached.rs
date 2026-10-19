@@ -29,6 +29,20 @@ pub(crate) enum Breaker {
     Player { creative: bool },
 }
 
+impl Breaker {
+    /// Who breaks a block-attached entity by an explosion: its damage source's entity
+    /// (`DamageSource.getEntity`), the player who primed the TNT, creative as every
+    /// player is, where anyone did (`docs/groundwork/n6-brief.md`, finding 2.0 item 7).
+    pub(crate) fn of_owner(owner: Option<uuid::Uuid>) -> Self {
+        match owner {
+            Some(_) => Self::Player {
+                creative: super::explosions::owner_is_creative(owner),
+            },
+            None => Self::Nothing,
+        }
+    }
+}
+
 /// Whether the record is of a block-attached entity.
 pub(crate) fn is_block_attached(data: &EntityData) -> bool {
     matches!(

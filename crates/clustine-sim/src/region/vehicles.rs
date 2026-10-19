@@ -159,6 +159,22 @@ impl Region {
         creative: bool,
         output: &mut TickOutput,
     ) -> bool {
+        self.hurt_vehicle_by(key, amount, creative, None, output)
+    }
+
+    /// [`Region::hurt_vehicle`] by a source that sets TNT alight where `igniter` is
+    /// `Some` (fire, lava, an explosion: the TNT cart's `damageSourceIgnitesTnt`), with
+    /// the entity that caused it, if any. Such a source is the TNT cart's
+    /// `shouldSourceDestroy`, which destroys it whatever the damage and whoever caused
+    /// it, and its `destroy` primes it (`tnt.rs`).
+    pub(crate) fn hurt_vehicle_by(
+        &mut self,
+        key: EntityId,
+        amount: f32,
+        creative: bool,
+        igniter: Option<Option<uuid::Uuid>>,
+        output: &mut TickOutput,
+    ) -> bool {
         let Some((chunk, record)) = self.find_entity(key) else {
             return false;
         };
@@ -188,8 +204,14 @@ impl Region {
         let mut report = super::items::tracked(&shown, Tracked::SYNC_VELOCITY, true);
         report.chunk = chunk;
         output.events.push(RegionEvent::EntityTracked(report));
-        if !creative && after.damage.0 > BREAKING_DAMAGE {
-            self.destroy_vehicle(key, output);
+        let tnt_cart = i32::from(record.kind) == entity_types::TNT_MINECART;
+        let source_destroys = tnt_cart && igniter.is_some();
+        if (!creative && after.damage.0 > BREAKING_DAMAGE) || source_destroys {
+            if tnt_cart {
+                self.tnt_cart_destroyed(key, igniter, output);
+            } else {
+                self.destroy_vehicle(key, output);
+            }
         } else if creative {
             self.remove_destroyed(key, output);
         }
@@ -261,8 +283,23 @@ impl Region {
             .block_streams
             .remove(&block)
             .unwrap_or_else(|| Random::of_block(self.config.seed, block, self.tick, SPILLS));
+        self.drop_contents_with(position, contents, size, &mut random, output);
+        self.block_streams.insert(block, random);
+    }
+
+    /// [`Region::drop_contents`] drawing what the level's random draws from `random`: an
+    /// explosion's spill of a container it breaks draws from the explosion's stream
+    /// (`explosions.rs`).
+    pub(crate) fn drop_contents_with(
+        &mut self,
+        position: [f64; 3],
+        contents: &Contents,
+        size: usize,
+        random: &mut Random,
+        output: &mut TickOutput,
+    ) {
         for slot in 0..size {
-            let place = spill_place(position, &mut random);
+            let place = spill_place(position, random);
             let held = contents
                 .iter()
                 .find(|(at, _)| usize::from(*at) == slot)
@@ -275,9 +312,9 @@ impl Region {
                 let taken = piece.min(stack.count);
                 stack.count -= taken;
                 let motion = [
-                    triangle(&mut random, 0.0, SPILL_SPREAD),
-                    triangle(&mut random, 0.2, SPILL_SPREAD),
-                    triangle(&mut random, 0.0, SPILL_SPREAD),
+                    triangle(random, 0.0, SPILL_SPREAD),
+                    triangle(random, 0.2, SPILL_SPREAD),
+                    triangle(random, 0.0, SPILL_SPREAD),
                 ];
                 // The motion is drawn after the item's own draws, which come from its
                 // own stream: the order between the two streams does not matter.
@@ -293,6 +330,5 @@ impl Region {
                 );
             }
         }
-        self.block_streams.insert(block, random);
     }
 }

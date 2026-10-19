@@ -794,7 +794,7 @@ impl Region {
     /// `brokenByAnything`: the breaking sound, the empty death loot (which draws
     /// nothing), and each worn stack in the order of `EquipmentSlot.VALUES` popped out
     /// at the block above the stand's own.
-    fn broken_by_anything(&mut self, stand: &Entity, output: &mut TickOutput) {
+    pub(super) fn broken_by_anything(&mut self, stand: &Entity, output: &mut TickOutput) {
         self.play_broken_sound(stand, output);
         let EntityData::ArmorStand { equipment, .. } = &stand.data else {
             return;
@@ -820,7 +820,7 @@ impl Region {
 
     /// `kill`: the stand is removed at once, its passengers getting off it and it
     /// getting off what it rides.
-    fn kill_stand(&mut self, key: EntityId, output: &mut TickOutput) {
+    pub(super) fn kill_stand(&mut self, key: EntityId, output: &mut TickOutput) {
         self.unride_removed(key, true, output);
         let Some((chunk, record)) = self.find_entity(key) else {
             return;

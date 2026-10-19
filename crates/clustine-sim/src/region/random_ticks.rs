@@ -26,6 +26,21 @@ use crate::api::TickOutput;
 /// The game rule `randomTickSpeed`: how many positions of a section are drawn a tick.
 const RANDOM_TICK_SPEED: usize = 3;
 
+/// The step SplitMix64 takes at each draw, odd.
+const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// The inverse of [`GOLDEN`] modulo 2^64, by Newton's iteration: an odd number is its
+/// own inverse modulo 8, and each step doubles the bits that are right.
+const GOLDEN_INVERSE: u64 = {
+    let mut inverse = GOLDEN;
+    let mut step = 0;
+    while step < 6 {
+        inverse = inverse.wrapping_mul(2_u64.wrapping_sub(GOLDEN.wrapping_mul(inverse)));
+        step += 1;
+    }
+    inverse
+};
+
 /// A stream of numbers for what the game draws from its random: SplitMix64, which is
 /// small, fast and good enough for chances that no player can count.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +86,13 @@ impl Random {
         random.mix(pos.z as u32 as u64);
         random.mix(tick);
         random
+    }
+
+    /// How many numbers the stream has drawn since it was `start`: each draw steps
+    /// SplitMix64's state on by the same odd number, which has an inverse modulo 2^64,
+    /// so the count is the state's difference times that inverse.
+    pub(crate) fn draws_since(&self, start: &Random) -> u64 {
+        self.0.wrapping_sub(start.0).wrapping_mul(GOLDEN_INVERSE)
     }
 
     fn mix(&mut self, value: u64) {
@@ -200,6 +222,24 @@ mod tests {
         assert_ne!(draw(7, 1, 4, 100), draw(7, 2, 4, 100));
         assert_ne!(draw(7, 1, 4, 100), draw(7, 1, -4, 100));
         assert_ne!(draw(7, 1, 4, 100), draw(7, 1, 4, 101));
+    }
+
+    #[test]
+    fn a_stream_counts_the_numbers_it_has_drawn_since_any_point() {
+        assert_eq!(GOLDEN.wrapping_mul(GOLDEN_INVERSE), 1);
+        let mut random = Random::of_entity(3, EntityId(9), 40);
+        random.next_u64();
+        let start = random.clone();
+        for _ in 0..37 {
+            random.next_int(7);
+        }
+        let used = random.draws_since(&start);
+        assert!(used >= 37, "{used}");
+        let mut again = start.clone();
+        for _ in 0..used {
+            again.next_u64();
+        }
+        assert_eq!(again, random);
     }
 
     #[test]

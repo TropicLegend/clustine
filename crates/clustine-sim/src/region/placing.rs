@@ -24,7 +24,11 @@ impl Region {
         if click.held.is_none() {
             return false;
         }
-        self.place_minecart(click, player, output)
+        // TNT lit by a flint and steel or a fire charge (`TntBlock.useItemOn`), then
+        // fire either sets (`FlintAndSteelItem.useOn`, `FireChargeItem.useOn`).
+        self.light_tnt(click, player, output)
+            || self.fire_item_used_on(click, player, output)
+            || self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)
             || self.place_hanging(click, player, output)
             || self.place_cushion(click, player, output)

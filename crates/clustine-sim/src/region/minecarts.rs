@@ -23,9 +23,9 @@
 //! record, as at the game's load.
 //!
 //! Named differences (`docs/groundwork/n5-plan.md`, sections 5 and 7):
-//! - TNT and hopper carts are placed and roll, inert: a TNT cart neither primes nor
-//!   explodes and a hopper cart takes nothing in (decision 2, until N6). Containers do
-//!   not open (decision 3): a click on a chest or hopper cart does nothing.
+//! - A hopper cart is placed and rolls, inert: it takes nothing in (decision 2, until
+//!   N6e). Containers do not open (decision 3): a click on a chest or hopper cart does
+//!   nothing. A TNT cart primes and explodes as the game's (`tnt.rs`, step N6c).
 //! - Carts tick in the order of their keys, so that three carts meeting push one
 //!   another in another order than the game's entity list.
 //! - Players are not in copies, and the region gives the physics no players' boxes yet
@@ -503,6 +503,19 @@ impl Region {
                 cart.body.fall_distance *= 0.5;
             }
         }
+        if !cart.removed && cart.kind == entity_types::TNT_MINECART {
+            // `MinecartTNT.tick` after `super.tick()`: its fuse, and its explosion.
+            self.sync_cart(&cart, position);
+            let moving = super::tnt::Moving {
+                position: cart.body.position,
+                motion: cart.body.motion,
+                horizontal_collision: cart.body.horizontal_collision,
+                in_water: cart.in_water,
+            };
+            if self.tnt_cart_tick(key, moving, output) {
+                cart.removed = true;
+            }
+        }
         if !cart.removed && cart.is_furnace() {
             // `MinecartFurnace.tick` after `super.tick()`.
             if cart.fuel > 0 {
@@ -581,6 +594,25 @@ impl Region {
         cart.body
             .move_with(&view, false, vector, None, rules, &mut |_| {});
         cart.body.movements.clear();
+        // `MinecartTNT.causeFallDamage`, from the block it lands on: a fall of three
+        // or more explodes it at once.
+        if cart.kind == entity_types::TNT_MINECART
+            && let Some((fallen, on)) = cart.body.fell_on
+            && let Some(fallen) = super::tnt::fall_onto(view.state(on), fallen)
+            && fallen >= 3.0
+        {
+            self.sync_cart(cart, chunk);
+            let moving = super::tnt::Moving {
+                position: cart.body.position,
+                motion: cart.body.motion,
+                horizontal_collision: cart.body.horizontal_collision,
+                in_water: cart.in_water,
+            };
+            let speed = fallen / 10.0;
+            self.tnt_cart_fell(cart.key, moving, speed * speed, output);
+            cart.removed = true;
+            return;
+        }
         self.cart_effects_from_blocks(cart, chunk, output);
     }
 
@@ -790,9 +822,9 @@ impl Region {
 
     /// `activateMinecart(level, x, y, z, powered)` of a cart on an activator rail, every
     /// tick it is on one: a plain cart on a powered one lets its riders off, and rocks,
-    /// its damage set to 50, each time its wobble has run down. Chest, furnace, TNT and
-    /// hopper carts do nothing (a TNT cart's priming and a hopper cart's switching off
-    /// are N6's).
+    /// its damage set to 50, each time its wobble has run down; a TNT cart on a powered
+    /// one is primed if it is not yet (`MinecartTNT.activateMinecart`). Chest, furnace
+    /// and hopper carts do nothing (a hopper cart's switching off is N6e's).
     fn activate_minecart(
         &mut self,
         cart: &mut Cart,
@@ -800,6 +832,13 @@ impl Region {
         chunk: ChunkPos,
         output: &mut TickOutput,
     ) {
+        if cart.kind == entity_types::TNT_MINECART && powered {
+            self.sync_cart(cart, chunk);
+            if self.tnt_cart_fuse(cart.key).is_some_and(|fuse| fuse < 0) {
+                self.prime_tnt_cart(cart.key, None, output);
+            }
+            return;
+        }
         if cart.kind != entity_types::MINECART || !powered {
             return;
         }
@@ -908,7 +947,7 @@ impl Region {
                     };
                     queued.push(Queued::Fire(damage));
                 } else if is_class(state, BlockClass::CactusBlock) {
-                    self.cart_hurt(cart, 1.0, chunk, output);
+                    self.cart_hurt(cart, 1.0, false, chunk, output);
                 } else if is_class(state, BlockClass::WebBlock) {
                     cart.body.fall_distance = 0.0;
                     cart.body.stuck_speed = [0.25, f64::from(0.05_f32), 0.25];
@@ -933,7 +972,7 @@ impl Region {
         for hurt in queued {
             match hurt {
                 Queued::Fire(amount) => {
-                    self.cart_hurt(cart, amount, chunk, output);
+                    self.cart_hurt(cart, amount, true, chunk, output);
                 }
                 Queued::Lava => self.cart_lava_hurt(cart, chunk, output),
             }
@@ -944,16 +983,21 @@ impl Region {
     }
 
     /// `hurtServer` of the cart by what is not a player (fire, a cactus, lava): its
-    /// wobble and damage, broken above 40, dropping its item. Whether it is still there.
+    /// wobble and damage, broken above 40, dropping its item; a TNT cart is primed by a
+    /// source that is fire (`ignites`), and by any that breaks it as it moves. Whether
+    /// it is still there.
     fn cart_hurt(
         &mut self,
         cart: &mut Cart,
         amount: f32,
+        ignites: bool,
         chunk: ChunkPos,
         output: &mut TickOutput,
     ) -> bool {
         self.sync_cart(cart, chunk);
-        self.hurt_vehicle(cart.key, amount, false, output);
+        // Fire, lava and a cactus have no entity that caused them.
+        let igniter = ignites.then_some(None);
+        self.hurt_vehicle_by(cart.key, amount, false, igniter, output);
         if self.find_entity(cart.key).is_none() {
             cart.removed = true;
             return false;
@@ -967,7 +1011,7 @@ impl Region {
     /// `hurtServer` answers true while it is there).
     fn cart_lava_hurt(&mut self, cart: &mut Cart, chunk: ChunkPos, output: &mut TickOutput) {
         let position = cart.body.position;
-        self.cart_hurt(cart, 4.0, chunk, output);
+        self.cart_hurt(cart, 4.0, true, chunk, output);
         let mut stream = Random::of_entity(self.config.seed, cart.key, self.tick);
         let drawn = self.entity_draws.entry(cart.key).or_default();
         for _ in 0..*drawn {
@@ -1225,6 +1269,11 @@ impl Region {
             *fuel = cart.fuel;
             *push = [Double(cart.push[0]), Double(cart.push[2])];
         }
+        // A TNT cart's ignition, which its hits in this tick may have set.
+        let ignition = self
+            .entity_memory
+            .get(&key)
+            .and_then(|memory| memory.cart.ignition);
         self.entity_memory.insert(
             key,
             Memory {
@@ -1234,6 +1283,7 @@ impl Region {
                 cart: CartMemory {
                     in_water: cart.in_water,
                     push_y: cart.push[1],
+                    ignition,
                 },
                 ..Memory::default()
             },
@@ -1488,11 +1538,18 @@ pub(crate) fn detector_search_box(pos: BlockPos) -> Aabb {
 }
 
 /// What of a cart's data a commit carries: what it shows, whether it is flipped, what
-/// it holds and a furnace cart's push.
-type CommittedParts<'a> = (Option<u16>, Option<i32>, bool, &'a Contents, [Double; 2]);
+/// it holds, a furnace cart's push and whether a TNT cart is primed.
+type CommittedParts<'a> = (
+    Option<u16>,
+    Option<i32>,
+    bool,
+    &'a Contents,
+    [Double; 2],
+    bool,
+);
 
 /// The parts of a cart's data that a tick commits when they change: all but its hurt
-/// data and fuel, which are counters.
+/// data, its fuel and a TNT cart's fuse once it burns, which are counters.
 fn committed_parts(data: &EntityData) -> Option<CommittedParts<'_>> {
     match data {
         EntityData::Minecart {
@@ -1501,8 +1558,16 @@ fn committed_parts(data: &EntityData) -> Option<CommittedParts<'_>> {
             flipped,
             contents,
             push,
+            fuse,
             ..
-        } => Some((*display, *display_offset, *flipped, contents, *push)),
+        } => Some((
+            *display,
+            *display_offset,
+            *flipped,
+            contents,
+            *push,
+            *fuse >= 0,
+        )),
         _ => None,
     }
 }

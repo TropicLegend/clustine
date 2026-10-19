@@ -76,12 +76,15 @@ pub(crate) struct BoatMemory {
 
 /// What the game keeps of a minecart in memory and does not save: whether its box was
 /// in water at its last fluid update (`isInWater`, which its next tick reads before it
-/// looks again), and the height of a furnace cart's push, which the game saves only
-/// along x and z.
+/// looks again), the height of a furnace cart's push, which the game saves only along x
+/// and z, and a TNT cart's `ignitionSource`, by the entity that caused it (`tnt.rs`).
+/// Primed TNT keeps its `isInWater` here too.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct CartMemory {
     pub(crate) in_water: bool,
     pub(crate) push_y: f64,
+    /// `Some` where a source primed the TNT cart (an explosion, fire), with its cause.
+    pub(crate) ignition: Option<Option<uuid::Uuid>>,
 }
 
 /// The region as the physics of one entity read it: its loaded and copied chunks, and

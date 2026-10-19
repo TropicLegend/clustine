@@ -262,8 +262,7 @@ impl Region {
             | EntityData::Painting { .. }
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
-            // Primed TNT ticks from step N6c (`docs/groundwork/n6-plan.md`).
-            EntityData::PrimedTnt { .. } => {}
+            EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
         }
     }
 
