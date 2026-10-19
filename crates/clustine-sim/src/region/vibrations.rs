@@ -342,8 +342,19 @@ fn replaces(held: Option<&(Heard, i64)>, candidate: &Heard, tick: i64) -> bool {
 impl Region {
     /// The game time a vibration posted now counts from: a player's packet is handled
     /// between two ticks, at the time of the one before, and anything else in the tick.
+    /// It is the world clock's (`docs/groundwork/n7-plan.md`, section 7.4.5), so that a
+    /// candidate kept in a sensor means the same after a merge, a split or a restore in
+    /// another region, whose own count of ticks is another; an effect's tick is the
+    /// region's, as many ticks before the clock's now as before its own.
     fn game_time(&self) -> i64 {
-        self.made_in.unwrap_or(self.tick as i64)
+        let now = self.clock_now();
+        self.made_in
+            .map_or(now, |made_in| now - (self.tick as i64 - made_in))
+    }
+
+    /// The world clock's game time of this tick.
+    fn clock_now(&self) -> i64 {
+        i64::try_from(self.clock.game_time).unwrap_or(i64::MAX)
     }
 
     /// `Level.gameEvent(event, position, context)`: every sensor of the region's about
@@ -447,11 +458,11 @@ impl Region {
         let Some(mut sensor) = self.sensor(pos) else {
             return;
         };
-        let now = self.tick as i64;
+        let now = self.clock_now();
         if sensor.current.is_none()
             && let Some((heard, tick)) = sensor.selector
-            // A candidate of a tick after this one is of a region whose ticks were
-            // counted further, restored here: it is of the past all the same.
+            // A candidate of a time after this one is of a region whose clock was
+            // further on, or of a world kept before the clock: of the past all the same.
             && tick != now
         {
             sensor.current = Some(heard);

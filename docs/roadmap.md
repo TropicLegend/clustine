@@ -284,8 +284,13 @@ that only moves forward, and the day passes; faces, so that mobs see players of 
 regions ([design](groundwork/n7-faces.md), reviewed); a player's experience and attack
 strength; the edge's living packets and a mob's synced data; breeding's protocol across a
 line, whose decisions are N7e's; and sleep ([plan](groundwork/n7d-plan.md), reviewed,
-[brief](groundwork/n7d-brief.md)). Next: the rest of N7d (a leash held from a face, the
-plates and the clock-driven blocks on the clock), then the farm animals (N7e).
+[brief](groundwork/n7d-brief.md)); a leash held from a face, and what an animal gives a
+player across a line (`Effected::Given`); sculk sensors and hoppers on the world clock.
+A plate or tripwire at a line still counts another region's player by N6's
+`PlayerInside` effect: the plan lets it stay until the plate tests pass with faces, and
+counting by faces would need the plate's holder to copy the player's chunk, which a line
+does not promise; it works, and nothing a player sees is gained by the change. Next: the
+farm animals (N7e), being built.
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and

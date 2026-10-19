@@ -575,3 +575,39 @@ fn a_sensor_placed_by_a_player_hears_and_a_calibrated_one_faces_the_players_way(
     // The player of these tests looks south (yaw 0).
     assert_eq!(state.property("facing"), Some("south"));
 }
+
+/// A sensor keeps its candidate by the world clock (`docs/groundwork/n7-plan.md`,
+/// section 7.4.5), not by the region's count of its own ticks, so that one kept in a
+/// region whose clock is far ahead of its ticks, as after a merge or a restore, is
+/// taken up and received as in a region whose clock is not.
+#[test]
+fn a_sensor_keeps_its_candidate_by_the_world_clock_and_hears_as_ever_with_the_clock_ahead() {
+    let heard = |ahead: bool| {
+        let mut region = ticking_with(&[(SENSOR, inactive())]);
+        checked(
+            &mut region,
+            &TickInputs {
+                clock: ahead.then_some(crate::api::WorldClock {
+                    game_time: 1_000_000,
+                    day: 1_000_000,
+                }),
+                ..TickInputs::default()
+            },
+        );
+        post(&mut region, Vibration::EXPLODE, BlockPos::new(3, -60, 0));
+        let stamp = region.sensor(SENSOR).and_then(|sensor| sensor.selector);
+        assert_eq!(
+            stamp.map(|(_, at)| at),
+            Some(i64::try_from(region.clock.game_time).unwrap())
+        );
+        let took = ticks_until_active(&mut region, SENSOR, 10);
+        (
+            region.clock.game_time > 999_000,
+            took,
+            phase(&region, SENSOR),
+        )
+    };
+    let (_, took, phase) = heard(false);
+    assert!(took.is_some());
+    assert_eq!(heard(true), (true, took, phase));
+}

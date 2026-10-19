@@ -83,7 +83,7 @@ const PUSHES: u64 = 0x7075_7368_6573;
 const PULLS: u64 = 0x0070_756c_6c73;
 
 /// A hopper's block entity as the simulation keeps it beside its data: its cooldown
-/// (`cooldownTime`) and the region's tick it last ticked in (`tickedGameTime`).
+/// (`cooldownTime`) and the world's game time it last ticked in (`tickedGameTime`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Timer {
     pub(crate) cooldown: i32,
@@ -326,7 +326,9 @@ impl Region {
         state: BlockState,
         output: &mut TickOutput,
     ) {
-        let tick = self.tick;
+        // The world clock's, as the game's `tickedGameTime` is the level's: two hoppers
+        // of regions merged since compare as they would have in one.
+        let tick = self.clock.game_time;
         let Some(timer) = self.hopper_timer_mut(pos) else {
             return;
         };
