@@ -25,6 +25,8 @@ pub mod api;
 mod living;
 pub(crate) mod menus;
 mod mobs;
+#[doc(hidden)]
+pub mod path_harness;
 mod physics;
 pub mod placement;
 mod region;
