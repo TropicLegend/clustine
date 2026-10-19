@@ -413,6 +413,9 @@ pub struct Region {
     /// The notes of riders who left the world in this tick, each with where their
     /// vehicle let them off (`riders.rs`). Empty between ticks.
     dismounted: Vec<(PlayerId, StayNote)>,
+    /// The drops of the blocks each explosion across a line broke in this tick, by the
+    /// explosion, merged as they come (`explosions.rs`). Empty between ticks.
+    blast_drops: BTreeMap<(EntityId, u64), Vec<(BlockPos, ItemStack)>>,
     /// The player whose input is being applied, and its number, which is the serial of
     /// a menu it opens (`menu_play.rs`). `None` between inputs.
     applying: Option<(PlayerId, u64)>,
@@ -539,6 +542,7 @@ impl Region {
             forwarded: BTreeMap::new(),
             dismounted: Vec::new(),
             applying: None,
+            blast_drops: BTreeMap::new(),
             reported: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
@@ -899,6 +903,9 @@ impl Region {
         self.handling_tick = true;
         self.pistons_may_retry |= !inputs.granted.is_empty() || self.chunks_started_ticking();
         self.run_seams(&inputs.effects, &mut output);
+        // The drops of the blocks explosions across a line broke, each explosion's
+        // together (`explosions.rs`).
+        self.lay_blast_drops(&mut output);
         self.pistons_may_retry = false;
         // The entities sent into the region's chunks, with the effects of their group and
         // before the entities tick (`arrivals.rs`).

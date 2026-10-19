@@ -597,3 +597,185 @@ fn a_chest_that_tnt_breaks_spills_what_it_holds_and_drops_itself() {
     }
     assert_eq!(count_of(&region, items::CHEST), 1);
 }
+
+/// The holder's side of an explosion across a line (`docs/groundwork/n6-plan.md`, section
+/// 6 item 9): what the exploding region made into effects, taken by the region that holds
+/// the blocks and entities.
+mod across {
+    use clustine_world::{Blast, Double, Due, Effect, EffectId, FiledEffect};
+
+    use super::*;
+    use crate::api::TickInputs;
+
+    fn blast(owner: Option<Uuid>) -> Blast {
+        Blast {
+            source: EntityId(9_999),
+            tick: 1,
+            centre: [Double(4.5), Double(-59.9), Double(4.5)],
+            radius: Float(4.0),
+            decay: false,
+            direct: true,
+            owner,
+            owner_creative: owner.is_some(),
+        }
+    }
+
+    fn taken(region: &mut Region, effects: Vec<Effect>) -> TickOutput {
+        let effects = effects
+            .into_iter()
+            .enumerate()
+            .map(|(index, effect)| FiledEffect {
+                id: EffectId {
+                    sequence: 1,
+                    index: u32::try_from(index).expect("few"),
+                },
+                effect,
+                due: Due::FromTaking,
+            })
+            .collect();
+        region.tick(&TickInputs {
+            effects,
+            ..TickInputs::default()
+        })
+    }
+
+    fn items_of(region: &Region) -> Vec<ItemStack> {
+        records(region)
+            .into_iter()
+            .filter_map(|entity| match entity.data {
+                EntityData::Item { stack, .. } => Some(stack),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_block_an_explosion_across_a_line_broke_is_broken_with_its_drops_merged() {
+        let stone = |pos: BlockPos| {
+            (pos.y == -60 && (2..=3).contains(&pos.x) && pos.z == 4).then_some(blocks::STONE)
+        };
+        let mut region = world(7, stone);
+        let effects = [2, 3]
+            .into_iter()
+            .map(|x| Effect {
+                at: at(x, -60, 4),
+                what: Effected::Exploded {
+                    expected: blocks::STONE,
+                    blast: blast(None),
+                },
+            })
+            .collect();
+        let output = taken(&mut region, effects);
+        assert_eq!(broken(&output), [at(2, -60, 4), at(3, -60, 4)]);
+        // Stone broken by TNT drops cobblestone, the two merged into one stack.
+        assert_eq!(
+            items_of(&region),
+            [ItemStack {
+                item: items::COBBLESTONE,
+                count: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn a_block_that_is_no_longer_what_the_explosion_saw_is_left_as_it_is() {
+        let mut region = world(7, |pos| (pos == at(2, -60, 4)).then_some(blocks::GLASS));
+        let output = taken(
+            &mut region,
+            vec![Effect {
+                at: at(2, -60, 4),
+                what: Effected::Exploded {
+                    expected: blocks::STONE,
+                    blast: blast(None),
+                },
+            }],
+        );
+        assert_eq!(broken(&output), []);
+        assert!(items_of(&region).is_empty());
+    }
+
+    #[test]
+    fn tnt_an_explosion_across_a_line_reached_is_primed_short_by_its_owner() {
+        let owner = Uuid::from_u128(42);
+        let mut region = world(7, |pos| (pos == at(2, -60, 4)).then_some(blocks::TNT));
+        taken(
+            &mut region,
+            vec![Effect {
+                at: at(2, -60, 4),
+                what: Effected::Exploded {
+                    expected: blocks::TNT,
+                    blast: blast(Some(owner)),
+                },
+            }],
+        );
+        let primed = super::super::super::tnt::tests::primed_tnt(&region);
+        let [(_, fuse, by)] = &primed[..] else {
+            panic!("{primed:?}");
+        };
+        assert!((10..30).contains(fuse), "{fuse}");
+        assert_eq!(*by, Some(owner));
+        assert!(
+            items_of(&region).is_empty(),
+            "TNT drops nothing: it is primed"
+        );
+    }
+
+    #[test]
+    fn tnt_fire_across_a_line_burnt_is_primed_by_nobody_with_the_whole_fuse() {
+        let mut region = world(7, |pos| (pos == at(2, -60, 4)).then_some(blocks::TNT));
+        taken(
+            &mut region,
+            vec![Effect {
+                at: at(2, -60, 4),
+                what: Effected::Burnt {
+                    expected: blocks::TNT,
+                },
+            }],
+        );
+        let primed = super::super::super::tnt::tests::primed_tnt(&region);
+        // Primed with 80 as the effects are taken, and one tick of it gone by the end of
+        // the tick, as the entities tick after the effects.
+        assert!(matches!(&primed[..], [(_, 79, None)]), "{primed:?}");
+    }
+
+    #[test]
+    fn an_armour_stand_a_blast_across_a_line_hit_breaks() {
+        let mut region = world(7, nothing);
+        let stand = record(
+            &mut region,
+            entity_types::ARMOR_STAND,
+            [2.5, -60.0, 4.5],
+            EntityData::ArmorStand {
+                flags: 0,
+                disabled_slots: 0,
+                pose: Box::new(DEFAULT_POSE.map(|part| part.map(Float))),
+                equipment: Vec::new(),
+                health: Float(20.0),
+                last_hit: None,
+                air: 300,
+                frozen: 0,
+            },
+        );
+        let at_block = at(2, -60, 4);
+        let key = add(&mut region, stand);
+        taken(
+            &mut region,
+            vec![Effect {
+                at: at_block,
+                what: Effected::OnEntity {
+                    key,
+                    by: EntityUse::Blasted {
+                        damage: Float(30.0),
+                        push: [Double(0.5), Double(0.2), Double(0.0)],
+                        blast: blast(None),
+                    },
+                },
+            }],
+        );
+        assert!(
+            region.find_entity(key).is_none(),
+            "the stand broke: {:?}",
+            records(&region)
+        );
+    }
+}

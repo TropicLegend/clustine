@@ -437,6 +437,10 @@ impl Region {
             return;
         };
         let key = entity.key;
+        // Burning TNT is work at a line where regions follow players, as a circuit is:
+        // they merge at once, so that its explosion is whole in one region
+        // (`docs/groundwork/n6-plan.md`, section 6 item 9; ADR-0027, section 7).
+        self.circuit_changed(position);
         let mut body = self.primed_body(&entity, position);
         let view = View {
             region: self,

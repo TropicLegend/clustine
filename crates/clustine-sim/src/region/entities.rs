@@ -222,6 +222,17 @@ impl Region {
         by: clustine_world::EntityUse,
         output: &mut TickOutput,
     ) {
+        // An explosion's hit across a line is the same for every kind as a hit from
+        // within (`explosions.rs`).
+        if let clustine_world::EntityUse::Blasted {
+            damage,
+            push,
+            blast,
+        } = by
+        {
+            self.take_blasted(key, damage, push, blast, output);
+            return;
+        }
         let Some((chunk, entity)) = self.find_entity(key) else {
             return;
         };

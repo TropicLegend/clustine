@@ -962,9 +962,13 @@ impl Region {
                 }
             }
             Effected::OnEntity { key, by } => self.entity_used(key, by, output),
-            // An explosion's, fire's and a player's effects across a line are step
-            // N6g's (`docs/groundwork/n6-plan.md`).
-            Effected::Exploded { .. } | Effected::Burnt { .. } | Effected::PlayerInside { .. } => {}
+            Effected::Exploded { expected, blast } => {
+                self.take_exploded(at, expected, blast, output);
+            }
+            Effected::Burnt { expected } => self.take_burnt(at, expected, output),
+            // A player of another region on a plate or a tripwire is counted with the
+            // plates' entities (`docs/groundwork/n6-plan.md`, section 7 item 12).
+            Effected::PlayerInside { .. } => {}
         }
     }
 

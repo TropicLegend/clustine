@@ -747,6 +747,128 @@ impl Region {
     }
 }
 
+/// The mark of the streams a holder draws the loot and the drops of a block an
+/// explosion across a line broke from, apart from every other stream.
+const FAR_BLAST: u64 = 0x6661_7262_6c61_7374;
+
+impl Region {
+    /// An explosion's block across a line, taken by its holder (`Effected::Exploded`,
+    /// `docs/groundwork/n6-plan.md`, section 6 item 9): broken if it is still `expected`,
+    /// as the exploding region would have broken it, its loot collected with the other
+    /// blocks of the same explosion taken in this tick, a container spilled by the
+    /// removal, and TNT primed with the short fuse by the explosion's owner. Its draws
+    /// come from the block's own stream; the drops are laid with
+    /// [`Region::lay_blast_drops`]. Named: a TNT cart's explosion primes the TNT it
+    /// reaches across a line by whoever lit the cart, where the game names nobody.
+    pub(super) fn take_exploded(
+        &mut self,
+        at: BlockPos,
+        expected: BlockState,
+        blast: Blast,
+        output: &mut TickOutput,
+    ) {
+        let Some(state) = self.own_block(at) else {
+            return;
+        };
+        if state != expected || state.props().is_air() {
+            return;
+        }
+        let mut random = Random::of_block(self.config.seed, at, self.tick, FAR_BLAST);
+        let tnt = is_class(state, BlockClass::TntBlock);
+        if !tnt {
+            let broken = Broken {
+                this_entity: blast.direct,
+                explosion_radius: blast.decay.then_some(blast.radius.0),
+            };
+            let stacks = block_drops_as(state, at, broken, &mut Loot(&mut random), &mut |pos| {
+                self.block(pos).unwrap_or(blocks::AIR)
+            });
+            let collectors = self
+                .blast_drops
+                .entry((blast.source, blast.tick))
+                .or_default();
+            for stack in stacks {
+                add_or_append(collectors, stack, at);
+            }
+        }
+        self.set_block_updated(at, blocks::AIR, UPDATE_ALL, UPDATE_LIMIT, output);
+        if tnt {
+            self.spawn_primed_tnt(at, blast.owner, true, &mut random, output);
+        }
+    }
+
+    /// Lays the drops of the blocks of each explosion taken across a line in this tick,
+    /// merged within that explosion alone, each at the first block of its stack: the
+    /// effects of one explosion that come apart in two ticks lay apart (named).
+    pub(super) fn lay_blast_drops(&mut self, output: &mut TickOutput) {
+        for ((source, _), collectors) in std::mem::take(&mut self.blast_drops) {
+            let Some((first, _)) = collectors.first().copied() else {
+                continue;
+            };
+            let mut random =
+                Random::of_block(self.config.seed, first, self.tick, FAR_BLAST ^ source.0);
+            for (pos, stack) in collectors {
+                self.pop_resource(pos, stack, &mut random, output);
+            }
+        }
+    }
+
+    /// Fire across a line burnt the block at `at` (`Effected::Burnt`): if it is still
+    /// `expected`, TNT is primed by nobody, and the block goes as the fire's region
+    /// would have taken it (`FireBlock.checkBurnOut`'s removal with flags 3).
+    pub(super) fn take_burnt(
+        &mut self,
+        at: BlockPos,
+        expected: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let Some(state) = self.own_block(at) else {
+            return;
+        };
+        if state != expected {
+            return;
+        }
+        if is_class(state, BlockClass::TntBlock) {
+            let mut random = Random::of_block(self.config.seed, at, self.tick, FAR_BLAST);
+            self.spawn_primed_tnt(at, None, false, &mut random, output);
+        }
+        self.set_block_updated(at, blocks::AIR, UPDATE_ALL, UPDATE_LIMIT, output);
+    }
+
+    /// An explosion's hit across a line on the entity `key` of this region
+    /// (`EntityUse::Blasted`): the damage and the push the exploding region worked out
+    /// from its copy, as its kind takes them. Named: whether the source was in water,
+    /// which hanging things read, is not carried, and they are hit.
+    pub(super) fn take_blasted(
+        &mut self,
+        key: EntityId,
+        damage: Float,
+        push: [Double; 3],
+        blast: Blast,
+        output: &mut TickOutput,
+    ) {
+        let Some((_, record)) = self.find_entity(key) else {
+            return;
+        };
+        let record = record.clone();
+        let explosion = Explosion {
+            source: blast.source,
+            centre: blast.centre.map(|component| component.0),
+            radius: blast.radius.0,
+            owner: blast.owner,
+            indirect: blast.owner,
+            decay: blast.decay,
+            rails_pass: false,
+            source_in_water: false,
+        };
+        let hit = Hit {
+            damage: damage.0,
+            push: push.map(|component| component.0),
+        };
+        self.blasted(&explosion, &record, hit, output);
+    }
+}
+
 /// `Level.clip` with `ClipContext.Block.COLLIDER` and `Fluid.NONE` from `from` to `to`:
 /// whether a block's collision shape, as `context` sees it, is in the way.
 fn clips_collider<W: World + ?Sized>(
