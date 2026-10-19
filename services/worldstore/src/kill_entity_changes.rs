@@ -114,6 +114,7 @@ fn commit(handle: &StoreHandle, tick: u64) {
             .collect(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 

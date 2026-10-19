@@ -387,6 +387,7 @@ fn the_same_start_or_a_lower_one_changes_nothing() {
             region.state(),
             RegionState {
                 tick: before.tick + 1,
+                clock: before.clock.next(),
                 ..before
             }
         );
@@ -860,6 +861,7 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         region.state(),
         RegionState {
             tick: before.tick + 1,
+            clock: before.clock.next(),
             ..before
         }
     );

@@ -367,6 +367,8 @@ pub struct Bot {
     pub particles: Vec<clustine_protocol::packets::play::LevelParticles>,
     /// Every arm the server showed swinging (`swing_animation`), in order.
     pub swings: Vec<clustine_protocol::packets::play::SwingAnimation>,
+    /// Every time the server told (`set_time`), in order.
+    pub times: Vec<clustine_protocol::packets::play::SetTime>,
     /// Every packet of a menu's window the server sent, in order: openings, a window's
     /// contents (not the inventory's own, window 0), slots, the cursor and closes.
     pub menu_log: Vec<ClientboundPlay>,
@@ -590,6 +592,7 @@ impl Bot {
             explosions: Vec::new(),
             particles: Vec::new(),
             swings: Vec::new(),
+            times: Vec::new(),
             menu_log: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
@@ -1808,6 +1811,7 @@ impl Bot {
             ClientboundPlay::Explode(packet) => self.explosions.push(packet),
             ClientboundPlay::LevelParticles(packet) => self.particles.push(packet),
             ClientboundPlay::SwingAnimation(packet) => self.swings.push(packet),
+            ClientboundPlay::SetTime(packet) => self.times.push(packet),
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

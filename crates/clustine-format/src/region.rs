@@ -227,6 +227,10 @@ pub struct TableFile {
     pub regions: Vec<TableRegion>,
     /// The regions that were absorbed, each with the region it went into, oldest first.
     pub absorbed: Vec<(u32, u32)>,
+    /// The world's clock as of the table: its game time and the ticks of the overworld's
+    /// clock, the later of every region's the store took (`docs/groundwork/n7-plan.md`,
+    /// section 8.4).
+    pub clock: [u64; 2],
 }
 
 /// A region as the table file has it.
@@ -268,6 +272,8 @@ impl TableFile {
             out.extend_from_slice(&absorbed.to_be_bytes());
             out.extend_from_slice(&into.to_be_bytes());
         }
+        out.extend_from_slice(&self.clock[0].to_be_bytes());
+        out.extend_from_slice(&self.clock[1].to_be_bytes());
         seal(out)
     }
 
@@ -307,6 +313,7 @@ impl TableFile {
         for _ in 0..count {
             absorbed.push((input.u32()?, input.u32()?));
         }
+        let clock = [input.u64()?, input.u64()?];
         input.finish()?;
         Ok(Self {
             from,
@@ -316,6 +323,7 @@ impl TableFile {
             division,
             regions,
             absorbed,
+            clock,
         })
     }
 }
@@ -762,6 +770,7 @@ mod tests {
                 },
             ],
             absorbed: vec![(0, 1), (2, 3)],
+            clock: [24_000, 13_000],
         }
     }
 
@@ -945,6 +954,22 @@ mod tests {
             0,
             0,
             3, // 2 into 3
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x5D,
+            0xC0, // the game time, 24000
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x32,
+            0xC8, // the overworld's clock, 13000
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -959,8 +984,9 @@ mod tests {
             division: Vec::new(),
             regions: Vec::new(),
             absorbed: Vec::new(),
+            clock: [0, 0],
         };
-        assert_eq!(empty.encode().len(), 2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 4);
+        assert_eq!(empty.encode().len(), 2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4);
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
 
@@ -1274,7 +1300,7 @@ mod tests {
             TableFile::decode(&end),
             Err(FormatError::Corrupt("an end of an area that has none"))
         );
-        // Something behind the last pair, and a pair too few.
+        // Something behind the clock, and the clock cut short.
         let trailing = resealed(bytes.clone(), |body| body.push(0));
         assert_eq!(
             TableFile::decode(&trailing),
@@ -1283,9 +1309,10 @@ mod tests {
         let short = resealed(bytes.clone(), |body| body.truncate(body.len() - 8));
         assert_eq!(TableFile::decode(&short), Err(FormatError::Truncated));
         // More of anything than the file holds, which must not be reserved either: of
-        // absorbed regions, whose count is before the two pairs, and of areas.
+        // absorbed regions, whose count is before the two pairs and the clock, and of
+        // areas.
         let forged = resealed(bytes.clone(), |body| {
-            let count = body.len() - 20;
+            let count = body.len() - 36;
             body[count..count + 4].fill(0xFF);
         });
         assert_eq!(TableFile::decode(&forged), Err(FormatError::Truncated));
@@ -1374,6 +1401,7 @@ mod tests {
                     })
                     .collect(),
                 absorbed,
+                clock: [from.wrapping_mul(3), next_region.into()],
             };
             prop_assert_eq!(TableFile::decode(&table.encode()), Ok(table));
         }

@@ -681,7 +681,8 @@ fn answer_of(message: &WorkerToEdge) -> Option<(ChunkPos, u64, Answer)> {
 fn place(message: &WorkerToEdge) -> Option<u8> {
     match message {
         WorkerToEdge::Welcome(_) | WorkerToEdge::Presence { .. } => Some(1),
-        WorkerToEdge::TickDelta { .. } => Some(2),
+        // The clock follows the tick's deltas, before what concerns one player.
+        WorkerToEdge::TickDelta { .. } | WorkerToEdge::Clock { .. } => Some(2),
         WorkerToEdge::ToPlayer {
             event: PlayerEvent::Spawned { .. },
             ..
@@ -6674,6 +6675,7 @@ fn of_the_stream(reply: &StoreReply) -> bool {
     matches!(
         reply,
         StoreReply::Effects { .. }
+            | StoreReply::Clock { .. }
             | StoreReply::CopyBase { .. }
             | StoreReply::CopyUpdate { .. }
             | StoreReply::CopyUsed { .. }

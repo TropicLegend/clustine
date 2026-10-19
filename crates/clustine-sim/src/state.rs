@@ -34,6 +34,8 @@ pub struct RegionState {
     /// (`docs/adr/0027-lending-at-a-line.md`, section 2). Kept so that a crash before
     /// the grant loses no ask.
     pub lends_asked: BTreeMap<ChunkPos, u64>,
+    /// The world's clock as of the last tick.
+    pub clock: crate::api::WorldClock,
 }
 
 /// A stay the home region has given a joining player and holds as entering: the player
@@ -233,12 +235,23 @@ impl RegionState {
             edges: BTreeMap::new(),
             entering: BTreeMap::new(),
             lends_asked: BTreeMap::new(),
+            clock: Default::default(),
         }
     }
 
     /// Makes this the state after the tick that `delta` came from, given that it is the
     /// state before that tick.
     pub fn apply(&mut self, delta: &StateDelta) {
+        // Ticks that changed only their number are not stored, so the clock moves on by
+        // as many ticks as the delta is after the state.
+        match delta.clock {
+            Some(clock) => self.clock = clock,
+            None => {
+                let ticks = delta.tick.saturating_sub(self.tick);
+                self.clock.game_time += ticks;
+                self.clock.day += ticks;
+            }
+        }
         self.tick = delta.tick;
         if let Some(next) = delta.next_entity_id {
             self.next_entity_id = next;
@@ -317,6 +330,10 @@ impl EdgeState {
 pub struct StateDelta {
     /// The number of the tick.
     pub tick: u64,
+    /// The world's clock after the tick, when it took a later one the store published;
+    /// otherwise each tick moved it on by one, which a delta need not say, so that a
+    /// tick at rest still changes only its number.
+    pub clock: Option<crate::api::WorldClock>,
     /// The next entity id to give out, if it changed.
     pub next_entity_id: Option<EntityId>,
     /// Each player that changed, in the order of the players, as they are after the tick:
@@ -336,7 +353,8 @@ pub struct StateDelta {
 impl StateDelta {
     /// Whether nothing changed in the tick but its number.
     pub fn changes_only_the_tick(&self) -> bool {
-        self.next_entity_id.is_none()
+        self.clock.is_none()
+            && self.next_entity_id.is_none()
             && self.players.is_empty()
             && self.edges.is_empty()
             && self.entering.is_empty()

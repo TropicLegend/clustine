@@ -1278,6 +1278,7 @@ fn a_restored_home_region_names_every_stay_in_its_first_tick_and_the_entering_on
     assert_eq!(
         RegionState {
             tick: before.tick,
+            clock: before.clock,
             entity_ids: before.entity_ids,
             next_entity_id: before.next_entity_id,
             ..west.region().state()
@@ -1807,6 +1808,7 @@ fn restored_with(
         held_tick: None,
         given_up: false,
         lends: clustine_rpc::Lends::default(),
+        clock: Default::default(),
     }
 }
 

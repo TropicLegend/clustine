@@ -7,6 +7,7 @@
 //! **Who holds a chunk**: the region it is granted to; else the region that is pinned
 //! to an area which contains it; else nobody. Areas of different regions never overlap.
 
+use clustine_rpc::WorldClock;
 use std::collections::{BTreeMap, VecDeque};
 
 use clustine_format::{TableFile, TableRegion};
@@ -167,6 +168,9 @@ pub(crate) struct Table {
     granted: BTreeMap<ChunkPos, RegionId>,
     /// The regions that were absorbed, each with what it went into, oldest first.
     absorbed: VecDeque<(RegionId, RegionId)>,
+    /// The world's clock: the later of every region's the store has taken
+    /// (`docs/groundwork/n7-plan.md`, section 8.4).
+    pub(crate) clock: WorldClock,
 }
 
 impl Table {
@@ -212,6 +216,7 @@ impl Table {
             regions,
             granted,
             absorbed: VecDeque::new(),
+            clock: WorldClock::default(),
         }
     }
 
@@ -253,6 +258,10 @@ impl Table {
                 .into_iter()
                 .map(|(absorbed, into)| (RegionId(absorbed), RegionId(into)))
                 .collect(),
+            clock: WorldClock {
+                game_time: file.clock[0],
+                day: file.clock[1],
+            },
         };
         let areas: Vec<(RegionId, ChunkArea)> = table.areas().collect();
         for (index, (region, area)) in areas.iter().enumerate() {
@@ -301,6 +310,7 @@ impl Table {
                 .iter()
                 .map(|(absorbed, into)| (absorbed.0, into.0))
                 .collect(),
+            clock: [self.clock.game_time, self.clock.day],
         }
     }
 

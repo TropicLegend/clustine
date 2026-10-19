@@ -1542,6 +1542,7 @@ fn commit_ticks(
         entity_changes: Vec::new(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 
@@ -1650,6 +1651,7 @@ fn a_chunk_given_an_entity_by_a_restore_is_no_longer_as_generated_and_is_not_mad
         entity_changes: vec![(A, clustine_world::EntityChange::Whole(lying_in_a()))],
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
     committed(&x, 1);
     let y = open(&store, hello(EAST, 3));

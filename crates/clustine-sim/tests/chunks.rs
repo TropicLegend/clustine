@@ -2499,6 +2499,7 @@ fn an_arrival_of_an_earlier_stay_of_a_player_who_is_there_changes_nothing_whatev
         );
         assert!(output.claims.is_empty(), "nobody came to stand there");
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         let told = expected.edges.get_mut(&F).expect("F is known");
         told.sent = 1;
         told.outbox.insert(1, over);
@@ -2508,6 +2509,7 @@ fn an_arrival_of_an_earlier_stay_of_a_player_who_is_there_changes_nothing_whatev
         let output = world.tick(&arrive(F, player(1), transfer(own, 9, position)));
         assert!(output.events.is_empty() && output.durable.is_empty());
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         assert_eq!(world.region.state(), expected);
     }
 }

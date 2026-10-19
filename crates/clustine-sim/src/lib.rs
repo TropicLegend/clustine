@@ -33,7 +33,7 @@ mod state;
 pub use api::{
     Durable, EdgeEvent, Entered, Keys, LendAnswer, LendAsked, Misdirected, Place, PlayerChange,
     PlayerEvent, PlayerJoin, PlayerTransfer, RemoteAction, RemoteStep, StayNote, TickInputs,
-    TickOutput, Ticket, VehicleMove,
+    TickOutput, Ticket, VehicleMove, WorldClock,
 };
 pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
 pub use state::{

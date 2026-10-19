@@ -119,6 +119,8 @@ pub(crate) struct Lanes {
     world: u64,
     /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
+    /// The game time of the world's clock as it was last put on the regions' streams.
+    clock_published: u64,
     /// The last segment of the log that has a record which changes the table and is not
     /// in the table file, if there is one. The segments from the file's `from` up to it
     /// hold what the file does not have.
@@ -758,6 +760,7 @@ impl Lanes {
             spawn,
             world: 0,
             regions,
+            clock_published: 0,
             table_last,
             players,
             next_block,
@@ -1216,6 +1219,7 @@ impl Lanes {
                 entity_changes,
                 arrivals,
                 mut arrivals_taken,
+                clock,
             } => {
                 let region = session.region;
                 // What the commit took of the arrivals is looked at before anything is
@@ -1241,6 +1245,8 @@ impl Lanes {
                     self.owner_lost(region);
                     return;
                 }
+                // The world's clock is the later of every region's taken.
+                self.table.clock = self.table.clock.later(clock);
                 // An entity sent into land nobody holds takes the land with it: granted to
                 // the sender before the commit is appended, so that a restart that reads
                 // the log, or keeps the first part of a torn group, files the arrival
@@ -2030,6 +2036,16 @@ impl Lanes {
                 owner.peer.answer(StoreReply::Dead {
                     stays: group.dead.clone(),
                 });
+            }
+        }
+        // The world's clock, once it has moved on a second since it was last told: every
+        // region that has an owner takes the later of it and its own
+        // (`docs/groundwork/n7-plan.md`, section 8.4).
+        let clock = self.table.clock;
+        if clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
+            self.clock_published = clock.game_time;
+            for owner in self.regions.values().filter_map(|lane| lane.owner.as_ref()) {
+                owner.peer.answer(StoreReply::Clock { clock });
             }
         }
         for peer in group.flushes {
@@ -2996,6 +3012,7 @@ impl Lanes {
             held_tick: of_region.held_tick,
             given_up: of_region.given_up,
             lends: self.lends_of(region),
+            clock: self.table.clock,
         };
         let opened = Opened {
             session,
@@ -3640,6 +3657,10 @@ fn tell_copiers(
         group.stream(copier, Streamed::Reply(Box::new(reply)));
     }
 }
+
+/// How many ticks of game time the world's clock moves on before the regions are told
+/// it again: a second's.
+const CLOCK_EVERY: u64 = 20;
 
 /// How many blocks of entity keys the blocks' file is raised by at a time.
 const BLOCKS_RESERVED: u32 = 16;

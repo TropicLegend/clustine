@@ -112,6 +112,7 @@ mod tests {
     use super::*;
     use crate::{RegionHello, RegionWelcome};
     use clustine_region::RegionId;
+    use clustine_sim::api::WorldClock;
 
     fn hello() -> RegionHello {
         RegionHello {
@@ -227,6 +228,12 @@ mod tests {
                 lends: crate::Lends::default(),
             },
             StoreReply::Split { region },
+            StoreReply::Clock {
+                clock: WorldClock {
+                    game_time: 24_000,
+                    day: 13_000,
+                },
+            },
             StoreReply::Declined {
                 reason: Decline::NotNext { next: region },
             },
@@ -518,6 +525,10 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: crate::Lends::default(),
+            clock: WorldClock {
+                game_time: 8,
+                day: 9,
+            },
         };
         assert_eq!(restored.tick(), 9);
         let welcomes = [
@@ -533,6 +544,10 @@ mod tests {
                 held_tick: None,
                 given_up: false,
                 lends: crate::Lends::default(),
+                clock: WorldClock {
+                    game_time: 10,
+                    day: 11,
+                },
             },
             StoreWelcome::EpochRefused { seen: u64::MAX },
             StoreWelcome::Absorbed {
@@ -560,6 +575,10 @@ mod tests {
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: WorldClock {
+                game_time: 6,
+                day: 7,
+            },
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -642,6 +661,10 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: crate::Lends::default(),
+            clock: WorldClock {
+                game_time: 8,
+                day: 9,
+            },
         };
         assert_eq!(fresh.tick(), 0);
         fresh.state = Some(TickState {
@@ -719,6 +742,10 @@ mod tests {
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: WorldClock {
+                game_time: 6,
+                day: 7,
+            },
         });
         for reply in [
             StoreReply::Enter {
@@ -759,6 +786,10 @@ mod tests {
                 held_tick: None,
                 given_up: false,
                 lends: crate::Lends::default(),
+                clock: WorldClock {
+                    game_time: 10,
+                    day: 11,
+                },
             });
             round_trip(Restored {
                 held: Vec::new(),
@@ -776,6 +807,10 @@ mod tests {
                 held_tick: None,
                 given_up: false,
                 lends: crate::Lends::default(),
+                clock: WorldClock {
+                    game_time: 8,
+                    day: 9,
+                },
             });
         }
     }
@@ -897,6 +932,10 @@ mod tests {
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: WorldClock {
+                game_time: 6,
+                day: 7,
+            },
         });
         let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
         for request in [

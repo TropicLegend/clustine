@@ -887,6 +887,7 @@ fn a_join_through_an_edge_the_region_does_not_know_leaves_the_stay_that_is_there
     let output = tick(&mut region, &changes(vec![join(STRANGER, player(1))]));
     assert!(silent(&output));
     expected.tick += 1;
+    expected.clock = expected.clock.next();
     assert_eq!(region.state(), expected);
 }
 
@@ -1038,6 +1039,7 @@ fn an_arrival_with_a_lower_entity_id_is_passed_over_and_its_entity_removed() {
             assert!(output.player_events.is_empty());
             assert!(output.claims.is_empty(), "nobody came to stand there");
             expected.tick += 1;
+            expected.clock = expected.clock.next();
             let told = expected.edges.get_mut(&edge).expect("the edge is known");
             told.sent = 1;
             told.outbox.insert(1, over);
@@ -1060,6 +1062,7 @@ fn an_arrival_with_the_entity_id_the_region_has_changes_nothing() {
             assert!(silent(&output), "at {position:?}: {output:?}");
             assert!(output.claims.is_empty());
             expected.tick += 1;
+            expected.clock = expected.clock.next();
             assert_eq!(region.state(), expected, "at {position:?}");
             assert_eq!(region.knowledge(chunk_of(position)), known);
         }
@@ -1081,6 +1084,7 @@ fn an_arrival_through_an_edge_the_region_does_not_know_is_passed_over_whatever_i
         assert!(spawned(&output).is_empty() && output.durable.is_empty());
         assert!(output.claims.is_empty());
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         assert_eq!(region.state(), expected, "at {position:?}");
         assert_eq!(region.knowledge(chunk_of(position)), known);
     }
@@ -1181,6 +1185,7 @@ fn a_leave_that_names_another_entity_changes_nothing() {
         );
         assert!(silent(&output), "{other:?}: {output:?}");
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         assert_eq!(region.state(), expected, "{other:?}");
     }
 }
@@ -1204,6 +1209,7 @@ fn a_leave_that_names_no_entity_removes_the_player_whose_stay_carries_the_attemp
         );
         assert!(silent(&output), "{other:?}: {output:?}");
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         assert_eq!(region.state(), expected, "{other:?}");
     }
     let output = tick(&mut region, &changes(vec![leave(E, player(1), None)]));
@@ -1238,6 +1244,7 @@ fn a_leave_through_another_edge_removes_nobody_whatever_it_names() {
             let output = tick(&mut region, &changes(vec![leave(edge, player(1), named)]));
             assert!(silent(&output), "{edge:?}, {named:?}");
             expected.tick += 1;
+            expected.clock = expected.clock.next();
             assert_eq!(region.state(), expected, "{edge:?}, {named:?}");
         }
     }
@@ -1493,6 +1500,7 @@ fn an_input_that_names_another_entity_is_not_applied_whatever_its_number() {
                 );
                 assert!(silent(&output), "{other:?}, {number}: {output:?}");
                 expected.tick += 1;
+                expected.clock = expected.clock.next();
                 assert_eq!(region.state(), expected, "{other:?}, {number}");
             }
         }
@@ -1554,6 +1562,7 @@ fn an_input_that_names_the_players_entity_through_another_edge_is_not_applied() 
         );
         assert!(silent(&output));
         expected.tick += 1;
+        expected.clock = expected.clock.next();
         assert_eq!(region.state(), expected);
     }
 }
@@ -2380,6 +2389,7 @@ fn a_state(
         edges: edges.iter().cloned().collect(),
         entering: BTreeMap::new(),
         lends_asked: std::collections::BTreeMap::new(),
+        clock: Default::default(),
     }
 }
 
@@ -3717,6 +3727,8 @@ fn split_as_the_record_says(
     ours.tick = tick;
     let mut theirs = RegionState::new(no_ids());
     theirs.tick = tick;
+    // A part takes its parent's clock: a split is not a tick of the game.
+    theirs.clock = state.clock;
     let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
     for (id, player) in &state.players {
         if goes(player) {

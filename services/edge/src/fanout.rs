@@ -23,14 +23,14 @@ use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, BlockEvent, BlockUpdate, ChunkBatchFinished,
-    ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue, EntityEvent, GameEvent,
-    LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
-    PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetHeadRotation,
-    SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SwingAnimation,
-    SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle,
-    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
-    relative,
+    ChunkBatchStart, ClientboundMoveVehicle, ClockState, Disconnect, EntityDataValue, EntityEvent,
+    GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
+    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
+    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
+    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
+    SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk,
+    abilities, angle, entity_data, game_event, game_mode, inventory as protocol_inventory,
+    level_event, player_info, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -39,7 +39,7 @@ use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
     Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected, PlayerEvent, PlayerInput,
-    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked,
+    PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked, WorldClock,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight, Vec3,
@@ -543,6 +543,9 @@ struct PlayerView {
     kept_inputs: VecDeque<(u64, Instant, PlayerInput)>,
     /// The menu the client shows, and its clicks on their way (`crate::menus`).
     menus: crate::menus::Menus,
+    /// The region whose clocks the client was last told whole, which a region it is
+    /// handed to then tells it whole again (`docs/groundwork/n7-plan.md`, section 8.4).
+    told_clocks: Option<RegionId>,
     /// The highest sequence number of the player's actions on blocks that has been
     /// reported as handled.
     handled: Option<i32>,
@@ -760,6 +763,8 @@ pub(crate) struct Fanout {
     identity: EdgeIdentity,
     /// What is kept for each region, by region id.
     regions: BTreeMap<RegionId, RegionPort>,
+    /// Each region's clock as it last said, from which its players are told the time.
+    clocks: BTreeMap<RegionId, WorldClock>,
     /// The links to start with, until [`Fanout::run`] takes them up.
     first_links: Vec<RegionLink>,
     /// Where new links to regions arrive.
@@ -983,6 +988,7 @@ impl Fanout {
             world_spawn: routing.spawn,
             identity: routing.identity,
             regions: BTreeMap::new(),
+            clocks: BTreeMap::new(),
             first_links: routing.links,
             relinks: routing.relinks,
             lost: routing.lost,
@@ -1578,6 +1584,7 @@ impl Fanout {
                         inputs_sent: 0,
                         kept_inputs: VecDeque::new(),
                         menus: Default::default(),
+                        told_clocks: None,
                         handled: None,
                         under_way: BTreeSet::new(),
                         acknowledged: None,
@@ -1736,6 +1743,18 @@ impl Fanout {
                 self.elsewhere(from, chunk, ask, holder).await;
             }
             WorkerToEdge::NotMine { chunk, ask } => self.not_mine(from, chunk, ask).await,
+            WorkerToEdge::Clock { clock, jumped, .. } => {
+                self.clocks.insert(from, clock);
+                let players: Vec<PlayerId> = self
+                    .players
+                    .iter()
+                    .filter(|(_, view)| view.region == from && view.entity.is_some())
+                    .map(|(player, _)| *player)
+                    .collect();
+                for player in players {
+                    self.tell_time(player, from, jumped).await;
+                }
+            }
             WorkerToEdge::Welcome(welcome) => return self.welcomed(from, welcome).await,
             WorkerToEdge::ToPlayer {
                 player,
@@ -4098,6 +4117,43 @@ impl Fanout {
         }
         let center = ChunkPos::containing(position.x, position.z);
         self.move_view(player, center).await;
+        let region = self.players.get(&player).map(|view| view.region);
+        if let Some(region) = region {
+            self.tell_time(player, region, true).await;
+        }
+    }
+
+    /// Tells the player the time by the clock `region` last said, if it said one: the
+    /// clocks whole where `whole`, or where the player was not told them by this region
+    /// yet (a join, a hand-over), and the game time alone otherwise, as the game sends
+    /// it every 20 ticks (`MinecraftServer.forceGameTimeSynchronization`).
+    async fn tell_time(&mut self, player: PlayerId, region: RegionId, whole: bool) {
+        let Some(clock) = self.clocks.get(&region).copied() else {
+            return;
+        };
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let whole = whole || view.told_clocks != Some(region);
+        let clocks = if whole {
+            view.told_clocks = Some(region);
+            let overworld = synced_registry("minecraft:world_clock")
+                .and_then(|registry| registry.id_of("minecraft:overworld"))
+                .expect("the overworld's clock is in the world's clocks");
+            vec![ClockState {
+                clock: overworld,
+                total_ticks: clock.day as i64,
+                partial_tick: 0.0,
+                rate: 1.0,
+            }]
+        } else {
+            Vec::new()
+        };
+        let packet = encoded(&SetTime {
+            game_time: clock.game_time as i64,
+            clocks,
+        });
+        self.send_to_player(player, [packet]).await;
     }
 
     /// Puts a player into the world whose stay a region let go before the edge was

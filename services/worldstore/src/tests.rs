@@ -148,6 +148,7 @@ pub(crate) fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, Blo
         entity_changes: Vec::new(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 

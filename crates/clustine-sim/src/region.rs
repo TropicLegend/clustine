@@ -387,6 +387,8 @@ pub struct Region {
     events_run: Vec<block_events::QueuedEvent>,
     /// [`RegionState::lends_asked`].
     lends_asked: BTreeMap<ChunkPos, u64>,
+    /// The world's clock as of the last tick (`api::WorldClock`).
+    clock: crate::api::WorldClock,
     /// The store's asks of lends of this tick, answered at its end (`lends.rs`); no
     /// part of the state, as the store calls a lend off at every hello.
     lends_to_answer: Vec<LendAsked>,
@@ -552,6 +554,7 @@ impl Region {
             unnamed: true,
             journal: Journal::default(),
             lends_asked,
+            clock: state.clock,
             lends_to_answer: Vec::new(),
             lend_tickets: BTreeMap::new(),
             letting_go: BTreeSet::new(),
@@ -639,6 +642,7 @@ impl Region {
             edges: self.edges.clone(),
             entering: self.entering.clone(),
             lends_asked: self.lends_asked.clone(),
+            clock: self.clock,
         }
     }
 
@@ -848,8 +852,19 @@ impl Region {
         self.tick += 1;
         self.ticks_counted_from_zero();
         let first = mem::take(&mut self.unnamed);
+        // The world's clock: the later of the region's and what the store last
+        // published of every region's, then this tick's one.
+        let before = self.clock;
+        if let Some(published) = inputs.clock {
+            self.clock = self.clock.later(published);
+        }
+        let clock_jumped = self.clock != before;
+        self.clock.game_time += 1;
+        self.clock.day += 1;
         let mut output = TickOutput {
             tick: self.tick,
+            clock: self.clock,
+            clock_jumped,
             ..TickOutput::default()
         };
         self.update_chunks(inputs, &mut output);
@@ -1061,6 +1076,9 @@ impl Region {
         self.piston_deltas.clear();
         self.block_streams.clear();
         output.delta = self.take_delta();
+        if clock_jumped {
+            output.delta.clock = Some(self.clock);
+        }
         output
     }
 
@@ -1690,6 +1708,7 @@ impl Region {
         let journal = mem::take(&mut self.journal);
         StateDelta {
             tick: self.tick,
+            clock: None,
             next_entity_id: journal.next_entity_id.then_some(self.next_entity_id),
             players: journal
                 .players
@@ -3135,6 +3154,7 @@ mod tests {
     mod arrivals;
     mod block_updates;
     mod boats;
+    mod clock;
     mod containers;
     mod diodes;
     mod effects;

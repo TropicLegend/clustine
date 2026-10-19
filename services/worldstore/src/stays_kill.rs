@@ -76,6 +76,7 @@ impl Actor {
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: Default::default(),
         });
     }
 

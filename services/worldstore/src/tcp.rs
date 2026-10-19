@@ -328,6 +328,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         held_tick,
         given_up,
         lends,
+        clock,
     } = restored;
     stream.set_write_timeout(Some(patience))?;
     let accepted = StoreWelcome::Accepted {
@@ -342,6 +343,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         held_tick,
         given_up,
         lends,
+        clock,
     };
     wire::blocking::write(&mut &*stream, &accepted)?;
     for part in Parts::new(state, deltas, &held, &in_use, PART_BYTES) {
@@ -509,6 +511,7 @@ impl Arriving {
                 held_tick: None,
                 given_up: false,
                 lends: clustine_rpc::Lends::default(),
+                clock: Default::default(),
             },
             cut: None,
             held: false,
@@ -734,9 +737,11 @@ fn welcomed(
             held_tick,
             given_up,
             lends,
+            clock,
         }) => {
             let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
             let restored = &mut arriving.restored;
+            restored.clock = clock;
             restored.offset = offset;
             restored.couplings = couplings;
             restored.handshakes = handshakes;
@@ -1027,6 +1032,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         // Each hello is given a fresh block, above the one before.
         let (remote, restored) = StoreHandle::connect(&address, hello(1, 7)).unwrap();
@@ -1570,6 +1576,7 @@ mod tests {
                 held_tick: None,
                 given_up: false,
                 lends: clustine_rpc::Lends::default(),
+                clock: Default::default(),
             };
             wire::blocking::write(&mut connection, &welcome).unwrap();
             then(connection);
@@ -1715,6 +1722,7 @@ mod tests {
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
+                clock: Default::default(),
             });
         }
         committed(&owner, tick);
@@ -1795,6 +1803,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         // Next to nothing thousands of times over, with and without bytes at all.
         let tiny: Vec<usize> = (0..3000).map(|index| index % 5).collect();
@@ -2015,6 +2024,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         assert_eq!(together(entity_ids, parts).unwrap(), expected);
     }
@@ -2216,6 +2226,7 @@ mod tests {
                     held_tick: None,
                     given_up: false,
                     lends: clustine_rpc::Lends::default(),
+                    clock: Default::default(),
                 };
                 assert_eq!(welcome, Some(accepted));
                 for _ in 0..parts {
@@ -2266,6 +2277,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         let error = welcome(&stream, Duration::from_millis(300), restored).unwrap_err();
         // Which of the two a write that ran out of time reports depends on the system.
@@ -2363,6 +2375,7 @@ mod tests {
             held_tick: Some(4_001),
             given_up: true,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         let sent = restored.clone();
         let store = std::thread::spawn(move || {

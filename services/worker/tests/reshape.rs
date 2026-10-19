@@ -724,7 +724,8 @@ fn answer_of(message: &WorkerToEdge) -> Option<(ChunkPos, u64, Answer)> {
 fn place(message: &WorkerToEdge) -> Option<u8> {
     match message {
         WorkerToEdge::Welcome(_) | WorkerToEdge::Presence { .. } => Some(1),
-        WorkerToEdge::TickDelta { .. } => Some(2),
+        // The clock follows the tick's deltas, before what concerns one player.
+        WorkerToEdge::TickDelta { .. } | WorkerToEdge::Clock { .. } => Some(2),
         WorkerToEdge::ToPlayer {
             event: PlayerEvent::Spawned { .. },
             ..
@@ -4313,6 +4314,8 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
         )]),
         entering: BTreeMap::new(),
         lends_asked: BTreeMap::new(),
+        // A split's part takes the world's clock with it.
+        clock: stays.clock,
     };
     assert_eq!(part.region.state(), goes);
 

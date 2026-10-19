@@ -3,7 +3,7 @@
 use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
     Durable, EntityState, Inventory, Place, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer,
-    Pose, RegionEvent, RemoteAction, StayNote,
+    Pose, RegionEvent, RemoteAction, StayNote, WorldClock,
 };
 use clustine_world::{
     Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, Entity,
@@ -174,6 +174,14 @@ pub enum WorkerToEdge {
     },
     /// What happened during `tick` in the chunks the edge is subscribed to.
     TickDelta { tick: u64, events: Vec<RegionEvent> },
+    /// The region's clock after `tick`: sent every second of game time, in a tick that
+    /// placed a player, and at once where it `jumped` (`docs/groundwork/n7-plan.md`,
+    /// section 8.4). The edge tells its players in the region the time from it.
+    Clock {
+        tick: u64,
+        clock: WorldClock,
+        jumped: bool,
+    },
     /// Something that concerns a single player on this edge.
     ToPlayer {
         player: PlayerId,
@@ -366,6 +374,10 @@ pub enum StoreRequest {
         /// The arrivals the tick took, ascending; each is filed and held by the region,
         /// or the commit is refused.
         arrivals_taken: Vec<EffectId>,
+        /// The world's clock after the tick, kept apart from the region's state so that
+        /// the store keeps the world's: the later of every region's it has taken
+        /// (`docs/groundwork/n7-plan.md`, section 8.4).
+        clock: WorldClock,
     },
     /// `state` is the region's whole state after `tick`, and every change committed up
     /// to `tick` is contained in a chunk saved before this request. Once those saves are
@@ -507,6 +519,12 @@ pub enum StoreReply {
     /// The commit of `tick` is on disk, and so is every one before it.
     Committed {
         tick: u64,
+    },
+    /// The world's clock: the later of every region's the store has made durable, put on
+    /// every region's stream as it moves on by a second, which each region takes the later
+    /// of and its own (`docs/groundwork/n7-plan.md`, section 8.4).
+    Clock {
+        clock: WorldClock,
     },
     Flushed,
     /// The answer to [`StoreRequest::Claim`]: the chunks of the claim that the region
@@ -805,6 +823,9 @@ pub struct Restored {
     pub given_up: bool,
     /// What it holds by a lend and has lent away (`docs/adr/0027-lending-at-a-line.md`).
     pub lends: Lends,
+    /// The world's clock as the store keeps it: the region takes the later of it and
+    /// the one its state has.
+    pub clock: WorldClock,
 }
 
 impl Restored {
@@ -868,6 +889,8 @@ pub enum StoreWelcome {
         given_up: bool,
         /// [`Restored::lends`].
         lends: Lends,
+        /// [`Restored::clock`].
+        clock: WorldClock,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.

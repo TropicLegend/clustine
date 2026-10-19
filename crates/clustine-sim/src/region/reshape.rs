@@ -150,6 +150,8 @@ impl Region {
     pub fn absorb(&self, absorbed: RegionId, other: &RegionState) -> RegionState {
         let mut state = self.state();
         state.tick += 1;
+        // The world's clock only moves forward: the later of the two.
+        state.clock = state.clock.later(other.clock);
         let tick = state.tick;
 
         // The other's side of every edge that it knows and that was not reset away.
@@ -325,6 +327,7 @@ impl Region {
         let tick = state.tick;
         let mut new = RegionState::new(NO_ENTITY_IDS);
         new.tick = tick;
+        new.clock = state.clock;
         // The stays that go, by the edge they are of: ascending, as the players are.
         let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
         for (id, player) in &self.players {
@@ -585,6 +588,7 @@ mod tests {
             edges: edges.into_iter().collect(),
             entering: BTreeMap::new(),
             lends_asked: std::collections::BTreeMap::new(),
+            clock: Default::default(),
         }
     }
 
@@ -1106,6 +1110,7 @@ mod tests {
             edges: [(E, edge(3, 21, 0, 0, &[])), (F, edge(5, 21, 0, 0, &[]))].into(),
             entering: BTreeMap::new(),
             lends_asked: std::collections::BTreeMap::new(),
+            clock: Default::default(),
         };
         assert_eq!(split.part, expected);
         // The region has lost them, and tells each of their edges which stays went

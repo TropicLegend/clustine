@@ -517,7 +517,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 13;
+pub const STATE_FORMAT: u8 = 14;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1597,6 +1597,9 @@ impl RegionRunner {
                 // player a new one (section 5 of the same record). The coming tick
                 // removes what the region has of them, and keeps nothing of the word.
                 StoreReply::Dead { stays } => self.inputs.dead.extend(stays),
+                StoreReply::Clock { clock } => {
+                    self.inputs.clock = Some(self.inputs.clock.unwrap_or(clock).later(clock));
+                }
                 // The answer to the merge or the split the store was handed. It is
                 // acted on by the step that finds it, not here: taking it makes the
                 // runner begin anew, and this is also called between two ticks.
@@ -2748,6 +2751,7 @@ impl RegionRunner {
                 entity_changes,
                 arrivals,
                 arrivals_taken,
+                clock: output.clock,
             });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
@@ -2846,6 +2850,24 @@ impl RegionRunner {
                 outgoing.push((*id, delta));
             }
             link.carried = carries;
+        }
+        // The clock: every second of game time, in a tick that placed a player, and at
+        // once where it moved other than by its tick.
+        let placed = output
+            .player_events
+            .iter()
+            .any(|(_, event)| matches!(event, PlayerEvent::Spawned { .. }));
+        if output.clock_jumped || output.clock.game_time.is_multiple_of(20) || placed {
+            for id in self.links.keys() {
+                outgoing.push((
+                    *id,
+                    WorkerToEdge::Clock {
+                        tick: output.tick,
+                        clock: output.clock,
+                        jumped: output.clock_jumped,
+                    },
+                ));
+            }
         }
 
         // What concerns a single player goes to the edge they belong to. One who was let
@@ -4389,6 +4411,8 @@ fn restored_state(restored: Restored) -> Result<RegionState, RestoreError> {
     }
     state.entity_ids = restored.entity_ids;
     state.next_entity_id = restored.entity_ids.first;
+    // The world's clock only moves forward: the later of the state's and the store's.
+    state.clock = state.clock.later(restored.clock);
     Ok(state)
 }
 
@@ -4675,6 +4699,7 @@ mod tests {
                 WorkerToEdge::Welcome(_)
                     | WorkerToEdge::Presence { .. }
                     | WorkerToEdge::Progress { .. }
+                    | WorkerToEdge::Clock { .. }
             )
         }
 
@@ -4714,12 +4739,16 @@ mod tests {
             }
         }
 
-        /// Everything the edge has been sent and has not looked at yet, with nothing set
-        /// aside, in the order it came.
+        /// Everything the edge has been sent and has not looked at yet, in the order it
+        /// came, with nothing set aside but the clock, which keeps time of its own.
         fn everything(&mut self) -> Vec<WorkerToEdge> {
             let mut messages = Vec::new();
             while let Ok(Some(message)) = self.end.try_recv() {
                 let message = self.plain(message);
+                if matches!(message, WorkerToEdge::Clock { .. }) {
+                    self.aside.push(message);
+                    continue;
+                }
                 messages.push(message);
             }
             messages
@@ -7738,6 +7767,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         // Of this build by its first two bytes, and nothing postcard can read behind.
         let unreadable = |tick| clustine_rpc::TickState {
@@ -8056,17 +8086,19 @@ mod tests {
     /// rides here, so only the number differs. Format 11 keeps the moves of a vehicle
     /// kept for a player who waits for it, a byte more a player, and a transfer carries
     /// what its player rides, the keys they hold and those moves, nine bytes more a
-    /// transfer (step N5h).
+    /// transfer (step N5h). Format 14 keeps the world's clock, two numbers at the end of
+    /// a state, and a delta has the clock it took where it jumped, a byte more a delta
+    /// that did not (step N7a2).
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 13);
+        assert_eq!(STATE_FORMAT, 14);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "000d02018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "000e02018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000010703010206",
@@ -8080,28 +8112,28 @@ mod tests {
                 "00000000000000000000000000000000000000000000000001010000000000000000000000010405",
                 "0104060201030506090110000000000000000000000000000000034d011706071000000000000000",
                 "0000000000000000034c01180110000000000000000000000000000000034e034a65620719010106",
-                "09",
+                "090202",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "000d0200021000000000000000000000000000000001001000000000000000000000000000000002",
-                "010204416c65780000000000002d400000000000004ec0000000000000e03f000000000000000001",
-                "29000000000000000000000000000000000000000000000000000000000000000000000000000000",
-                "0000001b000000000000000000000000000000000000000000000000000000020007000000000000",
-                "000000000000000107010301020600000601040010000000000000000000000000000000034d054e",
-                "6f74636800000000004044400000000000004ec0000000000000e03f000000000000000000290000",
+                "000e0200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
+                "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",
+                "00000000000000000107010301020600000601040010000000000000000000000000000000034d05",
+                "4e6f74636800000000004044400000000000004ec0000000000000e03f0000000000000000002900",
                 "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
-                "1b000000000000000000000000000000000000000000000000000000050201011700000000000000",
-                "00000102021000000000000000000000000000000002021200207900010103001000000000000000",
-                "0000000000000000010105537465766500000000004044400000000000004ec0000000000000e03f",
-                "00000000000000000129000000000000000000000000000000000000000000000000000000000000",
-                "0000000000000000000000001b000000000000000000000000000000000000000000000000000000",
-                "01010000000000000000000000010405010406020103050609011000000000000000000000000000",
-                "0000034d0117060710000000000000000000000000000000034c0118031000000000000000000000",
-                "00000000000100100000000000000000000000000000000200100000000000000000000000000000",
-                "0003014e034a656207190101060109",
+                "001b0000000000000000000000000000000000000000000000000000000502010117000000000000",
+                "00000001020210000000000000000000000000000000020212002079000101030010000000000000",
+                "000000000000000000010105537465766500000000004044400000000000004ec0000000000000e0",
+                "3f000000000000000001290000000000000000000000000000000000000000000000000000000000",
+                "000000000000000000000000001b0000000000000000000000000000000000000000000000000000",
+                "00010100000000000000000000000104050104060201030506090110000000000000000000000000",
+                "000000034d0117060710000000000000000000000000000000034c01180310000000000000000000",
+                "00000000000001001000000000000000000000000000000002001000000000000000000000000000",
+                "000003014e034a656207190101060109",
             )
         );
     }
@@ -8128,6 +8160,7 @@ mod tests {
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         };
         let (state, delta) = a_state_and_a_delta();
         let item = |tick, state| clustine_rpc::TickState { tick, state };
@@ -8159,7 +8192,17 @@ mod tests {
             Some(item(2, stored(&state))),
             vec![item(3, bare_delta), item(4, stored(&later))],
         );
-        assert_eq!(restored_state(mixed).unwrap(), fresh(4));
+        // The clock starts again with what was dropped, and the delta's tick moves it on.
+        assert_eq!(
+            restored_state(mixed).unwrap(),
+            RegionState {
+                clock: clustine_sim::WorldClock {
+                    game_time: 1,
+                    day: 1
+                },
+                ..fresh(4)
+            }
+        );
 
         // What this build stored is read as it is, but for its keys: those of the
         // block the store gave (`docs/adr/0028-entities.md`, section 1).
@@ -10790,6 +10833,11 @@ mod tests {
             // With the fresh block of keys of the hello (`docs/adr/0028-entities.md`,
             // section 1).
             let block = restored.entity_ids;
+            // The store's clock is later than the merge's, by the ticks after it.
+            let merged = RegionState {
+                clock: merged.clock.later(restored.clock),
+                ..merged
+            };
             assert_eq!(
                 restored_state(as_of_the_merge).unwrap(),
                 with_keys(merged, block)
@@ -10798,7 +10846,9 @@ mod tests {
             // A tick that changed nothing has no commit, and is not counted by the store.
             let mut stored = restored_state(restored).unwrap();
             assert!(tick < stored.tick && stored.tick <= now.tick);
+            assert!(stored.clock <= now.clock);
             stored.tick = now.tick;
+            stored.clock = now.clock;
             assert_eq!(stored, with_keys(now, block));
         }
     }
@@ -11465,7 +11515,9 @@ mod tests {
         let block = restored.entity_ids;
         let mut state = restored_state(restored).unwrap();
         assert!(state.tick >= merged.tick);
+        assert!(state.clock >= merged.clock);
         state.tick = merged.tick;
+        state.clock = merged.clock;
         assert_eq!(state, with_keys(merged, block));
     }
 

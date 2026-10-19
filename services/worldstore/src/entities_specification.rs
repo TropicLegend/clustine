@@ -164,6 +164,7 @@ fn commit(handle: &StoreHandle, step: &Step) {
             .collect(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 

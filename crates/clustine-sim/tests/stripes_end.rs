@@ -468,6 +468,7 @@ fn with_players(holdings: Holdings, players: &[(i32, EdgeId, ChunkPos)]) -> Regi
         edges: edges_before_a_split().into_iter().collect(),
         entering: BTreeMap::new(),
         lends_asked: std::collections::BTreeMap::new(),
+        clock: Default::default(),
     };
     Region::restore(config(LONG), state, holdings)
 }
@@ -634,6 +635,8 @@ fn split_by_the_record(
     ours.tick = tick;
     let mut theirs = RegionState::new(no_ids());
     theirs.tick = tick;
+    // A part takes its parent's clock: a split is not a tick of the game.
+    theirs.clock = state.clock;
     let mut went: BTreeMap<EdgeId, Vec<(PlayerId, EntityId, Option<u64>)>> = BTreeMap::new();
     for (id, player) in &state.players {
         if goes(player) {

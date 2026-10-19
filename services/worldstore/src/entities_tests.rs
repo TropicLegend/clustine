@@ -101,6 +101,7 @@ fn commit(
         entity_changes,
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 

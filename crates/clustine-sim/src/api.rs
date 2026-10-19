@@ -805,6 +805,39 @@ pub struct TickInputs {
     /// Chunks of the region's pinned land that whoever held them by a grant has given
     /// back.
     pub pinned_back: Vec<ChunkPos>,
+    /// The world's clock as the store last published it, if it did since the last tick:
+    /// the region takes the later of it and its own ([`WorldClock::later`]).
+    pub clock: Option<WorldClock>,
+}
+
+/// The world's clock (`docs/groundwork/n7-plan.md`, sections 7.4, 8.4 and 9.3): the game
+/// time, which every tick raises by one, and the ticks of the overworld's clock (the
+/// game's `world_clock` `minecraft:overworld`, whose rate is 1), which the day and night
+/// follow and a night slept through moves on. Every region keeps it, each the later of
+/// its own and what the world store last published of every region's, so that it only
+/// ever moves forward and the regions' stay within a second of one another.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct WorldClock {
+    pub game_time: u64,
+    pub day: u64,
+}
+
+impl WorldClock {
+    /// The clock a tick later: a tick moves both on by one.
+    pub fn next(self) -> Self {
+        Self {
+            game_time: self.game_time + 1,
+            day: self.day + 1,
+        }
+    }
+
+    /// The later of each of the two, apart.
+    pub fn later(self, other: Self) -> Self {
+        Self {
+            game_time: self.game_time.max(other.game_time),
+            day: self.day.max(other.day),
+        }
+    }
 }
 
 /// The world store's ask of a lend of chunks of the region's pinned land to the region
@@ -1281,6 +1314,13 @@ pub const SOUND_SOURCE_RECORDS: i32 = 2;
 pub struct TickOutput {
     /// The number of this tick; the first tick of a region is 1.
     pub tick: u64,
+    /// The world's clock after the tick, which the commit carries beside the region's
+    /// state, so that the store keeps the world's (`docs/groundwork/n7-plan.md`, section
+    /// 8.4).
+    pub clock: WorldClock,
+    /// Whether the clock moved in the tick other than by its one tick (a publication
+    /// taken, a night slept through), which clients are then told at once.
+    pub clock_jumped: bool,
     /// [`PlayerEvent::Spawned`], in the order the players joined, or, where the world
     /// store says where a player enters, in the order of its answers
     /// ([`TickInputs::entered`]); then [`PlayerEvent::InventorySlot`], in the order of

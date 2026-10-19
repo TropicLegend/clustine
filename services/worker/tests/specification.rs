@@ -906,6 +906,8 @@ impl Witness {
             // The answer to a subscription to a chunk of the next region, of which this
             // region tells the edge nothing else.
             WorkerToEdge::Elsewhere { .. } => {}
+            // The time, which the edge tells clients and nothing here keeps.
+            WorkerToEdge::Clock { .. } => {}
             WorkerToEdge::NotMine { .. } => {
                 panic!("a region said {message:?}, and nobody asked as a guest")
             }
@@ -5341,6 +5343,7 @@ fn store_by_hand(
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: Default::default(),
         });
     }
     handle.flush();
@@ -5439,6 +5442,7 @@ fn lived_in(ids: clustine_world::EntityIds, tick: u64) -> RegionState {
 fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_sim::StateDelta {
     clustine_sim::StateDelta {
         tick,
+        clock: None,
         next_entity_id: Some(EntityId(entity.0 + 1)),
         players: vec![(id, Some(someone(entity, edge)))],
         edges: vec![(
@@ -5463,6 +5467,7 @@ fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_
 fn answering(tick: u64, edge: EdgeId, since: u64) -> clustine_sim::StateDelta {
     clustine_sim::StateDelta {
         tick,
+        clock: None,
         next_entity_id: None,
         players: Vec::new(),
         edges: vec![(

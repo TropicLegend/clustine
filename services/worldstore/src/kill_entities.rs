@@ -141,6 +141,7 @@ fn scenario(store: &Store) -> Vec<u64> {
             entity_changes: Vec::new(),
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
+            clock: Default::default(),
         });
         if tick == SAVED_AS_OF {
             handle.request(StoreRequest::Save {

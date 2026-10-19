@@ -742,6 +742,7 @@ impl Played {
             entity_changes: Vec::new(),
             arrivals,
             arrivals_taken: Vec::new(),
+            clock: Default::default(),
         });
         self.wait(
             "the commit",

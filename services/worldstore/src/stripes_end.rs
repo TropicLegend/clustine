@@ -978,6 +978,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
                 lent: Vec::new(),
                 lent_away: PART.iter().map(|chunk| (*chunk, RegionId(2))).collect(),
             },
+            clock: Default::default(),
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -995,6 +996,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held_tick: None,
             given_up: false,
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         },
         Restored {
             spawn: crate::tests::spawn_in(from.home),
@@ -1013,6 +1015,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             given_up: false,
             // Its grants lie in the west's area, and are no lend: it is not pinned.
             lends: clustine_rpc::Lends::default(),
+            clock: Default::default(),
         },
     ];
     let mut handles = Vec::new();

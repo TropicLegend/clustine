@@ -106,6 +106,7 @@ pub(crate) fn commit(handle: &StoreHandle, tick: u64, stays: Vec<StayNote>) {
         entity_changes: Vec::new(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        clock: Default::default(),
     });
 }
 

@@ -366,6 +366,65 @@ impl Decode for GameEvent {
     }
 }
 
+/// The world's time (`ClientboundSetTimePacket`): the game time, and the clocks that
+/// changed other than by their ticks, each by its id in the `minecraft:world_clock`
+/// registry (`ByteBufCodecs.holderRegistry`, a VarInt) with its state
+/// (`ClockNetworkState`: the total ticks a VarLong, the partial tick and the rate as
+/// floats). The game sends the game time alone every 20 ticks, and the clocks whole at a
+/// join and whenever one is moved (`ServerClockManager.modifyClock`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetTime {
+    pub game_time: i64,
+    pub clocks: Vec<ClockState>,
+}
+
+/// One clock's state in a [`SetTime`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockState {
+    pub clock: i32,
+    pub total_ticks: i64,
+    pub partial_tick: f32,
+    pub rate: f32,
+}
+
+impl Packet for SetTime {
+    const ID: i32 = clientbound::SET_TIME;
+}
+
+impl Encode for SetTime {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i64(self.game_time);
+        w.put_var_int(self.clocks.len() as i32);
+        for clock in &self.clocks {
+            w.put_var_int(clock.clock);
+            w.put_var_long(clock.total_ticks);
+            w.put_f32(clock.partial_tick);
+            w.put_f32(clock.rate);
+        }
+    }
+}
+
+impl Decode for SetTime {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let game_time = r.i64()?;
+        let count = r.var_int()?;
+        let count = usize::try_from(count).map_err(|_| DecodeError::InvalidValue {
+            what: "count of clocks",
+            value: i64::from(count),
+        })?;
+        let mut clocks = Vec::with_capacity(count.min(16));
+        for _ in 0..count {
+            clocks.push(ClockState {
+                clock: r.var_int()?,
+                total_ticks: r.var_long()?,
+                partial_tick: r.f32()?,
+                rate: r.f32()?,
+            });
+        }
+        Ok(Self { game_time, clocks })
+    }
+}
+
 /// Where the world's spawn is: the game's `RespawnData`, a dimension and a block with
 /// the yaw and pitch a player is turned to there. A compass points to it.
 #[derive(Debug, Clone, PartialEq)]
@@ -3617,6 +3676,7 @@ packet_set! {
         SynchronizePlayerPosition,
         GameEvent,
         SetDefaultSpawnPosition,
+        SetTime,
         SetCenterChunk,
         ClientboundKeepAlive,
         Disconnect,

@@ -584,6 +584,7 @@ fn an_equal_start_changes_nothing() {
     assert!(output.events.is_empty(), "nobody is removed");
     assert!(output.delta.changes_only_the_tick());
     before.tick += 1;
+    before.clock = before.clock.next();
     assert_eq!(region.state(), before);
 
     let output = checked_tick(
@@ -605,6 +606,7 @@ fn a_lower_start_changes_nothing() {
     let output = checked_tick(&mut region, &edges(vec![started(E, 5)]));
     assert!(output.events.is_empty());
     before.tick += 1;
+    before.clock = before.clock.next();
     assert_eq!(region.state(), before);
 }
 
@@ -877,6 +879,7 @@ fn a_leave_through_another_edge_does_not_end_the_current_connection() {
     let output = checked_tick(&mut region, &changes(vec![leave(F, player(1))]));
     assert!(output.events.is_empty());
     before.tick += 1;
+    before.clock = before.clock.next();
     assert_eq!(region.state(), before);
 }
 
@@ -1456,6 +1459,7 @@ fn an_arrival_of_an_earlier_stay_of_a_player_the_region_has_leaves_them_as_they_
     // Nothing changes but that the edge the arrival came through is told that the stay
     // has ended (ADR-0020, section 6, rule 5).
     before.tick += 1;
+    before.clock = before.clock.next();
     let ended = Durable::Ended {
         player: player(1),
         entity: other,
