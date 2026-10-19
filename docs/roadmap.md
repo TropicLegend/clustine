@@ -263,7 +263,16 @@ waits for N7; a shulker box drops empty when broken (no item components yet) and
 what it held instead; a sculk sensor does not hear an event across a line between
 regions; an explosion's drops at a line are not merged across it.
 
-**Next in phase N:** N7 (animals and the structures' entities).
+**Next in phase N:** N7 (animals and the structures' entities), planned on 2026-10-19
+([plan](groundwork/n7-plan.md), reviewed five times; [brief](groundwork/n7-brief.md) read
+from the jar by eight readers over 1,248 classes). It is built in two halves: the first the
+living body, the AI's machinery, players beyond the region, one world clock with the day,
+the night and sleep, and the farm animals from spawn eggs; the second every other creature,
+golems, villagers, monsters' bodies and the animals and structures' entities made with each
+chunk. The plan's section 11 states it; its owner's questions (11.7) take the
+recommendations, each of which can be overruled. Since `f64decc` a player's arm swings for
+others with 26.3's swing packet (a punch, a placing, a use, a throw), compared with the
+official server.
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
