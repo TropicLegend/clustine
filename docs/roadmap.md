@@ -289,8 +289,12 @@ player across a line (`Effected::Given`); sculk sensors and hoppers on the world
 A plate or tripwire at a line still counts another region's player by N6's
 `PlayerInside` effect: the plan lets it stay until the plate tests pass with faces, and
 counting by faces would need the plate's holder to copy the player's chunk, which a line
-does not promise; it works, and nothing a player sees is gained by the change. Next: the
-farm animals (N7e), being built.
+does not promise; it works, and nothing a player sees is gained by the change. The farm
+animals (N7e): cows, mooshrooms, pigs, sheep, chickens and rabbits, from their spawn
+eggs, with their goals, breeding (across a line too), growing up, their uses and
+variants; riding a pig, the killer bunny, chicken jockeys, a mooshroom's change by
+lightning and a suspicious stew's effects are left out, named in the code. Next: tests of
+the animals written from the specification (N7g), then the measurement (N7f).
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
@@ -303,6 +307,15 @@ farm animals (N7e), being built.
    second player (also in another region, with pins) the bar says "1/2 players sleeping"
    until both lie down. Leave the bed with its button. A straw bed breaks as you get up.
    Another player sees you lying in the bed.
+0. Farm animals: use a cow's, pig's, sheep's, chicken's, rabbit's or mooshroom's spawn
+   egg. They wander, look at you, run when hit and follow you while you hold their food
+   (wheat; carrots, potatoes and beetroot for pigs; seeds for chickens; dandelions and
+   carrots for rabbits). Feed two of a kind: hearts, then a baby and an experience orb; the
+   baby follows its parents and grows up in twenty minutes, faster when fed. Milk a cow
+   with a bucket, take stew from a mooshroom with a bowl, shear a sheep (it eats grass and
+   its wool grows back) and dye it, saddle a pig, and wait for a chicken to lay an egg.
+   With pins: two animals in love on either side of x = 64 breed once, and a lead you
+   hold from across the line keeps an animal to you.
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
