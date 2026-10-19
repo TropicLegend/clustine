@@ -308,7 +308,8 @@ fn hanging(key: EntityId, kind: i32, uuid: uuid::Uuid, data: EntityData) -> Enti
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -457,7 +458,7 @@ impl Region {
         let Some(key) = self.take_key() else {
             return true;
         };
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let attached = Attached {
             block,
@@ -508,7 +509,7 @@ impl Region {
             // variant (`nextInt` may draw again where it rejects, which no later draw
             // of this tick follows).
             let drawn = if hung == Hung::Painting { 3 } else { 2 };
-            self.entity_draws.insert(key, drawn);
+            self.entity_drew(key, drawn);
             self.add_fresh_entity(entity, output);
         } else {
             // Into a chunk the region does not tick (another region's, across a line),
@@ -747,12 +748,8 @@ impl Region {
     /// The next float of the stream of the entity `key` in this tick, on from what it
     /// has drawn.
     fn next_float_of(&mut self, key: EntityId) -> f32 {
-        let drawn = self.entity_draws.entry(key).or_default();
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..*drawn {
-            random.next_u64();
-        }
-        *drawn += 1;
+        let mut random = self.entity_stream(key).random;
+        self.entity_drew(key, 1);
         random.next_float()
     }
 

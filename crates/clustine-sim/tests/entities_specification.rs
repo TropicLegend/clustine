@@ -297,6 +297,7 @@ fn a_thrown_item_leaves_from_below_the_eyes_along_the_look_with_the_game_s_motio
                 pick_up_delay: 40,
                 thrower: Some(player(1).0),
                 health: 5,
+                age_offset: 0,
             },
             "{case}"
         );
@@ -596,7 +597,8 @@ fn lying(key: EntityId, hops: u32) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops,
-        age: 5,
+        lived: 5,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack {
                 item: items::DIRT,
@@ -605,6 +607,7 @@ fn lying(key: EntityId, hops: u32) -> Entity {
             pick_up_delay: 35,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: -1,
@@ -652,7 +655,7 @@ fn a_loaded_item_is_taken_in_with_one_more_hop_and_then_commits_nothing_while_it
     let EntityData::Item { pick_up_delay, .. } = &kept.data else {
         panic!("{kept:?} is not an item");
     };
-    assert_eq!(u32::from(*pick_up_delay) + kept.age, 40, "{kept:?}");
+    assert_eq!(u32::from(*pick_up_delay) + kept.lived, 40, "{kept:?}");
     assert_eq!(kept.hops, 3);
 }
 

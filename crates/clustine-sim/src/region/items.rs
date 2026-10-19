@@ -140,9 +140,9 @@ impl item::Region for View<'_> {
     }
 }
 
-/// The entity's own stream in this tick, on from what it has drawn already.
+/// An entity's stream now, on from what it has drawn already ([`Region::entity_stream`]).
 pub(super) struct Stream {
-    random: Random,
+    pub(super) random: Random,
     pub(super) used: u64,
 }
 
@@ -159,6 +159,15 @@ fn burning(entity: &Entity) -> bool {
 }
 
 /// The stack and health of an item's record, which a change of commits.
+/// The game's `ItemEntity.age` of the item `entity`: its ticks lived less what a merge
+/// with a younger item took off.
+fn item_age(entity: &Entity) -> u32 {
+    match entity.data {
+        EntityData::Item { age_offset, .. } => entity.lived.saturating_sub(age_offset),
+        _ => entity.lived,
+    }
+}
+
 fn item_parts(data: &EntityData) -> Option<(ItemStack, i16)> {
     match data {
         EntityData::Item { stack, health, .. } => Some((*stack, *health)),
@@ -176,14 +185,42 @@ impl Region {
         Some(&entities[at])
     }
 
-    /// The stream of the entity `key` in this tick, on from what it has drawn.
+    /// The stream of the entity `key` now, on from what it has drawn of it in the tick:
+    /// its own while its tick runs, otherwise the one aside, for what is drawn on its
+    /// behalf outside its tick (`Random::of_entity_aside`). Its draws are noted by
+    /// [`Region::entity_drew`].
     pub(super) fn entity_stream(&self, key: EntityId) -> Stream {
-        let drawn = self.entity_draws.get(&key).copied().unwrap_or(0);
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..drawn {
+        let (mut random, drawn) = match self.ticking {
+            Some((ticking, lived)) if ticking == key => (
+                Random::of_entity(self.config.seed, key, lived),
+                self.entity_draws.get(&key),
+            ),
+            _ => {
+                // A player, or an entity not yet in its chunk, has lived no tick here.
+                let lived = self.find_entity(key).map_or(0, |(_, entity)| entity.lived);
+                (
+                    Random::of_entity_aside(self.config.seed, key, lived, self.tick),
+                    self.aside_draws.get(&key),
+                )
+            }
+        };
+        for _ in 0..drawn.copied().unwrap_or(0) {
             random.next_u64();
         }
         Stream { random, used: 0 }
+    }
+
+    /// Notes `used` more draws of the stream [`Region::entity_stream`] gives for `key`
+    /// now.
+    pub(crate) fn entity_drew(&mut self, key: EntityId, used: u64) {
+        if used == 0 {
+            return;
+        }
+        let draws = match self.ticking {
+            Some((ticking, _)) if ticking == key => &mut self.entity_draws,
+            _ => &mut self.aside_draws,
+        };
+        *draws.entry(key).or_default() += used;
     }
 
     /// The item of `entity` as its tick starts, or as a piston finds it.
@@ -247,10 +284,13 @@ impl Region {
             stack,
             health,
             pick_up_delay,
-            age: entity.age,
+            age: item_age(entity),
             fire_ticks: entity.fire_ticks,
             fire_immune: item::resists_fire(stack),
-            first_tick: memory.is_none() && entity.age == 0,
+            first_tick: memory.is_none() && entity.tick_count() == 0,
+            // The region's tick, so that a region and its restore gate a resting item's
+            // moves on the same ticks though it commits nothing (`docs/groundwork/
+            // n4-plan.md`, D3); a mob's is its own (`Entity::tick_count`).
             tick_count: self.tick as i32,
             game_id: entity.key.game_id(),
             last_movements,
@@ -293,9 +333,7 @@ impl Region {
             region: self,
             home: position,
         });
-        if stream.used > 0 {
-            *self.entity_draws.entry(key).or_default() += stream.used;
-        }
+        self.entity_drew(key, stream.used);
         self.item_side_effects(&mut item, key, output);
         self.write_item(&entity, item, position, output);
     }
@@ -417,12 +455,13 @@ impl Region {
             on_ground: item.body.on_ground,
             fall_distance: item.body.fall_distance,
             fire_ticks: item.fire_ticks,
-            age: item.age,
+            lived: before.lived.saturating_add(1),
             data: EntityData::Item {
                 stack: item.stack,
                 pick_up_delay: item.pick_up_delay,
                 thrower,
                 health: item.health,
+                age_offset: before.lived.saturating_add(1).saturating_sub(item.age),
             },
             ..current.clone()
         };
@@ -476,7 +515,7 @@ impl Region {
                 }
                 // A merge's smaller age goes with its stack.
                 if stack_changed {
-                    fields.push(EntityField::Age(after.age));
+                    fields.push(EntityField::Lived(after.lived));
                 }
                 output
                     .entity_changes
@@ -556,6 +595,7 @@ impl Region {
             pick_up_delay,
             thrower,
             health,
+            ..
         } = other.data
         else {
             return;
@@ -571,7 +611,7 @@ impl Region {
             let moved = (max - item.stack.count).min(stack.count);
             item.stack.count += moved;
             item.pick_up_delay = item.pick_up_delay.max(pick_up_delay);
-            item.age = item.age.min(other.age);
+            item.age = item.age.min(item_age(other));
             let left = stack.count - moved;
             if left <= 0 {
                 self.remove_entity(other.key, other.hops, chunk, output);
@@ -580,7 +620,6 @@ impl Region {
             // The other takes this one.
             let moved = (max - stack.count).min(item.stack.count);
             let taken = Entity {
-                age: other.age.min(item.age),
                 data: EntityData::Item {
                     stack: ItemStack {
                         count: stack.count + moved,
@@ -589,11 +628,12 @@ impl Region {
                     pick_up_delay: pick_up_delay.max(item.pick_up_delay),
                     thrower,
                     health,
+                    age_offset: other.lived.saturating_sub(item_age(other).min(item.age)),
                 },
                 ..other.clone()
             };
             let fields = vec![
-                EntityField::Age(taken.age),
+                EntityField::Lived(taken.lived),
                 EntityField::Data(taken.data.clone()),
             ];
             let change = EntityChange::Set(other.key, fields);
@@ -715,7 +755,7 @@ fn record_is_mergable(record: &Entity) -> bool {
             ..
         } => {
             pick_up_delay != NEVER_PICKED_UP
-                && record.age < item::LIFETIME
+                && item_age(record) < item::LIFETIME
                 && stack.count < item::max_stack_size(stack)
         }
         _ => false,

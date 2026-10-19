@@ -423,6 +423,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
             pick_up_delay: 40,
             thrower: Some(player(1).0),
             health: 5,
+            age_offset: 0,
         }
     );
     assert_eq!(
@@ -504,7 +505,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
     let EntityData::Item { pick_up_delay, .. } = &kept.data else {
         panic!("{kept:?} is not an item");
     };
-    assert_eq!(u32::from(*pick_up_delay) + kept.age, 40, "{kept:?}");
+    assert_eq!(u32::from(*pick_up_delay) + kept.lived, 40, "{kept:?}");
     // The hand and the item hold the 64 between them.
     assert_eq!(
         held(&runner),
@@ -657,11 +658,11 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
     let EntityData::Item { pick_up_delay, .. } = &saved.data else {
         panic!("{saved:?} is not an item");
     };
-    assert_eq!(u32::from(*pick_up_delay) + saved.age, 40, "{saved:?}");
+    assert_eq!(u32::from(*pick_up_delay) + saved.lived, 40, "{saved:?}");
     assert!(
-        u64::from(saved.age) <= file.tick - thrown_at + 1,
+        u64::from(saved.lived) <= file.tick - thrown_at + 1,
         "aged {} by tick {} of a throw at {thrown_at}",
-        saved.age,
+        saved.lived,
         file.tick
     );
 

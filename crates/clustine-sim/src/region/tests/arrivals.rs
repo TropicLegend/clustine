@@ -36,12 +36,14 @@ fn item(key: u64, position: [f64; 3], motion: [f64; 3], on_ground: bool, hops: u
         pitch: 0.0,
         on_ground,
         hops,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: DIRT,
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: 0,
@@ -260,7 +262,7 @@ fn a_falling_block_that_falls_across_a_line_is_sent_and_does_not_land_here() {
             cancel_drop: false,
         }
     );
-    assert_eq!((sent.hops, sent.age), (1, 2));
+    assert_eq!((sent.hops, sent.lived), (1, 2));
     assert_eq!(
         output.entity_changes,
         [(ORIGIN, EntityChange::Gone(sand.key))]

@@ -25,6 +25,7 @@ fn thrown(key: u64, x: f64, hops: u32) -> EntityState {
                 pick_up_delay: 40,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             riding: Default::default(),
         },

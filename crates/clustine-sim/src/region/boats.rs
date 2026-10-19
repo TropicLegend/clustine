@@ -384,7 +384,7 @@ impl Region {
             return false;
         };
         // `Entity.<init>`: the UUID's two longs from the new entity's own random.
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
             key,
@@ -396,7 +396,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -411,7 +412,7 @@ impl Region {
             },
         };
         if here {
-            self.entity_draws.insert(key, 2);
+            self.entity_drew(key, 2);
             self.entity_memory.insert(key, Memory::default());
             self.add_fresh_entity(entity, output);
         } else {
@@ -605,7 +606,7 @@ impl Region {
         }
         boat.body.motion = fluids::push(&in_fluids, boat.body.motion);
         // `isInLava` is false in an entity's first tick, before any fluid update.
-        boat.in_lava = entity.age > 0 && in_fluids.in_lava();
+        boat.in_lava = entity.tick_count() > 0 && in_fluids.in_lava();
         if boat.fire_ticks > 0 {
             if boat.fire_ticks % 20 == 0 && !boat.in_lava {
                 self.boat_hurt(&mut boat, 1.0, output);
@@ -1283,12 +1284,8 @@ impl Region {
 
     /// The boat's stream in this tick, on from what it drew, counting `taking` more.
     fn boat_random(&mut self, key: EntityId, taking: u64) -> Random {
-        let drawn = self.entity_draws.entry(key).or_default();
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..*drawn {
-            random.next_u64();
-        }
-        *drawn += taking;
+        let random = self.entity_stream(key).random;
+        self.entity_drew(key, taking);
         random
     }
 

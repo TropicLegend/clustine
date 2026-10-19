@@ -40,8 +40,10 @@ pub use region::{
 /// 4 since a player's place holds their whole inventory, 41 slots, where it held the
 /// nine of the hotbar (`docs/groundwork/n2-plan.md`, section 2); 8 since it holds their
 /// ender chest's 27 slots after it (`docs/groundwork/n6-plan.md`, section 7 item 9); 9
-/// since a minecart holds a TNT cart's fuse and a hopper cart's switch.
-pub const FORMAT_VERSION: u8 = 9;
+/// since a minecart holds a TNT cart's fuse and a hopper cart's switch; 10 since an
+/// entity keeps `lived` and `fresh_at`, an item its age apart, and a change may set an
+/// entity's hops (`docs/groundwork/n7-plan.md`, section 11.3).
+pub const FORMAT_VERSION: u8 = 10;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

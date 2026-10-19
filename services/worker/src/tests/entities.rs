@@ -27,12 +27,14 @@ fn item(key: u64, x: f64, z: f64) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack { item: 1, count: 1 },
             pick_up_delay: 40,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: -1,
@@ -166,7 +168,7 @@ async fn an_entity_change_marks_only_the_entities_unsaved_and_a_stop_saves_every
     assert_eq!(saved_parts(&gate, K), [Parts::ALL]);
     assert!(runner.unsaved.is_empty());
 
-    let aged = |age| EntityChange::Set(lying().key, vec![EntityField::Age(age)]);
+    let aged = |age| EntityChange::Set(lying().key, vec![EntityField::Lived(age)]);
     make(&mut runner, &gate, vec![(K, aged(9))]);
     runner.checkpoint();
     assert_eq!(saved_parts(&gate, K), [Parts::ALL, Parts::ENTITIES]);
@@ -245,7 +247,7 @@ async fn an_item_that_lies_and_commits_nothing_has_its_age_saved_at_a_checkpoint
             .iter()
             .all(|position| runner.region().chunk(*position).is_some())
     });
-    let age_in = |runner: &RegionRunner| runner.region().chunk(K).unwrap().entities()[0].age;
+    let age_in = |runner: &RegionRunner| runner.region().chunk(K).unwrap().entities()[0].lived;
     step_until(&mut runner, |runner| age_in(runner) >= 30);
     let committed = committed_entity_changes(&gate).len();
     runner.checkpoint();
@@ -267,5 +269,5 @@ async fn an_item_that_lies_and_commits_nothing_has_its_age_saved_at_a_checkpoint
     );
     drop(runner);
     let (handle, _) = world.open(RegionId(0), 3);
-    assert_eq!(stored_chunk(&handle, K).entities()[0].age, aged);
+    assert_eq!(stored_chunk(&handle, K).entities()[0].lived, aged);
 }

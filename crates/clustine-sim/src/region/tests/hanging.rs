@@ -118,7 +118,8 @@ fn frame_at(
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -361,10 +362,10 @@ fn a_painting_goes_only_on_the_four_sides() {
     );
 }
 
-/// The variant one painting placed by `output`'s tick draws, from the stream of its key
-/// after the two draws of its UUID, over `candidates` (the tag's order).
+/// The variant one painting placed by `output`'s tick draws, from the stream aside of its
+/// key at its birth after the two draws of its UUID, over `candidates` (the tag's order).
 fn drawn(painting: &Entity, tick: u64, candidates: &[u16]) -> u16 {
-    let mut own = Random::of_entity(0, painting.key, tick);
+    let mut own = Random::of_entity_aside(0, painting.key, 0, tick);
     let (most, least) = (own.next_u64(), own.next_u64());
     assert_eq!(
         painting.uuid,
@@ -637,8 +638,9 @@ fn a_broken_frame_drops_itself_before_its_item_and_draws_once_for_the_item() {
     let dropped = items_lying(&region);
     let items: Vec<i32> = dropped.iter().map(|(_, _, stack)| stack.item).collect();
     assert_eq!(items, [items::ITEM_FRAME, items::APPLE]);
-    // The one float against the drop chance, drawn from the frame's own stream.
-    assert_eq!(region.entity_draws[&target.key], 1);
+    // The one float against the drop chance, drawn aside from the frame's own stream:
+    // a hit is no tick of the frame's.
+    assert_eq!(region.aside_draws[&target.key], 1);
     assert_eq!(sound_ids(&output), [sound::ENTITY_ITEM_FRAME_BREAK]);
 }
 

@@ -316,7 +316,8 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], hops: u32) -> Entity {
         pitch: 0.0,
         on_ground: false,
         hops,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack {
                 item: items::DIRT,
@@ -325,6 +326,7 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], hops: u32) -> Entity {
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: 0,

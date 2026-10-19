@@ -51,6 +51,7 @@ fn item(position: [f64; 3], hops: u32) -> EntityState {
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             riding: Default::default(),
         },

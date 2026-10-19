@@ -103,7 +103,7 @@ impl Region {
         let Some(key) = self.take_entity_key(chunk) else {
             return false;
         };
-        let mut own = super::random_ticks::Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = super::entities::insecure_uuid(own.next_u64(), own.next_u64());
         // `EntityType.create` draws the level's random for a yaw that `snapTo` replaces.
         let yaw = match super::riding::direction_from_yaw(click.yaw) {
@@ -123,7 +123,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),

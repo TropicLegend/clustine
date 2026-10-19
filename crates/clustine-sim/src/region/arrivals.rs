@@ -62,6 +62,7 @@ impl Region {
         self.entity_chunks.remove(&key);
         self.entity_memory.remove(&key);
         self.entity_draws.remove(&key);
+        self.aside_draws.remove(&key);
         self.piston_deltas.remove(&key);
         output.events.push(RegionEvent::HandedOn {
             entity: key,

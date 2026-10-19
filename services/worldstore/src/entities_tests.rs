@@ -56,12 +56,14 @@ pub(crate) fn item(key: u64, x: f64, z: f64) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 3,
+        lived: 3,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack { item: 1, count: 5 },
             pick_up_delay: 40,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: -1,
@@ -178,13 +180,14 @@ fn first_moved() -> [EntityField; 2] {
 
 fn first_aged() -> [EntityField; 3] {
     [
-        EntityField::Age(9),
+        EntityField::Lived(9),
         EntityField::OnGround(false),
         EntityField::Data(EntityData::Item {
             stack: ItemStack { item: 1, count: 4 },
             pick_up_delay: 0,
             thrower: Some(uuid::Uuid::from_u128(77)),
             health: 5,
+            age_offset: 0,
         }),
     ]
 }
@@ -222,7 +225,7 @@ fn three_commits(east: &StoreHandle) {
             (A, EntityChange::Set(first().key, first_aged().to_vec())),
             (
                 A,
-                EntityChange::Set(EntityId(99), vec![EntityField::Age(1)]),
+                EntityChange::Set(EntityId(99), vec![EntityField::Lived(1)]),
             ),
         ],
     );

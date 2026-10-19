@@ -1148,6 +1148,7 @@ mod tests {
             pick_up_delay: 40,
             thrower: None,
             health: 5,
+            age_offset: 0,
         }
     }
 

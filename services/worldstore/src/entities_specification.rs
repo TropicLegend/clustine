@@ -39,12 +39,14 @@ fn thrown(key: u64) -> Entity {
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack { item: 1, count: 1 },
             pick_up_delay: 40,
             thrower: Some(uuid::Uuid::from_u128(1)),
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: -1,
@@ -59,7 +61,7 @@ fn moved() -> Vec<EntityField> {
     vec![
         EntityField::Position([5.25, -60.0, 6.5]),
         EntityField::OnGround(true),
-        EntityField::Age(12),
+        EntityField::Lived(12),
     ]
 }
 

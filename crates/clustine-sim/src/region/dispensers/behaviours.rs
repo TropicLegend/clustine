@@ -62,7 +62,6 @@ use clustine_world::{
 use super::super::Region;
 use super::super::entities::insecure_uuid;
 use super::super::items::Memory;
-use super::super::random_ticks::Random;
 use super::super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT, fluid_block};
 use super::{
     DISPENSED, Dispense, FAILED, WAX_ON, empty_sound, is_shulker_box_item, level_event, y_rot,
@@ -412,7 +411,7 @@ impl Region {
             return false;
         };
         // The stand's own draws: its UUID, then `LivingEntity`'s yaw, turned over.
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _yaw = own.next_float();
         let entity = Entity {
@@ -425,7 +424,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -441,7 +441,7 @@ impl Region {
             },
         };
         if here {
-            self.entity_draws.insert(key, 3);
+            self.entity_drew(key, 3);
             self.add_fresh_entity(entity, output);
         } else {
             self.send_made(entity, output);
@@ -497,7 +497,7 @@ impl Region {
             self.take_key()
         };
         if let Some(key) = key {
-            let mut own = Random::of_entity(self.config.seed, key, self.tick);
+            let mut own = self.entity_stream(key).random;
             let uuid = insecure_uuid(own.next_u64(), own.next_u64());
             let entity = Entity {
                 key,
@@ -509,7 +509,8 @@ impl Region {
                 pitch: 0.0,
                 on_ground: false,
                 hops: 0,
-                age: 0,
+                lived: 0,
+                fresh_at: 0,
                 fall_distance: 0.0,
                 fire_ticks: 0,
                 riding: Default::default(),
@@ -524,7 +525,7 @@ impl Region {
                 },
             };
             if here {
-                self.entity_draws.insert(key, 2);
+                self.entity_drew(key, 2);
                 self.entity_memory.insert(key, Memory::default());
                 self.add_fresh_entity(entity, output);
             } else {
@@ -612,7 +613,7 @@ impl Region {
         let Some(key) = key else {
             return false;
         };
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
             key,
@@ -624,7 +625,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -641,7 +643,7 @@ impl Region {
             },
         };
         if here {
-            self.entity_draws.insert(key, 2);
+            self.entity_drew(key, 2);
             self.entity_memory.insert(key, Memory::default());
             self.add_fresh_entity(entity, output);
         } else {

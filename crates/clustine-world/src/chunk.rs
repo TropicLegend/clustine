@@ -851,12 +851,14 @@ mod tests {
             pitch: 0.0,
             on_ground: true,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: crate::EntityData::Item {
                 stack: crate::ItemStack { item: 1, count: 1 },
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             fall_distance: 0.0,
             fire_ticks: -1,
@@ -873,7 +875,7 @@ mod tests {
             EntityChange::Whole(item(4, 2.5)),
             EntityChange::Set(EntityId(9), vec![EntityField::Position([3.5, -59.0, 0.5])]),
             EntityChange::Gone(EntityId(4)),
-            EntityChange::Set(EntityId(4), vec![EntityField::Age(3)]),
+            EntityChange::Set(EntityId(4), vec![EntityField::Lived(3)]),
         ];
         let mut chunk = empty();
         for change in &changes {

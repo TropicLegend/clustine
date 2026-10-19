@@ -788,7 +788,8 @@ fn stone(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -800,6 +801,7 @@ fn stone(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
             pick_up_delay: 30_000,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
     }
 }

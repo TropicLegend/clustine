@@ -407,6 +407,12 @@ pub struct Region {
     /// How many draws each entity has taken from its stream in this tick
     /// (`entities.rs`); empty between ticks.
     entity_draws: BTreeMap<EntityId, u64>,
+    /// The draws made in the tick for entities outside their own ticks, from each one's
+    /// stream aside (`random_ticks::Random::of_entity_aside`).
+    aside_draws: BTreeMap<EntityId, u64>,
+    /// The entity whose own tick is running and the `lived` it began with, whose draws
+    /// come from its own stream.
+    ticking: Option<(EntityId, u32)>,
     /// The items of this tick that took another in by a merge before they ticked
     /// themselves, by chunk: their counters are committed again at the end of the
     /// entities' phase, as the tick leaves them. Empty between ticks.
@@ -551,6 +557,8 @@ impl Region {
             circuit_changes: BTreeMap::new(),
             entity_chunks: BTreeMap::new(),
             entity_draws: BTreeMap::new(),
+            aside_draws: BTreeMap::new(),
+            ticking: None,
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
@@ -1046,6 +1054,7 @@ impl Region {
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
         self.entity_draws.clear();
+        self.aside_draws.clear();
         self.known_movements.clear();
         self.piston_deltas.clear();
         self.block_streams.clear();

@@ -343,9 +343,7 @@ impl Region {
                     home: chunk,
                 };
                 item.pushed_by_piston(&view, &mut stream, noclip, vector, &mut deltas);
-                if stream.used > 0 {
-                    *self.entity_draws.entry(key).or_default() += stream.used;
-                }
+                self.entity_drew(key, stream.used);
                 self.item_side_effects(item, key, output);
             }
             Pushed::Falling(body) => {

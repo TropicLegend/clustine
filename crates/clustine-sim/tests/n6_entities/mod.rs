@@ -25,7 +25,8 @@ pub fn entity(n: u32, kind: i32, position: [f64; 3], data: EntityData) -> Entity
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -45,6 +46,7 @@ pub fn item(n: u32, stack: ItemStack, position: [f64; 3]) -> Entity {
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
     )
 }
@@ -63,7 +65,7 @@ pub fn dirt(n: u32, position: [f64; 3]) -> Entity {
 
 /// An item that despawns within `ticks` ticks: an item is gone at an age of 6000.
 pub fn ageing(mut entity: Entity, ticks: u32) -> Entity {
-    entity.age = 6_000 - ticks;
+    entity.lived = 6_000 - ticks;
     entity
 }
 

@@ -60,7 +60,6 @@ use clustine_world::{
 use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{CartMemory, Memory, View, tracked};
-use super::random_ticks::Random;
 use super::riding::{Relocated, wrap_degrees};
 use super::vehicles::container_size;
 use crate::api::{RegionEvent, TickOutput, Tracked};
@@ -305,9 +304,9 @@ impl Region {
             return false;
         };
         // `Entity.<init>`: the UUID's two longs from the new entity's own random.
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
-        self.entity_draws.insert(key, 2);
+        self.entity_drew(key, 2);
         let entity = Entity {
             key,
             kind: u16::try_from(kind).expect("entity type ids fit 16 bits"),
@@ -318,7 +317,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -539,7 +539,7 @@ impl Region {
             if cart.fuel > 0 {
                 // `nextInt(4)` for a smoke particle the server does not send: drawn,
                 // so that the cart's stream stays the game's in count.
-                *self.entity_draws.entry(key).or_default() += 1;
+                self.entity_drew(key, 1);
             }
         }
         self.write_cart(&entity, cart, position, output);
@@ -1041,12 +1041,8 @@ impl Region {
     fn cart_lava_hurt(&mut self, cart: &mut Cart, chunk: ChunkPos, output: &mut TickOutput) {
         let position = cart.body.position;
         self.cart_hurt(cart, 4.0, true, chunk, output);
-        let mut stream = Random::of_entity(self.config.seed, cart.key, self.tick);
-        let drawn = self.entity_draws.entry(cart.key).or_default();
-        for _ in 0..*drawn {
-            stream.next_u64();
-        }
-        *drawn += 1;
+        let mut stream = self.entity_stream(cart.key).random;
+        self.entity_drew(cart.key, 1);
         let pitch = 2.0 + stream.next_float() * 0.4;
         output.events.push(RegionEvent::Sound {
             sound: sounds::ENTITY_GENERIC_BURN,

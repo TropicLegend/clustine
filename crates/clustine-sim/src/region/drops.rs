@@ -158,13 +158,13 @@ impl Region {
         let Some(key) = self.take_entity_key(chunk) else {
             return false;
         };
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _bob = own.next_float();
         let yaw = own.next_float() * 360.0;
         let x = own.next_double() * 0.2 - 0.1;
         let z = own.next_double() * 0.2 - 0.1;
-        self.entity_draws.insert(key, 6);
+        self.entity_drew(key, 6);
         let entity = Entity {
             key,
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
@@ -175,12 +175,14 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::Item {
                 stack,
                 pick_up_delay,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             fall_distance: 0.0,
             fire_ticks: 0,

@@ -266,7 +266,8 @@ fn boat(n: u32, position: [f64; 3]) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::Boat {
             hurt: Hurt::default(),
             paddles: [false; 2],

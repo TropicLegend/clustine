@@ -609,7 +609,7 @@ impl Region {
             };
             let motion = drop_motion(dispense.facing, &mut dispense.next_double());
             let entity = self.new_item(key, position, stack, motion);
-            self.entity_draws.insert(key, 6);
+            self.entity_drew(key, 6);
             self.add_fresh_entity(entity, output);
             return;
         }
@@ -631,7 +631,7 @@ impl Region {
         stack: ItemStack,
         motion: [f64; 3],
     ) -> Entity {
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _bob = own.next_float();
         let yaw = own.next_float() * 360.0;
@@ -646,12 +646,14 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::Item {
                 stack,
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             fall_distance: 0.0,
             fire_ticks: 0,

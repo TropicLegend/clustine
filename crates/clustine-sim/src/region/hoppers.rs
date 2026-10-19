@@ -521,6 +521,7 @@ impl Region {
             pick_up_delay,
             thrower,
             health,
+            age_offset,
         } = record.data
         else {
             return false;
@@ -536,6 +537,7 @@ impl Region {
                 pick_up_delay,
                 thrower,
                 health,
+                age_offset,
             };
             self.commit_entity(chunk, key, vec![EntityField::Data(data.clone())], output);
             let mut after = record;
@@ -631,14 +633,10 @@ impl Region {
                 Random::of_block(self.config.seed, pos, self.tick, purpose).next_int(bound)
             }
             Draw::Entity(key) => {
-                let already = self.entity_draws.get(&key).copied().unwrap_or(0);
-                let mut random = Random::of_entity(self.config.seed, key, self.tick);
-                for _ in 0..already {
-                    random.next_u64();
-                }
+                let mut random = self.entity_stream(key).random;
                 let start = random.clone();
                 let drawn = random.next_int(bound);
-                *self.entity_draws.entry(key).or_default() += random.draws_since(&start);
+                self.entity_drew(key, random.draws_since(&start));
                 drawn
             }
         };

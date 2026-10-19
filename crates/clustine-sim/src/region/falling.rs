@@ -30,7 +30,6 @@ use clustine_world::{BlockPos, ChunkPos, Entity, EntityChange, EntityData, Entit
 use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{Memory, View, tracked};
-use super::random_ticks::Random;
 use super::riding::Relocated;
 use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT, fluid_block};
 use crate::api::{RegionEvent, TickOutput, Tracked};
@@ -190,9 +189,9 @@ impl Region {
         let Some(key) = self.take_entity_key(chunk) else {
             return false;
         };
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
-        self.entity_draws.insert(key, 2);
+        self.entity_drew(key, 2);
         let entity = Entity {
             key,
             kind: u16::try_from(entity_types::FALLING_BLOCK).expect("entity type ids fit 16 bits"),
@@ -203,7 +202,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::FallingBlock {
                 state: falling.0,
                 time: 0,
@@ -416,11 +416,7 @@ impl Region {
                 let ticks = (fallen - 1.0).ceil() as i32;
                 let damage = ((ticks as f32 * 2.0).floor() as i32).min(40);
                 if ticks >= 0 && damage > 0 {
-                    let already = self.entity_draws.get(&key).copied().unwrap_or(0);
-                    let mut random = Random::of_entity(self.config.seed, key, self.tick);
-                    for _ in 0..already {
-                        random.next_u64();
-                    }
+                    let mut random = self.entity_stream(key).random;
                     drawn += 1;
                     if random.next_float() < 0.05 + ticks as f32 * 0.05 {
                         match damaged_anvil(block_state) {
@@ -431,9 +427,7 @@ impl Region {
                 }
             }
         }
-        if drawn > 0 {
-            *self.entity_draws.entry(key).or_default() += drawn;
-        }
+        self.entity_drew(key, drawn);
         // `applyEffectsFromBlocks`.
         let movements = tick_movements(&mut body);
         self.falling_effects(key, &mut body, &movements, position, output);
@@ -447,7 +441,7 @@ impl Region {
                 motion: physics::scale(body.motion, f64::from(AIR_DRAG)),
                 on_ground: body.on_ground,
                 fall_distance: body.fall_distance,
-                age: entity.age.saturating_add(1),
+                lived: entity.lived.saturating_add(1),
                 data: EntityData::FallingBlock {
                     state: block_state.0,
                     time,
@@ -480,7 +474,7 @@ impl Region {
             motion: body.motion,
             on_ground: body.on_ground,
             fall_distance: body.fall_distance,
-            age: entity.age.saturating_add(1),
+            lived: entity.lived.saturating_add(1),
             data: EntityData::FallingBlock {
                 state: block_state.0,
                 time,

@@ -40,7 +40,8 @@ fn entity(n: u32, kind: i32, position: [f64; 3], data: EntityData) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -77,6 +78,7 @@ fn lying_dirt(n: u32, position: [f64; 3]) -> Entity {
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
     )
 }

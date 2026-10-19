@@ -38,12 +38,14 @@ fn item(
         pitch: 0.0,
         on_ground,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::Item {
             stack,
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: 0,
@@ -488,7 +490,7 @@ fn side_by_side(first: ItemStack, second: ItemStack) -> (Region, Entity, Entity)
     let mut a = item(1, [8.5, -60.0, 8.5], [0.0; 3], true, first);
     let mut b = item(2, [9.0, -60.0, 8.5], [0.0; 3], true, second);
     for (entity, age, delay) in [(&mut a, 100, 10), (&mut b, 50, 20)] {
-        entity.age = age;
+        entity.lived = age;
         if let EntityData::Item { pick_up_delay, .. } = &mut entity.data {
             *pick_up_delay = delay;
         }
@@ -532,7 +534,11 @@ fn two_items_merge_with_the_game_s_rules_and_ages() {
     assert_eq!(stack.count, 8);
     let a_age = 100 + ticks - 1;
     let b_age = 50 + ticks - 1;
-    assert_eq!(u64::from(merged.age), a_age.min(b_age) + 1);
+    let EntityData::Item { age_offset, .. } = merged.data else {
+        panic!("{merged:?} is not an item");
+    };
+    // The game's age, which the merge took down to the younger's.
+    assert_eq!(u64::from(merged.lived - age_offset), a_age.min(b_age) + 1);
     let a_delay = 10_u64.saturating_sub(ticks);
     let b_delay = 20_u64.saturating_sub(ticks - 1);
     assert_eq!(
@@ -585,10 +591,10 @@ fn two_items_merge_with_the_game_s_rules_and_ages() {
 fn an_item_despawns_at_the_age_of_6000() {
     let mut region = on_ticking_floor_with(&[]);
     let mut old = item(1, [8.5, -60.0, 8.5], [0.0; 3], true, DIRT);
-    old.age = 5998;
+    old.lived = 5998;
     lay(&mut region, &old);
     idle(&mut region);
-    assert_eq!(record(&region, old.key).unwrap().age, 5999);
+    assert_eq!(record(&region, old.key).unwrap().lived, 5999);
     let output = idle(&mut region);
     assert_eq!(record(&region, old.key), None);
     assert!(output.events.contains(&RegionEvent::EntityGone {

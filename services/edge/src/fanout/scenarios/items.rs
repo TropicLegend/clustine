@@ -40,6 +40,7 @@ fn item(key: u64, chunk: ChunkPos, hops: u32) -> EntityState {
                 pick_up_delay: 40,
                 thrower: Some(player(1).0),
                 health: 5,
+                age_offset: 0,
             },
             riding: Default::default(),
         },
@@ -323,6 +324,7 @@ fn an_item_s_data_is_its_stack_by_the_game_s_index_and_serializer() {
             pick_up_delay: 0,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
     );
     let bytes = packets::encode(&data);

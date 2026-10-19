@@ -30,7 +30,8 @@ fn falling(key: u64, position: [f64; 3], motion: [f64; 3], state: BlockState, ti
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         data: EntityData::FallingBlock {
             state: state.0,
             time,

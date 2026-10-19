@@ -77,6 +77,7 @@ fn spawn(key: u64, position: [f64; 3], motion: [f64; 3]) -> RegionEvent {
                 pick_up_delay: 10,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             riding: Default::default(),
         },

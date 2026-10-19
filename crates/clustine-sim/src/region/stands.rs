@@ -41,7 +41,6 @@ use clustine_world::{
 use super::Region;
 use super::entities::insecure_uuid;
 use super::items::{Memory, View, tracked};
-use super::random_ticks::Random;
 use super::riding::{Relocated, wrap_degrees};
 use crate::api::{Face, PlayerEvent, RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput, Tracked};
 use crate::living::{End, Kind, Living, MAX_AIR, slots};
@@ -293,7 +292,7 @@ impl Region {
         // placing turns over. The level's draw of a yaw in `EntityType.create`, also
         // turned over, is drawn nowhere: the repo keeps no stream of the level's that
         // anything later reads (the brief, finding 39).
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _yaw = own.next_float();
         let entity = Entity {
@@ -306,7 +305,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -330,7 +330,7 @@ impl Region {
             except: None,
         });
         if here {
-            self.entity_draws.insert(key, 3);
+            self.entity_drew(key, 3);
             self.add_fresh_entity(entity, output);
         } else {
             self.send_made(entity, output);
@@ -448,7 +448,7 @@ impl Region {
         living.fire_ticks = entity.fire_ticks;
         living.air = i32::from(*air);
         living.frozen = i32::from(*frozen);
-        living.first_tick = memory.is_none() && entity.age == 0;
+        living.first_tick = memory.is_none() && entity.tick_count() == 0;
         // `canFreeze`: nothing of `#freeze_immune_wearables` (leather) worn as armour.
         living.can_freeze = ![slots::FEET, slots::LEGS, slots::CHEST, slots::HEAD]
             .into_iter()
@@ -498,9 +498,7 @@ impl Region {
             },
             &mut stream,
         );
-        if stream.used > 0 {
-            *self.entity_draws.entry(key).or_default() += stream.used;
-        }
+        self.entity_drew(key, stream.used);
         // Its landing, then what it stood on (`vibrations.rs`).
         let source = super::vibrations::Source::of(key);
         if let Some(on) = living.landed_on.take() {
@@ -589,7 +587,7 @@ impl Region {
             on_ground: living.body.on_ground,
             fall_distance: living.body.fall_distance,
             fire_ticks: living.fire_ticks,
-            age: before.age.saturating_add(1),
+            lived: before.lived.saturating_add(1),
             data,
             ..before.clone()
         };
@@ -776,7 +774,7 @@ impl Region {
             self.kill_stand(key, output);
             return;
         }
-        let now = record.age;
+        let now = record.lived;
         let first = last_hit.is_none_or(|then| now.saturating_sub(then) > DOUBLE_HIT_WINDOW);
         if first {
             let mut data = record.data.clone();
@@ -1006,7 +1004,7 @@ impl Region {
         report.chunk = chunk;
         output.events.push(RegionEvent::EntityTracked(report));
         let same = old.map(|stack| stack.item) == stack.map(|stack| stack.item);
-        if same || record.age == 0 {
+        if same || record.tick_count() == 0 {
             return;
         }
         let Some(sound) = stack
@@ -1017,7 +1015,7 @@ impl Region {
             return;
         };
         // `playSeededSound` takes its seed from the stand's own random: one long.
-        *self.entity_draws.entry(key).or_default() += 1;
+        self.entity_drew(key, 1);
         let [x, y, z] = record.position;
         output.events.push(RegionEvent::Sound {
             sound,

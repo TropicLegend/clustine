@@ -226,7 +226,7 @@ impl Region {
             FUSE
         };
         // `Entity.<init>`: the UUID's two longs from the new entity's own random.
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
             key,
@@ -238,7 +238,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::PrimedTnt {
                 fuse,
                 block: blocks::TNT.0,
@@ -250,7 +251,7 @@ impl Region {
             riding: Default::default(),
         };
         if here {
-            self.entity_draws.insert(key, 2);
+            self.entity_drew(key, 2);
             self.add_fresh_entity(entity, output);
         } else {
             self.send_made(entity, output);
@@ -535,7 +536,7 @@ impl Region {
             motion: body.motion,
             on_ground: body.on_ground,
             fall_distance: body.fall_distance,
-            age: entity.age.saturating_add(1),
+            lived: entity.lived.saturating_add(1),
             data: EntityData::PrimedTnt {
                 fuse,
                 block,
@@ -602,23 +603,16 @@ impl Region {
         output.events.push(RegionEvent::EntityTracked(report));
     }
 
-    /// The stream of the entity `key` in this tick, on from what it has drawn.
+    /// The stream of the entity `key` now, on from what it has drawn
+    /// ([`Region::entity_stream`]).
     fn own_stream(&self, key: EntityId) -> Random {
-        let drawn = self.entity_draws.get(&key).copied().unwrap_or(0);
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..drawn {
-            random.next_u64();
-        }
-        random
+        self.entity_stream(key).random
     }
 
     /// Counts what the entity `key` has drawn from `start`, its stream as
     /// [`Region::own_stream`] gave it, to `now`.
     fn count_draws(&mut self, key: EntityId, start: &Random, now: &Random) {
-        let used = now.draws_since(start);
-        if used > 0 {
-            *self.entity_draws.entry(key).or_default() += used;
-        }
+        self.entity_drew(key, now.draws_since(start));
     }
 
     /// The fuse of the TNT cart `key` (`-1` while it is not primed), if the region has

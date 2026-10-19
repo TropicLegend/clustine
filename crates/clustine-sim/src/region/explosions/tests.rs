@@ -305,6 +305,7 @@ fn item_record(region: &mut Region, item: i32, position: [f64; 3]) -> EntityId {
         pick_up_delay: 0,
         thrower: None,
         health: 5,
+        age_offset: 0,
     };
     let entity = record(region, entity_types::ITEM, position, data);
     add(region, entity)
@@ -528,7 +529,8 @@ fn record_for_copy(position: [f64; 3]) -> Entity {
         pitch: 0.0,
         on_ground: true,
         hops: 0,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: ItemStack {
                 item: items::STICK,
@@ -537,6 +539,7 @@ fn record_for_copy(position: [f64; 3]) -> Entity {
             pick_up_delay: 0,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: 0,

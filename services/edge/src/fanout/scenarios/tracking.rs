@@ -76,6 +76,7 @@ fn item(key: u64, position: [f64; 3], hops: u32) -> EntityState {
         pick_up_delay: 40,
         thrower: None,
         health: 5,
+        age_offset: 0,
     };
     other(key, position, hops, data)
 }
@@ -462,6 +463,7 @@ async fn a_change_of_an_item_s_data_is_sent_in_the_next_update() {
         pick_up_delay: 40,
         thrower: None,
         health: 5,
+        age_offset: 0,
     });
     let events = vec![
         RegionEvent::BlockEventsBegin,

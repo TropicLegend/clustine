@@ -189,7 +189,8 @@ mod tests {
             pitch: 0.0,
             on_ground: true,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),
@@ -198,6 +199,7 @@ mod tests {
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
         }
     }

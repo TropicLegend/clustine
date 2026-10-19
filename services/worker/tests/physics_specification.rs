@@ -381,7 +381,11 @@ fn a_resting_item_s_age_delay_and_motion_reach_the_store_at_checkpoints_without_
             };
             assert_eq!(saved.key, key);
             let (age, delay) = counters_at(thrown, file.tick);
-            assert_eq!(saved.age, age, "the file of tick {}: {saved:?}", file.tick);
+            assert_eq!(
+                saved.lived, age,
+                "the file of tick {}: {saved:?}",
+                file.tick
+            );
             let EntityData::Item { pick_up_delay, .. } = saved.data else {
                 panic!("{saved:?}");
             };
@@ -417,7 +421,7 @@ fn an_item_s_age_survives_a_stop_and_start_and_it_despawns_at_6000() {
     assert_eq!(runner.ended(), Some(Ended::Released));
     let stopped_at = runner.region().tick_number();
     let at_stop = record(&runner, key).expect("lies there");
-    assert_eq!(at_stop.age, counters_at(thrown, stopped_at).0);
+    assert_eq!(at_stop.lived, counters_at(thrown, stopped_at).0);
     let file = world.saved(HOME).expect("saved at the stop");
     assert_eq!(
         file.tick, stopped_at,
@@ -428,7 +432,7 @@ fn an_item_s_age_survives_a_stop_and_start_and_it_despawns_at_6000() {
         .iter()
         .find(|saved| saved.key == key)
         .expect("in the file");
-    assert_eq!(saved.age, at_stop.age);
+    assert_eq!(saved.lived, at_stop.lived);
     drop(runner);
 
     let (mut runner, _) = world.open();
@@ -439,22 +443,22 @@ fn an_item_s_age_survives_a_stop_and_start_and_it_despawns_at_6000() {
     // Taken in as the store had it, and aged on from there one a tick.
     let taken_at = runner.region().tick_number();
     let again = record(&runner, key).expect("just waited for it");
-    assert!(again.age >= at_stop.age, "{again:?} after {at_stop:?}");
+    assert!(again.lived >= at_stop.lived, "{again:?} after {at_stop:?}");
     assert!(
-        u64::from(again.age - at_stop.age) <= taken_at - stopped_at,
+        u64::from(again.lived - at_stop.lived) <= taken_at - stopped_at,
         "it aged {} in {} ticks",
-        again.age - at_stop.age,
+        again.lived - at_stop.lived,
         taken_at - stopped_at
     );
-    let mut oldest = again.age;
+    let mut oldest = again.lived;
     run_until(
         &mut runner,
         &mut link,
         "the item despawning",
         |runner, link| match record(runner, key) {
             Some(now) => {
-                assert!(now.age < LIFETIME, "{now:?}");
-                oldest = now.age;
+                assert!(now.lived < LIFETIME, "{now:?}");
+                oldest = now.lived;
                 false
             }
             None => link.gone(key).is_some(),

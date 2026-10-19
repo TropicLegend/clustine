@@ -635,6 +635,7 @@ impl Region {
             pick_up_delay,
             thrower,
             health,
+            age_offset,
         } = current.data
         else {
             return false;
@@ -650,6 +651,7 @@ impl Region {
             pick_up_delay,
             thrower,
             health: i16::try_from(health).unwrap_or(i16::MAX),
+            age_offset,
         };
         self.commit_entity(chunk, record.key, vec![EntityField::Data(data)], output);
         false

@@ -2363,7 +2363,7 @@ mod tests {
                         key,
                         vec![
                             clustine_world::EntityField::OnGround(true),
-                            clustine_world::EntityField::Age(258),
+                            clustine_world::EntityField::Lived(258),
                         ],
                     ),
                 ),

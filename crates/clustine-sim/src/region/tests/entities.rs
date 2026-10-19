@@ -54,9 +54,10 @@ fn game_s_motion(yaw: f32, pitch: f32, draws: [f32; 4]) -> [f64; 3] {
 }
 
 /// The four floats the thrower `key` draws first in the tick `tick` of a world of seed
-/// 0, which the tests' regions are.
+/// 0, which the tests' regions are: a player is no entity of a chunk, so what they
+/// draw is drawn aside, at no ticks lived.
 fn draws_of(key: EntityId, tick: u64, skipped: usize) -> [f32; 4] {
-    let mut random = Random::of_entity(0, key, tick);
+    let mut random = Random::of_entity_aside(0, key, 0, tick);
     for _ in 0..skipped {
         random.next_u64();
     }
@@ -129,12 +130,14 @@ fn resting(key: EntityId, x: f64, z: f64) -> Entity {
         position: [x, -60.0, z],
         motion: [0.0; 3],
         on_ground: true,
-        age: 0,
+        lived: 0,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: DIRT,
             pick_up_delay: 40,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         ..item_at(key, [x, -60.0, z], 0)
     }
@@ -180,9 +183,9 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
     let speed = item.motion.iter().map(|m| m * m).sum::<f64>().sqrt();
     assert!((0.25..0.4).contains(&speed), "{speed}");
 
-    // Its own draws at its birth: two for its UUID, of version 4, then one for its bob
-    // and one for its yaw.
-    let mut own = Random::of_entity(0, FIRST_ITEM, output.tick);
+    // Its draws at its birth, aside from its own ticks': two for its UUID, of version 4,
+    // then one for its bob and one for its yaw.
+    let mut own = Random::of_entity_aside(0, FIRST_ITEM, 0, output.tick);
     let (most, least) = (own.next_u64(), own.next_u64());
     assert_eq!(
         item.uuid.as_u64_pair(),
@@ -195,7 +198,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
     assert_eq!(item.key, FIRST_ITEM);
     assert_eq!(i32::from(item.kind), clustine_data::entity_types::ITEM);
     assert_eq!(
-        (item.pitch, item.on_ground, item.hops, item.age),
+        (item.pitch, item.on_ground, item.hops, item.lived),
         (0.0, false, 0, 0)
     );
     assert_eq!(
@@ -205,6 +208,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             pick_up_delay: 40,
             thrower: Some(player(1).0),
             health: 5,
+            age_offset: 0,
         }
     );
     // The chunk has it, ticked once since: gravity, then the move through the air, then
@@ -213,7 +217,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
     let drag = f64::from(0.98_f32);
     let fallen = [item.motion[0], item.motion[1] + -0.04, item.motion[2]];
     let ticked = Entity {
-        age: 1,
+        lived: 1,
         position: [
             item.position[0] + fallen[0],
             item.position[1] + fallen[1],
@@ -225,6 +229,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             pick_up_delay: 39,
             thrower: Some(player(1).0),
             health: 5,
+            age_offset: 0,
         },
         ..item.clone()
     };
@@ -503,12 +508,14 @@ fn item_at(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
         pitch: 0.0,
         on_ground: false,
         hops,
-        age: 7,
+        lived: 7,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: DIRT,
             pick_up_delay: 33,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: -1,
@@ -520,7 +527,7 @@ fn counters(entity: &Entity) -> (u32, u16) {
     let EntityData::Item { pick_up_delay, .. } = &entity.data else {
         panic!("{entity:?} is not an item");
     };
-    (entity.age, *pick_up_delay)
+    (entity.lived, *pick_up_delay)
 }
 
 #[test]

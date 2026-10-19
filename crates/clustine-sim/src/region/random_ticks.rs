@@ -57,16 +57,36 @@ impl Random {
         random
     }
 
-    /// The stream of the entity `key` in a tick of a world (`docs/adr/0028-entities.md`,
-    /// section 4): what it draws is a function of the world, the key, the tick and the
-    /// draw's place in the entity's tick, with nothing to keep between ticks. Apart
-    /// from the streams of sections by a mark of its own.
-    pub(crate) fn of_entity(world: u64, key: EntityId, tick: u64) -> Self {
+    /// The stream of the entity `key` in its own tick, which began at `lived`
+    /// (`docs/adr/0028-entities.md`, section 4, as `docs/groundwork/n7-plan.md`, section
+    /// 11.2, amends it): what it draws is a function of the world, the key, the ticks it
+    /// has lived and the draw's place in its tick, with nothing to keep between ticks.
+    /// `lived` rises at each of its ticks wherever it is held, where a region's tick
+    /// does not (a merge continues the survivor's), so no entity draws the same numbers
+    /// twice. Apart from the streams of sections by a mark of its own.
+    pub(crate) fn of_entity(world: u64, key: EntityId, lived: u32) -> Self {
         /// Mixed in first, so that no entity's stream is a section's.
         const ENTITIES: u64 = 0x656e_7469_7469_6573;
         let mut random = Self(world);
         random.mix(ENTITIES);
         random.mix(key.0);
+        random.mix(u64::from(lived));
+        random
+    }
+
+    /// The stream of what is drawn for the entity `key` outside its own tick: its
+    /// birth, a hit, a throw by a player (who is no entity of a chunk). Keyed by its
+    /// `lived` and the region's tick, by a mark of its own, so that it never meets the
+    /// entity's own stream: an entity born in a tick draws its first tick's numbers
+    /// afresh.
+    pub(crate) fn of_entity_aside(world: u64, key: EntityId, lived: u32, tick: u64) -> Self {
+        /// Mixed in first, so that this is neither an entity's own stream nor a
+        /// section's.
+        const ASIDE: u64 = 0x61_7369_6465;
+        let mut random = Self(world);
+        random.mix(ASIDE);
+        random.mix(key.0);
+        random.mix(u64::from(lived));
         random.mix(tick);
         random
     }

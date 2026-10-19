@@ -52,7 +52,6 @@ use clustine_world::{
 
 use super::Region;
 use super::entities::insecure_uuid;
-use super::random_ticks::Random;
 use super::riding::y_rot;
 use crate::api::{RegionEvent, TickOutput};
 use crate::physics::aabb::Aabb;
@@ -641,9 +640,9 @@ impl Region {
     ) -> Option<EntityId> {
         let chunk = fence.chunk();
         let key = self.take_entity_key(chunk)?;
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
-        self.entity_draws.insert(key, 2);
+        self.entity_drew(key, 2);
         let corner = [f64::from(fence.x), f64::from(fence.y), f64::from(fence.z)];
         let knot = Entity {
             key,
@@ -655,7 +654,8 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: Default::default(),

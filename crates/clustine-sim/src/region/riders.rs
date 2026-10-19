@@ -62,7 +62,8 @@ impl Player {
             pitch: self.pose.pitch,
             on_ground: self.pose.on_ground,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             fall_distance: 0.0,
             fire_ticks: 0,
             riding: clustine_world::Riding {

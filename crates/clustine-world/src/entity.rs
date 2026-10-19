@@ -17,11 +17,11 @@ pub struct ItemStack {
 
 /// An entity other than a player, as its chunk keeps it.
 ///
-/// Its counters (`age` and the data's delays) are as of the tick of the record that
+/// Its counters (`lived` and the data's delays) are as of the tick of the record that
 /// holds it: a commit, a copy's update or a file. Regions count their ticks each from
 /// their own start, so a region that takes an entity in keeps its counters in its own
 /// ticks and writes them as of each record again; the game freezes them while an entity
-/// does not tick, and so do these (the plan, section 11).
+/// does not tick, and so do these (`docs/groundwork/n2-plan.md`, section 11).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entity {
     pub key: EntityId,
@@ -35,8 +35,14 @@ pub struct Entity {
     pub on_ground: bool,
     /// Changes of holder behind it (`docs/adr/0028-entities.md`, section 6).
     pub hops: u32,
-    /// The ticks it has ticked.
-    pub age: u32,
+    /// The ticks it has ticked: never lowered, but by a restore after a crash, which
+    /// lives again the ticks since the entity's last record. What it draws in its own
+    /// tick is keyed by it, and so are the game's counters that count its ticks
+    /// (`docs/groundwork/n7-plan.md`, section 11.3).
+    pub lived: u32,
+    /// `lived` at its last fresh load, the game's reload of its chunk: the game's
+    /// `tickCount` is `lived - fresh_at`, which the game starts again at 0 at every load.
+    pub fresh_at: u32,
     /// How far it has fallen since it last stood on something (the game's
     /// `fallDistance`, a `double`).
     pub fall_distance: f64,
@@ -52,6 +58,12 @@ impl Entity {
     /// The chunk its position is in, by the game's rule (the floor of x and z over 16).
     pub fn chunk(&self) -> ChunkPos {
         ChunkPos::containing(self.position[0], self.position[2])
+    }
+
+    /// The game's `tickCount`: the ticks it has ticked since its chunk was last loaded
+    /// fresh.
+    pub fn tick_count(&self) -> u32 {
+        self.lived.saturating_sub(self.fresh_at)
     }
 }
 
@@ -69,7 +81,8 @@ impl PartialEq for Entity {
             && self.pitch.to_bits() == other.pitch.to_bits()
             && self.on_ground == other.on_ground
             && self.hops == other.hops
-            && self.age == other.age
+            && self.lived == other.lived
+            && self.fresh_at == other.fresh_at
             && self.fall_distance.to_bits() == other.fall_distance.to_bits()
             && self.fire_ticks == other.fire_ticks
             && self.riding == other.riding
@@ -212,6 +225,9 @@ pub enum EntityData {
         thrower: Option<Uuid>,
         /// What it can still take before it is destroyed (the game's 5).
         health: i16,
+        /// What `lived` is ahead of its age, the game's `ItemEntity.age`, which a merge
+        /// with a younger item lowers: the age is `lived - age_offset`.
+        age_offset: u32,
     },
     /// A block falling (`FallingBlockEntity`).
     FallingBlock {
@@ -346,9 +362,16 @@ impl EntityChange {
 pub enum EntityField {
     Position([f64; 3]),
     Motion([f64; 3]),
-    Rotation { yaw: f32, pitch: f32 },
+    Rotation {
+        yaw: f32,
+        pitch: f32,
+    },
     OnGround(bool),
-    Age(u32),
+    Lived(u32),
+    FreshAt(u32),
+    /// Its changes of holder, raised at a take-in without its record whole
+    /// (`docs/groundwork/n7-plan.md`, section 10, item 1).
+    Hops(u32),
     Data(EntityData),
     FallDistance(f64),
     FireTicks(i32),
@@ -370,7 +393,9 @@ impl PartialEq for EntityField {
                 },
             ) => yaw.to_bits() == other_yaw.to_bits() && pitch.to_bits() == other_pitch.to_bits(),
             (Self::OnGround(a), Self::OnGround(b)) => a == b,
-            (Self::Age(a), Self::Age(b)) => a == b,
+            (Self::Lived(a), Self::Lived(b))
+            | (Self::FreshAt(a), Self::FreshAt(b))
+            | (Self::Hops(a), Self::Hops(b)) => a == b,
             (Self::Data(a), Self::Data(b)) => a == b,
             (Self::FallDistance(a), Self::FallDistance(b)) => a.to_bits() == b.to_bits(),
             (Self::FireTicks(a), Self::FireTicks(b)) => a == b,
@@ -390,7 +415,9 @@ impl EntityField {
             Self::Motion(motion) => entity.motion = *motion,
             Self::Rotation { yaw, pitch } => (entity.yaw, entity.pitch) = (*yaw, *pitch),
             Self::OnGround(on_ground) => entity.on_ground = *on_ground,
-            Self::Age(age) => entity.age = *age,
+            Self::Lived(lived) => entity.lived = *lived,
+            Self::FreshAt(fresh_at) => entity.fresh_at = *fresh_at,
+            Self::Hops(hops) => entity.hops = *hops,
             Self::Data(data) => entity.data = data.clone(),
             Self::FallDistance(distance) => entity.fall_distance = *distance,
             Self::FireTicks(ticks) => entity.fire_ticks = *ticks,
@@ -602,21 +629,25 @@ mod tests {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::Item {
                 stack: ItemStack { item: 1, count: 1 },
                 pick_up_delay: 40,
                 thrower: None,
                 health: 5,
+                age_offset: 0,
             },
             fall_distance: 0.0,
             fire_ticks: -1,
             riding: Default::default(),
         };
         EntityField::Position([3.25, -60.0, -0.5]).set(&mut entity);
-        EntityField::Age(12).set(&mut entity);
+        EntityField::Lived(12).set(&mut entity);
+        EntityField::FreshAt(10).set(&mut entity);
+        EntityField::Hops(3).set(&mut entity);
         assert_eq!(entity.position, [3.25, -60.0, -0.5]);
-        assert_eq!(entity.age, 12);
+        assert_eq!((entity.lived, entity.tick_count(), entity.hops), (12, 2, 3));
         assert_eq!(entity.chunk(), ChunkPos::new(0, -1));
     }
 }

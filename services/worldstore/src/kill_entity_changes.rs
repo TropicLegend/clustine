@@ -52,7 +52,10 @@ fn entity_changes(tick: u64) -> Vec<EntityChange> {
             EntityChange::Whole(second()),
         ],
         3 => vec![EntityChange::Gone(first().key)],
-        4 => vec![EntityChange::Set(second().key, vec![EntityField::Age(40)])],
+        4 => vec![EntityChange::Set(
+            second().key,
+            vec![EntityField::Lived(40)],
+        )],
         5 => vec![EntityChange::Gone(second().key)],
         6 => vec![EntityChange::Whole(third())],
         _ => unreachable!(),

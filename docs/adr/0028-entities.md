@@ -605,3 +605,21 @@ Step N5 built section 5's "Vehicles and riders" as its plan's sections 7 and 8 h
 - Effects on entities (section 7) come with N5 for a player's hits and uses of an
   entity across a line; a mount there is the player's hand-over, and an armour stand's
   take does nothing across a line (named).
+
+## Amended with step N7 (2026-10-19)
+
+Step N7's plan (`docs/groundwork/n7-plan.md`, section 11) amends this record as its
+parts land:
+
+- **Counters (section 3).** An entity's `age` is `lived`, the ticks it has ticked, never
+  lowered but by a crash's restore, which lives again the ticks since its last record;
+  beside it `fresh_at`, `lived` at its last fresh load, so that the game's `tickCount` is
+  `lived - fresh_at`. An item keeps its own age as what `lived` is ahead of it, which a
+  merge with a younger item raises. A change may set an entity's hops alone (a
+  `Set` of `Hops`). Items keep the region's tick as their `tickCount` (N4's D3), so that a
+  resting item and its restore move on the same ticks.
+- **Randomness (section 4).** An entity's own stream is keyed by its key and the `lived`
+  its tick began with, which rises wherever it is held, where a region's tick does not;
+  what is drawn for it outside its own tick (its birth, a hit, a player's throw) comes
+  from a stream aside, keyed by its key, its `lived` and the region's tick, by a mark of
+  its own, so that an entity's first tick never draws again what its birth drew.

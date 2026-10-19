@@ -20,7 +20,6 @@ use clustine_world::{
 use uuid::Uuid;
 
 use super::Region;
-use super::random_ticks::Random;
 use crate::api::{EntityKind, EntityState, ItemStack, Pose, RegionEvent, TickOutput};
 
 /// How far above a player's feet their eyes are, standing and crouching: the game's
@@ -261,6 +260,7 @@ impl Region {
         position: ChunkPos,
         output: &mut TickOutput,
     ) {
+        let before = self.ticking.replace((entity.key, entity.lived));
         match &entity.data {
             EntityData::Item { .. } => self.tick_item(entity, position, output),
             EntityData::FallingBlock { .. } => {
@@ -275,6 +275,7 @@ impl Region {
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
             EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
         }
+        self.ticking = before;
     }
 
     /// Forgets the entities of the chunk at `position`, which is no longer loaded.
@@ -380,7 +381,7 @@ impl Region {
                 continue;
             };
             let fields = vec![
-                EntityField::Age(entity.age),
+                EntityField::Lived(entity.lived),
                 EntityField::Data(entity.data.clone()),
             ];
             output
@@ -395,15 +396,11 @@ impl Region {
         output.entities_ageing.dedup();
     }
 
-    /// `count` floats from the stream of the entity `key` in this tick, on from what it
-    /// has drawn in the tick already.
+    /// `count` floats from the stream of the entity `key` now, on from what it has
+    /// drawn in the tick already ([`Region::entity_stream`]).
     fn draw_floats<const N: usize>(&mut self, key: EntityId) -> [f32; N] {
-        let drawn = self.entity_draws.entry(key).or_default();
-        let mut random = Random::of_entity(self.config.seed, key, self.tick);
-        for _ in 0..*drawn {
-            random.next_u64();
-        }
-        *drawn += N as u64;
+        let mut random = self.entity_stream(key).random;
+        self.entity_drew(key, N as u64);
         std::array::from_fn(|_| random.next_float())
     }
 
@@ -504,7 +501,7 @@ impl Region {
         // The item's own draws at its birth: its UUID (the game's two longs), the bob
         // of its model, which only clients show, and its yaw (`ItemEntity`'s
         // constructors).
-        let mut own = Random::of_entity(self.config.seed, key, self.tick);
+        let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _bob = own.next_float();
         let yaw = own.next_float() * 360.0;
@@ -518,12 +515,14 @@ impl Region {
             pitch: 0.0,
             on_ground: false,
             hops: 0,
-            age: 0,
+            lived: 0,
+            fresh_at: 0,
             data: EntityData::Item {
                 stack,
                 pick_up_delay: THROWN_PICK_UP_DELAY,
                 thrower: Some(player.0),
                 health: 5,
+                age_offset: 0,
             },
             fall_distance: 0.0,
             // The game's field starts at 0.
@@ -533,7 +532,7 @@ impl Region {
         // `LivingEntity.drop` swings the main hand with `SwingAnimation.DEFAULT`.
         self.swing_arm(player, false, clustine_data::Swing::DEFAULT, false, output);
         if here {
-            self.entity_draws.insert(key, 4);
+            self.entity_drew(key, 4);
             self.add_fresh_entity(entity, output);
         } else {
             self.send_made(entity, output);

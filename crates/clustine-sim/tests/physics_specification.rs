@@ -29,6 +29,21 @@ use clustine_world::{
 };
 use uuid::Uuid;
 
+/// The game's `ItemEntity.age` of an item's record: the ticks it has lived less what a
+/// merge with a younger item took off.
+trait Aged {
+    fn age(&self) -> u32;
+}
+
+impl Aged for Entity {
+    fn age(&self) -> u32 {
+        match self.data {
+            EntityData::Item { age_offset, .. } => self.lived - age_offset,
+            _ => self.lived,
+        }
+    }
+}
+
 const EDGE: EdgeId = EdgeId(7);
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
 const FEET: Vec3 = Vec3::new(0.5, -60.0, 0.5);
@@ -259,12 +274,14 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], on_ground: bool) -> Entity
         pitch: 0.0,
         on_ground,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::Item {
             stack: stack(items::DIRT, 1),
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
+            age_offset: 0,
         },
         fall_distance: 0.0,
         fire_ticks: 0,
@@ -274,12 +291,13 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], on_ground: bool) -> Entity
 
 fn item_of(n: u32, position: [f64; 3], of: ItemStack, delay: u16, age: u32) -> Entity {
     let mut entity = item(n, position, [0.0; 3], true);
-    entity.age = age;
+    entity.lived = age;
     entity.data = EntityData::Item {
         stack: of,
         pick_up_delay: delay,
         thrower: None,
         health: 5,
+        age_offset: 0,
     };
     entity
 }
@@ -297,7 +315,8 @@ fn falling(n: u32, position: [f64; 3], block: BlockState) -> Entity {
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         data: EntityData::FallingBlock {
             state: block.0,
             time: 0,
@@ -1046,6 +1065,7 @@ fn lava_burns_an_item_in_two_ticks_and_netherite_never() {
         pick_up_delay: 32_767,
         thrower: None,
         health: 5,
+        age_offset: 0,
     };
     let (mut region, _) = scene(&placed, vec![ingot]);
     for _ in 0..100 {
@@ -1145,9 +1165,9 @@ fn two_items_merge_by_the_game_s_rules_into_the_larger_with_the_larger_delay_and
         let (target, source) = if lower_absorbs { (&a, &b) } else { (&b, &a) };
         // The lower key ticks first: its delay has gone down by one when it merges.
         let (expected_delay, expected_age) = if lower_absorbs {
-            ((delay_a - 1).max(delay_b), a.age.min(b.age) + 1)
+            ((delay_a - 1).max(delay_b), a.age().min(b.age()) + 1)
         } else {
-            ((delay_a - 1).max(delay_b) - 1, b.age.min(a.age) + 1)
+            ((delay_a - 1).max(delay_b) - 1, b.age().min(a.age()) + 1)
         };
         let merged = record(&region, target.key).expect("the larger stays");
         assert!(record(&region, source.key).is_none(), "the smaller is gone");
@@ -1156,7 +1176,7 @@ fn two_items_merge_by_the_game_s_rules_into_the_larger_with_the_larger_delay_and
         let case = format!("{low} and {high}");
         assert_eq!(merged_stack, stack(items::DIRT, low + high), "{case}");
         assert_eq!(merged_delay, expected_delay, "{case}");
-        assert_eq!(merged.age, expected_age, "{case}");
+        assert_eq!(merged.age(), expected_age, "{case}");
         assert!(gone_in(&output, source.key), "{case}");
         assert!(
             output
@@ -1212,11 +1232,12 @@ fn a_merge_commits_the_merged_age_and_delay_as_the_tick_leaves_them() {
         }
         let (_, delay_after, _) = data_of(&after);
         let (_, delay_replayed, _) = data_of(&replayed);
-        if (replayed.age, delay_replayed) != (after.age, delay_after) {
+        if (replayed.age(), delay_replayed) != (after.age(), delay_after) {
             wrong.push(format!(
                 "{low} and {high}: the commit gives age {} and delay {delay_replayed}, \
                  the region has {} and {delay_after}",
-                replayed.age, after.age
+                replayed.age(),
+                after.age()
             ));
         }
     }
@@ -1305,10 +1326,10 @@ fn items_merge_only_by_the_game_s_rules() {
 fn an_item_despawns_in_the_tick_its_age_reaches_6000() {
     let old = item_of(40, [8.5, FLOOR, 8.5], stack(items::DIRT, 1), 32_000, 5990);
     let (mut region, _) = scene(&[], vec![old.clone()]);
-    assert_eq!(record(&region, old.key).expect("young enough").age, 5991);
+    assert_eq!(record(&region, old.key).expect("young enough").age(), 5991);
     for age in 5992..6000 {
         let output = idle(&mut region);
-        assert_eq!(record(&region, old.key).expect("young enough").age, age);
+        assert_eq!(record(&region, old.key).expect("young enough").age(), age);
         assert!(!gone_in(&output, old.key));
     }
     let last = idle(&mut region);
@@ -1349,7 +1370,7 @@ fn a_resting_item_s_age_is_in_the_saved_chunk_without_a_commit() {
             .expect("saved with its chunk");
         assert_eq!(*kept, now);
     }
-    assert_eq!(record(&region, lying.key).expect("there").age, 151);
+    assert_eq!(record(&region, lying.key).expect("there").age(), 151);
 }
 
 // ------------------------------------------------------------------------------------
@@ -1766,6 +1787,7 @@ fn sand_that_cannot_land_drops_one_item_of_itself_where_it_stopped() {
             pick_up_delay: 10,
             thrower: None,
             health: 5,
+            age_offset: 0,
         }
     );
     assert_eq!(motion[1], 0.2);
@@ -1855,6 +1877,7 @@ fn assert_popped(state: &clustine_sim::api::EntityState, at: BlockPos, what: Ite
             pick_up_delay: 10,
             thrower: None,
             health: 5,
+            age_offset: 0,
         }
     );
     assert_eq!(motion[1], 0.2);

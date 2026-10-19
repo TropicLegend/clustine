@@ -54,7 +54,8 @@ fn stand(n: u64, position: [f64; 3], equipment: Vec<(u8, ItemStack)>) -> Entity 
         pitch: 0.0,
         on_ground: false,
         hops: 0,
-        age: 1,
+        lived: 1,
+        fresh_at: 0,
         fall_distance: 0.0,
         fire_ticks: 0,
         riding: Default::default(),
@@ -179,7 +180,7 @@ fn a_stand_is_placed_on_the_clicked_top_and_the_creative_player_keeps_the_item()
     assert_eq!(placed.position, [3.5, -60.0, 3.5]);
     assert_eq!(placed.yaw, -180.0);
     // Made before the entities' phase, it ticked in the tick it was made.
-    assert_eq!(placed.age, 1);
+    assert_eq!(placed.lived, 1);
     let EntityData::ArmorStand {
         flags,
         health,
@@ -235,6 +236,7 @@ fn a_stand_is_not_placed_on_an_underside_nor_where_an_item_or_a_block_is_in_the_
         pick_up_delay: 32_767,
         thrower: None,
         health: 5,
+        age_offset: 0,
     };
     lay(&mut region, &lying);
     checked(
@@ -620,10 +622,12 @@ fn a_survival_hit_is_a_first_hit_unless_one_came_within_five_ticks_and_the_secon
     let helmet_at = at(items::DIAMOND_HELMET);
     // `popResource`: within a quarter of the block's centre, the item's feet half its
     // height below that; the items, made before the entities' phase, have since made
-    // their first move, at most the 0.16 their throw up and gravity leave them.
+    // their first move: sideways at most the 0.1 of their motion's draw
+    // (`nextDouble() * 0.2 - 0.1`), up at most the 0.16 their throw up and gravity leave
+    // them.
     for (at, block_y) in [(stand_at, -60.0_f64), (helmet_at, -59.0)] {
-        assert!((at[0] - 8.5).abs() <= 0.25 + 0.02, "{at:?}");
-        assert!((at[2] - 8.5).abs() <= 0.25 + 0.02, "{at:?}");
+        assert!((at[0] - 8.5).abs() <= 0.25 + 0.1, "{at:?}");
+        assert!((at[2] - 8.5).abs() <= 0.25 + 0.1, "{at:?}");
         let low = block_y + 0.5 - 0.125 - 0.25;
         assert!(at[1] >= low && at[1] <= low + 0.5 + 0.16, "{at:?}");
     }
