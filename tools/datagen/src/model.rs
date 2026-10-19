@@ -105,7 +105,17 @@ pub struct ItemComponents {
     /// `minecraft:equippable`: the slot it is worn in, as the ordinal of the game's
     /// `EquipmentSlot`, and the sound putting it on plays, by its name.
     pub equippable: Option<(u8, String)>,
+    /// `minecraft:attack_animation`: its kind's id and its duration, `None` where the
+    /// component has the codec's defaults (`SwingAnimation.DEFAULT`).
+    pub attack_animation: Option<(u8, u8)>,
 }
+
+/// The game's `SwingAnimationType`s by their serialised names, in the order of their
+/// ids.
+const SWING_KINDS: [&str; 3] = ["none", "whack", "stab"];
+
+/// `SwingAnimation.DEFAULT`: what the component's codec gives for what it leaves out.
+const DEFAULT_SWING: (u8, u8) = (1, 6);
 
 /// The game's `EquipmentSlot`s by their serialised names, in the order of their
 /// ordinals.
@@ -190,11 +200,44 @@ pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
             Some((slot as u8, sound))
         }
     };
+    let attack_animation = match components.get("minecraft:attack_animation") {
+        None => None,
+        Some(value) => {
+            let object = value
+                .as_object()
+                .context("an attack animation that is not an object")?;
+            let kind = match object.get("type") {
+                None => DEFAULT_SWING.0,
+                Some(kind) => {
+                    let kind = kind
+                        .as_str()
+                        .context("an attack animation's type that is not a name")?;
+                    SWING_KINDS
+                        .iter()
+                        .position(|name| *name == kind)
+                        .with_context(|| format!("a swing animation {kind}"))?
+                        as u8
+                }
+            };
+            let duration = match object.get("duration") {
+                None => DEFAULT_SWING.1,
+                Some(duration) => {
+                    let duration = duration
+                        .as_u64()
+                        .context("an attack animation's duration that is not a number")?;
+                    u8::try_from(duration)
+                        .with_context(|| format!("an attack animation of {duration} ticks"))?
+                }
+            };
+            Some((kind, duration)).filter(|swing| *swing != DEFAULT_SWING)
+        }
+    };
     Ok(ItemComponents {
         max_stack_size: max_stack_size as u8,
         max_damage,
         damage_resistant,
         equippable,
+        attack_animation,
     })
 }
 

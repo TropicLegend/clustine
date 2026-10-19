@@ -1058,7 +1058,7 @@ fn item_components(data: &GameData) -> Result<String> {
         data.items.len()
     );
     let mut out = String::new();
-    writeln!(out, "use crate::{{Equippable, ItemComponents}};\n")?;
+    writeln!(out, "use crate::{{Equippable, ItemComponents, Swing}};\n")?;
     writeln!(out, "/// By item id.")?;
     writeln!(
         out,
@@ -1085,9 +1085,13 @@ fn item_components(data: &GameData) -> Result<String> {
             }
             None => "None".to_owned(),
         };
+        let attack_animation = match components.attack_animation {
+            Some((kind, duration)) => format!("Swing {{ kind: {kind}, duration: {duration} }}"),
+            None => "Swing::DEFAULT".to_owned(),
+        };
         writeln!(
             out,
-            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable} }}, // {}",
+            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable}, attack_animation: {attack_animation} }}, // {}",
             components.max_stack_size,
             item.name.strip_prefix("minecraft:").unwrap_or(&item.name)
         )?;

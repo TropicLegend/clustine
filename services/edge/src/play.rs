@@ -291,6 +291,9 @@ async fn pump(
                         let flying = packet.is_flying();
                         send_input(shared, client, PlayerInput::SetFlying { flying }).await?;
                     }
+                    ServerboundPlay::Punch(_) => {
+                        send_input(shared, client, PlayerInput::Punch).await?;
+                    }
                     ServerboundPlay::PickItemFromEntity(packet) => {
                         // Answered by the player's own region from the entity as it has
                         // it. `includeData` gives an operator an avatar's profile, which

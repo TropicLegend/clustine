@@ -478,7 +478,6 @@ impl Region {
         }
         let pose = thrower.pose;
         let thrower_key = thrower.entity_id;
-        let thrower_chunk = thrower.chunk();
         // A player who flies does not crouch, whatever the key says.
         let eyes = if crouching && !thrower.flying {
             CROUCHING_EYES
@@ -531,10 +530,8 @@ impl Region {
             fire_ticks: 0,
             riding: Default::default(),
         };
-        output.events.push(RegionEvent::ArmSwung {
-            entity: thrower_key,
-            chunk: thrower_chunk,
-        });
+        // `LivingEntity.drop` swings the main hand with `SwingAnimation.DEFAULT`.
+        self.swing_arm(player, false, clustine_data::Swing::DEFAULT, false, output);
         if here {
             self.entity_draws.insert(key, 4);
             self.add_fresh_entity(entity, output);

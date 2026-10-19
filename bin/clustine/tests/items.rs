@@ -598,7 +598,7 @@ async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_serve
     let swings_before = watcher
         .stats
         .received
-        .get(clientbound::NAMES[clientbound::ANIMATE as usize])
+        .get(clientbound::NAMES[clientbound::SWING_ANIMATION as usize])
         .copied()
         .unwrap_or(0);
 
@@ -617,12 +617,12 @@ async fn a_thrown_item_is_seen_by_both_players_and_is_there_once_after_the_serve
 
     let seen = sees(&mut watcher, own.spawn.uuid).await;
     assert_near(seen.position, thrown);
-    // The thrower's arm swings for the watcher (`Animate`).
+    // The thrower's arm swings for the watcher (`SwingAnimation`).
     watcher
         .wait_until(PATIENCE, |bot| {
             bot.stats
                 .received
-                .get(clientbound::NAMES[clientbound::ANIMATE as usize])
+                .get(clientbound::NAMES[clientbound::SWING_ANIMATION as usize])
                 .copied()
                 .unwrap_or(0)
                 > swings_before

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 
-use clustine_data::{BlockState, ITEMS, blocks};
+use clustine_data::{BlockState, ITEMS, ItemComponents, Swing, blocks};
 use clustine_world::{
     BlockPos, Chunk, ChunkArea, ChunkPos, Double, EdgeId, Effect, EntityId, EntityIds, EntityUse,
     Float, PlayerId, RegionId, Vec3,
@@ -280,6 +280,10 @@ struct Player {
     menu: Option<crate::state::Menu>,
     /// What the game keeps of their steps and fall, in memory only (`vibrations.rs`).
     steps: vibrations::Steps,
+    /// The swing of an arm under way (`LivingEntity.SwingState`): the tick it began in
+    /// and how many it lasts. In memory only, as `steps`: a restore or a hand-over
+    /// forgets a swing that lasts a second at most.
+    swinging: Option<(u64, u8)>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1465,6 +1469,7 @@ impl Region {
             kept: transfer.kept.clone(),
             menu: None,
             steps: Default::default(),
+            swinging: None,
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1586,6 +1591,7 @@ impl Region {
             kept: Vec::new(),
             menu: None,
             steps: Default::default(),
+            swinging: None,
         };
         self.enter(id, player, attempt, output);
     }
@@ -1942,6 +1948,14 @@ impl Region {
             }
             PlayerInput::OpenVehicleInventory => self.open_vehicle_inventory(id, output),
             PlayerInput::MenuResync => self.menu_resync(id, output),
+            // `handlePunch`: the main hand swings with the attack animation of what it
+            // holds, for everyone tracking the player.
+            PlayerInput::Punch => {
+                let swing = held.map_or(Swing::DEFAULT, |stack| {
+                    ItemComponents::of(stack.item).attack_animation
+                });
+                self.swing_arm(id, false, swing, false, output);
+            }
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
@@ -2117,10 +2131,12 @@ impl Region {
                     }
                     Clicked::Used { changes, flags } => {
                         self.use_block(&changes, flags, action.player, output);
+                        self.swung_using(action, click.position, output);
                         return None;
                     }
                     Clicked::ByRule { position, face } => {
                         self.use_by_rule(position, face, action.player, output);
+                        self.swung_using(action, click.position, output);
                         return None;
                     }
                     Clicked::Place {
@@ -2168,9 +2184,67 @@ impl Region {
                 self.placed_by_player(target, output);
                 self.play_placed(target, action.player, output);
                 self.ask_lends_for(target, output);
+                self.swung_using(action, target, output);
             }
         }
         None
+    }
+
+    /// The arm of the player of `action` swings for everyone else, as the game swings it
+    /// after a use of a block or a placing that succeeded (`handleUseItemOn`: the
+    /// interact animation, which no item of 26.3 changes from `SwingAnimation.DEFAULT`).
+    /// Where the player is another region's, the swing is reported from the chunk of
+    /// `at`, which an edge that shows the player watches too, since it is within their
+    /// reach.
+    fn swung_using(&mut self, action: &RemoteAction, at: BlockPos, output: &mut TickOutput) {
+        let off_hand = matches!(action.step, RemoteStep::OffHandOn { .. });
+        if self.players.contains_key(&action.player) {
+            self.swing_arm(action.player, off_hand, Swing::DEFAULT, false, output);
+        } else {
+            // The player's swing under way is their region's, so a swing of a use across
+            // a line is shown whether or not the last one is half done.
+            output.events.push(RegionEvent::ArmSwung {
+                entity: action.entity,
+                chunk: at.chunk(),
+                off_hand,
+                swing: Swing::DEFAULT,
+                own: false,
+            });
+        }
+    }
+
+    /// Swings an arm of the player `id`, here, if their last swing lets it begin
+    /// (`LivingEntity.swing`, `SwingState.startIfAble`): the game starts a swing where
+    /// none is under way, in the tick the last began, or once the last is more than half
+    /// done, and otherwise shows nothing. The player's tick counts a swing's ticks after
+    /// their inputs, so the inputs of the `k`th tick after it began read `k`; it is over
+    /// once `k` passes its length.
+    pub(super) fn swing_arm(
+        &mut self,
+        id: PlayerId,
+        off_hand: bool,
+        swing: Swing,
+        own: bool,
+        output: &mut TickOutput,
+    ) {
+        let tick = self.tick;
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        if let Some((began, duration)) = player.swinging {
+            let ticks = tick - began;
+            if ticks > 0 && ticks <= u64::from(duration / 2) {
+                return;
+            }
+        }
+        player.swinging = Some((tick, swing.duration));
+        output.events.push(RegionEvent::ArmSwung {
+            entity: player.entity_id,
+            chunk: player.chunk(),
+            off_hand,
+            swing,
+            own,
+        });
     }
 
     /// `BlockItem.place`'s sound of the block placed at `pos` by `player`: its place
@@ -2905,6 +2979,7 @@ impl Player {
             kept: state.kept,
             menu: state.menu,
             steps: Default::default(),
+            swinging: None,
         }
     }
 
@@ -3076,6 +3151,7 @@ mod tests {
     mod scheduled_ticks;
     mod sculk;
     mod stands;
+    mod swings;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
@@ -4336,7 +4412,9 @@ mod tests {
             .filter(|event| {
                 !matches!(
                     event,
-                    RegionEvent::BlockDestroyed { .. } | RegionEvent::Sound { .. }
+                    RegionEvent::BlockDestroyed { .. }
+                        | RegionEvent::Sound { .. }
+                        | RegionEvent::ArmSwung { .. }
                 ) && !is_drop(event)
             })
             .cloned()

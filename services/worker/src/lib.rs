@@ -3565,7 +3565,9 @@ impl RegionRunner {
                         _ => return false,
                     }
                 }
-                PlayerInput::OpenVehicleInventory | PlayerInput::MenuResync => return false,
+                PlayerInput::OpenVehicleInventory
+                | PlayerInput::MenuResync
+                | PlayerInput::Punch => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

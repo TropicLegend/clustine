@@ -242,13 +242,24 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
         })
         .collect();
     let [
-        RegionEvent::ArmSwung { entity, chunk },
+        RegionEvent::ArmSwung {
+            entity,
+            chunk,
+            off_hand,
+            swing,
+            own,
+        },
         RegionEvent::EntitySpawned(state),
     ] = &shown[..]
     else {
         panic!("a swing and a spawn: {shown:?}");
     };
     assert_eq!((*entity, *chunk), (PLAYER_KEY, ORIGIN));
+    // `LivingEntity.drop`: the main hand, the default swing, for the others only.
+    assert_eq!(
+        (*off_hand, *swing, *own),
+        (false, clustine_data::Swing::DEFAULT, false)
+    );
     assert_eq!(state.entity, FIRST_ITEM);
     assert_eq!(state.pose.position, Vec3::new(0.5, y, 0.5));
     assert_eq!(state.pose.yaw, item.yaw);

@@ -3,7 +3,7 @@
 //! These types cross the boundary between the worker and the edge, so they have to stay
 //! serialisable and free of anything specific to the Minecraft protocol.
 
-use clustine_data::BlockState;
+use clustine_data::{BlockState, Swing};
 use clustine_world::{
     Arrival, BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, Entity, EntityChange,
     EntityData, EntityId, FiledEffect, PlayerId, RegionId, Vec3,
@@ -382,6 +382,9 @@ pub enum PlayerInput {
     /// [`PlayerEvent::NoMenu`] (section 7 item 7). An input, so that the region stays a
     /// function of its inputs.
     MenuResync,
+    /// The player swung their arm at nothing they hit (`punch`): at air, or at a block
+    /// they begin to break. Everyone else near sees the arm swing.
+    Punch,
 }
 
 /// The kinds of click in a menu (the game's `ContainerInput`).
@@ -1067,10 +1070,19 @@ pub enum RegionEvent {
         /// position when it crossed a chunk border.
         previous_chunk: ChunkPos,
     },
-    /// The entity, a player in `chunk`, swung their main arm, as the game's
-    /// `LivingEntity.swing` shows it to everyone but the player, whose client swings it
-    /// already: when they throw an item.
-    ArmSwung { entity: EntityId, chunk: ChunkPos },
+    /// The entity, a player in `chunk`, swung an arm, as the game's `LivingEntity.swing`
+    /// shows it to everyone but the player, whose client swings it already: when they
+    /// punch, throw an item, place a block or use one. `off_hand` is the arm, `swing`
+    /// how it moves (a spear stabs), and `own` whether the player's own client is shown
+    /// it too, as for a use whose result is the game's `SUCCESS_SERVER`, which the client
+    /// did not foresee.
+    ArmSwung {
+        entity: EntityId,
+        chunk: ChunkPos,
+        off_hand: bool,
+        swing: Swing,
+        own: bool,
+    },
     /// An entity other than a player as its tick left it, reported in a tick that
     /// changed what an edge shows of it or set one of its flags for the edge
     /// (`docs/groundwork/n4-plan.md`, section 7; the brief's section 9).

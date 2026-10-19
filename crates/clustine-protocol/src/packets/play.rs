@@ -2381,6 +2381,27 @@ impl Decode for PaddleBoat {
     }
 }
 
+/// The player swung their arm at nothing they hit (`ServerboundPunchPacket`): a click at
+/// air, or at a block they begin to break. No fields: the game swings the main hand with
+/// the held item's attack animation for everyone tracking the player
+/// (`handlePunch`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Punch;
+
+impl Packet for Punch {
+    const ID: i32 = serverbound::PUNCH;
+}
+
+impl Encode for Punch {
+    fn encode(&self, _: &mut Writer) {}
+}
+
+impl Decode for Punch {
+    fn decode(_: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
 /// The player picked the item of an entity with the middle button
 /// (`ServerboundPickItemFromEntityPacket`): a minecart, a boat, an armour stand, a
 /// painting or what a frame holds.
@@ -3043,6 +3064,7 @@ packet_set! {
         ServerboundMoveVehicle,
         PaddleBoat,
         PickItemFromEntity,
+        Punch,
         PlayerCommand,
         ContainerClick,
         ServerboundContainerClose,
@@ -3336,14 +3358,16 @@ impl Decode for SetEquipment {
     }
 }
 
-/// The actions of [`Animate`], as the game's `ClientboundAnimatePacket` numbers them.
+/// The actions of [`Animate`], as the game's `ClientboundAnimatePacket` numbers them in
+/// 26.3. A swing of the arm is no longer one of them: it is [`SwingAnimation`].
 pub mod animation {
-    pub const SWING_MAIN_HAND: u8 = 0;
-    pub const SWING_OFF_HAND: u8 = 3;
+    pub const WAKE_UP: u8 = 0;
+    pub const CRITICAL_HIT: u8 = 1;
+    pub const MAGIC_CRITICAL_HIT: u8 = 2;
 }
 
-/// Shows an entity doing something brief: a player's arm swinging (the game's
-/// `ClientboundAnimatePacket`).
+/// Shows an entity doing something brief: a player waking, the sparks of a critical hit
+/// (the game's `ClientboundAnimatePacket`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Animate {
     pub entity_id: i32,
@@ -3737,7 +3761,7 @@ mod tests {
         assert_round_trip(
             Animate {
                 entity_id: 3,
-                action: animation::SWING_MAIN_HAND,
+                action: animation::CRITICAL_HIT,
             },
             Set::decode,
             Set::Animate,
@@ -5149,6 +5173,29 @@ mod tests {
         assert_eq!(one(8, EntityDataValue::DyeColor(15)), with(&[8, 43, 15]));
         // A painting variant sent whole is not modelled.
         assert!(ClientboundPlay::decode(&[0x65, 1, 9, 34, 0, 0xFF]).is_err());
+    }
+
+    /// A punch is its id alone (`ServerboundPunchPacket`'s codec is `StreamCodec.unit`),
+    /// and a swing of the arm is four VarInts: the entity, the hand, the kind and the
+    /// duration (`ClientboundSwingAnimationPacket`).
+    #[test]
+    fn a_punch_is_its_id_alone_and_a_swing_four_numbers() {
+        assert_eq!(Punch::ID, 46);
+        assert_eq!(
+            ServerboundPlay::decode(&[46]),
+            Ok(ServerboundPlay::Punch(Punch))
+        );
+        assert_eq!(crate::packets::encode(&Punch), [46]);
+        let swing = SwingAnimation {
+            entity_id: 300,
+            hand: 0,
+            kind: swing_animation::STAB,
+            duration: 19,
+        };
+        assert_eq!(
+            crate::packets::encode(&swing),
+            [SwingAnimation::ID as u8, 0xAC, 0x02, 0, 2, 19]
+        );
     }
 
     #[test]

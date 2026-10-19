@@ -957,12 +957,14 @@ impl Region {
         // `SUCCESS_SERVER`: the arm swings for those who see the player.
         if let Some(hand) = hand
             && hand.main
-            && let Some(record) = self.players.get(&hand.player)
         {
-            output.events.push(RegionEvent::ArmSwung {
-                entity: record.entity_id,
-                chunk: record.chunk(),
-            });
+            self.swing_arm(
+                hand.player,
+                false,
+                clustine_data::Swing::DEFAULT,
+                true,
+                output,
+            );
         }
     }
 

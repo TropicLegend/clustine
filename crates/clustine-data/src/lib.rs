@@ -332,6 +332,33 @@ pub struct ItemComponents {
     /// `minecraft:equippable`, for an item that is worn or held in a slot of its own: an
     /// armour stand puts it there (`getEquipmentSlotForItem`).
     pub equippable: Option<Equippable>,
+    /// `minecraft:attack_animation`: how others see the player's arm swing when they
+    /// punch with the item in hand (`ItemStack.getAttackAnimation`). A spear stabs.
+    pub attack_animation: Swing,
+}
+
+/// A swing of the arm, as `ClientboundSwingAnimationPacket` shows it: the game's
+/// `SwingAnimation` component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Swing {
+    /// The game's `SwingAnimationType` by its id: [`Swing::NONE`], [`Swing::WHACK`] or
+    /// [`Swing::STAB`].
+    pub kind: u8,
+    /// In ticks.
+    pub duration: u8,
+}
+
+impl Swing {
+    pub const NONE: u8 = 0;
+    pub const WHACK: u8 = 1;
+    pub const STAB: u8 = 2;
+
+    /// `SwingAnimation.DEFAULT`, what an item without its own animation shows, and what
+    /// a use or a throw shows.
+    pub const DEFAULT: Swing = Swing {
+        kind: Self::WHACK,
+        duration: 6,
+    };
 }
 
 /// An item's `minecraft:equippable`, as far as Clustine reads it.

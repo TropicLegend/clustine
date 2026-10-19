@@ -17,20 +17,20 @@ use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use clustine_data::{BlockState, entity_types, synced_registry};
+use clustine_data::{BlockState, Swing, entity_types, synced_registry};
 use clustine_protocol::codec::Position;
 use clustine_protocol::item as protocol;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    AcknowledgeBlockChange, AddTransientBlock, Animate, BlockEvent, BlockUpdate,
-    ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue,
-    EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove,
-    PlayerInfoUpdate, PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
-    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity,
+    AcknowledgeBlockChange, AddTransientBlock, BlockEvent, BlockUpdate, ChunkBatchFinished,
+    ChunkBatchStart, ClientboundMoveVehicle, Disconnect, EntityDataValue, EntityEvent, GameEvent,
+    LevelEvent, Login, PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
+    PositionPath, RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
+    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetHeadRotation,
+    SetHeldSlot, SetPassengers, SetPlayerInventory, Sound, SpawnEntity, SwingAnimation,
     SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, abilities, angle,
-    animation, entity_data, game_event, game_mode, inventory as protocol_inventory, level_event,
-    player_info, relative,
+    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
+    relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -3160,7 +3160,13 @@ impl Fanout {
                 self.show_near(position, level_event::LAVA_FIZZ, 0, None)
                     .await;
             }
-            RegionEvent::ArmSwung { entity, .. } => self.swing_arm(entity).await,
+            RegionEvent::ArmSwung {
+                entity,
+                off_hand,
+                swing,
+                own,
+                ..
+            } => self.swing_arm(entity, off_hand, swing, own).await,
             RegionEvent::EntityTracked(tracked) => self.track_entity(from, tracked).await,
             RegionEvent::EntityGone { entity, hops, .. } => {
                 if self.was_gone(entity, hops) || !self.takes_word_of(from, entity, hops) {
@@ -3699,20 +3705,25 @@ impl Fanout {
         self.refresh_entity(entity, true).await;
     }
 
-    /// Shows the arm of the player `entity` swinging to everyone shown the player.
-    async fn swing_arm(&mut self, entity: EntityId) {
+    /// Shows the arm of the player `entity` swinging to everyone shown the player, and to
+    /// the player too where `own` (`LivingEntity.swing`'s `sendToTrackingPlayersAndSelf`).
+    async fn swing_arm(&mut self, entity: EntityId, off_hand: bool, swing: Swing, own: bool) {
         let watching: Vec<PlayerId> = self
             .players
             .iter()
-            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .filter(|(_, view)| {
+                view.visible.contains_key(&entity) || (own && view.entity == Some(entity))
+            })
             .map(|(player, _)| *player)
             .collect();
         if watching.is_empty() {
             return;
         }
-        let packet = encoded(&Animate {
+        let packet = encoded(&SwingAnimation {
             entity_id: self.wire.of(entity),
-            action: animation::SWING_MAIN_HAND,
+            hand: i32::from(off_hand),
+            kind: i32::from(swing.kind),
+            duration: i32::from(swing.duration),
         });
         for player in watching {
             self.send_to_player(player, [packet.clone()]).await;
@@ -9022,7 +9033,7 @@ mod scenarios {
         /// it was told, in order.
         spawns: Vec<SpawnEntity>,
         entity_data: Vec<SetEntityData>,
-        swings: Vec<Animate>,
+        swings: Vec<SwingAnimation>,
         /// Every list of a vehicle's passengers and every teleport it was sent, in order.
         passengers: Vec<SetPassengers>,
         /// Every leash it was told of, in order.
@@ -9221,7 +9232,7 @@ mod scenarios {
                     self.named.push((Naming::Data, data.entity_id));
                     self.entity_data.push(data);
                 }
-                ClientboundPlay::Animate(swing) => {
+                ClientboundPlay::SwingAnimation(swing) => {
                     self.named.push((Naming::Swing, swing.entity_id));
                     self.swings.push(swing);
                 }

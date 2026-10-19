@@ -6,6 +6,7 @@
 //! `SetEntityData` with its stack; it is shown from the region whose word has the most
 //! changes of holder behind it; and the thrower's arm swings for the others.
 
+use clustine_data::Swing;
 use clustine_protocol::packets::play::entity_data_serializer;
 
 use super::*;
@@ -165,6 +166,9 @@ async fn a_thrown_item_is_shown_to_every_client_in_view_once_by_one_wire_id_and_
     let swung = RegionEvent::ArmSwung {
         entity: EntityId(5),
         chunk: HOME,
+        off_hand: false,
+        swing: Swing::DEFAULT,
+        own: false,
     };
     edge.tell(
         WEST,
@@ -185,9 +189,11 @@ async fn a_thrown_item_is_shown_to_every_client_in_view_once_by_one_wire_id_and_
     );
     assert_eq!(
         second.swings,
-        [Animate {
+        [SwingAnimation {
             entity_id: thrower[0].1,
-            action: animation::SWING_MAIN_HAND,
+            hand: 0,
+            kind: i32::from(Swing::WHACK),
+            duration: 6,
         }]
     );
     assert_eq!(first.swings, []);
@@ -439,4 +445,33 @@ async fn an_item_handed_on_is_not_taken_off_by_its_sender_s_own_snapshot() {
     assert!(first.entities.contains(&key));
 
     edge.end().await;
+}
+
+#[tokio::test]
+async fn a_swing_the_player_s_client_did_not_foresee_is_shown_to_the_player_too_with_its_hand_and_kind()
+ {
+    let (mut edge, mut first, mut second) = two_at_home().await;
+    let swung = RegionEvent::ArmSwung {
+        entity: EntityId(5),
+        chunk: HOME,
+        off_hand: true,
+        swing: Swing {
+            kind: Swing::STAB,
+            duration: 19,
+        },
+        own: true,
+    };
+    edge.tell(WEST, ticked(vec![swung]));
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    edge.sync(&mut second).await;
+    let shown = SwingAnimation {
+        entity_id: second.naming(5)[0].1,
+        hand: 1,
+        kind: i32::from(Swing::STAB),
+        duration: 19,
+    };
+    assert_eq!(second.swings, std::slice::from_ref(&shown));
+    // The player's own client knows their entity by the same id.
+    assert_eq!(first.swings, [shown]);
 }

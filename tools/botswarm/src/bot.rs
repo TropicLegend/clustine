@@ -365,6 +365,8 @@ pub struct Bot {
     /// Every particle the server showed (`level_particles`: a sculk sensor's vibration),
     /// in order.
     pub particles: Vec<clustine_protocol::packets::play::LevelParticles>,
+    /// Every arm the server showed swinging (`swing_animation`), in order.
+    pub swings: Vec<clustine_protocol::packets::play::SwingAnimation>,
     /// Every packet of a menu's window the server sent, in order: openings, a window's
     /// contents (not the inventory's own, window 0), slots, the cursor and closes.
     pub menu_log: Vec<ClientboundPlay>,
@@ -587,6 +589,7 @@ impl Bot {
             menus_closed: Vec::new(),
             explosions: Vec::new(),
             particles: Vec::new(),
+            swings: Vec::new(),
             menu_log: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
@@ -1104,6 +1107,16 @@ impl Bot {
     }
 
     /// Selects a hotbar slot, from 0 to 8.
+    /// Swings the main arm at nothing, as a client does at a click that hits no entity
+    /// (`punch`).
+    pub async fn punch(&mut self) -> Result<()> {
+        self.connection
+            .write(&clustine_protocol::packets::play::Punch)
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
     pub async fn select_slot(&mut self, slot: i16) -> Result<()> {
         self.connection.write(&SetHeldItem { slot }).await?;
         self.own_slot = slot.into();
@@ -1794,6 +1807,7 @@ impl Bot {
             ClientboundPlay::ContainerSetData(_) => {}
             ClientboundPlay::Explode(packet) => self.explosions.push(packet),
             ClientboundPlay::LevelParticles(packet) => self.particles.push(packet),
+            ClientboundPlay::SwingAnimation(packet) => self.swings.push(packet),
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu
@@ -1913,11 +1927,10 @@ impl Bot {
             // What an armour stand wears is nothing a bot keeps.
             | ClientboundPlay::SetEquipment(_)
             | ClientboundPlay::Animate(_)
-            // The bots lead nothing yet, so what is said about leads and swings is not
-            // theirs to keep.
+            // The bots lead nothing yet, so what is said about leads is not theirs to
+            // keep.
             | ClientboundPlay::SetEntityLink(_)
             | ClientboundPlay::SoundEntity(_)
-            | ClientboundPlay::SwingAnimation(_)
             | ClientboundPlay::EntityEvent(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
