@@ -506,6 +506,10 @@ impl Region {
         if self.container_tick(pos, state, output) {
             return;
         }
+        // A dispenser's or a dropper's dispense (`dispensers.rs`).
+        if self.dispenser_tick(pos, state, output) {
+            return;
+        }
         // `SpeleothemBlock.tick`: a stalagmite that its support left goes, with its
         // drops; a stalactite falls, from the block ticked down to its tip.
         if is_class(state, BlockClass::SpeleothemBlock) {

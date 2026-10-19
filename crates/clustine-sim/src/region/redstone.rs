@@ -55,6 +55,10 @@ impl Region {
         if self.diode_neighbour_changed(pos, state, output) {
             return true;
         }
+        // Dispensers and droppers (`dispensers.rs`).
+        if self.dispenser_neighbour_changed(pos, state, output) {
+            return true;
+        }
         if signal::is_wire(state) {
             // `RedStoneWireBlock.neighborChanged`: its source is not read without the
             // experiments.

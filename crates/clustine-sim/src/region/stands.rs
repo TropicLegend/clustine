@@ -71,7 +71,7 @@ pub(crate) const DEFAULT_POSE: [[f32; 3]; 6] = [
 
 /// The health of a new stand: the `max_health` attribute's default. **Inferred**:
 /// `Attributes` is not in the dump; 20 is the game's.
-const MAX_HEALTH: f32 = 20.0;
+pub(super) const MAX_HEALTH: f32 = 20.0;
 
 /// The ticks within which a second hit breaks a stand (`now - lastHit > 5` is a first
 /// hit).
@@ -106,7 +106,7 @@ pub(crate) fn own_size(entity: &Entity) -> Option<(f32, f32)> {
 }
 
 /// What a stand wears in `slot`, if anything.
-fn worn(equipment: &[(u8, ItemStack)], slot: u8) -> Option<ItemStack> {
+pub(super) fn worn(equipment: &[(u8, ItemStack)], slot: u8) -> Option<ItemStack> {
     equipment
         .iter()
         .find(|(at, _)| *at == slot)
@@ -146,7 +146,7 @@ fn is_disabled(disabled_slots: i32, flags: u8, slot: u8) -> bool {
 }
 
 /// `canUseSlot(slot)`: anything but an animal's body, a saddle and a disabled slot.
-fn can_use_slot(disabled_slots: i32, flags: u8, slot: u8) -> bool {
+pub(super) fn can_use_slot(disabled_slots: i32, flags: u8, slot: u8) -> bool {
     slot != slots::BODY && slot != slots::SADDLE && !is_disabled(disabled_slots, flags, slot)
 }
 
@@ -956,7 +956,7 @@ impl Region {
     /// `onEquipItem`'s sound: an item of a slot of its own put in its slot plays its
     /// equip sound, but not in the stand's first tick, and not where the slot held the
     /// same item already.
-    fn set_worn(
+    pub(super) fn set_worn(
         &mut self,
         key: EntityId,
         slot: u8,

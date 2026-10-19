@@ -78,7 +78,7 @@ const MOST_FUEL: i32 = 32_000;
 
 /// The cart a minecart item makes (`MinecartItem`'s type): of the five a player can
 /// place. Spawner and command block carts have no item a player has.
-fn kind_of_item(item: i32) -> Option<i32> {
+pub(super) fn kind_of_item(item: i32) -> Option<i32> {
     match item {
         items::MINECART => Some(entity_types::MINECART),
         items::CHEST_MINECART => Some(entity_types::CHEST_MINECART),

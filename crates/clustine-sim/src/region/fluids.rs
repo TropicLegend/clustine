@@ -236,7 +236,7 @@ impl Region {
     /// `LiquidBlockContainer.placeLiquid`: a block that can be waterlogged and is not
     /// takes still water, and its tick; a lit campfire or candle goes out as it does.
     /// Kelp, seagrass and a double slab take nothing.
-    fn place_liquid(
+    pub(super) fn place_liquid(
         &mut self,
         pos: BlockPos,
         state: BlockState,

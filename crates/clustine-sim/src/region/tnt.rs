@@ -798,7 +798,7 @@ impl Region {
 
 /// `CampfireBlock.canLight`, `CandleBlock.canLight` and `CandleCakeBlock.canLight`: an
 /// unlit campfire or candle out of water, or an unlit candle cake.
-fn can_light(state: BlockState) -> bool {
+pub(super) fn can_light(state: BlockState) -> bool {
     let unlit = state.property("lit") == Some("false");
     if in_tag(state, "minecraft:campfires") || in_tag(state, "minecraft:candles") {
         return unlit && !flag(state, "waterlogged") && state.property("waterlogged").is_some();

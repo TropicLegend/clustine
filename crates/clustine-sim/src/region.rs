@@ -29,6 +29,7 @@ mod colliders;
 mod containers;
 mod cushions;
 mod diodes;
+mod dispensers;
 mod drops;
 mod entities;
 mod explosions;
