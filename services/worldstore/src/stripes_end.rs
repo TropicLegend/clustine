@@ -958,6 +958,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     };
     let expected = [
         Restored {
+            faces: Vec::new(),
             spawn: crate::tests::spawn_in(from.home),
             entity_ids: NO_ENTITY_IDS,
             state: state(5, "merged"),
@@ -981,6 +982,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            faces: Vec::new(),
             spawn: crate::tests::spawn_in(from.home),
             entity_ids: NO_ENTITY_IDS,
             state: state(1, "east"),
@@ -999,6 +1001,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            faces: Vec::new(),
             spawn: crate::tests::spawn_in(from.home),
             entity_ids: NO_ENTITY_IDS,
             state: state(2, "part"),

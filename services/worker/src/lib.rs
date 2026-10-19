@@ -56,7 +56,7 @@ use clustine_rpc::{
     Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Parts, Presence, Restored, SplitPart,
     StoreReply, StoreRequest, Welcome, WorkerToEdge,
 };
-use clustine_sim::api::{Entered, Inventory, PlayerInput, RegionEvent};
+use clustine_sim::api::{Entered, FaceChange, FaceSeq, Inventory, PlayerInput, RegionEvent};
 use clustine_sim::{
     Durable, EdgeEvent, Holdings, Knowledge, LendAnswer, LendAsked, Misdirected, NoSplit, Part,
     PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting,
@@ -1078,6 +1078,7 @@ impl RegionRunner {
         let holdings = holdings(&restored);
         let rings = settings.rings;
         let config = settings.with_spawn(restored.spawn, restored.world);
+        let faces = mem::take(&mut restored.faces);
         let borders = Restored {
             deltas: Vec::new(),
             state: None,
@@ -1087,6 +1088,7 @@ impl RegionRunner {
             held: Vec::new(),
             pinned: Vec::new(),
             lends: mem::take(&mut restored.lends),
+            faces: Vec::new(),
             ..restored
         };
         let state = restored_state(restored)?;
@@ -1094,6 +1096,7 @@ impl RegionRunner {
             Self::with_store(Region::restore(config, state, holdings), Box::new(store))
                 .with_borders(&borders);
         runner.with_rings = rings;
+        runner.inputs.faces = faces;
         Ok(runner)
     }
 
@@ -1597,9 +1600,14 @@ impl RegionRunner {
                 // player a new one (section 5 of the same record). The coming tick
                 // removes what the region has of them, and keeps nothing of the word.
                 StoreReply::Dead { stays } => self.inputs.dead.extend(stays),
-                StoreReply::Clock { clock } => {
+                StoreReply::Clock { clock, players } => {
                     self.inputs.clock = Some(self.inputs.clock.unwrap_or(clock).later(clock));
+                    self.inputs.world_players = Some(players);
                 }
+                // Faces go to the next tick as they come, whatever the borders hold
+                // back: the region keeps them all and shows those it holds or copies
+                // (`docs/groundwork/n7-faces.md`).
+                StoreReply::Faces { changes } => self.inputs.faces.extend(changes),
                 // The answer to the merge or the split the store was handed. It is
                 // acted on by the step that finds it, not here: taking it makes the
                 // runner begin anew, and this is also called between two ticks.
@@ -1627,6 +1635,23 @@ impl RegionRunner {
                 | StoreReply::Uncoupled { .. }
                 | StoreReply::Progress { .. }
                 | StoreReply::Mark { .. }) => {
+                    // A copy's faces go to the next tick at once, whenever the borders
+                    // hand the base itself in: the region keeps them and shows them once
+                    // it copies the chunk, and drops what it kept there from before.
+                    let mut reply = reply;
+                    if let StoreReply::CopyBase {
+                        position,
+                        sequence,
+                        faces,
+                        ..
+                    } = &mut reply
+                    {
+                        self.inputs.faces.push(FaceChange::Base {
+                            chunks: Some(vec![*position]),
+                            seq: FaceSeq(*sequence, u32::MAX),
+                        });
+                        self.inputs.faces.append(faces);
+                    }
                     let mut asks = Asks::default();
                     let next = self.region.tick_number() + 1;
                     self.border.take(reply, next, &mut asks);
@@ -7771,6 +7796,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            faces: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             held: Vec::new(),
             pinned: Vec::new(),
@@ -8164,6 +8190,7 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            faces: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             held: Vec::new(),
             pinned: Vec::new(),

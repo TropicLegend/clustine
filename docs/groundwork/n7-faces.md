@@ -33,12 +33,17 @@ the commit. Log sequences are durable and only rise, so this is the plan's (grou
    - `known: BTreeMap<PlayerId, (EntityId, u32)>`, the highest stay it has held or let go
      (R3).
    A face is taken where its `(entity, hops)` is at least `known`'s, its sequence at least
-   the tombstone's and above the kept face's, the player is not held, and its chunk is held,
-   granted in this tick's inputs or copied (R4). A removal at or above `known` drops a
-   face strictly below its sequence and is kept as the tombstone if higher.
-5. **Holdings and copies are an invariant** (R4): whenever chunks are given back, lent
-   away, left with a split's other part or a copy is withdrawn, faces whose chunk is
-   neither held nor copied are dropped. The departed face is exempt for its life.
+   the tombstone's and above the kept face's, and the player is not held. A removal at or
+   above `known` drops a face strictly below its sequence and is kept as the tombstone if
+   higher.
+5. **What mobs see is held and copied land only** (R4, as built): every face so taken is
+   kept, but the view lists only those whose chunk the region holds or copies (and the
+   departed ones). The worker's borders can hold a copy's base back until its chunk may
+   be read, and faces streamed meanwhile would otherwise be refused and lost. A face
+   kept beyond what the region holds and copies is told of no more and may be out of
+   date, so every base of faces begins with `FaceChange::Base { chunks, seq }`: what the
+   region keeps in those chunks (every chunk, for `None`) at or below `seq` is dropped
+   before the base's faces are taken.
 6. **The departed face** (8.3.1, 9.2.1, R3): at a let-go the region keeps the player's face
    as departed, with `known` raised to the let-go's `(entity, hops)`. It ends at the first
    of a face of that player with `(entity, hops)` at least the departure's, a removal at or
@@ -64,10 +69,12 @@ the commit. Log sequences are durable and only rise, so this is the plan's (grou
 3. A counted `Gone`: the face goes, a removal to its audience, out of the world list; the
    same at an `Entering` that raises the floor.
 4. All on the group's streams (`Streamed::Reply`), out once durable, in the group's undo.
-5. **Bases** (R5, R7): a `CopyBase` carries its chunk's faces as the records have them when
-   the base is streamed; every hello, merge and split answer is followed by
-   `StoreReply::Faces` with the faces of every chunk the region then holds; a grant or a
-   lend's take-in by those of the chunks granted.
+5. **Bases** (R5, R7): behind a `CopyBase`, `StoreReply::Faces` with the base marker and
+   its chunk's faces as the records have them when the base is streamed; behind a
+   grant's answer, those of the chunks granted; behind a merge's, every chunk the
+   survivor holds; a hello's answer (`Restored::faces`, in the welcome) has the faces of
+   every chunk the region holds. A split's part is opened with a hello. A lend's take-in
+   gets none (named: the borrower sees players in a lent chunk only once they move).
 6. The world's players with the clock every 20 ticks of game time, to every owner.
 7. At an `AbsorbCommit` the records whose writer is the absorbed region are rewritten to
    the survivor (R6).

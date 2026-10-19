@@ -6676,6 +6676,7 @@ fn of_the_stream(reply: &StoreReply) -> bool {
         reply,
         StoreReply::Effects { .. }
             | StoreReply::Clock { .. }
+            | StoreReply::Faces { .. }
             | StoreReply::CopyBase { .. }
             | StoreReply::CopyUpdate { .. }
             | StoreReply::CopyUsed { .. }

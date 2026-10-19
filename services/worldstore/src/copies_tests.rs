@@ -136,6 +136,7 @@ fn a_copy_is_based_on_its_chunk_with_the_holders_commits_and_kept_up_to_date() {
             last_change,
             chunk,
             used,
+            ..
         },
     ] = &streamed[..]
     else {

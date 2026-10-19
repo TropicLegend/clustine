@@ -118,10 +118,13 @@ pub(crate) fn answers(handle: &StoreHandle) -> Vec<StoreReply> {
     handle.request(StoreRequest::Flush);
     let mut answers = Vec::new();
     while let Ok(reply) = handle.replies.recv() {
-        if reply == StoreReply::Flushed {
-            break;
+        match reply {
+            StoreReply::Flushed => break,
+            // The faces the notes stream, and the marks behind them, are another
+            // matter's (`faces_tests.rs`).
+            StoreReply::Faces { .. } | StoreReply::Mark { .. } => {}
+            reply => answers.push(reply),
         }
-        answers.push(reply);
     }
     answers
 }

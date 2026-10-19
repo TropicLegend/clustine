@@ -949,7 +949,11 @@ impl Region {
         for answer in &inputs.entered {
             self.apply_entered(answer, &mut unplaced, &mut output);
         }
-        self.take_faces(&inputs.faces, inputs.world_players.as_ref());
+        self.take_faces(
+            &inputs.granted,
+            &inputs.faces,
+            inputs.world_players.as_ref(),
+        );
 
         // A player's action is the game's packet handled between two ticks, at the game
         // time of the one before (`MinecraftServer.runAllTasks`): what it schedules

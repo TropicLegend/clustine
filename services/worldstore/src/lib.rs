@@ -31,6 +31,7 @@ mod copies;
 mod couplings;
 mod disk;
 mod effects;
+mod faces;
 mod lanes;
 mod lends;
 mod local;
@@ -52,6 +53,8 @@ mod effects_tests;
 mod entities_specification;
 #[cfg(test)]
 mod entities_tests;
+#[cfg(test)]
+mod faces_tests;
 #[cfg(test)]
 mod generation_tests;
 #[cfg(test)]

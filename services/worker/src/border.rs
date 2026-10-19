@@ -178,6 +178,7 @@ impl Border {
                 last_change,
                 chunk,
                 used,
+                ..
             } => {
                 let copy = self.copies.get_mut(&position)?;
                 copy.base = Some(Based {
@@ -676,6 +677,7 @@ mod tests {
 
     fn base(sequence: u64, last: u64, used: CopyUse) -> StoreReply {
         StoreReply::CopyBase {
+            faces: Vec::new(),
             position: C,
             sequence,
             last_change: last,

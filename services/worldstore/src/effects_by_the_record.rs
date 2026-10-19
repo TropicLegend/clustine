@@ -745,6 +745,7 @@ fn a_copy_is_based_on_the_committed_form_and_kept_up_by_a_chain_of_updates() {
                 last_change,
                 chunk,
                 used,
+                ..
             } => {
                 assert_eq!(position, ORIGIN);
                 assert_eq!(chunk.as_ref(), Some(&expected), "the base has the commit");

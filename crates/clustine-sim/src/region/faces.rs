@@ -5,10 +5,17 @@
 //!
 //! A face is taken only for a stay at least as late as the latest the region has held
 //! or let go of that player, at a sequence at least that of the player's tombstone and
-//! above the face kept, of a player the region does not hold, and in a chunk the region
-//! holds or copies. A stream and an edge's link are apart, so a face written before the
-//! region took a player in and let them go again can come after; the stay it names is
-//! then below what the region knows, and it is refused.
+//! above the face kept, and of a player the region does not hold. A stream and an
+//! edge's link are apart, so a face written before the region took a player in and let
+//! them go again can come after; the stay it names is then below what the region knows,
+//! and it is refused.
+//!
+//! Every face so taken is kept, but mobs see only those in chunks the region holds or
+//! copies (and the faces of players it let go). The worker can hold a copy's base back
+//! until its chunk may be read, and faces streamed meanwhile are not lost so. A face
+//! kept where the region no longer holds or copies is told of no more, and may be out
+//! of date; the base of a chunk the region comes to hold or copy begins by dropping
+//! what it keeps there from before ([`FaceChange::Base`]).
 
 use std::collections::BTreeMap;
 
@@ -88,14 +95,9 @@ impl Faces {
         );
     }
 
-    /// Takes a change the store streamed, by the rules above. `holds` says whether the
-    /// region holds or copies a chunk, `is_held` whether it holds the player.
-    pub(super) fn take(
-        &mut self,
-        change: &FaceChange,
-        holds: impl Fn(ChunkPos) -> bool,
-        is_held: impl Fn(PlayerId) -> bool,
-    ) {
+    /// Takes a change the store streamed, by the rules above. `is_held` says whether the
+    /// region holds the player.
+    pub(super) fn take(&mut self, change: &FaceChange, is_held: impl Fn(PlayerId) -> bool) {
         match change {
             FaceChange::Face {
                 player,
@@ -107,7 +109,6 @@ impl Faces {
                 if (*entity, *hops) < self.known(*player)
                     || self.tombstones.get(player).is_some_and(|stone| seq < stone)
                     || is_held(*player)
-                    || !holds(chunk_of(face))
                 {
                     return;
                 }
@@ -146,40 +147,66 @@ impl Faces {
                     self.kept.remove(player);
                 }
             }
+            FaceChange::Base { chunks, seq } => {
+                let within =
+                    |chunk: ChunkPos| chunks.as_ref().is_none_or(|chunks| chunks.contains(&chunk));
+                self.kept.retain(|_, kept| {
+                    kept.departed.is_some()
+                        || !within(chunk_of(&kept.face))
+                        || kept.seq.is_some_and(|kept| kept > *seq)
+                });
+            }
         }
     }
 
-    /// Drops the faces in chunks the region neither holds nor copies any more, but those
-    /// of players it let go, and the departed faces that are old.
-    pub(super) fn keep_to(&mut self, tick: u64, holds: impl Fn(ChunkPos) -> bool) {
-        self.kept.retain(|_, kept| match kept.departed {
-            Some(at) => tick < at + DEPARTED_TICKS,
-            None => holds(chunk_of(&kept.face)),
-        });
+    /// Drops the departed faces that are old.
+    pub(super) fn expire(&mut self, tick: u64) {
+        self.kept
+            .retain(|_, kept| kept.departed.is_none_or(|at| tick < at + DEPARTED_TICKS));
+    }
+
+    /// The faces mobs see, by the player: those in chunks `holds` says the region holds
+    /// or copies, and those of players it let go.
+    pub(super) fn seen(
+        &self,
+        holds: impl Fn(ChunkPos) -> bool,
+    ) -> impl Iterator<Item = (&PlayerId, &Kept)> {
+        self.kept
+            .iter()
+            .filter(move |(_, kept)| kept.departed.is_some() || holds(chunk_of(&kept.face)))
     }
 }
 
-fn chunk_of(face: &PlayerFace) -> ChunkPos {
+pub(super) fn chunk_of(face: &PlayerFace) -> ChunkPos {
     ChunkPos::containing(face.position[0], face.position[2])
 }
 
 impl Region {
     /// What the store streamed of faces and the world's players, after the players'
     /// changes of the tick; and the faces kept to what the region holds and copies.
-    pub(super) fn take_faces(&mut self, changes: &[FaceChange], world: Option<&Vec<WorldPlayer>>) {
+    pub(super) fn take_faces(
+        &mut self,
+        granted: &[ChunkPos],
+        changes: &[FaceChange],
+        world: Option<&Vec<WorldPlayer>>,
+    ) {
+        // What it kept of chunks it begins to hold is from before, and their faces come
+        // behind the grant.
+        if !granted.is_empty() {
+            self.faces.kept.retain(|_, kept| {
+                kept.departed.is_some() || !granted.contains(&chunk_of(&kept.face))
+            });
+        }
         // Whoever the region holds it sees itself.
         for (id, player) in &self.players {
             self.faces.held(*id, player.entity_id, player.hops);
         }
-        let land = &self.land;
-        let copies = &self.copies;
         let players = &self.players;
-        let holds = |chunk: ChunkPos| land.holds(chunk) || copies.contains_key(&chunk);
         for change in changes {
             self.faces
-                .take(change, holds, |player| players.contains_key(&player));
+                .take(change, |player| players.contains_key(&player));
         }
-        self.faces.keep_to(self.tick, holds);
+        self.faces.expire(self.tick);
         if let Some(world) = world {
             self.faces.world.clone_from(world);
         }
@@ -233,10 +260,6 @@ mod tests {
         }
     }
 
-    fn everywhere(_: ChunkPos) -> bool {
-        true
-    }
-
     fn nobody(_: PlayerId) -> bool {
         false
     }
@@ -248,23 +271,23 @@ mod tests {
     #[test]
     fn a_face_is_taken_only_above_the_one_kept_and_at_least_at_the_tombstone() {
         let mut faces = Faces::default();
-        faces.take(&face(5, 0, 10, 1.0), everywhere, nobody);
-        faces.take(&face(5, 0, 9, 2.0), everywhere, nobody);
-        faces.take(&face(5, 0, 10, 3.0), everywhere, nobody);
+        faces.take(&face(5, 0, 10, 1.0), nobody);
+        faces.take(&face(5, 0, 9, 2.0), nobody);
+        faces.take(&face(5, 0, 10, 3.0), nobody);
         assert_eq!(kept_x(&faces), Some(1.0));
-        faces.take(&removed(5, 0, 20), everywhere, nobody);
+        faces.take(&removed(5, 0, 20), nobody);
         assert_eq!(kept_x(&faces), None);
-        faces.take(&face(5, 0, 15, 4.0), everywhere, nobody);
+        faces.take(&face(5, 0, 15, 4.0), nobody);
         assert_eq!(kept_x(&faces), None);
-        faces.take(&face(5, 0, 20, 5.0), everywhere, nobody);
+        faces.take(&face(5, 0, 20, 5.0), nobody);
         assert_eq!(kept_x(&faces), Some(5.0));
     }
 
     #[test]
     fn a_tombstone_drops_only_a_face_below_it() {
         let mut faces = Faces::default();
-        faces.take(&face(5, 0, 30, 1.0), everywhere, nobody);
-        faces.take(&removed(5, 0, 20), everywhere, nobody);
+        faces.take(&face(5, 0, 30, 1.0), nobody);
+        faces.take(&removed(5, 0, 20), nobody);
         assert_eq!(kept_x(&faces), Some(1.0));
     }
 
@@ -274,37 +297,56 @@ mod tests {
         // came on the stream (the review's R3b).
         let mut faces = Faces::default();
         faces.know(player(1), EntityId(5), 2);
-        faces.take(&face(5, 1, 10, 1.0), everywhere, nobody);
+        faces.take(&face(5, 1, 10, 1.0), nobody);
         assert_eq!(kept_x(&faces), None);
-        faces.take(&face(5, 2, 11, 2.0), everywhere, nobody);
+        faces.take(&face(5, 2, 11, 2.0), nobody);
         assert_eq!(kept_x(&faces), Some(2.0));
-        faces.take(&removed(5, 1, 12), everywhere, nobody);
+        faces.take(&removed(5, 1, 12), nobody);
         assert_eq!(kept_x(&faces), Some(2.0));
         // A later stay is always above.
-        faces.take(&face(6, 0, 13, 3.0), everywhere, nobody);
+        faces.take(&face(6, 0, 13, 3.0), nobody);
         assert_eq!(kept_x(&faces), Some(3.0));
     }
 
     #[test]
     fn the_face_of_a_player_the_region_holds_is_not_kept_and_is_dropped_when_it_takes_them_in() {
         let mut faces = Faces::default();
-        faces.take(&face(5, 0, 10, 1.0), everywhere, |_| true);
+        faces.take(&face(5, 0, 10, 1.0), |_| true);
         assert_eq!(kept_x(&faces), None);
-        faces.take(&face(5, 0, 10, 1.0), everywhere, nobody);
+        faces.take(&face(5, 0, 10, 1.0), nobody);
         faces.held(player(1), EntityId(5), 1);
         assert_eq!(kept_x(&faces), None);
     }
 
     #[test]
-    fn a_face_outside_what_the_region_holds_and_copies_is_refused_and_dropped_when_that_shrinks() {
+    fn a_face_outside_what_the_region_holds_and_copies_is_kept_but_not_seen() {
         let near = |chunk: ChunkPos| chunk.x == 0;
+        let seen = |faces: &Faces| faces.seen(near).count();
         let mut faces = Faces::default();
-        faces.take(&face(5, 0, 10, 40.0), near, nobody);
-        assert_eq!(kept_x(&faces), None);
-        faces.take(&face(5, 0, 11, 1.0), near, nobody);
+        faces.take(&face(5, 0, 10, 40.0), nobody);
+        assert_eq!((kept_x(&faces), seen(&faces)), (Some(40.0), 0));
+        faces.take(&face(5, 0, 11, 1.0), nobody);
+        assert_eq!(seen(&faces), 1);
+    }
+
+    #[test]
+    fn a_base_drops_what_is_kept_in_its_chunks_from_before_it_and_nothing_after() {
+        let base = |chunks: Option<Vec<ChunkPos>>, seq: u64| FaceChange::Base {
+            chunks,
+            seq: FaceSeq(seq, u32::MAX),
+        };
+        let mut faces = Faces::default();
+        faces.take(&face(5, 0, 10, 1.0), nobody);
+        faces.take(&base(Some(vec![ChunkPos::new(3, 0)]), 20), nobody);
         assert_eq!(kept_x(&faces), Some(1.0));
-        faces.keep_to(1, |_| false);
+        faces.take(&base(Some(vec![ChunkPos::new(0, 0)]), 9), nobody);
+        assert_eq!(kept_x(&faces), Some(1.0));
+        faces.take(&base(None, 10), nobody);
         assert_eq!(kept_x(&faces), None);
+        // A departed face is the region's own, and no base drops it.
+        faces.departed(player(1), EntityId(5), 1, at(2.0), 30);
+        faces.take(&base(None, 40), nobody);
+        assert_eq!(kept_x(&faces), Some(2.0));
     }
 
     #[test]
@@ -314,23 +356,23 @@ mod tests {
         let mut faces = Faces::default();
         faces.know(player(1), EntityId(5), 1);
         departed(&mut faces);
-        faces.take(&removed(5, 1, 50), everywhere, nobody);
-        faces.keep_to(150, |_| false);
+        faces.take(&removed(5, 1, 50), nobody);
+        faces.expire(150);
         assert_eq!(kept_x(&faces), Some(9.0));
         // The next region's face replaces it, wherever it is.
-        faces.take(&face(5, 2, 51, 12.0), everywhere, nobody);
+        faces.take(&face(5, 2, 51, 12.0), nobody);
         assert_eq!(kept_x(&faces), Some(12.0));
 
         let mut faces = Faces::default();
         departed(&mut faces);
-        faces.take(&removed(5, 2, 50), everywhere, nobody);
+        faces.take(&removed(5, 2, 50), nobody);
         assert_eq!(kept_x(&faces), None);
 
         let mut faces = Faces::default();
         departed(&mut faces);
-        faces.keep_to(199, |_| false);
+        faces.expire(199);
         assert_eq!(kept_x(&faces), Some(9.0));
-        faces.keep_to(200, |_| false);
+        faces.expire(200);
         assert_eq!(kept_x(&faces), None);
     }
 }

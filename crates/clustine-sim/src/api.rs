@@ -248,6 +248,13 @@ pub enum FaceChange {
         hops: u32,
         seq: FaceSeq,
     },
+    /// The faces that follow are those of `chunks` (every chunk where `None`) as the
+    /// store has them now: a face the region keeps there at or below `seq` is out of
+    /// date, as the player may have left it while the region was not told.
+    Base {
+        chunks: Option<Vec<ChunkPos>>,
+        seq: FaceSeq,
+    },
 }
 
 /// A player of the world as the store publishes them once a second, for the rules that

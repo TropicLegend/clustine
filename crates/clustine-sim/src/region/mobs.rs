@@ -95,7 +95,9 @@ impl MobWorld for View<'_> {
             .map(|(id, player)| seen(*id, player.entity_id, &player.face()))
             .collect();
         players.sort_by_key(|player| player.key);
-        let faces = self.region.faces.kept.iter();
+        let region = self.region;
+        let holds = |chunk| region.land.holds(chunk) || region.copies.contains_key(&chunk);
+        let faces = region.faces.seen(holds);
         players.extend(faces.map(|(id, kept)| seen(*id, kept.entity, &kept.face)));
         players
     }

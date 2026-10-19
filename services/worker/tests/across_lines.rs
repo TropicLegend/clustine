@@ -620,6 +620,7 @@ fn brief(reply: &StoreReply) -> String {
             last_change,
             chunk,
             used,
+            ..
         } => format!(
             "CopyBase {position:?} {sequence} {last_change} {} {used:?}",
             if chunk.is_some() { "chunk" } else { "none" }

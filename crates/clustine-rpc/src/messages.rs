@@ -2,8 +2,8 @@
 
 use clustine_region::{RegionId, RoutingTable};
 use clustine_sim::api::{
-    Durable, EntityState, Inventory, Place, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer,
-    Pose, RegionEvent, RemoteAction, StayNote, WorldClock,
+    Durable, EntityState, FaceChange, Inventory, Place, PlayerEvent, PlayerInput, PlayerJoin,
+    PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote, WorldClock, WorldPlayer,
 };
 use clustine_world::{
     Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, Entity,
@@ -531,6 +531,16 @@ pub enum StoreReply {
     /// of and its own (`docs/groundwork/n7-plan.md`, section 8.4).
     Clock {
         clock: WorldClock,
+        /// The world's players as the store has them, published with the clock
+        /// (`docs/groundwork/n7-plan.md`, section 7.3.3).
+        players: Vec<WorldPlayer>,
+    },
+    /// On the stream: faces of players and their removals, in the order the store took
+    /// them, for the chunks the region holds or copies; and, behind a hello's answer, a
+    /// merge, a split, a grant or a copy's base, the faces of those chunks then
+    /// (`docs/groundwork/n7-faces.md`).
+    Faces {
+        changes: Vec<FaceChange>,
     },
     Flushed,
     /// The answer to [`StoreRequest::Claim`]: the chunks of the claim that the region
@@ -615,6 +625,10 @@ pub enum StoreReply {
         last_change: u64,
         chunk: Option<Chunk>,
         used: CopyUse,
+        /// The faces in the chunk as the store has them when it puts the base on the
+        /// stream: what the region kept there at or below `sequence` is out of date
+        /// (`docs/groundwork/n7-faces.md`, step 2).
+        faces: Vec<FaceChange>,
     },
     /// On the stream: the changes of a commit in a chunk the region copies, made
     /// durable in the group of `sequence`. `previous` is the sequence of the chunk's
@@ -780,7 +794,7 @@ pub enum Decline {
 }
 
 /// What the world store has of a region, as it hands it to the owner that opens it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Restored {
     /// The block of entity keys the store gave the region at this hello: a fresh one at
     /// every hello, a split's part's among them, so that keys a lost tick gave out are
@@ -832,6 +846,9 @@ pub struct Restored {
     /// The world's clock as the store keeps it: the region takes the later of it and
     /// the one its state has.
     pub clock: WorldClock,
+    /// The faces of other regions' players in the chunks the region holds, as the store
+    /// has them at the hello (`docs/groundwork/n7-faces.md`, step 2).
+    pub faces: Vec<FaceChange>,
 }
 
 impl Restored {
@@ -866,7 +883,11 @@ pub enum StoreHello {
 }
 
 /// The world store's answer to a [`StoreHello::Region`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one welcome a hello, and what a region is restored with is held whole anyway"
+)]
 pub enum StoreWelcome {
     /// The store lets the owner have the region. What the region is restored with
     /// follows in [`RestoredPart`]s, up to one that is the last: a [`Restored`] can be
@@ -897,6 +918,8 @@ pub enum StoreWelcome {
         lends: Lends,
         /// [`Restored::clock`].
         clock: WorldClock,
+        /// [`Restored::faces`].
+        faces: Vec<FaceChange>,
     },
     /// The region has been opened with epoch `seen`, which is higher than the one in the
     /// hello: whoever said hello has been replaced. The connection is closed.

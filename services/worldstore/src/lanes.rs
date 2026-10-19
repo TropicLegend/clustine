@@ -51,8 +51,8 @@ use clustine_format::{
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
-    CopyUse, Decline, Lends as LendsOf, RegionHello, RegionList, Restored, SplitPart, StayNote,
-    StoreReply, StoreRequest, TickState,
+    CopyUse, Decline, FaceChange, FaceSeq, Lends as LendsOf, RegionHello, RegionList, Restored,
+    SplitPart, StayNote, StoreReply, StoreRequest, TickState,
 };
 use clustine_world::{
     Arrival, BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, Entity,
@@ -66,6 +66,7 @@ use crate::copies::Copies;
 use crate::couplings::{Couplings, Said};
 use crate::disk::{Disk, replace};
 use crate::effects::{self, Filed, Kept, Uses, sequence};
+use crate::faces::{self, Faces, Held};
 use crate::lends::{self, Lend, Lends};
 use crate::players::{self, Players, Taken, Undo};
 use crate::table::{Division, Table};
@@ -121,6 +122,8 @@ pub(crate) struct Lanes {
     regions: BTreeMap<RegionId, Lane>,
     /// The game time of the world's clock as it was last put on the regions' streams.
     clock_published: u64,
+    /// The latest face of every player in the world (`faces.rs`).
+    faces: Faces,
     /// The last segment of the log that has a record which changes the table and is not
     /// in the table file, if there is one. The segments from the file's `from` up to it
     /// hold what the file does not have.
@@ -761,6 +764,7 @@ impl Lanes {
             world: 0,
             regions,
             clock_published: 0,
+            faces: Faces::default(),
             table_last,
             players,
             next_block,
@@ -1002,12 +1006,16 @@ impl Lanes {
                     .get(&session.region)
                     .is_some_and(|lane| lane.current == Some(session.number));
                 if current && self.copies.copies(session.region, position) {
+                    // With its faces as they are now: one written since the base's group
+                    // went on the stream before the base, and the worker may hand the
+                    // base in later still.
                     let base = StoreReply::CopyBase {
                         position,
                         sequence,
                         last_change,
                         chunk,
                         used: copy_use(&self.uses, &self.couplings, session.region, position),
+                        faces: self.faces.base([position]),
                     };
                     self.group
                         .stream(session.region, Streamed::Reply(Box::new(base)));
@@ -1494,7 +1502,9 @@ impl Lanes {
                         self.players.noted(segment, Some(&mut self.group.undo));
                         let home = region == self.table.home_region;
                         let mut dead = Vec::new();
-                        for (note, logged) in stays.iter().zip(&notes) {
+                        let mut written = Vec::new();
+                        for (index, (note, logged)) in stays.iter().zip(&notes).enumerate() {
+                            let seq = FaceSeq(at, index as u32);
                             let (StayNote::Entering { player, entity }
                             | StayNote::Has { player, entity, .. }
                             | StayNote::Gone { player, entity, .. }) = *note;
@@ -1515,18 +1525,49 @@ impl Lanes {
                                 Taken::Raised { place } => {
                                     self.group.dead.push((player, entity, 0));
                                     owner.unsynced.push(enter(place));
+                                    // A later stay: the face of the one before is gone.
+                                    if let Some(held) = self.faces.remove(player) {
+                                        let removed = FaceChange::Removed {
+                                            player,
+                                            entity: held.entity,
+                                            hops: held.hops,
+                                            seq,
+                                        };
+                                        let audience =
+                                            audience(&self.copies, &self.table, held.chunk());
+                                        stream_faces(&mut self.group, audience, &removed);
+                                    }
                                 }
                                 Taken::Again { place } => owner.unsynced.push(enter(place)),
                                 Taken::Dead { stay, hops, .. } => {
                                     dead.push((player, EntityId(stay), hops));
                                 }
-                                Taken::Written | Taken::Ahead => {}
+                                Taken::Written => {
+                                    if let StayNote::Has {
+                                        hops, face, let_go, ..
+                                    } = note
+                                    {
+                                        let held = Held {
+                                            entity,
+                                            hops: *hops,
+                                            seq,
+                                            face: face.clone(),
+                                            writer: region,
+                                            let_go: *let_go,
+                                        };
+                                        written.push((player, held));
+                                    }
+                                }
+                                Taken::Ahead => {}
                             }
                         }
                         if !dead.is_empty() {
                             owner.unsynced.push(StoreReply::Dead { stays: dead });
                         }
                         self.call_off_returns(calls_off);
+                        for (player, held) in written {
+                            self.face_written(player, held);
+                        }
                     }
                     Err(error) => {
                         error!(%region, %error, "a commit could not be written to the log");
@@ -1682,7 +1723,13 @@ impl Lanes {
                 }
                 // Answered when the group ends, behind the commits asked for before:
                 // also a claim that granted nothing anew may rest on a grant of this
-                // group.
+                // group. The faces of what it holds now follow on its stream; the
+                // region drops what it kept of the chunks from before as it takes them.
+                let faces = self.faces.base(granted.iter().copied());
+                if !faces.is_empty() {
+                    let reply = StoreReply::Faces { changes: faces };
+                    self.group.stream(region, Streamed::Reply(Box::new(reply)));
+                }
                 owner
                     .unsynced
                     .push(StoreReply::Claimed { granted, foreign });
@@ -2051,8 +2098,12 @@ impl Lanes {
         let clock = self.table.clock;
         if clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
             self.clock_published = clock.game_time;
+            let players = self.faces.world();
             for owner in self.regions.values().filter_map(|lane| lane.owner.as_ref()) {
-                owner.peer.answer(StoreReply::Clock { clock });
+                owner.peer.answer(StoreReply::Clock {
+                    clock,
+                    players: players.clone(),
+                });
             }
         }
         for peer in group.flushes {
@@ -2093,6 +2144,9 @@ impl Lanes {
         // is as it was before the group, a record the group made is gone, and so is
         // what it added to the ids that were given out. Nobody was told of any of it.
         self.players.undo(group.undo);
+        // The faces are memory, and every owner is lost below: each region's first tick
+        // names its stays again, with their faces.
+        self.faces.clear();
         // So do the effects it filed, took and dropped. Use is not in the log, and stays.
         self.filed.undo(group.effects);
         // And the arrivals, with the grants of land nobody held that came with them,
@@ -2333,6 +2387,44 @@ impl Lanes {
     }
 
     /// Answers the owner of `region`, if it has one, once the group is durable.
+    /// A taken `Has` of the living stay wrote the player's face: it goes to the regions
+    /// that copy or hold its chunk but its writer, and where it moved to another chunk,
+    /// a removal to those of the old chunk the new face does not reach
+    /// (`docs/groundwork/n7-faces.md`, step 2).
+    fn face_written(&mut self, player: PlayerId, held: Held) {
+        let writer = held.writer;
+        let mut reached = audience(&self.copies, &self.table, held.chunk());
+        reached.remove(&writer);
+        let change = faces::face_change(player, &held);
+        let removal = FaceChange::Removed {
+            player,
+            entity: held.entity,
+            hops: held.hops,
+            seq: held.seq,
+        };
+        let chunk = held.chunk();
+        let before = self.faces.write(player, held);
+        stream_faces(&mut self.group, reached.clone(), &change);
+        if let Some(before) = before
+            && before.chunk() != chunk
+        {
+            let mut left = audience(&self.copies, &self.table, before.chunk());
+            left.remove(&writer);
+            left.retain(|region| !reached.contains(region));
+            stream_faces(&mut self.group, left, &removal);
+        }
+    }
+
+    /// The faces in the chunks `region` holds, as a base.
+    fn faces_held_by(&self, region: RegionId) -> Vec<FaceChange> {
+        let chunks: Vec<ChunkPos> = self
+            .faces
+            .chunks()
+            .filter(|chunk| self.table.holder(*chunk) == Some(region))
+            .collect();
+        self.faces.base(chunks)
+    }
+
     fn answer_in_group(&mut self, region: RegionId, reply: StoreReply) {
         let Some(owner) = self
             .regions
@@ -3020,6 +3112,7 @@ impl Lanes {
             given_up: of_region.given_up,
             lends: self.lends_of(region),
             clock: self.table.clock,
+            faces: self.faces_held_by(region),
         };
         let opened = Opened {
             session,
@@ -3130,6 +3223,15 @@ impl Lanes {
         lane.latest = tick;
         lane.named = tick;
         info!(%region, %absorbed, tick, "a region has absorbed another");
+        // What the absorbed region noted of players the survivor notes from now on
+        // (the review's R6), and the faces of its land are the survivor's to see.
+        self.faces.rewrite_writer(absorbed, region);
+        // The survivor begins anew with no faces.
+        let held = self.faces_held_by(region);
+        if !held.is_empty() {
+            let reply = StoreReply::Faces { changes: held };
+            self.group.stream(region, Streamed::Reply(Box::new(reply)));
+        }
         peer.answer(StoreReply::Absorbed {
             absorbed,
             chunks,
@@ -3959,4 +4061,21 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
 
 fn segment_path(directory: &Path, segment: u64) -> PathBuf {
     directory.join(format!("{segment:020}.wal"))
+}
+
+/// The regions that copy `chunk` and the one that holds it.
+fn audience(copies: &Copies, table: &Table, chunk: ChunkPos) -> BTreeSet<RegionId> {
+    let mut regions: BTreeSet<RegionId> = copies.copiers(chunk).into_iter().collect();
+    regions.extend(table.holder(chunk));
+    regions
+}
+
+/// Puts `change` on the streams of `regions`.
+fn stream_faces(group: &mut Group, regions: BTreeSet<RegionId>, change: &FaceChange) {
+    for region in regions {
+        let reply = StoreReply::Faces {
+            changes: vec![change.clone()],
+        };
+        group.stream(region, Streamed::Reply(Box::new(reply)));
+    }
 }

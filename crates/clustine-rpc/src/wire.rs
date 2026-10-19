@@ -233,6 +233,27 @@ mod tests {
                     game_time: 24_000,
                     day: 13_000,
                 },
+                players: vec![crate::WorldPlayer {
+                    player: PlayerId(uuid::Uuid::from_u128(7)),
+                    entity: EntityId(9),
+                    position: [1.5, 64.0, -2.5],
+                    game_mode: 1,
+                    sleeping: Some(40),
+                }],
+            },
+            StoreReply::Faces {
+                changes: vec![
+                    crate::FaceChange::Base {
+                        chunks: Some(vec![ChunkPos::new(-1, 2)]),
+                        seq: crate::FaceSeq(77, u32::MAX),
+                    },
+                    crate::FaceChange::Removed {
+                        player: PlayerId(uuid::Uuid::from_u128(7)),
+                        entity: EntityId(9),
+                        hops: 3,
+                        seq: crate::FaceSeq(80, 2),
+                    },
+                ],
             },
             StoreReply::Declined {
                 reason: Decline::NotNext { next: region },
@@ -495,6 +516,7 @@ mod tests {
         };
 
         let restored = Restored {
+            faces: Vec::new(),
             held: Vec::new(),
             pinned: vec![ChunkArea {
                 min_x: None,
@@ -533,6 +555,7 @@ mod tests {
         assert_eq!(restored.tick(), 9);
         let welcomes = [
             StoreWelcome::Accepted {
+                faces: Vec::new(),
                 entity_ids: restored.entity_ids,
                 pinned: restored.pinned.clone(),
                 issued: EntityId(u64::MAX),
@@ -646,6 +669,7 @@ mod tests {
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
+            faces: Vec::new(),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
@@ -786,6 +810,7 @@ mod tests {
         }
         for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
+                faces: Vec::new(),
                 entity_ids: EntityIds::block(3).unwrap(),
                 pinned: Vec::new(),
                 issued,
@@ -803,6 +828,7 @@ mod tests {
                 },
             });
             round_trip(Restored {
+                faces: Vec::new(),
                 held: Vec::new(),
                 pinned: Vec::new(),
                 entity_ids: EntityIds::block(3).unwrap(),
@@ -983,6 +1009,7 @@ mod tests {
         for reply in [
             StoreReply::Effects { effects: filed },
             StoreReply::CopyBase {
+                faces: Vec::new(),
                 position: one,
                 sequence: 40,
                 last_change: 31,
