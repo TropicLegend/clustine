@@ -9954,6 +9954,9 @@ mod tests {
         let loaded = loop {
             match neighbour.try_reply() {
                 Some(StoreReply::Loaded { chunk, .. }) => break chunk,
+                // The two regions now hold chunks side by side, and the store may tell the
+                // neighbour to couple before it answers the load: no answer to it.
+                Some(StoreReply::CoupleWith { .. }) => {}
                 Some(other) => panic!("the store answered a load with {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
