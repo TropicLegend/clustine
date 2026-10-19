@@ -69,8 +69,14 @@ pub fn config(inventory: Inventory) -> RegionConfig {
 
 /// An overworld column with a stone floor at y = -61 and air above.
 pub fn floor() -> Chunk {
+    floor_in(0)
+}
+
+/// [`floor`] in the biome of id `biome` (0, the badlands, for the floor of every test
+/// that does not say).
+pub fn floor_in(biome: u16) -> Chunk {
     let sections = (0..24)
-        .map(|_| Section::filled(blocks::AIR, clustine_world::Biome(0)))
+        .map(|_| Section::filled(blocks::AIR, clustine_world::Biome(biome)))
         .collect();
     let mut chunk = Chunk::from_sections(-64, sections);
     for z in 0..16 {
@@ -88,12 +94,14 @@ pub fn around(radius: i32) -> Vec<ChunkPos> {
 }
 
 /// What a scene's chunks hold beyond the floor: blocks, entities, and scheduled ticks
-/// (a fire placed in a chunk is ticked only by a tick its placing scheduled).
+/// (a fire placed in a chunk is ticked only by a tick its placing scheduled), and the
+/// biome all of it is in.
 #[derive(Default, Clone)]
 pub struct World {
     pub blocks: Vec<(BlockPos, BlockState)>,
     pub entities: Vec<Entity>,
     pub ticks: Vec<(BlockPos, ScheduledTick)>,
+    pub biome: u16,
 }
 
 impl World {
@@ -111,7 +119,7 @@ impl World {
 
     /// The chunk at `position`: the floor with what of this world is in it.
     pub fn chunk(&self, position: ChunkPos) -> Chunk {
-        let mut chunk = floor();
+        let mut chunk = floor_in(self.biome);
         for (at, state) in &self.blocks {
             if at.chunk() == position {
                 chunk.set(
