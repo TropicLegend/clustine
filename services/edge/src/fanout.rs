@@ -3956,6 +3956,7 @@ impl Fanout {
     /// client that shows it or rides it (`ClientboundSetPassengersPacket`, which the
     /// game sends the vehicle's trackers on any change of its list).
     async fn show_passengers(&mut self, vehicle: EntityId, passengers: Vec<EntityId>) {
+        let shown_before = self.carried(vehicle);
         if let Some(before) = self.passengers.remove(&vehicle) {
             for rider in before {
                 if self.vehicle_of.get(&rider) == Some(&vehicle) {
@@ -3975,15 +3976,25 @@ impl Fanout {
         if !passengers.is_empty() {
             self.passengers.insert(vehicle, passengers);
         }
-        self.tell_passengers(vehicle).await;
+        // The game tells a vehicle's trackers only of a change of its list: a vehicle
+        // that names a rider their own word put in its seat already changes nothing.
+        if self.carried(vehicle) != shown_before {
+            self.tell_passengers(vehicle).await;
+        }
+    }
+
+    /// Whom the vehicle `vehicle` carries as clients are shown it, by its word and its
+    /// riders' own.
+    fn carried(&self, vehicle: EntityId) -> Vec<EntityId> {
+        effective_passengers(&self.passengers, &self.rides_word)
+            .remove(&vehicle)
+            .unwrap_or_default()
     }
 
     /// Tells each client that shows the vehicle `vehicle`, or rides it, whom it carries
     /// now, by its word and its riders' own.
     async fn tell_passengers(&mut self, vehicle: EntityId) {
-        let riders = effective_passengers(&self.passengers, &self.rides_word)
-            .remove(&vehicle)
-            .unwrap_or_default();
+        let riders = self.carried(vehicle);
         let mut outgoing = Vec::new();
         for (player, view) in &self.players {
             if let Some(packet) = passengers_packet(view, vehicle, &riders, &mut self.wire) {
@@ -3998,22 +4009,29 @@ impl Fanout {
     /// Takes the word of the region of the player whose entity is `rider` that they ride
     /// `vehicle` now, or nothing, and tells the clients of the vehicles it concerns.
     async fn take_rides_word(&mut self, rider: EntityId, vehicle: Option<EntityId>) {
-        let before = self
-            .rides_word
-            .insert(
-                rider,
-                RidesWord {
-                    vehicle,
-                    named: false,
-                },
-            )
-            .and_then(|word| word.vehicle);
+        let before = self.rides_word.get(&rider).and_then(|word| word.vehicle);
         let mut concerned: Vec<EntityId> = before.into_iter().chain(vehicle).collect();
         concerned.extend(self.vehicle_of.get(&rider).copied());
         concerned.sort();
         concerned.dedup();
-        for vehicle in concerned {
-            self.tell_passengers(vehicle).await;
+        let shown_before: Vec<Vec<EntityId>> = concerned
+            .iter()
+            .map(|vehicle| self.carried(*vehicle))
+            .collect();
+        self.rides_word.insert(
+            rider,
+            RidesWord {
+                vehicle,
+                named: false,
+            },
+        );
+        // Only a vehicle whose list the word changes is told of it, as the game tells a
+        // change of the list alone: the word of a rider the vehicle names already, as
+        // when their region says they got on in the tick the vehicle says so, is no news.
+        for (vehicle, shown_before) in concerned.into_iter().zip(shown_before) {
+            if self.carried(vehicle) != shown_before {
+                self.tell_passengers(vehicle).await;
+            }
         }
     }
 

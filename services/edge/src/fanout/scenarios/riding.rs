@@ -66,6 +66,7 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
     assert!(edge.shows(&mut rider, WEST, HOME).await);
     assert!(edge.shows(&mut watcher, WEST, HOME).await);
     let teleports_before = rider.teleports.len();
+    let told_before = (rider.passengers.len(), watcher.passengers.len());
 
     edge.tell(WEST, ticked(vec![passengers(1 << 32, &[5])]));
     let sat = Pose::at(Vec3::new(0.5, -60.35, 0.5));
@@ -84,6 +85,12 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
     watcher.drain();
     let seat_id = rider.ledger_id(1 << 32);
     let own_id = rider.ledger_id(5);
+    // The vehicle's word and the rider's agree: one change of the list, told once, as
+    // the official server tells it (`minecarts_oracle.rs`).
+    assert_eq!(
+        (rider.passengers.len(), watcher.passengers.len()),
+        (told_before.0 + 1, told_before.1 + 1)
+    );
     assert_eq!(
         rider
             .passengers
@@ -141,6 +148,7 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
     )));
 
     // Off again: the seat is empty for everyone, and the rider teleported once more.
+    let told_before = watcher.passengers.len();
     edge.tell(WEST, ticked(vec![passengers(1 << 32, &[])]));
     edge.tell(
         WEST,
@@ -162,12 +170,52 @@ async fn a_rider_s_client_is_teleported_on_and_off_and_every_client_is_told_who_
             .map(|told| told.passengers.clone()),
         Some(Vec::new())
     );
+    assert_eq!(watcher.passengers.len(), told_before + 1, "told once");
     assert_eq!(
         rider
             .teleports
             .last()
             .map(|told| (told.teleport_id, told.relative_flags)),
         Some((3, relative::ROTATION))
+    );
+}
+
+/// The rider's own region may speak before the vehicle's: its word seats them at once,
+/// and the vehicle's naming them after changes nothing a client is told again.
+#[tokio::test]
+async fn a_rider_s_word_before_the_vehicle_s_is_told_once() {
+    let mut edge = Harness::start().await;
+    let mut rider = edge.joined(player(1), EntityId(5)).await;
+    let mut watcher = edge.joined(player(2), EntityId(6)).await;
+    edge.quiet().await;
+    let seat = cushion(1 << 32);
+    let there = vec![own(1, EntityId(5)), own(2, EntityId(6)), seat.clone()];
+    let ask = edge.ask(WEST, HOME);
+    edge.tell(WEST, snapshot_of(HOME, ask, empty_chunk(), there));
+    assert!(edge.shows(&mut rider, WEST, HOME).await);
+    assert!(edge.shows(&mut watcher, WEST, HOME).await);
+    let told_before = watcher.passengers.len();
+    edge.tell(
+        WEST,
+        WorkerToEdge::ToPlayer {
+            player: player(1),
+            event: PlayerEvent::Rides {
+                vehicle: Some(EntityId(1 << 32)),
+                pose: Pose::at(Vec3::new(0.5, -60.35, 0.5)),
+            },
+        },
+    );
+    edge.tell(WEST, ticked(vec![passengers(1 << 32, &[5])]));
+    edge.quiet().await;
+    watcher.drain();
+    let own_id = watcher.ledger_id(5);
+    assert_eq!(watcher.passengers.len(), told_before + 1, "told once");
+    assert_eq!(
+        watcher
+            .passengers
+            .last()
+            .map(|told| told.passengers.clone()),
+        Some(vec![own_id])
     );
 }
 
