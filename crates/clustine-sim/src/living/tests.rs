@@ -46,7 +46,9 @@ fn stand_body() -> Living {
 }
 
 fn health(living: &Living) -> f32 {
-    let Kind::ArmorStand { health, .. } = living.kind;
+    let Kind::ArmorStand { health, .. } = living.kind else {
+        panic!("a stand's body");
+    };
     health
 }
 

@@ -22,7 +22,7 @@ const FLUID_VERTICAL_DRAG: f64 = 0.800_000_011_920_929;
 impl Living {
     /// `travel(Vec3.ZERO)`: in a fluid where it is in one (`shouldTravelInFluid`: a
     /// living body is moved by fluids and stands on none), else in the air.
-    pub(super) fn travel<R: Holds + ?Sized>(&mut self, world: &R) {
+    pub(crate) fn travel<R: Holds + ?Sized>(&mut self, world: &R) {
         if self.body.in_water || self.in_lava() {
             self.travel_in_fluid(world);
         } else {

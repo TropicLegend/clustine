@@ -2644,6 +2644,13 @@ impl RegionRunner {
             .map(|position| (*position, self.region.scheduled_ticks(*position)))
             .collect();
         self.ageing = output.ticks_pending.iter().copied().collect();
+        for mob in &output.unreadable_mobs {
+            warn!(
+                tick = self.region.tick_number(),
+                mob = mob.0,
+                "a mob's record is not one this build reads; it is left as it is"
+            );
+        }
         let region = &self.region;
         self.entities_ageing.extend(
             output

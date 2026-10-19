@@ -14,8 +14,7 @@ clustine-noise.workspace = true
 clustine-world.workspace = true
 # `StrictMath`'s sine and cosine, for the one angle of a throw the game takes them for.
 libm = "0.2"
+# A mob's parts in its record, in an encoding that is the same bytes wherever it runs.
+postcard.workspace = true
 serde.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-postcard.workspace = true

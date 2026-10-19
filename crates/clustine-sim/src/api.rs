@@ -1400,6 +1400,10 @@ pub struct TickOutput {
     /// worker saves their entities at its checkpoints and its stop, so that what the
     /// store has of them is never older than the last checkpoint.
     pub entities_ageing: Vec<ChunkPos>,
+    /// Mobs whose record this build cannot read (a part of a later version, or bytes that
+    /// are not a part's): each is left as it is and does not tick, and the worker logs it
+    /// (`docs/groundwork/n7-plan.md`, section 9.6, item 2).
+    pub unreadable_mobs: Vec<EntityId>,
     /// The entities the tick sent across a line, each to the chunk it is in, whole with
     /// the `hops` it had: their chunks' changes have them `Gone`.
     pub arrivals: Vec<(ChunkPos, Entity)>,

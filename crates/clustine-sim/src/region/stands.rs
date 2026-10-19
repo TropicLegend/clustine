@@ -388,21 +388,16 @@ impl Region {
         1.0 + collide::collide_with_shapes([0.0, -2.0, 0.0], raised, &shapes)[1]
     }
 
-    /// The living body of the stand `entity` of the loaded chunk `position`, as its tick
-    /// starts.
-    fn living_of(&self, entity: &Entity, position: ChunkPos) -> Option<Living> {
-        let EntityData::ArmorStand {
-            flags,
-            equipment,
-            health,
-            air,
-            frozen,
-            ..
-        } = &entity.data
-        else {
-            return None;
-        };
-        let (width, height, eye) = stand_size(entity.kind, *flags);
+    /// The physics body of the living entity `entity` of the loaded chunk `position`, of
+    /// `width` and `height`, as its tick starts: its record with what the region keeps
+    /// of it in memory between ticks.
+    pub(super) fn living_body(
+        &self,
+        entity: &Entity,
+        width: f32,
+        height: f32,
+        position: ChunkPos,
+    ) -> Body {
         let memory = self.entity_memory.get(&entity.key);
         let mut body = Body {
             position: entity.position,
@@ -437,6 +432,26 @@ impl Region {
                 None,
             );
         }
+        body
+    }
+
+    /// The living body of the stand `entity` of the loaded chunk `position`, as its tick
+    /// starts.
+    fn living_of(&self, entity: &Entity, position: ChunkPos) -> Option<Living> {
+        let EntityData::ArmorStand {
+            flags,
+            equipment,
+            health,
+            air,
+            frozen,
+            ..
+        } = &entity.data
+        else {
+            return None;
+        };
+        let (width, height, eye) = stand_size(entity.kind, *flags);
+        let memory = self.entity_memory.get(&entity.key);
+        let body = self.living_body(entity, width, height, position);
         let kind = Kind::ArmorStand {
             health: health.0,
             invulnerable: flags & (INVISIBLE | MARKER) != 0,
@@ -499,6 +514,33 @@ impl Region {
             &mut stream,
         );
         self.entity_drew(key, stream.used);
+        self.living_aftermath(key, &mut living, output);
+        match living.end {
+            End::Lives => {}
+            End::Broken => {
+                self.broken_by_anything(&entity, output);
+                self.kill_stand(key, output);
+                return;
+            }
+            End::Killed => {
+                self.kill_stand(key, output);
+                return;
+            }
+        }
+        if let Some(after) = self.write_stand(&entity, living, position, output) {
+            self.push_carts(&after, output);
+        }
+    }
+
+    /// What a living body's tick met that the region does: its landing and what it
+    /// stood on (`vibrations.rs`), the plates, tripwire and detector rails its walk met
+    /// (`pressed.rs`), and its sounds.
+    pub(super) fn living_aftermath(
+        &mut self,
+        key: EntityId,
+        living: &mut Living,
+        output: &mut TickOutput,
+    ) {
         // Its landing, then what it stood on (`vibrations.rs`).
         let source = super::vibrations::Source::of(key);
         if let Some(on) = living.landed_on.take() {
@@ -532,21 +574,6 @@ impl Region {
                 except: None,
             });
         }
-        match living.end {
-            End::Lives => {}
-            End::Broken => {
-                self.broken_by_anything(&entity, output);
-                self.kill_stand(key, output);
-                return;
-            }
-            End::Killed => {
-                self.kill_stand(key, output);
-                return;
-            }
-        }
-        if let Some(after) = self.write_stand(&entity, living, position, output) {
-            self.push_carts(&after, output);
-        }
     }
 
     /// What the body's tick leaves of the stand `before` of the chunk `position`: its
@@ -572,7 +599,10 @@ impl Region {
         };
         let Kind::ArmorStand {
             health: health_now, ..
-        } = living.kind;
+        } = living.kind
+        else {
+            unreachable!("a stand's body is a stand's");
+        };
         *health = Float(health_now);
         *air = i16::try_from(living.air).expect("air is kept between -20 and 300");
         *frozen = u16::try_from(living.frozen).expect("freezing is kept between 0 and 140");

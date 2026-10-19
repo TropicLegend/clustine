@@ -150,6 +150,40 @@ impl Random {
             }
         }
     }
+
+    /// `nextBoolean`.
+    #[allow(dead_code, reason = "for the goals and the body of mobs, N7b and N7c")]
+    pub(crate) fn next_bool(&mut self) -> bool {
+        self.next_u64() >> 63 != 0
+    }
+
+    /// `nextIntBetweenInclusive(low, high)`: `nextInt(high - low + 1) + low`.
+    #[allow(dead_code, reason = "for the goals and the body of mobs, N7b and N7c")]
+    pub(crate) fn next_int_between(&mut self, low: i32, high: i32) -> i32 {
+        let span = u32::try_from(i64::from(high) - i64::from(low) + 1).unwrap_or(1);
+        low.wrapping_add(self.next_int(span) as i32)
+    }
+
+    /// `nextGaussian`: normal, of mean 0 and deviation 1, by the polar method, which
+    /// draws two doubles at a time until a pair falls in the circle and keeps neither
+    /// for later, so that what a draw takes is the game's in count only in distribution.
+    #[allow(dead_code, reason = "for the goals and the body of mobs, N7b and N7c")]
+    pub(crate) fn next_gaussian(&mut self) -> f64 {
+        loop {
+            let x = 2.0 * self.next_double() - 1.0;
+            let y = 2.0 * self.next_double() - 1.0;
+            let s = x * x + y * y;
+            if s < 1.0 && s != 0.0 {
+                return x * (-2.0 * libm::log(s) / s).sqrt();
+            }
+        }
+    }
+}
+
+impl crate::physics::item::Draws for Random {
+    fn next_float(&mut self) -> f32 {
+        Random::next_float(self)
+    }
 }
 
 impl Region {
@@ -229,6 +263,19 @@ fn ticks_randomly(state: BlockState) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_int_between_two_bounds_lies_within_them_both_and_reaches_each() {
+        let mut random = Random::of_entity(1, EntityId(2), 3);
+        let drawn: Vec<i32> = (0..200).map(|_| random.next_int_between(-2, 2)).collect();
+        assert!(drawn.iter().all(|value| (-2..=2).contains(value)));
+        assert!(drawn.contains(&-2) && drawn.contains(&2));
+        assert_eq!(random.next_int_between(5, 5), 5);
+        let heads = (0..1000).filter(|_| random.next_bool()).count();
+        assert!((400..600).contains(&heads), "{heads}");
+        let mean = (0..2000).map(|_| random.next_gaussian()).sum::<f64>() / 2000.0;
+        assert!(mean.abs() < 0.1, "{mean}");
+    }
     use super::*;
 
     #[test]

@@ -25,7 +25,7 @@ use crate::api::{EntityKind, EntityState, ItemStack, Pose, RegionEvent, TickOutp
 /// How far above a player's feet their eyes are, standing and crouching: the game's
 /// `Avatar` dimensions, which it keeps as floats.
 const STANDING_EYES: f32 = 1.62;
-const CROUCHING_EYES: f32 = 1.27;
+pub(super) const CROUCHING_EYES: f32 = 1.27;
 
 /// How far below the eyes an item leaves from (`LivingEntity.createItemStackToDrop`).
 const BELOW_THE_EYES: f64 = 0.300_000_011_920_928_96;
@@ -277,8 +277,7 @@ impl Region {
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
             EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
-            // The mob's tick is N7b's and N7c's, on the skeleton N7a1 lays down next.
-            EntityData::Mob { .. } => {}
+            EntityData::Mob { .. } => self.tick_mob(entity, position, output),
         }
         self.ticking = before;
     }

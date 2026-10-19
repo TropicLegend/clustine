@@ -118,11 +118,18 @@ pub(crate) enum Damage {
 
 /// The kind of a body, for what only its kind decides: how it takes damage
 /// (`hurtServer`) and the sound of its fall.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Kind {
     /// An armour stand, with its health and whether nothing but the void hurts it (its
     /// own field of being invisible, or being a marker).
     ArmorStand { health: f32, invulnerable: bool },
+    /// A mob of the entity type `kind`, whose hurts its body takes
+    /// (`crate::mobs::body::hurt_server`); what it meets of itself in its tick waits in
+    /// `hurts` for its tick to take, in the order met.
+    Mob {
+        kind: u16,
+        hurts: Vec<(Damage, f32)>,
+    },
 }
 
 /// How a body's tick ended it.
@@ -257,8 +264,17 @@ impl Living {
         if !self.alive() {
             return false;
         }
-        match self.kind {
-            Kind::ArmorStand {
+        match &mut self.kind {
+            Kind::Mob { hurts, .. } => {
+                // The mob's body takes it in its tick (`mobs::tick`), after the step that
+                // met it and before anything else reads its health: noted here, in
+                // order. Taken as given here; where the game reads the answer (lava's
+                // burn sound plays only for a hurt that counted), the living body's part
+                // (N7b) makes it the mob's own.
+                hurts.push((damage, amount));
+                true
+            }
+            &mut Kind::ArmorStand {
                 health,
                 invulnerable,
             } => {
@@ -295,16 +311,19 @@ impl Living {
         if left <= 0.5 {
             self.end = End::Broken;
         } else {
-            let Kind::ArmorStand { health, .. } = &mut self.kind;
-            *health = left;
+            if let Kind::ArmorStand { health, .. } = &mut self.kind {
+                *health = left;
+            }
         }
     }
 
     /// `getFallDamageSound(damage)` of the kind.
     fn fall_sound(&self, damage: i32) -> i32 {
-        let _ = damage;
         match self.kind {
             Kind::ArmorStand { .. } => sounds::ENTITY_ARMOR_STAND_FALL,
+            // `LivingEntity.getFallSounds`, which no mob of N7 changes.
+            Kind::Mob { .. } if damage > 4 => sounds::ENTITY_GENERIC_BIG_FALL,
+            Kind::Mob { .. } => sounds::ENTITY_GENERIC_SMALL_FALL,
         }
     }
 
@@ -326,7 +345,7 @@ impl Living {
     }
 
     /// `LivingEntity.baseTick()`.
-    fn base_tick<R: Holds + ?Sized>(&mut self, world: &R) {
+    pub(crate) fn base_tick<R: Holds + ?Sized>(&mut self, world: &R) {
         // `Entity.baseTick`.
         self.was_in_powder_snow = self.in_powder_snow;
         self.in_powder_snow = false;
@@ -395,7 +414,16 @@ impl Living {
 
     /// `LivingEntity.aiStep()` of a body without a mind.
     fn ai_step<R: Holds + ?Sized>(&mut self, world: &R, draws: &mut dyn Draws) {
-        // Small motion is zeroed, each axis apart, as for every type but the player.
+        self.zero_small_motion();
+        if self.travels {
+            self.travel(world);
+        }
+        self.after_travel(world, draws);
+    }
+
+    /// The start of `aiStep`: small motion is zeroed, each axis apart, as for every type
+    /// but the player. A mob's AI runs after it (`crate::mobs::tick`).
+    pub(crate) fn zero_small_motion(&mut self) {
         let [mut x, mut y, mut z] = self.body.motion;
         if x.abs() < 0.003 {
             x = 0.0;
@@ -407,9 +435,11 @@ impl Living {
             y = 0.0;
         }
         self.body.motion = [x, y, z];
-        if self.travels {
-            self.travel(world);
-        }
+    }
+
+    /// What `aiStep` does after `travel`: the effects of the blocks walked through, and
+    /// powder snow's freezing.
+    pub(crate) fn after_travel<R: Holds + ?Sized>(&mut self, world: &R, draws: &mut dyn Draws) {
         self.apply_effects_from_blocks(world, draws);
         // Powder snow freezes it a tick at a time and thaws it two; a fully frozen
         // body's `freeze` hit every 40 ticks breaks no stand, and is not asked.

@@ -24,6 +24,7 @@
 pub mod api;
 mod living;
 pub(crate) mod menus;
+mod mobs;
 mod physics;
 pub mod placement;
 mod region;
