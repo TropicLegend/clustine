@@ -1403,7 +1403,8 @@ impl Region {
     /// `VehicleEntity` is hurt (a creative player's breaks it at once, a chest boat
     /// spilling what it holds); a click of a player who does not sneak seats them while
     /// it has not been under water sixty ticks (`AbstractBoat.interact`), a chest
-    /// boat's too (the plan, section 7 item 11): its chest does not open (decision 3).
+    /// boat's too (the plan, section 7 item 11), whose chest opens instead to a player
+    /// who sneaks or finds no room (`menu_play.rs`).
     /// Riding a boat from across a line is a mount, the riders' step's (N5h).
     pub(crate) fn boat_used(
         &mut self,
@@ -1428,8 +1429,18 @@ impl Region {
                 }
                 let out_of_control =
                     parts_of(&entity.data).map_or(0.0, |parts| parts.out_of_control);
+                // As it was before anyone got on by this use.
+                let full = !self.can_add_passenger(entity, position);
                 if !sneaking && out_of_control < OUT_OF_CONTROL {
                     self.mount_player(player, entity.key, output);
+                }
+                // `ChestBoat.interact`: its chest opens to a player who sneaks, or who
+                // could not get on for want of room (`interactWithContainerVehicle`).
+                if super::menu_play::is_container_vehicle(entity.kind)
+                    && (sneaking || full)
+                    && let Some(id) = self.player_with_entity(player)
+                {
+                    self.use_container_vehicle(entity.key, id, output);
                 }
             }
             // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).

@@ -12,10 +12,6 @@
 //! Clustine's stacks have no components, so the game's `isSameItemSameComponents` is
 //! the item alone, and every N6 container keeps the default 99 a slot as its most
 //! (`Container.getMaxStackSize`), so a slot holds a full stack of its item at most.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used from step N6b's integration on")
-)]
 
 use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, ITEMS, items};
@@ -129,6 +125,13 @@ pub(crate) fn inventory_slot_of(kind: MenuKind, index: usize) -> Option<usize> {
 }
 
 /// The menu slot that shows the inventory slot `slot` (0 to 35), if one does.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the edge maps the inventory onto a menu itself; kept beside its inverse"
+    )
+)]
 pub(crate) fn menu_slot_of(kind: MenuKind, slot: usize) -> Option<usize> {
     let main = ITEM_SLOTS - HOTBAR_SLOTS;
     let from = if slot < HOTBAR_SLOTS {

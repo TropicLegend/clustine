@@ -474,10 +474,11 @@ fn a_click_on_a_fence_places_a_torch_on_it_and_a_chest_takes_the_click() {
             .with(2, 64, 0, blocks::CHEST);
     let changes = click_and_place(&click_top(at(0, 64, 0), items::TORCH), &world);
     assert_eq!(changes, Some(vec![(at(0, 65, 0), blocks::TORCH)]));
-    assert_eq!(
+    // A chest takes the click for its menu, which the region opens.
+    assert!(matches!(
         super::click(&click_top(at(2, 64, 0), items::TORCH), &world),
-        Clicked::Nothing
-    );
+        Clicked::ByRule { .. }
+    ));
 }
 
 #[test]

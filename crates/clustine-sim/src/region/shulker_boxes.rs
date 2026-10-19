@@ -109,7 +109,6 @@ impl Region {
     /// `ShulkerBoxBlock.canOpen`: the box at `pos`, of a chunk loaded or copied, is
     /// already moving its lid, or is shut with room for its lid: the half block beyond
     /// its face meets no block's shape and no solid entity (`Level.noCollision`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "called by the menus"))]
     pub(crate) fn shulker_box_may_open(&self, pos: BlockPos) -> bool {
         let Some(state) = self.block(pos) else {
             return false;

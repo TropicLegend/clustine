@@ -422,6 +422,10 @@ impl Region {
         let Some(state) = self.own_block(pos) else {
             return;
         };
+        if Region::opens_menu(state) {
+            self.use_container(pos, player, output);
+            return;
+        }
         if signal::use_reads_signal(state) && !self.ticks_chunk(pos.chunk()) {
             return;
         }

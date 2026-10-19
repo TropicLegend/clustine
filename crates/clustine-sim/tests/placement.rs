@@ -474,11 +474,16 @@ fn a_flower_pot_takes_nothing_else_and_nothing_is_placed_on_it() {
     }
 }
 
+/// A chest takes the click for its menu, which the region opens (step N6b), and nothing
+/// is placed against it.
 #[test]
-fn a_chest_is_used_and_nothing_happens() {
+fn a_chest_takes_the_click_for_its_menu_and_nothing_is_placed() {
     let world = World::new().with(P, "chest[facing=north]");
     let click = click_on(P, Face::Top, Some(items::STONE));
-    assert!(comes_to_nothing(&placement::click(&click, &world)));
+    assert!(matches!(
+        placement::click(&click, &world),
+        Clicked::ByRule { .. }
+    ));
     assert!(changes(&click, &world).is_empty());
 }
 

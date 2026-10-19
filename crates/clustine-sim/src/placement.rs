@@ -242,6 +242,17 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     // A lever, a button and wire use themselves by rules that tell their neighbours,
     // which the region runs.
     let face = geometry::from_api(click.face);
+    // A container opens a menu, which the region keeps (`docs/groundwork/n6-plan.md`,
+    // decision 2); the click is the block's whether it opens or not.
+    if data::is(state, BlockClass::ChestBlock)
+        || data::is(state, BlockClass::EnderChestBlock)
+        || data::is(state, BlockClass::BarrelBlock)
+        || data::is(state, BlockClass::ShulkerBoxBlock)
+        || data::is(state, BlockClass::DispenserBlock)
+        || data::is(state, BlockClass::HopperBlock)
+    {
+        return Clicked::ByRule { position, face };
+    }
     // A repeater's delay and a comparator's mode, which every Clustine player may
     // change, as creative players may build (`Abilities.mayBuild`).
     if data::is(state, BlockClass::LeverBlock)

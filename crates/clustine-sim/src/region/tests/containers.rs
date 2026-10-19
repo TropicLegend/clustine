@@ -203,8 +203,11 @@ fn the_recheck_corrects_a_count_nobody_stands_behind() {
     assert_eq!(closed.len(), 1);
     assert_eq!(heard(closed[0]), [(sound::BLOCK_CHEST_CLOSE, 0.5)]);
     assert_eq!(region.openers(CHEST), 0);
+    // The menu is closed in the player's tick as `stillValid` fails, which says the
+    // count of 0; the recheck that was due says it again, as the game's
+    // `recheckOpeners` says the count whether it changed or not, and plays no sound.
     let said: Vec<_> = outputs.iter().flat_map(block_events).collect();
-    assert_eq!(said, [(CHEST, block, 1, 0)]);
+    assert_eq!(said, [(CHEST, block, 1, 0); 2]);
     // No recheck is left.
     let later: Vec<_> = (0..10)
         .flat_map(|_| block_events(&idle(&mut region)))

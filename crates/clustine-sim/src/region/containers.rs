@@ -66,10 +66,6 @@ impl Container {
     /// What the game's `unpackLootTable` does to the data, without the loot, which N6
     /// does not have (decision 4): the table is gone, and the slots are saved from now
     /// on.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "called by the menus as a chest opens")
-    )]
     pub(crate) fn unpack(&mut self) {
         self.loot = false;
     }
@@ -465,10 +461,6 @@ impl Region {
     /// `setChanged` does: the data, committed and not sent to the edges, and the
     /// comparators reading it told (`updateNeighbourForOutputSignal`). A container of
     /// another size than the block's is not written.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "called by the menus, dispensers and hoppers")
-    )]
     pub(crate) fn set_container(
         &mut self,
         pos: BlockPos,
@@ -568,7 +560,6 @@ impl Region {
     /// (`ContainerOpenersCounter.incrementOpeners`), and a shulker box its own way
     /// (`shulker_boxes.rs`); a dispenser, a dropper or a hopper counts nobody. A double
     /// chest's menu opens both halves, the right one first (`CompoundContainer`).
-    #[cfg_attr(not(test), expect(dead_code, reason = "called by the menus"))]
     pub(crate) fn start_open(&mut self, pos: BlockPos, output: &mut TickOutput) {
         let Some(state) = self.own_block(pos) else {
             return;
@@ -593,7 +584,6 @@ impl Region {
     /// `stopOpen` of the container block at `pos` by a player, as a menu's `removed`
     /// calls it (`ContainerOpenersCounter.decrementOpeners`, and the shulker box's). A
     /// count already at 0 stays there, where the game's would go below.
-    #[cfg_attr(not(test), expect(dead_code, reason = "called by the menus"))]
     pub(crate) fn stop_open(&mut self, pos: BlockPos, output: &mut TickOutput) {
         let Some(state) = self.own_block(pos) else {
             return;

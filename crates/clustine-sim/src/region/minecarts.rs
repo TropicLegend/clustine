@@ -1373,8 +1373,8 @@ impl Region {
     /// `VehicleEntity` is hurt (a creative player's breaks it at once, a container
     /// spilling what it holds); a furnace cart takes coal or charcoal (`addFuel`), its
     /// push pointing from the player to the cart, as long as they are apart; a chest or
-    /// hopper cart does not open (decision 3), and riding a plain cart is a mount, the
-    /// riders' step's.
+    /// hopper cart opens its menu (`interactWithContainerVehicle`, `menu_play.rs`), and
+    /// riding a plain cart is a mount, the riders' step's.
     pub(crate) fn minecart_used(
         &mut self,
         entity: &Entity,
@@ -1403,6 +1403,11 @@ impl Region {
                 if i32::from(entity.kind) == entity_types::FURNACE_MINECART {
                     let from = from.map(|component| component.0);
                     self.add_fuel(entity, position, held, from, output);
+                }
+                if super::menu_play::is_container_vehicle(entity.kind)
+                    && let Some(id) = self.player_with_entity(player)
+                {
+                    self.use_container_vehicle(entity.key, id, output);
                 }
             }
             // An explosion's hit across a line is step N6g's (`docs/groundwork/n6-plan.md`).

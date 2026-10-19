@@ -3555,12 +3555,17 @@ impl RegionRunner {
                 | PlayerInput::MoveVehicle(_)
                 | PlayerInput::PaddleBoat { .. }
                 | PlayerInput::PickItemFromEntity { .. } => return false,
-                // Held while their container's chunks load from step N6b on
-                // (`docs/groundwork/n6-plan.md`, section 8 item 6 and section 9 item 3).
-                PlayerInput::ContainerClick { .. }
-                | PlayerInput::CloseContainer { .. }
-                | PlayerInput::OpenVehicleInventory
-                | PlayerInput::MenuResync => return false,
+                // A click and a close are about the chunks of the menu's container: held
+                // while one is on its way, so that a click after a merge waits for the
+                // chest rather than being refused (`docs/groundwork/n6-plan.md`, section 8
+                // item 6, bounded as section 9 item 3 has it, below).
+                PlayerInput::ContainerClick { .. } | PlayerInput::CloseContainer { .. } => {
+                    match &message.body {
+                        EdgeToWorker::Input { player, .. } => self.region.menu_chunks(*player),
+                        _ => return false,
+                    }
+                }
+                PlayerInput::OpenVehicleInventory | PlayerInput::MenuResync => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

@@ -40,6 +40,7 @@ mod items;
 mod knots;
 mod leashes;
 mod lends;
+mod menu_play;
 mod minecarts;
 mod picks;
 mod pistons;
@@ -412,6 +413,12 @@ pub struct Region {
     /// The notes of riders who left the world in this tick, each with where their
     /// vehicle let them off (`riders.rs`). Empty between ticks.
     dismounted: Vec<(PlayerId, StayNote)>,
+    /// The player whose input is being applied, and its number, which is the serial of
+    /// a menu it opens (`menu_play.rs`). `None` between inputs.
+    applying: Option<(PlayerId, u64)>,
+    /// What the region last reported of each player's menu (`menu_play.rs`). Not in the
+    /// state: a region restored, merged or split reports every menu whole.
+    reported: BTreeMap<PlayerId, menu_play::Reported>,
     /// How far pistons have moved each entity along each axis in this tick
     /// (`Entity.pistonDeltas`, `pushed.rs`); empty between ticks, as the game resets
     /// them at the first push of a tick.
@@ -531,6 +538,8 @@ impl Region {
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
             dismounted: Vec::new(),
+            applying: None,
+            reported: BTreeMap::new(),
             piston_deltas: BTreeMap::new(),
             block_streams: BTreeMap::new(),
             arrival_tickets: BTreeMap::new(),
@@ -875,7 +884,10 @@ impl Region {
             self.send(*edge, answer, &mut output);
         }
         for (edge, id, entity, number, input) in &inputs.inputs {
+            // A menu the input opens is named by the input's number.
+            self.applying = Some((*id, *number));
             self.apply_input(*edge, *id, *entity, *number, input, &mut output);
+            self.applying = None;
         }
         self.made_in = None;
         // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
@@ -915,6 +927,10 @@ impl Region {
         // The end of each riding player's tick: the checks of a driver's next moves
         // count from where their boat is now (`boats.rs`).
         self.tick_drivers(&mut output);
+        // The end of each player's tick for their menu, after every move and before the
+        // block events are kept, so that a menu closed at a hand-over keeps its lid's
+        // events with their chunk (`docs/groundwork/n6-plan.md`, section 8 item 7).
+        self.tick_menus(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
         // entities: a piston's move finishing) with the next tick's
@@ -1141,6 +1157,7 @@ impl Region {
 
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        self.menu_leaving(id, true, output);
         if let Some(player) = self.players.remove(&id) {
             self.unseat_leaving(Some(id), &player, output);
             self.journal.players.insert(id);
@@ -1155,6 +1172,7 @@ impl Region {
     /// their entity as removed. Their edge did not ask for it, so it is told that the
     /// stay has ended.
     fn end_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        self.menu_leaving(id, true, output);
         let Some(player) = self.players.remove(&id) else {
             return;
         };
@@ -1362,6 +1380,9 @@ impl Region {
                 if hops >= transfer.hops {
                     return;
                 }
+                // The copy here gives way to a later copy of the same stay, which has
+                // what the player carried: its menu goes without a throw.
+                self.menu_leaving(id, false, output);
                 if let Some(player) = self.players.remove(&id) {
                     self.unseat_leaving(None, &player, output);
                 }
@@ -1881,11 +1902,18 @@ impl Region {
                 };
                 self.pick_entity_item(id, user, *entity, output);
             }
-            // The menus' inputs, which step N6b takes (`docs/groundwork/n6-plan.md`).
-            PlayerInput::ContainerClick { .. }
-            | PlayerInput::CloseContainer { .. }
-            | PlayerInput::OpenVehicleInventory
-            | PlayerInput::MenuResync => {}
+            // A player's menus (`menu_play.rs`).
+            PlayerInput::ContainerClick {
+                serial,
+                slot,
+                button,
+                kind,
+            } => self.menu_click(id, *serial, *slot, *button, *kind, output),
+            PlayerInput::CloseContainer { serial } => {
+                self.menu_closed_by_client(id, *serial, output);
+            }
+            PlayerInput::OpenVehicleInventory => self.open_vehicle_inventory(id, output),
+            PlayerInput::MenuResync => self.menu_resync(id, output),
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => player.keys = *keys,
@@ -2985,6 +3013,7 @@ mod tests {
     mod leashes;
     mod lends;
     mod lends_by_the_record;
+    mod menus;
     mod minecarts;
     mod pistons;
     mod post_processing_and_seams;
