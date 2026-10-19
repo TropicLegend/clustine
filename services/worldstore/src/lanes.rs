@@ -206,6 +206,10 @@ struct Lane {
     /// split has to name a tick above it, so that no checkpoint that is still under
     /// way can be put in place over the state it leaves.
     named: u64,
+    /// Whether the region's next commit is its first since a hello, a merge or a split,
+    /// which names every stay it has (ADR-0020, section 3): the players whose faces it
+    /// wrote and does not name are offline (`docs/groundwork/n7-faces.md`, step 3).
+    names_all: bool,
 }
 
 impl Lane {
@@ -1230,12 +1234,13 @@ impl Lanes {
                 clock,
             } => {
                 let region = session.region;
-                // The store does not judge a stay that is no more yet (step N7a2's
-                // faces, the next commit): it is passed over, as before there was one.
-                let stays: Vec<StayNote> = stays
+                // A stay that is no more is the faces' (`faces.rs`): the players' records
+                // and the log keep the place, and the store judges it once the commit
+                // is taken, below.
+                let (gone, stays): (Vec<StayNote>, Vec<StayNote>) = stays
                     .into_iter()
-                    .filter(|note| !matches!(note, StayNote::Gone { .. }))
-                    .collect();
+                    .partition(|note| matches!(note, StayNote::Gone { .. }));
+                let names_all = mem::take(&mut lane.names_all);
                 // What the commit took of the arrivals is looked at before anything is
                 // appended: each filed and held by the region, or the commit is refused,
                 // appending nothing, and the region is lost; a taking passed over would
@@ -1489,7 +1494,7 @@ impl Lanes {
                         *highest = (*highest).max(tick);
                         lane.latest = lane.latest.max(tick);
                         lane.named = lane.named.max(tick);
-                        if notes.is_empty() {
+                        if notes.is_empty() && gone.is_empty() && !names_all {
                             self.call_off_returns(calls_off);
                             return;
                         }
@@ -1499,7 +1504,9 @@ impl Lanes {
                         // stay that is in no state (ADR-0020, section 3). What the
                         // notes are answered with goes behind the commit's own
                         // answer, and out when the group is durable.
-                        self.players.noted(segment, Some(&mut self.group.undo));
+                        if !notes.is_empty() {
+                            self.players.noted(segment, Some(&mut self.group.undo));
+                        }
                         let home = region == self.table.home_region;
                         let mut dead = Vec::new();
                         let mut written = Vec::new();
@@ -1567,6 +1574,28 @@ impl Lanes {
                         self.call_off_returns(calls_off);
                         for (player, held) in written {
                             self.face_written(player, held);
+                        }
+                        // Then the stays that are no more, and, in the region's first
+                        // commit, the players it wrote and does not name.
+                        let mut index = stays.len() as u32;
+                        for note in &gone {
+                            if let StayNote::Gone {
+                                player,
+                                entity,
+                                hops,
+                            } = *note
+                                && let Some(held) = self.faces.gone(player, entity, hops, region)
+                            {
+                                self.face_removed(player, held, FaceSeq(at, index));
+                            }
+                            index += 1;
+                        }
+                        if names_all {
+                            let named: BTreeSet<PlayerId> =
+                                stays.iter().map(StayNote::player).collect();
+                            for (player, held) in self.faces.offline(region, &named) {
+                                self.face_removed(player, held, FaceSeq(at, index));
+                            }
                         }
                     }
                     Err(error) => {
@@ -2387,6 +2416,20 @@ impl Lanes {
     }
 
     /// Answers the owner of `region`, if it has one, once the group is durable.
+    /// The player's face, which `held` was, is gone at `seq`: those who were sent it are
+    /// told.
+    fn face_removed(&mut self, player: PlayerId, held: Held, seq: FaceSeq) {
+        let mut reached = audience(&self.copies, &self.table, held.chunk());
+        reached.remove(&held.writer);
+        let removal = FaceChange::Removed {
+            player,
+            entity: held.entity,
+            hops: held.hops,
+            seq,
+        };
+        stream_faces(&mut self.group, reached, &removal);
+    }
+
     /// A taken `Has` of the living stay wrote the player's face: it goes to the regions
     /// that copy or hold its chunk but its writer, and where it moved to another chunk,
     /// a removal to those of the old chunk the new face does not reach
@@ -3081,6 +3124,7 @@ impl Lanes {
             unsynced: Vec::new(),
             held: Vec::new(),
         });
+        lane.names_all = true;
         lane.current = Some(session.number);
         lane.latest = restored_tick;
         lane.named = restored_tick;
@@ -3222,6 +3266,7 @@ impl Lanes {
         lane.record = Some(entry);
         lane.latest = tick;
         lane.named = tick;
+        lane.names_all = true;
         info!(%region, %absorbed, tick, "a region has absorbed another");
         // What the absorbed region noted of players the survivor notes from now on
         // (the review's R6), and the faces of its land are the survivor's to see.
@@ -3408,6 +3453,7 @@ impl Lanes {
         lane.record = Some(entry);
         lane.latest = tick;
         lane.named = tick;
+        lane.names_all = true;
         let file = RegionFile {
             epoch: as_epoch,
             entity_ids: NO_ENTITY_IDS,
@@ -3423,6 +3469,11 @@ impl Lanes {
             ..Lane::default()
         };
         self.regions.insert(new, made);
+        // The players in the part's land are the part's to name from now on, which its
+        // first tick does once it is opened; the survivor's first names the rest.
+        let table = &self.table;
+        self.faces
+            .rewrite_writer_where(region, new, |chunk| table.holder(chunk) == Some(new));
         if let Err(error) = self.write_region_files() {
             warn!(region = %new, %error, "the file of a new region could not be written yet");
         }

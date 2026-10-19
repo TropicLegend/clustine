@@ -1569,3 +1569,24 @@ record implies and did not say as a rule that can be tested:
   what was acknowledged before the login began (section 10, row 10). In the bots'
   runs 5 of 8 returns after an edge was killed, and 2 of 12 second logins, were
   behind the last state sent, all within the bound.
+
+## Amended with step N7a2 (the faces of `docs/groundwork/n7-faces.md`)
+
+- **A fourth note, `Gone { player, entity, hops }`**, is written for a leave of the
+  living stay, for a player let go whose edge went with them, and for a `Discard` the
+  region cannot see is out of date (it holds no stay of the player at or after it). It is
+  the player's last note in its commit. It changes nothing of the records or the log:
+  it ends the player's face in the store, which the world's players are made of. It
+  counts from the face's writer with as many hand-overs or more, from any region with
+  more, and from any region with as many while the latest note let the stay go. Row 17
+  of the table in section 10 changes so: a `Discard` writes `Gone`, which counts, and a
+  player who leaves in the middle of a hand-over leaves the world's players.
+- **`Has` carries the player's face and whether the stay was let go in the tick.** The
+  log and the players' file keep neither: faces are memory, and every region's first
+  tick names every stay again.
+- **`Discard` names the player and the transfer's hand-overs** (`EdgeToWorker::Discard`
+  and `PlayerChange::Discard`).
+- **A region's first commit after a hello, a merge or a split marks offline** the
+  players whose faces it wrote and does not name, but those its latest note let go. A
+  merge gives the survivor the absorbed region's writes, and a split gives the part the
+  writes of players in its land.
