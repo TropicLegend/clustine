@@ -28,11 +28,11 @@ use clustine_protocol::packets::play::{
     Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities,
     PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
     SectionBlocksUpdate, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
-    SetEntityData, SetEntityLink, SetEquipment, SetHeadRotation, SetHeldSlot, SetPassengers,
-    SetPlayerInventory, SetTime, Sound, SpawnEntity, SwingAnimation, SyncEntityPosition,
-    SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, UpdateAttributes, abilities, angle,
-    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
-    relative,
+    SetEntityData, SetEntityLink, SetEquipment, SetExperience, SetHeadRotation, SetHeldSlot,
+    SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity, SwingAnimation,
+    SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, UpdateAttributes,
+    abilities, angle, entity_data, game_event, game_mode, inventory as protocol_inventory,
+    level_event, player_info, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -1811,6 +1811,17 @@ impl Fanout {
                 player,
                 event: PlayerEvent::HeldSlot { slot },
             } => self.held_slot(player, slot).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Experience(experience),
+            } => {
+                let packet = encoded(&SetExperience {
+                    progress: experience.progress,
+                    level: experience.level,
+                    total: experience.total,
+                });
+                self.send_to_player(player, [packet]).await;
+            }
             WorkerToEdge::ToPlayer {
                 player,
                 event:
@@ -6728,6 +6739,8 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: entity,
             name: "Player1".to_owned(),
             pose: Pose::at(Vec3::new(64.5, -60.0, 0.5)),
@@ -9671,6 +9684,8 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

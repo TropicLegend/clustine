@@ -43,8 +43,9 @@ pub use region::{
 /// since a minecart holds a TNT cart's fuse and a hopper cart's switch; 10 since an
 /// entity keeps `lived` and `fresh_at`, an item its age apart, a change may set an
 /// entity's hops, and a mob is kept by the parts of its body and mind and its type's
-/// state (`docs/groundwork/n7-plan.md`, section 11.3).
-pub const FORMAT_VERSION: u8 = 10;
+/// state (`docs/groundwork/n7-plan.md`, section 11.3); 11 since a player's place holds
+/// their experience after their ender chest (section 7.7 of the same plan).
+pub const FORMAT_VERSION: u8 = 11;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

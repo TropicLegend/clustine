@@ -3724,6 +3724,7 @@ packet_set! {
         SwingAnimation,
         DamageEvent,
         UpdateAttributes,
+        SetExperience,
     }
 }
 
@@ -5541,6 +5542,37 @@ impl Decode for UpdateAttributes {
         Ok(Self {
             entity_id,
             attributes,
+        })
+    }
+}
+
+/// A player's experience bar (`ClientboundSetExperiencePacket`): the progress towards the
+/// next level as a float, then the level and the points in all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetExperience {
+    pub progress: f32,
+    pub level: i32,
+    pub total: i32,
+}
+
+impl Packet for SetExperience {
+    const ID: i32 = clientbound::SET_EXPERIENCE;
+}
+
+impl Encode for SetExperience {
+    fn encode(&self, w: &mut Writer) {
+        w.put_f32(self.progress);
+        w.put_var_int(self.level);
+        w.put_var_int(self.total);
+    }
+}
+
+impl Decode for SetExperience {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            progress: r.f32()?,
+            level: r.var_int()?,
+            total: r.var_int()?,
         })
     }
 }

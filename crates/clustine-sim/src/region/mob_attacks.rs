@@ -3,9 +3,8 @@
 //! 4), its attack strength, its critical hit while falling, its sweep with a sword,
 //! the two pushes, and the attacker's sounds.
 //!
-//! The attack strength is the player's state (its ticker since the last swing), the
-//! lead's (`docs/groundwork/n7-plan.md`, section 7.7): until it comes it is taken as
-//! full ([`Region::attack_strength`]). What the player holds adds to their attack's
+//! The attack strength is the player's state (`experience.rs`). What the player holds
+//! adds to their attack's
 //! damage, speed and push by its default attribute modifiers.
 //!
 //! Named differences: the player's own last movement is not kept, so a sword sweeps on
@@ -53,7 +52,7 @@ pub(crate) struct Attack {
 
 /// `AttributeInstance.getValue()` of a player's attribute `attribute` of the base
 /// `base`, with the modifiers of `held` in the main hand.
-fn held_value(base: f64, attribute_id: i32, held: Option<ItemStack>) -> f64 {
+pub(crate) fn held_value(base: f64, attribute_id: i32, held: Option<ItemStack>) -> f64 {
     let attribute = attribute(attribute_id);
     let mut instance = Instance {
         attribute,
@@ -76,13 +75,6 @@ fn held_value(base: f64, attribute_id: i32, held: Option<ItemStack>) -> f64 {
 }
 
 impl Region {
-    /// `getAttackStrengthScale(0.5f)` of the player `player`: its ticker is the player's
-    /// state, the lead's (the module's documentation), and is taken as full.
-    pub(crate) fn attack_strength(&self, player: PlayerId) -> f32 {
-        let _ = player;
-        1.0
-    }
-
     /// The hit the region's player `id` makes now with what their main hand holds
     /// (`Player.attack` up to the hurt): `None` for a player the region does not have.
     pub(crate) fn attack_of(&self, id: PlayerId) -> Option<Attack> {
@@ -165,6 +157,8 @@ impl Region {
         if !attack.lands {
             return;
         }
+        // `onAttack`, behind the strength the hit was made with.
+        self.reset_attack_strength(player);
         let attacker = attack.source.cause.as_ref().map(|cause| cause.key);
         if attack.sprint_knock {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_KNOCKBACK, attack.feet, output);

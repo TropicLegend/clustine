@@ -718,6 +718,7 @@ mod tests {
         inventory.set(39, Some(ItemStack { item: 7, count: 1 }));
         inventory.set(OFF_HAND, Some(ItemStack { item: 9, count: 3 }));
         let place = Place {
+            experience: Default::default(),
             pose: Pose {
                 position: Vec3::new(-1234.5, 71.25, 0.5),
                 yaw: -179.5,
@@ -730,6 +731,7 @@ mod tests {
             ender: Default::default(),
         };
         let standing = Place {
+            experience: Default::default(),
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,
             inventory: Inventory::default(),

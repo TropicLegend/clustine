@@ -978,6 +978,7 @@ impl Witness {
                 PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
                 PlayerEvent::InventorySlot { .. }
                 | PlayerEvent::HeldSlot { .. }
+                | PlayerEvent::Experience(_)
                 | PlayerEvent::VehicleCorrected { .. }
                 | PlayerEvent::Rides { .. }
                 | PlayerEvent::Kicked { .. }
@@ -5378,6 +5379,8 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        experience: Default::default(),
+        attack_reset: None,
         entity_id: entity,
         name: "someone".to_owned(),
         pose: Pose {

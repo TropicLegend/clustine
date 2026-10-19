@@ -186,6 +186,10 @@ impl Region {
                 (present.entity_id, present.hops) >= (player.entity_id, player.hops)
             };
             if !state.players.get(id).is_some_and(later) {
+                // Their attack strength's reset is kept as the tick it was: the two
+                // regions' ticks run together but for a lag, which the player gains
+                // (a named difference of `docs/groundwork/n7-plan.md`, 7.7.2), and a
+                // region split and merged again is as one that never was.
                 state.players.insert(*id, player.clone());
             }
         }
@@ -496,6 +500,8 @@ mod tests {
             count: entity,
         });
         PlayerState {
+            experience: Default::default(),
+            attack_reset: None,
             entity_id: EntityId(entity as u64),
             name: format!("Stay{entity}"),
             pose: Pose {
@@ -529,6 +535,8 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: stay.entity_id,
             name: stay.name,
             pose: stay.pose,

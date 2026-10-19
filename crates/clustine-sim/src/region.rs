@@ -10,8 +10,8 @@ use clustine_world::{
 };
 
 use crate::api::{
-    Durable, EdgeEvent, EnderChest, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory,
-    ItemStack, Keys, LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent,
+    Durable, EdgeEvent, EnderChest, Entered, EntityKind, EntityState, Experience, HOTBAR_SLOTS,
+    Inventory, ItemStack, Keys, LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent,
     PlayerFace, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
     RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
@@ -32,6 +32,7 @@ mod diodes;
 mod dispensers;
 mod drops;
 mod entities;
+mod experience;
 mod explosions;
 mod faces;
 mod falling;
@@ -291,6 +292,13 @@ struct Player {
     /// and how many it lasts. In memory only, as `steps`: a restore or a hand-over
     /// forgets a swing that lasts a second at most.
     swinging: Option<(u64, u8)>,
+    /// See [`PlayerState::experience`].
+    experience: crate::api::Experience,
+    /// See [`PlayerState::attack_reset`].
+    attack_reset: Option<u64>,
+    /// The tick of their last level-up's sound (`lastLevelUpTime`), in memory only: a
+    /// restore may let a level-up five levels on be heard once more.
+    last_level_up: Option<u64>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -423,7 +431,6 @@ pub struct Region {
     /// come from its own stream.
     ticking: Option<(EntityId, u32)>,
     /// What the region's players were given of experience (`mob_bodies.rs`).
-    experience_given: mob_bodies::ExperienceGiven,
     /// The tick each player last took an orb in (`orbs.rs`): a player takes one at most
     /// every other tick (`takeXpDelay`). In memory only, as the player's own delay is
     /// the lead's.
@@ -582,7 +589,6 @@ impl Region {
             entity_draws: BTreeMap::new(),
             aside_draws: BTreeMap::new(),
             ticking: None,
-            experience_given: BTreeMap::new(),
             orbs_taken: BTreeMap::new(),
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
@@ -959,6 +965,7 @@ impl Region {
         // time of the one before (`MinecraftServer.runAllTasks`): what it schedules
         // counts from there, and a lamp put out by a lever goes out three ticks after
         // the lever is seen, not four, as on the official server (ADR-0026, R8).
+        let main_hands = self.main_hands();
         self.made_in = Some(self.tick as i64 - 1);
         for (edge, action) in &inputs.remote_actions {
             // Nobody would hear what became of it.
@@ -975,6 +982,8 @@ impl Region {
             self.applying = None;
         }
         self.made_in = None;
+        // `Player.tick`'s look at the main hand, after the inputs.
+        self.watch_main_hands(&main_hands);
         // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
@@ -1076,7 +1085,7 @@ impl Region {
             self.unseat_leaving(None, &player, &mut output);
             self.journal.players.insert(id);
             let edge = player.edge;
-            Some((edge, id, player.into_transfer(), to))
+            Some((edge, id, player.into_transfer(self.tick), to))
         });
         let departing: Vec<Departure> = unplaced.into_iter().chain(departing).collect();
         for (edge, id, transfer, to) in departing {
@@ -1091,6 +1100,7 @@ impl Region {
                     inventory: transfer.inventory.clone(),
                     selected_slot: transfer.selected_slot,
                     ender: transfer.ender.clone(),
+                    experience: transfer.experience,
                 },
                 face: PlayerFace::of(
                     &transfer.pose,
@@ -1397,6 +1407,12 @@ impl Region {
                 selected_slot: player.selected_slot,
             },
         ));
+        // A client begins with none (`ServerPlayer`'s first `set_experience`).
+        if player.experience != Experience::default() {
+            output
+                .player_events
+                .push((id, PlayerEvent::Experience(player.experience)));
+        }
         output
             .events
             .push(RegionEvent::EntitySpawned(player.entity_state(id)));
@@ -1566,6 +1582,12 @@ impl Region {
             menu: None,
             steps: Default::default(),
             swinging: None,
+            experience: transfer.experience,
+            // Counted on from where the last region left it, on this region's ticks.
+            attack_reset: transfer
+                .attack_ticks
+                .map(|ticks| self.tick.saturating_sub(u64::from(ticks))),
+            last_level_up: None,
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1622,9 +1644,15 @@ impl Region {
         let lowest = f64::from(self.config.lowest_y);
         let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
         let at_spawn = self.spawn_pose();
-        // The ender chest is theirs wherever they are, below the world too.
+        // The ender chest is theirs wherever they are, below the world too, and so is
+        // their experience.
         let ender =
             (answer.place.as_ref()).map_or_else(EnderChest::default, |place| place.ender.clone());
+        let experience = answer
+            .place
+            .as_ref()
+            .map(|place| place.experience)
+            .unwrap_or_default();
         let (pose, flying, inventory, selected_slot) = match kept {
             None => (at_spawn, false, self.config.starting_inventory.clone(), 0),
             Some((place, true)) => (
@@ -1652,6 +1680,8 @@ impl Region {
                         riding: None,
                         keys: Default::default(),
                         kept: Vec::new(),
+                        experience: place.experience,
+                        attack_ticks: None,
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -1688,6 +1718,9 @@ impl Region {
             menu: None,
             steps: Default::default(),
             swinging: None,
+            experience,
+            attack_reset: None,
+            last_level_up: None,
         };
         self.enter(id, player, attempt, output);
     }
@@ -2072,6 +2105,7 @@ impl Region {
                     ItemComponents::of(stack.item).attack_animation
                 });
                 self.swing_arm(id, false, swing, false, output);
+                self.reset_attack_strength(id);
             }
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
@@ -3072,6 +3106,8 @@ impl Player {
             keys: self.keys,
             kept: self.kept.clone(),
             menu: self.menu.clone(),
+            experience: self.experience,
+            attack_reset: self.attack_reset,
         }
     }
 
@@ -3097,6 +3133,9 @@ impl Player {
             menu: state.menu,
             steps: Default::default(),
             swinging: None,
+            experience: state.experience,
+            attack_reset: state.attack_reset,
+            last_level_up: None,
         }
     }
 
@@ -3120,12 +3159,13 @@ impl Player {
             inventory: self.inventory.clone(),
             selected_slot: self.selected_slot,
             ender: self.ender.clone(),
+            experience: self.experience,
         }
     }
 
     /// What another region needs to carry on with the player, who has been handed on
-    /// once more by it.
-    fn into_transfer(self) -> PlayerTransfer {
+    /// once more by it in `tick`.
+    fn into_transfer(self, tick: u64) -> PlayerTransfer {
         PlayerTransfer {
             entity_id: self.entity_id,
             name: self.name,
@@ -3140,6 +3180,12 @@ impl Player {
             riding: self.riding,
             keys: self.keys,
             kept: self.kept,
+            experience: self.experience,
+            // As counted at the end of the tick, which the next region takes the
+            // player in after: its inputs then read one more.
+            attack_ticks: self
+                .attack_reset
+                .map(|reset| u32::try_from((tick + 1).saturating_sub(reset)).unwrap_or(u32::MAX)),
         }
     }
 
@@ -3251,6 +3297,7 @@ mod tests {
     use crate::api::{Face, INVENTORY_SLOTS, PlayerJoin};
 
     mod arrivals;
+    mod attack_strength;
     mod block_updates;
     mod boats;
     mod clock;
@@ -5288,6 +5335,8 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: EntityId(entity as u64),
             name: format!("Player{number}"),
             pose: Pose {
@@ -5864,6 +5913,9 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        experience: Default::default(),
+                        // The selection changed the main hand in the tick.
+                        attack_ticks: Some(0),
                         entity_id: EntityId(1),
                         name: "Player1".to_owned(),
                         pose,
@@ -6174,6 +6226,8 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
             pose: Pose::at(SPAWN),

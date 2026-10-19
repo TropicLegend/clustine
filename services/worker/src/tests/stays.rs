@@ -343,6 +343,7 @@ fn standing(x: f64) -> Pose {
 /// The place of somebody who has walked to `x` and done nothing else.
 fn place_at(x: f64) -> Place {
     Place {
+        experience: Default::default(),
         pose: standing(x),
         flying: false,
         inventory: Inventory::default(),
@@ -390,6 +391,7 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                 selected_slot,
             } if of == attempt => {
                 let place = Place {
+                    experience: Default::default(),
                     pose,
                     flying,
                     inventory,
@@ -601,6 +603,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
     let mut hotbar = [None; HOTBAR_SLOTS];
     hotbar[4] = Some(stack);
     let place = Place {
+        experience: Default::default(),
         pose: Pose {
             position: Vec3::new(HOME_X, -50.0, 0.5),
             yaw: 135.0,
@@ -720,6 +723,8 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
     let (number, entry) = e.entries().pop().unwrap();
     let second = EntityId(2);
     let transfer = PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: second,
         name: "player-1".to_owned(),
         pose: standing(EAST_X + 1.0),
@@ -837,6 +842,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
     let mut hotbar = [None; HOTBAR_SLOTS];
     hotbar[2] = Some(stack);
     let place = Place {
+        experience: Default::default(),
         pose: Pose::at(SPAWN),
         flying: false,
         inventory: Inventory::with_hotbar(hotbar),

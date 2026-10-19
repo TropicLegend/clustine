@@ -16,10 +16,8 @@
 //! goals' (N7c), and its leash is ticked before the rest of its tick, where the game
 //! ticks it at the end of `Entity.baseTick`.
 
-use std::collections::BTreeMap;
-
 use clustine_data::{EntityTypeInfo, entity_types, items, sounds};
-use clustine_world::{ChunkPos, Entity, EntityData, EntityField, EntityId, EntityUse, PlayerId};
+use clustine_world::{ChunkPos, Entity, EntityData, EntityField, EntityId, EntityUse};
 
 use super::Region;
 use super::items::{View, tracked};
@@ -43,11 +41,6 @@ pub(crate) struct LeashPull {
     pub(crate) fall_distance: f64,
     pub(crate) yaw: f32,
 }
-
-/// The experience the region's players were given (`giveExperiencePoints`), by player:
-/// the player's experience is the lead's (`docs/groundwork/n7-plan.md`, section 7.7),
-/// and until it comes this keeps what an orb gave, for the tests.
-pub(crate) type ExperienceGiven = BTreeMap<PlayerId, i64>;
 
 impl Region {
     /// `Leashable.tickLeash(level, mob)` of the mob `entity`, in the chunk `chunk`: a
@@ -525,13 +518,6 @@ impl Region {
         }
         self.mob_ticked(&record, record.position, out, chunk, output);
         Some(answer)
-    }
-
-    /// `giveExperiencePoints(points)` of the region's player `player`. The player's
-    /// experience is the lead's (`docs/groundwork/n7-plan.md`, section 7.7): until it
-    /// comes, what each was given is kept here.
-    pub(crate) fn add_experience(&mut self, player: PlayerId, points: i32) {
-        *self.experience_given.entry(player).or_default() += i64::from(points);
     }
 }
 

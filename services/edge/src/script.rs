@@ -1156,6 +1156,8 @@ impl Script {
         let person = self.people.get_mut(&who).expect("the player has joined");
         let from = person.region;
         let transfer = PlayerTransfer {
+            experience: Default::default(),
+            attack_ticks: None,
             entity_id: person.entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

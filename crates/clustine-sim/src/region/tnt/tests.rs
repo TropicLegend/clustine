@@ -143,6 +143,9 @@ pub(in crate::region) fn add_player(
     let id = PlayerId(Uuid::from_u128(number));
     let entity_id = EntityId(1_000_000 + u64::try_from(number).expect("a small number"));
     let player = Player {
+        experience: Default::default(),
+        attack_reset: None,
+        last_level_up: None,
         entity_id,
         name: format!("player{number}"),
         pose: Pose::at(Vec3::new(feet[0], feet[1], feet[2])),

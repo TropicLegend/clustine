@@ -315,6 +315,11 @@ fn a_creative_player_s_hit_is_a_survival_hit_a_crit_falling_and_a_sweep_with_a_s
             count: 1,
         },
     );
+    // A sword is at full strength twenty over its speed of 1.6 ticks after it is taken
+    // up, 12.5.
+    for _ in 0..13 {
+        checked(&mut region, &TickInputs::default());
+    }
     lay(&mut region, &cow([2.5, -60.0, 0.5], true));
     let beside = mob_of(EntityId(41), entity_types::COW, [2.5, -60.0, 1.5], true);
     lay(&mut region, &beside);
@@ -417,7 +422,7 @@ fn an_experience_orb_merges_with_one_of_its_worth_and_is_picked_up_one_at_a_time
     assert_eq!(taken, 2);
     assert!(record(&region, orb_key).is_none());
     // The other, more than 8 blocks off, does not follow the player and lies there.
-    assert_eq!(region.experience_given.get(&player(1)), Some(&(3 + 3)));
+    assert_eq!(region.players[&player(1)].experience.total, 3 + 3);
     assert_eq!(orbs(&region).len(), 1);
 }
 

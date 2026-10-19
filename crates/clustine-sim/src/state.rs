@@ -97,6 +97,12 @@ pub struct PlayerState {
     /// The menu the player has open, if any. A hand-over closes it, so it is in no
     /// transfer (`docs/groundwork/n6-plan.md`, section 6 items 1 and 2).
     pub menu: Option<Menu>,
+    pub experience: crate::api::Experience,
+    /// The tick in which their attack strength was last reset (`attackStrengthTicker`
+    /// counts the ticks since), if it was: an arrival and a merge put it on the region's
+    /// ticks. None is full strength, as a player who joins has (a named difference: the
+    /// game's ticker begins at 0 then, a quarter of a second of weak hits).
+    pub attack_reset: Option<u64>,
 }
 
 /// A menu a player has open: what it shows, the stack on the cursor and a drag under

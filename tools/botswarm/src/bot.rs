@@ -373,6 +373,8 @@ pub struct Bot {
     pub damage_events: Vec<clustine_protocol::packets::play::DamageEvent>,
     /// Every update of an entity's attributes, in order.
     pub attribute_updates: Vec<clustine_protocol::packets::play::UpdateAttributes>,
+    /// The experience the server last told.
+    pub experience: Option<clustine_protocol::packets::play::SetExperience>,
     /// Every packet of a menu's window the server sent, in order: openings, a window's
     /// contents (not the inventory's own, window 0), slots, the cursor and closes.
     pub menu_log: Vec<ClientboundPlay>,
@@ -599,6 +601,7 @@ impl Bot {
             times: Vec::new(),
             damage_events: Vec::new(),
             attribute_updates: Vec::new(),
+            experience: None,
             menu_log: Vec::new(),
         };
         // Every server places a joining player before anything else can happen.
@@ -1820,6 +1823,7 @@ impl Bot {
             ClientboundPlay::SetTime(packet) => self.times.push(packet),
             ClientboundPlay::DamageEvent(packet) => self.damage_events.push(packet),
             ClientboundPlay::UpdateAttributes(packet) => self.attribute_updates.push(packet),
+            ClientboundPlay::SetExperience(packet) => self.experience = Some(packet),
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

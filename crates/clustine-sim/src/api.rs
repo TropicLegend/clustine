@@ -73,6 +73,16 @@ impl Face {
     }
 }
 
+/// A player's experience (`Player.experienceLevel`, `experienceProgress`,
+/// `totalExperience`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct Experience {
+    pub level: i32,
+    /// Towards the next level, from 0 to 1.
+    pub progress: f32,
+    pub total: i32,
+}
+
 /// Where a player is and what they hold: what the world store keeps of a player from
 /// one stay to the next. See `docs/adr/0020-one-stay-per-player.md`, section 2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +93,7 @@ pub struct Place {
     pub selected_slot: u8,
     /// What their ender chest holds (`docs/groundwork/n6-plan.md`, decision 5).
     pub ender: EnderChest,
+    pub experience: Experience,
 }
 
 /// What a region says to the world store about a stay, in the commit of a tick. See
@@ -329,6 +340,11 @@ pub struct PlayerTransfer {
     pub keys: Keys,
     /// Moves of their vehicle kept for them; see [`crate::PlayerState::kept`].
     pub kept: Vec<VehicleMove>,
+    pub experience: Experience,
+    /// The ticks since their attack strength was last reset (`attackStrengthTicker`),
+    /// which the next region counts on from (`docs/groundwork/n7-plan.md`, 7.7.2); none
+    /// where it never was.
+    pub attack_ticks: Option<u32>,
 }
 
 /// A player entering or leaving the region. Each but `Discard` names the edge it came
@@ -1161,6 +1177,8 @@ pub enum PlayerEvent {
     /// The region selected the hotbar slot `slot`, from 0 to 8, of its own accord (a
     /// pick of an entity's item), which the client is told (`set_held_slot`).
     HeldSlot { slot: u8 },
+    /// Their experience changed, or they entered the world with some (`set_experience`).
+    Experience(Experience),
     /// A menu, of the serial `serial`, whole: opened (the edge sends `open_screen`,
     /// closing a menu of another serial first), or reported again whole (after a
     /// restore, when its container's chunks load, or answering a click of another

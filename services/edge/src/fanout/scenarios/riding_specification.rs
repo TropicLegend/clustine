@@ -277,6 +277,8 @@ async fn riding_by_the_line() -> (Harness, Client, Client) {
 /// the east holds in `EASTERN` by then.
 fn riding_transfer() -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: RIDER,
         name: "Player1".to_owned(),
         pose: Pose::at(Vec3::new(TAKEN[0], SEATED.y, TAKEN[2])),

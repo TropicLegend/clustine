@@ -1420,6 +1420,8 @@ fn arrive(id: PlayerId, transfer: &PlayerTransfer) -> EdgeToWorker {
 /// along.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: entity,
         name: "arriving".to_owned(),
         pose: Pose::at(Vec3::new(x, FEET, 8.5)),

@@ -199,6 +199,9 @@ pub struct LoggedPlace {
     pub inventory: [Option<(i32, i32)>; INVENTORY_SLOTS],
     /// Each slot of the ender chest, as the inventory's.
     pub ender: [Option<(i32, i32)>; ENDER_SLOTS],
+    /// The player's experience: their level, the progress to the next (0 to 1) and
+    /// the points they gathered in all.
+    pub experience: (i32, f32, i32),
 }
 
 impl PartialEq for LoggedPlace {
@@ -211,6 +214,9 @@ impl PartialEq for LoggedPlace {
             && self.selected_slot == other.selected_slot
             && self.inventory == other.inventory
             && self.ender == other.ender
+            && self.experience.0 == other.experience.0
+            && self.experience.1.to_bits() == other.experience.1.to_bits()
+            && self.experience.2 == other.experience.2
     }
 }
 
@@ -993,6 +999,10 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
             }
         }
     }
+    let (level, progress, total) = place.experience;
+    out.extend_from_slice(&level.to_be_bytes());
+    out.extend_from_slice(&progress.to_be_bytes());
+    out.extend_from_slice(&total.to_be_bytes());
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1013,6 +1023,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
             _ => return Err(FormatError::Corrupt("inventory slot")),
         };
     }
+    let experience = (input.i32()?, input.f32()?, input.i32()?);
     Ok(LoggedPlace {
         position,
         yaw,
@@ -1022,6 +1033,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         selected_slot,
         inventory,
         ender,
+        experience,
     })
 }
 
@@ -2559,6 +2571,7 @@ mod tests {
         let mut ender = [None; ENDER_SLOTS];
         ender[0] = Some((6, 1));
         LoggedPlace {
+            experience: (5, 0.25, 87),
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
             pitch: -45.0,
@@ -2768,6 +2781,8 @@ mod tests {
         // The ender chest: one of item 6 in its first slot, and 26 empty.
         payload.extend_from_slice(&[1, 0, 0, 0, 6, 0, 0, 0, 1]);
         payload.extend_from_slice(&[0; 26]);
+        // The experience: level 5, a quarter of the way to the next, 87 points.
+        payload.extend_from_slice(&[0, 0, 0, 5, 0x3E, 0x80, 0, 0, 0, 0, 0, 87]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -2950,9 +2965,17 @@ mod tests {
             any::<(bool, bool, u8)>(),
             inventories(),
             any::<[Option<(i32, i32)>; ENDER_SLOTS]>(),
+            any::<(i32, f32, i32)>(),
         )
             .prop_map(
-                |(position, (yaw, pitch), (on_ground, flying, selected_slot), inventory, ender)| {
+                |(
+                    position,
+                    (yaw, pitch),
+                    (on_ground, flying, selected_slot),
+                    inventory,
+                    ender,
+                    experience,
+                )| {
                     LoggedPlace {
                         position,
                         yaw,
@@ -2962,6 +2985,7 @@ mod tests {
                         selected_slot,
                         inventory,
                         ender,
+                        experience,
                     }
                 },
             )

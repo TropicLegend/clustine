@@ -364,6 +364,8 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
@@ -384,6 +386,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
@@ -403,6 +407,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
 /// A player as a region has them right after taking in `transfer` through `edge`.
 fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
     PlayerState {
+        experience: Default::default(),
+        attack_reset: None,
         entity_id: transfer.entity_id,
         name: transfer.name.clone(),
         pose: transfer.pose,
@@ -2334,6 +2340,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         count: n % 60 + 1,
     });
     PlayerState {
+        experience: Default::default(),
+        attack_reset: None,
         entity_id: entity,
         name: format!("entity-{n}"),
         pose: Pose {
@@ -4903,6 +4911,7 @@ fn run_config() -> RegionConfig {
 /// Where a player is and what they hold, as the store keeps it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        experience: Default::default(),
         pose: state.pose,
         flying: state.flying,
         inventory: state.inventory.clone(),
@@ -6030,6 +6039,10 @@ impl Pair {
                 let plain = PlayerState {
                     handled: None,
                     hops: 0,
+                    // The attack strength counts the ticks a player spends in a region,
+                    // which a hand-over's ticks on the way leave out (a named difference
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    attack_reset: None,
                     ..player
                 };
                 assert!(
@@ -6045,6 +6058,10 @@ impl Pair {
                 let plain = PlayerState {
                     handled: None,
                     hops: 0,
+                    // The attack strength counts the ticks a player spends in a region,
+                    // which a hand-over's ticks on the way leave out (a named difference
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    attack_reset: None,
                     ..player
                 };
                 (id, plain)

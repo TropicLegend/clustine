@@ -328,7 +328,9 @@ pub(crate) fn logged(note: &StayNote) -> LoggedStay {
 /// The place as the log and the players' file keep it.
 pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
     let Vec3 { x, y, z } = place.pose.position;
+    let experience = place.experience;
     LoggedPlace {
+        experience: (experience.level, experience.progress, experience.total),
         position: [x, y, z],
         yaw: place.pose.yaw,
         pitch: place.pose.pitch,
@@ -349,7 +351,13 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
 /// The place as a region is told it.
 pub(crate) fn place(logged: &LoggedPlace) -> Place {
     let [x, y, z] = logged.position;
+    let (level, progress, total) = logged.experience;
     Place {
+        experience: clustine_rpc::Experience {
+            level,
+            progress,
+            total,
+        },
         pose: Pose {
             position: Vec3::new(x, y, z),
             yaw: logged.yaw,

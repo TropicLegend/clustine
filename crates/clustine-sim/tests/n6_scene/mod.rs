@@ -318,6 +318,7 @@ impl Scene {
                 player: player(n),
                 entity: entering,
                 place: Some(Place {
+                    experience: Default::default(),
                     pose: Pose {
                         position: feet,
                         yaw: 0.0,

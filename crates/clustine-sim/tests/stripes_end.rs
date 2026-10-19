@@ -400,6 +400,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         count: n % 60 + 1,
     });
     PlayerState {
+        experience: Default::default(),
+        attack_reset: None,
         entity_id: entity,
         name: format!("entity-{n}"),
         pose: Pose {
@@ -2526,6 +2528,10 @@ impl Pair {
                 let plain = PlayerState {
                     handled: None,
                     hops: 0,
+                    // The attack strength counts the ticks a player spends in a region,
+                    // which a hand-over's ticks on the way leave out (a named difference
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    attack_reset: None,
                     ..player
                 };
                 assert!(
@@ -2541,6 +2547,10 @@ impl Pair {
                 let plain = PlayerState {
                     handled: None,
                     hops: 0,
+                    // The attack strength counts the ticks a player spends in a region,
+                    // which a hand-over's ticks on the way leave out (a named difference
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    attack_reset: None,
                     ..player
                 };
                 (id, plain)

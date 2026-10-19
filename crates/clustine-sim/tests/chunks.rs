@@ -296,6 +296,8 @@ fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> Remot
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
@@ -316,6 +318,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
@@ -2213,6 +2217,9 @@ fn a_player_who_steps_into_a_chunk_believed_anothers_is_let_go_in_that_tick_to_t
         // An input of the stay was applied, so it no longer carries the attempt of
         // its join.
         attempt: None,
+        // The selection changed what the main hand holds in the tick it was let go in,
+        // which resets the attack strength (`docs/groundwork/n7-plan.md`, 7.7.2).
+        attack_ticks: Some(0),
         ..transfer_of(&before)
     };
     assert_eq!(before.attempt, Some(attempt(player(1))));
@@ -4746,6 +4753,10 @@ impl Wander {
 
 /// An outbox entry a made-up tick is to make.
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a test's few entries, an outbox entry carrying a whole player"
+)]
 enum Made {
     /// The entry as it is to be, for the edge.
     Entry(EdgeId, Durable),

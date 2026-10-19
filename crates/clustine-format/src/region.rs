@@ -1011,6 +1011,7 @@ mod tests {
                     stay: 258,
                     hops: 4,
                     place: Some(LoggedPlace {
+                        experience: (2, 0.5, 13),
                         position: [1.5, -2.0, 0.0],
                         yaw: 90.0,
                         pitch: -45.0,
@@ -1169,6 +1170,8 @@ mod tests {
         // The ender chest: 26 empty slots, then the last holds two of item 11.
         body.extend_from_slice(&[0; 26]);
         body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2]);
+        // The experience: level 2, half way to the next, 13 points.
+        body.extend_from_slice(&[0, 0, 0, 2, 0x3F, 0, 0, 0, 0, 0, 0, 13]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1468,6 +1471,7 @@ mod tests {
                                 ender,
                             )| {
                                 LoggedPlace {
+                                    experience: (0, 0.0, 0),
                                     position,
                                     yaw,
                                     pitch,

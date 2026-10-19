@@ -14,7 +14,7 @@
 //! an explosion (`applyEffectsFromBlocks` is left out), and one stuck in a block is not
 //! eased out of it (`unstuckIfPossible`, `moveTowardsClosestSpace`); a player's delay
 //! between orbs is the region's memory, which another region's does not share; the
-//! player's experience is the lead's ([`Region::add_experience`]).
+//! player's experience is theirs ([`Region::add_experience`]).
 
 use clustine_blocks::fluid::FluidState;
 use clustine_data::{EntityTypeInfo, entity_types};
@@ -452,7 +452,7 @@ impl Region {
                     chunk,
                 });
                 // `repairPlayerItems`: nothing a player holds has mending.
-                self.add_experience(id, value);
+                self.add_experience(id, value, output);
                 let left = count - 1;
                 if left <= 0 {
                     self.remove_entity(key, record.hops, chunk, output);

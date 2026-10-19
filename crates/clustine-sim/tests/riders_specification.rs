@@ -489,6 +489,8 @@ fn crossing() -> Crossing {
 /// Player `n`, walking, handed over at `at` for the first time.
 fn walker(n: u128, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: EntityId(5 << 32 | n as u64),
         name: format!("Walker{n}"),
         pose: clustine_sim::api::Pose::at(at),
@@ -1233,6 +1235,8 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
     assert!(sent.riding.passengers[0].pending.is_some());
 
     let transfer = PlayerTransfer {
+        experience: Default::default(),
+        attack_ticks: None,
         entity_id: rider,
         name: "Rider".to_owned(),
         pose: clustine_sim::api::Pose::at(Vec3::new(31.0, -60.0, 8.5)),
