@@ -41,6 +41,7 @@ const ON_ENTITY: u8 = 5;
 const EXPLODED: u8 = 6;
 const BURNT: u8 = 7;
 const PLAYER_INSIDE: u8 = 8;
+const GIVEN: u8 = 9;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
@@ -187,6 +188,17 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.push(PLAYER_INSIDE);
             put_doubles(out, min);
             put_doubles(out, max);
+        }
+        Effected::Given {
+            player,
+            stack,
+            no_duplicates,
+        } => {
+            out.push(GIVEN);
+            out.extend_from_slice(&player.0.to_be_bytes());
+            out.extend_from_slice(&stack.item.to_be_bytes());
+            out.extend_from_slice(&stack.count.to_be_bytes());
+            out.push(u8::from(no_duplicates));
         }
     }
 }
@@ -371,6 +383,18 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
             min: take_doubles(input)?,
             max: take_doubles(input)?,
         },
+        GIVEN => Effected::Given {
+            player: EntityId(input.u64()?),
+            stack: ItemStack {
+                item: input.i32()?,
+                count: input.i32()?,
+            },
+            no_duplicates: match input.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(FormatError::Corrupt("a given stack's flag")),
+            },
+        },
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };
     Ok(Effect { at, what })
@@ -521,7 +545,7 @@ mod tests {
         assert_eq!(take_effect(&mut Input(&good)), Ok(effect()));
         // The kind is after the block, three i32; the direction after the kind.
         let mut kind = good.clone();
-        kind[12] = 9;
+        kind[12] = 10;
         assert_eq!(
             take_effect(&mut Input(&kind)),
             Err(FormatError::Corrupt("an effect's kind"))
@@ -667,6 +691,38 @@ mod entity_uses {
         // The flags follow the block (12), the kind (1), the key (8), the use's kind (1)
         // and the attacker (8).
         out[30] = 4;
+        assert!(take_effect(&mut Input(&out)).is_err());
+    }
+
+    #[test]
+    fn a_stack_given_to_a_player_is_read_back_as_written_and_a_bad_flag_refused() {
+        for no_duplicates in [false, true] {
+            round_trip(Effect {
+                at: BlockPos::new(-3, 70, 11),
+                what: Effected::Given {
+                    player: EntityId(3 << 32 | 1),
+                    stack: ItemStack {
+                        item: 1134,
+                        count: 1,
+                    },
+                    no_duplicates,
+                },
+            });
+        }
+        let mut out = Vec::new();
+        put_effect(
+            &mut out,
+            &Effect {
+                at: BlockPos::new(0, 0, 0),
+                what: Effected::Given {
+                    player: EntityId(1),
+                    stack: ItemStack { item: 1, count: 1 },
+                    no_duplicates: true,
+                },
+            },
+        );
+        // The flag is the last byte, after the block, the kind, the player and the stack.
+        *out.last_mut().expect("written") = 2;
         assert!(take_effect(&mut Input(&out)).is_err());
     }
 

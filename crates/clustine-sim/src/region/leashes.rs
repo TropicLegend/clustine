@@ -384,10 +384,27 @@ impl Region {
                 player: Some(id),
             });
         }
-        let (_, record) = self.copied_entity(key)?;
+        if let Some((_, record)) = self.copied_entity(key) {
+            return Some(Held {
+                key,
+                end: self.record_end(&record),
+                player: None,
+            });
+        }
+        // A player of another region, by their face (`docs/groundwork/n7-plan.md`,
+        // section 7.3.5): the pull is the leashee's region's, from where the face says
+        // they stand; how they move is not in a face (named), so they pull as one
+        // standing.
+        let face = self.face_of_entity(key)?;
         Some(Held {
             key,
-            end: self.record_end(&record),
+            end: End {
+                position: face.position,
+                yaw: face.yaw,
+                width: 0.6,
+                height: if face.sneaking { 1.5 } else { 1.8 },
+                movement: [0.0; 3],
+            },
             player: None,
         })
     }

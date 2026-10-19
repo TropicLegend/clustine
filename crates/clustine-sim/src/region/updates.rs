@@ -995,6 +995,16 @@ impl Region {
                 };
                 self.take_player_inside(at, due, min, max, output);
             }
+            // What an animal across a line gave a player of the region (`given.rs`).
+            Effected::Given {
+                player,
+                stack,
+                no_duplicates,
+            } => {
+                if let Some(id) = self.player_with_entity(player) {
+                    self.take_given(id, stack, no_duplicates, output);
+                }
+            }
         }
     }
 

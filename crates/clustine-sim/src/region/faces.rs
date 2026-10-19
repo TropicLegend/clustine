@@ -182,6 +182,16 @@ pub(super) fn chunk_of(face: &PlayerFace) -> ChunkPos {
 }
 
 impl Region {
+    /// The face of the player whose stay is `key`, as mobs see it: in land the region
+    /// holds or copies, or of a player it let go.
+    pub(crate) fn face_of_entity(&self, key: EntityId) -> Option<&PlayerFace> {
+        let holds = |chunk: ChunkPos| self.land.holds(chunk) || self.copies.contains_key(&chunk);
+        self.faces
+            .seen(holds)
+            .find(|(_, kept)| kept.entity == key)
+            .map(|(_, kept)| &kept.face)
+    }
+
     /// What the store streamed of faces and the world's players, after the players'
     /// changes of the tick; and the faces kept to what the region holds and copies.
     pub(super) fn take_faces(

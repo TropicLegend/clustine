@@ -728,6 +728,18 @@ single bits, and a flipped bit in a position does exactly this; but that is not 
 If this test ever fails on GitHub's machines, it is a race in the hand-over as phase A
 changed it, and has to be found.
 
+On 2026-10-19 the same sight came up again, on a machine whose bad pages had been taken
+out: in the full check of `cf991f5`, `ledger_bots_who_leave_in_another_region_join_again_there`
+(`bin/clustine/tests/returns.rs`) failed because Ledger2, at x = 48.32, saw the entity
+of Ledger3, who was still playing, removed at x = 48.03, on the line, while the bots
+were logging in a second time. It passed in 12 runs alone and 30 runs six at a time
+after it. The commits it was checked with change nothing about what the edge removes.
+Two sightings make a race at a crossing likelier than a flipped bit: an entity a
+watcher sees taken off at the line and, presumably, shown again. Ordinary play does not
+show it, so it waits, but it is to be found: the edge's paths that remove an entity
+(`remove_entity`, a stale snapshot, a discard) against a player handed over at that
+moment.
+
 Not covered by tests yet:
 
 - The worker's path for an epoch the store refuses, between processes (the worker hears

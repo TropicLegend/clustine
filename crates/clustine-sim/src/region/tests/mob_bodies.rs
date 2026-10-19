@@ -734,3 +734,145 @@ fn a_request_to_breed_crosses_a_line_as_an_effect_and_its_answer_comes_back() {
         output.effects
     );
 }
+
+/// `docs/groundwork/n7-plan.md`, section 7.3.5: a leash held by a player of another
+/// region, whom only their face shows, holds and pulls as one held by the region's own.
+#[test]
+fn a_leash_held_by_a_player_of_another_region_pulls_by_their_face() {
+    let mut region = on_ticking_floor_with(&[]);
+    let holder = EntityId(500);
+    let mut tied = cow([3.5, -60.0, 0.5], true);
+    tied.riding.leash = Some(Box::new(clustine_world::Leash {
+        holder: LeashHolder::Entity(holder),
+        angular_momentum: clustine_world::Double(0.0),
+    }));
+    lay(&mut region, &tied);
+    let face = |x: f64, seq: u64| crate::api::FaceChange::Face {
+        player: player(9),
+        entity: holder,
+        hops: 0,
+        seq: crate::api::FaceSeq(seq, 0),
+        face: crate::api::PlayerFace::of(
+            &Pose::at(Vec3::new(x, -60.0, 0.5)),
+            false,
+            false,
+            &Default::default(),
+            0,
+            None,
+        ),
+    };
+    checked(
+        &mut region,
+        &TickInputs {
+            faces: vec![face(1.5, 1)],
+            ..TickInputs::default()
+        },
+    );
+    assert!(record(&region, COW_KEY).unwrap().riding.leash.is_some());
+    // They walk off past the elastic distance: the cow is pulled after them.
+    checked(
+        &mut region,
+        &TickInputs {
+            faces: vec![face(-6.0, 2)],
+            ..TickInputs::default()
+        },
+    );
+    let pulled = record(&region, COW_KEY).unwrap();
+    assert!(pulled.riding.leash.is_some());
+    assert!(pulled.motion[0] < 0.0, "{:?}", pulled.motion);
+}
+
+/// What a mob's use gives a player: into the first empty slot, once only where duplicates
+/// are kept out; across a line, as an effect to the player's region.
+#[test]
+fn a_given_stack_goes_into_the_player_s_inventory_or_across_the_line() {
+    let mut region = on_ticking_floor_with(&[]);
+    let bucket = ItemStack {
+        item: items::MILK_BUCKET,
+        count: 1,
+    };
+    let mut output = TickOutput::default();
+    let own = player_entity(&region);
+    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
+    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
+    let held = region.players[&player(1)]
+        .inventory
+        .0
+        .iter()
+        .flatten()
+        .filter(|stack| stack.item == items::MILK_BUCKET)
+        .count();
+    assert_eq!(held, 1);
+    region.give_to_player(own, bucket, false, [0.5, -60.0, 0.5], &mut output);
+    let held = region.players[&player(1)]
+        .inventory
+        .0
+        .iter()
+        .flatten()
+        .filter(|stack| stack.item == items::MILK_BUCKET)
+        .count();
+    assert_eq!(held, 2);
+}
+
+#[test]
+fn a_stack_given_to_a_player_of_another_region_goes_to_them_as_an_effect() {
+    let west = ChunkArea {
+        min_x: None,
+        max_x: Some(1),
+    };
+    let mut region = joined_in(west, &[1]);
+    let beyond = ChunkPos::new(40, 0);
+    region.tick(&TickInputs {
+        foreign: vec![(beyond, RegionId(1))],
+        copy_bases: vec![(beyond, crate::region::tests::floor())],
+        ..TickInputs::default()
+    });
+    let stew = ItemStack {
+        item: items::MUSHROOM_STEW,
+        count: 1,
+    };
+    let mut output = TickOutput::default();
+    region.give_to_player(EntityId(900), stew, false, [645.5, -60.0, 2.5], &mut output);
+    assert_eq!(
+        region.made,
+        [Effect {
+            at: BlockPos::new(645, -60, 2),
+            what: Effected::Given {
+                player: EntityId(900),
+                stack: stew,
+                no_duplicates: false,
+            },
+        }]
+    );
+}
+
+#[test]
+fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
+    let mut region = on_ticking_floor_with(&[]);
+    let own = player_entity(&region);
+    let stew = ItemStack {
+        item: items::MUSHROOM_STEW,
+        count: 1,
+    };
+    let output = region.tick(&TickInputs {
+        effects: vec![FiledEffect {
+            id: EffectId {
+                sequence: 4,
+                index: 0,
+            },
+            effect: Effect {
+                at: BlockPos::new(0, -60, 0),
+                what: Effected::Given {
+                    player: own,
+                    stack: stew,
+                    no_duplicates: false,
+                },
+            },
+            due: Due::FromTaking,
+        }],
+        ..TickInputs::default()
+    });
+    assert!(region.players[&player(1)].inventory.0.contains(&Some(stew)));
+    assert!(output.player_events.iter().any(|(id, event)| *id == player(1)
+        && matches!(event, PlayerEvent::InventorySlot { stack: Some(given), .. } if *given == stew)));
+}

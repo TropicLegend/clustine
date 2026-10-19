@@ -70,6 +70,15 @@ pub enum Effected {
     /// plate or a tripwire of the block counts as an entity of its own for the tick it is
     /// due (players are not in copies; section 7 item 12 and section 8 item 10).
     PlayerInside { min: [Double; 3], max: [Double; 3] },
+    /// What an animal's region gives the player whose stay is `player`, who used it from
+    /// another region (a milk bucket, a stew): the player's region does the game's
+    /// `ItemUtils.createFilledResult` with it, keeping out a second of one the player
+    /// has where `no_duplicates` (`docs/groundwork/n7-plan.md`, section 7.3.6).
+    Given {
+        player: EntityId,
+        stack: ItemStack,
+        no_duplicates: bool,
+    },
 }
 
 /// What an explosion's effects carry of the explosion, for the holder of a block or an
@@ -159,7 +168,8 @@ impl Effect {
             | Effected::OnEntity { .. }
             | Effected::Exploded { .. }
             | Effected::Burnt { .. }
-            | Effected::PlayerInside { .. } => None,
+            | Effected::PlayerInside { .. }
+            | Effected::Given { .. } => None,
         }
     }
 }
