@@ -131,6 +131,11 @@ pub fn is_circuit_part(state: BlockState) -> bool {
             BlockClass::CopperBulbBlock,
             BlockClass::RedstoneLampBlock,
             BlockClass::TargetBlock,
+            // Dispensers, droppers and hoppers, which act on the block they face
+            // (`docs/groundwork/n6-plan.md`, section 6 item 4 and section 10 item 1); a
+            // dropper is a dispenser.
+            BlockClass::DispenserBlock,
+            BlockClass::HopperBlock,
         ]
         .into_iter()
         .any(|class| is_class(state, class))

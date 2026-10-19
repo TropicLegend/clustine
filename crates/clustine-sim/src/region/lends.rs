@@ -11,6 +11,7 @@
 
 use std::collections::BTreeSet;
 
+use clustine_blocks::data::is_class;
 use clustine_blocks::piston;
 use clustine_blocks::signal::is_circuit_part;
 use clustine_data::{BlockClass, BlockState};
@@ -64,6 +65,24 @@ impl Region {
     /// sideways included, as the resolver finds them now (section 2).
     fn reach(&mut self, pos: BlockPos, state: BlockState) -> BTreeSet<ChunkPos> {
         let mut reached = BTreeSet::new();
+        // A dispenser, a dropper or a hopper reaches the chunks of the blocks it acts on
+        // that are not its own: the one it faces, and a hopper the one above it, where
+        // it pulls from. Standing in a chunk keeps no lend of it (section 10 item 1).
+        if is_class(state, BlockClass::DispenserBlock) || is_class(state, BlockClass::HopperBlock) {
+            let mut acted_on = Vec::new();
+            if let Some(facing) = clustine_blocks::data::facing(state) {
+                acted_on.push(clustine_blocks::data::relative(pos, facing));
+            }
+            if is_class(state, BlockClass::HopperBlock) {
+                acted_on.push(BlockPos::new(pos.x, pos.y + 1, pos.z));
+            }
+            for block in acted_on {
+                if block.chunk() != pos.chunk() {
+                    reached.insert(block.chunk());
+                }
+            }
+            return reached;
+        }
         chunks_near(pos, &mut reached);
         if piston::is_piston_base(state)
             && let Some(facing) = clustine_blocks::data::facing(state)
@@ -370,6 +389,16 @@ impl Region {
             .values()
             .any(|player| player.chunk() == position)
         {
+            return true;
+        }
+        // A menu one of the region's players has open on a container in the chunk, a
+        // block (either half of a double chest) or a vehicle: a lend would close it
+        // (`docs/groundwork/n6-plan.md`, section 9 item 3).
+        let open_here = self
+            .players
+            .keys()
+            .any(|id| self.menu_chunks(*id).contains(&position));
+        if open_here {
             return true;
         }
         let Some(chunk) = self.chunks.get(&position) else {

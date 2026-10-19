@@ -515,7 +515,6 @@ fn place_by_the_line(item: i32, yaw: f32) -> (Scene, Vec<TickOutput>) {
 /// chunk beyond, as a piston, a wire or a repeater placed there does (section 10 item 7
 /// gives this to N6e, "beside their ticking").
 #[test]
-#[ignore = "finding: a dispenser placed facing across a pinned line asks for no lend, where a piston, wire or repeater placed there asks for the chunk beyond"]
 fn a_dispenser_placed_facing_across_a_pinned_line_asks_for_the_chunk_it_faces() {
     // Looking west, the dispenser is placed facing east, at the player.
     let (scene, outputs) = place_by_the_line(items::DISPENSER, 90.0);
