@@ -144,7 +144,8 @@ pub fn table_drops_as(
         if pool.condition.is_some_and(|number| !context.test(number)) {
             continue;
         }
-        for _ in 0..pool.rolls {
+        let rolls = context.int(pool.rolls);
+        for _ in 0..rolls {
             context.add_random_item(pool.entries, [pool.modifiers, table.modifiers]);
         }
     }
@@ -181,22 +182,31 @@ struct Context<'a, D, W> {
 
 impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
     /// `LootPool.addRandomItem`: every entry expanded in order (their conditions drawn
-    /// as they are tested), then one stack of the one found, or of one chosen by weight
-    /// among several (a draw the block tables never take: each pool has one entry, and
-    /// an `alternatives` gives at most one).
+    /// as they are tested), the choices of no weight left out, then one stack of the
+    /// one choice, without a draw, or of one chosen by weight among several (a draw the
+    /// block tables never take: each pool has one entry, and an `alternatives` gives
+    /// at most one).
     fn add_random_item(&mut self, entries: &'static [LootEntry], outer: [&'static [u16]; 2]) {
         let mut found = Vec::new();
         for entry in entries {
             self.expand(entry, &mut found);
         }
+        found.retain(|entry| weight(entry) > 0);
         let chosen = match found.len() {
             0 => return,
             1 => found[0],
-            // Every entry of the block tables weighs 1 with no quality.
-            total => {
-                let total = i32::try_from(total).expect("a pool has few entries");
-                let index = self.draws.next_int(total);
-                found[usize::try_from(index).expect("a draw below the bound is not negative")]
+            _ => {
+                let total: i32 = found.iter().map(|entry| weight(entry)).sum();
+                let mut left = self.draws.next_int(total);
+                let mut chosen = found[0];
+                for entry in &found {
+                    left -= weight(entry);
+                    if left < 0 {
+                        chosen = entry;
+                        break;
+                    }
+                }
+                chosen
             }
         };
         self.create(chosen, outer);
@@ -206,7 +216,11 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
     /// and fails; an `alternatives` gives what its first child that succeeds gives.
     fn expand(&mut self, entry: &'static LootEntry, found: &mut Vec<&'static LootEntry>) -> bool {
         match entry {
-            LootEntry::Item { condition, .. } | LootEntry::Dynamic { condition, .. } => {
+            LootEntry::Item { condition, .. }
+            | LootEntry::Dynamic { condition, .. }
+            | LootEntry::Empty { condition, .. }
+            | LootEntry::Table { condition, .. }
+            | LootEntry::Tag { condition, .. } => {
                 if condition.is_some_and(|number| !self.test(number)) {
                     return false;
                 }
@@ -249,8 +263,12 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 self.split(stack);
             }
             // The decorated pot's sherds come from its block entity, which a rule's
-            // break does not give here (the module's documentation).
-            LootEntry::Dynamic { .. } => {}
+            // break does not give here (the module's documentation). No block's table
+            // nests another or names a tag, and nothing is nothing.
+            LootEntry::Dynamic { .. }
+            | LootEntry::Empty { .. }
+            | LootEntry::Table { .. }
+            | LootEntry::Tag { .. } => {}
             LootEntry::Alternatives { .. } => {
                 unreachable!("an alternatives expands to its children, never to itself")
             }
@@ -290,7 +308,11 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
             | LootModifier::ApplyBonus { condition, .. }
             | LootModifier::LimitCount { condition, .. }
             | LootModifier::CopyComponents { condition }
-            | LootModifier::CopyState { condition, .. } => *condition,
+            | LootModifier::CopyState { condition, .. }
+            | LootModifier::EnchantedCountIncrease { condition, .. }
+            | LootModifier::FurnaceSmelt { condition }
+            | LootModifier::SetPotion { condition, .. }
+            | LootModifier::SetOminousBottleAmplifier { condition, .. } => *condition,
         };
         if when.is_some_and(|number| !self.test(number)) {
             return stack;
@@ -348,7 +370,20 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
                 }
             }
             // Components a stack here does not carry (the module's documentation).
-            LootModifier::CopyComponents { .. } | LootModifier::CopyState { .. } => {}
+            LootModifier::CopyComponents { .. }
+            | LootModifier::CopyState { .. }
+            | LootModifier::SetPotion { .. } => {}
+            // The amplifier is drawn, and is a component the stack does not carry.
+            LootModifier::SetOminousBottleAmplifier { amplifier, .. } => {
+                self.int(*amplifier);
+            }
+            // Without an attacker there is no weapon, nor any level of its enchantment.
+            LootModifier::EnchantedCountIncrease { .. } => {}
+            LootModifier::FurnaceSmelt { .. } => {
+                if let Some(cooked) = clustine_data::loot::smelted(stack.item) {
+                    stack.item = cooked;
+                }
+            }
         }
         stack
     }
@@ -433,7 +468,28 @@ impl<D: LootDraws, W: FnMut(BlockPos) -> BlockState> Context<'_, D, W> {
             LootCondition::MatchToolItems { .. } | LootCondition::MatchToolEnchantment { .. } => {
                 false
             }
+            // No player kills a block, and no block's table asks what an entity is or
+            // what damaged it.
+            LootCondition::KilledByPlayer
+            | LootCondition::EntityMatches { .. }
+            | LootCondition::DamageSource(_) => false,
+            // No attacker has a weapon whose enchantment counts.
+            LootCondition::RandomChanceWithEnchantedBonus { unenchanted, .. } => {
+                self.draws.next_float() < *unenchanted
+            }
         }
+    }
+}
+
+/// The weight of a choice: a singleton's own, 1 for the decorated pot's `dynamic`, the
+/// one other entry an expanded pool can hold.
+fn weight(entry: &LootEntry) -> i32 {
+    match entry {
+        LootEntry::Item { weight, .. }
+        | LootEntry::Empty { weight, .. }
+        | LootEntry::Table { weight, .. }
+        | LootEntry::Tag { weight, .. } => *weight,
+        LootEntry::Alternatives { .. } | LootEntry::Dynamic { .. } => 1,
     }
 }
 

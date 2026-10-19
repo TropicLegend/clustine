@@ -367,11 +367,12 @@ fn a_stack_above_its_size_is_split_into_full_ones() {
     let modifiers: &'static [u16] = Box::leak(Box::new([four]));
     let entries: &'static [LootEntry] = Box::leak(Box::new([LootEntry::Item {
         item: u16::try_from(items::RED_BED).unwrap(),
+        weight: 1,
         condition: None,
         modifiers,
     }]));
     let pools: &'static [LootPool] = Box::leak(Box::new([LootPool {
-        rolls: 1,
+        rolls: IntProvider::Constant(1),
         condition: None,
         entries,
         modifiers: &[],

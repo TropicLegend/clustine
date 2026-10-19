@@ -33,7 +33,8 @@ impl Region {
         let placed = self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)
             || self.place_hanging(click, player, output)
-            || self.place_cushion(click, player, output);
+            || self.place_cushion(click, player, output)
+            || self.use_spawn_egg_on(click, player, output);
         if placed {
             self.entity_placed(player, spawned, output);
             return true;
@@ -80,7 +81,8 @@ impl Region {
             return false;
         }
         let spawned = output.events.len();
-        let placed = self.place_boat(used, player, output);
+        let placed =
+            self.place_boat(used, player, output) || self.use_spawn_egg(used, player, output);
         if placed {
             self.entity_placed(player, spawned, output);
         }

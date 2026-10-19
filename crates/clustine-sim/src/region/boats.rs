@@ -295,6 +295,7 @@ fn boat_bounce() -> Bounce {
         own: 0.0,
         living: false,
         rails_keep_speed: false,
+        max_up_step: 0.0,
     }
 }
 

@@ -240,6 +240,14 @@ impl Ticked {
             kind: entity_types::COW as u16,
             lived: self.lived,
             tick_count: self.lived,
+
+            vehicle: None,
+
+            carries: false,
+
+            leashed: false,
+
+            counted: false,
             mob: self.mob.clone(),
             living: self.living.clone(),
             yaw: self.yaw,
@@ -280,6 +288,14 @@ impl Ticked {
             kind: entity_types::COW as u16,
             lived: self.lived,
             tick_count: self.lived,
+
+            vehicle: None,
+
+            carries: false,
+
+            leashed: false,
+
+            counted: false,
             mob: self.mob.clone(),
             living: self.living.clone(),
             yaw: self.yaw,

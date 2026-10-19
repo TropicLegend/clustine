@@ -288,6 +288,98 @@ pub(crate) fn collide<W: World + ?Sized>(
     collide_with_shapes(vector, bounds, &shapes)
 }
 
+/// `Entity.collide` for an entity that steps up as much as `max_up_step` (a living
+/// entity's `step_height`; the n4-brief's section 1.3): where the move meets something
+/// beside it, on the ground or landing, the step heights the shapes around offer are
+/// tried from the lowest, and the first that carries it further sideways than the plain
+/// move is taken. With no step it is [`collide`].
+pub(crate) fn collide_stepping<W: World + ?Sized>(
+    world: &W,
+    context: Context,
+    mover: &Mover,
+    bounds: &Aabb,
+    vector: Vec3,
+    on_ground: bool,
+    max_up_step: f32,
+) -> Vec3 {
+    if max_up_step <= 0.0 {
+        return collide(world, context, mover, bounds, vector);
+    }
+    let step = f64::from(max_up_step);
+    let swept = bounds
+        .expand_towards(vector)
+        .expand_towards([0.0, step, 0.0]);
+    let entities = entity_collisions(world, mover, &swept);
+    let out = if super::length_sqr(vector) == 0.0 {
+        vector
+    } else {
+        let mut shapes: Vec<Placed> = entities.iter().map(box_shape).collect();
+        shapes.extend(
+            block_collisions(world, context, &bounds.expand_towards(vector))
+                .into_iter()
+                .map(|found| found.shape),
+        );
+        collide_with_shapes(vector, bounds, &shapes)
+    };
+    let collided = [0, 1, 2].map(|axis| vector[axis] != out[axis]);
+    let down_hit = collided[1] && vector[1] < 0.0;
+    if !(down_hit || on_ground) || !(collided[0] || collided[2]) {
+        return out;
+    }
+    let base = if down_hit {
+        bounds.moved([0.0, out[1], 0.0])
+    } else {
+        *bounds
+    };
+    let mut search = base.expand_towards([vector[0], step, vector[2]]);
+    if !down_hit {
+        search = search.expand_towards([0.0, -9.999_999_747_378_752e-6, 0.0]);
+    }
+    // `collectColliders`: the entities' boxes first, then the blocks', of the search.
+    let mut shapes: Vec<Placed> = entities.iter().map(box_shape).collect();
+    shapes.extend(
+        block_collisions(world, context, &search)
+            .into_iter()
+            .map(|found| found.shape),
+    );
+    for height in step_up_heights(&base, &shapes, max_up_step, out[1] as f32) {
+        let stepped =
+            collide_with_shapes([vector[0], f64::from(height), vector[2]], &base, &shapes);
+        let sideways = |v: Vec3| v[0] * v[0] + v[2] * v[2];
+        if sideways(stepped) > sideways(out) {
+            let lowered = bounds.min[1] - base.min[1];
+            return [stepped[0], stepped[1] - lowered, stepped[2]];
+        }
+    }
+    out
+}
+
+/// `collectCandidateStepUpHeights(box, shapes, maxStep, skip)`: every boundary of the
+/// shapes along y above the box's bottom, as a float, at most `max_step` (the rest of a
+/// shape's boundaries, which rise, passed over), but `skip`, each once, ascending.
+fn step_up_heights(bounds: &Aabb, shapes: &[Placed], max_step: f32, skip: f32) -> Vec<f32> {
+    let mut heights: Vec<f32> = Vec::new();
+    for shape in shapes {
+        if shape.is_empty() {
+            continue;
+        }
+        for index in 0..=shape.size(1) {
+            let height = (shape.coord(1, index) - bounds.min[1]) as f32;
+            if height < 0.0 || height == skip {
+                continue;
+            }
+            if height > max_step {
+                break;
+            }
+            if !heights.contains(&height) {
+                heights.push(height);
+            }
+        }
+    }
+    heights.sort_by(f32::total_cmp);
+    heights
+}
+
 /// `CollisionGetter.findSupportingBlock`: of the blocks whose shapes `probe` meets, the
 /// one whose centre is nearest `position`, the greater by the game's order of positions
 /// (y, then z, then x) where two are as near.

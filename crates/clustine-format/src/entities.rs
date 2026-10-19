@@ -98,6 +98,7 @@ const DATA_CUSHION: u8 = 8;
 const DATA_LEASH_KNOT: u8 = 9;
 const DATA_PRIMED_TNT: u8 = 10;
 const DATA_MOB: u8 = 11;
+const DATA_EXPERIENCE_ORB: u8 = 12;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -539,6 +540,26 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             put_entries(out, mind);
             put_type_state(out, state);
         }
+        EntityData::ExperienceOrb {
+            value,
+            count,
+            health,
+            age_offset,
+            following,
+        } => {
+            out.push(DATA_EXPERIENCE_ORB);
+            out.extend_from_slice(&value.to_be_bytes());
+            out.extend_from_slice(&count.to_be_bytes());
+            out.extend_from_slice(&health.to_be_bytes());
+            out.extend_from_slice(&age_offset.to_be_bytes());
+            match following {
+                None => out.push(0),
+                Some(player) => {
+                    out.push(1);
+                    out.extend_from_slice(&player.0.to_be_bytes());
+                }
+            }
+        }
     }
 }
 
@@ -752,6 +773,17 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
             body: take_entries(input)?,
             mind: take_entries(input)?,
             state: take_type_state(input)?,
+        }),
+        DATA_EXPERIENCE_ORB => Ok(EntityData::ExperienceOrb {
+            value: input.i32()?,
+            count: input.i32()?,
+            health: input.i16()?,
+            age_offset: input.u32()?,
+            following: if take_flag(input, "an orb's followed player flag")? {
+                Some(EntityId(input.u64()?))
+            } else {
+                None
+            },
         }),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
@@ -1520,6 +1552,15 @@ pub(crate) mod tests {
                     owner: owner.map(Uuid::from_u128),
                 }
             }),
+            any::<(i32, i32, i16, u32, Option<u64>)>().prop_map(
+                |(value, count, health, age_offset, following)| EntityData::ExperienceOrb {
+                    value,
+                    count,
+                    health,
+                    age_offset,
+                    following: following.map(EntityId),
+                }
+            ),
         ]
     }
 

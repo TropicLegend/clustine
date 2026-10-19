@@ -114,6 +114,14 @@ pub(crate) enum Damage {
     Lava,
     /// `fellOutOfWorld`: far below the world.
     OutOfWorld,
+    /// `inWall`: its eyes in a block that suffocates (a mob's alone).
+    InWall,
+    /// `drown`: out of air under water (a mob's alone).
+    Drown,
+    /// `fall`: a fall beyond its safe distance, its damage counted (a mob's alone).
+    Fall,
+    /// `freeze`: frozen through in powder snow (a mob's alone).
+    Freeze,
 }
 
 /// The kind of a body, for what only its kind decides: how it takes damage
@@ -184,6 +192,20 @@ pub(crate) struct Living {
     /// The plates, tripwire and detector rails its walk met, in the order met, whose
     /// `entityInside` the region runs itself ([`crate::physics::item::handed_back`]).
     pub(crate) inside: Vec<BlockPos>,
+    /// What steers it (`travelInput`: `xxa`, `yya`, `zza` widened), zero for a body
+    /// without a mind, and its `getSpeed()`.
+    pub(crate) input: physics::Vec3,
+    pub(crate) speed: f32,
+    /// `yRot`, which its input is turned by.
+    pub(crate) yaw: f32,
+    /// `maxUpStep()`: the `step_height` it steps up as it moves; a stand's is 0.
+    pub(crate) step_height: f32,
+    /// Of `#fall_damage_immune`: a fall costs it nothing and sounds of nothing.
+    pub(crate) fall_damage_immune: bool,
+    /// `canBreatheUnderwater`: under water it keeps its air.
+    pub(crate) breathes_under_water: bool,
+    /// Its air ran out under water in this tick (entity event 67's bubbles).
+    pub(crate) drowned: bool,
 }
 
 impl Living {
@@ -213,7 +235,19 @@ impl Living {
             ore: Vec::new(),
             landed_on: None,
             inside: Vec::new(),
+            input: [0.0; 3],
+            speed: 0.0,
+            yaw: 0.0,
+            step_height: 0.0,
+            fall_damage_immune: false,
+            breathes_under_water: false,
+            drowned: false,
         }
+    }
+
+    /// Whether it is a mob's body, whose hurts its mind's body takes.
+    fn is_mob(&self) -> bool {
+        matches!(self.kind, Kind::Mob { .. })
     }
 
     /// Whether it lives (`isAlive`).
@@ -227,7 +261,7 @@ impl Living {
     }
 
     /// `isInLava`.
-    fn in_lava(&self) -> bool {
+    pub(crate) fn in_lava(&self) -> bool {
         !self.first_tick && self.fluids.in_lava()
     }
 
@@ -268,9 +302,10 @@ impl Living {
             Kind::Mob { hurts, .. } => {
                 // The mob's body takes it in its tick (`mobs::tick`), after the step that
                 // met it and before anything else reads its health: noted here, in
-                // order. Taken as given here; where the game reads the answer (lava's
-                // burn sound plays only for a hurt that counted), the living body's part
-                // (N7b) makes it the mob's own.
+                // order. Taken as given here; where the game reads the answer, the
+                // mob's body does what the answer decides when it takes it (lava's
+                // burn sound plays only for a hurt that counted:
+                // `mobs::body::take_hurt`).
                 hurts.push((damage, amount));
                 true
             }
@@ -369,8 +404,12 @@ impl Living {
             return;
         }
         // What is in a wall takes `inWall`, and what drowns `drown`: neither breaks a
-        // stand, so neither is asked. The air goes down a tick at a time with the eyes
-        // in water out of a bubble column, and back up four a tick elsewhere.
+        // stand, which is not asked, but both hurt a mob. The air goes down a tick at a
+        // time with the eyes in water out of a bubble column, and back up four a tick
+        // elsewhere.
+        if self.is_mob() && self.is_in_wall(world) {
+            self.hurt(Damage::InWall, 1.0);
+        }
         let eyes = [
             self.body.position[0],
             self.body.position[1] + f64::from(self.eye_height),
@@ -378,16 +417,57 @@ impl Living {
         ];
         let at_eyes = world.state(physics::containing(eyes));
         if self.eye_in_water(world) && !is_class(at_eyes, BlockClass::BubbleColumnBlock) {
-            // `decreaseAirSupply`, with no oxygen bonus.
-            self.air -= 1;
-            if self.air <= -20 {
-                // `shouldTakeDrowningDamage`: the bubbles (entity event 67, which the
-                // repo does not send) and a drowning hit the stand ignores.
-                self.air = 0;
+            if !self.breathes_under_water {
+                // `decreaseAirSupply`, with no oxygen bonus, which nothing in Clustine
+                // gives and which alone would draw.
+                self.air -= 1;
+                if self.air <= -20 {
+                    // `shouldTakeDrowningDamage`: the bubbles (entity event 67) and a
+                    // drowning hit, which only a mob takes.
+                    self.air = 0;
+                    if self.is_mob() {
+                        self.drowned = true;
+                        self.hurt(Damage::Drown, 2.0);
+                    }
+                }
             }
+            // A body that breathes under water keeps its air there: it is refilled
+            // only by water breathing or a conduit's power, which no body has.
         } else if self.air < MAX_AIR {
             self.air = (self.air + 4).min(MAX_AIR);
         }
+    }
+
+    /// `isInWall()`: not moving through everything, and a block that suffocates in a
+    /// thin box at its eyes, of four fifths of its width each way. **Inferred**, as
+    /// `region/cushions.rs` has it: a block suffocates where its collision shape is the
+    /// full block; the blocks whose own predicates the dump does not have are not told
+    /// apart.
+    fn is_in_wall<W: World + ?Sized>(&self, world: &W) -> bool {
+        if self.no_physics {
+            return false;
+        }
+        let half = f64::from(self.body.width * 0.8) / 2.0;
+        let eye = self.body.position[1] + f64::from(self.eye_height);
+        let thin = 1.0e-6 / 2.0;
+        let low = [
+            physics::floor(self.body.position[0] - half),
+            physics::floor(eye - thin),
+            physics::floor(self.body.position[2] - half),
+        ];
+        let high = [
+            physics::floor(self.body.position[0] + half),
+            physics::floor(eye + thin),
+            physics::floor(self.body.position[2] + half),
+        ];
+        (low[0]..=high[0]).any(|x| {
+            (low[1]..=high[1]).any(|y| {
+                (low[2]..=high[2]).any(|z| {
+                    let state = world.state(BlockPos::new(x, y, z));
+                    !state.props().is_air() && state.props().collision_is_full_block()
+                })
+            })
+        })
     }
 
     /// `isEyeInFluid(#water)`: water in the column of its block reaches its eyes.
@@ -470,7 +550,11 @@ impl Living {
             } else {
                 (distance, 1.0)
             };
-        // `calculateFallDamage`: the fall beyond the safe distance, floored.
+        // `calculateFallDamage`: the fall beyond the safe distance, floored; nothing for
+        // a type of `#fall_damage_immune`.
+        if self.fall_damage_immune {
+            return;
+        }
         let power = distance + 1.0e-6 - self.attributes.safe_fall_distance;
         let damage =
             physics::floor(power * f64::from(multiplier) * self.attributes.fall_damage_multiplier);
@@ -494,6 +578,10 @@ impl Living {
                 sound_type.volume * 0.5,
                 sound_type.pitch * 0.75,
             );
+        }
+        // `hurt(fall, damage)`, which a stand ignores.
+        if self.is_mob() {
+            self.hurt(Damage::Fall, damage as f32);
         }
     }
 }

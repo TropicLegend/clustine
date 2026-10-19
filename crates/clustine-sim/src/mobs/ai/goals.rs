@@ -69,10 +69,8 @@ fn move_to_held(ai: &mut Ai<'_, '_>, held: HeldPath, speed: f64) -> bool {
 /// `Mob.getNoActionTime()` as the body's stamp gives it: the AI steps since its last
 /// reset, counting this one.
 pub(crate) fn no_action_time(ai: &Ai<'_, '_>) -> i32 {
-    ai.tick
-        .lived
-        .saturating_add(1)
-        .saturating_sub(ai.tick.mob.body.idle.no_action_since) as i32
+    let time = ai.tick.mob.body.no_action_time(ai.tick.lived);
+    i32::try_from(time).unwrap_or(i32::MAX)
 }
 
 /// Whether the mob's last damage, within the 40 ticks `getLastDamageSource` keeps it,

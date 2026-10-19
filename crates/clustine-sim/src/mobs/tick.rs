@@ -16,18 +16,34 @@ use super::{Mob, ai, body};
 use crate::living::Living;
 use crate::region::Random;
 
-/// What a mob's tick does to other things than itself, applied in order after it.
+/// What a mob's tick does to other things than itself, and what it shows, applied in
+/// order after it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct MobOutput {
-    /// Writes to other entities and blocks, in the order made. None is made yet.
+    /// Writes to other entities and blocks, in the order made.
     pub(crate) local: Vec<Local>,
+    /// What clients are shown of it, in the order made (the body's sounds, entity
+    /// events and damage events).
+    pub(crate) events: Vec<body::Event>,
+    /// What it drops as it dies, drawn as it died, for the region to lay down.
+    pub(crate) died: Option<body::Death>,
+    /// How it left the world, if it did.
+    pub(crate) removed: Option<body::Removed>,
+    /// `needsSync`: its move and motion are sent at the next update.
+    pub(crate) needs_sync: bool,
+    /// `syncVelocity` (a hurt's `markHurt`): its motion is sent, to everyone.
+    pub(crate) sync_velocity: bool,
 }
 
 /// A write a mob's tick makes to something other than itself. Each part adds what it
 /// needs, as the same messages as the effects across a line (`docs/groundwork/
 /// n7-plan.md`, section 10, item 12).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Local {}
+pub(crate) enum Local {
+    /// `Entity.push(x, y, z)` of the region's entity `key` (another mob a mob pushes in
+    /// its `pushEntities`).
+    Push { key: EntityId, by: [f64; 3] },
+}
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,
 /// what it reads and what it draws from.
@@ -43,12 +59,20 @@ pub(crate) struct MobTick<'w> {
     pub(crate) lived: u32,
     /// The game's `tickCount`: its ticks since it was last loaded fresh.
     pub(crate) tick_count: u32,
-    pub(crate) mob: Mob,
-    pub(crate) living: Living,
-    /// `yRot` and `xRot`: the yaw its move control turns and the pitch its look control
-    /// sets (N7c's), which the record keeps as the entity's rotation.
+    /// `yRot` and `xRot`, which its controls turn and its input is turned by.
     pub(crate) yaw: f32,
     pub(crate) pitch: f32,
+    /// Whether it rides something (`isPassenger`), and what, by type.
+    pub(crate) vehicle: Option<u16>,
+    /// Whether something rides it (`isVehicle`).
+    pub(crate) carries: bool,
+    /// Whether it is on a lead (`isLeashed`).
+    pub(crate) leashed: bool,
+    /// Whether this tick's `baseTick` has counted its counters down: what happens
+    /// after comes at the next moment (`body::moment`).
+    pub(crate) counted: bool,
+    pub(crate) mob: Mob,
+    pub(crate) living: Living,
     pub(crate) mob_type: &'static dyn MobType,
     pub(crate) world: &'w dyn MobWorld,
     /// Its own stream in this tick, on from what it has drawn: every draw of its tick,
@@ -66,15 +90,23 @@ impl MobTick<'_> {
 
 /// The tick of a mob, in the game's order.
 pub(crate) fn tick(tick: &mut MobTick<'_>) {
-    body::base_tick(tick);
-    take_hurts(tick);
-    if !tick.living.alive() || tick.mob.body.vitals.died_at.is_some() {
-        body::tick_death(tick);
+    // `Mob.checkDespawn`, which the level runs before the entity's tick.
+    body::check_despawn(tick);
+    if tick.out.removed.is_some() {
         return;
     }
-    // `aiStep`.
+    // `baseTick`: the entity's (fluids, fire, the void), the living body's (its wall,
+    // its air), the hurts these met in order, the counters, the death's tick, and
+    // `Mob.baseTick`'s ambient sound.
+    body::base_tick(tick);
+    take_hurts(tick);
+    body::after_base_tick(tick);
+    if tick.out.removed.is_some() {
+        return;
+    }
+    // `aiStep`: a dying mob does not think, but falls and slides.
     body::start_ai_step(tick);
-    if tick.effective_ai() {
+    if tick.effective_ai() && !body::immobile(tick) {
         ai::server_ai_step(tick);
     }
     body::jump(tick);
@@ -87,7 +119,7 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
 
 /// The hurts the body met of itself so far in the tick, taken in the order met
 /// (`hurtServer` of each, as the game calls it where it meets it).
-fn take_hurts(tick: &mut MobTick<'_>) {
+pub(crate) fn take_hurts(tick: &mut MobTick<'_>) {
     let hurts = match &mut tick.living.kind {
         crate::living::Kind::Mob { hurts, .. } => std::mem::take(hurts),
         crate::living::Kind::ArmorStand { .. } => return,

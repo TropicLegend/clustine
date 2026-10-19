@@ -342,6 +342,23 @@ pub enum EntityData {
         /// What its type keeps beside (a sheep's colour, a cow's variant, love).
         state: TypeState,
     },
+    /// An orb of experience (`ExperienceOrb`, `docs/groundwork/n7-brief.md`, section
+    /// 1.7): what one is worth, how many of that worth it stands for, what it can still
+    /// take, and the player it follows.
+    ExperienceOrb {
+        /// `DATA_VALUE`: the points each of it gives.
+        value: i32,
+        /// `count`: the orbs of the same worth merged into it.
+        count: i32,
+        /// What it can still take before it is destroyed (the game's 5).
+        health: i16,
+        /// What `lived` is ahead of its age, the game's `age` (gone at 6000), which a
+        /// merge with a younger orb lowers: the age is `lived - age_offset`.
+        age_offset: u32,
+        /// `followingPlayer`: the player's entity it moves to, kept while they are within
+        /// 8 blocks.
+        following: Option<EntityId>,
+    },
 }
 
 /// A part of a mob's body or mind: an id that the code of that part gives it and keeps

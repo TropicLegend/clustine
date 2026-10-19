@@ -133,8 +133,17 @@ impl Region {
     /// The tick of the mob `entity`, of the loaded chunk `position`.
     pub(crate) fn tick_mob(&mut self, entity: Entity, position: ChunkPos, output: &mut TickOutput) {
         let key = entity.key;
-        let Ok(mob) = Mob::decode(&entity.data) else {
+        let Ok(mut mob) = Mob::decode(&entity.data) else {
             output.unreadable_mobs.push(key);
+            return;
+        };
+        // Its leash, before its tick (`mob_bodies.rs`), which may move it, turn it,
+        // keep it home or let it go: its record is read again after it.
+        let pull = self.mob_tick_leash(&entity, &mut mob, position, output);
+        let Some((position, entity)) = self
+            .find_entity(key)
+            .map(|(position, entity)| (position, entity.clone()))
+        else {
             return;
         };
         let info = EntityTypeInfo::of(i32::from(entity.kind));
@@ -145,6 +154,12 @@ impl Region {
         };
         let memory = self.entity_memory.get(&key);
         let mut living = Living::new(body, kind, info.eye_height);
+        let mut yaw = entity.yaw;
+        if let Some(pull) = pull {
+            living.body.motion = pull.motion;
+            living.body.fall_distance = pull.fall_distance;
+            yaw = pull.yaw;
+        }
         // A mob without AI does not travel at all (the brief's 1.0.13).
         living.travels = !mob.body.flags.no_ai;
         living.fire_ticks = entity.fire_ticks;
@@ -167,15 +182,24 @@ impl Region {
             region: self,
             home: position,
         };
+        let vehicle = entity
+            .riding
+            .vehicle
+            .and_then(|vehicle| self.find_entity(vehicle))
+            .map(|(_, vehicle)| vehicle.kind);
         let mut ticking = MobTick {
             key,
             kind: entity.kind,
             lived: entity.lived,
             tick_count: entity.tick_count(),
+            yaw,
+            pitch: entity.pitch,
+            vehicle,
+            carries: !entity.riding.passengers.is_empty(),
+            leashed: entity.riding.leash.is_some(),
+            counted: false,
             mob,
             living,
-            yaw: entity.yaw,
-            pitch: entity.pitch,
             mob_type: types::of(entity.kind),
             world: &view,
             draws: &mut stream,
@@ -191,11 +215,25 @@ impl Region {
             ..
         } = ticking;
         self.entity_drew(key, stream.draws_since(&start));
-        debug_assert!(out.local.is_empty(), "no write to another is made yet");
         self.living_aftermath(key, &mut living, output);
         mob.body.vitals.air = living.air;
         mob.body.vitals.frozen = living.frozen;
-        self.write_mob(&entity, &mob, &living, (yaw, pitch), position, output);
+        let mut flags = 0;
+        if out.needs_sync {
+            flags |= Tracked::NEEDS_SYNC;
+        }
+        if out.sync_velocity {
+            flags |= Tracked::SYNC_VELOCITY;
+        }
+        // What it showed, dropped and did to others (`mob_bodies.rs`), then its record,
+        // unless it left the world.
+        let removed = out.removed;
+        self.mob_ticked(&entity, living.body.position, out, position, output);
+        if removed.is_some() {
+            return;
+        }
+        let shown = Shown { yaw, pitch, flags };
+        self.write_mob(&entity, &mob, &living, shown, position, output);
     }
 
     /// What the tick leaves of the mob `before` of the chunk `position`: its record, its
@@ -206,7 +244,7 @@ impl Region {
         before: &Entity,
         mob: &Mob,
         living: &Living,
-        (yaw, pitch): (f32, f32),
+        shown: Shown,
         position: ChunkPos,
         output: &mut TickOutput,
     ) {
@@ -214,15 +252,21 @@ impl Region {
         let mut after = Entity {
             position: living.body.position,
             motion: living.body.motion,
+            yaw: shown.yaw,
+            pitch: shown.pitch,
             on_ground: living.body.on_ground,
             fall_distance: living.body.fall_distance,
             fire_ticks: living.fire_ticks,
-            yaw,
-            pitch,
             lived: before.lived.saturating_add(1),
             data: mob.encode(),
             ..before.clone()
         };
+        // Its leash's memory outlives its tick (`leashes.rs`).
+        let boat = self
+            .entity_memory
+            .get(&key)
+            .map(|memory| memory.boat.clone())
+            .unwrap_or_default();
         self.entity_memory.insert(
             key,
             Memory {
@@ -233,7 +277,7 @@ impl Region {
                 no_physics: living.no_physics,
                 ticks_since_check: 0,
                 cart: Default::default(),
-                boat: Default::default(),
+                boat,
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {
@@ -253,13 +297,16 @@ impl Region {
             if bits(after.motion) != bits(before.motion) {
                 fields.push(EntityField::Motion(after.motion));
             }
+            if after.on_ground != before.on_ground {
+                fields.push(EntityField::OnGround(after.on_ground));
+            }
             if after.yaw.to_bits() != before.yaw.to_bits()
                 || after.pitch.to_bits() != before.pitch.to_bits()
             {
-                fields.push(EntityField::Rotation { yaw, pitch });
-            }
-            if after.on_ground != before.on_ground {
-                fields.push(EntityField::OnGround(after.on_ground));
+                fields.push(EntityField::Rotation {
+                    yaw: after.yaw,
+                    pitch: after.pitch,
+                });
             }
             if after.fall_distance.to_bits() != before.fall_distance.to_bits() {
                 fields.push(EntityField::FallDistance(after.fall_distance));
@@ -279,7 +326,11 @@ impl Region {
             }
         }
         output.entities_ageing.push(to);
-        let mut flags = 0;
+        // The attributes a client is sent (`UpdateAttributes`), where they changed, and
+        // at its first tick, which makes its `movement_speed`; its equipment
+        // (`SetEquipment`), where it changed.
+        self.mob_shown_changes(before, &after, to, output);
+        let mut flags = shown.flags;
         if living.body.horizontal_collision {
             flags |= Tracked::HORIZONTAL_COLLISION;
         }
@@ -293,7 +344,12 @@ impl Region {
             flags |= Tracked::ON_FIRE;
         }
         let burning_shown = living.on_fire_flag != (before.fire_ticks > 0);
-        if committed || burning_shown || to != position || living.body.sync_position {
+        if committed
+            || burning_shown
+            || to != position
+            || living.body.sync_position
+            || shown.flags != 0
+        {
             let mut report = tracked(&after, flags, !parts.is_empty());
             report.chunk = to;
             output.events.push(RegionEvent::EntityTracked(report));
@@ -317,4 +373,13 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         spectator: face.game_mode == 3,
         vehicle: face.vehicle,
     }
+}
+
+/// What a mob's tick leaves of it beyond its body and record: its rotation, and the
+/// flags its report carries (`needsSync`, `syncVelocity`).
+#[derive(Debug, Clone, Copy)]
+struct Shown {
+    yaw: f32,
+    pitch: f32,
+    flags: u8,
 }

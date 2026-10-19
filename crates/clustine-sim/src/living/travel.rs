@@ -1,7 +1,8 @@
-//! `LivingEntity.travel` of a body with nothing to steer it (its input is zero): in
-//! the air with its block's friction, the drag of the air and gravity; in water slowed
-//! and sinking slowly; in lava halved; each move the body's own (`Entity.move`, with a
-//! living body's bounce and the fluids looked at again before its fall counts).
+//! `LivingEntity.travel` of a body and what steers it (`travelInput`, zero for a body
+//! without a mind): in the air with its block's friction, the drag of the air and
+//! gravity; in water slowed and sinking slowly; in lava halved; each move the body's own
+//! (`Entity.move`, with a living body's bounce and the fluids looked at again before
+//! its fall counts).
 
 use clustine_blocks::data::{in_tag, is_block, is_class};
 use clustine_data::{BlockClass, blocks};
@@ -60,8 +61,8 @@ impl Living {
         world: &R,
         friction: f32,
     ) -> Vec3 {
-        let _ = friction;
-        self.move_relative_by_nothing();
+        let speed = self.friction_influenced_speed(friction);
+        self.move_relative(speed);
         self.body.motion = self.handle_on_climbable(world, self.body.motion);
         let motion = self.body.motion;
         self.move_self(world, motion);
@@ -74,15 +75,32 @@ impl Living {
         moved
     }
 
-    /// `moveRelative(speed, Vec3.ZERO)`: nothing to steer by adds a zero vector, which
-    /// still makes a negative zero positive.
-    fn move_relative_by_nothing(&mut self) {
-        self.body.motion = physics::add(self.body.motion, [0.0; 3]);
+    /// `moveRelative(speed, input)`: the input turned by the yaw and scaled by `speed`,
+    /// added; nothing to steer by adds a zero vector, which still makes a negative zero
+    /// positive.
+    fn move_relative(&mut self, speed: f32) {
+        let push = crate::physics::minecart::input_vector(self.input, speed, self.yaw);
+        self.body.motion = physics::add(self.body.motion, push);
+    }
+
+    /// `getFrictionInfluencedSpeed(friction)`: on the ground its speed, scaled down on
+    /// what is more slippery than most (`0.6f` widened is above 0.6, so the ordinary
+    /// block's factor is exactly 1); in the air `getFlyingSpeed()`, `0.02f` for a body
+    /// no player steers.
+    fn friction_influenced_speed(&self, friction: f32) -> f32 {
+        if !self.body.on_ground {
+            return 0.02;
+        }
+        if f64::from(friction) > 0.6 {
+            self.speed * (0.216_000_02 / (friction * friction * friction))
+        } else {
+            self.speed
+        }
     }
 
     /// `onClimbable()`: the block it is in is climbable, or an open trapdoor over a
     /// ladder that faces as it does.
-    pub(super) fn on_climbable<W: World + ?Sized>(&self, world: &W) -> bool {
+    pub(crate) fn on_climbable<W: World + ?Sized>(&self, world: &W) -> bool {
         let at = self.body.block_position();
         let state = world.state(at);
         if in_tag(state, "minecraft:climbable") {
@@ -133,14 +151,16 @@ impl Living {
     ) {
         // `getWaterSlowDown`; a body that does not sprint, without dolphin's grace.
         let mut slow = 0.8_f32;
+        let mut speed = 0.02_f32;
         let mut efficiency = self.attributes.water_movement_efficiency as f32;
         if !self.body.on_ground {
             efficiency *= 0.5;
         }
         if efficiency > 0.0 {
             slow += (0.546_000_06 - slow) * efficiency;
+            speed += (self.speed - speed) * efficiency;
         }
-        self.move_relative_by_nothing();
+        self.move_relative(speed);
         let motion = self.body.motion;
         self.move_self(world, motion);
         let mut moved = self.body.motion;
@@ -164,7 +184,7 @@ impl Living {
         falling: bool,
         start_y: f64,
     ) {
-        self.move_relative_by_nothing();
+        self.move_relative(0.02);
         let motion = self.body.motion;
         self.move_self(world, motion);
         // `isInShallowFluid(#lava)`: no deeper than the fluid jump threshold.
@@ -207,6 +227,7 @@ impl Living {
             own: self.attributes.bounciness,
             living: true,
             rails_keep_speed: false,
+            max_up_step: self.step_height,
         };
         let before = self.body.position;
         let mut refreshed = None;

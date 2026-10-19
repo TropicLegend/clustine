@@ -45,6 +45,8 @@ mod leashes;
 mod lends;
 mod menu_play;
 mod minecarts;
+mod mob_attacks;
+mod mob_bodies;
 mod mobs;
 mod picks;
 mod pistons;
@@ -54,12 +56,14 @@ mod pushed;
 mod rails;
 mod random_ticks;
 pub(crate) use random_ticks::Random;
+mod orbs;
 mod redstone;
 mod reshape;
 mod riders;
 mod riding;
 mod sculk;
 mod shulker_boxes;
+mod spawn_eggs;
 mod stands;
 mod ticks;
 mod tnt;
@@ -418,6 +422,12 @@ pub struct Region {
     /// The entity whose own tick is running and the `lived` it began with, whose draws
     /// come from its own stream.
     ticking: Option<(EntityId, u32)>,
+    /// What the region's players were given of experience (`mob_bodies.rs`).
+    experience_given: mob_bodies::ExperienceGiven,
+    /// The tick each player last took an orb in (`orbs.rs`): a player takes one at most
+    /// every other tick (`takeXpDelay`). In memory only, as the player's own delay is
+    /// the lead's.
+    orbs_taken: BTreeMap<PlayerId, u64>,
     /// The items of this tick that took another in by a merge before they ticked
     /// themselves, by chunk: their counters are committed again at the end of the
     /// entities' phase, as the tick leaves them. Empty between ticks.
@@ -572,6 +582,8 @@ impl Region {
             entity_draws: BTreeMap::new(),
             aside_draws: BTreeMap::new(),
             ticking: None,
+            experience_given: BTreeMap::new(),
+            orbs_taken: BTreeMap::new(),
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
@@ -998,6 +1010,7 @@ impl Region {
         self.players_push_minecarts(&mut output);
         self.players_push_boats(&mut output);
         self.pick_up_items(&mut output);
+        self.players_touch_orbs(&mut output);
         // The end of each riding player's tick: the checks of a driver's next moves
         // count from where their boat is now (`boats.rs`).
         self.tick_drivers(&mut output);
@@ -1985,13 +1998,16 @@ impl Region {
                     sneaking: false,
                 };
                 // Every player is a creative one, whose hit breaks what N5 brings at
-                // once; the damage is a bare hand's at full strength, as the game's
-                // attack strength is not kept yet.
+                // once; the damage is what they hold deals by `Player.attack`'s rule
+                // (`mob_attacks.rs`), at the attack strength taken as full until the
+                // player's ticker is kept.
+                let attacker = player.entity_id;
+                let damage = self.attack_of(id).map_or(1.0, |attack| attack.amount);
                 let by = EntityUse::Attack {
-                    attacker: player.entity_id,
+                    attacker,
                     creative: true,
                     sprinting: false,
-                    damage: Float(1.0),
+                    damage: Float(damage),
                     from: user.from(),
                 };
                 self.player_used_entity(user, *entity, by, output);
@@ -3249,6 +3265,7 @@ mod tests {
     mod lends_by_the_record;
     mod menus;
     mod minecarts;
+    mod mob_bodies;
     mod mobs;
     mod pistons;
     mod post_processing_and_seams;

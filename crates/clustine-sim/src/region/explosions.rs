@@ -576,9 +576,25 @@ impl Region {
             }
             // `hurtServer` only marks it hurt, which sends its motion.
             EntityData::FallingBlock { .. } => flags |= Tracked::SYNC_VELOCITY,
-            // It cannot be hurt, and is pushed from its feet. A mob's hurt is its body's,
-            // N7b's.
-            EntityData::PrimedTnt { .. } | EntityData::Mob { .. } => {}
+            // It cannot be hurt, and is pushed from its feet.
+            EntityData::PrimedTnt { .. } => {}
+            // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),
+            // which pushes nothing of itself (`#no_knockback`).
+            EntityData::Mob { .. } => {
+                let kind = if explosion.owner.is_some() {
+                    crate::mobs::body::hurt::DamageType("minecraft:player_explosion")
+                } else {
+                    crate::mobs::body::hurt::DamageType("minecraft:explosion")
+                };
+                let source = crate::mobs::body::hurt::DamageSource::of(kind);
+                self.hurt_mob(key, &source, hit.damage, output);
+            }
+            EntityData::ExperienceOrb { .. } => {
+                if self.hurt_orb(key, hit.damage, output) {
+                    return;
+                }
+                flags |= Tracked::SYNC_VELOCITY;
+            }
             EntityData::Minecart { .. } | EntityData::Boat { .. } => {
                 // An explosion sets a TNT cart alight, with the owner as its cause.
                 self.hurt_vehicle_by(key, hit.damage, creative, Some(explosion.owner), output);

@@ -954,6 +954,10 @@ impl Witness {
                         | RegionEvent::EntityEvent { .. }
                         | RegionEvent::Explosion { .. }
                         | RegionEvent::Vibration { .. }
+                        | RegionEvent::DamageEvent { .. }
+                        | RegionEvent::AttributesChanged { .. }
+                        | RegionEvent::EquipmentChanged { .. }
+                        | RegionEvent::Animated { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);

@@ -597,6 +597,11 @@ pub(crate) fn boat_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option
     bucket::boat_hit(item_use, blocks)
 }
 
+/// See [`bucket::source_hit`].
+pub(crate) fn source_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<BlockPos>, ()> {
+    bucket::source_hit(item_use, blocks)
+}
+
 /// The box of a player whose feet are at `feet`: 0.6 wide, 1.8 high, or 1.5 while
 /// sneaking (section 4.3).
 pub fn body(feet: Vec3, sneaking: bool) -> [f64; 6] {

@@ -253,6 +253,13 @@ pub(crate) struct Steps {
     fall: f64,
 }
 
+impl Steps {
+    /// `fallDistance` as the player's moves left it, which a critical hit reads.
+    pub(crate) fn fall(&self) -> f64 {
+        self.fall
+    }
+}
+
 impl Default for Steps {
     fn default() -> Steps {
         Steps {

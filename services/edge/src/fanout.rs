@@ -3248,6 +3248,12 @@ impl Fanout {
             RegionEvent::Leashed { entity, holder, .. } => self.show_leash(entity, holder).await,
             // Shown from the steps of N5 that make them.
             RegionEvent::DataChanged { .. } | RegionEvent::EntitySound { .. } => {}
+            // A mob's living packets are shown from the edge's part of N7
+            // (`docs/groundwork/n7-plan.md`, part N7b's edge, the lead's).
+            RegionEvent::DamageEvent { .. }
+            | RegionEvent::AttributesChanged { .. }
+            | RegionEvent::EquipmentChanged { .. }
+            | RegionEvent::Animated { .. } => {}
             RegionEvent::Explosion {
                 centre,
                 radius,

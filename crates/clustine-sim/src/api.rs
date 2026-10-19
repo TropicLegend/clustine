@@ -1390,6 +1390,52 @@ pub enum RegionEvent {
         to: BlockPos,
         ticks: i32,
     },
+    /// A living entity in `chunk` took a hurt that counts (`broadcastDamageEvent`,
+    /// `docs/groundwork/n7-brief.md`, section 9.1): of the damage type of id
+    /// `damage_type` in the registry the server sends (Clustine's sorted order),
+    /// caused by `cause` and dealt by `direct` (keys, which the edge translates),
+    /// with the position the source names, if any. Clients show its hurt from it.
+    DamageEvent {
+        entity: EntityId,
+        chunk: ChunkPos,
+        damage_type: i32,
+        cause: Option<EntityId>,
+        direct: Option<EntityId>,
+        position: Option<[f64; 3]>,
+    },
+    /// The attributes a client is sent of a mob in `chunk` (`UpdateAttributes`):
+    /// every synced instance it has made, ascending by the attribute's id, where they
+    /// changed or it made its first.
+    AttributesChanged {
+        entity: EntityId,
+        chunk: ChunkPos,
+        attributes: Vec<AttributeShown>,
+    },
+    /// What a mob in `chunk` wears and holds changed (`SetEquipment`): every slot,
+    /// by `EquipmentSlot` ordinal, empty ones as `None`.
+    EquipmentChanged {
+        entity: EntityId,
+        chunk: ChunkPos,
+        slots: Vec<(u8, Option<ItemStack>)>,
+    },
+    /// The player entity `attacker` in `chunk` struck `target` in a way its client
+    /// shows (`ClientboundAnimatePacket` of the target: 1 a critical hit, 2 a magic
+    /// one), sent to the attacker and the players who see the attacker.
+    Animated {
+        target: EntityId,
+        attacker: EntityId,
+        chunk: ChunkPos,
+        action: u8,
+    },
+}
+
+/// One attribute of an entity as clients are sent it: its id in the game's registry,
+/// its base value, and its modifiers (id, amount, operation's ordinal).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttributeShown {
+    pub attribute: u16,
+    pub base: f64,
+    pub modifiers: Vec<(String, f64, u8)>,
 }
 
 /// What an edge is told of an entity other than a player in a tick that changed it.
@@ -1442,7 +1488,11 @@ impl RegionEvent {
             | Self::Leashed { chunk, .. }
             | Self::DataChanged { chunk, .. }
             | Self::EntityEvent { chunk, .. }
-            | Self::EntitySound { chunk, .. } => [*chunk; 2],
+            | Self::EntitySound { chunk, .. }
+            | Self::DamageEvent { chunk, .. }
+            | Self::AttributesChanged { chunk, .. }
+            | Self::EquipmentChanged { chunk, .. }
+            | Self::Animated { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }

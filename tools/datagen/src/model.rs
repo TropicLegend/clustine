@@ -88,7 +88,7 @@ pub struct GameData {
     pub worldgen: Worldgen,
     /// The components of each item that the step of items reads, by item id.
     pub item_components: Vec<ItemComponents>,
-    /// The block loot tables, compiled.
+    /// The loot tables of blocks and entities, compiled, with what smelting makes.
     pub loot: loot::Compiled,
 }
 
@@ -496,14 +496,16 @@ impl GameData {
                     .with_context(|| format!("reading {}", path.display()))?,
             );
         }
-        let loot = loot::load(
-            &data.join("loot_table/blocks"),
-            &loot::PredicateDirectory(&data.join("predicate")),
-            &loot::Names {
-                blocks: &blocks,
-                items: &item_names,
-            },
-        )?;
+        let entity_types = static_registry(&registries, "entity_type")?;
+        let names = loot::Names {
+            blocks: &blocks,
+            items: &item_names,
+            entities: &entity_types,
+        };
+        let predicates = loot::PredicateDirectory(&data.join("predicate"));
+        let mut loot = loot::load(&data.join("loot_table/blocks"), &predicates, &names)?;
+        loot.add_entities(&data.join("loot_table"), &predicates, &names)?;
+        loot.add_smelting(&data.join("recipe"), &names)?;
         let items = item_names
             .into_iter()
             .map(|name| Item {
@@ -580,7 +582,7 @@ impl GameData {
             packets: load_packets(&reports)?,
             blocks,
             items,
-            entity_types: static_registry(&registries, "entity_type")?,
+            entity_types,
             sound_events: static_registry(&registries, "sound_event")?,
             synced_registries,
             dimension_types,

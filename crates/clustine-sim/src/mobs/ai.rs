@@ -537,6 +537,14 @@ fn malus_of(controls: &Controls, config: &Config, kind: PathType) -> f32 {
         .unwrap_or(kind.malus())
 }
 
+/// `navigation.canFloat()`, which the type's goals set as they are made (`FloatGoal`'s):
+/// what the body's jump in a fluid reads.
+pub(crate) fn can_float(tick: &MobTick<'_>) -> bool {
+    let mut setup = Setup::default();
+    tick.mob_type.register_goals(&mut setup);
+    setup.config.navigation.flags.can_float
+}
+
 /// The mob's two selectors in its tick, with their goals' states read from its mind.
 fn selectors(tick: &MobTick<'_>) -> (Goals, Goals, Config) {
     let mut setup = Setup::default();

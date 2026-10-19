@@ -215,6 +215,14 @@ pub(crate) fn boat_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option
     Ok(ray(item_use, blocks, Fluids::Any)?.map(|hit| hit.location))
 }
 
+/// The block where a ray from the player's eyes along their view first meets a block's
+/// outline or a fluid's source within reach, as `SpawnEggItem.use` aims
+/// (`Item.getPlayerPOVHitResult` with `ClipContext.Fluid.SOURCE_ONLY`): `Ok(None)` when
+/// it meets nothing, `Err` when it reaches a block the caller cannot see first.
+pub(crate) fn source_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<BlockPos>, ()> {
+    Ok(ray(item_use, blocks, Fluids::Sources)?.map(|hit| hit.pos))
+}
+
 /// The first block a ray from the player's eyes along their view meets within reach,
 /// by the blocks' outline shapes and the shapes of the fluids `fluids` names.
 /// `Ok(None)` when it meets nothing, `Err` when it reaches a block the caller cannot

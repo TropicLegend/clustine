@@ -413,6 +413,7 @@ mod tests {
                 own: 0.0,
                 living: false,
                 rails_keep_speed: false,
+                max_up_step: 0.0,
             },
             passenger: false,
             last_yd: 0.0,

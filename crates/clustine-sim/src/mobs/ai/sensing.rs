@@ -64,8 +64,7 @@ impl Looked {
         let info = EntityTypeInfo::of(i32::from(entity.kind));
         let (mob, alive) = match &entity.data {
             EntityData::Mob { body, .. } => {
-                let alive = part::decode::<Vitals>(body)
-                    .is_ok_and(|vitals| vitals.health > 0.0 && vitals.died_at.is_none());
+                let alive = part::decode::<Vitals>(body).is_ok_and(|vitals| !vitals.dying());
                 (true, alive)
             }
             _ => (false, true),

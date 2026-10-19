@@ -1311,7 +1311,7 @@ fn item_components(data: &GameData) -> Result<String> {
     Ok(out)
 }
 
-/// `loot_tables.rs`: the block loot tables, and each block's.
+/// `loot_tables.rs`: the loot tables, each block's and each entity type's.
 fn loot_tables(data: &GameData) -> Result<String> {
     let dumped = &data.extract.block_physics;
     ensure!(
@@ -1324,7 +1324,18 @@ fn loot_tables(data: &GameData) -> Result<String> {
         .iter()
         .map(|block| block.loot_table.as_deref())
         .collect();
-    crate::loot::emit(&data.loot, &names)
+    // `EntityType.getDefaultLootTable`: `entities/` and the type's name, which a type
+    // without a file of that name does not have.
+    let entity_names: Vec<String> = data
+        .entity_types
+        .iter()
+        .map(|name| name.replacen("minecraft:", "minecraft:entities/", 1))
+        .collect();
+    let entities: Vec<Option<&str>> = entity_names
+        .iter()
+        .map(|name| Some(name.as_str()))
+        .collect();
+    crate::loot::emit(&data.loot, &names, &entities)
 }
 
 /// The sound events, by id, and a constant for each, named as the game's

@@ -245,12 +245,12 @@ impl Region {
             }
             EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
             EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
-            // A mob's uses and hits are its body's (`docs/groundwork/n7-plan.md`, part
-            // N7b), which no part has built yet: nothing makes a mob before it.
+            // A mob's uses and hits are its body's (`mob_bodies.rs`).
+            EntityData::Mob { .. } => self.mob_used(&entity, chunk, by, output),
             EntityData::Item { .. }
             | EntityData::FallingBlock { .. }
             | EntityData::PrimedTnt { .. }
-            | EntityData::Mob { .. } => {}
+            | EntityData::ExperienceOrb { .. } => {}
         }
     }
 
@@ -278,6 +278,7 @@ impl Region {
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
             EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
             EntityData::Mob { .. } => self.tick_mob(entity, position, output),
+            EntityData::ExperienceOrb { .. } => self.tick_orb(entity, position, output),
         }
         self.ticking = before;
     }

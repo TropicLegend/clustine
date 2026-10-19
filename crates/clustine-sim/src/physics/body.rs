@@ -31,6 +31,8 @@ pub(crate) struct Bounce {
     pub(crate) living: bool,
     /// Whether a rail under it keeps its speed (`AbstractMinecart.getBlockSpeedFactor`).
     pub(crate) rails_keep_speed: bool,
+    /// `maxUpStep()`: how high it steps up as it moves, 0 for all but living entities.
+    pub(crate) max_up_step: f32,
 }
 
 /// The bounce of items and falling blocks, which are not living and bounce of
@@ -41,6 +43,7 @@ pub(crate) const NOT_LIVING: Bounce = Bounce {
     own: 0.0,
     living: false,
     rails_keep_speed: false,
+    max_up_step: 0.0,
 };
 
 /// One move of the tick (`Entity.Movement`): where from and to, and, for a move the
@@ -228,7 +231,15 @@ impl Body {
             self.stuck_speed = [0.0; 3];
             self.motion = [0.0; 3];
         }
-        let out = collide::collide(world, self.context(), &self.mover, &self.bounds(), vector);
+        let out = collide::collide_stepping(
+            world,
+            self.context(),
+            &self.mover,
+            &self.bounds(),
+            vector,
+            self.on_ground,
+            bounce.max_up_step,
+        );
         let moved = super::length_sqr(out);
         if moved > 1.0e-7 || super::length_sqr(vector) - moved < 1.0e-7 {
             if self.fall_distance != 0.0 && moved >= 1.0 {

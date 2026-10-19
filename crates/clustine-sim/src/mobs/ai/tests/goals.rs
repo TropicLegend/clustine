@@ -244,6 +244,14 @@ fn the_tempt_range_is_the_attribute_s() {
         kind: clustine_data::entity_types::COW as u16,
         lived: 0,
         tick_count: 0,
+
+        vehicle: None,
+
+        carries: false,
+
+        leashed: false,
+
+        counted: false,
         mob: cow.mob.clone(),
         living: cow.living.clone(),
         yaw: 0.0,
