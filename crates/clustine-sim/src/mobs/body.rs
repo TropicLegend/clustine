@@ -614,13 +614,18 @@ fn jump_from_ground(tick: &mut MobTick<'_>) {
         .body
         .attributes
         .value(tick.kind, attribute(ids::JUMP_STRENGTH)) as f32;
-    let power = strength * 1.0 * block_jump_factor(tick);
-    if power <= 1.0e-5 {
-        return;
+    let factor = block_jump_factor(tick);
+    let power = tick
+        .mob_type
+        .jump_power(tick, factor)
+        .unwrap_or(strength * 1.0 * factor);
+    if power > 1.0e-5 {
+        let motion = &mut tick.living.body.motion;
+        motion[1] = f64::from(power).max(motion[1]);
+        tick.out.needs_sync = true;
     }
-    let motion = &mut tick.living.body.motion;
-    motion[1] = f64::from(power).max(motion[1]);
-    tick.out.needs_sync = true;
+    // The type's own part of the jump (a rabbit's push on).
+    tick.mob_type.jumped_from_ground(tick);
 }
 
 /// `getBlockJumpFactor()`: the block it is in's, unless that is 1, then the block's

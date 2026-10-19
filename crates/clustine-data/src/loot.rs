@@ -102,6 +102,10 @@ pub struct EntityPredicate {
     pub sheep_colour: Option<&'static str>,
     /// A frog's variant (`minecraft:frog/variant`).
     pub frog_variant: Option<&'static str>,
+    /// A mooshroom's colour, `red` or `brown` (`minecraft:mooshroom/variant`).
+    pub mooshroom_variant: Option<&'static str>,
+    /// A chicken's variant (`minecraft:chicken/variant`).
+    pub chicken_variant: Option<&'static str>,
     /// Whether a sheep is sheared.
     pub sheared: Option<bool>,
     /// A slime's or magma cube's size, its least and greatest.
@@ -504,8 +508,16 @@ mod tests {
                 }
             }
         }
-        // The blocks' 1201, the entities' 109 and the fish of a guardian's.
-        assert_eq!(tables().len(), 1311);
+        // The blocks' 1201, the entities' 109 and the fish of a guardian's; a chicken's
+        // laying, and the mooshroom's and the sheep's shearing with their colours' (21).
+        assert_eq!(tables().len(), 1311 + 21);
+        for name in [
+            "minecraft:gameplay/chicken_lay",
+            "minecraft:shearing/mooshroom",
+            "minecraft:shearing/sheep",
+        ] {
+            assert!(table_by_name(name).is_some(), "{name}");
+        }
         assert!(tables().is_sorted_by(|a, b| a.name < b.name));
         for table in tables() {
             for pool in table.pools {

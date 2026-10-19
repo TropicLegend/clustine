@@ -564,9 +564,32 @@ fn selectors(tick: &MobTick<'_>) -> (Goals, Goals, Config) {
 }
 
 /// `PathfinderMob.isPanicking` of a mob without a brain: whether a panic goal runs.
-#[allow(dead_code, reason = "what breeding and the leash ask, N7b's and N7e's")]
+#[allow(dead_code, reason = "what the leash asks, N7b's")]
 pub(crate) fn is_panicking(tick: &MobTick<'_>) -> bool {
     selectors(tick).0.panicking()
+}
+
+/// `isPanicking()` of a mob as its record has it: whether its goal selector runs a panic
+/// goal of its type's. A copy's record keeps no mind, so a mob across a line is read as
+/// not panicking (named).
+pub(crate) fn panicking_record(entity: &clustine_world::Entity) -> bool {
+    let clustine_world::EntityData::Mob { mind, .. } = &entity.data else {
+        return false;
+    };
+    let Ok(selector) = part::decode::<GoalSelector>(mind) else {
+        return false;
+    };
+    if selector.0.running.is_empty() {
+        return false;
+    }
+    let mut setup = Setup::default();
+    super::types::of(entity.kind).register_goals(&mut setup);
+    selector.0.running.iter().any(|&index| {
+        setup
+            .goals
+            .get(usize::from(index))
+            .is_some_and(|goal| goal.slot.panics())
+    })
 }
 
 /// `Mob.serverAiStep`: sensing cleared, the target selector, the goal selector, the
@@ -604,9 +627,10 @@ pub(crate) fn server_ai_step(tick: &mut MobTick<'_>) {
             sensing: sensing::Sensing::default(),
             navigation_ticked: true,
         };
-        controls::tick_move(&mut ai);
+        let mob_type = ai.tick.mob_type;
+        mob_type.tick_move_control(&mut ai);
         controls::tick_look(&mut ai);
-        controls::tick_jump(&mut ai);
+        mob_type.tick_jump_control(&mut ai);
     }
     let mut slots = Vec::new();
     goals.save(mind_ids::FIRST_GOAL, &mut slots);

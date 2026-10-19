@@ -29,7 +29,7 @@ use clustine_protocol::packets::{
     },
 };
 use clustine_sim::api::Tracked;
-use clustine_sim::shown::DataShown;
+use clustine_sim::shown::{DataShown, Holder};
 use clustine_world::EntityData;
 
 /// How far an entity has to be from where it was sent last for a move to be sent, the
@@ -328,6 +328,19 @@ const STAND_INVISIBLE: u8 = 32;
 /// every entity, the health (1, which the stand's constructor sets to its most, so that
 /// it is always sent), the stand's flags and its six rotations. Anything else's are
 /// none.
+/// The serializer a farm animal's variant is written with.
+fn holder_serializer(holder: Holder) -> i32 {
+    use clustine_protocol::packets::play::entity_data_serializer as serializers;
+    match holder {
+        Holder::CowVariant => serializers::COW_VARIANT,
+        Holder::CowSoundVariant => serializers::COW_SOUND_VARIANT,
+        Holder::PigVariant => serializers::PIG_VARIANT,
+        Holder::PigSoundVariant => serializers::PIG_SOUND_VARIANT,
+        Holder::ChickenVariant => serializers::CHICKEN_VARIANT,
+        Holder::ChickenSoundVariant => serializers::CHICKEN_SOUND_VARIANT,
+    }
+}
+
 pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
     // A mob's are read from its record by the sim, which knows its parts.
     if let EntityData::Mob { .. } = data {
@@ -339,6 +352,10 @@ pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityData
                     DataShown::Int(int) => EntityDataValue::Int(int),
                     DataShown::Float(float) => EntityDataValue::Float(float),
                     DataShown::Boolean(boolean) => EntityDataValue::Boolean(boolean),
+                    DataShown::Holder(holder, id) => EntityDataValue::Registered {
+                        serializer: holder_serializer(holder),
+                        id,
+                    },
                 };
                 (index, value, default)
             })

@@ -20,6 +20,7 @@ use crate::state::{
     EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
 };
 
+mod animals;
 mod arrivals;
 mod attached;
 mod block_entities;
@@ -58,6 +59,7 @@ mod pressed;
 mod pushed;
 mod rails;
 mod random_ticks;
+pub(crate) use drops::DEFAULT_PICK_UP_DELAY;
 pub(crate) use random_ticks::Random;
 mod orbs;
 mod redstone;
@@ -3368,6 +3370,7 @@ mod tests {
     mod effects;
     mod entities;
     mod falling_and_drops;
+    mod farm;
     mod fluids;
     mod hanging;
     mod hoppers;

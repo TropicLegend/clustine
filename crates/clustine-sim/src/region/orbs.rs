@@ -113,6 +113,12 @@ impl Region {
             self.commit_entity(chunk, key, vec![EntityField::Data(data)], output);
             return;
         }
+        self.add_orb(position, value, output);
+    }
+
+    /// `new ExperienceOrb(level, x, y, z, value)` added (a breeding's): an orb of its own,
+    /// whose own draws turn it and throw it a little.
+    pub(crate) fn add_orb(&mut self, position: Vec3, value: i32, output: &mut TickOutput) {
         let chunk = ChunkPos::containing(position[0], position[2]);
         let here = self.ticks_chunk(chunk);
         let key = if here {

@@ -101,6 +101,10 @@ pub struct EntityPredicate {
     pub sheep_colour: Option<String>,
     /// `minecraft:components`' `minecraft:frog/variant`.
     pub frog_variant: Option<String>,
+    /// `minecraft:components`' `minecraft:mooshroom/variant`: `red` or `brown`.
+    pub mooshroom_variant: Option<String>,
+    /// `minecraft:components`' `minecraft:chicken/variant`.
+    pub chicken_variant: Option<String>,
     /// `minecraft:type_specific/sheep`'s `sheared`.
     pub sheared: Option<bool>,
     /// `minecraft:type_specific/cube_mob`'s `size`, as its least and greatest.
@@ -322,6 +326,15 @@ impl Names<'_> {
     }
 }
 
+/// The tables the farm animals' own code names (`docs/groundwork/n7-brief.md`, section
+/// 4): a chicken's laying (`Chicken.aiStep`'s gift), a sheep's and a mooshroom's
+/// shearing; each picks a nested table by the animal's variant or colour.
+pub const ANIMALS: [&str; 3] = [
+    "gameplay/chicken_lay",
+    "shearing/mooshroom",
+    "shearing/sheep",
+];
+
 /// Reads every file of `directory` (the block loot tables) with the predicates of
 /// `predicates`.
 pub fn load(directory: &Path, predicates: &dyn Predicates, names: &Names) -> Result<Compiled> {
@@ -385,8 +398,8 @@ fn tables_under(directory: &Path) -> Result<Vec<String>> {
 
 impl Compiled {
     /// Adds the entity tables of `loot_tables` (the directory `loot_table`), those of
-    /// `entities` and below, then every table they name that is not there yet; and
-    /// sorts the tables by name.
+    /// `entities` and below and the ones the animals' own code names ([`ANIMALS`]),
+    /// then every table they name that is not there yet; and sorts the tables by name.
     pub fn add_entities(
         &mut self,
         loot_tables: &Path,
@@ -395,6 +408,9 @@ impl Compiled {
     ) -> Result<()> {
         for stem in tables_under(&loot_tables.join("entities"))? {
             self.add_file(loot_tables, &format!("entities/{stem}"), predicates, names)?;
+        }
+        for path in ANIMALS {
+            self.add_file(loot_tables, path, predicates, names)?;
         }
         loop {
             let missing: Vec<String> = self
@@ -530,13 +546,20 @@ impl Compiled {
     ) -> Result<()> {
         let json = Json::parse(text)?;
         only(&json, &["type", "pools", "modifier", "random_sequence"])?;
-        // A table's type says which parameters it is given: a block's, an entity's, or
-        // the fishing a guardian's table names.
-        let expected = match name.split('/').next() {
-            Some("minecraft:blocks") => "block",
-            Some("minecraft:entities") => "entity",
-            Some("minecraft:gameplay") => "fishing",
-            _ => bail!("the table {name} is of no kind read here"),
+        // A table's type says which parameters it is given: a block's, an entity's, the
+        // fishing a guardian's table names, a shearing's, or a chicken's gift of an egg.
+        let expected = if name.starts_with("minecraft:blocks/") {
+            "block"
+        } else if name.starts_with("minecraft:entities/") {
+            "entity"
+        } else if name.starts_with("minecraft:gameplay/fishing") {
+            "fishing"
+        } else if name.starts_with("minecraft:shearing/") {
+            "shearing"
+        } else if name == "minecraft:gameplay/chicken_lay" {
+            "gift"
+        } else {
+            bail!("the table {name} is of no kind read here")
         };
         ensure!(
             kind(&json)? == expected,
@@ -1054,15 +1077,25 @@ fn entity_predicate(predicate: &Json, names: &Names) -> Result<EntityPredicate> 
                     Some(names.entity_kind(value.member("minecraft:entity_type")?.string()?)?);
             }
             "minecraft:components" => {
-                only(value, &["minecraft:sheep/color", "minecraft:frog/variant"])?;
-                read.sheep_colour = value
-                    .get("minecraft:sheep/color")
-                    .map(|colour| colour.string().map(str::to_owned))
-                    .transpose()?;
-                read.frog_variant = value
-                    .get("minecraft:frog/variant")
-                    .map(|variant| variant.string().map(str::to_owned))
-                    .transpose()?;
+                only(
+                    value,
+                    &[
+                        "minecraft:sheep/color",
+                        "minecraft:frog/variant",
+                        "minecraft:mooshroom/variant",
+                        "minecraft:chicken/variant",
+                    ],
+                )?;
+                let text = |key: &str| {
+                    value
+                        .get(key)
+                        .map(|named| named.string().map(str::to_owned))
+                        .transpose()
+                };
+                read.sheep_colour = text("minecraft:sheep/color")?;
+                read.frog_variant = text("minecraft:frog/variant")?;
+                read.mooshroom_variant = text("minecraft:mooshroom/variant")?;
+                read.chicken_variant = text("minecraft:chicken/variant")?;
             }
             "minecraft:type_specific/sheep" => {
                 only(value, &["sheared"])?;
@@ -1365,14 +1398,16 @@ fn entity_predicate_text(predicate: &EntityPredicate) -> String {
     let size = |(min, max): &(Option<i32>, Option<i32>)| format!("({min:?}, {max:?})");
     format!(
         "EntityPredicate {{ kind: {}, on_fire: {}, baby: {}, vehicle: {}, sheep_colour: {}, \
-         frog_variant: {}, sheared: {}, cube_size: {}, captain: {}, \
-         main_hand_enchantment: {} }}",
+         frog_variant: {}, mooshroom_variant: {}, chicken_variant: {}, sheared: {}, \
+         cube_size: {}, captain: {}, main_hand_enchantment: {} }}",
         optional_text(&predicate.kind, text),
         optional_text(&predicate.on_fire, flag),
         optional_text(&predicate.baby, flag),
         optional_text(&predicate.vehicle, text),
         optional_text(&predicate.sheep_colour, text),
         optional_text(&predicate.frog_variant, text),
+        optional_text(&predicate.mooshroom_variant, text),
+        optional_text(&predicate.chicken_variant, text),
         optional_text(&predicate.sheared, flag),
         optional_text(&predicate.cube_size, size),
         optional_text(&predicate.captain, flag),
@@ -1646,6 +1681,9 @@ mod tests {
             "minecraft:leather",
             "minecraft:rabbit_foot",
             "minecraft:white_wool",
+            "minecraft:egg",
+            "minecraft:blue_egg",
+            "minecraft:red_mushroom",
         ]
         .map(str::to_owned)
         .to_vec()
@@ -2002,6 +2040,112 @@ mod tests {
         assert!(text.contains("rolls: IntProvider::Uniform { min: 1, max: 3 }"));
     }
 
+    const CHICKEN_LAY: &str = r#"{"type": "minecraft:gift", "pools": [{"entries": [
+      {"type": "minecraft:alternatives", "children": [
+        {"type": "minecraft:item", "name": "minecraft:egg", "condition":
+          {"type": "minecraft:entity_properties", "entity": "this", "predicate":
+            {"minecraft:components": {"minecraft:chicken/variant": "minecraft:temperate"}}}},
+        {"type": "minecraft:item", "name": "minecraft:blue_egg", "condition":
+          {"type": "minecraft:entity_properties", "entity": "this", "predicate":
+            {"minecraft:components": {"minecraft:chicken/variant": "minecraft:cold"}}}}]}],
+      "rolls": 1}], "random_sequence": "minecraft:gameplay/chicken_lay"}"#;
+
+    const MOOSHROOM: &str = r#"{"type": "minecraft:shearing", "pools": [{"entries": [
+      {"type": "minecraft:alternatives", "children": [
+        {"type": "minecraft:loot_table", "value": "minecraft:shearing/mooshroom/red",
+         "condition": {"type": "minecraft:entity_properties", "entity": "this",
+           "predicate": {"minecraft:components": {"minecraft:mooshroom/variant": "red"}}}}]}],
+      "rolls": 1}], "random_sequence": "minecraft:shearing/mooshroom"}"#;
+
+    const RED_MUSHROOMS: &str = r#"{"type": "minecraft:shearing", "pools": [{"entries":
+      [{"type": "minecraft:item", "name": "minecraft:red_mushroom"}], "rolls": 5}],
+      "random_sequence": "minecraft:shearing/mooshroom/red"}"#;
+
+    /// The tables of the farm animals' own code: a gift and a shearing, which pick by a
+    /// chicken's and a mooshroom's variant, and a shearing's table of its colour.
+    #[test]
+    fn a_chicken_s_laying_and_a_mooshroom_s_shearing_are_compiled_by_their_variants() {
+        let compiled = compile_entities(&[
+            ("minecraft:gameplay/chicken_lay", CHICKEN_LAY),
+            ("minecraft:shearing/mooshroom", MOOSHROOM),
+            ("minecraft:shearing/mooshroom/red", RED_MUSHROOMS),
+        ])
+        .unwrap();
+        let names: Vec<&str> = compiled
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "minecraft:gameplay/chicken_lay",
+                "minecraft:shearing/mooshroom",
+                "minecraft:shearing/mooshroom/red"
+            ]
+        );
+        let Entry::Alternatives { children, .. } = &compiled.tables[0].pools[0].entries[0] else {
+            panic!("the eggs are alternatives");
+        };
+        let Entry::Item {
+            condition: Some(cold),
+            ..
+        } = &children[1]
+        else {
+            panic!("a blue egg under a condition");
+        };
+        assert_eq!(
+            compiled.conditions[*cold],
+            Condition::EntityMatches {
+                entity: "this".to_owned(),
+                predicate: EntityPredicate {
+                    chicken_variant: Some("minecraft:cold".to_owned()),
+                    ..EntityPredicate::default()
+                },
+            }
+        );
+        let Entry::Alternatives { children, .. } = &compiled.tables[1].pools[0].entries[0] else {
+            panic!("the colours are alternatives");
+        };
+        let Entry::Table {
+            name,
+            condition: Some(red),
+            ..
+        } = &children[0]
+        else {
+            panic!("the red table under a condition");
+        };
+        assert_eq!(name, "minecraft:shearing/mooshroom/red");
+        assert_eq!(
+            compiled.conditions[*red],
+            Condition::EntityMatches {
+                entity: "this".to_owned(),
+                predicate: EntityPredicate {
+                    mooshroom_variant: Some("red".to_owned()),
+                    ..EntityPredicate::default()
+                },
+            }
+        );
+        assert_eq!(compiled.tables[2].pools[0].rolls, IntProvider::Constant(5));
+        let text = emit(&compiled, &[], &[]).unwrap();
+        assert!(text.contains("mooshroom_variant: Some(\"red\")"), "{text}");
+        assert!(text.contains("chicken_variant: Some(\"minecraft:cold\")"));
+        // A table of either kind under a name of the other is refused, as is a variant
+        // of a mob nobody reads.
+        for (name, text) in [
+            (
+                "minecraft:gameplay/chicken_lay",
+                MOOSHROOM.replace("shearing/mooshroom\"", "gameplay/chicken_lay\""),
+            ),
+            (
+                "minecraft:shearing/mooshroom",
+                MOOSHROOM.replace("mooshroom/variant", "goat/variant"),
+            ),
+        ] {
+            assert!(compile_entities(&[(name, &text)]).is_err(), "{name}");
+        }
+    }
+
     #[test]
     fn what_an_entity_s_table_does_not_understand_is_refused() {
         let refused = [
@@ -2056,12 +2200,14 @@ mod tests {
         let predicates = PredicateDirectory(&data.join("predicate"));
         let mut compiled = load(&data.join("loot_table/blocks"), &predicates, &names).unwrap();
         assert_eq!(compiled.tables.len(), 1201);
-        // The entities' 93 and the sheep's 16, and the guardians' fish.
+        // The entities' 93 and the sheep's 16, and the guardians' fish; the chicken's
+        // laying, the mooshroom's shearing and its two colours', the sheep's shearing and
+        // its sixteen colours'.
         compiled
             .add_entities(&data.join("loot_table"), &predicates, &names)
             .unwrap();
         compiled.add_smelting(&data.join("recipe"), &names).unwrap();
-        assert_eq!(compiled.tables.len(), 1201 + 93 + 16 + 1);
+        assert_eq!(compiled.tables.len(), 1201 + 93 + 16 + 1 + 1 + 3 + 17);
         let by_name: Vec<String> = block_names
             .iter()
             .map(|name| name.replace("minecraft:", "minecraft:blocks/"))

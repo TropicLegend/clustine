@@ -16,7 +16,8 @@ use crate::region::Random;
 
 const COW: u16 = entity_types::COW as u16;
 
-/// A cow of full health and air.
+/// A cow of full health and air, as a body alone: the tests here are of the body's rules,
+/// which a type that adds nothing ([`types::Plain`]) keeps.
 fn cow() -> Mob {
     let mut mob = Mob::fresh();
     mob.body.vitals.health = 10.0;
@@ -78,7 +79,7 @@ fn a_hit_within_the_cooldown_does_only_what_it_adds_and_pushes_and_shows_nothing
     // The first hit: all of it, its event and sound, pushed away from the player and up.
     let (took, out) = hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         0,
         &source,
@@ -118,7 +119,7 @@ fn a_hit_within_the_cooldown_does_only_what_it_adds_and_pushes_and_shows_nothing
     let before = mob.clone();
     let (took, out) = hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         5,
         &source,
@@ -132,7 +133,7 @@ fn a_hit_within_the_cooldown_does_only_what_it_adds_and_pushes_and_shows_nothing
     // `hurtServer`'s damage event and push are under its `playSounds`).
     let (took, out) = hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         5,
         &source,
@@ -151,7 +152,7 @@ fn a_hit_within_the_cooldown_does_only_what_it_adds_and_pushes_and_shows_nothing
     // Ten ticks after the first, the cooldown is 10, no longer above it: a hit counts whole.
     let (took, out) = hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         10,
         &source,
@@ -175,7 +176,7 @@ fn the_counters_of_a_hurt_count_down_from_its_moment_and_a_player_is_remembered_
     let source = DamageSource::by(DamageType::PLAYER_ATTACK, player_at([1.0, 0.0, 0.0]));
     hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         40,
         &source,
@@ -211,7 +212,7 @@ fn what_hurts_a_mob_by_itself_pushes_nothing_and_drowning_does_not_mark_it_hurt(
         let mut draws = Random::of_entity(1, EntityId(5), 0);
         let (took, out) = hurt_at(
             &mut mob,
-            types::of(COW),
+            &types::Plain,
             &mut motion,
             0,
             &DamageSource::of(kind),
@@ -283,7 +284,7 @@ fn a_cow_killed_by_a_player_drops_its_table_s_loot_by_the_game_s_draws_and_a_bab
     let experience = 1 + walk.next_int(3) as i32;
     let (took, out) = hurt_at(
         &mut mob,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         0,
         &source,
@@ -331,7 +332,7 @@ fn a_cow_killed_by_a_player_drops_its_table_s_loot_by_the_game_s_draws_and_a_bab
     let mut motion = RESTING;
     let (_, out) = hurt_at(
         &mut alone,
-        types::of(COW),
+        &types::Plain,
         &mut motion,
         0,
         &DamageSource::of(DamageType::FALL),

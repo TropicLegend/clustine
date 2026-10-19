@@ -12,11 +12,11 @@
 //! on its behalf (its yaw, the follow range's two, the hand's) from the player's stream
 //! aside, in that order (`docs/groundwork/n7-plan.md`, section 7.2.8).
 //!
-//! Named differences: an egg of any living type makes its mob, built or not, where the
-//! plan has the first half's eggs of types not yet built make nothing (the lead's to
-//! gate); a spawner set by an egg spawns nothing until N9; a trial spawner is not set;
-//! an egg in a dispenser is not used (`dispensers/behaviours.rs`); a renamed egg names
-//! nothing; a creative player keeps the egg, and every player is one.
+//! An egg used on a mob of its own type makes a baby of it (`region/animals.rs`).
+//!
+//! Named differences: a spawner set by an egg spawns nothing until N9; a trial spawner
+//! is not set; an egg in a dispenser is not used (`dispensers/behaviours.rs`); a renamed
+//! egg names nothing; a creative player keeps the egg, and every player is one.
 
 use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, DEFAULT_ATTRIBUTES, EntityTypeInfo, ItemComponents, entity_types};
@@ -193,12 +193,14 @@ impl Region {
         let own_start = own.clone();
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _constructor_yaw = own.next_float();
+        // The type's constructor's own draws (a chicken's egg timer).
+        let mob_type = types::of(kind);
+        let mut mob = Mob::fresh();
+        mob_type.construct(&mut mob, &mut own);
         // The level's draws on its behalf, from the player's stream aside.
         let mut level = self.entity_stream(player_key).random;
         let level_start = level.clone();
         let yaw = wrap_degrees(level.next_float() * 360.0);
-        let mob_type = types::of(kind);
-        let mut mob = Mob::fresh();
         // `setHealth(getMaxHealth())` in the constructor, of its type's attributes.
         mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;
         mob.body.vitals.air = MAX_AIR;
@@ -207,8 +209,13 @@ impl Region {
             body_yaw: yaw,
             still_since: 0,
         };
-        // `finalizeSpawn`: the type's, then `Mob`'s.
-        mob_type.finalize_spawn(&mut mob, &mut level);
+        // `finalizeSpawn`: the type's, with the biome at its block, then `Mob`'s.
+        let biome = self.biome_at(crate::physics::containing([x, y, z]));
+        mob_type.finalize_spawn(&mut types::Spawning {
+            mob: &mut mob,
+            level: &mut level,
+            biome,
+        });
         finalize_spawn(kind, &mut mob, &mut level);
         self.entity_drew(player_key, level.draws_since(&level_start));
         let entity = Entity {

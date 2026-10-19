@@ -10,8 +10,7 @@
 //! of the damage the attacker's region worked out, pushed only by default, from the
 //! player's feet, and remembered without the player's UUID (the effect does not carry
 //! it); a use across a line ties and lets go no lead (as N5's boats); a name tag names
-//! nothing (Clustine keeps no names), and a spawn egg used on a mob of its own type
-//! makes no baby until the types' breeding (N7e); a leashed mob's slack path towards its
+//! nothing (Clustine keeps no names); a leashed mob's slack path towards its
 //! holder and the move flag a snapped leash takes off are the navigation's and the
 //! goals' (N7c), and its leash is ticked before the rest of its tick, where the game
 //! ticks it at the end of `Entity.baseTick`.
@@ -29,7 +28,7 @@ use crate::mobs::body::hurt::{self, Causer, DamageSource, DamageType, Struck};
 use crate::mobs::body::{Attributes, Death, Equipment, Event, Home};
 use crate::mobs::part;
 use crate::mobs::tick::{Local, MobOutput};
-use crate::mobs::types::{self, Interaction, Used};
+use crate::mobs::types::{self, Interaction};
 use crate::physics::Vec3;
 use crate::physics::World;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
@@ -85,11 +84,13 @@ impl Region {
         let (_, record) = self.find_entity(key)?;
         let record = record.clone();
         let info = EntityTypeInfo::of(i32::from(record.kind));
+        let (width, height) = types::own_size(&record)
+            .map_or((info.width, info.height), |size| (size.width, size.height));
         let leashee = leashes::End {
             position: record.position,
             yaw: record.yaw,
-            width: info.width,
-            height: info.height,
+            width,
+            height,
             movement: record.motion,
         };
         let mut pull = LeashPull {
@@ -163,14 +164,7 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let key = before.key;
-        for local in out.local {
-            match local {
-                Local::Push { key: pushed, by } => self.push_mob(pushed, by, output),
-                Local::BreedAsk { partner, number } => {
-                    self.ask_to_breed(key, partner, number, output);
-                }
-            }
-        }
+        self.apply_locals(key, out.local, output);
         for event in out.events {
             self.show_body_event(key, chunk, at, event, output);
         }
@@ -183,6 +177,50 @@ impl Region {
             let hops = record.hops;
             self.unride_removed(key, true, output);
             self.remove_entity(key, hops, chunk, output);
+        }
+    }
+
+    /// What the mob `key`'s tick wrote to others, in the order made: pushes, a request
+    /// to breed, blocks it changed, items it dropped.
+    pub(crate) fn apply_locals(
+        &mut self,
+        key: EntityId,
+        locals: Vec<Local>,
+        output: &mut TickOutput,
+    ) {
+        for local in locals {
+            match local {
+                Local::Push { key: pushed, by } => self.push_mob(pushed, by, output),
+                Local::BreedAsk { partner, number } => {
+                    self.ask_to_breed(key, partner, number, output);
+                }
+                Local::SetBlock { pos, state, flags } => {
+                    self.set_block_updated(pos, state, flags, super::updates::UPDATE_LIMIT, output);
+                }
+                Local::DestroyBlock { pos } => {
+                    self.destroy_block(pos, false, super::updates::UPDATE_LIMIT, output);
+                }
+                Local::LevelEvent { kind, pos, data } => {
+                    output.events.push(RegionEvent::LevelEvent {
+                        kind,
+                        position: pos,
+                        data,
+                    });
+                }
+                Local::GameEvent { name, pos } => {
+                    if let Some(vibration) = Vibration::named(name) {
+                        let context = Context::of(Some(Source::of(key)), None);
+                        self.vibrate_at(vibration, pos, context);
+                    }
+                }
+                Local::Drop {
+                    stack,
+                    at,
+                    pick_up_delay,
+                } => {
+                    self.spawn_item_as(at, stack, pick_up_delay, None, output);
+                }
+            }
         }
     }
 
@@ -369,10 +407,14 @@ impl Region {
         }
     }
 
-    /// `Mob.interact(player, hand, location)`: nothing for a dying mob; then the leash's
-    /// part of `Entity.interact` (a lead ties a mob that can be leashed, the holder lets
-    /// go, a sneaking player ties their leashees to it, shears cut); then its type's own
-    /// (`mobInteract`), which posts `ENTITY_INTERACT` where it did anything.
+    /// `Mob.interact(player, hand, location)`: nothing for a dying mob; a spawn egg of
+    /// its own type makes a baby of it (`checkAndHandleImportantInteractions`); then the
+    /// leash's part of `Entity.interact` (a lead ties a mob that can be leashed, the
+    /// holder lets go, a sneaking player ties their leashees to it, shears cut) and
+    /// shears take what may be shorn of what it wears; then its type's own
+    /// (`mobInteract`), and where that passed, the item's own use on it
+    /// (`ItemStack.interactLivingEntity`), each of which posts `ENTITY_INTERACT` where it
+    /// did anything.
     fn mob_interacted(
         &mut self,
         entity: &Entity,
@@ -385,15 +427,20 @@ impl Region {
             creative,
             held,
             sneaking,
+            from,
             ..
         } = by
         else {
             return;
         };
-        let Ok(mut mob) = Mob::decode(&entity.data) else {
+        let Ok(mob) = Mob::decode(&entity.data) else {
             return;
         };
         if mob.body.vitals.dying() {
+            return;
+        }
+        if self.offspring_from_egg(entity, held, output) {
+            self.interacted(entity, player, Interaction::SuccessServer, output);
             return;
         }
         let mob_type = types::of(entity.kind);
@@ -402,32 +449,18 @@ impl Region {
         if (!lead || leashable) && self.leash_used(entity, by, output) {
             return;
         }
-        let result = mob_type.mob_interact(&mut Used {
-            key: entity.key,
-            kind: entity.kind,
-            mob: &mut mob,
-            player,
-            held,
-            creative,
-            sneaking,
-        });
-        if result == Interaction::Pass {
+        let shears = held.is_some_and(|stack| stack.count > 0 && stack.item == items::SHEARS);
+        if shears
+            && !sneaking
+            && entity.riding.passengers.is_empty()
+            && self.shear_equipment(entity, chunk, player, output)
+        {
             return;
         }
-        let fields = mob.changes_from(&entity.data);
-        if !fields.is_empty() {
-            self.commit_entity(chunk, entity.key, fields, output);
-        }
-        if let Some(vibration) = Vibration::named("minecraft:entity_interact") {
-            let context = Context::of(Some(Source::of(player)), None);
-            self.vibrate(vibration, entity.position, context);
-        }
-        if let Some(id) = self.player_with_entity(player)
-            && matches!(result, Interaction::Success | Interaction::SuccessServer)
-        {
-            let own = result == Interaction::SuccessServer;
-            self.swing_arm(id, false, clustine_data::Swing::DEFAULT, own, output);
-        }
+        let from = from.map(|value| value.0);
+        self.mob_used_by(
+            entity, chunk, player, held, creative, sneaking, from, output,
+        );
     }
 
     /// `hurtServer(source, amount)` of the region's mob `key` between its ticks (a

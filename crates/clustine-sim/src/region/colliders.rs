@@ -54,6 +54,9 @@ impl Region {
         if let Some((width, height)) = super::stands::own_size(entity) {
             return Aabb::of_entity(entity.position, width, height);
         }
+        if let Some(size) = crate::mobs::types::own_size(entity) {
+            return Aabb::of_entity(entity.position, size.width, size.height);
+        }
         let info = EntityTypeInfo::of(i32::from(entity.kind));
         Aabb::of_entity(entity.position, info.width, info.height)
     }

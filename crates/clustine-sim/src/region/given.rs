@@ -11,7 +11,6 @@ use crate::api::{PlayerEvent, TickOutput};
 impl Region {
     /// Gives `stack` to the player whose stay is `player`, who stood at `from` when they
     /// used the mob (their hand keeps what it held: every player is creative).
-    #[allow(dead_code, reason = "what the farm animals of N7e give")]
     pub(crate) fn give_to_player(
         &mut self,
         player: EntityId,

@@ -8,7 +8,8 @@
 //! [`MobOutput::local`], which the region applies after the mob's tick and before the
 //! next entity's, as the messages of the effects across a line are applied.
 
-use clustine_world::EntityId;
+use clustine_data::BlockState;
+use clustine_world::{BlockPos, EntityId, ItemStack};
 
 use super::types::MobType;
 use super::view::MobWorld;
@@ -44,8 +45,26 @@ pub(crate) enum Local {
     /// its `pushEntities`).
     Push { key: EntityId, by: [f64; 3] },
     /// An animal asks `partner` to breed, its request `number` (`region/breeding.rs`).
-    #[allow(dead_code, reason = "what the breeding goal of N7e asks")]
     BreedAsk { partner: EntityId, number: u32 },
+    /// `level.setBlock(pos, state, flags)` (a sheep's grass become dirt, a carrot eaten).
+    SetBlock {
+        pos: BlockPos,
+        state: BlockState,
+        flags: u32,
+    },
+    /// `level.destroyBlock(pos, false)`: a plant a sheep ate, without drops.
+    DestroyBlock { pos: BlockPos },
+    /// `level.levelEvent(kind, pos, data)`.
+    LevelEvent { kind: i32, pos: BlockPos, data: i32 },
+    /// `level.gameEvent(event, pos, the mob)`, by the event's name.
+    GameEvent { name: &'static str, pos: BlockPos },
+    /// `spawnAtLocation(stack)`: an item at `at` (a chicken's egg) with its pick-up
+    /// delay.
+    Drop {
+        stack: ItemStack,
+        at: crate::physics::Vec3,
+        pick_up_delay: u16,
+    },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,
@@ -116,6 +135,8 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     body::travel(tick);
     take_hurts(tick);
     body::push_entities(tick);
+    // The type's `aiStep`, after `LivingEntity`'s.
+    tick.mob_type.after_ai_step(tick);
     // After `aiStep`, in `LivingEntity.tick`.
     ai::rotate_body(tick);
 }

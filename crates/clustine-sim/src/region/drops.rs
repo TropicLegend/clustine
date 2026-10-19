@@ -154,6 +154,31 @@ impl Region {
         motion: Option<[f64; 3]>,
         output: &mut TickOutput,
     ) -> bool {
+        self.spawn_item_moved(position, stack, pick_up_delay, motion, None, output)
+    }
+
+    /// [`Region::spawn_item`] with the pick-up delay `pick_up_delay` and, where given,
+    /// `push` added to the motion its constructor drew (a sheep's wool).
+    pub(crate) fn spawn_item_pushed(
+        &mut self,
+        position: [f64; 3],
+        stack: ItemStack,
+        pick_up_delay: u16,
+        push: Option<[f64; 3]>,
+        output: &mut TickOutput,
+    ) -> bool {
+        self.spawn_item_moved(position, stack, pick_up_delay, None, push, output)
+    }
+
+    fn spawn_item_moved(
+        &mut self,
+        position: [f64; 3],
+        stack: ItemStack,
+        pick_up_delay: u16,
+        motion: Option<[f64; 3]>,
+        push: Option<[f64; 3]>,
+        output: &mut TickOutput,
+    ) -> bool {
         let chunk = ChunkPos::containing(position[0], position[2]);
         let Some(key) = self.take_entity_key(chunk) else {
             return false;
@@ -170,7 +195,10 @@ impl Region {
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
             uuid,
             position,
-            motion: motion.unwrap_or([x, 0.2, z]),
+            motion: match push {
+                Some(push) => crate::physics::add(motion.unwrap_or([x, 0.2, z]), push),
+                None => motion.unwrap_or([x, 0.2, z]),
+            },
             yaw,
             pitch: 0.0,
             on_ground: false,

@@ -285,6 +285,8 @@ pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount
 /// takes no wear), and what is left off its health, which sculk hears. Neither effects
 /// nor enchantments nor absorption reduce it: no mob of Clustine has any.
 fn actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) {
+    // The type's own first (an animal's love ends).
+    struck.mob_type.actually_hurt(struck.mob, struck.moment);
     if invulnerable_to(struck, source) {
         return;
     }
@@ -376,6 +378,10 @@ fn scale(v: Vec3, by: f64) -> Vec3 {
 pub(crate) enum GameEvent {
     EntityDamage,
     EntityDie,
+    /// `Mob.ate()`'s.
+    Eat,
+    /// A chicken's egg laid.
+    EntityPlace,
 }
 
 impl GameEvent {
@@ -384,6 +390,8 @@ impl GameEvent {
         match self {
             Self::EntityDamage => "minecraft:entity_damage",
             Self::EntityDie => "minecraft:entity_die",
+            Self::Eat => "minecraft:eat",
+            Self::EntityPlace => "minecraft:entity_place",
         }
     }
 }

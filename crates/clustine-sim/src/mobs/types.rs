@@ -2,17 +2,30 @@
 //! interactions, its spawn and its babies (`docs/groundwork/n7-plan.md`, section 11.3,
 //! item 8). Each type is a module of its own that the parts from N7e on add; [`of`] is
 //! the one place a type id finds its module.
+//!
+//! The farm animals (part N7e: cows, mooshrooms, pigs, sheep, chickens and rabbits) share
+//! what `AgeableMob` and `Animal` add, which [`animal`] holds; each has a module of its
+//! own beside it.
 
-use clustine_world::BlockPos;
+pub(crate) mod animal;
+pub(crate) mod chicken;
+pub(crate) mod cow;
+pub(crate) mod mooshroom;
+pub(crate) mod pig;
+pub(crate) mod rabbit;
+pub(crate) mod sheep;
+#[cfg(test)]
+mod tests;
 
-use super::ai::{Ai, HeadLimits, Setup};
-use clustine_data::sounds;
-use clustine_world::{EntityId, ItemStack};
+use clustine_data::{entity_types, sounds};
+use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
 
 use super::Mob;
+use super::ai::{Ai, HeadLimits, Setup, controls};
 use super::body::hurt::DamageSource;
 use super::body::{ladder, loot};
 use super::tick::MobTick;
+use crate::physics::Vec3;
 use crate::region::Random;
 
 /// What a type of mob does beyond what every mob does. Every hook has the game's
@@ -53,11 +66,76 @@ pub(crate) trait MobType: Sync {
         Interaction::Pass
     }
 
+    /// `ItemStack.interactLivingEntity` of the item used on a mob of the type, once the
+    /// mob's own use passed: a dye on a sheep. `Item`'s passes.
+    fn item_interact(&self, used: &mut Used<'_>) -> Interaction {
+        let _ = used;
+        Interaction::Pass
+    }
+
+    /// What the type's constructor sets and draws beyond the body's (a chicken's egg
+    /// timer, a rabbit's idle timer and its wanted position), from the new mob's own
+    /// stream: every mob of the type is made so, by an egg, a breeding or a conversion.
+    fn construct(&self, mob: &mut Mob, own: &mut Random) {
+        let _ = (mob, own);
+    }
+
     /// The type's own `finalizeSpawn`, before `Mob`'s (the body's: the follow range's
     /// bonus and the hand), with the level's draws on the mob's behalf: its variant,
     /// its colour, a baby of a group. `Mob`'s adds nothing.
-    fn finalize_spawn(&self, mob: &mut Mob, level: &mut Random) {
-        let _ = (mob, level);
+    fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        let _ = spawn;
+    }
+
+    /// `getBreedOffspring(level, partner)`: the child of a breeding (or of a spawn egg
+    /// used on the mob, its own partner), as `EntityType.create` makes it, with what it
+    /// takes of its parents; `None` where the type has none.
+    fn breed_offspring(&self, breeding: &mut Breeding<'_>) -> Option<Mob> {
+        let _ = breeding;
+        None
+    }
+
+    /// What the type's `aiStep` does after `LivingEntity.aiStep` (its travel and its
+    /// pushes): an ageable mob's growing, an animal's love, a chicken's slow fall and
+    /// eggs, a rabbit's hop ending.
+    fn after_ai_step(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
+    }
+
+    /// What the type's `actuallyHurt` does before the body's (an animal's love ends),
+    /// at the moment `moment`.
+    fn actually_hurt(&self, mob: &mut Mob, moment: u32) {
+        let _ = (mob, moment);
+    }
+
+    /// `getDefaultDimensions(pose)` where it is not the type's (a baby animal's own
+    /// size): its width, height and eye height.
+    fn dimensions(&self, mob: &Mob) -> Option<Dimensions> {
+        let _ = mob;
+        None
+    }
+
+    /// `moveControl.tick()` of the type's move control (a rabbit's sets its speed first).
+    fn tick_move_control(&self, ai: &mut Ai<'_, '_>) {
+        controls::tick_move(ai);
+    }
+
+    /// `jumpControl.tick()` of the type's jump control (a rabbit's starts a hop).
+    fn tick_jump_control(&self, ai: &mut Ai<'_, '_>) {
+        controls::tick_jump(ai);
+    }
+
+    /// `getJumpPower()` where the type has its own (a rabbit's), given the jump factor of
+    /// the block it stands on; `None` for `LivingEntity`'s.
+    fn jump_power(&self, tick: &MobTick<'_>, block_factor: f32) -> Option<f32> {
+        let _ = (tick, block_factor);
+        None
+    }
+
+    /// What the type's `jumpFromGround` does after `LivingEntity`'s (a rabbit's push
+    /// ahead and its hop shown).
+    fn jumped_from_ground(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
     }
 
     /// `removeWhenFarAway(distance)`: whether, far from every player, it may despawn.
@@ -131,7 +209,10 @@ pub(crate) trait MobType: Sync {
 }
 
 /// A player's use of a mob, as `mobInteract` reads it.
-#[allow(dead_code, reason = "what the types' own uses read, N7e on")]
+#[allow(
+    dead_code,
+    reason = "what the uses of later parts read: a tamer's key, a sneaking rider's"
+)]
 pub(crate) struct Used<'a> {
     pub(crate) key: EntityId,
     /// The mob's entity type, by id.
@@ -141,12 +222,87 @@ pub(crate) struct Used<'a> {
     pub(crate) player: EntityId,
     /// What the hand used holds.
     pub(crate) held: Option<ItemStack>,
+    /// Whether the player is a creative one (every player is: what they use is kept).
     pub(crate) creative: bool,
     pub(crate) sneaking: bool,
+    /// The player's feet.
+    pub(crate) from: Vec3,
+    /// The mob's feet.
+    pub(crate) position: Vec3,
+    /// The mob's `lived`: the moment its counters see the use at.
+    pub(crate) moment: u32,
+    /// The mob's own stream, aside from its tick, on from what it drew in it.
+    pub(crate) draws: &'a mut Random,
+    /// What the use did beyond the mob, for the region to do in order.
+    pub(crate) did: Vec<Did>,
+}
+
+/// What a player's use of a mob does beyond the mob itself, which the region carries
+/// out in the order given.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Did {
+    /// `playSound` at `at` from `source`, heard by everyone, or by everyone but the
+    /// player who used it (`Player.playSound`, whose own client plays it).
+    Sound {
+        sound: i32,
+        source: i32,
+        at: Vec3,
+        volume: f32,
+        pitch: f32,
+        but_the_player: bool,
+    },
+    /// `broadcastEntityEvent(mob, event)`.
+    Event(u8),
+    /// `gameEvent(event, player)` at the mob, by its name.
+    GameEvent(&'static str),
+    /// `ItemUtils.createFilledResult`: the stack goes to the player.
+    Give {
+        stack: ItemStack,
+        no_duplicates: bool,
+    },
+    /// An item entity of `stack` at `at` (`spawnAtLocation`, a shearing's drops), with
+    /// its pick-up delay, and a push added to its own motion.
+    Drop {
+        stack: ItemStack,
+        at: Vec3,
+        pick_up_delay: u16,
+        push: Option<Vec3>,
+    },
+    /// `convertTo(kind, single)`: the mob made a mob of `kind` where it stands, with
+    /// `drops` laid at its top before the new mob is added, and itself gone.
+    Convert { kind: u16, drops: Vec<ItemStack> },
+}
+
+/// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
+/// on its behalf, and the biome at its block.
+pub(crate) struct Spawning<'a> {
+    pub(crate) mob: &'a mut Mob,
+    pub(crate) level: &'a mut Random,
+    /// The name of the biome at the mob's block, where its chunk is read.
+    pub(crate) biome: Option<&'static str>,
+}
+
+/// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its
+/// partner, the draws, and the biome at the parent's block.
+pub(crate) struct Breeding<'a> {
+    pub(crate) this: &'a Mob,
+    pub(crate) partner: &'a Mob,
+    /// The parent's own stream: its random's draws, and the level's on its behalf at
+    /// their place among them (the plan's 7.2.8).
+    pub(crate) draws: &'a mut Random,
+    /// The name of the biome at the parent's block, where its chunk is read.
+    pub(crate) biome: Option<&'static str>,
+}
+
+/// An entity's size (`EntityDimensions`): its width, height and eye height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Dimensions {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) eye_height: f32,
 }
 
 /// `InteractionResult` as a use of a mob answers.
-#[allow(dead_code, reason = "what the types' own uses answer, N7e on")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Interaction {
     /// Nothing happened; the item's own use of an entity may follow.
@@ -165,18 +321,44 @@ pub(crate) struct Plain;
 
 impl MobType for Plain {}
 
-/// The module of the entity type `kind`, by its id in `clustine_data::ENTITY_TYPES`.
 /// Whether a type has its module, so that an egg makes it: a mob of a type without its
 /// AI would stand like a statue, so until its part brings it, its egg makes nothing
 /// (`docs/groundwork/n7-plan.md`, section 11.6).
 pub(crate) fn is_built(kind: u16) -> bool {
-    // One arm a type, as each part brings it (N7e on).
-    let _ = kind;
-    false
+    built(kind).is_some()
 }
 
+/// The module of the entity type `kind`, by its id in `clustine_data::ENTITY_TYPES`.
 pub(crate) fn of(kind: u16) -> &'static dyn MobType {
-    // One arm a type, as each part brings it (N7e on).
-    let _ = kind;
-    &Plain
+    built(kind).unwrap_or(&Plain)
+}
+
+/// The module of a type some part has built: one arm a type, as each part brings it.
+fn built(kind: u16) -> Option<&'static dyn MobType> {
+    let found: &'static dyn MobType = match i32::from(kind) {
+        entity_types::COW => &cow::Cow,
+        entity_types::MOOSHROOM => &mooshroom::Mooshroom,
+        entity_types::PIG => &pig::Pig,
+        entity_types::SHEEP => &sheep::Sheep,
+        entity_types::CHICKEN => &chicken::Chicken,
+        entity_types::RABBIT => &rabbit::Rabbit,
+        _ => return None,
+    };
+    Some(found)
+}
+
+/// The size of `entity` where its type's module gives it one of its own (a baby
+/// animal's), else `None`: the type's.
+pub(crate) fn own_size(entity: &Entity) -> Option<Dimensions> {
+    let module = built(entity.kind)?;
+    let EntityData::Mob { state, .. } = &entity.data else {
+        return None;
+    };
+    // Only the type's state decides a baby's size: the body is not decoded for it.
+    let mob = Mob {
+        body: Default::default(),
+        mind: Default::default(),
+        state: state.clone(),
+    };
+    module.dimensions(&mob)
 }

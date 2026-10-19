@@ -46,6 +46,12 @@ fn cow(position: [f64; 3], on_ground: bool) -> Entity {
     mob_of(COW_KEY, entity_types::COW, position, on_ground)
 }
 
+/// A mob of a type no part has built yet (a goat, until its brain), which is a body of the
+/// game's defaults: what the body's own rules are seen on, without a mind's moves.
+fn plain(position: [f64; 3], on_ground: bool) -> Entity {
+    mob_of(COW_KEY, entity_types::GOAT, position, on_ground)
+}
+
 /// Lays `entity` in its loaded chunk, as a load would have it.
 fn lay(region: &mut Region, entity: &Entity) {
     let chunk = entity.chunk();
@@ -154,7 +160,7 @@ const RESTING: f64 = -0.078_400_001_525_878_9;
 #[test]
 fn a_mob_at_rest_draws_its_ambient_chance_each_tick_and_commits_only_its_resets() {
     let mut region = on_ticking_floor_with(&[]);
-    lay(&mut region, &cow([4.5, -60.0, 4.5], true));
+    lay(&mut region, &plain([4.5, -60.0, 4.5], true));
     let mut resets = 0;
     for _ in 0..200 {
         let before = mob(&region, COW_KEY);
@@ -196,7 +202,7 @@ fn a_fall_of_five_blocks_hurts_by_two_with_the_small_sound_and_one_of_eight_by_f
         (8.0, 5.0, sounds::ENTITY_GENERIC_BIG_FALL),
     ] {
         let mut region = on_ticking_floor_with(&[]);
-        let mut falling = cow([4.5, -60.0 + height, 4.5], false);
+        let mut falling = plain([4.5, -60.0 + height, 4.5], false);
         falling.motion = [0.0; 3];
         lay(&mut region, &falling);
         let mut heard = Vec::new();
@@ -437,12 +443,12 @@ fn a_spawn_egg_of_a_type_not_built_yet_makes_nothing() {
     holding(
         &mut region,
         ItemStack {
-            item: items::COW_SPAWN_EGG,
+            item: items::GOAT_SPAWN_EGG,
             count: 1,
         },
     );
     checked(&mut region, &moves(vec![place(1, 1, -61, 1, Face::Top)]));
-    assert!(mobs_of(&region, entity_types::COW).is_empty());
+    assert!(mobs_of(&region, entity_types::GOAT).is_empty());
 }
 
 #[test]

@@ -18,6 +18,20 @@ pub enum DataShown {
     Int(i32),
     Float(f32),
     Boolean(bool),
+    /// An entry of a registry the server sends, by its id there: a farm animal's
+    /// variant or sound variant, each of its own serializer.
+    Holder(Holder, i32),
+}
+
+/// The registry an entry of [`DataShown::Holder`] is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    CowVariant,
+    CowSoundVariant,
+    PigVariant,
+    PigSoundVariant,
+    ChickenVariant,
+    ChickenSoundVariant,
 }
 
 /// The indices of `LivingEntity`'s and `Mob`'s values (the brief's 9.1).
@@ -85,7 +99,8 @@ mod tests {
         mob.body.flags.left_handed = true;
         mob.body.combat.aggressive = true;
         let data = mob.encode();
-        let cow = clustine_data::entity_types::COW as u16;
+        // A type that adds nothing of its own (a goat, until its part).
+        let cow = clustine_data::entity_types::GOAT as u16;
         let values = mob_values(cow, &data);
         assert_eq!(
             values,

@@ -40,6 +40,10 @@ pub(crate) struct Facts {
     pub(crate) sheared: Option<bool>,
     /// A frog's variant.
     pub(crate) frog_variant: Option<&'static str>,
+    /// A mooshroom's colour, `red` or `brown`.
+    pub(crate) mooshroom_variant: Option<&'static str>,
+    /// A chicken's variant, by its name.
+    pub(crate) chicken_variant: Option<&'static str>,
     /// A slime's or magma cube's size.
     pub(crate) cube_size: Option<i32>,
     /// Whether a raider is a patrol's captain.
@@ -69,6 +73,32 @@ pub(crate) fn entity_drops(
         return Vec::new();
     };
     table_drops(table, subject, source, killed_by_player, draws)
+}
+
+/// What the table named `name` gives a mob of the type `kind` (a shearing's, a
+/// chicken's laying: `dropFromShearingLootTable`, `dropFromGiftLootTable`), which only
+/// its own facts decide: drawn from `draws`, as an entity's loot is. Nothing where the
+/// table is not compiled.
+pub(crate) fn named_drops(
+    name: &str,
+    kind: u16,
+    baby: bool,
+    facts: Facts,
+    draws: &mut Random,
+) -> Vec<ItemStack> {
+    let Some(table) = clustine_data::loot::table_by_name(name) else {
+        return Vec::new();
+    };
+    let subject = Subject {
+        kind,
+        on_fire: false,
+        baby,
+        vehicle: None,
+        facts,
+    };
+    // No damage source and no player: the tables read only the mob itself.
+    let source = DamageSource::of(super::hurt::DamageType("minecraft:generic"));
+    table_drops(table, &subject, &source, false, draws)
 }
 
 /// What `table` gives for `subject` killed by `source`.
@@ -520,6 +550,12 @@ fn subject_matches(subject: &Subject, predicate: &EntityPredicate) -> bool {
         && predicate
             .frog_variant
             .is_none_or(|wanted| facts.frog_variant == Some(wanted))
+        && predicate
+            .mooshroom_variant
+            .is_none_or(|wanted| facts.mooshroom_variant == Some(wanted))
+        && predicate
+            .chicken_variant
+            .is_none_or(|wanted| facts.chicken_variant == Some(wanted))
         && predicate.cube_size.is_none_or(|(min, max)| {
             facts.cube_size.is_some_and(|size| {
                 min.is_none_or(|min| size >= min) && max.is_none_or(|max| size <= max)
@@ -543,6 +579,8 @@ fn causer_matches(causer: &Causer, predicate: &EntityPredicate) -> bool {
         && predicate.sheep_colour.is_none()
         && predicate.sheared.is_none()
         && predicate.frog_variant.is_none()
+        && predicate.mooshroom_variant.is_none()
+        && predicate.chicken_variant.is_none()
         && predicate.cube_size.is_none()
         && predicate.captain.is_none()
         && predicate.main_hand_enchantment.is_none()

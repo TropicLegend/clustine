@@ -76,6 +76,12 @@ pub(crate) trait MobWorld: Holds {
     /// copies show (N7a2's faces), each by key.
     fn players(&self) -> Vec<SeenPlayer>;
 
+    /// `Level.getSkyDarken()`: how far the sky's light is below full by the time of day
+    /// (none where a view knows no clock).
+    fn sky_darken(&self) -> i32 {
+        0
+    }
+
     /// The light at `pos`: the chunk's stored light, or where a change left the chunk
     /// none, the sky's above its highest block that blocks motion and none below, and no
     /// light of blocks (the plan's 9.7.2, until N8). `None` where the chunk is not read.

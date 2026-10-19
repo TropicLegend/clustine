@@ -3178,6 +3178,11 @@ pub enum EntityDataValue {
     /// `EntityDataSerializers.DYE_COLOR`: a cushion's colour, as a VarInt of the dye's
     /// id (white 0 to black 15).
     DyeColor(i32),
+    /// One of the serializers of a farm animal's variant or sound variant
+    /// (`COW_VARIANT`, `PIG_SOUND_VARIANT` and the like, of [`entity_data_serializer`]):
+    /// `ByteBufCodecs.holderRegistry`, a VarInt of the entry's id in the registry the
+    /// client was sent (no whole entry, so no one added).
+    Registered { serializer: i32, id: i32 },
 }
 
 /// The serializer ids of the game's `EntityDataSerializers`, in the order it registers
@@ -3195,6 +3200,12 @@ pub mod entity_data_serializer {
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const POSE: i32 = 20;
+    pub const COW_VARIANT: i32 = 23;
+    pub const COW_SOUND_VARIANT: i32 = 24;
+    pub const PIG_VARIANT: i32 = 28;
+    pub const PIG_SOUND_VARIANT: i32 = 29;
+    pub const CHICKEN_VARIANT: i32 = 30;
+    pub const CHICKEN_SOUND_VARIANT: i32 = 31;
     pub const PAINTING_VARIANT: i32 = 34;
     pub const DYE_COLOR: i32 = 43;
 }
@@ -3329,6 +3340,10 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::DYE_COLOR);
                     w.put_var_int(*colour);
                 }
+                EntityDataValue::Registered { serializer, id } => {
+                    w.put_var_int(*serializer);
+                    w.put_var_int(*id);
+                }
             }
         }
         w.put_u8(ENTITY_DATA_END);
@@ -3374,6 +3389,15 @@ impl Decode for SetEntityData {
                     holder => EntityDataValue::PaintingVariant(holder - 1),
                 },
                 entity_data_serializer::DYE_COLOR => EntityDataValue::DyeColor(r.var_int()?),
+                serializer @ (entity_data_serializer::COW_VARIANT
+                | entity_data_serializer::COW_SOUND_VARIANT
+                | entity_data_serializer::PIG_VARIANT
+                | entity_data_serializer::PIG_SOUND_VARIANT
+                | entity_data_serializer::CHICKEN_VARIANT
+                | entity_data_serializer::CHICKEN_SOUND_VARIANT) => EntityDataValue::Registered {
+                    serializer,
+                    id: r.var_int()?,
+                },
                 other => {
                     return Err(DecodeError::InvalidValue {
                         what: "entity data serializer",
@@ -5288,6 +5312,17 @@ mod tests {
         );
         // `DYE_COLOR`, 43: the dye's id.
         assert_eq!(one(8, EntityDataValue::DyeColor(15)), with(&[8, 43, 15]));
+        // `COW_VARIANT`, 23: the entry's id in the registry sent, as it is.
+        assert_eq!(
+            one(
+                18,
+                EntityDataValue::Registered {
+                    serializer: entity_data_serializer::COW_VARIANT,
+                    id: 1
+                }
+            ),
+            with(&[18, 23, 1])
+        );
         // A painting variant sent whole is not modelled.
         assert!(ClientboundPlay::decode(&[0x65, 1, 9, 34, 0, 0xFF]).is_err());
     }
@@ -5439,6 +5474,13 @@ mod tests {
                     (11, EntityDataValue::OptionalBlockState(27_000)),
                     (9, EntityDataValue::PaintingVariant(0)),
                     (8, EntityDataValue::DyeColor(0)),
+                    (
+                        19,
+                        EntityDataValue::Registered {
+                            serializer: entity_data_serializer::PIG_SOUND_VARIANT,
+                            id: 2,
+                        },
+                    ),
                 ],
             },
             Client::decode,

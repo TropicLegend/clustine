@@ -102,6 +102,10 @@ impl MobWorld for View<'_> {
         players
     }
 
+    fn sky_darken(&self) -> i32 {
+        crate::time::sky_darken(self.region.clock.day)
+    }
+
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
         let chunk = self.region.readable_chunk(pos.chunk())?;
         let (x, z) = pos.in_chunk();
@@ -149,13 +153,18 @@ impl Region {
             return;
         };
         let info = EntityTypeInfo::of(i32::from(entity.kind));
-        let body = self.living_body(&entity, info.width, info.height, position);
+        // A baby animal's size is its own, as its type state has it at the tick's start.
+        let (width, height, eye_height) = types::own_size(&entity)
+            .map_or((info.width, info.height, info.eye_height), |size| {
+                (size.width, size.height, size.eye_height)
+            });
+        let body = self.living_body(&entity, width, height, position);
         let kind = Kind::Mob {
             kind: entity.kind,
             hurts: Vec::new(),
         };
         let memory = self.entity_memory.get(&key);
-        let mut living = Living::new(body, kind, info.eye_height);
+        let mut living = Living::new(body, kind, eye_height);
         let mut yaw = entity.yaw;
         if let Some(pull) = pull {
             living.body.motion = pull.motion;
@@ -213,9 +222,12 @@ impl Region {
             mut living,
             yaw,
             pitch,
-            out,
+            mut out,
             ..
         } = ticking;
+        // Its writes to others come after its own record is written, so that what they
+        // do to it (a breeding it asked for) is not written over.
+        let locals = std::mem::take(&mut out.local);
         self.entity_drew(key, stream.draws_since(&start));
         self.living_aftermath(key, &mut living, output);
         mob.body.vitals.air = living.air;
@@ -231,11 +243,11 @@ impl Region {
         // unless it left the world.
         let removed = out.removed;
         self.mob_ticked(&entity, living.body.position, out, position, output);
-        if removed.is_some() {
-            return;
+        if removed.is_none() {
+            let shown = Shown { yaw, pitch, flags };
+            self.write_mob(&entity, &mob, &living, shown, position, output);
         }
-        let shown = Shown { yaw, pitch, flags };
-        self.write_mob(&entity, &mob, &living, shown, position, output);
+        self.apply_locals(key, locals, output);
     }
 
     /// What the tick leaves of the mob `before` of the chunk `position`: its record, its

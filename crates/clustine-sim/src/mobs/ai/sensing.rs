@@ -62,6 +62,9 @@ impl Looked {
     pub(crate) fn of_seen(seen: &Seen<'_>) -> Self {
         let entity = seen.entity;
         let info = EntityTypeInfo::of(i32::from(entity.kind));
+        // A baby animal's eyes are its own size's.
+        let eye_height =
+            crate::mobs::types::own_size(entity).map_or(info.eye_height, |size| size.eye_height);
         let (mob, alive) = match &entity.data {
             EntityData::Mob { body, .. } => {
                 let alive = part::decode::<Vitals>(body).is_ok_and(|vitals| !vitals.dying());
@@ -75,7 +78,7 @@ impl Looked {
             mob,
             position: entity.position,
             bounds: seen.bounds,
-            eye_y: entity.position[1] + f64::from(info.eye_height),
+            eye_y: entity.position[1] + f64::from(eye_height),
             alive,
             sneaking: false,
             creative: false,
@@ -163,6 +166,9 @@ pub(crate) enum Class {
     Kinds(&'static [u16]),
     /// The living things of an entity type tag.
     Tag(&'static str),
+    /// `Monster`: the mobs of the monsters' category but the ghast, the phantom, the
+    /// slimes and the shulker, which are not of the class.
+    Monster,
 }
 
 impl Class {
@@ -176,8 +182,23 @@ impl Class {
             Class::Tag(tag) => looked
                 .kind
                 .is_some_and(|kind| entity_in_tag(i32::from(kind), tag)),
+            Class::Monster => looked.mob && looked.kind.is_some_and(is_monster),
         }
     }
+}
+
+/// Whether the mob type `kind` is of the class `Monster`.
+fn is_monster(kind: u16) -> bool {
+    let id = i32::from(kind);
+    EntityTypeInfo::of(id).category == clustine_data::MobCategory::Monster
+        && ![
+            entity_types::GHAST,
+            entity_types::PHANTOM,
+            entity_types::SLIME,
+            entity_types::MAGMA_CUBE,
+            entity_types::SHULKER,
+        ]
+        .contains(&id)
 }
 
 /// `TargetingConditions`.
