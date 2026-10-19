@@ -173,6 +173,10 @@ impl Region {
             pitch: 1.0,
             except: None,
         });
+        // Then `prime_fuse` at the block, of the igniter, whom the region knows only by
+        // the UUID it saves, which no sensor reads (`vibrations.rs`).
+        let context = super::vibrations::Context::default();
+        self.vibrate_at(super::vibrations::Vibration::PRIME_FUSE, pos, context);
         true
     }
 

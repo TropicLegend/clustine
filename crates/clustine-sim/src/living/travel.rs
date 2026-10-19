@@ -229,6 +229,7 @@ impl Living {
             self.fluids = found;
         }
         if let Some((distance, on)) = self.body.fell_on.take() {
+            self.landed_on = Some(on);
             self.landed(world, distance, on);
         }
         hold_back(&mut self.body, world, before);

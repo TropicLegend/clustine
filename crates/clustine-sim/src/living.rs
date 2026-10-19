@@ -170,8 +170,10 @@ pub(crate) struct Living {
     /// The shared flag of being on fire, as `baseTick` set it.
     pub(crate) on_fire_flag: bool,
     pub(crate) sounds: Vec<Sound>,
-    /// Redstone ore it stood on, to light.
+    /// Redstone ore it stood on, to light, and sculk sensors, to hear it.
     pub(crate) ore: Vec<BlockPos>,
+    /// Where its fall ended in this tick, if one did, for the landing's vibration.
+    pub(crate) landed_on: Option<BlockPos>,
     /// The plates, tripwire and detector rails its walk met, in the order met, whose
     /// `entityInside` the region runs itself ([`crate::physics::item::handed_back`]).
     pub(crate) inside: Vec<BlockPos>,
@@ -202,6 +204,7 @@ impl Living {
             on_fire_flag: false,
             sounds: Vec::new(),
             ore: Vec::new(),
+            landed_on: None,
             inside: Vec::new(),
         }
     }

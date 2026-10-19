@@ -336,6 +336,9 @@ impl Region {
         if let Some(signal) = self.container_output(pos, state) {
             return signal;
         }
+        if let Some(signal) = self.sensor_output(pos, state) {
+            return signal;
+        }
         signal::analog_output(state).unwrap_or(0)
     }
 

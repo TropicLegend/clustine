@@ -153,6 +153,10 @@ impl Region {
                 .map(|seat| seat.key)
                 .collect(),
         });
+        // `entity_mount`, of the rider, at the vehicle (`vibrations.rs`).
+        let context = super::vibrations::Context::of(self.player_source(id), None);
+        let mount = super::vibrations::Vibration::ENTITY_MOUNT;
+        self.vibrate(mount, record.position, context);
         let player = self.players.get_mut(&id).expect("found above");
         player.riding = Some(PlayerRiding {
             vehicle,
@@ -226,6 +230,12 @@ impl Region {
             .find_entity(riding.vehicle)
             .map(|(chunk, record)| (chunk, record.clone()));
         let mut at = passenger.position;
+        // `entity_dismount`, of the rider, at the vehicle (`vibrations.rs`).
+        if let Some((_, record)) = &vehicle {
+            let context = super::vibrations::Context::of(self.player_source(id), None);
+            let dismount = super::vibrations::Vibration::ENTITY_DISMOUNT;
+            self.vibrate(dismount, record.position, context);
+        }
         if let Some((chunk, mut record)) = vehicle {
             record.riding.passengers.retain(|seat| seat.key != entity);
             self.commit_entity(

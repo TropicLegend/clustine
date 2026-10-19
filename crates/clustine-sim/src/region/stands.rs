@@ -501,10 +501,14 @@ impl Region {
         if stream.used > 0 {
             *self.entity_draws.entry(key).or_default() += stream.used;
         }
+        // Its landing, then what it stood on (`vibrations.rs`).
+        let source = super::vibrations::Source::of(key);
+        if let Some(on) = living.landed_on.take() {
+            let supporting = living.body.supporting;
+            self.entity_hit_ground(source, living.body.position, on, supporting);
+        }
         for ore in std::mem::take(&mut living.ore) {
-            if let Some(state) = self.own_block(ore) {
-                self.light_redstone_ore(ore, state, output);
-            }
+            self.stood_on(ore, source, living.body.position, output);
         }
         // The plates, tripwire and detector rails its walk met, which count it where
         // it is, a living entity (`pressed.rs`).

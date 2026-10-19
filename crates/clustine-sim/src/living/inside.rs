@@ -175,7 +175,9 @@ impl Living {
                 let [x, y, z] = self.body.motion;
                 self.body.motion = [x * factor, y * 1.0, z * factor];
             }
-        } else if is_class(state, BlockClass::RedStoneOreBlock) {
+        } else if is_class(state, BlockClass::RedStoneOreBlock)
+            || is_class(state, BlockClass::SculkSensorBlock)
+        {
             self.ore.push(pos);
         }
         // A magma block's `hotFloor` hit breaks no stand.

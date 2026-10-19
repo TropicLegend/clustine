@@ -32,6 +32,7 @@ use clustine_world::{BlockPos, PlayerId, Ticked, Vec3};
 
 use super::Region;
 use super::updates::{RegionView, UPDATE_CLIENTS, UPDATE_LIMIT, fluid_block};
+use super::vibrations::{Context, Vibration};
 use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 
 /// `RedstoneLampBlock`'s delay before it goes out.
@@ -215,6 +216,28 @@ impl Region {
         };
         let pitch = self.next_draw().next_float() * 0.1 + 0.9;
         play(pos, sound, 1.0, pitch, None, output);
+        // `block_open` or `block_close`, of no entity (`vibrations.rs`).
+        self.vibrate_open(pos, state, None);
+    }
+
+    /// The `block_open` or `block_close` of a door, trapdoor or gate that has become
+    /// `state` at `pos`, opened or closed by `player` or by power.
+    pub(super) fn vibrate_open(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        player: Option<PlayerId>,
+    ) {
+        if state.property("open").is_none() {
+            return;
+        }
+        let event = if flag(state, "open") {
+            Vibration::BLOCK_OPEN
+        } else {
+            Vibration::BLOCK_CLOSE
+        };
+        let source = player.and_then(|player| self.player_source(player));
+        self.vibrate_at(event, pos, Context::of(source, None));
     }
 
     /// `SignalGetter.hasNeighborSignal` of the region's blocks.
@@ -398,6 +421,7 @@ impl Region {
                 self.update_attached(pos, released, output);
                 let sound = button_sound(state, false);
                 play(pos, sound, 1.0, 1.0, None, output);
+                self.vibrate_at(Vibration::BLOCK_DEACTIVATE, pos, Context::default());
             }
             return true;
         }
@@ -441,6 +465,14 @@ impl Region {
             self.update_attached(pos, pulled, output);
             let pitch = if flag(pulled, "powered") { 0.6 } else { 0.5 };
             play(pos, sounds::BLOCK_LEVER_CLICK, 0.3, pitch, None, output);
+            // `LeverBlock.useWithoutItem`'s event, of the player (`vibrations.rs`).
+            let event = if flag(pulled, "powered") {
+                Vibration::BLOCK_ACTIVATE
+            } else {
+                Vibration::BLOCK_DEACTIVATE
+            };
+            let context = Context::of(self.player_source(player), None);
+            self.vibrate_at(event, pos, context);
         } else if is_class(state, BlockClass::ButtonBlock) {
             // `ButtonBlock.press`; a button already pressed takes the click and does
             // nothing.
@@ -454,6 +486,8 @@ impl Region {
             self.schedule_tick(pos, Ticked::Block(block), button_delay(state), 0);
             let sound = button_sound(state, true);
             play(pos, sound, 1.0, 1.0, Some(player), output);
+            let context = Context::of(self.player_source(player), None);
+            self.vibrate_at(Vibration::BLOCK_ACTIVATE, pos, context);
         } else if signal::is_wire(state) {
             let Some(used) = signal::wire_used(&mut RegionView(self), state, pos) else {
                 return;

@@ -76,6 +76,10 @@ impl Region {
             .unwrap_or(clustine_data::blocks::AIR);
         if instrument.works_above_note_block() || above.props().is_air() {
             self.block_event(pos, state, NOTE_EVENT, 0);
+            // `note_block_play`, of no entity: the player who struck it is not passed
+            // down, and a listener reads them only to pass on (`vibrations.rs`).
+            let context = super::vibrations::Context::default();
+            self.vibrate_at(super::vibrations::Vibration::NOTE_BLOCK_PLAY, pos, context);
         }
     }
 

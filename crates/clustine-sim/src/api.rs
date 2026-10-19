@@ -1162,6 +1162,19 @@ pub enum RegionEvent {
         large: bool,
         sound: bool,
     },
+    /// The particle of a vibration a sculk sensor took up (`VibrationParticleOption`,
+    /// sent by `ServerLevel.sendParticles` as `level_particles` with count 1 and no
+    /// spread or speed), which every edge shows to each of its players whose block's
+    /// centre is within 32 blocks of `from`, whatever region they are in
+    /// (`docs/groundwork/n6-brief.md`, sections 8.6 and 9.6): it starts at `from`, the
+    /// event's position or, for one reloaded with its sensor's chunk, the point it had
+    /// reached; it goes to the sensor's block `to` (the `minecraft:block` position
+    /// source) and arrives in `ticks` ticks.
+    Vibration {
+        from: [f64; 3],
+        to: BlockPos,
+        ticks: i32,
+    },
 }
 
 /// What an edge is told of an entity other than a player in a tick that changed it.
@@ -1225,6 +1238,9 @@ impl RegionEvent {
             // The chunk of its centre: a player within 64 blocks of it has the chunk in
             // view unless their view reaches less than four chunks.
             Self::Explosion { centre, .. } => [ChunkPos::containing(centre[0], centre[2]); 2],
+            // The chunk where it starts: a player within 32 blocks of it has the chunk in
+            // view unless their view reaches less than two chunks.
+            Self::Vibration { from, .. } => [ChunkPos::containing(from[0], from[2]); 2],
             // No place: see the variant.
             Self::BlockEventsBegin => [ChunkPos::new(0, 0); 2],
             Self::EntityMoved {

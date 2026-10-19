@@ -315,6 +315,11 @@ impl Region {
         position: ChunkPos,
         output: &mut TickOutput,
     ) {
+        // What its move posted of a landing (`vibrations.rs`).
+        let source = super::vibrations::Source::of(key);
+        if let Some((_, on)) = body.fell_on {
+            self.entity_hit_ground(source, body.position, on, body.supporting);
+        }
         let view = View {
             region: self,
             home: position,
@@ -330,7 +335,9 @@ impl Region {
                     let [x, y, z] = body.motion;
                     body.motion = [x * factor, y * 1.0, z * factor];
                 }
-            } else if is_class(under, BlockClass::RedStoneOreBlock) {
+            } else if is_class(under, BlockClass::RedStoneOreBlock)
+                || is_class(under, BlockClass::SculkSensorBlock)
+            {
                 ore = Some(on);
             }
         }
@@ -340,10 +347,8 @@ impl Region {
         };
         check_inside_blocks(&view, &mut inside, movements);
         let met = inside.inside;
-        if let Some(ore) = ore
-            && let Some(state) = self.own_block(ore)
-        {
-            self.light_redstone_ore(ore, state, output);
+        if let Some(ore) = ore {
+            self.stood_on(ore, source, body.position, output);
         }
         let toucher = super::pressed::Toucher {
             key,

@@ -209,6 +209,7 @@ impl Region {
             self.redstone_after_removal(pos, old, moved_by_piston, output);
             self.piston_after_removal(pos, old, output);
             self.container_after_removal(pos, old, output);
+            self.sensor_after_removal(pos, old, output);
         }
         // Wire placed works out its power and tells the blocks around it
         // (`RedStoneWireBlock.onPlace`).
@@ -220,6 +221,9 @@ impl Region {
         // A hopper placed takes whether power locks it (`HopperBlock.onPlace`,
         // `hoppers.rs`).
         self.hopper_on_place(pos, state, old, output);
+        // A sensor that comes with power and no tick loses it (`SculkSensorBlock.onPlace`,
+        // `sculk.rs`).
+        self.sensor_on_place(pos, state, old, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up, a dragon egg five (`FallingBlock.onPlace`,
         // `BrushableBlock`'s), and scaffolding one on how far it is held
@@ -377,6 +381,11 @@ impl Region {
             state,
             breaker: player,
         });
+        // `Block.playerWillDestroy`'s `block_destroy`, of the player and the block
+        // (`vibrations.rs`).
+        let source = player.and_then(|player| self.player_source(player));
+        let context = super::vibrations::Context::of(source, Some(state));
+        self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
         self.set_block(pos, fluid_block(state), output);
     }
 
@@ -710,7 +719,11 @@ impl Region {
         if drops {
             self.drop_resources(state, pos, output);
         }
-        self.set_block_updated(pos, fluid_block(state), UPDATE_ALL, depth, output);
+        if self.set_block_updated(pos, fluid_block(state), UPDATE_ALL, depth, output) {
+            // `block_destroy` of no entity, once the block is gone (`vibrations.rs`).
+            let context = super::vibrations::Context::of(None, Some(state));
+            self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
+        }
     }
 
     /// `neighborChanged` of the block at `pos`: a liquid looks again; rails, repeaters

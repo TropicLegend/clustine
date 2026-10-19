@@ -9,9 +9,11 @@
 //! after the block events and before the other entities, for each player in the order
 //! of their ids, with the box where the player stands at the end of the tick's inputs:
 //! the game sweeps the box along the tick's movement, which a player walking fast over
-//! a plate in one tick would press, and this does not. Whether a player sneaks is not
-//! region state, so none steps carefully. Every other entity's walk (an item's, a
-//! cart's, a boat's, a falling block's, primed TNT's, an armour stand's) hands back the
+//! a plate in one tick would press, and this does not. A player with the shift key down
+//! steps carefully (`isSteppingCarefully`), and lights no redstone ore by standing on it;
+//! a sculk sensor hears them all the same (`vibrations.rs`). Every other entity's walk
+//! (an item's, a cart's, a boat's, a falling block's, primed TNT's, an armour stand's)
+//! hands back the
 //! plates, tripwire and detector rails it met, and the region runs their `entityInside`
 //! for it in its own tick, in the order of the entities ([`Region::entity_touched`]).
 //!
@@ -55,6 +57,7 @@ use clustine_world::{BlockPos, EntityData, EntityId, Ticked, Vec3};
 
 use super::Region;
 use super::updates::{RegionView, UPDATE_CLIENTS, UPDATE_LIMIT};
+use super::vibrations::{Context, Source, Vibration};
 use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 use crate::physics::aabb::Aabb;
 
@@ -100,12 +103,22 @@ impl Region {
     /// The phase in which the region's players act on the blocks they stand on and
     /// in, in the order of their ids.
     pub(crate) fn players_touch_blocks(&mut self, output: &mut TickOutput) {
-        let players: Vec<(Vec3, bool)> = self
+        let players: Vec<(Vec3, bool, clustine_world::EntityId)> = self
             .players
             .values()
-            .map(|player| (player.pose.position, player.pose.on_ground))
+            .map(|player| {
+                (
+                    player.pose.position,
+                    player.pose.on_ground,
+                    player.entity_id,
+                )
+            })
             .collect();
-        for (feet, on_ground) in players {
+        for (feet, on_ground, entity) in players {
+            let careful = self
+                .players
+                .values()
+                .any(|player| player.entity_id == entity && player.keys.sneak);
             if on_ground {
                 // `getOnPosLegacy`: the block a fifth of a block below the feet.
                 let on = BlockPos::new(
@@ -113,11 +126,13 @@ impl Region {
                     (feet.y - 0.2).floor() as i32,
                     feet.z.floor() as i32,
                 );
-                if self.ticks_chunk(on.chunk())
-                    && let Some(state) = self.own_block(on)
-                    && is_class(state, BlockClass::RedStoneOreBlock)
-                {
-                    self.light_redstone_ore(on, state, output);
+                if self.ticks_chunk(on.chunk()) {
+                    // Redstone ore lights, and a sculk sensor hears it (`vibrations.rs`).
+                    let source = Source {
+                        careful,
+                        ..Source::of(entity)
+                    };
+                    self.stood_on(on, source, [feet.x, feet.y, feet.z], output);
                 }
             }
             let body = crate::placement::body(feet, false);
@@ -259,10 +274,15 @@ impl Region {
             self.set_block_updated(pos, changed, UPDATE_CLIENTS, UPDATE_LIMIT, output);
             self.plate_updates_neighbours(pos, changed, output);
         }
+        // With `block_deactivate` or `block_activate`, of the entity that checks it
+        // (`vibrations.rs`).
+        let source = toucher.map(|toucher| Source::of(toucher.key));
         if new == 0 && old > 0 {
             play(pos, plate_sound(state, false), 1.0, 1.0, output);
+            self.vibrate_at(Vibration::BLOCK_DEACTIVATE, pos, Context::of(source, None));
         } else if new > 0 && old == 0 {
             play(pos, plate_sound(state, true), 1.0, 1.0, output);
+            self.vibrate_at(Vibration::BLOCK_ACTIVATE, pos, Context::of(source, None));
         }
         if new > 0 {
             let block = Ticked::Block(tick_id(state));
@@ -548,16 +568,24 @@ impl Region {
         was_powered: bool,
         output: &mut TickOutput,
     ) {
-        if powered && !was_powered {
+        // Each with its event, of no entity (`vibrations.rs`).
+        let event = if powered && !was_powered {
             play(pos, sounds::BLOCK_TRIPWIRE_CLICK_ON, 0.4, 0.6, output);
+            Vibration::BLOCK_ACTIVATE
         } else if !powered && was_powered {
             play(pos, sounds::BLOCK_TRIPWIRE_CLICK_OFF, 0.4, 0.5, output);
+            Vibration::BLOCK_DEACTIVATE
         } else if attached && !was_attached {
             play(pos, sounds::BLOCK_TRIPWIRE_ATTACH, 0.4, 0.7, output);
+            Vibration::BLOCK_ATTACH
         } else if !attached && was_attached {
             let pitch = 1.2 / (self.next_draw().next_float() * 0.2 + 0.9);
             play(pos, sounds::BLOCK_TRIPWIRE_DETACH, 0.4, pitch, output);
-        }
+            Vibration::BLOCK_DETACH
+        } else {
+            return;
+        };
+        self.vibrate_at(event, pos, Context::default());
     }
 
     /// `BigDripleafBlock.setTiltAndScheduleTick`: the leaf takes `tilt`, with its sound

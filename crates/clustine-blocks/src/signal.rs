@@ -186,7 +186,9 @@ pub fn own_signal(state: BlockState) -> u8 {
         };
     }
     // `TargetBlock.ownSignal`: the power an arrow last gave it, which falls back to 0.
-    if is_class(state, BlockClass::TargetBlock) {
+    // `SculkSensorBlock.ownSignal`: the power of the vibration it last took, until its
+    // cooldown, the calibrated sensor's too.
+    if is_class(state, BlockClass::TargetBlock) || is_class(state, BlockClass::SculkSensorBlock) {
         return crate::data::number(state, "power").unwrap_or(0);
     }
     0
@@ -318,6 +320,11 @@ pub fn block_signal<V: BlockView + ?Sized>(
             0
         };
     }
+    // `CalibratedSculkSensorBlock.getSignal`: every side but the one asking it the way
+    // it faces, the block behind it, whose signal it reads.
+    if is_class(state, BlockClass::CalibratedSculkSensorBlock) && facing(state) == Some(direction) {
+        return 0;
+    }
     own_signal_at(view, state, pos)
 }
 
@@ -379,6 +386,15 @@ pub fn block_direct_signal<V: BlockView + ?Sized>(
     // their `getSignal`).
     if is_class(state, BlockClass::DiodeBlock) || is_class(state, BlockClass::ObserverBlock) {
         return block_signal(view, state, pos, direction, query);
+    }
+    // A sculk sensor powers the block below it, which asks it upwards
+    // (`SculkSensorBlock.getDirectSignal`).
+    if is_class(state, BlockClass::SculkSensorBlock) {
+        return if direction == Face::Up {
+            block_signal(view, state, pos, direction, query)
+        } else {
+            0
+        };
     }
     0
 }

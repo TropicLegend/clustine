@@ -26,8 +26,9 @@
 //! container is whole in one region; the recheck counts the region's own players, who
 //! are the only ones whose menus show its containers; a comparator reads a container in
 //! a copy from the copy's data. Named differences: the opener's game events
-//! (`container_open`, `container_close`) wait for sculk (N6f); the cat sitting on a
-//! chest waits for N7; a loot table is not rolled (decision 4), so a structure's chest
+//! (`container_open`, `container_close`) are of no entity, where the game's are of the
+//! player who opened or closed it, which a sensor reads only to pass on; the cat
+//! sitting on a chest waits for N7; a loot table is not rolled (decision 4), so a structure's chest
 //! spills nothing; a player's interaction range is a creative player's, which every
 //! player of Clustine has; an opener's count does not go below 0 where the game's would.
 
@@ -764,6 +765,19 @@ impl Region {
                 self.set_block(pos, set_flag(state, "open", open), output);
             }
         }
+        // `incrementOpeners`, `decrementOpeners` and `recheckOpeners` post their event
+        // after `onOpen` and `onClose` (`vibrations.rs`).
+        self.container_vibrates(pos, open);
+    }
+
+    /// `container_open` or `container_close` at the container at `pos`.
+    pub(super) fn container_vibrates(&mut self, pos: BlockPos, open: bool) {
+        let event = if open {
+            super::vibrations::Vibration::CONTAINER_OPEN
+        } else {
+            super::vibrations::Vibration::CONTAINER_CLOSE
+        };
+        self.vibrate_at(event, pos, super::vibrations::Context::default());
     }
 
     /// The counters' `openerCountChanged`: a chest's and an ender chest's block event

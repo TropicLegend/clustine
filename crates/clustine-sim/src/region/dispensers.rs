@@ -343,6 +343,9 @@ impl Region {
         let Some(slot) = random_slot(&container.slots, |bound| random.next_int(bound)) else {
             self.block_streams.insert(pos, random);
             level_event(FAILED, pos, 0, output);
+            // `block_activate` of the dispenser as it is (`vibrations.rs`).
+            let context = super::vibrations::Context::of(None, self.own_block(pos));
+            self.vibrate_at(super::vibrations::Vibration::BLOCK_ACTIVATE, pos, context);
             if unpacked {
                 self.set_container(pos, container, output);
             }

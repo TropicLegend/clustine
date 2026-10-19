@@ -161,6 +161,7 @@ pub(in crate::region) fn add_player(
         keys: Keys::default(),
         kept: Vec::new(),
         menu: None,
+        steps: Default::default(),
     };
     region.players.insert(id, player);
     (id, entity_id)

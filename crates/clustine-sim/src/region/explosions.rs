@@ -198,6 +198,14 @@ impl Region {
         random: &mut Random,
         output: &mut TickOutput,
     ) {
+        // `explode` first, of the entity that explodes (`vibrations.rs`).
+        let source = Some(super::vibrations::Source::of(explosion.source));
+        let context = super::vibrations::Context::of(source, None);
+        self.vibrate(
+            super::vibrations::Vibration::EXPLODE,
+            explosion.centre,
+            context,
+        );
         let positions = self.exploded_positions(explosion, random);
         let knockback = self.hurt_entities(explosion, output);
         // TNT always breaks blocks (`interactsWithBlocks`: its interaction is not `KEEP`).

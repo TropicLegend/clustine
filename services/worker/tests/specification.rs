@@ -951,6 +951,7 @@ impl Witness {
                         | RegionEvent::EntitySound { .. }
                         | RegionEvent::EntityEvent { .. }
                         | RegionEvent::Explosion { .. }
+                        | RegionEvent::Vibration { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);

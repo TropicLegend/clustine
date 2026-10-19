@@ -23,6 +23,9 @@ pub(crate) enum Rule {
     Axis,
     /// `facing` the opposite of the player's facing: furnaces and the like.
     FacingAway,
+    /// `facing` the player's facing: a calibrated sculk sensor
+    /// (`CalibratedSculkSensorBlock.getStateForPlacement`).
+    FacingAlong,
     /// As [`Rule::FacingAway`], or turned to pair with a chest beside it as half of a
     /// double chest.
     Chest,
@@ -110,6 +113,7 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
         | C::EnderChestBlock
         | C::ChiseledBookShelfBlock
         | C::EndPortalFrameBlock => Rule::FacingAway,
+        C::CalibratedSculkSensorBlock => Rule::FacingAlong,
         C::ChestBlock => Rule::Chest,
         C::DiodeBlock => Rule::Diode,
         C::CampfireBlock => Rule::Campfire,
@@ -208,6 +212,7 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
         Rule::Default => block,
         Rule::Axis => set(block, "axis", face.axis().name()),
         Rule::FacingAway => set(block, "facing", horizontal.opposite().name()),
+        Rule::FacingAlong => set(block, "facing", horizontal.name()),
         Rule::Chest => chest(block, context),
         Rule::Diode => {
             let state = set(block, "facing", horizontal.opposite().name());
@@ -824,6 +829,7 @@ mod tests {
             let needs: &[&str] = match rule_for(state) {
                 Rule::Axis => &["axis"],
                 Rule::FacingAway
+                | Rule::FacingAlong
                 | Rule::Chest
                 | Rule::Diode
                 | Rule::Campfire

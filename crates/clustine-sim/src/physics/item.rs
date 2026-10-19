@@ -150,12 +150,13 @@ pub(crate) struct Item {
     pub(crate) fluids: InFluids,
     /// Its motion at the start of its own part of the tick.
     pub(crate) start_motion: Vec3,
-    /// Redstone ore it stood on, to light.
+    /// Redstone ore it stood on, to light, and sculk sensors, to hear it.
     pub(crate) ore: Vec<BlockPos>,
     /// The blocks its walk met whose `entityInside` the region runs itself, because it
-    /// reads the region's entities or containers: plates, tripwire, detector rails,
-    /// hoppers and sculk sensors, in the order they were met
-    /// (`docs/groundwork/n6-plan.md`, decision 11).
+    /// reads the region's entities or containers: plates, tripwire, detector rails and
+    /// hoppers, in the order they were met (`docs/groundwork/n6-plan.md`, decision 11).
+    /// A sculk sensor has no `entityInside`: it hears what stands on it
+    /// ([`Item::ore`]).
     pub(crate) inside: Vec<BlockPos>,
     pub(crate) sounds: Vec<Sound>,
 }
@@ -167,7 +168,6 @@ pub(crate) fn handed_back(state: BlockState) -> bool {
         || is_class(state, BlockClass::TripWireBlock)
         || is_class(state, BlockClass::DetectorRailBlock)
         || is_class(state, BlockClass::HopperBlock)
-        || is_class(state, BlockClass::SculkSensorBlock)
 }
 
 /// What draws the item's random numbers (`Entity.random`).
@@ -523,7 +523,9 @@ impl Item {
                 let [x, y, z] = self.body.motion;
                 self.body.motion = [x * factor, y * 1.0, z * factor];
             }
-        } else if is_class(state, BlockClass::RedStoneOreBlock) {
+        } else if is_class(state, BlockClass::RedStoneOreBlock)
+            || is_class(state, BlockClass::SculkSensorBlock)
+        {
             self.ore.push(pos);
         }
     }

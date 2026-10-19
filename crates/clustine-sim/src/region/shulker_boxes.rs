@@ -200,6 +200,9 @@ impl Region {
         } else {
             sounds::BLOCK_SHULKER_BOX_CLOSE
         };
+        // With `container_open` or `container_close` of the first opener or the last
+        // (`vibrations.rs`); the user is not passed down, and is none.
+        self.container_vibrates(pos, open);
         self.container_sound(centre, sound, output);
     }
 

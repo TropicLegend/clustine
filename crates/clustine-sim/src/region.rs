@@ -55,6 +55,7 @@ mod redstone;
 mod reshape;
 mod riders;
 mod riding;
+mod sculk;
 mod shulker_boxes;
 mod stands;
 mod ticks;
@@ -62,6 +63,7 @@ mod tnt;
 mod updates;
 mod uses;
 mod vehicles;
+mod vibrations;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
@@ -276,6 +278,8 @@ struct Player {
     kept: Vec<crate::api::VehicleMove>,
     /// See [`PlayerState::menu`].
     menu: Option<crate::state::Menu>,
+    /// What the game keeps of their steps and fall, in memory only (`vibrations.rs`).
+    steps: vibrations::Steps,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -940,6 +944,9 @@ impl Region {
         // block events are kept, so that a menu closed at a hand-over keeps its lid's
         // events with their chunk (`docs/groundwork/n6-plan.md`, section 8 item 7).
         self.tick_menus(&mut output);
+        // What the tick changed of sculk sensors goes into their chunks' data
+        // (`sculk.rs`).
+        self.save_sensors(&mut output);
         // The game broadcasts a tick's block changes before its block events, and what
         // changes from then on (in the block events, the entities and the block
         // entities: a piston's move finishing) with the next tick's
@@ -1450,6 +1457,7 @@ impl Region {
             keys: transfer.keys,
             kept: transfer.kept.clone(),
             menu: None,
+            steps: Default::default(),
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1570,6 +1578,7 @@ impl Region {
             keys: Keys::default(),
             kept: Vec::new(),
             menu: None,
+            steps: Default::default(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -1776,11 +1785,14 @@ impl Region {
                     *position
                 };
                 let from = player.pose.position;
+                let was_on_ground = player.pose.on_ground;
                 player.move_to(position, *rotation, *on_ground);
                 if position.is_some() {
                     let to = player.pose.position;
-                    self.known_movements
-                        .insert(id, [to.x - from.x, to.y - from.y, to.z - from.z]);
+                    let delta = [to.x - from.x, to.y - from.y, to.z - from.z];
+                    self.known_movements.insert(id, delta);
+                    // The steps and the landing of the move (`vibrations.rs`).
+                    self.player_moved(id, delta, was_on_ground);
                 }
             }
             PlayerInput::SelectSlot { slot } => {
@@ -2159,17 +2171,22 @@ impl Region {
     /// but the player, whose own client plays it (`docs/adr/0026-redstone.md`, section
     /// 8).
     fn play_placed(&mut self, pos: BlockPos, player: PlayerId, output: &mut TickOutput) {
-        let Some(sound) = self.own_block(pos).and_then(BlockState::sound_type) else {
+        let Some(placed) = self.own_block(pos) else {
             return;
         };
-        output.events.push(RegionEvent::Sound {
-            sound: sound.place,
-            source: crate::api::SOUND_SOURCE_BLOCKS,
-            position: block_centre(pos),
-            volume: (sound.volume + 1.0) / 2.0,
-            pitch: sound.pitch * 0.8,
-            except: Some(player),
-        });
+        if let Some(sound) = placed.sound_type() {
+            output.events.push(RegionEvent::Sound {
+                sound: sound.place,
+                source: crate::api::SOUND_SOURCE_BLOCKS,
+                position: block_centre(pos),
+                volume: (sound.volume + 1.0) / 2.0,
+                pitch: sound.pitch * 0.8,
+                except: Some(player),
+            });
+        }
+        // Then `block_place`, of the player and what they placed (`vibrations.rs`).
+        let context = vibrations::Context::of(self.player_source(player), Some(placed));
+        self.vibrate_at(vibrations::Vibration::BLOCK_PLACE, pos, context);
     }
 
     /// The sound of a bucket used by `player`, or of a block placed on water: a
@@ -2225,6 +2242,15 @@ impl Region {
             pitch: 1.0,
             except: Some(player),
         });
+        // `BucketItem.use`'s `fluid_pickup` and `playEmptySound`'s `fluid_place`, of the
+        // player, at the block (`vibrations.rs`).
+        let event = if item_use.held == Some(items::BUCKET) {
+            vibrations::Vibration::FLUID_PICKUP
+        } else {
+            vibrations::Vibration::FLUID_PLACE
+        };
+        let context = vibrations::Context::of(self.player_source(player), None);
+        self.vibrate_at(event, pos, context);
     }
 
     /// `RedStoneOreBlock.useItemOn`: a click on redstone ore lights it, and the click
@@ -2307,6 +2333,11 @@ impl Region {
                 pitch,
                 except: Some(player),
             });
+        }
+        // A door's, a trapdoor's or a gate's `block_open` or `block_close`, of the
+        // player (`vibrations.rs`).
+        if let Some((position, state)) = changes.first() {
+            self.vibrate_open(*position, *state, Some(player));
         }
     }
 
@@ -2866,6 +2897,7 @@ impl Player {
             keys: state.keys,
             kept: state.kept,
             menu: state.menu,
+            steps: Default::default(),
         }
     }
 
@@ -3035,6 +3067,7 @@ mod tests {
     mod redstone_ground;
     mod riding;
     mod scheduled_ticks;
+    mod sculk;
     mod stands;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);

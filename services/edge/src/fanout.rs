@@ -3188,6 +3188,8 @@ impl Fanout {
             RegionEvent::TransientBlock { position, state } => {
                 self.show_transient(position, state).await;
             }
+            // Shown by the edge's step that brings the vibration particle.
+            RegionEvent::Vibration { .. } => {}
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
                     return;

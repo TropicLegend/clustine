@@ -942,10 +942,10 @@ impl Region {
                     let [x, y, z] = cart.body.motion;
                     cart.body.motion = [x * factor, y * 1.0, z * factor];
                 }
-            } else if is_class(state, BlockClass::RedStoneOreBlock)
-                && let Some(own) = self.own_block(on)
-            {
-                self.light_redstone_ore(on, own, output);
+            } else {
+                // Redstone ore lights, and a sculk sensor hears it (`vibrations.rs`).
+                let source = super::vibrations::Source::of(cart.key);
+                self.stood_on(on, source, cart.body.position, output);
             }
         }
         let mut queued = Vec::new();

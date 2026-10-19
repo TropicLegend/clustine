@@ -333,10 +333,13 @@ impl Region {
         key: EntityId,
         output: &mut TickOutput,
     ) {
+        // What its moves posted of a landing, then what it stood on (`vibrations.rs`).
+        let source = super::vibrations::Source::item(key, item.stack.item);
+        if let Some((_, on)) = item.body.fell_on {
+            self.entity_hit_ground(source, item.body.position, on, item.body.supporting);
+        }
         for ore in std::mem::take(&mut item.ore) {
-            if let Some(state) = self.own_block(ore) {
-                self.light_redstone_ore(ore, state, output);
-            }
+            self.stood_on(ore, source, item.body.position, output);
         }
         for pos in std::mem::take(&mut item.inside) {
             if item.removed {

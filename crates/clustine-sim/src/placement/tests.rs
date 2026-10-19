@@ -99,6 +99,7 @@ fn every_named_class_and_every_class_made_from_one_finds_its_rule() {
         (C::EnderChestBlock, Rule::FacingAway),
         (C::ChiseledBookShelfBlock, Rule::FacingAway),
         (C::EndPortalFrameBlock, Rule::FacingAway),
+        (C::CalibratedSculkSensorBlock, Rule::FacingAlong),
         (C::DiodeBlock, Rule::Diode),
         (C::SmallDripleafBlock, Rule::SmallDripleaf),
         (C::BigDripleafBlock, Rule::BigDripleaf),

@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use super::Region;
 use super::containers::read_openers;
 use super::hoppers::Timer;
+use super::sculk::Sensor;
 use super::shulker_boxes::Lid;
 use crate::api::TickOutput;
 
@@ -49,6 +50,10 @@ pub(crate) enum Typed {
     /// `HopperBlockEntity`'s cooldown and the tick it last ticked in (N6e); its slots
     /// are in the data, and its cooldown too (`hoppers.rs`).
     Hopper(Timer),
+    /// `SculkSensorBlockEntity` and the calibrated sensor's (N6f): the vibration it
+    /// holds and its travel, its selector and the frequency it last took, durable as
+    /// the game saves them (`sculk.rs`).
+    Sensor(Sensor),
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -90,15 +95,20 @@ impl Typed {
         if is_class(state, BlockClass::HopperBlock) {
             return Some(Typed::Hopper(Timer::loaded(data)));
         }
+        if is_class(state, BlockClass::SculkSensorBlock) {
+            return Some(Typed::Sensor(Sensor::loaded(data)));
+        }
         None
     }
 
     /// Whether the kind has a ticker (`EntityBlock.getTicker` on the server).
     fn ticks(self) -> bool {
         match self {
-            Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) | Typed::Hopper(_) => {
-                true
-            }
+            Typed::Bell(_)
+            | Typed::MovingPiston(_)
+            | Typed::ShulkerBox(_)
+            | Typed::Hopper(_)
+            | Typed::Sensor(_) => true,
             Typed::Comparator(_) => false,
         }
     }
@@ -107,8 +117,11 @@ impl Typed {
 pub(super) const TAG_END: u8 = 0;
 pub(super) const TAG_BYTE: u8 = 1;
 pub(super) const TAG_INT: u8 = 3;
-const TAG_FLOAT: u8 = 5;
-const TAG_STRING: u8 = 8;
+pub(super) const TAG_LONG: u8 = 4;
+pub(super) const TAG_FLOAT: u8 = 5;
+pub(super) const TAG_DOUBLE: u8 = 6;
+pub(super) const TAG_STRING: u8 = 8;
+pub(super) const TAG_LIST: u8 = 9;
 pub(super) const TAG_COMPOUND: u8 = 10;
 
 /// The bucket of a `HashMap` of 16 that Java puts the string `name` in: its
@@ -123,15 +136,15 @@ pub(super) fn string_bucket(name: &str) -> u32 {
 }
 
 /// One entry of a compound being written: its name, its tag and its payload.
-struct Entry {
-    name: &'static str,
-    tag: u8,
-    payload: Vec<u8>,
+pub(super) struct Entry {
+    pub(super) name: &'static str,
+    pub(super) tag: u8,
+    pub(super) payload: Vec<u8>,
 }
 
 /// `entries`, put in that order, as the game writes the compound of them: in the order
 /// of their buckets, which holds for fewer than thirteen.
-fn compound(mut entries: Vec<Entry>) -> Vec<u8> {
+pub(super) fn compound(mut entries: Vec<Entry>) -> Vec<u8> {
     entries.sort_by_key(|entry| string_bucket(entry.name));
     let mut data = Vec::new();
     for entry in entries {
@@ -304,12 +317,16 @@ fn read_block_state(compound: &[u8]) -> Option<BlockState> {
 }
 
 /// What [`each_entry`] calls for an entry: with its tag, its name and its payload.
-type EachEntry<'a, 'f> = dyn FnMut(u8, &[u8], &'a [u8]) + 'f;
+pub(super) type EachEntry<'a, 'f> = dyn FnMut(u8, &[u8], &'a [u8]) + 'f;
 
 /// Calls `each` with the tag, the name and the payload of every entry of the compound
 /// whose entries begin `data`, up to its end; returns what follows the end, or `None`
 /// for data cut short.
-fn each_entry<'a>(data: &'a [u8], depth: u32, each: &mut EachEntry<'a, '_>) -> Option<&'a [u8]> {
+pub(super) fn each_entry<'a>(
+    data: &'a [u8],
+    depth: u32,
+    each: &mut EachEntry<'a, '_>,
+) -> Option<&'a [u8]> {
     let mut rest = data;
     loop {
         let (&tag, after) = rest.split_first()?;
@@ -487,6 +504,9 @@ pub(crate) struct BlockEntities {
     pending: Vec<BlockPos>,
     /// Whether the phase of block entities runs (`Level.tickingBlockEntities`).
     ticking: bool,
+    /// The sculk sensors whose saved part changed in this tick, written into their
+    /// chunks' data once at its end (`sculk.rs`); empty between ticks.
+    pub(super) sensors_changed: std::collections::BTreeSet<BlockPos>,
 }
 
 impl BlockEntities {
@@ -588,6 +608,9 @@ impl Region {
                 Some(Typed::Hopper(_)) if is_class(state, BlockClass::HopperBlock) => {
                     self.hopper_tick(pos, state, output);
                 }
+                Some(Typed::Sensor(_)) if is_class(state, BlockClass::SculkSensorBlock) => {
+                    self.sensor_entity_tick(pos, output);
+                }
                 _ => {}
             }
         }
@@ -602,7 +625,8 @@ impl Region {
             Typed::Comparator(_)
             | Typed::MovingPiston(_)
             | Typed::ShulkerBox(_)
-            | Typed::Hopper(_) => None,
+            | Typed::Hopper(_)
+            | Typed::Sensor(_) => None,
         }
     }
 
@@ -617,7 +641,8 @@ impl Region {
                 Typed::Bell(_)
                 | Typed::MovingPiston(_)
                 | Typed::ShulkerBox(_)
-                | Typed::Hopper(_) => 0,
+                | Typed::Hopper(_)
+                | Typed::Sensor(_) => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {
@@ -745,6 +770,50 @@ impl Region {
             Typed::Hopper(timer) => Some(timer),
             _ => None,
         }
+    }
+
+    /// The sculk sensor's block entity at `pos`, if it is there.
+    pub(crate) fn sensor(&self, pos: BlockPos) -> Option<Sensor> {
+        match self.block_entities.typed.get(&pos)? {
+            Typed::Sensor(sensor) => Some(*sensor),
+            _ => None,
+        }
+    }
+
+    /// Gives the sculk sensor's block entity at `pos` the state `sensor`, its saved
+    /// part to be written at the tick's end where it changed.
+    pub(super) fn set_sensor(&mut self, pos: BlockPos, sensor: Sensor) {
+        if let Some(Typed::Sensor(kept)) = self.block_entities.typed.get_mut(&pos) {
+            if kept.saved() != sensor.saved() {
+                self.block_entities.sensors_changed.insert(pos);
+            }
+            *kept = sensor;
+        }
+    }
+
+    /// The positions of the sculk sensors' block entities whose blocks are within
+    /// `radius` of `origin` along each axis, ascending: the listeners a game event
+    /// there may reach (`GameEventDispatcher.post` visits the sections about it).
+    pub(super) fn sensors_about(&self, origin: BlockPos, radius: i32) -> Vec<BlockPos> {
+        let low = BlockPos::new(origin.x - radius, i32::MIN, i32::MIN);
+        let high = BlockPos::new(origin.x + radius, i32::MAX, i32::MAX);
+        self.block_entities
+            .typed
+            .range(low..=high)
+            .filter(|(pos, typed)| {
+                matches!(typed, Typed::Sensor(_))
+                    && (pos.y - origin.y).abs() <= radius
+                    && (pos.z - origin.z).abs() <= radius
+            })
+            .map(|(pos, _)| *pos)
+            .collect()
+    }
+
+    /// The sculk sensors whose saved part changed in this tick, taken.
+    pub(super) fn take_sensors_changed(&mut self) -> Vec<BlockPos> {
+        std::mem::take(&mut self.block_entities.sensors_changed)
+            .into_iter()
+            .collect()
     }
 
     /// The positions of the shulker boxes' block entities of the chunk at `position`,

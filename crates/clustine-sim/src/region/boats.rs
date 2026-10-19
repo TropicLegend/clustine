@@ -837,10 +837,10 @@ impl Region {
                     let [x, y, z] = boat.body.motion;
                     boat.body.motion = [x * factor, y * 1.0, z * factor];
                 }
-            } else if is_class(state, BlockClass::RedStoneOreBlock)
-                && let Some(own) = self.own_block(on)
-            {
-                self.light_redstone_ore(on, own, output);
+            } else {
+                // Redstone ore lights, and a sculk sensor hears it (`vibrations.rs`).
+                let source = super::vibrations::Source::of(boat.key);
+                self.stood_on(on, source, boat.body.position, output);
             }
         }
         let mut fire_hurts = Vec::new();
