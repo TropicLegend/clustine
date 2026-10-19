@@ -1623,21 +1623,19 @@ fn saved_of(
     (scene.region.state(), saved)
 }
 
-/// Section 6 item 1: "at the first tick after any restore the region reports every
-/// player's menu whole, or that they have none"; section 7 item 3 replaces that with "a
-/// menu is reported whole at the first tick for a vehicle's container ... and for one
-/// that has none", read here as a player that has no menu. The plan is unclear there:
-/// "one that has none" may mean something else, and section 7 item 7's resync after a
-/// resume may be meant to cover it. Which event says "none" it leaves open too:
-/// [`PlayerEvent::NoMenu`] is the answer of that meaning to a resync, and
-/// [`PlayerEvent::MenuClosed`] is taken as well.
+/// Section 6 item 1, as section 7 items 3 and 7 settle it: a restored region reports a
+/// menu whole once its container is loaded, and says nothing of a player who has none at
+/// its first tick; a client that still shows a window the restored region does not have
+/// is set right by the resync its edge sends on the resumed link, which a region answers
+/// for a player with no menu with [`PlayerEvent::NoMenu`]. (The plan's "and for one that
+/// has none" meant a menu with no container to wait for; the test of this file's first
+/// reading took it as a player with no menu, and is kept in this form.)
 #[test]
-#[ignore = "finding (the plan's words are unclear): nothing is reported at the first tick after a restore of a player who has no menu"]
-fn the_first_tick_after_a_restore_says_of_a_player_with_no_menu_that_they_have_none() {
+fn after_a_restore_a_resync_says_of_a_player_with_no_menu_that_they_have_none() {
     let scene = Scene::alone(&chest(), holding(), BESIDE);
     let (state, _) = saved_of(&scene);
     let mut restored = Region::restore(config(holding()), state, scene.layout.holdings());
-    let first = restored.tick(&TickInputs {
+    let tickets = TickInputs {
         tickets_added: scene
             .layout
             .loaded
@@ -1645,17 +1643,31 @@ fn the_first_tick_after_a_restore_says_of_a_player_with_no_menu_that_they_have_n
             .map(|chunk| (*chunk, Ticket::Viewer))
             .collect(),
         ..TickInputs::default()
-    });
-    let said: Vec<PlayerEvent> = events_of(&first, player(1))
+    };
+    let first = restored.tick(&tickets);
+    assert!(
+        events_of(&first, player(1))
+            .iter()
+            .all(|event| !matches!(event, PlayerEvent::NoMenu { .. })),
+        "nothing is said unasked: {:?}",
+        first.player_events
+    );
+    let resync = TickInputs {
+        inputs: vec![(
+            EDGE,
+            player(1),
+            scene.me(),
+            scene.next_input(0),
+            PlayerInput::MenuResync,
+        )],
+        ..TickInputs::default()
+    };
+    let answered = restored.tick(&resync);
+    let said: Vec<PlayerEvent> = events_of(&answered, player(1))
         .into_iter()
-        .filter(|event| {
-            matches!(
-                event,
-                PlayerEvent::NoMenu { .. } | PlayerEvent::MenuClosed { .. }
-            )
-        })
+        .filter(|event| matches!(event, PlayerEvent::NoMenu { .. }))
         .collect();
-    assert_eq!(said.len(), 1, "{:?}", first.player_events);
+    assert_eq!(said.len(), 1, "{:?}", answered.player_events);
 }
 
 /// Section 7 item 3: a menu whose container's chunk the restored region does not hold

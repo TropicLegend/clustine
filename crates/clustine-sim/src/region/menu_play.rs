@@ -14,6 +14,7 @@ use clustine_blocks::data::is_class;
 use clustine_data::{BlockClass, BlockState, ENTITY_TYPES, entity_types};
 use clustine_world::{BlockPos, EntityData, EntityField, EntityId, PlayerId};
 
+use super::containers::Container;
 use super::uses::distance_to_sqr;
 use super::{Knowledge, Region};
 use crate::api::{ClickKind, ItemStack, MenuKind, PlayerEvent, TickOutput};
@@ -262,18 +263,30 @@ impl Region {
     ) {
         match of {
             MenuOf::Block { at, other } => {
-                let halves = [Some(at), other];
-                for (index, pos) in halves.into_iter().enumerate() {
-                    let Some(pos) = pos else {
-                        continue;
-                    };
-                    let Some(mut container) = self.container_at(pos) else {
-                        continue;
-                    };
-                    let part =
-                        &slots[index * 27..(index * 27 + container.slots.len()).min(slots.len())];
-                    if container.slots != part {
+                // `CompoundContainer.setChanged` tells both halves, so the comparators of
+                // either read a change of the other's slots.
+                let halves: Vec<(BlockPos, Container)> = std::iter::once(at)
+                    .chain(other)
+                    .filter_map(|pos| Some((pos, self.container_at(pos)?)))
+                    .collect();
+                let mut start = 0;
+                let (mut changed, mut unchanged) = (Vec::new(), Vec::new());
+                for (pos, mut container) in halves {
+                    let end = (start + container.slots.len()).min(slots.len());
+                    let part = &slots[start..end];
+                    start = end;
+                    if container.slots == part {
+                        unchanged.push((pos, container));
+                    } else {
                         container.slots = part.to_vec();
+                        changed.push((pos, container));
+                    }
+                }
+                // Every half written before any is read again: the comparators of the
+                // half that did not change are told last, when they read the other's new
+                // slots, as the game's slot is set before `setChanged` tells both.
+                if !changed.is_empty() {
+                    for (pos, container) in changed.into_iter().chain(unchanged) {
                         self.set_container(pos, container, output);
                     }
                 }

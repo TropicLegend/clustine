@@ -260,7 +260,7 @@ overrides what it amends above it.
    healing whatever the client guessed meanwhile) and counts its openers again. Only a
    chunk not held closes a menu. This replaces section 6 item 1's "at the first tick
    after any restore": a menu is reported whole at the first tick for a vehicle's
-   container (the vehicle's chunk is loaded with it) and for one that has none, and at its
+   container (the vehicle's chunk is loaded with it) and for a menu with no container to wait for (the ender chest's slots are the player's), and, as the tests from the specification found the words unclear: nothing is said at the first tick of a player with no menu, whom the resync after a resume (item 7) answers, and at its
    chunk's load for a block's. The differential test of restores (`tests/stays.rs`,
    which compares a restored region's outputs with one that ran on, except the first
    tick's notes) also excepts these reports.

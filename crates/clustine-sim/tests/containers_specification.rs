@@ -966,7 +966,6 @@ fn an_ender_chest_sends_its_openers_as_a_chest_does() {
 /// call both halves', and each half's `setChanged` tells the comparators beside it
 /// (`updateNeighbourForOutputSignal`), so this one re-reads.
 #[test]
-#[ignore = "finding: a comparator behind a double chest's left half is not told when only the right half's slots change through the menu, and keeps reading 0"]
 fn a_comparator_reads_a_double_chest_as_fifty_four_slots() {
     let west = BOX;
     let east = BOX.offset(1, 0, 0);
@@ -1039,7 +1038,6 @@ fn a_hopper_filling_a_double_chests_right_half_is_read_behind_the_left_half() {
 /// into the left half's slots through the menu (brief 3.6, `CompoundContainer
 /// .setChanged`).
 #[test]
-#[ignore = "finding: a comparator behind a double chest's right half is not told when only the left half's slots change through the menu, and keeps reading 0"]
 fn a_comparator_behind_a_double_chests_right_half_reads_the_left_halfs_slots() {
     let west = BOX;
     let east = BOX.offset(1, 0, 0);
