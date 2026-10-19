@@ -136,7 +136,8 @@ impl Region {
     }
 
     /// `BlockBehaviour.triggerEvent` of the block `state` at `at`: a note block's note
-    /// and a bell's ring (`instruments.rs`); R5's pistons come here too.
+    /// and a bell's ring (`instruments.rs`); R5's pistons come here too, and N6's
+    /// chests and shulker boxes (`containers.rs`).
     fn trigger_event(
         &mut self,
         at: BlockPos,
@@ -147,6 +148,7 @@ impl Region {
     ) -> bool {
         self.instrument_event(at, state, kind, data, output)
             .or_else(|| self.piston_event(at, state, kind, data, output))
+            .or_else(|| self.container_event(at, state, kind, data))
             .unwrap_or(false)
     }
 

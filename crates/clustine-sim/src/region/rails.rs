@@ -66,6 +66,9 @@ impl clustine_blocks::BlockView for ReadOnly<'_> {
     fn analog_output(&mut self, at: BlockPos, state: BlockState) -> u8 {
         self.0.analog_output_at(at, state)
     }
+    fn trapped_chest_openers(&mut self, at: BlockPos) -> u8 {
+        self.0.trapped_chest_openers(at)
+    }
 }
 
 /// `RailShape`.
@@ -324,11 +327,14 @@ impl Region {
     }
 
     /// `getAnalogOutputSignal` of the block `state` at `pos`, as a comparator reads it:
-    /// a detector rail's from the carts on it (`minecarts.rs`), any other block's from
-    /// its state.
+    /// a detector rail's from the carts on it (`minecarts.rs`), a container's from what
+    /// it holds (`containers.rs`), any other block's from its state.
     pub(crate) fn analog_output_at(&self, pos: BlockPos, state: BlockState) -> u8 {
         if is_class(state, BlockClass::DetectorRailBlock) {
             return self.detector_rail_output(pos, state);
+        }
+        if let Some(signal) = self.container_output(pos, state) {
+            return signal;
         }
         signal::analog_output(state).unwrap_or(0)
     }

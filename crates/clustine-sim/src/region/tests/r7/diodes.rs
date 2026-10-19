@@ -276,7 +276,7 @@ fn a_comparators_output_is_kept_in_its_block_entity_and_said_when_it_changes() {
         .events
         .iter()
         .filter_map(|event| match event {
-            RegionEvent::BlockEntityChanged { position, data } if *position == DIODE => {
+            RegionEvent::BlockEntityChanged { position, data, .. } if *position == DIODE => {
                 Some(output_signal(data))
             }
             _ => None,

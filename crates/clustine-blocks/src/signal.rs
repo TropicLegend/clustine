@@ -192,9 +192,14 @@ pub fn own_signal(state: BlockState) -> u8 {
     0
 }
 
-/// `ownSignal` of the block `state` at `pos`: as [`own_signal`], and a powered
-/// comparator's the output its block entity keeps (`ComparatorBlock.getOutputSignal`).
+/// `ownSignal` of the block `state` at `pos`: as [`own_signal`], a powered
+/// comparator's the output its block entity keeps (`ComparatorBlock.getOutputSignal`),
+/// and a trapped chest's the count of its openers, at most 15
+/// (`TrappedChestBlock.getSignal`).
 pub fn own_signal_at<V: BlockView + ?Sized>(view: &mut V, state: BlockState, pos: BlockPos) -> u8 {
+    if is_class(state, BlockClass::TrappedChestBlock) {
+        return view.trapped_chest_openers(pos).min(MAX_SIGNAL);
+    }
     if is_class(state, BlockClass::ComparatorBlock) {
         return if flag(state, "powered") {
             view.comparator_output(pos).min(MAX_SIGNAL)
@@ -335,6 +340,15 @@ pub fn block_direct_signal<V: BlockView + ?Sized>(
     // A plate powers the block it lies on, which asks it upwards.
     if let Some(signal) = plate_signal(state) {
         return if direction == Face::Up { signal } else { 0 };
+    }
+    // A trapped chest powers the block below it, which asks it upwards
+    // (`TrappedChestBlock.getDirectSignal`).
+    if is_class(state, BlockClass::TrappedChestBlock) {
+        return if direction == Face::Up {
+            own_signal_at(view, state, pos)
+        } else {
+            0
+        };
     }
     // A pressed detector rail powers the block below it, which asks it upwards.
     if is_class(state, BlockClass::DetectorRailBlock) {

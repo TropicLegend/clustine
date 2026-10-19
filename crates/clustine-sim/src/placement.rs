@@ -41,6 +41,20 @@ pub trait Blocks {
     fn comparator_output(&self, _at: BlockPos) -> u8 {
         0
     }
+
+    /// Whether the caller holds the chunk of `at`, as a chest asks before it pairs with
+    /// a chest there: two chests across a line stay single
+    /// (`docs/groundwork/n6-plan.md`, section 10 item 2). A caller of one world holds
+    /// everything it reads.
+    fn holds(&self, _at: BlockPos) -> bool {
+        true
+    }
+
+    /// How many players have the trapped chest at `at` open, which is its signal; 0
+    /// where the caller keeps no block entities.
+    fn trapped_chest_openers(&self, _at: BlockPos) -> u8 {
+        0
+    }
 }
 
 /// A click on a block with the use button.

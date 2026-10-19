@@ -41,6 +41,11 @@ impl<'a> World<'a> {
     pub(crate) fn get(&self, pos: BlockPos) -> BlockState {
         self.known(pos).unwrap_or(data::AIR)
     }
+
+    /// Whether the caller holds the chunk of `pos` ([`Blocks::holds`]).
+    pub(crate) fn holds(&self, pos: BlockPos) -> bool {
+        self.blocks.holds(pos)
+    }
 }
 
 /// The blocks of a placement as the shared rules of blocks (`clustine-blocks`) read
@@ -75,6 +80,10 @@ impl clustine_blocks::BlockView for View<'_, '_> {
 
     fn comparator_output(&mut self, at: BlockPos) -> u8 {
         self.0.blocks.comparator_output(at)
+    }
+
+    fn trapped_chest_openers(&mut self, at: BlockPos) -> u8 {
+        self.0.blocks.trapped_chest_openers(at)
     }
 }
 

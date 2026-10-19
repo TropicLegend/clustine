@@ -1003,8 +1003,15 @@ pub enum RegionEvent {
     /// The block entity at the position has new data, the bytes of one NBT compound as
     /// [`clustine_world::BlockEntity`] keeps them; empty where the game makes a fresh
     /// one for a block of the same kind (`docs/adr/0026-redstone.md`, section 6). It
-    /// comes in its place among the tick's [`Self::BlockChanged`].
-    BlockEntityChanged { position: BlockPos, data: Vec<u8> },
+    /// comes in its place among the tick's [`Self::BlockChanged`]. `seen` says whether
+    /// the edges are to be told: a container's slots and openers are durable as any
+    /// data is, but the game never sends them to clients, so neither are the edges
+    /// (`docs/groundwork/n6-plan.md`, section 6 item 12).
+    BlockEntityChanged {
+        position: BlockPos,
+        data: Vec<u8>,
+        seen: bool,
+    },
     /// A block broke, which clients show with its sound and bits (the game's level
     /// event 2001). The block itself changes by a [`Self::BlockChanged`] beside it.
     /// `breaker` is the player who broke it, whose client shows it already.

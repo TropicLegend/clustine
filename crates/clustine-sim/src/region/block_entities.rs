@@ -26,6 +26,8 @@ use clustine_world::{BlockPos, ChunkPos, InChunk};
 use std::collections::BTreeMap;
 
 use super::Region;
+use super::containers::read_openers;
+use super::shulker_boxes::Lid;
 use crate::api::TickOutput;
 
 /// How many ticks a bell shakes after a ring (`BellBlockEntity.DURATION`).
@@ -40,6 +42,9 @@ pub(crate) enum Typed {
     /// `PistonMovingBlockEntity` (R5): a block on its way, durable as the game saves
     /// it.
     MovingPiston(Moving),
+    /// `ShulkerBoxBlockEntity`'s lid (N6), in memory as the game's is; its slots and
+    /// openers are in the data (`containers.rs`, `shulker_boxes.rs`).
+    ShulkerBox(Lid),
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -75,13 +80,16 @@ impl Typed {
         if is_class(state, BlockClass::MovingPistonBlock) {
             return Some(Typed::MovingPiston(read_moving(data)));
         }
+        if is_class(state, BlockClass::ShulkerBoxBlock) {
+            return Some(Typed::ShulkerBox(Lid::loaded(read_openers(data) > 0)));
+        }
         None
     }
 
     /// Whether the kind has a ticker (`EntityBlock.getTicker` on the server).
     fn ticks(self) -> bool {
         match self {
-            Typed::Bell(_) | Typed::MovingPiston(_) => true,
+            Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => true,
             Typed::Comparator(_) => false,
         }
     }
@@ -565,6 +573,9 @@ impl Region {
                 Some(Typed::MovingPiston(_)) if is_class(state, BlockClass::MovingPistonBlock) => {
                     self.moving_piston_tick(pos, output);
                 }
+                Some(Typed::ShulkerBox(_)) if is_class(state, BlockClass::ShulkerBoxBlock) => {
+                    self.shulker_box_tick(pos, state, output);
+                }
                 _ => {}
             }
         }
@@ -576,7 +587,7 @@ impl Region {
     pub(crate) fn bell(&self, pos: BlockPos) -> Option<Bell> {
         match self.block_entities.typed.get(&pos)? {
             Typed::Bell(bell) => Some(*bell),
-            Typed::Comparator(_) | Typed::MovingPiston(_) => None,
+            Typed::Comparator(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => None,
         }
     }
 
@@ -588,7 +599,7 @@ impl Region {
         if let Some(typed) = self.block_entities.typed.get(&pos) {
             return match typed {
                 Typed::Comparator(output) => *output,
-                Typed::Bell(_) | Typed::MovingPiston(_) => 0,
+                Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {
@@ -686,6 +697,32 @@ impl Region {
         if saved(before) != saved(moving) {
             self.set_block_entity_data(pos, moving_data(moving), output);
         }
+    }
+
+    /// The lid of the shulker box at `pos`, if its block entity is there.
+    pub(crate) fn shulker_lid(&self, pos: BlockPos) -> Option<Lid> {
+        match self.block_entities.typed.get(&pos)? {
+            Typed::ShulkerBox(lid) => Some(*lid),
+            _ => None,
+        }
+    }
+
+    pub(super) fn shulker_lid_mut(&mut self, pos: BlockPos) -> Option<&mut Lid> {
+        match self.block_entities.typed.get_mut(&pos)? {
+            Typed::ShulkerBox(lid) => Some(lid),
+            _ => None,
+        }
+    }
+
+    /// The positions of the shulker boxes' block entities of the chunk at `position`,
+    /// in order.
+    pub(super) fn shulker_boxes_in(&self, position: ChunkPos) -> Vec<BlockPos> {
+        self.block_entities
+            .typed
+            .iter()
+            .filter(|(pos, typed)| pos.chunk() == position && matches!(typed, Typed::ShulkerBox(_)))
+            .map(|(pos, _)| *pos)
+            .collect()
     }
 
     /// The game's `removeBlockEntityIfSame` and `setRemoved`: the typed block entity

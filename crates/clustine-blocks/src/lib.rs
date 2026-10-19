@@ -83,6 +83,13 @@ pub trait BlockView {
     fn analog_output(&mut self, _at: BlockPos, state: BlockState) -> u8 {
         signal::analog_output(state).unwrap_or(0)
     }
+
+    /// How many players have the trapped chest at `at` open
+    /// (`ChestBlockEntity.getOpenCount`), which is its signal; 0 for a view that keeps
+    /// no block entities.
+    fn trapped_chest_openers(&mut self, _at: BlockPos) -> u8 {
+        0
+    }
 }
 
 /// The callers whose copies of these rules disagreed before they were made one, each

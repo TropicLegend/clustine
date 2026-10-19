@@ -49,6 +49,9 @@ pub(crate) const UPDATE_SUPPRESS_DROPS: u32 = 32;
 /// `Block.UPDATE_MOVE_BY_PISTON`: the change is a piston's move. A kept update keeps it
 /// among its flags, for the `movedByPiston` of the `neighborChanged` it makes.
 pub(crate) const UPDATE_MOVE_BY_PISTON: u32 = 64;
+/// `Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`: a container replaced does not spill what
+/// it holds (`BlockEntity.preRemoveSideEffects` is not run).
+pub(crate) const UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS: u32 = 256;
 /// `Block.UPDATE_ALL`: what a player's placing and breaking and `destroyBlock` use.
 pub(crate) const UPDATE_ALL: u32 = UPDATE_NEIGHBORS | UPDATE_CLIENTS;
 
@@ -163,6 +166,8 @@ impl Region {
         if is_class(old, BlockClass::MovingPistonBlock) && !same_block(old, state) {
             self.moving_piston_replaced(pos, flags, output);
         }
+        // What a container that goes holds, read before its data goes with it.
+        let spilled = self.container_to_spill(pos, old, state, flags);
         let (x, z) = pos.in_chunk();
         let Some(chunk) = self.chunks.get_mut(&pos.chunk()) else {
             return false;
@@ -191,6 +196,11 @@ impl Region {
         // The typed block entity there goes with a block of another kind, and a new
         // one comes with a block that keeps one (`block_entities.rs`).
         self.block_entity_changed(pos, old, state);
+        // `BlockEntity.preRemoveSideEffects`, after the chunk's set and before
+        // `affectNeighborsAfterRemoval`: a container spills (`containers.rs`).
+        if let Some(container) = spilled {
+            self.spill_container(pos, container, output);
+        }
         // `affectNeighborsAfterRemoval` of the block that went, inside the chunk's set
         // in the game, before the new block's `onPlace`: only where the block is
         // another and the neighbours are to be told, or a piston moved it.
@@ -198,6 +208,7 @@ impl Region {
         if !same_block(old, state) && (flags & UPDATE_NEIGHBORS != 0 || moved_by_piston) {
             self.redstone_after_removal(pos, old, moved_by_piston, output);
             self.piston_after_removal(pos, old, output);
+            self.container_after_removal(pos, old, output);
         }
         // Wire placed works out its power and tells the blocks around it
         // (`RedStoneWireBlock.onPlace`).
@@ -280,6 +291,18 @@ impl Region {
         data: Vec<u8>,
         output: &mut TickOutput,
     ) -> bool {
+        self.set_block_entity_data_as(pos, data, true, output)
+    }
+
+    /// [`Self::set_block_entity_data`], said to the edges only where `seen`: a
+    /// container's data is committed and never sent (`containers.rs`).
+    pub(crate) fn set_block_entity_data_as(
+        &mut self,
+        pos: BlockPos,
+        data: Vec<u8>,
+        seen: bool,
+        output: &mut TickOutput,
+    ) -> bool {
         let Some(chunk) = self.chunks.get_mut(&pos.chunk()) else {
             return false;
         };
@@ -293,6 +316,7 @@ impl Region {
         output.events.push(RegionEvent::BlockEntityChanged {
             position: pos,
             data,
+            seen,
         });
         true
     }
@@ -639,7 +663,8 @@ impl Region {
             return;
         };
         let new = update_shape(&mut RegionView(self), old, pos, direction, neighbour);
-        if new == old {
+        // A chest does not join a chest across a line (`containers.rs`).
+        if new == old || self.keeps_chest_single(pos, direction, old, new) {
             return;
         }
         if new.props().is_air() {
@@ -1050,6 +1075,10 @@ impl BlockView for RegionView<'_> {
 
     fn analog_output(&mut self, at: BlockPos, state: BlockState) -> u8 {
         self.0.analog_output_at(at, state)
+    }
+
+    fn trapped_chest_openers(&mut self, at: BlockPos) -> u8 {
+        self.0.trapped_chest_openers(at)
     }
 }
 

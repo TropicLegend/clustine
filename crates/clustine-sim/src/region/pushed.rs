@@ -38,6 +38,7 @@ use super::attached::is_block_attached;
 use super::block_entities::Moving;
 use super::items::{Memory, View};
 use crate::api::{TickOutput, Tracked};
+use crate::physics::Vec3;
 use crate::physics::aabb::Aabb;
 use crate::physics::body::{Body, Movement};
 use crate::physics::item::{Item, move_guarded_as};
@@ -259,6 +260,32 @@ impl Region {
                 chunk,
                 output,
             );
+            self.write_pushed(&record, pushed, chunk, output);
+        }
+    }
+
+    /// `Entity.move(MoverType.SHULKER_BOX, by)` of what the region ticks whose boxes meet
+    /// `bounds`, as a shulker box's lid opening moves it (`shulker_boxes.rs`): a plain
+    /// move, with none of a piston's limits, of items and falling blocks, and a
+    /// block-attached entity popped as any move of it pops it. What the blocks along
+    /// the way would do to what moves is not done.
+    pub(super) fn push_by_shulker_box(&mut self, bounds: &Aabb, by: Vec3, output: &mut TickOutput) {
+        for (record, chunk) in self.pushable_in(bounds) {
+            if is_block_attached(&record.data) {
+                self.moved_attached(record.key, by, output);
+                continue;
+            }
+            let Some(mut pushed) = self.pushed_of(&record, chunk) else {
+                continue;
+            };
+            let no_physics = matches!(&pushed, Pushed::Item(item) if item.no_physics);
+            let view = View {
+                region: self,
+                home: chunk,
+            };
+            let body = pushed.body_mut();
+            move_guarded_as(body, &view, no_physics, by, None);
+            body.movements.clear();
             self.write_pushed(&record, pushed, chunk, output);
         }
     }

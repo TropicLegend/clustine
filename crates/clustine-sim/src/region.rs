@@ -52,6 +52,7 @@ mod redstone;
 mod reshape;
 mod riders;
 mod riding;
+mod shulker_boxes;
 mod stands;
 mod ticks;
 mod tnt;
@@ -2591,6 +2592,9 @@ impl Region {
         for position in loaded {
             self.take_up_events(position);
             self.take_up_block_entities(position);
+            // A shulker box has no recheck: its openers are counted again as it loads
+            // (`shulker_boxes.rs`).
+            self.recount_shulker_boxes(position, output);
             self.take_up_entities(position, false, Some(&mut *output));
         }
         // Border copies, with the chunks and before the region works out which chunks
@@ -2751,6 +2755,14 @@ impl placement::Blocks for Readable<'_> {
 
     fn comparator_output(&self, at: BlockPos) -> u8 {
         self.0.comparator_output(at)
+    }
+
+    fn holds(&self, at: BlockPos) -> bool {
+        self.0.chunks.contains_key(&at.chunk())
+    }
+
+    fn trapped_chest_openers(&self, at: BlockPos) -> u8 {
+        self.0.trapped_chest_openers(at)
     }
 }
 
@@ -2961,6 +2973,7 @@ mod tests {
     mod arrivals;
     mod block_updates;
     mod boats;
+    mod containers;
     mod diodes;
     mod effects;
     mod entities;

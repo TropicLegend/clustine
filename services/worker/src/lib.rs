@@ -753,6 +753,11 @@ impl EdgeLink {
                 visible.push(event.clone());
                 continue;
             }
+            // A container's data is never sent to clients, so the edges are not told
+            // of it (`docs/groundwork/n6-plan.md`, section 6 item 12).
+            if matches!(event, RegionEvent::BlockEntityChanged { seen: false, .. }) {
+                continue;
+            }
             let [current, previous] = event.chunks();
             let visible_now = self.watches(current);
             let visible_before = self.watches(previous);
@@ -2618,7 +2623,7 @@ impl RegionRunner {
                 RegionEvent::BlockChanged {
                     position, state, ..
                 } => Some(Change::Block(*position, *state)),
-                RegionEvent::BlockEntityChanged { position, data } => {
+                RegionEvent::BlockEntityChanged { position, data, .. } => {
                     Some(Change::BlockEntity(*position, data.clone()))
                 }
                 _ => None,

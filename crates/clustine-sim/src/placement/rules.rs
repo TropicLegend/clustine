@@ -645,15 +645,19 @@ fn chest(block: BlockState, context: &Context) -> BlockState {
 }
 
 /// `ChestBlock.candidatePartnerFacing`: the facing of the chest towards `towards`, if
-/// it is single and one `block` pairs with.
+/// it is single and one `block` pairs with. A chest in a chunk the placing region does
+/// not hold is none: two chests across a line stay single, as a sneaking player places
+/// one (`docs/groundwork/n6-plan.md`, section 10 item 2).
 fn chest_partner_facing(
     block: BlockState,
     world: &super::context::World,
     target: BlockPos,
     towards: Dir,
 ) -> Option<Dir> {
-    let other = world.get(towards.relative(target));
-    if clustine_blocks::growth::chest_can_connect_to(block, other)
+    let at = towards.relative(target);
+    let other = world.get(at);
+    if world.holds(at)
+        && clustine_blocks::growth::chest_can_connect_to(block, other)
         && other.property("type") == Some("single")
     {
         facing(other)

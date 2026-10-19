@@ -514,7 +514,8 @@ fn a_comparator_reads_a_cake_through_a_block_and_keeps_its_output_durably() {
         said,
         [&RegionEvent::BlockEntityChanged {
             position: at,
-            data: data(14)
+            data: data(14),
+            seen: true,
         }]
     );
 

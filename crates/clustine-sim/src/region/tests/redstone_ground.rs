@@ -402,7 +402,8 @@ fn a_block_entitys_data_is_said_in_its_place_among_the_changes() {
             },
             &RegionEvent::BlockEntityChanged {
                 position: chest,
-                data: b"items".to_vec()
+                data: b"items".to_vec(),
+                seen: true,
             },
         ]
     );

@@ -3052,7 +3052,7 @@ impl Fanout {
                     self.show_changes(changed).await;
                 }
             }
-            RegionEvent::BlockEntityChanged { position, data } => {
+            RegionEvent::BlockEntityChanged { position, data, .. } => {
                 self.change_block_entity(position, data);
             }
             RegionEvent::BlockEvent {

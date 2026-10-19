@@ -501,6 +501,11 @@ impl Region {
         if self.fire_block_tick(pos, state, output) {
             return;
         }
+        // A chest's, a barrel's or an ender chest's recheck of its openers
+        // (`containers.rs`).
+        if self.container_tick(pos, state, output) {
+            return;
+        }
         // `SpeleothemBlock.tick`: a stalagmite that its support left goes, with its
         // drops; a stalactite falls, from the block ticked down to its tip.
         if is_class(state, BlockClass::SpeleothemBlock) {
