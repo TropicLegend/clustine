@@ -262,6 +262,40 @@ pub(crate) fn with_openers(data: &[u8], openers: u32) -> Vec<u8> {
     write_compound(entries, openers)
 }
 
+/// The whole number `name` of `data`, a block entity's data, if it keeps one: a
+/// hopper's `TransferCooldown` (`hoppers.rs`).
+pub(crate) fn read_int(data: &[u8], name: &str) -> Option<i32> {
+    let (&TAG_COMPOUND, rest) = data.split_first()? else {
+        return None;
+    };
+    let mut found = None;
+    let _ = each_raw(rest, |tag, entry, payload| {
+        if tag == TAG_INT && entry == name.as_bytes() {
+            found = int(payload);
+        }
+    });
+    found
+}
+
+/// `data`, a block entity's data, with the whole number `name` set to `value` and every
+/// other entry as it was: what a hopper's cooldown changes.
+pub(crate) fn with_int(data: &[u8], name: &str, value: i32) -> Vec<u8> {
+    let mut entries: Entries = Vec::new();
+    if let Some((&TAG_COMPOUND, rest)) = data.split_first() {
+        let _ = each_raw(rest, |tag, entry, payload| {
+            if entry != name.as_bytes() {
+                entries.push((tag, entry.to_vec(), payload.to_vec()));
+            }
+        });
+    }
+    entries.push((
+        TAG_INT,
+        name.as_bytes().to_vec(),
+        value.to_be_bytes().to_vec(),
+    ));
+    write_compound(entries, 0)
+}
+
 /// The payload of an `Items` list of `filled`: compounds of `Slot`, `id` and `count`, the
 /// count left out where it is one, as `ItemStackWithSlot.CODEC` writes them.
 fn items_payload(filled: &[(usize, ItemStack)]) -> Vec<u8> {
@@ -440,7 +474,7 @@ impl Region {
 
     /// The data of the block entity at `pos`, in a chunk loaded: what the region may
     /// change.
-    fn own_block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
+    pub(super) fn own_block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
         let chunk = self.chunks.get(&pos.chunk())?;
         let (x, z) = pos.in_chunk();
         chunk

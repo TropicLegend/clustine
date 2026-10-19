@@ -11,7 +11,7 @@ use clustine_world::BlockPos;
 
 use super::{Damage, Living};
 use crate::physics::body::Body;
-use crate::physics::item::{Draws, Inside, check_inside_blocks, tick_movements};
+use crate::physics::item::{Draws, Inside, check_inside_blocks, handed_back, tick_movements};
 use crate::physics::{Vec3, World};
 
 /// The effects of blocks a body is in, in the game's order of applying them
@@ -94,11 +94,14 @@ impl<W: World + ?Sized> Inside for LivingInside<'_, W> {
         !self.living.alive()
     }
 
-    fn met(&mut self, state: BlockState, _pos: BlockPos, step: i32, block: bool, fluid: bool) {
+    fn met(&mut self, state: BlockState, pos: BlockPos, step: i32, block: bool, fluid: bool) {
         if block {
             self.collector.advance_step(step);
             let in_block = self.world.state(self.living.body.block_position());
             self.living.entity_inside(state, in_block, self.collector);
+            if handed_back(state) {
+                self.living.inside.push(pos);
+            }
         }
         if fluid {
             self.collector.advance_step(step);

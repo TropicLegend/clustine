@@ -23,9 +23,9 @@
 //! record, as at the game's load.
 //!
 //! Named differences (`docs/groundwork/n5-plan.md`, sections 5 and 7):
-//! - A hopper cart is placed and rolls, inert: it takes nothing in (decision 2, until
-//!   N6e). Containers do not open (decision 3): a click on a chest or hopper cart does
-//!   nothing. A TNT cart primes and explodes as the game's (`tnt.rs`, step N6c).
+//! - A hopper cart takes in what lies about it and what the container above it holds
+//!   after its tick, and an activator rail switches it off (`hoppers.rs`, step N6e). A
+//!   TNT cart primes and explodes as the game's (`tnt.rs`, step N6c).
 //! - Carts tick in the order of their keys, so that three carts meeting push one
 //!   another in another order than the game's entity list.
 //! - Players are not in copies, and the region gives the physics no players' boxes yet
@@ -38,7 +38,8 @@
 //! - A cart's fire ticks change nothing a server or a client sees (it never calls
 //!   `baseTick`, the brief's finding 2): they are not kept, and a burning cart that rolls
 //!   into water makes no sound of going out. Fire and lava still hurt it, and break it.
-//! - A cart does not press pressure plates or tripwire (`pressed.rs` counts players).
+//! - A cart presses plates and tripwire where it is after its moves, not along them,
+//!   as it meets them only there (`cart_effects_from_blocks`).
 //! - A sprinting hit's push of a cart that survives it is not made: the hit carries no
 //!   yaw, and every player is a creative one, whose hit breaks the cart at once.
 //! - The rider's keys reach a cart through [`Region::rider_intent`], which knows no
@@ -516,6 +517,17 @@ impl Region {
                 cart.removed = true;
             }
         }
+        if !cart.removed && cart.kind == entity_types::HOPPER_MINECART {
+            // `MinecartHopper.tick` after `super.tick()`: `tryConsumeItems`.
+            self.sync_cart(&cart, position);
+            self.hopper_cart_consume(
+                key,
+                position,
+                cart.body.position,
+                cart.body.bounds(),
+                output,
+            );
+        }
         if !cart.removed && cart.is_furnace() {
             // `MinecartFurnace.tick` after `super.tick()`.
             if cart.fuel > 0 {
@@ -823,8 +835,10 @@ impl Region {
     /// `activateMinecart(level, x, y, z, powered)` of a cart on an activator rail, every
     /// tick it is on one: a plain cart on a powered one lets its riders off, and rocks,
     /// its damage set to 50, each time its wobble has run down; a TNT cart on a powered
-    /// one is primed if it is not yet (`MinecartTNT.activateMinecart`). Chest, furnace
-    /// and hopper carts do nothing (a hopper cart's switching off is N6e's).
+    /// one is primed if it is not yet (`MinecartTNT.activateMinecart`); a hopper cart is
+    /// switched off on a powered one and on on one that is not
+    /// (`MinecartHopper.activateMinecart`, `hoppers.rs`). Chest and furnace carts do
+    /// nothing.
     fn activate_minecart(
         &mut self,
         cart: &mut Cart,
@@ -832,6 +846,10 @@ impl Region {
         chunk: ChunkPos,
         output: &mut TickOutput,
     ) {
+        if cart.kind == entity_types::HOPPER_MINECART {
+            self.hopper_cart_activated(cart.key, chunk, powered);
+            return;
+        }
         if cart.kind == entity_types::TNT_MINECART && powered {
             self.sync_cart(cart, chunk);
             if self.tnt_cart_fuse(cart.key).is_some_and(|fuse| fuse < 0) {
@@ -931,9 +949,20 @@ impl Region {
             }
         }
         let mut queued = Vec::new();
+        let toucher = super::pressed::Toucher {
+            key: cart.key,
+            bounds: cart.body.bounds(),
+            living: false,
+        };
         for (state, pos, block, fluid) in met {
             if block {
-                if is_class(state, BlockClass::DetectorRailBlock) {
+                if is_class(state, BlockClass::BasePressurePlateBlock)
+                    || is_class(state, BlockClass::TripWireBlock)
+                {
+                    // `entityInside` of a plate or tripwire, which counts the cart where
+                    // it is (`pressed.rs`).
+                    self.entity_touched(pos, &toucher, output);
+                } else if is_class(state, BlockClass::DetectorRailBlock) {
                     // `DetectorRailBlock.entityInside`: any entity, but it looks for
                     // carts.
                     if self.ticks_chunk(pos.chunk()) && !flag(state, "powered") {
@@ -1543,13 +1572,15 @@ pub(crate) fn detector_search_box(pos: BlockPos) -> Aabb {
 }
 
 /// What of a cart's data a commit carries: what it shows, whether it is flipped, what
-/// it holds, a furnace cart's push and whether a TNT cart is primed.
+/// it holds, a furnace cart's push, whether a TNT cart is primed and whether a hopper
+/// cart is switched on.
 type CommittedParts<'a> = (
     Option<u16>,
     Option<i32>,
     bool,
     &'a Contents,
     [Double; 2],
+    bool,
     bool,
 );
 
@@ -1564,6 +1595,7 @@ fn committed_parts(data: &EntityData) -> Option<CommittedParts<'_>> {
             contents,
             push,
             fuse,
+            enabled,
             ..
         } => Some((
             *display,
@@ -1572,6 +1604,7 @@ fn committed_parts(data: &EntityData) -> Option<CommittedParts<'_>> {
             contents,
             *push,
             *fuse >= 0,
+            *enabled,
         )),
         _ => None,
     }

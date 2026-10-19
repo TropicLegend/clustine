@@ -25,7 +25,7 @@ use clustine_blocks::data::{has_water, in_tag, is_class};
 use clustine_blocks::fluid::{FluidState, concrete_of};
 use clustine_blocks::survive::can_survive;
 use clustine_data::{BlockClass, BlockState, EntityTypeInfo, blocks, entity_types};
-use clustine_world::{BlockPos, ChunkPos, Entity, EntityChange, EntityData, EntityField};
+use clustine_world::{BlockPos, ChunkPos, Entity, EntityChange, EntityData, EntityField, EntityId};
 
 use super::Region;
 use super::entities::insecure_uuid;
@@ -82,9 +82,11 @@ fn damaged_anvil(state: BlockState) -> Option<BlockState> {
 }
 
 /// A falling block's part in the walk through the blocks it touches: a cobweb and
-/// powder snow hold it on its next move, as `makeStuckInBlock` does.
+/// powder snow hold it on its next move, as `makeStuckInBlock` does; the plates,
+/// tripwire and detector rails it meets are handed back to the region.
 struct FallingInside<'a> {
     body: &'a mut Body,
+    inside: Vec<BlockPos>,
 }
 
 impl Inside for FallingInside<'_> {
@@ -96,9 +98,12 @@ impl Inside for FallingInside<'_> {
         false
     }
 
-    fn met(&mut self, state: BlockState, _pos: BlockPos, _step: i32, block: bool, _fluid: bool) {
+    fn met(&mut self, state: BlockState, pos: BlockPos, _step: i32, block: bool, _fluid: bool) {
         if !block {
             return;
+        }
+        if crate::physics::item::handed_back(state) {
+            self.inside.push(pos);
         }
         let hold = if is_class(state, BlockClass::WebBlock) {
             [0.25, f64::from(0.05_f32), 0.25]
@@ -298,11 +303,13 @@ impl Region {
         body
     }
 
-    /// `applyEffectsFromBlocks` of a falling block whose moves were `movements`: slime
-    /// under it slows it, lit redstone ore under it lights, and a cobweb or powder snow
-    /// on its way holds it.
+    /// `applyEffectsFromBlocks` of a falling block or of primed TNT, the entity `key`,
+    /// whose moves were `movements`: slime under it slows it, lit redstone ore under it
+    /// lights, a cobweb or powder snow on its way holds it, and the plates and tripwire
+    /// it meets count it where it is (`pressed.rs`).
     pub(super) fn falling_effects(
         &mut self,
+        key: EntityId,
         body: &mut Body,
         movements: &[Movement],
         position: ChunkPos,
@@ -327,11 +334,24 @@ impl Region {
                 ore = Some(on);
             }
         }
-        check_inside_blocks(&view, &mut FallingInside { body }, movements);
+        let mut inside = FallingInside {
+            body,
+            inside: Vec::new(),
+        };
+        check_inside_blocks(&view, &mut inside, movements);
+        let met = inside.inside;
         if let Some(ore) = ore
             && let Some(state) = self.own_block(ore)
         {
             self.light_redstone_ore(ore, state, output);
+        }
+        let toucher = super::pressed::Toucher {
+            key,
+            bounds: body.bounds(),
+            living: false,
+        };
+        for pos in met {
+            self.entity_touched(pos, &toucher, output);
         }
     }
 
@@ -411,7 +431,7 @@ impl Region {
         }
         // `applyEffectsFromBlocks`.
         let movements = tick_movements(&mut body);
-        self.falling_effects(&mut body, &movements, position, output);
+        self.falling_effects(key, &mut body, &movements, position, output);
         // A move into a chunk the region does not have loaded ends the tick here: the
         // block is sent, and lands, where it lands, in the region it went to
         // (`arrivals.rs`).

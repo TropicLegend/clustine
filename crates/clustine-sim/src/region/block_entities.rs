@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 
 use super::Region;
 use super::containers::read_openers;
+use super::hoppers::Timer;
 use super::shulker_boxes::Lid;
 use crate::api::TickOutput;
 
@@ -45,6 +46,9 @@ pub(crate) enum Typed {
     /// `ShulkerBoxBlockEntity`'s lid (N6), in memory as the game's is; its slots and
     /// openers are in the data (`containers.rs`, `shulker_boxes.rs`).
     ShulkerBox(Lid),
+    /// `HopperBlockEntity`'s cooldown and the tick it last ticked in (N6e); its slots
+    /// are in the data, and its cooldown too (`hoppers.rs`).
+    Hopper(Timer),
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -83,13 +87,18 @@ impl Typed {
         if is_class(state, BlockClass::ShulkerBoxBlock) {
             return Some(Typed::ShulkerBox(Lid::loaded(read_openers(data) > 0)));
         }
+        if is_class(state, BlockClass::HopperBlock) {
+            return Some(Typed::Hopper(Timer::loaded(data)));
+        }
         None
     }
 
     /// Whether the kind has a ticker (`EntityBlock.getTicker` on the server).
     fn ticks(self) -> bool {
         match self {
-            Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => true,
+            Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) | Typed::Hopper(_) => {
+                true
+            }
             Typed::Comparator(_) => false,
         }
     }
@@ -576,6 +585,9 @@ impl Region {
                 Some(Typed::ShulkerBox(_)) if is_class(state, BlockClass::ShulkerBoxBlock) => {
                     self.shulker_box_tick(pos, state, output);
                 }
+                Some(Typed::Hopper(_)) if is_class(state, BlockClass::HopperBlock) => {
+                    self.hopper_tick(pos, state, output);
+                }
                 _ => {}
             }
         }
@@ -587,7 +599,10 @@ impl Region {
     pub(crate) fn bell(&self, pos: BlockPos) -> Option<Bell> {
         match self.block_entities.typed.get(&pos)? {
             Typed::Bell(bell) => Some(*bell),
-            Typed::Comparator(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => None,
+            Typed::Comparator(_)
+            | Typed::MovingPiston(_)
+            | Typed::ShulkerBox(_)
+            | Typed::Hopper(_) => None,
         }
     }
 
@@ -599,7 +614,10 @@ impl Region {
         if let Some(typed) = self.block_entities.typed.get(&pos) {
             return match typed {
                 Typed::Comparator(output) => *output,
-                Typed::Bell(_) | Typed::MovingPiston(_) | Typed::ShulkerBox(_) => 0,
+                Typed::Bell(_)
+                | Typed::MovingPiston(_)
+                | Typed::ShulkerBox(_)
+                | Typed::Hopper(_) => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {
@@ -710,6 +728,21 @@ impl Region {
     pub(super) fn shulker_lid_mut(&mut self, pos: BlockPos) -> Option<&mut Lid> {
         match self.block_entities.typed.get_mut(&pos)? {
             Typed::ShulkerBox(lid) => Some(lid),
+            _ => None,
+        }
+    }
+
+    /// The cooldown of the hopper at `pos`, if its block entity is there.
+    pub(crate) fn hopper_timer(&self, pos: BlockPos) -> Option<Timer> {
+        match self.block_entities.typed.get(&pos)? {
+            Typed::Hopper(timer) => Some(*timer),
+            _ => None,
+        }
+    }
+
+    pub(super) fn hopper_timer_mut(&mut self, pos: BlockPos) -> Option<&mut Timer> {
+        match self.block_entities.typed.get_mut(&pos)? {
+            Typed::Hopper(timer) => Some(timer),
             _ => None,
         }
     }

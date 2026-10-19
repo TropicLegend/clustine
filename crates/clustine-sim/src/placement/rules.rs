@@ -35,6 +35,9 @@ pub(crate) enum Rule {
     AwayFromLook,
     /// `facing` the nearest looking direction: observers.
     TowardsLook,
+    /// `facing` into the clicked block from the side, down from a top or a bottom:
+    /// hoppers (`HopperBlock.getStateForPlacement`).
+    Hopper,
     EndRod,
     LightningRod,
     Stairs,
@@ -113,6 +116,7 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
         C::AnvilBlock => Rule::Anvil,
         C::BarrelBlock | C::DispenserBlock | C::PistonBaseBlock => Rule::AwayFromLook,
         C::ObserverBlock => Rule::TowardsLook,
+        C::HopperBlock => Rule::Hopper,
         C::EndRodBlock => Rule::EndRod,
         C::LightningRodBlock => Rule::LightningRod,
         C::StairBlock => Rule::Stairs,
@@ -225,6 +229,15 @@ fn rule_state(rule: Rule, block: BlockState, context: &Context) -> Option<BlockS
         Rule::Anvil => set(block, "facing", horizontal.clockwise().name()),
         Rule::AwayFromLook => set(block, "facing", context.nearest_looking().opposite().name()),
         Rule::TowardsLook => set(block, "facing", context.nearest_looking().name()),
+        Rule::Hopper => {
+            let into = face.opposite();
+            let facing = if matches!(into, Dir::Up | Dir::Down) {
+                Dir::Down
+            } else {
+                into
+            };
+            data::set_flag(set(block, "facing", facing.name()), "enabled", true)
+        }
         Rule::EndRod => {
             let against = world.get(face.opposite().relative(target));
             let flipped = data::same_block(against, block) && facing(against) == Some(face);
@@ -849,6 +862,7 @@ mod tests {
                 Rule::NoteBlock => &["instrument"],
                 Rule::TripWire => &["north", "east", "south", "west"],
                 Rule::Bell => &["facing", "attachment"],
+                Rule::Hopper => &["facing", "enabled"],
                 Rule::Additive | Rule::Multiface | Rule::Seagrass | Rule::Default => &[],
             };
             for property in needs {

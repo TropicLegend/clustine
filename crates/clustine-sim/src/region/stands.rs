@@ -506,6 +506,16 @@ impl Region {
                 self.light_redstone_ore(ore, state, output);
             }
         }
+        // The plates, tripwire and detector rails its walk met, which count it where
+        // it is, a living entity (`pressed.rs`).
+        let toucher = super::pressed::Toucher {
+            key,
+            bounds: living.body.bounds(),
+            living: true,
+        };
+        for pos in std::mem::take(&mut living.inside) {
+            self.entity_touched(pos, &toucher, output);
+        }
         for sound in std::mem::take(&mut living.sounds) {
             output.events.push(RegionEvent::Sound {
                 sound: sound.sound,

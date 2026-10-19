@@ -36,6 +36,7 @@ mod explosions;
 mod falling;
 mod fluids;
 mod hanging;
+mod hoppers;
 mod instruments;
 mod items;
 mod knots;
@@ -3016,6 +3017,7 @@ mod tests {
     mod falling_and_drops;
     mod fluids;
     mod hanging;
+    mod hoppers;
     mod instruments;
     mod item_physics;
     mod leashes;

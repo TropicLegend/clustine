@@ -296,35 +296,54 @@ impl Region {
         if stream.used > 0 {
             *self.entity_draws.entry(key).or_default() += stream.used;
         }
-        self.item_side_effects(&mut item, output);
+        self.item_side_effects(&mut item, key, output);
         self.write_item(&entity, item, position, output);
     }
 
     /// `entityInside` of the block `state` at `pos`, which the item `item`'s walk met and
-    /// handed back ([`crate::physics::item::handed_back`]): a plate's or a tripwire's
-    /// check, a hopper's pull, a sculk sensor's step. Steps N6e and N6f fill it in
-    /// (`docs/groundwork/n6-plan.md`, decision 11); until then it does nothing.
+    /// handed back ([`crate::physics::item::handed_back`]): a hopper's pull
+    /// (`hoppers.rs`), which may take the item in; a plate's, tripwire's or detector
+    /// rail's check (`pressed.rs`), with the item where its tick has it. A sculk
+    /// sensor's step is step N6f's (`docs/groundwork/n6-plan.md`, decision 11).
     pub(super) fn item_inside(
         &mut self,
         pos: BlockPos,
         state: clustine_data::BlockState,
-        item: &Item,
+        item: &mut Item,
+        key: EntityId,
         output: &mut TickOutput,
     ) {
-        let _ = (pos, state, item, output);
+        if clustine_blocks::data::is_class(state, clustine_data::BlockClass::HopperBlock) {
+            self.hopper_entity_inside(pos, state, item, output);
+            return;
+        }
+        let toucher = super::pressed::Toucher {
+            key,
+            bounds: item.body.bounds(),
+            living: false,
+        };
+        self.entity_touched(pos, &toucher, output);
     }
 
     /// What an item's tick or push leaves beyond its record: the redstone ore it stood
     /// on lit, the blocks it was inside answered, and its sounds.
-    pub(super) fn item_side_effects(&mut self, item: &mut Item, output: &mut TickOutput) {
+    pub(super) fn item_side_effects(
+        &mut self,
+        item: &mut Item,
+        key: EntityId,
+        output: &mut TickOutput,
+    ) {
         for ore in std::mem::take(&mut item.ore) {
             if let Some(state) = self.own_block(ore) {
                 self.light_redstone_ore(ore, state, output);
             }
         }
         for pos in std::mem::take(&mut item.inside) {
+            if item.removed {
+                break;
+            }
             if let Some(state) = self.own_block(pos) {
-                self.item_inside(pos, state, item, output);
+                self.item_inside(pos, state, item, key, output);
             }
         }
         for sound in std::mem::take(&mut item.sounds) {

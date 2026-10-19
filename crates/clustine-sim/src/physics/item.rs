@@ -153,17 +153,19 @@ pub(crate) struct Item {
     /// Redstone ore it stood on, to light.
     pub(crate) ore: Vec<BlockPos>,
     /// The blocks its walk met whose `entityInside` the region runs itself, because it
-    /// reads the region's entities or containers: plates, tripwire, hoppers and sculk
-    /// sensors, in the order they were met (`docs/groundwork/n6-plan.md`, decision 11).
+    /// reads the region's entities or containers: plates, tripwire, detector rails,
+    /// hoppers and sculk sensors, in the order they were met
+    /// (`docs/groundwork/n6-plan.md`, decision 11).
     pub(crate) inside: Vec<BlockPos>,
     pub(crate) sounds: Vec<Sound>,
 }
 
-/// Whether the region runs the `entityInside` of `state` for an item itself
-/// ([`Item::inside`]).
+/// Whether the region runs the `entityInside` of `state` for an entity itself
+/// ([`Item::inside`], and the walks of the other entities, which hand back the same).
 pub(crate) fn handed_back(state: BlockState) -> bool {
     is_class(state, BlockClass::BasePressurePlateBlock)
         || is_class(state, BlockClass::TripWireBlock)
+        || is_class(state, BlockClass::DetectorRailBlock)
         || is_class(state, BlockClass::HopperBlock)
         || is_class(state, BlockClass::SculkSensorBlock)
 }

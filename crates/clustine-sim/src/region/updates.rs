@@ -217,6 +217,9 @@ impl Region {
         self.piston_on_place(pos, state, old, output);
         // TNT placed beside power is primed (`TntBlock.onPlace`, `tnt.rs`).
         self.tnt_on_place(pos, state, old, output);
+        // A hopper placed takes whether power locks it (`HopperBlock.onPlace`,
+        // `hoppers.rs`).
+        self.hopper_on_place(pos, state, old, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up, a dragon egg five (`FallingBlock.onPlace`,
         // `BrushableBlock`'s), and scaffolding one on how far it is held
@@ -746,6 +749,10 @@ impl Region {
         // TNT is primed by power beside it (`TntBlock.neighborChanged`, `tnt.rs`).
         if is_class(state, BlockClass::TntBlock) {
             self.tnt_neighbour_changed(pos, output);
+            return;
+        }
+        // A hopper is locked by power beside it (`HopperBlock.neighborChanged`).
+        if self.hopper_neighbour_changed(pos, state, output) {
             return;
         }
         // Wire, lamps, doors, trapdoors, gates, torches and diodes (`redstone.rs`,

@@ -452,7 +452,7 @@ impl Region {
         let movements = tick_movements(&mut body);
         // `applyEffectsFromBlocks`: a cobweb's or powder snow's hold, slime, lit
         // redstone ore. Fire sets it alight, which it is immune to.
-        self.falling_effects(&mut body, &movements, position, output);
+        self.falling_effects(key, &mut body, &movements, position, output);
         body.motion = physics::scale(body.motion, f64::from(AIR_DRAG));
         if body.on_ground {
             let [x, y, z] = body.motion;

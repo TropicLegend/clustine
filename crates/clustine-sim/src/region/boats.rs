@@ -846,9 +846,18 @@ impl Region {
         let mut fire_hurts = Vec::new();
         let mut lava = 0;
         let mut extinguish = false;
+        let toucher = super::pressed::Toucher {
+            key: boat.key,
+            bounds: boat.body.bounds(),
+            living: false,
+        };
         for (state, pos, block, fluid) in met {
             if block {
-                if is_class(state, BlockClass::BubbleColumnBlock) {
+                if crate::physics::item::handed_back(state) {
+                    // A plate, tripwire or a detector rail, which counts the boat where
+                    // it is (`pressed.rs`).
+                    self.entity_touched(pos, &toucher, output);
+                } else if is_class(state, BlockClass::BubbleColumnBlock) {
                     self.boat_in_bubble_column(boat, state, pos);
                 } else if is_class(state, BlockClass::BaseFireBlock) {
                     let damage = if is_class(state, BlockClass::SoulFireBlock) {

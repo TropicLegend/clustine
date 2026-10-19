@@ -346,7 +346,7 @@ impl Region {
                 if stream.used > 0 {
                     *self.entity_draws.entry(key).or_default() += stream.used;
                 }
-                self.item_side_effects(item, output);
+                self.item_side_effects(item, key, output);
             }
             Pushed::Falling(body) => {
                 body.noclip = Some(noclip);
@@ -361,7 +361,7 @@ impl Region {
                     to: body.position,
                     asked: None,
                 };
-                self.falling_effects(body, &[movement], chunk, output);
+                self.falling_effects(key, body, &[movement], chunk, output);
                 body.movements.clear();
                 body.noclip = None;
             }

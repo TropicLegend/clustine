@@ -172,6 +172,9 @@ pub(crate) struct Living {
     pub(crate) sounds: Vec<Sound>,
     /// Redstone ore it stood on, to light.
     pub(crate) ore: Vec<BlockPos>,
+    /// The plates, tripwire and detector rails its walk met, in the order met, whose
+    /// `entityInside` the region runs itself ([`crate::physics::item::handed_back`]).
+    pub(crate) inside: Vec<BlockPos>,
 }
 
 impl Living {
@@ -199,6 +202,7 @@ impl Living {
             on_fire_flag: false,
             sounds: Vec::new(),
             ore: Vec::new(),
+            inside: Vec::new(),
         }
     }
 

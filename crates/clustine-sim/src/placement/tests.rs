@@ -109,6 +109,7 @@ fn every_named_class_and_every_class_made_from_one_finds_its_rule() {
         (C::DispenserBlock, Rule::AwayFromLook),
         (C::PistonBaseBlock, Rule::AwayFromLook),
         (C::ObserverBlock, Rule::TowardsLook),
+        (C::HopperBlock, Rule::Hopper),
         (C::EndRodBlock, Rule::EndRod),
         (C::LightningRodBlock, Rule::LightningRod),
         (C::StairBlock, Rule::Stairs),
@@ -553,6 +554,31 @@ fn stairs_beside_stairs_turned_across_make_a_corner() {
             at(0, 64, 0),
             state("minecraft:oak_stairs[facing=south,half=bottom,shape=outer_left]")
         )]
+    );
+}
+
+/// `HopperBlock.getStateForPlacement`: a hopper faces into the block whose side was
+/// clicked, and down from a click on a top.
+#[test]
+fn a_hopper_faces_into_the_side_clicked_and_down_from_a_top() {
+    let world = TestWorld::default().with(0, 64, 0, blocks::STONE);
+    let mut click = click_top(at(0, 64, 0), items::HOPPER);
+    click.face = Face::East;
+    click.cursor = [1.0, 0.5, 0.5];
+    assert_eq!(
+        click_and_place(&click, &world),
+        Some(vec![(
+            at(1, 64, 0),
+            state("minecraft:hopper[enabled=true,facing=west]")
+        )])
+    );
+    let click = click_top(at(0, 64, 0), items::HOPPER);
+    assert_eq!(
+        click_and_place(&click, &world),
+        Some(vec![(
+            at(0, 65, 0),
+            state("minecraft:hopper[enabled=true,facing=down]")
+        )])
     );
 }
 
