@@ -365,6 +365,10 @@ fn couplings_outlive_a_restart_of_the_store() {
         commit(&east, 40, &[]);
         flushed(&west);
         flushed(&east);
+        // The store dies with its owners attached. Were the handles dropped first, a
+        // store that got to their closing would end the couplings, as for a lost owner,
+        // and write their file before the crash.
+        drop(store);
     }
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let store = store_on(&left, &hands);
