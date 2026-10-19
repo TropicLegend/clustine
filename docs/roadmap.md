@@ -274,9 +274,30 @@ recommendations, each of which can be overruled. Since `f64decc` a player's arm 
 others with 26.3's swing packet (a punch, a placing, a use, a throw), compared with the
 official server.
 
+**N7's first half so far** (2026-10-19): the skeleton of a mob's tick (N7a1); the living
+body (N7b: hurts, death, loot, experience orbs, a player's hit, eggs, leads), built but
+shown to nobody yet, since an egg of a type whose part has not come makes nothing (the
+plan's named difference); goals, controls, sensing and paths (N7c), the paths judged node
+for node against the jar's own path finder on 521 layouts
+(`crates/clustine-sim/tests/paths_official_server.rs`), all the game's; one world clock
+that only moves forward, and the day passes; faces, so that mobs see players of other
+regions ([design](groundwork/n7-faces.md), reviewed); a player's experience and attack
+strength; the edge's living packets and a mob's synced data; breeding's protocol across a
+line, whose decisions are N7e's; and sleep ([plan](groundwork/n7d-plan.md), reviewed,
+[brief](groundwork/n7d-brief.md)). Next: the rest of N7d (a leash held from a face, the
+plates and the clock-driven blocks on the clock), then the farm animals (N7e).
+
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
 `cargo run --release -p clustine -- --seed 3` for regions that follow players):
+
+0. The day passes now: the sun goes down after ten minutes and night falls. At night, use
+   a bed: you lie down, the action bar says "Sleeping through this night", and after five
+   seconds the night is skipped and you stand beside the bed facing it; by day it says you
+   can sleep only at night, and in either case "Respawn point set" the first time. With a
+   second player (also in another region, with pins) the bar says "1/2 players sleeping"
+   until both lie down. Leave the bed with its button. A straw bed breaks as you get up.
+   Another player sees you lying in the bed.
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.

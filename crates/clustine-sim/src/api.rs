@@ -94,6 +94,25 @@ pub struct Place {
     /// What their ender chest holds (`docs/groundwork/n6-plan.md`, decision 5).
     pub ender: EnderChest,
     pub experience: Experience,
+    /// Where they wake after a death, if a bed set it (`docs/groundwork/n7d-plan.md`).
+    pub respawn: Option<Respawn>,
+}
+
+/// A player asleep in a bed: its head, and the game time of their region they lay down
+/// at (`docs/groundwork/n7d-plan.md`, sections 1 and 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sleep {
+    pub head: BlockPos,
+    pub since: u64,
+}
+
+/// A player's respawn point as a bed sets it (`ServerPlayer.RespawnConfig`, never forced):
+/// the bed's head, and the look they had.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Respawn {
+    pub pos: BlockPos,
+    pub yaw: f32,
+    pub pitch: f32,
 }
 
 /// What a region says to the world store about a stay, in the commit of a tick. See
@@ -170,8 +189,9 @@ pub struct PlayerFace {
     pub sneaking: bool,
     /// The game mode's id: 1, creative, for everyone until survival.
     pub game_mode: u8,
-    /// The sleep counter, in ticks lived, while they sleep.
-    pub sleeping: Option<u32>,
+    /// The game time they lay down at, while they sleep (their region's clock), from
+    /// which their sleep counter is reckoned.
+    pub sleeping: Option<u64>,
     /// What they ride.
     pub vehicle: Option<EntityId>,
     pub alive: bool,
@@ -276,6 +296,8 @@ pub struct WorldPlayer {
     pub entity: EntityId,
     pub position: [f64; 3],
     pub game_mode: u8,
+    /// Their sleep counter (`sleepCounter`, 0 to 100) while they sleep, as the store
+    /// reckons it from their region's last commit: low by up to a second.
     pub sleeping: Option<u32>,
 }
 
@@ -345,6 +367,8 @@ pub struct PlayerTransfer {
     /// which the next region counts on from (`docs/groundwork/n7-plan.md`, 7.7.2); none
     /// where it never was.
     pub attack_ticks: Option<u32>,
+    pub sleeping: Option<Sleep>,
+    pub respawn: Option<Respawn>,
 }
 
 /// A player entering or leaving the region. Each but `Discard` names the edge it came
@@ -564,6 +588,8 @@ pub enum PlayerInput {
     /// The player asked for the inventory of the vehicle they ride (`player_command`'s
     /// `OPEN_INVENTORY`, a chest boat's or a chest cart's key).
     OpenVehicleInventory,
+    /// The player asked to leave their bed (`player_command`'s `STOP_SLEEPING`).
+    LeaveBed,
     /// The edge's link to the region was resumed, and player events may have been lost
     /// on it: the region answers with the player's menu whole, or with
     /// [`PlayerEvent::NoMenu`] (section 7 item 7). An input, so that the region stays a
@@ -824,6 +850,10 @@ pub enum Durable {
 
 /// What a [`Durable::NotMine`] sends on its way again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a few a tick at most, and an arrival carries a whole player"
+)]
 pub enum Misdirected {
     /// A player who was let go to this region, as in [`PlayerChange::Arrive`].
     Arrival {
@@ -1132,6 +1162,10 @@ impl TickInputs {
 
 /// Something that concerns a single player.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a few a tick at most, and a departure carries a whole player"
+)]
 pub enum PlayerEvent {
     /// The player has entered the world. `attempt` is that of the join it answers
     /// ([`PlayerJoin::attempt`]).
@@ -1174,6 +1208,16 @@ pub enum PlayerEvent {
     /// The player was put out for holding a vehicle in the air too long (the game's
     /// kick after 160 ticks).
     Kicked { reason: String },
+    /// A sentence of the game by its key, with numbers for its arguments, in their chat
+    /// or, with `overlay`, on their action bar (`sendSystemMessage`, `sendOverlayMessage`).
+    Message {
+        key: String,
+        args: Vec<i32>,
+        overlay: bool,
+    },
+    /// The player was put somewhere by the server (`connection.teleport`): lying down in a
+    /// bed, getting up from one, or sent back while asleep.
+    Teleported { pose: Pose },
     /// The region selected the hotbar slot `slot`, from 0 to 8, of its own accord (a
     /// pick of an entity's item), which the client is told (`set_held_slot`).
     HeldSlot { slot: u8 },
@@ -1443,9 +1487,17 @@ pub enum RegionEvent {
         chunk: ChunkPos,
         slots: Vec<(u8, Option<ItemStack>)>,
     },
+    /// The player entity `entity` in `chunk` lay down in the bed whose head is `head`, or
+    /// got up (`None`): their pose and sleeping position, which those who see them and
+    /// they themselves are sent (`docs/groundwork/n7d-brief.md`, section 2.3).
+    Sleeping {
+        entity: EntityId,
+        chunk: ChunkPos,
+        head: Option<BlockPos>,
+    },
     /// The player entity `attacker` in `chunk` struck `target` in a way its client
     /// shows (`ClientboundAnimatePacket` of the target: 1 a critical hit, 2 a magic
-    /// one), sent to the attacker and the players who see the attacker.
+    /// one, 0 a waking), sent to the attacker and the players who see the attacker.
     Animated {
         target: EntityId,
         attacker: EntityId,
@@ -1517,7 +1569,8 @@ impl RegionEvent {
             | Self::DamageEvent { chunk, .. }
             | Self::AttributesChanged { chunk, .. }
             | Self::EquipmentChanged { chunk, .. }
-            | Self::Animated { chunk, .. } => [*chunk; 2],
+            | Self::Animated { chunk, .. }
+            | Self::Sleeping { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }
             | Self::BlockEvent { position, .. }

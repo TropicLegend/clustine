@@ -32,6 +32,7 @@ pub mod placement;
 mod region;
 pub mod shown;
 mod state;
+pub mod time;
 
 pub use api::{
     Durable, EdgeEvent, Entered, FaceChange, FaceSeq, Keys, LendAnswer, LendAsked, Misdirected,

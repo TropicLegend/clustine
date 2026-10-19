@@ -821,6 +821,8 @@ fn applied_is_noted_for_edges_the_region_knows() {
 fn nothing_through_an_unknown_edge_is_taken_on() {
     let mut region = populated();
     let transfer = PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: EntityId(5000),

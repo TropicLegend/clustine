@@ -61,6 +61,7 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
     let mut ender = clustine_world::EnderChest::default();
     ender.set(26, Some(ItemStack { item: 6, count: 3 }));
     Place {
+        respawn: None,
         experience: clustine_rpc::Experience {
             level: 3,
             progress: 0.5,
@@ -168,6 +169,7 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
     }
     let experience = place.experience;
     LoggedPlace {
+        respawn: None,
         experience: (experience.level, experience.progress, experience.total),
         position: [
             place.pose.position.x,

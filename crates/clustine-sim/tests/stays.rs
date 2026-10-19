@@ -138,6 +138,7 @@ fn middle(chunk: ChunkPos) -> Vec3 {
 fn place_in(chunk: ChunkPos) -> Place {
     let ground = middle(chunk);
     Place {
+        respawn: None,
         experience: Default::default(),
         pose: Pose {
             position: Vec3::new(ground.x, 70.0, ground.z),
@@ -155,6 +156,7 @@ fn place_in(chunk: ChunkPos) -> Place {
 /// Where a player is and what they hold, as a region's state has it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        respawn: None,
         experience: Default::default(),
         pose: state.pose,
         flying: state.flying,
@@ -167,6 +169,7 @@ fn place_of(state: &PlayerState) -> Place {
 /// Where a transfer has a player be and hold.
 fn place_from(transfer: &PlayerTransfer) -> Place {
     Place {
+        respawn: None,
         experience: Default::default(),
         pose: transfer.pose,
         flying: transfer.flying,
@@ -265,6 +268,8 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity,
@@ -551,6 +556,7 @@ fn spawned(place: &Place) -> (PlayerId, PlayerEvent) {
 /// Where a player is who enters the world for the first time.
 fn at_spawn() -> Place {
     Place {
+        respawn: None,
         experience: Default::default(),
         pose: Pose::at(SPAWN),
         flying: false,
@@ -649,6 +655,8 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity(1),
@@ -686,6 +694,8 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity(1),
@@ -726,6 +736,7 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
     };
     // With what they held, at the spawn point, looking ahead and not flying.
     let back = Place {
+        respawn: None,
         experience: Default::default(),
         pose: Pose::at(SPAWN),
         flying: false,
@@ -967,6 +978,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     other.tick = 9;
     other.edges = region.state().edges;
     let theirs = PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: TRAVELLER,
@@ -1421,6 +1434,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let region = entering();
     let mut state = region.state();
     let earlier = PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: EntityId(entity(1).0 - 1),
@@ -1507,6 +1522,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
 #[test]
 fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
     let copy = |hops: u32, edge: EdgeId, position: Vec3| PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: entity(1),
@@ -1662,6 +1679,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     tick(&mut region, &changes(stays));
     let mut state = region.state();
     let earlier = PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: EntityId(entity(1).0 - 1),

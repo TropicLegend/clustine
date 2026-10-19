@@ -202,6 +202,8 @@ pub struct LoggedPlace {
     /// The player's experience: their level, the progress to the next (0 to 1) and
     /// the points they gathered in all.
     pub experience: (i32, f32, i32),
+    /// Where a bed set their respawn point: the bed's head, and the yaw and pitch.
+    pub respawn: Option<([i32; 3], f32, f32)>,
 }
 
 impl PartialEq for LoggedPlace {
@@ -217,6 +219,12 @@ impl PartialEq for LoggedPlace {
             && self.experience.0 == other.experience.0
             && self.experience.1.to_bits() == other.experience.1.to_bits()
             && self.experience.2 == other.experience.2
+            && self
+                .respawn
+                .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
+                == other
+                    .respawn
+                    .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
     }
 }
 
@@ -1003,6 +1011,17 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     out.extend_from_slice(&level.to_be_bytes());
     out.extend_from_slice(&progress.to_be_bytes());
     out.extend_from_slice(&total.to_be_bytes());
+    match place.respawn {
+        None => out.push(0),
+        Some((pos, yaw, pitch)) => {
+            out.push(1);
+            for coordinate in pos {
+                out.extend_from_slice(&coordinate.to_be_bytes());
+            }
+            out.extend_from_slice(&yaw.to_be_bytes());
+            out.extend_from_slice(&pitch.to_be_bytes());
+        }
+    }
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1024,6 +1043,15 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         };
     }
     let experience = (input.i32()?, input.f32()?, input.i32()?);
+    let respawn = match input.u8()? {
+        0 => None,
+        1 => Some((
+            [input.i32()?, input.i32()?, input.i32()?],
+            input.f32()?,
+            input.f32()?,
+        )),
+        _ => return Err(FormatError::Corrupt("a place's respawn flag")),
+    };
     Ok(LoggedPlace {
         position,
         yaw,
@@ -1034,6 +1062,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         inventory,
         ender,
         experience,
+        respawn,
     })
 }
 
@@ -2571,6 +2600,7 @@ mod tests {
         let mut ender = [None; ENDER_SLOTS];
         ender[0] = Some((6, 1));
         LoggedPlace {
+            respawn: None,
             experience: (5, 0.25, 87),
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
@@ -2783,6 +2813,8 @@ mod tests {
         payload.extend_from_slice(&[0; 26]);
         // The experience: level 5, a quarter of the way to the next, 87 points.
         payload.extend_from_slice(&[0, 0, 0, 5, 0x3E, 0x80, 0, 0, 0, 0, 0, 87]);
+        // No respawn point.
+        payload.push(0);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -2977,6 +3009,7 @@ mod tests {
                     experience,
                 )| {
                     LoggedPlace {
+                        respawn: None,
                         position,
                         yaw,
                         pitch,

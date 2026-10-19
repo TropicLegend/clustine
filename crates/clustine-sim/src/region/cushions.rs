@@ -38,7 +38,7 @@ pub(crate) fn next_deflated(bounds: Aabb) -> Aabb {
 /// blocks motion with a full collision cube; the blocks that override it (glass, leaves,
 /// soul sand, mud and the like) are not told apart, the per-block predicates being in
 /// classes the dump does not have.
-fn is_suffocating(state: clustine_data::BlockState) -> bool {
+pub(crate) fn is_suffocating(state: clustine_data::BlockState) -> bool {
     state.props().collision_is_full_block()
 }
 

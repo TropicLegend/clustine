@@ -252,6 +252,8 @@ mod tests {
 
     fn transfer() -> PlayerTransfer {
         PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: EntityId(5),

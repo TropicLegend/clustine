@@ -1011,6 +1011,7 @@ mod tests {
                     stay: 258,
                     hops: 4,
                     place: Some(LoggedPlace {
+                        respawn: None,
                         experience: (2, 0.5, 13),
                         position: [1.5, -2.0, 0.0],
                         yaw: 90.0,
@@ -1172,6 +1173,8 @@ mod tests {
         body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2]);
         // The experience: level 2, half way to the next, 13 points.
         body.extend_from_slice(&[0, 0, 0, 2, 0x3F, 0, 0, 0, 0, 0, 0, 13]);
+        // No respawn point.
+        body.push(0);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1471,6 +1474,7 @@ mod tests {
                                 ender,
                             )| {
                                 LoggedPlace {
+                                    respawn: None,
                                     experience: (0, 0.0, 0),
                                     position,
                                     yaw,

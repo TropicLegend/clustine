@@ -500,6 +500,8 @@ mod tests {
             count: entity,
         });
         PlayerState {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_reset: None,
             entity_id: EntityId(entity as u64),
@@ -535,6 +537,8 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: stay.entity_id,

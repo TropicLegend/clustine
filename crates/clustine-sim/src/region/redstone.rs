@@ -450,6 +450,10 @@ impl Region {
         let Some(state) = self.own_block(pos) else {
             return;
         };
+        if is_class(state, BlockClass::AbstractBedBlock) {
+            self.use_bed(pos, player, output);
+            return;
+        }
         if Region::opens_menu(state) {
             self.use_container(pos, player, output);
             return;

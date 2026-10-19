@@ -164,7 +164,7 @@ fn empty_context_shape(state: BlockState) -> Option<clustine_data::collisions::V
 /// `BlockGetter.getBlockFloorHeight(shape, below)`: the top of `shape`, or, where it is
 /// empty, how far the block below's reaches up into this one, minus infinity where it
 /// does not.
-fn block_floor_height(
+pub(crate) fn block_floor_height(
     here: Option<clustine_data::collisions::VoxelShape>,
     below: impl FnOnce() -> Option<clustine_data::collisions::VoxelShape>,
 ) -> f64 {
@@ -1091,7 +1091,7 @@ pub(crate) fn escape_vector(vehicle_width: f64, passenger_width: f64, yaw: f32) 
 
 /// `DismountHelper.nonClimbableShape`: the block's collision shape, but none for a
 /// climbable block or an open trapdoor.
-fn non_climbable(state: BlockState) -> Option<clustine_data::collisions::VoxelShape> {
+pub(crate) fn non_climbable(state: BlockState) -> Option<clustine_data::collisions::VoxelShape> {
     let open_trapdoor =
         is_class(state, BlockClass::TrapDoorBlock) && clustine_blocks::data::flag(state, "open");
     if in_tag(state, "minecraft:climbable") || open_trapdoor {

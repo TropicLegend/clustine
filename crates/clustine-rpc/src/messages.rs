@@ -33,6 +33,10 @@ impl EdgeMessage {
 /// What an edge tells the worker that owns a region. See
 /// `docs/adr/0005-edge-worker-interface.md`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an arrival carries a whole player, and messages are encoded as they go"
+)]
 pub enum EdgeToWorker {
     /// The first message on a link: which edge this is and what it knows of the region,
     /// so that the region can tell it what it has missed. Answered with

@@ -277,6 +277,8 @@ async fn riding_by_the_line() -> (Harness, Client, Client) {
 /// the east holds in `EASTERN` by then.
 fn riding_transfer() -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: RIDER,

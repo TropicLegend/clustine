@@ -103,6 +103,10 @@ pub struct PlayerState {
     /// ticks. None is full strength, as a player who joins has (a named difference: the
     /// game's ticker begins at 0 then, a quarter of a second of weak hits).
     pub attack_reset: Option<u64>,
+    /// The bed they sleep in, if they do.
+    pub sleeping: Option<crate::api::Sleep>,
+    /// Where a bed set their respawn point.
+    pub respawn: Option<crate::api::Respawn>,
 }
 
 /// A menu a player has open: what it shows, the stack on the cursor and a drag under

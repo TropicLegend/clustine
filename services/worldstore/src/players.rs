@@ -331,6 +331,13 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
     let experience = place.experience;
     LoggedPlace {
         experience: (experience.level, experience.progress, experience.total),
+        respawn: place.respawn.map(|respawn| {
+            (
+                [respawn.pos.x, respawn.pos.y, respawn.pos.z],
+                respawn.yaw,
+                respawn.pitch,
+            )
+        }),
         position: [x, y, z],
         yaw: place.pose.yaw,
         pitch: place.pose.pitch,
@@ -358,6 +365,13 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
             progress,
             total,
         },
+        respawn: logged
+            .respawn
+            .map(|([x, y, z], yaw, pitch)| clustine_rpc::Respawn {
+                pos: clustine_world::BlockPos::new(x, y, z),
+                yaw,
+                pitch,
+            }),
         pose: Pose {
             position: Vec3::new(x, y, z),
             yaw: logged.yaw,

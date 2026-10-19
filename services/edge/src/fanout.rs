@@ -30,9 +30,9 @@ use clustine_protocol::packets::play::{
     SectionBlocksUpdate, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
     SetEntityData, SetEntityLink, SetEquipment, SetExperience, SetHeadRotation, SetHeldSlot,
     SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity, SwingAnimation,
-    SyncEntityPosition, SynchronizePlayerPosition, TakeItemEntity, UnloadChunk, UpdateAttributes,
-    abilities, angle, entity_data, game_event, game_mode, inventory as protocol_inventory,
-    level_event, player_info, relative,
+    SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk,
+    UpdateAttributes, abilities, angle, entity_data, game_event, game_mode,
+    inventory as protocol_inventory, level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -972,11 +972,13 @@ struct Shown {
     living: LivingShown,
 }
 
-/// A mob's attributes, by their ids, and what it wears, by slot, as last sent.
+/// A mob's attributes, by their ids, and what it wears, by slot, as last sent; and the
+/// bed a player sleeps in.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct LivingShown {
     attributes: BTreeMap<i32, AttributeSnapshot>,
     equipment: BTreeMap<u8, WireStack>,
+    sleeping: Option<Position>,
 }
 
 impl Fanout {
@@ -1811,6 +1813,17 @@ impl Fanout {
                 player,
                 event: PlayerEvent::HeldSlot { slot },
             } => self.held_slot(player, slot).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Message { key, args, overlay },
+            } => {
+                let packet = encoded(&SystemChat::translated(&key, &args, overlay));
+                self.send_to_player(player, [packet]).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Teleported { pose },
+            } => self.rides(player, pose).await,
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Experience(experience),
@@ -3293,6 +3306,13 @@ impl Fanout {
                     self.show_to_watchers(entity, encoded(&packet)).await;
                 }
             }
+            // A player lying down or getting up, shown to those who see them and to
+            // themselves, whose client takes its in-bed screen from it.
+            RegionEvent::Sleeping { entity, head, .. } => {
+                if self.is_of(entity, from) {
+                    self.show_sleeping(entity, head).await;
+                }
+            }
             RegionEvent::AttributesChanged {
                 entity, attributes, ..
             } => {
@@ -4106,6 +4126,29 @@ impl Fanout {
             attributes: snapshots,
         });
         self.show_to_watchers(entity, packet).await;
+    }
+
+    /// A player lay down in the bed whose head is `head`, or got up: remembered for those
+    /// who come to see them, and sent to those who see them and to themselves.
+    async fn show_sleeping(&mut self, entity: EntityId, head: Option<BlockPos>) {
+        let head = head.map(|head| Position {
+            x: head.x,
+            y: head.y,
+            z: head.z,
+        });
+        if let Some(shown) = self.entities.get_mut(&entity) {
+            shown.living.sleeping = head;
+        }
+        let packet = encoded(&sleeping_data(self.wire.of(entity), head));
+        self.show_to_watchers(entity, packet.clone()).await;
+        let own = self
+            .players
+            .iter()
+            .find(|(_, view)| view.entity == Some(entity))
+            .map(|(player, _)| *player);
+        if let Some(player) = own {
+            self.send_to_player(player, [packet]).await;
+        }
     }
 
     /// What a mob wears and holds changed: remembered, and sent to those who see it.
@@ -6068,7 +6111,28 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 /// with the motion and angles sent last, its head at 0 and, for a falling block, its
 /// block as the spawn's data; and then the values of its data that are not the
 /// defaults, if any (the game's `ServerEntity.sendPairingData`).
-/// A mob's pairing beyond its spawn and data: its attributes, and what it wears.
+/// The pose and sleeping position of a player lying in the bed whose head is `head`, or
+/// standing again (`None`).
+fn sleeping_data(id: i32, head: Option<Position>) -> SetEntityData {
+    let pose = if head.is_some() {
+        pose::SLEEPING
+    } else {
+        pose::STANDING
+    };
+    SetEntityData {
+        entity_id: id,
+        values: vec![
+            (entity_data::POSE, EntityDataValue::Pose(pose)),
+            (
+                entity_data::SLEEPING_POSITION,
+                EntityDataValue::OptionalBlockPos(head),
+            ),
+        ],
+    }
+}
+
+/// A living entity's pairing beyond its spawn and data: its attributes, a sleeper's bed,
+/// and what it wears.
 fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
     let mut packets = Vec::new();
     if !living.attributes.is_empty() {
@@ -6076,6 +6140,9 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
             entity_id: id,
             attributes: living.attributes.values().cloned().collect(),
         }));
+    }
+    if let Some(head) = living.sleeping {
+        packets.push(encoded(&sleeping_data(id, Some(head))));
     }
     if !living.equipment.is_empty() {
         packets.push(encoded(&SetEquipment {
@@ -6739,6 +6806,8 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: entity,
@@ -9684,6 +9753,8 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: entity,

@@ -364,6 +364,8 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity,
@@ -386,6 +388,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: state.entity_id,
@@ -407,6 +411,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
 /// A player as a region has them right after taking in `transfer` through `edge`.
 fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
     PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: transfer.entity_id,
@@ -2340,6 +2346,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         count: n % 60 + 1,
     });
     PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: entity,
@@ -4911,6 +4919,7 @@ fn run_config() -> RegionConfig {
 /// Where a player is and what they hold, as the store keeps it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        respawn: None,
         experience: Default::default(),
         pose: state.pose,
         flying: state.flying,

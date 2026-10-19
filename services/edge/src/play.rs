@@ -203,6 +203,9 @@ async fn pump(
                             send_input(shared, client, PlayerInput::OpenVehicleInventory)
                                 .await?;
                         }
+                        if packet.action == player_command::STOP_SLEEPING {
+                            send_input(shared, client, PlayerInput::LeaveBed).await?;
+                        }
                         // Sprinting is what N5 reads of these; the rest are for what
                         // later steps bring (a horse's jump).
                         let sprint = match packet.action {

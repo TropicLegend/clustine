@@ -718,6 +718,7 @@ mod tests {
         inventory.set(39, Some(ItemStack { item: 7, count: 1 }));
         inventory.set(OFF_HAND, Some(ItemStack { item: 9, count: 3 }));
         let place = Place {
+            respawn: None,
             experience: Default::default(),
             pose: Pose {
                 position: Vec3::new(-1234.5, 71.25, 0.5),
@@ -731,6 +732,7 @@ mod tests {
             ender: Default::default(),
         };
         let standing = Place {
+            respawn: None,
             experience: Default::default(),
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,

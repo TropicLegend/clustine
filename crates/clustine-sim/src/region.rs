@@ -65,6 +65,7 @@ mod riders;
 mod riding;
 mod sculk;
 mod shulker_boxes;
+mod sleep;
 mod spawn_eggs;
 mod stands;
 mod ticks;
@@ -297,6 +298,10 @@ struct Player {
     experience: crate::api::Experience,
     /// See [`PlayerState::attack_reset`].
     attack_reset: Option<u64>,
+    /// See [`PlayerState::sleeping`].
+    sleeping: Option<crate::api::Sleep>,
+    /// See [`PlayerState::respawn`].
+    respawn: Option<crate::api::Respawn>,
     /// The tick of their last level-up's sound (`lastLevelUpTime`), in memory only: a
     /// restore may let a level-up five levels on be heard once more.
     last_level_up: Option<u64>,
@@ -459,6 +464,8 @@ pub struct Region {
     /// The faces of players the region does not hold, and the world's players
     /// (`faces.rs`).
     faces: faces::Faces,
+    /// What the region remembers of the night (`sleep.rs`).
+    sleep: sleep::SleepMemory,
     /// The drops of the blocks each explosion across a line broke in this tick, by the
     /// explosion, merged as they come (`explosions.rs`). Empty between ticks.
     blast_drops: BTreeMap<(EntityId, u64), Vec<(BlockPos, ItemStack)>>,
@@ -597,6 +604,7 @@ impl Region {
             dismounted: Vec::new(),
             gone: Vec::new(),
             faces: faces::Faces::default(),
+            sleep: sleep::SleepMemory::default(),
             applying: None,
             foreign_boxes: Vec::new(),
             blast_drops: BTreeMap::new(),
@@ -888,6 +896,11 @@ impl Region {
             self.clock = self.clock.later(published);
         }
         let clock_jumped = self.clock != before;
+        // A morning taken from the store is another region's skip (`sleep.rs`).
+        self.sleep.last_day = before.day;
+        self.sleep.morning_taken =
+            clock_jumped && before.day / crate::time::DAY < self.clock.day / crate::time::DAY;
+        self.sleep.jumped = false;
         self.clock.game_time += 1;
         self.clock.day += 1;
         let mut output = TickOutput {
@@ -985,6 +998,9 @@ impl Region {
         self.made_in = None;
         // `Player.tick`'s look at the main hand, after the inputs.
         self.watch_main_hands(&main_hands);
+        // The level's sleep check, before the blocks and entities, which see a morning it
+        // moves to (`sleep.rs`).
+        self.check_sleep(&mut output);
         // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
@@ -1071,6 +1087,8 @@ impl Region {
                     .push((*id, PlayerEvent::Acknowledged { sequence }));
             }
         }
+        // The players' end of the tick: sleepers woken by their beds (`sleep.rs`).
+        self.sleepers_tick(&mut output);
         // Last, so that a player is told what became of their actions before they are
         // told that they are someone else's from now on. Nothing says that the entity
         // is gone: it lives on in the region it walked into.
@@ -1081,6 +1099,11 @@ impl Region {
         // an edge passes over a number that is not above the highest it has seen. See
         // `docs/adr/0020-one-stay-per-player.md`, section 6.
         let mut let_go: Vec<(PlayerId, StayNote)> = Vec::new();
+        // A sleeper let go gets up first, where the place kept for them is
+        // (`sleep.rs`).
+        for (id, _) in &departing {
+            self.stop_sleep(*id, true, false, &mut output);
+        }
         let departing = departing.into_iter().filter_map(|(id, to)| {
             let player = self.players.remove(&id)?;
             self.unseat_leaving(None, &player, &mut output);
@@ -1096,6 +1119,7 @@ impl Region {
                 entity: transfer.entity_id,
                 hops: transfer.hops,
                 place: Place {
+                    respawn: None,
                     pose: transfer.pose,
                     flying: transfer.flying,
                     inventory: transfer.inventory.clone(),
@@ -1145,7 +1169,7 @@ impl Region {
         self.piston_deltas.clear();
         self.block_streams.clear();
         output.delta = self.take_delta();
-        if clock_jumped {
+        if clock_jumped || self.sleep.jumped {
             output.delta.clock = Some(self.clock);
         }
         output
@@ -1290,6 +1314,9 @@ impl Region {
 
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        // A sleeper gets up first (`ServerPlayer.disconnect`'s `stopSleepInBed(true,
+        // false)`): the bed is freed and the place kept is beside it.
+        self.stop_sleep(id, true, false, output);
         self.menu_leaving(id, true, output);
         if let Some(player) = self.players.remove(&id) {
             self.gone.push((id, player.entity_id, player.hops));
@@ -1306,6 +1333,7 @@ impl Region {
     /// their entity as removed. Their edge did not ask for it, so it is told that the
     /// stay has ended.
     fn end_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        self.stop_sleep(id, true, false, output);
         self.menu_leaving(id, true, output);
         let Some(player) = self.players.remove(&id) else {
             return;
@@ -1561,6 +1589,8 @@ impl Region {
         // be let go to this region again for ever. A chunk it knows nothing of is
         // claimed at the end of the tick, because the player stands in it.
         let player = Player {
+            sleeping: None,
+            respawn: None,
             entity_id: transfer.entity_id,
             name: transfer.name.clone(),
             pose: transfer.pose,
@@ -1668,6 +1698,8 @@ impl Region {
                     // being placed here. Nothing is claimed and no entity is shown; the
                     // edge finds its view by the attempt the transfer carries.
                     let transfer = PlayerTransfer {
+                        sleeping: None,
+                        respawn: None,
                         entity_id,
                         name,
                         pose: place.pose,
@@ -1699,6 +1731,8 @@ impl Region {
             }
         };
         let player = Player {
+            sleeping: None,
+            respawn: None,
             entity_id,
             name,
             pose,
@@ -1938,6 +1972,21 @@ impl Region {
                 rotation,
                 on_ground,
             } => {
+                // A sleeper's moves are not taken; one more than a block away is
+                // answered with where they lie (`sleep.rs`).
+                if player.sleeping.is_some() {
+                    let at = player.pose.position;
+                    let far = position.is_some_and(|to| {
+                        (to.x - at.x).powi(2) + (to.y - at.y).powi(2) + (to.z - at.z).powi(2) > 1.0
+                    });
+                    if far {
+                        let pose = player.pose;
+                        output
+                            .player_events
+                            .push((id, PlayerEvent::Teleported { pose }));
+                    }
+                    return;
+                }
                 // A riding player's own moves move nothing: their vehicle puts them at
                 // their seat, and only their head is theirs (`handleMovePlayer`).
                 let position = if player.riding.is_some() {
@@ -2098,6 +2147,8 @@ impl Region {
                 self.menu_closed_by_client(id, *serial, output);
             }
             PlayerInput::OpenVehicleInventory => self.open_vehicle_inventory(id, output),
+            // `handlePlayerCommand`'s `STOP_SLEEPING` (`sleep.rs`).
+            PlayerInput::LeaveBed => self.stop_sleep(id, false, true, output),
             PlayerInput::MenuResync => self.menu_resync(id, output),
             // `handlePunch`: the main hand swings with the attack animation of what it
             // holds, for everyone tracking the player.
@@ -3109,6 +3160,8 @@ impl Player {
             menu: self.menu.clone(),
             experience: self.experience,
             attack_reset: self.attack_reset,
+            sleeping: self.sleeping,
+            respawn: self.respawn,
         }
     }
 
@@ -3136,20 +3189,24 @@ impl Player {
             swinging: None,
             experience: state.experience,
             attack_reset: state.attack_reset,
+            sleeping: state.sleeping,
+            respawn: state.respawn,
             last_level_up: None,
         }
     }
 
     /// What mobs of other regions see of the player.
     pub(super) fn face(&self) -> PlayerFace {
-        PlayerFace::of(
+        let mut face = PlayerFace::of(
             &self.pose,
             self.keys.sneak,
             self.flying,
             &self.inventory,
             self.selected_slot,
             self.riding.map(|riding| riding.vehicle),
-        )
+        );
+        face.sleeping = self.sleeping.map(|sleep| sleep.since);
+        face
     }
 
     /// Where the player is and what they hold, as the world store keeps it.
@@ -3161,6 +3218,7 @@ impl Player {
             selected_slot: self.selected_slot,
             ender: self.ender.clone(),
             experience: self.experience,
+            respawn: self.respawn,
         }
     }
 
@@ -3187,6 +3245,8 @@ impl Player {
             attack_ticks: self
                 .attack_reset
                 .map(|reset| u32::try_from((tick + 1).saturating_sub(reset)).unwrap_or(u32::MAX)),
+            sleeping: self.sleeping,
+            respawn: self.respawn,
         }
     }
 
@@ -3330,6 +3390,7 @@ mod tests {
     mod riding;
     mod scheduled_ticks;
     mod sculk;
+    mod sleep;
     mod stands;
     mod swings;
 
@@ -5336,6 +5397,8 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: EntityId(entity as u64),
@@ -5914,6 +5977,8 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        sleeping: None,
+                        respawn: None,
                         experience: Default::default(),
                         // The selection changed the main hand in the tick.
                         attack_ticks: Some(0),
@@ -6227,6 +6292,8 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            sleeping: None,
+            respawn: None,
             experience: Default::default(),
             attack_ticks: None,
             entity_id: EntityId(1),

@@ -1297,6 +1297,8 @@ fn dig(position: BlockPos, sequence: i32) -> PlayerInput {
 /// along, with an entity of that region's.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity,

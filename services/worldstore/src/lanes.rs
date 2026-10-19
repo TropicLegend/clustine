@@ -124,6 +124,9 @@ pub(crate) struct Lanes {
     clock_published: u64,
     /// The latest face of every player in the world (`faces.rs`).
     faces: Faces,
+    /// The game time of each region's latest commit, which the world's players' sleep
+    /// counters are reckoned against (`docs/groundwork/n7d-plan.md`, section 7 item 3).
+    committed_time: BTreeMap<RegionId, u64>,
     /// The last segment of the log that has a record which changes the table and is not
     /// in the table file, if there is one. The segments from the file's `from` up to it
     /// hold what the file does not have.
@@ -769,6 +772,7 @@ impl Lanes {
             regions,
             clock_published: 0,
             faces: Faces::default(),
+            committed_time: BTreeMap::new(),
             table_last,
             players,
             next_block,
@@ -1266,6 +1270,9 @@ impl Lanes {
                 }
                 // The world's clock is the later of every region's taken.
                 self.table.clock = self.table.clock.later(clock);
+                // A sleeper's counter is reckoned against their region's own time.
+                let committed = self.committed_time.entry(region).or_default();
+                *committed = (*committed).max(clock.game_time);
                 // An entity sent into land nobody holds takes the land with it: granted to
                 // the sender before the commit is appended, so that a restart that reads
                 // the log, or keeps the first part of a torn group, files the arrival
@@ -2127,7 +2134,10 @@ impl Lanes {
         let clock = self.table.clock;
         if clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
             self.clock_published = clock.game_time;
-            let players = self.faces.world();
+            let committed = &self.committed_time;
+            let players = self
+                .faces
+                .world(|region| committed.get(&region).copied().unwrap_or(0));
             for owner in self.regions.values().filter_map(|lane| lane.owner.as_ref()) {
                 owner.peer.answer(StoreReply::Clock {
                     clock,

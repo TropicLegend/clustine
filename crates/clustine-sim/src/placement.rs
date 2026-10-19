@@ -242,6 +242,10 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     // A lever, a button and wire use themselves by rules that tell their neighbours,
     // which the region runs.
     let face = geometry::from_api(click.face);
+    // A bed lays its user down, which the region decides (`region/sleep.rs`).
+    if data::is(state, BlockClass::AbstractBedBlock) {
+        return Clicked::ByRule { position, face };
+    }
     // A container opens a menu, which the region keeps (`docs/groundwork/n6-plan.md`,
     // decision 2); the click is the block's whether it opens or not.
     if data::is(state, BlockClass::ChestBlock)

@@ -296,6 +296,8 @@ fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> Remot
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: entity,
@@ -318,6 +320,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_ticks: None,
         entity_id: state.entity_id,

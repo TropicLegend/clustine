@@ -138,14 +138,19 @@ impl Faces {
         }
     }
 
-    /// The world's players, in ascending order of their ids.
-    pub(crate) fn world(&self) -> Vec<WorldPlayer> {
+    /// The world's players, in ascending order of their ids: a sleeper's counter is
+    /// reckoned from when they lay down to the game time of their region's latest
+    /// commit (`committed`), low by up to a second, at most 100.
+    pub(crate) fn world(&self, committed: impl Fn(RegionId) -> u64) -> Vec<WorldPlayer> {
         let listed = self.kept.iter().map(|(player, held)| WorldPlayer {
             player: *player,
             entity: held.entity,
             position: held.face.position,
             game_mode: held.face.game_mode,
-            sleeping: held.face.sleeping,
+            sleeping: held.face.sleeping.map(|since| {
+                let counter = committed(held.writer).saturating_sub(since).min(100);
+                u32::try_from(counter).expect("at most 100")
+            }),
         });
         listed.collect()
     }

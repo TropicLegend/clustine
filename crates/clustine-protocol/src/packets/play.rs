@@ -3157,6 +3157,9 @@ pub enum EntityDataValue {
     /// VarInt of the direction's 3D value (down 0, up 1, north 2, south 3, west 4,
     /// east 5); see [`direction`].
     Direction(i32),
+    /// `EntityDataSerializers.POSE`: an entity's pose, as a VarInt of its ordinal; see
+    /// [`pose`].
+    Pose(i32),
     /// `EntityDataSerializers.BLOCK_STATE`: the block primed TNT shows, as a VarInt of the
     /// state's id (`docs/groundwork/n6-brief.md`, section 9.1).
     BlockState(i32),
@@ -3191,8 +3194,17 @@ pub mod entity_data_serializer {
     pub const DIRECTION: i32 = 12;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const POSE: i32 = 20;
     pub const PAINTING_VARIANT: i32 = 34;
     pub const DYE_COLOR: i32 = 43;
+}
+
+/// The ordinals of the game's `Pose` that [`EntityDataValue::Pose`] carries
+/// (`docs/groundwork/n7d-brief.md`, section 2.3).
+pub mod pose {
+    pub const STANDING: i32 = 0;
+    pub const SLEEPING: i32 = 2;
+    pub const CROUCHING: i32 = 5;
 }
 
 /// The 3D values of the game's `Direction`, which [`EntityDataValue::Direction`] and the
@@ -3223,8 +3235,13 @@ pub mod entity_data {
     pub const AIR_SUPPLY: u8 = 1;
     /// `Entity.DATA_TICKS_FROZEN`, the ticks spent in powder snow, an int.
     pub const TICKS_FROZEN: u8 = 7;
+    /// `Entity.DATA_POSE`, a [`super::pose`] ordinal.
+    pub const POSE: u8 = 6;
     /// `LivingEntity.DATA_HEALTH_ID`, a float.
     pub const HEALTH: u8 = 9;
+    /// `LivingEntity.SLEEPING_POS_ID`, an optional block position: the head of the bed a
+    /// player sleeps in.
+    pub const SLEEPING_POSITION: u8 = 14;
     /// `ArmorStand.DATA_CLIENT_FLAGS`: small, arms, no base plate, marker.
     pub const ARMOR_STAND_FLAGS: u8 = 15;
     /// `ArmorStand.DATA_HEAD_POSE`, the first of the six rotations of its parts (head,
@@ -3292,6 +3309,10 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::DIRECTION);
                     w.put_var_int(*direction);
                 }
+                EntityDataValue::Pose(pose) => {
+                    w.put_var_int(entity_data_serializer::POSE);
+                    w.put_var_int(*pose);
+                }
                 EntityDataValue::BlockState(state) => {
                     w.put_var_int(entity_data_serializer::BLOCK_STATE);
                     w.put_var_int(*state);
@@ -3337,6 +3358,7 @@ impl Decode for SetEntityData {
                     EntityDataValue::OptionalBlockPos(r.option(Reader::position)?)
                 }
                 entity_data_serializer::DIRECTION => EntityDataValue::Direction(r.var_int()?),
+                entity_data_serializer::POSE => EntityDataValue::Pose(r.var_int()?),
                 entity_data_serializer::BLOCK_STATE => EntityDataValue::BlockState(r.var_int()?),
                 entity_data_serializer::OPTIONAL_BLOCK_STATE => {
                     EntityDataValue::OptionalBlockState(r.var_int()?)
@@ -3725,6 +3747,7 @@ packet_set! {
         DamageEvent,
         UpdateAttributes,
         SetExperience,
+        SystemChat,
     }
 }
 
@@ -5573,6 +5596,53 @@ impl Decode for SetExperience {
             progress: r.f32()?,
             level: r.var_int()?,
             total: r.var_int()?,
+        })
+    }
+}
+
+/// A message of the server to the player (`ClientboundSystemChatPacket`): a text
+/// component, in their chat or, with `overlay`, on their action bar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemChat {
+    pub content: Nbt,
+    pub overlay: bool,
+}
+
+impl SystemChat {
+    /// A sentence of the game by its key, with whole numbers for its arguments.
+    pub fn translated(key: &str, args: &[i32], overlay: bool) -> Self {
+        let mut entries = vec![("translate".to_owned(), Nbt::String(key.to_owned()))];
+        if !args.is_empty() {
+            let with = args.iter().map(|arg| Nbt::Int(*arg)).collect();
+            entries.push(("with".to_owned(), Nbt::List(with)));
+        }
+        Self {
+            content: Nbt::Compound(entries),
+            overlay,
+        }
+    }
+}
+
+impl Packet for SystemChat {
+    const ID: i32 = clientbound::SYSTEM_CHAT;
+}
+
+impl Encode for SystemChat {
+    fn encode(&self, w: &mut Writer) {
+        w.put_nbt(&self.content);
+        w.put_bool(self.overlay);
+    }
+}
+
+impl Decode for SystemChat {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let content = r.nbt()?.ok_or(DecodeError::InvalidValue {
+            what: "text component",
+            value: 0,
+        })?;
+        Ok(Self {
+            content,
+            overlay: r.bool()?,
         })
     }
 }

@@ -44,8 +44,9 @@ pub use region::{
 /// entity keeps `lived` and `fresh_at`, an item its age apart, a change may set an
 /// entity's hops, and a mob is kept by the parts of its body and mind and its type's
 /// state (`docs/groundwork/n7-plan.md`, section 11.3); 11 since a player's place holds
-/// their experience after their ender chest (section 7.7 of the same plan).
-pub const FORMAT_VERSION: u8 = 11;
+/// their experience after their ender chest (section 7.7 of the same plan); 12 since it
+/// holds where a bed set their respawn point after it (`docs/groundwork/n7d-plan.md`).
+pub const FORMAT_VERSION: u8 = 12;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

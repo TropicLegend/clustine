@@ -400,6 +400,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         count: n % 60 + 1,
     });
     PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: entity,

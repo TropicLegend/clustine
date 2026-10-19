@@ -958,6 +958,7 @@ impl Witness {
                         | RegionEvent::AttributesChanged { .. }
                         | RegionEvent::EquipmentChanged { .. }
                         | RegionEvent::Animated { .. }
+                        | RegionEvent::Sleeping { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
                             self.entities.remove(entity);
@@ -979,6 +980,8 @@ impl Witness {
                 PlayerEvent::InventorySlot { .. }
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::Experience(_)
+                | PlayerEvent::Message { .. }
+                | PlayerEvent::Teleported { .. }
                 | PlayerEvent::VehicleCorrected { .. }
                 | PlayerEvent::Rides { .. }
                 | PlayerEvent::Kicked { .. }
@@ -5379,6 +5382,8 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        sleeping: None,
+        respawn: None,
         experience: Default::default(),
         attack_reset: None,
         entity_id: entity,
