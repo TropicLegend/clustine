@@ -7,7 +7,8 @@
 //! Everything the game draws from the level's random here comes from one stream, the
 //! exploding entity's own in this tick (`Random::of_entity`, `docs/adr/0028-entities.md`,
 //! section 4), in the game's order: the rays' floats, the shuffle, then, block by
-//! block, the loot, the spill and a TNT's priming, and last the drops' places. The new
+//! block, the loot and a TNT's priming, and last the drops' places; a container
+//! spills from the block's own stream as it is removed, as by any other cause. The new
 //! items draw their own from their keys, as everywhere. The game's order of positions
 //! before the shuffle is its `HashSet`'s; the shuffle makes any order as good, and the
 //! positions are taken in ascending order.
@@ -36,13 +37,12 @@ use clustine_blocks::loot::{Broken, LootDraws, block_drops_as};
 use clustine_data::{BlockClass, BlockState, EntityTypeInfo, ItemComponents, blocks};
 use clustine_world::{
     Blast, BlockPos, ChunkPos, Double, Effect, Effected, Entity, EntityData, EntityField, EntityId,
-    EntityUse, Float, InChunk, ItemStack,
+    EntityUse, Float, ItemStack,
 };
 use uuid::Uuid;
 
 use super::Region;
 use super::attached::Breaker;
-use super::containers::{container_size, read_container};
 use super::items::{View, tracked};
 use super::random_ticks::Random;
 use super::stands::{INVISIBLE, MARKER, stand_size};
@@ -733,8 +733,8 @@ impl Region {
                 }
             }
             // `setBlockAndUpdate(pos, AIR)`, inside which a container spills what it
-            // holds (`preRemoveSideEffects`, `Containers.dropContents`).
-            self.spill_container(pos, state, random, output);
+            // holds (`preRemoveSideEffects`, `Containers.dropContents`), as every
+            // removal does (`containers.rs`), from the block's own stream.
             self.set_block_updated(pos, blocks::AIR, UPDATE_ALL, UPDATE_LIMIT, output);
             // `TntBlock.wasExploded`: primed with a short fuse, by whoever primed this.
             if tnt {
@@ -744,38 +744,6 @@ impl Region {
         for (pos, stack) in collectors {
             self.pop_resource(pos, stack, random, output);
         }
-    }
-
-    /// What the container block `state` at `pos` holds, spilled as it goes, from its
-    /// block entity's slots (`containers.rs`), drawing from `random`.
-    fn spill_container(
-        &mut self,
-        pos: BlockPos,
-        state: BlockState,
-        random: &mut Random,
-        output: &mut TickOutput,
-    ) {
-        let Some(size) = container_size(state) else {
-            return;
-        };
-        let (x, z) = pos.in_chunk();
-        let Some(data) = self.chunks.get(&pos.chunk()).and_then(|chunk| {
-            chunk
-                .block_entities()
-                .get(&InChunk::new(x, pos.y, z))
-                .map(|entity| entity.data.clone())
-        }) else {
-            return;
-        };
-        let container = read_container(size, &data);
-        let contents: Vec<(u8, ItemStack)> = container
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
-            .collect();
-        let at = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
-        self.drop_contents_with(at, &contents, size, random, output);
     }
 }
 
