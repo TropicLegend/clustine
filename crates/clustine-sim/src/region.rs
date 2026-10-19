@@ -12,8 +12,8 @@ use clustine_world::{
 use crate::api::{
     Durable, EdgeEvent, EnderChest, Entered, EntityKind, EntityState, HOTBAR_SLOTS, Inventory,
     ItemStack, Keys, LendAsked, Misdirected, OFF_HAND, Place, PlayerChange, PlayerEvent,
-    PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep, StayNote,
-    TickInputs, TickOutput, Ticket,
+    PlayerFace, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
+    RemoteStep, StayNote, TickInputs, TickOutput, Ticket,
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{
@@ -33,6 +33,7 @@ mod dispensers;
 mod drops;
 mod entities;
 mod explosions;
+mod faces;
 mod falling;
 mod fluids;
 mod hanging;
@@ -433,6 +434,13 @@ pub struct Region {
     /// The notes of riders who left the world in this tick, each with where their
     /// vehicle let them off (`riders.rs`). Empty between ticks.
     dismounted: Vec<(PlayerId, StayNote)>,
+    /// The stays that are no more in this tick: a player who left, or whose edge went
+    /// with them on the way to another region, or whose discard came. Empty between
+    /// ticks.
+    gone: Vec<(PlayerId, EntityId, u32)>,
+    /// The faces of players the region does not hold, and the world's players
+    /// (`faces.rs`).
+    faces: faces::Faces,
     /// The drops of the blocks each explosion across a line broke in this tick, by the
     /// explosion, merged as they come (`explosions.rs`). Empty between ticks.
     blast_drops: BTreeMap<(EntityId, u64), Vec<(BlockPos, ItemStack)>>,
@@ -568,6 +576,8 @@ impl Region {
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
             dismounted: Vec::new(),
+            gone: Vec::new(),
+            faces: faces::Faces::default(),
             applying: None,
             foreign_boxes: Vec::new(),
             blast_drops: BTreeMap::new(),
@@ -896,12 +906,26 @@ impl Region {
                 PlayerChange::Arrive(edge, id, transfer) => {
                     self.apply_arrival(*edge, *id, transfer, &mut output);
                 }
-                PlayerChange::Discard { entity, chunk } => {
+                PlayerChange::Discard {
+                    player,
+                    entity,
+                    hops,
+                    chunk,
+                } => {
                     output.events.push(RegionEvent::EntityRemoved {
                         entity: *entity,
                         chunk: *chunk,
                     });
                     self.drop_pending_seat_of_player(*entity, &mut output);
+                    // The store judges whether it ends the player's time in the world;
+                    // a stay the region holds of the player at or after it does not end.
+                    let held = self
+                        .players
+                        .get(player)
+                        .is_some_and(|held| (held.entity_id, held.hops) >= (*entity, *hops));
+                    if !held {
+                        self.gone.push((*player, *entity, *hops));
+                    }
                 }
             }
         }
@@ -913,6 +937,7 @@ impl Region {
         for answer in &inputs.entered {
             self.apply_entered(answer, &mut unplaced, &mut output);
         }
+        self.take_faces(&inputs.faces, inputs.world_players.as_ref());
 
         // A player's action is the game's packet handled between two ticks, at the game
         // time of the one before (`MinecraftServer.runAllTasks`): what it schedules
@@ -1050,7 +1075,22 @@ impl Region {
                     selected_slot: transfer.selected_slot,
                     ender: transfer.ender.clone(),
                 },
+                face: PlayerFace::of(
+                    &transfer.pose,
+                    transfer.keys.sneak,
+                    transfer.flying,
+                    &transfer.inventory,
+                    transfer.selected_slot,
+                    transfer.riding.map(|riding| riding.vehicle),
+                ),
+                let_go: true,
             };
+            // Its mobs keep seeing the player until the next region's face comes.
+            if let StayNote::Has { face, .. } = &note {
+                let face = face.clone();
+                self.faces
+                    .departed(id, transfer.entity_id, transfer.hops, face, self.tick);
+            }
             let_go.push((id, note));
             let departed = Durable::Departed {
                 player: id,
@@ -1064,7 +1104,8 @@ impl Region {
         // Riders who left the world, noted where they got off, then those let go.
         let mut noted = std::mem::take(&mut self.dismounted);
         noted.extend(let_go);
-        output.stays = self.notes(first, noted);
+        let gone = mem::take(&mut self.gone);
+        output.stays = self.notes(first, noted, gone);
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
@@ -1187,6 +1228,14 @@ impl Region {
             return;
         };
         for entry in mem::take(&mut edge.outbox).into_values() {
+            // A player let go whose edge went is nobody's now: the stay is no more.
+            if let Durable::Departed {
+                player, transfer, ..
+            } = &entry
+                && !alive.contains(&transfer.entity_id)
+            {
+                self.gone.push((*player, transfer.entity_id, transfer.hops));
+            }
             let on_their_way = match entry {
                 Durable::Departed { transfer, .. } => Some(transfer),
                 Durable::NotMine {
@@ -1215,6 +1264,7 @@ impl Region {
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
         self.menu_leaving(id, true, output);
         if let Some(player) = self.players.remove(&id) {
+            self.gone.push((id, player.entity_id, player.hops));
             self.unseat_leaving(Some(id), &player, output);
             self.journal.players.insert(id);
             output.events.push(RegionEvent::EntityRemoved {
@@ -1658,9 +1708,16 @@ impl Region {
     /// What the tick says to the world store of stays: see [`TickOutput::stays`].
     /// `first` is whether this is the region's first tick, and `let_go` has the note of
     /// every stay the tick let go. To be called before the journal is taken.
-    fn notes(&self, first: bool, let_go: Vec<(PlayerId, StayNote)>) -> Vec<StayNote> {
-        // By the player, an entering stay before one that is or was here.
-        let mut notes: BTreeMap<(PlayerId, bool), StayNote> = BTreeMap::new();
+    fn notes(
+        &self,
+        first: bool,
+        let_go: Vec<(PlayerId, StayNote)>,
+        gone: Vec<(PlayerId, EntityId, u32)>,
+    ) -> Vec<StayNote> {
+        // By the player, an entering stay before one that is or was here, and the stays
+        // that are no more last, so that the `Has` of a ride a player left in the tick
+        // they left the world does not bring them back.
+        let mut notes: BTreeMap<(PlayerId, u8, EntityId), StayNote> = BTreeMap::new();
         for (id, entering) in &self.entering {
             // An entering stay changes in a tick only by being begun.
             if first || self.journal.entering.contains(id) {
@@ -1668,7 +1725,7 @@ impl Region {
                     player: *id,
                     entity: entering.entity_id,
                 };
-                notes.insert((*id, false), note);
+                notes.insert((*id, 0, EntityId(0)), note);
             }
         }
         for (id, player) in &self.players {
@@ -1678,13 +1735,23 @@ impl Region {
                     entity: player.entity_id,
                     hops: player.hops,
                     place: player.place(),
+                    face: player.face(),
+                    let_go: false,
                 };
-                notes.insert((*id, true), note);
+                notes.insert((*id, 1, EntityId(0)), note);
             }
         }
         // Whoever was let go is in the region no longer, so no note is replaced.
         for (id, note) in let_go {
-            notes.insert((id, true), note);
+            notes.insert((id, 1, EntityId(0)), note);
+        }
+        for (player, entity, hops) in gone {
+            let note = StayNote::Gone {
+                player,
+                entity,
+                hops,
+            };
+            notes.insert((player, 2, entity), note);
         }
         notes.into_values().collect()
     }
@@ -3011,6 +3078,18 @@ impl Player {
             steps: Default::default(),
             swinging: None,
         }
+    }
+
+    /// What mobs of other regions see of the player.
+    pub(super) fn face(&self) -> PlayerFace {
+        PlayerFace::of(
+            &self.pose,
+            self.keys.sneak,
+            self.flying,
+            &self.inventory,
+            self.selected_slot,
+            self.riding.map(|riding| riding.vehicle),
+        )
     }
 
     /// Where the player is and what they hold, as the world store keeps it.
@@ -6438,7 +6517,9 @@ mod tests {
             discarded
                 .iter()
                 .map(|(entity, chunk)| PlayerChange::Discard {
+                    player: player(9),
                     entity: *entity,
+                    hops: 1,
                     chunk: *chunk,
                 })
                 .collect(),
@@ -7150,7 +7231,7 @@ mod tests {
             .iter()
             .filter_map(|note| match note {
                 StayNote::Has { place, .. } => Some(place.inventory.clone()),
-                StayNote::Entering { .. } => None,
+                StayNote::Entering { .. } | StayNote::Gone { .. } => None,
             })
             .collect();
         assert_eq!(kept, [full_inventory()], "the store keeps it for a rejoin");
@@ -7194,7 +7275,7 @@ mod tests {
             .iter()
             .filter_map(|note| match note {
                 StayNote::Has { place, .. } => Some(place.ender.clone()),
-                StayNote::Entering { .. } => None,
+                StayNote::Entering { .. } | StayNote::Gone { .. } => None,
             })
             .collect();
         assert_eq!(kept, [ender], "the store keeps it for a rejoin");
@@ -9198,7 +9279,9 @@ mod tests {
                         inputs.player_changes.push(arrive(number, &transfer));
                     }
                     3 => inputs.player_changes.push(PlayerChange::Discard {
+                        player: player(number),
                         entity: EntityId(2000 + random(4)),
+                        hops: 1,
                         chunk: position,
                     }),
                     4 => inputs.tickets_added.push((position, Ticket::Viewer)),

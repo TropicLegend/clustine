@@ -300,6 +300,9 @@ impl Region {
             );
             let mut place = player.place();
             place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
+            let mut face = player.face();
+            face.position = at;
+            face.vehicle = None;
             self.dismounted.push((
                 id,
                 crate::api::StayNote::Has {
@@ -307,6 +310,8 @@ impl Region {
                     entity: player.entity_id,
                     hops: player.hops,
                     place,
+                    face,
+                    let_go: false,
                 },
             ));
         }

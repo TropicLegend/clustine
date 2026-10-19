@@ -679,7 +679,9 @@ mod tests {
     /// `docs/adr/0020-one-stay-per-player.md`, sections 3, 5 and 7.
     #[test]
     fn what_is_said_of_stays_to_and_by_the_world_store_round_trips() {
-        use clustine_sim::api::{Inventory, ItemStack, OFF_HAND, Place, Pose, StayNote};
+        use clustine_sim::api::{
+            Inventory, ItemStack, OFF_HAND, Place, PlayerFace, Pose, StayNote,
+        };
         use clustine_world::{BlockPos, EntityId, EntityIds, PlayerId, Vec3};
 
         use crate::{Restored, StoreReply, StoreRequest, StoreWelcome};
@@ -724,13 +726,22 @@ mod tests {
                     player,
                     entity: EntityId(41),
                     hops: 0,
+                    face: PlayerFace::standing(&standing),
                     place: standing.clone(),
+                    let_go: false,
                 },
                 StayNote::Has {
                     player: other,
                     entity: EntityId(u64::MAX),
                     hops: u32::MAX,
+                    face: PlayerFace::standing(&place),
                     place: place.clone(),
+                    let_go: true,
+                },
+                StayNote::Gone {
+                    player: other,
+                    entity: EntityId(u64::MAX),
+                    hops: u32::MAX,
                 },
             ],
             ticks: Vec::new(),

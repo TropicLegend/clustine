@@ -161,7 +161,7 @@ fn store_answers(output: &TickOutput) -> Vec<Entered> {
             place: None,
             holder: None,
         }),
-        StayNote::Has { .. } => None,
+        StayNote::Has { .. } | StayNote::Gone { .. } => None,
     };
     output.stays.iter().filter_map(answer).collect()
 }
@@ -1929,7 +1929,9 @@ impl Cluster {
                 }
             }
             _ => next.change(PlayerChange::Discard {
+                player: id,
                 entity: transfer.entity_id,
+                hops: transfer.hops,
                 chunk: chunk_of(transfer.pose.position),
             }),
         }

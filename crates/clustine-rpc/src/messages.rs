@@ -92,8 +92,14 @@ pub enum EdgeToWorker {
         transfer: PlayerTransfer,
     },
     /// The entity of a player who left while being handed over will not arrive. The
-    /// region reports it as removed to those watching `chunk`, where it was seen last.
-    Discard { entity: EntityId, chunk: ChunkPos },
+    /// region reports it as removed to those watching `chunk`, where it was seen last,
+    /// and notes the stay, with the hand-overs of its transfer, as no more.
+    Discard {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+        chunk: ChunkPos,
+    },
     /// Something a player did while they had `entity`. An edge numbers the inputs of
     /// a player in ascending order, from 1 with every connection, so the entity says
     /// which of the player's stays in the world the input is of; see

@@ -543,12 +543,7 @@ fn a_join_is_held_as_entering_and_named_to_the_store_and_the_player_enters_on_it
     let noted = gate.noted();
     assert_eq!(noted.len(), 2, "{noted:?}");
     assert!(noted[1].0 > joined_in);
-    let has = StayNote::Has {
-        player: player(),
-        entity,
-        hops: 0,
-        place: at_the_spawn_point(),
-    };
+    let has = StayNote::held(player(), entity, 0, at_the_spawn_point());
     assert_eq!(noted[1].1, [has]);
     // Those who watch the chunk are shown the entity only now.
     let shown = e.log.iter().any(|message| {
@@ -629,12 +624,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         (second, place.pose, true, 0)
     );
     assert_eq!(state.attempt, Some(72));
-    let has = StayNote::Has {
-        player: player(),
-        entity: second,
-        hops: 0,
-        place,
-    };
+    let has = StayNote::held(player(), second, 0, place);
     assert_eq!(last_notes(&gate), [has]);
 }
 
@@ -755,12 +745,10 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
     assert_eq!(told(&e, player(), 72), None);
     assert_eq!(west.region().player(player()), None);
     assert_eq!(west.region().entering_state(player()), None);
-    let has = StayNote::Has {
-        player: player(),
-        entity: second,
-        hops: 1,
-        place: place_at(EAST_X + 1.0),
-    };
+    let mut has = StayNote::held(player(), second, 1, place_at(EAST_X + 1.0));
+    if let StayNote::Has { let_go, .. } = &mut has {
+        *let_go = true;
+    }
     let has = [has];
     assert_eq!(last_notes(&gate), has);
 
@@ -776,7 +764,8 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         1,
         arrived,
     );
-    assert_eq!(last_notes(&east_gate), has);
+    let held = [StayNote::held(player(), second, 1, place_at(EAST_X + 1.0))];
+    assert_eq!(last_notes(&east_gate), held);
     let after = there.send(nothing());
     applied(
         &mut [&mut west, &mut east],
@@ -939,12 +928,10 @@ fn a_player_placed_where_the_region_believes_the_chunk_anothers_is_told_they_ent
     // one that says anything of a stay says where it went.
     let noted = gate.noted();
     assert_eq!(noted.len(), noted_before + 2, "{noted:?}");
-    let has = StayNote::Has {
-        player: player(),
-        entity: second,
-        hops: 1,
-        place: place_at(OUT_X),
-    };
+    let mut has = StayNote::held(player(), second, 1, place_at(OUT_X));
+    if let StayNote::Has { let_go, .. } = &mut has {
+        *let_go = true;
+    }
     assert_eq!(noted[noted_before + 1].1, [has]);
 }
 
@@ -1294,12 +1281,7 @@ fn a_restored_home_region_names_every_stay_in_its_first_tick_and_the_entering_on
         player: player(),
         entity: EntityId(2),
     };
-    let has = StayNote::Has {
-        player: other_player(),
-        entity: present,
-        hops: 0,
-        place: place_at(HOME_X),
-    };
+    let has = StayNote::held(other_player(), present, 0, place_at(HOME_X));
     // In the order of the players, whatever each note is.
     assert_eq!(gate.noted(), [(restored_at + 1, vec![entering, has])]);
     assert_eq!(gate.commits(), [restored_at + 1]);
@@ -1403,12 +1385,7 @@ fn a_restored_region_names_a_stay_that_died_while_it_had_no_owner_and_removes_it
         Some(first)
     );
     east.step();
-    let has = StayNote::Has {
-        player: player(),
-        entity: first,
-        hops: 1,
-        place: place_at(EAST_X + 1.0),
-    };
+    let has = StayNote::held(player(), first, 1, place_at(EAST_X + 1.0));
     assert_eq!(east_gate.noted(), [(restored_at + 1, vec![has])]);
     run(
         &mut [&mut west, &mut east],
@@ -1561,15 +1538,17 @@ fn a_merge_drops_what_the_store_said_of_stays_and_the_tick_after_it_names_every_
     assert_eq!(noted.len(), noted_before + 1);
     let (tick, notes) = &noted[noted_before];
     assert_eq!(*tick, merged.tick + 1);
-    let has = |player: PlayerId, entity: EntityId, hops: u32, x: f64| StayNote::Has {
-        player,
-        entity,
-        hops,
-        place: if x == 0.5 {
-            at_the_spawn_point()
-        } else {
-            place_at(x)
-        },
+    let has = |player: PlayerId, entity: EntityId, hops: u32, x: f64| {
+        StayNote::held(
+            player,
+            entity,
+            hops,
+            if x == 0.5 {
+                at_the_spawn_point()
+            } else {
+                place_at(x)
+            },
+        )
     };
     let entering = |player: PlayerId, entity: EntityId| StayNote::Entering { player, entity };
     assert_eq!(
@@ -1706,15 +1685,17 @@ fn a_split_drops_what_the_store_said_of_stays_and_both_regions_name_every_stay_i
     // The region that was split: who stayed, and the stay that is entering.
     let noted_before = gate.noted().len();
     west.step();
-    let has = |player: PlayerId, entity: EntityId, hops: u32, x: f64| StayNote::Has {
-        player,
-        entity,
-        hops,
-        place: if x == 0.5 {
-            at_the_spawn_point()
-        } else {
-            place_at(x)
-        },
+    let has = |player: PlayerId, entity: EntityId, hops: u32, x: f64| {
+        StayNote::held(
+            player,
+            entity,
+            hops,
+            if x == 0.5 {
+                at_the_spawn_point()
+            } else {
+                place_at(x)
+            },
+        )
     };
     let entering = StayNote::Entering {
         player: third_player(),

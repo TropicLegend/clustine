@@ -161,7 +161,8 @@ fn a_mob_reads_its_region_s_entities_then_its_copies_players_and_the_sky_s_light
     let players = view.players();
     assert_eq!(players.len(), 1);
     assert!(players[0].creative && !players[0].sneaking);
-    assert_eq!(players[0].eye_height, 1.62);
+    // The game's eye height is a float.
+    assert_eq!(players[0].eye_height, f64::from(1.62_f32));
     assert!(view.is_loaded(BlockPos::new(8, -60, 8)));
     assert!(!view.is_loaded(BlockPos::new(1000, -60, 8)));
     // The floor's chunk keeps no light: the sky's above its top, none below.

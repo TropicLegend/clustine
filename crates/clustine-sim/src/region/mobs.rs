@@ -5,14 +5,13 @@
 
 use clustine_data::EntityTypeInfo;
 use clustine_world::{
-    BlockPos, ChunkPos, Entity, EntityChange, EntityField, EntityId, OFF_HAND, SectionLight,
+    BlockPos, ChunkPos, Entity, EntityChange, EntityField, EntityId, PlayerId, SectionLight,
 };
 
-use super::entities::CROUCHING_EYES;
+use super::Region;
 use super::items::{Memory, View, tracked};
 use super::riding::Relocated;
-use super::{EYE_HEIGHT, Region};
-use crate::api::{RegionEvent, TickOutput, Tracked};
+use crate::api::{PlayerFace, RegionEvent, TickOutput, Tracked};
 use crate::living::{Kind, Living};
 use crate::mobs::tick::{MobOutput, MobTick};
 use crate::mobs::view::{LightAt, MobWorld, Seen, SeenPlayer};
@@ -86,35 +85,18 @@ impl MobWorld for View<'_> {
         })
     }
 
+    /// The players the region holds, by their keys, then the faces of others it keeps,
+    /// by the player (`docs/groundwork/n7-plan.md`, 10.11).
     fn players(&self) -> Vec<SeenPlayer> {
         let mut players: Vec<SeenPlayer> = self
             .region
             .players
             .iter()
-            .map(|(id, player)| SeenPlayer {
-                key: player.entity_id,
-                uuid: id.0.as_u128(),
-                position: [
-                    player.pose.position.x,
-                    player.pose.position.y,
-                    player.pose.position.z,
-                ],
-                eye_height: if player.keys.sneak && !player.flying {
-                    f64::from(CROUCHING_EYES)
-                } else {
-                    EYE_HEIGHT
-                },
-                yaw: player.pose.yaw,
-                pitch: player.pose.pitch,
-                main_hand: player.inventory.0[usize::from(player.selected_slot)],
-                off_hand: player.inventory.0[OFF_HAND],
-                sneaking: player.keys.sneak,
-                creative: true,
-                spectator: false,
-                vehicle: player.riding.map(|riding| riding.vehicle),
-            })
+            .map(|(id, player)| seen(*id, player.entity_id, &player.face()))
             .collect();
         players.sort_by_key(|player| player.key);
+        let faces = self.region.faces.kept.iter();
+        players.extend(faces.map(|(id, kept)| seen(*id, kept.entity, &kept.face)));
         players
     }
 
@@ -316,5 +298,23 @@ impl Region {
             report.chunk = to;
             output.events.push(RegionEvent::EntityTracked(report));
         }
+    }
+}
+
+/// What a mob reads of a player, from their face.
+fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
+    SeenPlayer {
+        key,
+        uuid: id.0.as_u128(),
+        position: face.position,
+        eye_height: f64::from(face.eye_height),
+        yaw: face.yaw,
+        pitch: face.pitch,
+        main_hand: face.main_hand,
+        off_hand: face.off_hand,
+        sneaking: face.sneaking,
+        creative: face.game_mode == 1,
+        spectator: face.game_mode == 3,
+        vehicle: face.vehicle,
     }
 }

@@ -1478,7 +1478,9 @@ fn a_discard_changes_nothing_of_the_state() {
     let output = checked_tick(
         &mut region,
         &changes(vec![PlayerChange::Discard {
+            player: player(1),
             entity,
+            hops: 1,
             chunk: CHUNK_A,
         }]),
     );

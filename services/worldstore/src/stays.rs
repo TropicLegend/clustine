@@ -86,7 +86,9 @@ pub(crate) fn has(player: PlayerId, entity: u64, hops: u32, place: Place) -> Sta
         player,
         entity: EntityId(entity),
         hops,
+        face: clustine_rpc::PlayerFace::standing(&place),
         place,
+        let_go: false,
     }
 }
 
@@ -184,12 +186,14 @@ pub(crate) fn note_on_disk(note: &StayNote) -> LoggedStay {
             entity,
             hops,
             place,
+            ..
         } => LoggedStay::Has {
             player: player.0.as_u128(),
             entity: entity.0,
             hops: *hops,
             place: on_disk(place),
         },
+        StayNote::Gone { .. } => unreachable!("a commit's `Gone` notes are passed over"),
     }
 }
 
@@ -582,7 +586,9 @@ fn what_the_record_calls_an_error_is_said_in_the_log_and_nothing_else_is() {
 }
 
 fn entity_of(note: &StayNote) -> u64 {
-    let (StayNote::Entering { entity, .. } | StayNote::Has { entity, .. }) = note;
+    let (StayNote::Entering { entity, .. }
+    | StayNote::Has { entity, .. }
+    | StayNote::Gone { entity, .. }) = note;
     entity.0
 }
 

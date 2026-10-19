@@ -1091,7 +1091,9 @@ fn a_seat_kept_for_a_player_whose_hand_over_is_discarded_goes() {
     assert_eq!(seats(&east, key(1)).len(), 1);
     let output = east.tick(&TickInputs {
         player_changes: vec![PlayerChange::Discard {
+            player: PlayerId(uuid::Uuid::from_u128(1)),
             entity: crossing.seated.rider,
+            hops: 1,
             chunk: ChunkPos::new(0, 0),
         }],
         ..TickInputs::default()

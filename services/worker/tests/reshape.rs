@@ -6425,7 +6425,9 @@ impl Edge {
                     self.tell(
                         to,
                         EdgeToWorker::Discard {
+                            player,
                             entity: transfer.entity_id,
+                            hops: transfer.hops,
                             chunk: ChunkPos::containing(position.x, position.z),
                         },
                     );

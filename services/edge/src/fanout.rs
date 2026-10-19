@@ -2033,7 +2033,7 @@ impl Fanout {
                     }
                     let chunk =
                         ChunkPos::containing(transfer.pose.position.x, transfer.pose.position.z);
-                    self.discard(holder, transfer.entity_id, chunk).await;
+                    self.discard(holder, player, &transfer, chunk).await;
                     self.remove_player(player).await;
                 } else {
                     self.hand_over(player, from, holder, transfer, back).await;
@@ -2998,7 +2998,7 @@ impl Fanout {
             .get_mut(&player)
             .filter(|view| view.entity == Some(transfer.entity_id));
         let Some(view) = current else {
-            self.discard(to, transfer.entity_id, chunk).await;
+            self.discard(to, player, &transfer, chunk).await;
             return;
         };
         if view.region != from {
@@ -3012,7 +3012,7 @@ impl Fanout {
             // does. Sending the player back would have them bounce there forever.
             error!(name = %view.name, %from, "a region let go of a player who is inside it");
             refuse(&view.outbound, "The server lost track of where you are.");
-            self.discard(to, transfer.entity_id, chunk).await;
+            self.discard(to, player, &transfer, chunk).await;
             self.remove_player(player).await;
             return;
         }
@@ -3082,9 +3082,21 @@ impl Fanout {
     /// players saw it cross. This edge takes it off its own screens here and now: it
     /// takes a removal only from the region that showed it the entity last, which is
     /// the old one, and it may not be asking `to` for that chunk at all.
-    async fn discard(&mut self, to: RegionId, entity: EntityId, chunk: ChunkPos) {
-        self.send_to_region(to, EdgeToWorker::Discard { entity, chunk })
-            .await;
+    async fn discard(
+        &mut self,
+        to: RegionId,
+        player: PlayerId,
+        transfer: &PlayerTransfer,
+        chunk: ChunkPos,
+    ) {
+        let entity = transfer.entity_id;
+        let discard = EdgeToWorker::Discard {
+            player,
+            entity,
+            hops: transfer.hops,
+            chunk,
+        };
+        self.send_to_region(to, discard).await;
         self.remove_entity(entity).await;
     }
 
@@ -10840,7 +10852,9 @@ mod scenarios {
         edge.say(WEST, departed(player(1), EntityId(5), EAST, EASTERN));
         edge.settle(WEST).await;
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: EASTERN,
         };
         let said = edge.said(EAST).await;
@@ -10876,7 +10890,9 @@ mod scenarios {
         edge.say(WEST, departed(player(1), EntityId(5), EAST, EASTERN));
         edge.settle(WEST).await;
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: EASTERN,
         };
         let said = edge.said(EAST).await;
@@ -10935,7 +10951,9 @@ mod scenarios {
         edge.say(EAST, sent_on(player(1), EntityId(5), NORTH, EASTERN));
         edge.settle(EAST).await;
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: EASTERN,
         };
         let said = edge.said(NORTH).await;
@@ -10995,7 +11013,9 @@ mod scenarios {
         edge.say(EAST, sent_on(player(1), EntityId(5), NORTH, EASTERN));
         edge.settle(EAST).await;
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: EASTERN,
         };
         let said = edge.said(NORTH).await;
@@ -11893,7 +11913,9 @@ mod scenarios {
         edge.settle(EAST).await;
         let said = numbered(&edge.said(WEST).await);
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: near,
         };
         assert_eq!(
@@ -13006,7 +13028,7 @@ mod scenarios {
                         }
                     }
                 }
-                EdgeToWorker::Discard { entity, chunk } => {
+                EdgeToWorker::Discard { entity, chunk, .. } => {
                     self.on_the_way.remove(&entity);
                     ticked
                         .events
@@ -18579,7 +18601,9 @@ mod scenarios {
         edge.settle(WEST).await;
         let said = edge.sent(EAST).await;
         let discard = EdgeToWorker::Discard {
+            player: player(1),
             entity: EntityId(5),
+            hops: 0,
             chunk: NORTHERN,
         };
         assert_eq!(numbered(&said), [(1, discard)]);
@@ -19445,7 +19469,9 @@ mod scenarios {
 
             let said = edge.sent(EAST).await;
             let discard = EdgeToWorker::Discard {
+                player: player(1),
                 entity: EntityId(5),
+                hops: 1,
                 chunk: EASTERN,
             };
             assert_eq!(numbered(&said), [(1, discard)]);

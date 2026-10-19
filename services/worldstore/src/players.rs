@@ -314,12 +314,14 @@ pub(crate) fn logged(note: &StayNote) -> LoggedStay {
             entity,
             hops,
             place,
+            ..
         } => LoggedStay::Has {
             player: player.0.as_u128(),
             entity: entity.0,
             hops: *hops,
             place: logged_place(place),
         },
+        StayNote::Gone { .. } => unreachable!("a commit's `Gone` notes are passed over"),
     }
 }
 

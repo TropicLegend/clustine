@@ -363,7 +363,9 @@ mod tests {
                 transfer: transfer(),
             },
             EdgeToWorker::Discard {
+                player: player(),
                 entity: EntityId(9),
+                hops: 3,
                 chunk: ChunkPos::new(-3, 4),
             },
             EdgeToWorker::Remote(remote()),

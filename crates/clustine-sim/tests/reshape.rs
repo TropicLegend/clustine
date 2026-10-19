@@ -4950,6 +4950,8 @@ impl Places {
         let (mut enter, mut dead, mut all) = (Vec::new(), Vec::new(), Vec::new());
         for note in notes {
             match note {
+                // Not judged by the store yet (step N7a2's faces).
+                StayNote::Gone { .. } => {}
                 StayNote::Entering { player, entity } => {
                     assert!(home, "{note:?} from a region that is not joined");
                     let record = self.records.entry(*player).or_insert(Kept {
@@ -4984,6 +4986,7 @@ impl Places {
                     entity,
                     hops,
                     place,
+                    ..
                 } => {
                     let record = self.records.get_mut(player);
                     let record =
@@ -5378,7 +5381,9 @@ impl Cluster {
                 }
             }
             _ => next.change(PlayerChange::Discard {
+                player: id,
                 entity: transfer.entity_id,
+                hops: transfer.hops,
                 chunk: chunk_of(transfer.pose.position),
             }),
         }

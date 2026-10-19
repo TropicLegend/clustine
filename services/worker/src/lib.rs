@@ -4124,7 +4124,7 @@ impl RegionRunner {
             PlayerChange::Join(from, _)
             | PlayerChange::Leave(from, ..)
             | PlayerChange::Arrive(from, ..) => *from != edge,
-            PlayerChange::Discard { entity, chunk } => {
+            PlayerChange::Discard { entity, chunk, .. } => {
                 let found = discards.iter().position(|of| *of == (*entity, *chunk));
                 found.map(|index| discards.swap_remove(index)).is_none()
             }
@@ -4155,9 +4155,19 @@ impl RegionRunner {
             EdgeToWorker::Remote(action) => {
                 self.inputs.remote_actions.push((edge, action));
             }
-            EdgeToWorker::Discard { entity, chunk } => {
+            EdgeToWorker::Discard {
+                player,
+                entity,
+                hops,
+                chunk,
+            } => {
                 self.discards.push((edge, entity, chunk));
-                self.inputs.change(PlayerChange::Discard { entity, chunk });
+                self.inputs.change(PlayerChange::Discard {
+                    player,
+                    entity,
+                    hops,
+                    chunk,
+                });
             }
             EdgeToWorker::Input {
                 player,
@@ -6082,9 +6092,14 @@ mod tests {
             // Nor is the edge told what happens out there: the next it hears is about
             // the chunk it does get.
             for (entity, chunk) in [(EntityId(8), outside), (EntityId(9), inside)] {
-                edge.send(EdgeToWorker::Discard { entity, chunk })
-                    .await
-                    .unwrap();
+                edge.send(EdgeToWorker::Discard {
+                    player: player(),
+                    entity,
+                    hops: 1,
+                    chunk,
+                })
+                .await
+                .unwrap();
             }
             let removed = RegionEvent::EntityRemoved {
                 entity: EntityId(9),
@@ -6104,7 +6119,9 @@ mod tests {
             // Letting go of it changes nothing of what is loaded.
             edge.send(done_with(vec![outside])).await.unwrap();
             edge.send(EdgeToWorker::Discard {
+                player: player(),
                 entity: EntityId(10),
+                hops: 1,
                 chunk: inside,
             })
             .await
@@ -7384,7 +7401,9 @@ mod tests {
         old.send(join(other_player(), "Jeb")).await.unwrap();
         old.send(walk(player(), 3.0)).await.unwrap();
         old.send(EdgeToWorker::Discard {
+            player: player(),
             entity: EntityId(77),
+            hops: 1,
             chunk: ORIGIN,
         })
         .await
@@ -9132,9 +9151,14 @@ mod tests {
 
         // What happens in the chunk that is elsewhere is not told.
         for (entity, chunk) in [(EntityId(8), BESIDE), (EntityId(9), ORIGIN)] {
-            edge.send(EdgeToWorker::Discard { entity, chunk })
-                .await
-                .unwrap();
+            edge.send(EdgeToWorker::Discard {
+                player: player(),
+                entity,
+                hops: 1,
+                chunk,
+            })
+            .await
+            .unwrap();
         }
         let removed = RegionEvent::EntityRemoved {
             entity: EntityId(9),
@@ -9240,7 +9264,9 @@ mod tests {
         ] {
             edge.send(message).await.unwrap();
             let discard = EdgeToWorker::Discard {
+                player: player(),
                 entity,
+                hops: 1,
                 chunk: BESIDE,
             };
             edge.send(discard).await.unwrap();
@@ -10058,7 +10084,9 @@ mod tests {
         // being told what happens in it.
         viewer.send(done_with(vec![BESIDE])).await.unwrap();
         let discard = EdgeToWorker::Discard {
+            player: player(),
             entity: EntityId(9),
+            hops: 1,
             chunk: BESIDE,
         };
         guest.send(discard).await.unwrap();

@@ -1042,7 +1042,9 @@ impl Scenario {
                     PlayerChange::Arrive(edge, id, transfer)
                 }
                 _ => PlayerChange::Discard {
+                    player: PlayerId(uuid::Uuid::from_u128(u128::from(random.below(4)) + 1)),
                     entity: EntityId(random.below(40)),
+                    hops: random.below(3) as u32,
                     chunk: ChunkPos::new(random.below(5) as i32 - 2, 0),
                 },
             };

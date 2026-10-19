@@ -32,8 +32,8 @@ use clustine_sim::api::{
 };
 use clustine_sim::{
     Durable, EdgeEvent, Entered, EnteringState, Holdings, Knowledge, Misdirected, Place,
-    PlayerChange, PlayerEvent, PlayerJoin, PlayerState, PlayerTransfer, Region, RegionConfig,
-    RegionState, StayNote, TickInputs, TickOutput, Ticket,
+    PlayerChange, PlayerEvent, PlayerFace, PlayerJoin, PlayerState, PlayerTransfer, Region,
+    RegionConfig, RegionState, StayNote, TickInputs, TickOutput, Ticket,
 };
 use clustine_world::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,
@@ -323,7 +323,29 @@ fn has(n: u128, entity: EntityId, hops: u32, place: Place) -> StayNote {
         player: player(n),
         entity,
         hops,
+        face: PlayerFace::standing(&place),
         place,
+        let_go: false,
+    }
+}
+
+/// The note of a stay let go in the tick.
+fn let_go_note(n: u128, entity: EntityId, hops: u32, place: Place) -> StayNote {
+    StayNote::Has {
+        player: player(n),
+        entity,
+        hops,
+        face: PlayerFace::standing(&place),
+        place,
+        let_go: true,
+    }
+}
+
+fn gone(n: u128, entity: EntityId, hops: u32) -> StayNote {
+    StayNote::Gone {
+        player: player(n),
+        entity,
+        hops,
     }
 }
 
@@ -353,6 +375,7 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
     let key = |note: &StayNote| match note {
         StayNote::Entering { player, .. } => (*player, 0),
         StayNote::Has { player, .. } => (*player, 1),
+        StayNote::Gone { player, entity, .. } => (*player, 2 + entity.0),
     };
     let keys: Vec<_> = output.stays.iter().map(key).collect();
     assert!(
@@ -362,6 +385,7 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
     );
     for note in &output.stays {
         match note {
+            StayNote::Gone { .. } => {}
             StayNote::Entering { player, entity } => {
                 let held = after.entering.get(player).map(|held| held.entity_id);
                 assert_eq!(held, Some(*entity), "tick {tick}: {note:?}");
@@ -371,6 +395,7 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
                 entity,
                 hops,
                 place,
+                ..
             } => {
                 let here = after
                     .players
@@ -638,7 +663,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         to: OTHER,
     };
     assert_eq!(output.durable, [(E, 1, departed)]);
-    assert_eq!(output.stays, [has(1, entity(1), 1, place)]);
+    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place)]);
     assert!(output.events.is_empty(), "the entity lives on");
     assert_eq!(region.player_count(), 0);
 }
@@ -673,7 +698,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         to: OTHER,
     };
     assert_eq!(output.durable, [(E, 1, departed)]);
-    assert_eq!(output.stays, [has(1, entity(1), 1, place)]);
+    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place)]);
     // The region has nothing of the stay any more.
     assert_eq!(region.entering_state(player(1)), None);
     assert_eq!(region.player(player(1)), None);
@@ -840,7 +865,10 @@ fn a_player_who_is_let_go_is_named_with_the_place_and_the_hops_the_next_region_b
     };
     assert_eq!((*to, transfer.hops, transfer.attempt), (OTHER, 1, None));
     assert_eq!(transfer.pose.position, step);
-    assert_eq!(output.stays, [has(1, entity(1), 1, place_from(transfer))]);
+    assert_eq!(
+        output.stays,
+        [let_go_note(1, entity(1), 1, place_from(transfer))]
+    );
     assert_eq!(region.player_count(), 0);
 
     // The region that takes them in names them with those hops, and counts one more
@@ -857,7 +885,10 @@ fn a_player_who_is_let_go_is_named_with_the_place_and_the_hops_the_next_region_b
         panic!("{:?}", output.durable);
     };
     assert_eq!(transfer.hops, 2);
-    assert_eq!(output.stays, [has(1, entity(1), 2, place_from(transfer))]);
+    assert_eq!(
+        output.stays,
+        [let_go_note(1, entity(1), 2, place_from(transfer))]
+    );
 }
 
 #[test]
@@ -987,12 +1018,13 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
 }
 
 #[test]
-fn a_player_who_is_removed_is_not_named() {
-    // By a leave, by a join that is refused, by the store's word and by an edge that
-    // is gone.
+fn a_player_who_leaves_or_whose_edge_goes_is_named_gone_and_one_a_later_stay_ends_is_not() {
+    // By a leave and by an edge that is gone, the stay is no more, which the store
+    // judges (`docs/groundwork/n7-plan.md`, section 8.3.2); by the store's word or a
+    // join over them, the store knows already (the plan's faces design, question 3).
     let mut region = with_player();
     let output = tick(&mut region, &changes(vec![leave_as(E, 1, entity(1))]));
-    assert!(output.stays.is_empty());
+    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
     assert_eq!(removed(&output), [entity(1)]);
 
     let mut region = with_player();
@@ -1002,7 +1034,7 @@ fn a_player_who_is_removed_is_not_named() {
 
     let mut region = with_player();
     let output = tick(&mut region, &edges(vec![EdgeEvent::Gone { edge: E }]));
-    assert!(output.stays.is_empty());
+    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
     assert_eq!(removed(&output), [entity(1)]);
 
     // A join over them names the stay that is entering, and not the one that went.
@@ -1058,7 +1090,8 @@ fn a_leave_without_an_entity_ends_a_present_stay_only_while_it_carries_that_atte
     assert!(silent(&output) && output.delta.changes_only_the_tick());
     let output = tick(&mut region, &changes(vec![leave_of(E, 1, Some(ATTEMPT))]));
     assert_eq!(removed(&output), [entity(1)]);
-    assert!(output.durable.is_empty() && output.stays.is_empty());
+    assert!(output.durable.is_empty());
+    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
 
     // Once an input of the stay is applied its edge knows the entity, the stay
     // carries no attempt, and only a leave that names the entity ends it.
@@ -1429,7 +1462,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         ]
     ));
     assert_eq!(region.player_count(), 0);
-    assert_eq!(output.stays, [has(1, entity(1), 1, place_in(FAR))]);
+    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place_in(FAR))]);
 
     // A stay that is here and not below the entering one cannot be while only the
     // home region gives out ids. If it is, the entering stay goes instead.
@@ -1869,6 +1902,8 @@ impl Store {
         let (mut answers, mut all) = (Vec::new(), Vec::new());
         for note in notes {
             match note {
+                // Not judged by the store yet (step N7a2's faces).
+                StayNote::Gone { .. } => {}
                 StayNote::Entering { player, entity } => {
                     assert!(home, "{note:?} from a region that is not joined");
                     let record = self.records.entry(*player).or_insert(Record {
@@ -1903,6 +1938,7 @@ impl Store {
                     entity,
                     hops,
                     place,
+                    ..
                 } => {
                     let record = self.records.get_mut(player);
                     let record =
@@ -2114,7 +2150,9 @@ impl Edges {
             None => {
                 self.discarded += 1;
                 let discard = PlayerChange::Discard {
+                    player: id,
                     entity: transfer.entity_id,
+                    hops: transfer.hops,
                     chunk: chunk_of(transfer.pose.position),
                 };
                 (to, Message::Change(discard))
@@ -3307,9 +3345,10 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
                 let said: BTreeSet<(PlayerId, bool)> = theirs
                     .stays
                     .iter()
-                    .map(|note| match note {
-                        StayNote::Entering { player, .. } => (*player, false),
-                        StayNote::Has { player, .. } => (*player, true),
+                    .filter_map(|note| match note {
+                        StayNote::Entering { player, .. } => Some((*player, false)),
+                        StayNote::Has { player, .. } => Some((*player, true)),
+                        StayNote::Gone { .. } => None,
                     })
                     .collect();
                 let let_go = output.stays.iter().filter_map(|note| match note {
@@ -3455,4 +3494,23 @@ fn made_up_ticks_of_one_region_never_leave_two_stays_and_tell_every_edge_whose_s
         }
     }
     assert!(seen.iter().all(|count| *count >= 100), "{seen:?}");
+}
+
+/// `docs/groundwork/n7-plan.md`, 9.2.3, and the faces design (R1): a discard is noted
+/// `Gone` for the store to judge, unless the region holds that stay or a later one.
+#[test]
+fn a_discard_is_noted_gone_unless_the_region_holds_that_stay_or_a_later_one() {
+    let discard = |n: u128, entity: EntityId, hops: u32| PlayerChange::Discard {
+        player: player(n),
+        entity,
+        hops,
+        chunk: ChunkPos::new(0, 0),
+    };
+    let mut region = with_player();
+    let output = tick(&mut region, &changes(vec![discard(1, entity(1), 0)]));
+    assert!(output.stays.is_empty(), "{:?}", output.stays);
+    let output = tick(&mut region, &changes(vec![discard(1, entity(1), 1)]));
+    assert_eq!(output.stays, [gone(1, entity(1), 1)]);
+    let output = tick(&mut region, &changes(vec![discard(2, entity(7), 3)]));
+    assert_eq!(output.stays, [gone(2, entity(7), 3)]);
 }

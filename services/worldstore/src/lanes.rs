@@ -1222,6 +1222,12 @@ impl Lanes {
                 clock,
             } => {
                 let region = session.region;
+                // The store does not judge a stay that is no more yet (step N7a2's
+                // faces, the next commit): it is passed over, as before there was one.
+                let stays: Vec<StayNote> = stays
+                    .into_iter()
+                    .filter(|note| !matches!(note, StayNote::Gone { .. }))
+                    .collect();
                 // What the commit took of the arrivals is looked at before anything is
                 // appended: each filed and held by the region, or the commit is refused,
                 // appending nothing, and the region is lost; a taking passed over would
@@ -1490,7 +1496,8 @@ impl Lanes {
                         let mut dead = Vec::new();
                         for (note, logged) in stays.iter().zip(&notes) {
                             let (StayNote::Entering { player, entity }
-                            | StayNote::Has { player, entity, .. }) = *note;
+                            | StayNote::Has { player, entity, .. }
+                            | StayNote::Gone { player, entity, .. }) = *note;
                             // Who holds the chunk of the place as the table is now.
                             // It is advice: a claim later in this group can take the
                             // chunk, and its holder can give it back a moment later.

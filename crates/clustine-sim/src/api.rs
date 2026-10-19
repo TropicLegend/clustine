@@ -89,18 +89,176 @@ pub struct Place {
 /// `docs/adr/0020-one-stay-per-player.md`, section 3, and [`TickOutput::stays`] for
 /// which tick makes which.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a tick has a few notes at most, and a `Has` carries a whole inventory"
+)]
 pub enum StayNote {
     /// The home region has given `player` the stay `entity` and holds it as entering,
     /// or still holds it so and names it again.
     Entering { player: PlayerId, entity: EntityId },
-    /// The stay is in this region after the tick, or was let go in it, with `hops`
-    /// hand-overs behind it and this place.
+    /// The stay is in this region after the tick, or was let go in it (`let_go`), with
+    /// `hops` hand-overs behind it, this place and this face.
     Has {
         player: PlayerId,
         entity: EntityId,
         hops: u32,
         place: Place,
+        face: PlayerFace,
+        let_go: bool,
     },
+    /// The stay is no more: its player left, their edge went with them on the way to
+    /// another region, or an edge said that a stay let go will arrive nowhere. The
+    /// world store judges whether it ends the player's time in the world
+    /// (`docs/groundwork/n7-plan.md`, sections 8.3.2, 9.2.4 and 10.4). A player's `Gone`
+    /// is the last of their notes in a commit, behind the `Has` of a ride they left.
+    Gone {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+    },
+}
+
+impl StayNote {
+    /// The `Has` of a stay held at `place`, its player standing and riding nothing.
+    pub fn held(player: PlayerId, entity: EntityId, hops: u32, place: Place) -> Self {
+        Self::Has {
+            player,
+            entity,
+            hops,
+            face: PlayerFace::standing(&place),
+            place,
+            let_go: false,
+        }
+    }
+
+    /// The player the note is of.
+    pub fn player(&self) -> PlayerId {
+        match self {
+            Self::Entering { player, .. }
+            | Self::Has { player, .. }
+            | Self::Gone { player, .. } => *player,
+        }
+    }
+}
+
+/// What a mob sees of a player another region holds, or that this one let go a moment
+/// ago: the store keeps the latest of every player and streams it to the regions that
+/// copy or hold its chunk (`docs/groundwork/n7-plan.md`, sections 7.3 and 11.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlayerFace {
+    /// Their feet.
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub eye_height: f32,
+    pub main_hand: Option<ItemStack>,
+    pub off_hand: Option<ItemStack>,
+    /// Feet, legs, chest and head.
+    pub worn: [Option<ItemStack>; 4],
+    pub sneaking: bool,
+    /// The game mode's id: 1, creative, for everyone until survival.
+    pub game_mode: u8,
+    /// The sleep counter, in ticks lived, while they sleep.
+    pub sleeping: Option<u32>,
+    /// What they ride.
+    pub vehicle: Option<EntityId>,
+    pub alive: bool,
+    /// The mob they last hurt and when, in game time.
+    pub last_hurt_mob: Option<(EntityId, u64)>,
+    /// The mob that last hurt them and when, in game time.
+    pub last_hurt_by: Option<(EntityId, u64)>,
+    /// `hasMovedHorizontallyRecently`.
+    pub moved_horizontally: bool,
+}
+
+impl PlayerFace {
+    /// What mobs see of a player standing so and holding this (the view's `SeenPlayer`).
+    pub fn of(
+        pose: &Pose,
+        sneaking: bool,
+        flying: bool,
+        inventory: &Inventory,
+        selected_slot: u8,
+        vehicle: Option<EntityId>,
+    ) -> Self {
+        let slot = |index: usize| inventory.0[index];
+        Self {
+            position: [pose.position.x, pose.position.y, pose.position.z],
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+            eye_height: if sneaking && !flying {
+                CROUCHING_EYE_HEIGHT
+            } else {
+                EYE_HEIGHT
+            },
+            main_hand: slot(usize::from(selected_slot)),
+            off_hand: slot(OFF_HAND),
+            worn: std::array::from_fn(|index| slot(clustine_world::ARMOUR_START + index)),
+            sneaking,
+            // Everyone is in creative mode until survival.
+            game_mode: 1,
+            sleeping: None,
+            vehicle,
+            alive: true,
+            last_hurt_mob: None,
+            last_hurt_by: None,
+            moved_horizontally: false,
+        }
+    }
+
+    /// The face of a player at their place, standing and riding nothing.
+    pub fn standing(place: &Place) -> Self {
+        Self::of(
+            &place.pose,
+            false,
+            place.flying,
+            &place.inventory,
+            place.selected_slot,
+            None,
+        )
+    }
+}
+
+/// How far above their feet a player's eyes are, standing and crouching
+/// (`Player.STANDING_DIMENSIONS`, `CROUCHING_DIMENSIONS`).
+const EYE_HEIGHT: f32 = 1.62;
+const CROUCHING_EYE_HEIGHT: f32 = 1.27;
+
+/// The place of a face in the order the store took it: the sequence of the commit that
+/// wrote it in the log, and the index of its note in the commit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FaceSeq(pub u64, pub u32);
+
+/// A face or its removal, as the world store streams them, with the stay they are of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FaceChange {
+    Face {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+        seq: FaceSeq,
+        face: PlayerFace,
+    },
+    /// The face of the stay at `seq` and every earlier face are gone: the player moved to
+    /// a chunk the region neither holds nor copies, or left the world.
+    Removed {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+        seq: FaceSeq,
+    },
+}
+
+/// A player of the world as the store publishes them once a second, for the rules that
+/// count every player (sleep, the 32 and 128 blocks, owners beyond the copies).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldPlayer {
+    pub player: PlayerId,
+    pub entity: EntityId,
+    pub position: [f64; 3],
+    pub game_mode: u8,
+    pub sleeping: Option<u32>,
 }
 
 /// The world store's answer to a [`StayNote::Entering`]: the stay `entity` of `player`
@@ -228,8 +386,14 @@ pub enum PlayerChange {
     Arrive(EdgeId, PlayerId, PlayerTransfer),
     /// An entity that another region let go will not arrive anywhere, because its player
     /// left in the meantime. It is reported as removed to those watching `chunk`, where
-    /// it was seen last.
-    Discard { entity: EntityId, chunk: ChunkPos },
+    /// it was seen last. The region notes the stay `Gone`, with the hand-overs of its
+    /// transfer, unless it holds that stay or a later one of the player.
+    Discard {
+        player: PlayerId,
+        entity: EntityId,
+        hops: u32,
+        chunk: ChunkPos,
+    },
 }
 
 /// What kind of thing an entity is.
@@ -808,6 +972,12 @@ pub struct TickInputs {
     /// The world's clock as the store last published it, if it did since the last tick:
     /// the region takes the later of it and its own ([`WorldClock::later`]).
     pub clock: Option<WorldClock>,
+    /// The faces and their removals the store streamed since the last tick, in order
+    /// (`docs/groundwork/n7-plan.md`, section 7.3).
+    pub faces: Vec<FaceChange>,
+    /// The world's players as the store last published them, if it did since the last
+    /// tick.
+    pub world_players: Option<Vec<WorldPlayer>>,
 }
 
 /// The world's clock (`docs/groundwork/n7-plan.md`, sections 7.4, 8.4 and 9.3): the game
