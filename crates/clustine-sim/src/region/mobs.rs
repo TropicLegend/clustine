@@ -5,7 +5,7 @@
 
 use clustine_data::EntityTypeInfo;
 use clustine_world::{
-    BlockPos, ChunkPos, Entity, EntityChange, EntityField, OFF_HAND, SectionLight,
+    BlockPos, ChunkPos, Entity, EntityChange, EntityField, EntityId, OFF_HAND, SectionLight,
 };
 
 use super::entities::CROUCHING_EYES;
@@ -64,6 +64,26 @@ impl MobWorld for View<'_> {
             }
         }
         found
+    }
+
+    fn entity(&self, key: EntityId) -> Option<Seen<'_>> {
+        if let Some((_, entity)) = self.region.find_entity(key) {
+            return Some(Seen {
+                entity,
+                bounds: self.region.entity_box(entity),
+                copied: false,
+            });
+        }
+        // A copy's entities are not indexed by key: a target across the line is looked
+        // for among them.
+        self.region.copies.values().find_map(|chunk| {
+            let entity = chunk.entities().iter().find(|entity| entity.key == key)?;
+            Some(Seen {
+                entity,
+                bounds: self.region.entity_box(entity),
+                copied: true,
+            })
+        })
     }
 
     fn players(&self) -> Vec<SeenPlayer> {
@@ -172,6 +192,8 @@ impl Region {
             tick_count: entity.tick_count(),
             mob,
             living,
+            yaw: entity.yaw,
+            pitch: entity.pitch,
             mob_type: types::of(entity.kind),
             world: &view,
             draws: &mut stream,
@@ -181,6 +203,8 @@ impl Region {
         let MobTick {
             mut mob,
             mut living,
+            yaw,
+            pitch,
             out,
             ..
         } = ticking;
@@ -189,7 +213,7 @@ impl Region {
         self.living_aftermath(key, &mut living, output);
         mob.body.vitals.air = living.air;
         mob.body.vitals.frozen = living.frozen;
-        self.write_mob(&entity, &mob, &living, position, output);
+        self.write_mob(&entity, &mob, &living, (yaw, pitch), position, output);
     }
 
     /// What the tick leaves of the mob `before` of the chunk `position`: its record, its
@@ -200,6 +224,7 @@ impl Region {
         before: &Entity,
         mob: &Mob,
         living: &Living,
+        (yaw, pitch): (f32, f32),
         position: ChunkPos,
         output: &mut TickOutput,
     ) {
@@ -210,6 +235,8 @@ impl Region {
             on_ground: living.body.on_ground,
             fall_distance: living.body.fall_distance,
             fire_ticks: living.fire_ticks,
+            yaw,
+            pitch,
             lived: before.lived.saturating_add(1),
             data: mob.encode(),
             ..before.clone()
@@ -243,6 +270,11 @@ impl Region {
             }
             if bits(after.motion) != bits(before.motion) {
                 fields.push(EntityField::Motion(after.motion));
+            }
+            if after.yaw.to_bits() != before.yaw.to_bits()
+                || after.pitch.to_bits() != before.pitch.to_bits()
+            {
+                fields.push(EntityField::Rotation { yaw, pitch });
             }
             if after.on_ground != before.on_ground {
                 fields.push(EntityField::OnGround(after.on_ground));

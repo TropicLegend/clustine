@@ -45,6 +45,10 @@ pub(crate) struct MobTick<'w> {
     pub(crate) tick_count: u32,
     pub(crate) mob: Mob,
     pub(crate) living: Living,
+    /// `yRot` and `xRot`: the yaw its move control turns and the pitch its look control
+    /// sets (N7c's), which the record keeps as the entity's rotation.
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
     pub(crate) mob_type: &'static dyn MobType,
     pub(crate) world: &'w dyn MobWorld,
     /// Its own stream in this tick, on from what it has drawn: every draw of its tick,

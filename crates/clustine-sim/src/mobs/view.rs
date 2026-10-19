@@ -65,6 +65,13 @@ pub(crate) trait MobWorld: Holds {
     /// in the order they were added (named).
     fn entities_in(&self, bounds: &Aabb) -> Vec<Seen<'_>>;
 
+    /// The entity `key`, where the region's land or copies have it: what a goal holds by
+    /// key (its target), looked up as the game holds it by reference.
+    fn entity(&self, key: EntityId) -> Option<Seen<'_>> {
+        let _ = key;
+        None
+    }
+
     /// The players a mob reads: the region's own, then those of other regions that its
     /// copies show (N7a2's faces), each by key.
     fn players(&self) -> Vec<SeenPlayer>;
