@@ -327,6 +327,53 @@ pub enum EntityData {
         /// Who primed it (`owner`), if anyone did.
         owner: Option<Uuid>,
     },
+    /// A living mob of any type (`Mob` and what derives from it): its body, its mind and
+    /// its type's own state, each in the encoding of the code that keeps it, so that a
+    /// type's code adds what it keeps without a change to this record
+    /// (`docs/groundwork/n7-plan.md`, section 11.3).
+    Mob {
+        /// The body's parts, ascending by id, each once: its vitals, attributes,
+        /// equipment, controls, path and the rest that every mob has.
+        body: Vec<Entry>,
+        /// The mind's parts, ascending by id, each once: the goal and target selectors'
+        /// state, each goal's, and a brain's. Copies of a chunk leave them out, as
+        /// nothing reads another mob's mind across a line.
+        mind: Vec<Entry>,
+        /// What its type keeps beside (a sheep's colour, a cow's variant, love).
+        state: TypeState,
+    },
+}
+
+/// A part of a mob's body or mind: an id that the code of that part gives it and keeps
+/// across builds, the version of that code's encoding, and the bytes. A build that does
+/// not know an id drops the part, and reads every earlier version of those it knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    pub id: u16,
+    pub version: u8,
+    pub bytes: Vec<u8>,
+}
+
+/// What a mob's type keeps beside its body and mind, in its own encoding's `version`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeState {
+    pub version: u8,
+    pub bytes: Vec<u8>,
+}
+
+/// Puts `entry` into `entries`, ascending by id, in place of one of the same id.
+fn put_entry(entries: &mut Vec<Entry>, entry: &Entry) {
+    match entries.binary_search_by_key(&entry.id, |held| held.id) {
+        Ok(at) => entries[at] = entry.clone(),
+        Err(at) => entries.insert(at, entry.clone()),
+    }
+}
+
+/// Takes the entry of `id` out of `entries`, if it is there.
+fn drop_entry(entries: &mut Vec<Entry>, id: u16) {
+    if let Ok(at) = entries.binary_search_by_key(&id, |held| held.id) {
+        entries.remove(at);
+    }
 }
 
 /// What a tick did to an entity of a chunk. Applied in the order a tick made them, after
@@ -373,6 +420,16 @@ pub enum EntityField {
     /// (`docs/groundwork/n7-plan.md`, section 10, item 1).
     Hops(u32),
     Data(EntityData),
+    /// A part of a mob's body, set; on an entity that is no mob, nothing.
+    BodyEntry(Entry),
+    /// The part of a mob's body of this id, gone.
+    BodyGone(u16),
+    /// A part of a mob's mind, set.
+    MindEntry(Entry),
+    /// The part of a mob's mind of this id, gone.
+    MindGone(u16),
+    /// A mob's type's own state.
+    TypeState(TypeState),
     FallDistance(f64),
     FireTicks(i32),
     Riding(Riding),
@@ -397,6 +454,13 @@ impl PartialEq for EntityField {
             | (Self::FreshAt(a), Self::FreshAt(b))
             | (Self::Hops(a), Self::Hops(b)) => a == b,
             (Self::Data(a), Self::Data(b)) => a == b,
+            (Self::BodyEntry(a), Self::BodyEntry(b)) | (Self::MindEntry(a), Self::MindEntry(b)) => {
+                a == b
+            }
+            (Self::BodyGone(a), Self::BodyGone(b)) | (Self::MindGone(a), Self::MindGone(b)) => {
+                a == b
+            }
+            (Self::TypeState(a), Self::TypeState(b)) => a == b,
             (Self::FallDistance(a), Self::FallDistance(b)) => a.to_bits() == b.to_bits(),
             (Self::FireTicks(a), Self::FireTicks(b)) => a == b,
             (Self::Riding(a), Self::Riding(b)) => a == b,
@@ -419,6 +483,31 @@ impl EntityField {
             Self::FreshAt(fresh_at) => entity.fresh_at = *fresh_at,
             Self::Hops(hops) => entity.hops = *hops,
             Self::Data(data) => entity.data = data.clone(),
+            Self::BodyEntry(entry) => {
+                if let EntityData::Mob { body, .. } = &mut entity.data {
+                    put_entry(body, entry);
+                }
+            }
+            Self::BodyGone(id) => {
+                if let EntityData::Mob { body, .. } = &mut entity.data {
+                    drop_entry(body, *id);
+                }
+            }
+            Self::MindEntry(entry) => {
+                if let EntityData::Mob { mind, .. } = &mut entity.data {
+                    put_entry(mind, entry);
+                }
+            }
+            Self::MindGone(id) => {
+                if let EntityData::Mob { mind, .. } = &mut entity.data {
+                    drop_entry(mind, *id);
+                }
+            }
+            Self::TypeState(type_state) => {
+                if let EntityData::Mob { state, .. } = &mut entity.data {
+                    *state = type_state.clone();
+                }
+            }
             Self::FallDistance(distance) => entity.fall_distance = *distance,
             Self::FireTicks(ticks) => entity.fire_ticks = *ticks,
             Self::Riding(riding) => entity.riding = riding.clone(),
@@ -649,5 +738,76 @@ mod tests {
         assert_eq!(entity.position, [3.25, -60.0, -0.5]);
         assert_eq!((entity.lived, entity.tick_count(), entity.hops), (12, 2, 3));
         assert_eq!(entity.chunk(), ChunkPos::new(0, -1));
+    }
+
+    #[test]
+    fn a_mob_s_parts_are_set_in_order_of_their_ids_and_dropped_by_id_and_nothing_else_has_them() {
+        let entry = |id: u16, byte: u8| Entry {
+            id,
+            version: 1,
+            bytes: vec![byte],
+        };
+        let mut mob = Entity {
+            key: EntityId(9),
+            kind: 30,
+            uuid: Uuid::from_u128(1),
+            position: [0.5, -60.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+            hops: 0,
+            lived: 0,
+            fresh_at: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: EntityData::Mob {
+                body: Vec::new(),
+                mind: Vec::new(),
+                state: TypeState::default(),
+            },
+        };
+        for field in [
+            EntityField::BodyEntry(entry(5, 1)),
+            EntityField::BodyEntry(entry(2, 2)),
+            EntityField::BodyEntry(entry(5, 3)),
+            EntityField::MindEntry(entry(7, 4)),
+            EntityField::MindEntry(entry(1, 5)),
+            EntityField::MindGone(7),
+            EntityField::BodyGone(4),
+            EntityField::TypeState(TypeState {
+                version: 2,
+                bytes: vec![6],
+            }),
+        ] {
+            field.set(&mut mob);
+        }
+        assert_eq!(
+            mob.data,
+            EntityData::Mob {
+                body: vec![entry(2, 2), entry(5, 3)],
+                mind: vec![entry(1, 5)],
+                state: TypeState {
+                    version: 2,
+                    bytes: vec![6],
+                },
+            }
+        );
+        // An item takes none of it.
+        let mut item = Entity {
+            data: EntityData::Item {
+                stack: ItemStack { item: 1, count: 1 },
+                pick_up_delay: 0,
+                thrower: None,
+                health: 5,
+                age_offset: 0,
+            },
+            ..mob
+        };
+        let before = item.clone();
+        EntityField::BodyEntry(entry(1, 1)).set(&mut item);
+        EntityField::MindGone(1).set(&mut item);
+        assert_eq!(item, before);
     }
 }

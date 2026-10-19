@@ -576,8 +576,9 @@ impl Region {
             }
             // `hurtServer` only marks it hurt, which sends its motion.
             EntityData::FallingBlock { .. } => flags |= Tracked::SYNC_VELOCITY,
-            // It cannot be hurt, and is pushed from its feet.
-            EntityData::PrimedTnt { .. } => {}
+            // It cannot be hurt, and is pushed from its feet. A mob's hurt is its body's,
+            // N7b's.
+            EntityData::PrimedTnt { .. } | EntityData::Mob { .. } => {}
             EntityData::Minecart { .. } | EntityData::Boat { .. } => {
                 // An explosion sets a TNT cart alight, with the owner as its cause.
                 self.hurt_vehicle_by(key, hit.damage, creative, Some(explosion.owner), output);

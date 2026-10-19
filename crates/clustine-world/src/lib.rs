@@ -25,8 +25,9 @@ pub use effects::{
 };
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,
-    EntityData, EntityField, Float, HOTBAR_SLOTS, Hurt, INVENTORY_SLOTS, Inventory, ItemStack,
-    Leash, LeashHolder, MAIN_START, MAX_CHUNK_ENTITIES, OFF_HAND, Pending, Riding, Seat,
+    EntityData, EntityField, Entry, Float, HOTBAR_SLOTS, Hurt, INVENTORY_SLOTS, Inventory,
+    ItemStack, Leash, LeashHolder, MAIN_START, MAX_CHUNK_ENTITIES, OFF_HAND, Pending, Riding, Seat,
+    TypeState,
 };
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{

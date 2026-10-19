@@ -245,9 +245,12 @@ impl Region {
             }
             EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
             EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
+            // A mob's uses and hits are its body's (`docs/groundwork/n7-plan.md`, part
+            // N7b), which no part has built yet: nothing makes a mob before it.
             EntityData::Item { .. }
             | EntityData::FallingBlock { .. }
-            | EntityData::PrimedTnt { .. } => {}
+            | EntityData::PrimedTnt { .. }
+            | EntityData::Mob { .. } => {}
         }
     }
 
@@ -274,6 +277,8 @@ impl Region {
             | EntityData::Cushion { .. }
             | EntityData::LeashKnot { .. } => self.tick_block_attached(entity, position, output),
             EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
+            // The mob's tick is N7b's and N7c's, on the skeleton N7a1 lays down next.
+            EntityData::Mob { .. } => {}
         }
         self.ticking = before;
     }

@@ -29,7 +29,8 @@
 //! it cannot land, bit 1 its drop is called off; the others 0). Tags 3 to 9 are N5's
 //! kinds (`docs/groundwork/n5-plan.md`): 3 a minecart, 4 a boat, 5 an armour stand, 6 an
 //! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, and tag 10 is N6's primed
-//! TNT (`docs/groundwork/n6-plan.md`), each written by `put_data` in the order of its
+//! TNT (`docs/groundwork/n6-plan.md`) and tag 11 is N7's mob (`docs/groundwork/n7-plan.md`,
+//! section 11.3), each written by `put_data` in the order of its
 //! fields (a minecart's TNT fuse i32 and a hopper cart's switch u8 after its push; the
 //! TNT's fuse i16, block u16, power f32 and owner as an item's thrower); a block-attached entity's attachment is its block (3 × i32)
 //! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
@@ -39,7 +40,11 @@
 //! A field a tick set is a tag u8 and its value: 1 the position (3 × f64), 2 the motion
 //! (3 × f64), 3 the rotation (yaw f32, pitch f32), 4 on the ground (u8 0 or 1), 5 the
 //! data (as above), 6 `lived` (u32), 7 the fall distance (f64), 8 the fire (i32), 9 the
-//! riding (as above), 10 `fresh_at` (u32), 11 the hops (u32).
+//! riding (as above), 10 `fresh_at` (u32), 11 the hops (u32), 12 a mob's body part and 14
+//! a mind part (each its id u16, version u8, and bytes as a length u32 and the bytes), 13
+//! and 15 the id u16 of a body or mind part gone, 16 a mob's type's state (its version u8
+//! and bytes). A mob's data is its body's parts and then its mind's, each a count u16 and
+//! the parts ascending by id, then its type's state.
 //!
 //! A passenger is written in its root's chunk, wherever its own position is, so the
 //! check that a whole entity lies in the chunk it is written under is made only of an
@@ -69,7 +74,8 @@
 
 use clustine_world::{
     Attached, BlockPos, ChunkPos, Contents, Double, EdgeId, Entity, EntityChange, EntityData,
-    EntityField, EntityId, Float, Hurt, ItemStack, Leash, LeashHolder, Pending, Riding, Seat,
+    EntityField, EntityId, Entry, Float, Hurt, ItemStack, Leash, LeashHolder, Pending, Riding,
+    Seat, TypeState,
 };
 use uuid::Uuid;
 
@@ -91,6 +97,7 @@ const DATA_PAINTING: u8 = 7;
 const DATA_CUSHION: u8 = 8;
 const DATA_LEASH_KNOT: u8 = 9;
 const DATA_PRIMED_TNT: u8 = 10;
+const DATA_MOB: u8 = 11;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -116,6 +123,11 @@ const FIELD_FIRE: u8 = 8;
 const FIELD_RIDING: u8 = 9;
 const FIELD_FRESH_AT: u8 = 10;
 const FIELD_HOPS: u8 = 11;
+const FIELD_BODY_ENTRY: u8 = 12;
+const FIELD_BODY_GONE: u8 = 13;
+const FIELD_MIND_ENTRY: u8 = 14;
+const FIELD_MIND_GONE: u8 = 15;
+const FIELD_TYPE_STATE: u8 = 16;
 
 const CHANGE_WHOLE: u8 = 1;
 const CHANGE_GONE: u8 = 2;
@@ -130,6 +142,8 @@ const RIDING_LENGTH: usize = 1 + 2 + 1 + 1;
 const CHANGE_LENGTH: usize = 9;
 /// Bytes a field takes at the least: on the ground.
 const FIELD_LENGTH: usize = 2;
+/// The fewest bytes a mob's part can take: its id, version and length.
+const ENTRY_LENGTH: usize = 7;
 /// Bytes a run of changes takes at the least.
 const RUN_LENGTH: usize = 12 + CHANGE_LENGTH;
 
@@ -519,7 +533,73 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
                 }
             }
         }
+        EntityData::Mob { body, mind, state } => {
+            out.push(DATA_MOB);
+            put_entries(out, body);
+            put_entries(out, mind);
+            put_type_state(out, state);
+        }
     }
+}
+
+fn put_entry(out: &mut Vec<u8>, entry: &Entry) {
+    out.extend_from_slice(&entry.id.to_be_bytes());
+    out.push(entry.version);
+    put_bytes(out, &entry.bytes);
+}
+
+fn take_entry(input: &mut Input<'_>) -> Result<Entry, FormatError> {
+    Ok(Entry {
+        id: input.u16()?,
+        version: input.u8()?,
+        bytes: take_bytes(input)?,
+    })
+}
+
+/// A mob's parts: a count u16, then each part, ascending by id.
+fn put_entries(out: &mut Vec<u8>, entries: &[Entry]) {
+    let count = u16::try_from(entries.len()).expect("a mob has fewer than 65,536 parts");
+    out.extend_from_slice(&count.to_be_bytes());
+    for entry in entries {
+        put_entry(out, entry);
+    }
+}
+
+fn take_entries(input: &mut Input<'_>) -> Result<Vec<Entry>, FormatError> {
+    let count = usize::from(input.u16()?);
+    let mut entries: Vec<Entry> = Vec::with_capacity(count.min(input.0.len() / ENTRY_LENGTH));
+    for _ in 0..count {
+        let entry = take_entry(input)?;
+        if entries.last().is_some_and(|last| last.id >= entry.id) {
+            return Err(FormatError::Corrupt("a mob's parts out of order"));
+        }
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn put_type_state(out: &mut Vec<u8>, state: &TypeState) {
+    out.push(state.version);
+    put_bytes(out, &state.bytes);
+}
+
+fn take_type_state(input: &mut Input<'_>) -> Result<TypeState, FormatError> {
+    Ok(TypeState {
+        version: input.u8()?,
+        bytes: take_bytes(input)?,
+    })
+}
+
+/// Bytes of a part's own encoding: a length u32, then the bytes.
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let length = u32::try_from(bytes.len()).expect("a part is shorter than 4 GiB");
+    out.extend_from_slice(&length.to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn take_bytes(input: &mut Input<'_>) -> Result<Vec<u8>, FormatError> {
+    let length = usize::try_from(input.u32()?).map_err(|_| FormatError::Corrupt("a length"))?;
+    Ok(input.take(length)?.to_vec())
 }
 
 fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
@@ -668,6 +748,11 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 None
             },
         }),
+        DATA_MOB => Ok(EntityData::Mob {
+            body: take_entries(input)?,
+            mind: take_entries(input)?,
+            state: take_type_state(input)?,
+        }),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -758,6 +843,26 @@ fn put_field(out: &mut Vec<u8>, field: &EntityField) {
             out.push(FIELD_HOPS);
             out.extend_from_slice(&hops.to_be_bytes());
         }
+        EntityField::BodyEntry(entry) => {
+            out.push(FIELD_BODY_ENTRY);
+            put_entry(out, entry);
+        }
+        EntityField::BodyGone(id) => {
+            out.push(FIELD_BODY_GONE);
+            out.extend_from_slice(&id.to_be_bytes());
+        }
+        EntityField::MindEntry(entry) => {
+            out.push(FIELD_MIND_ENTRY);
+            put_entry(out, entry);
+        }
+        EntityField::MindGone(id) => {
+            out.push(FIELD_MIND_GONE);
+            out.extend_from_slice(&id.to_be_bytes());
+        }
+        EntityField::TypeState(state) => {
+            out.push(FIELD_TYPE_STATE);
+            put_type_state(out, state);
+        }
         EntityField::FallDistance(distance) => {
             out.push(FIELD_FALL_DISTANCE);
             out.extend_from_slice(&distance.to_be_bytes());
@@ -786,6 +891,11 @@ fn take_field(input: &mut Input<'_>) -> Result<EntityField, FormatError> {
         FIELD_LIVED => EntityField::Lived(input.u32()?),
         FIELD_FRESH_AT => EntityField::FreshAt(input.u32()?),
         FIELD_HOPS => EntityField::Hops(input.u32()?),
+        FIELD_BODY_ENTRY => EntityField::BodyEntry(take_entry(input)?),
+        FIELD_BODY_GONE => EntityField::BodyGone(input.u16()?),
+        FIELD_MIND_ENTRY => EntityField::MindEntry(take_entry(input)?),
+        FIELD_MIND_GONE => EntityField::MindGone(input.u16()?),
+        FIELD_TYPE_STATE => EntityField::TypeState(take_type_state(input)?),
         FIELD_FALL_DISTANCE => EntityField::FallDistance(input.f64()?),
         FIELD_FIRE => EntityField::FireTicks(input.i32()?),
         FIELD_RIDING => EntityField::Riding(take_riding(input)?),
@@ -1076,6 +1186,52 @@ pub(crate) mod tests {
         }
     }
 
+    /// A mob's parts are written ascending by id, each once, so that replaying a part's
+    /// change finds it by its id; bytes that say otherwise are refused.
+    #[test]
+    fn a_mob_whose_parts_are_out_of_order_or_twice_is_refused() {
+        let part = |id: u16| Entry {
+            id,
+            version: 0,
+            bytes: vec![id as u8],
+        };
+        for body in [vec![part(3), part(1)], vec![part(2), part(2)]] {
+            let mut out = Vec::new();
+            put_data(
+                &mut out,
+                &EntityData::Mob {
+                    body,
+                    mind: Vec::new(),
+                    state: TypeState::default(),
+                },
+            );
+            assert_eq!(
+                take_data(&mut Input(&out)),
+                Err(FormatError::Corrupt("a mob's parts out of order"))
+            );
+        }
+        let mut out = Vec::new();
+        let mob = EntityData::Mob {
+            body: vec![part(1), part(3)],
+            mind: vec![part(0)],
+            state: TypeState {
+                version: 4,
+                bytes: vec![9, 8],
+            },
+        };
+        put_data(&mut out, &mob);
+        // The tag; two body parts, each id, version, length and its one byte; one mind
+        // part; the state's version, length and bytes.
+        assert_eq!(
+            out,
+            [
+                11, 0, 2, 0, 1, 0, 0, 0, 0, 1, 1, 0, 3, 0, 0, 0, 0, 1, 3, 0, 1, 0, 0, 0, 0, 0, 0,
+                1, 0, 4, 0, 0, 0, 2, 9, 8
+            ]
+        );
+        assert_eq!(take_data(&mut Input(&out)), Ok(mob));
+    }
+
     #[test]
     fn a_whole_entity_written_under_another_chunk_is_refused() {
         let mut out = Vec::new();
@@ -1202,8 +1358,37 @@ pub(crate) mod tests {
         })
     }
 
+    fn entry() -> impl Strategy<Value = Entry> {
+        (
+            any::<u16>(),
+            any::<u8>(),
+            prop::collection::vec(any::<u8>(), 0..12),
+        )
+            .prop_map(|(id, version, bytes)| Entry { id, version, bytes })
+    }
+
+    /// Parts ascending by id, each once.
+    fn entries() -> impl Strategy<Value = Vec<Entry>> {
+        prop::collection::btree_map(any::<u16>(), entry(), 0..4).prop_map(|parts| {
+            parts
+                .into_iter()
+                .map(|(id, entry)| Entry { id, ..entry })
+                .collect()
+        })
+    }
+
+    fn type_states() -> impl Strategy<Value = TypeState> {
+        (any::<u8>(), prop::collection::vec(any::<u8>(), 0..12))
+            .prop_map(|(version, bytes)| TypeState { version, bytes })
+    }
+
     fn datas() -> impl Strategy<Value = EntityData> {
         prop_oneof![
+            (entries(), entries(), type_states()).prop_map(|(body, mind, state)| EntityData::Mob {
+                body,
+                mind,
+                state
+            }),
             (
                 any::<i32>(),
                 any::<i32>(),
@@ -1348,6 +1533,11 @@ pub(crate) mod tests {
             any::<u32>().prop_map(EntityField::Lived),
             any::<u32>().prop_map(EntityField::FreshAt),
             any::<u32>().prop_map(EntityField::Hops),
+            entry().prop_map(EntityField::BodyEntry),
+            any::<u16>().prop_map(EntityField::BodyGone),
+            entry().prop_map(EntityField::MindEntry),
+            any::<u16>().prop_map(EntityField::MindGone),
+            type_states().prop_map(EntityField::TypeState),
             datas().prop_map(EntityField::Data),
             any::<f64>().prop_map(EntityField::FallDistance),
             any::<i32>().prop_map(EntityField::FireTicks),
