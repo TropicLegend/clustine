@@ -421,6 +421,13 @@ impl Region {
                 chunk.apply_entity(&gone);
             }
             output.entity_changes.push((from, gone));
+            // Edges that were shown the chunk it left and the one it comes into at
+            // different ticks may know it in neither (`RegionEvent::EntityEntered`).
+            output
+                .events
+                .push(RegionEvent::EntityEntered(super::entities::state_of(
+                    &member,
+                )));
             let whole = EntityChange::Whole(member);
             if let Some(chunk) = self.chunks.get_mut(&to) {
                 chunk.apply_entity(&whole);

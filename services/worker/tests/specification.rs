@@ -922,7 +922,7 @@ impl Witness {
                 }
                 for event in events {
                     match event {
-                        RegionEvent::EntitySpawned(state) => {
+                        RegionEvent::EntitySpawned(state) | RegionEvent::EntityEntered(state) => {
                             self.entities.insert(state.entity, state.pose);
                         }
                         RegionEvent::EntityRemoved { entity, .. } => {

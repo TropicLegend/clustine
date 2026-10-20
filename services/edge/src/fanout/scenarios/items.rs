@@ -491,3 +491,38 @@ async fn a_swing_the_player_s_client_did_not_foresee_is_shown_to_the_player_too_
     // The player's own client knows their entity by the same id.
     assert_eq!(first.swings, [shown]);
 }
+
+/// An entity that comes into a watched chunk from one of the region's chunks the edge
+/// was not shown it in (its snapshot taken a tick before it came, the other's a tick
+/// after it left) is shown at once, with its data, as the game's tracking shows one
+/// coming into view; one the edge shows already is moved by its own report, and its
+/// entering sends nothing more.
+#[tokio::test]
+async fn an_entity_that_enters_a_watched_chunk_unknown_is_shown_and_a_known_one_is_not_again() {
+    let (mut edge, mut first, _second) = two_at_home().await;
+    let key = 1 << 32;
+    let entered = item(key, HOME, 0);
+    edge.tell(
+        WEST,
+        ticked(vec![RegionEvent::EntityEntered(entered.clone())]),
+    );
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    let id = shown_once(&first, &entered);
+    let spawns = |client: &Client| {
+        client
+            .spawns
+            .iter()
+            .filter(|spawn| spawn.entity_id == id)
+            .count()
+    };
+    assert_eq!(spawns(&first), 1);
+    let named = of_item(&first, key).len();
+
+    // Known now: its entering again names it no more.
+    edge.tell(WEST, ticked(vec![RegionEvent::EntityEntered(entered)]));
+    edge.settle(WEST).await;
+    edge.sync(&mut first).await;
+    assert_eq!(spawns(&first), 1);
+    assert_eq!(of_item(&first, key).len(), named);
+}

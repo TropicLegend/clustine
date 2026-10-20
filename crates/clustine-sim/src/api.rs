@@ -1264,6 +1264,13 @@ pub enum PlayerEvent {
 pub enum RegionEvent {
     /// An entity has come into existence.
     EntitySpawned(EntityState),
+    /// An entity has gone from one of the region's chunks into another, as it is now:
+    /// for an edge that watches the chunk it came into and not the one it left, or that
+    /// was shown the two chunks at different ticks, between which it moved, and so is
+    /// shown it in neither (the game's `ChunkMap` tracks an entity coming into a
+    /// player's view as one appearing). An edge that knows the entity passes it over,
+    /// its move being in the entity's own report.
+    EntityEntered(EntityState),
     /// An entity has ceased to exist. `chunk` is where it was last.
     EntityRemoved { entity: EntityId, chunk: ChunkPos },
     /// A block has changed. `seen` says whether it was set with the game's
@@ -1553,7 +1560,7 @@ impl RegionEvent {
     /// The chunks from which the event can be observed.
     pub fn chunks(&self) -> [ChunkPos; 2] {
         match self {
-            Self::EntitySpawned(state) => [state.chunk(); 2],
+            Self::EntitySpawned(state) | Self::EntityEntered(state) => [state.chunk(); 2],
             Self::EntityRemoved { chunk, .. }
             | Self::ArmSwung { chunk, .. }
             | Self::EntityGone { chunk, .. }

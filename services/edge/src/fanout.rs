@@ -3141,6 +3141,14 @@ impl Fanout {
     async fn handle_event(&mut self, from: RegionId, event: RegionEvent) {
         match event {
             RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state, true).await,
+            // An entity that came into a chunk the edge watches from one it was shown at
+            // another tick, or not at all: shown as from a snapshot. One the edge shows
+            // already is moved by its own report, as the game moves it.
+            RegionEvent::EntityEntered(state) => {
+                if !self.entities.contains_key(&state.entity) {
+                    self.upsert_entity(from, state, false).await;
+                }
+            }
             RegionEvent::EntityRemoved { entity, .. } => {
                 if self.is_of(entity, from) {
                     self.remove_entity(entity).await;

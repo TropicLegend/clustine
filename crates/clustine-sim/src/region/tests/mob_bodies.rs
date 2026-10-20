@@ -906,3 +906,39 @@ fn a_full_inventory_throws_what_is_given_unless_duplicates_are_kept_out() {
     region.give_to_player(own, bucket, false, [0.5, -60.0, 0.5], &mut output);
     assert_eq!(items_lying(&region), [bucket]);
 }
+
+/// A mob that goes from one of the region's chunks into another is reported as
+/// entering it whole (`RegionEvent::EntityEntered`), for an edge that was shown the two
+/// chunks at different ticks; one that stays in its chunk is not.
+#[test]
+fn a_mob_that_goes_into_another_chunk_is_reported_entering_it_whole() {
+    let mut region = on_ticking_floor_with(&[]);
+    let mut goat = mob_of(COW_KEY, entity_types::GOAT, [15.7, -60.0, 0.5], true);
+    goat.motion = [0.8, 0.0, 0.0];
+    lay(&mut region, &goat);
+    let output = checked(&mut region, &TickInputs::default());
+    let entered: Vec<&EntityState> = output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::EntityEntered(state) => Some(state),
+            _ => None,
+        })
+        .collect();
+    let [state] = entered[..] else {
+        panic!("{:?}", output.events);
+    };
+    assert_eq!(state.entity, COW_KEY);
+    assert_eq!(state.chunk(), ChunkPos::new(1, 0));
+    assert_eq!(
+        record(&region, COW_KEY).unwrap().chunk(),
+        ChunkPos::new(1, 0)
+    );
+    let output = checked(&mut region, &TickInputs::default());
+    assert!(
+        !output
+            .events
+            .iter()
+            .any(|event| matches!(event, RegionEvent::EntityEntered(_)))
+    );
+}
