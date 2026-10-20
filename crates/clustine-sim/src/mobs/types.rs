@@ -159,6 +159,13 @@ pub(crate) trait MobType: Sync {
         None
     }
 
+    /// The sound of its `playStepSound(pos, state)` where the type has its own (played
+    /// at 0.15 and 1); `None` for `Entity`'s, the step of the block stepped on.
+    fn step_sound(&self, mob: &Mob) -> Option<i32> {
+        let _ = mob;
+        None
+    }
+
     /// `getAmbientSoundInterval()`: 80 in `Mob`.
     fn ambient_interval(&self) -> u32 {
         80

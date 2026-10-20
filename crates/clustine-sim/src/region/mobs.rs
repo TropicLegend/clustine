@@ -16,7 +16,7 @@ use crate::living::{Kind, Living};
 use crate::mobs::tick::{MobOutput, MobTick};
 use crate::mobs::view::{LightAt, MobWorld, Seen, SeenPlayer};
 use crate::mobs::{Mob, tick, types};
-use crate::physics::body::Movement;
+use crate::physics::body::{Movement, Steps};
 use crate::physics::{self, aabb::Aabb};
 
 impl MobWorld for View<'_> {
@@ -165,6 +165,14 @@ impl Region {
         };
         let memory = self.entity_memory.get(&key);
         let mut living = Living::new(body, kind, eye_height);
+        // A passenger's moves are its vehicle's and make no steps of its own
+        // (`Entity.move`'s `isPassenger`).
+        if entity.riding.vehicle.is_none() {
+            living.body.steps = Some(Steps {
+                count: memory.map(|memory| memory.steps).unwrap_or_default(),
+                taken: Vec::new(),
+            });
+        }
         let mut yaw = entity.yaw;
         if let Some(pull) = pull {
             living.body.motion = pull.motion;
@@ -276,11 +284,13 @@ impl Region {
             ..before.clone()
         };
         // Its leash's memory outlives its tick (`leashes.rs`).
-        let boat = self
-            .entity_memory
-            .get(&key)
-            .map(|memory| memory.boat.clone())
-            .unwrap_or_default();
+        let kept = self.entity_memory.get(&key);
+        let boat = kept.map(|memory| memory.boat.clone()).unwrap_or_default();
+        // A passenger's count waits for it to walk again.
+        let steps = living.body.steps.as_ref().map_or_else(
+            || kept.map(|memory| memory.steps).unwrap_or_default(),
+            |steps| steps.count,
+        );
         self.entity_memory.insert(
             key,
             Memory {
@@ -292,6 +302,7 @@ impl Region {
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat,
+                steps,
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {

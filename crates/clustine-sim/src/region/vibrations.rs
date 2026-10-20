@@ -41,13 +41,14 @@
 //! not occlude. A sensor's wait for its 3×3 chunks to tick is read as its own chunk
 //! ticking (ADR-0025, section 3), which its ticker already asks.
 
-use clustine_blocks::data::{has_water, in_tag, is_block, is_class};
+use clustine_blocks::data::{has_water, in_tag, is_class};
 use clustine_data::{BlockClass, BlockState, TAGS, blocks};
 use clustine_world::{BlockPos, Double, EntityId, Float, PlayerId};
 
 use super::Region;
 use super::sculk::{self, Heard, listener_position};
 use crate::api::{RegionEvent, TickOutput};
+use crate::physics::body::climbable;
 use crate::physics::walk::traverse;
 
 /// A game event, by its id in the game's registry `minecraft:game_event`.
@@ -670,11 +671,6 @@ struct Stepping {
     level: bool,
     feet: [f64; 3],
     source: Source,
-}
-
-/// `Entity.isStateClimbable`: `#climbable`, or powder snow.
-fn climbable(state: BlockState) -> bool {
-    in_tag(state, "minecraft:climbable") || is_block(state, blocks::POWDER_SNOW)
 }
 
 /// Whether `item` is wool of any kind, which an item entity of it dampens (for the tests'

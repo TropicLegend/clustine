@@ -421,6 +421,7 @@ impl Region {
             fell_on: None,
             noclip: None,
             mover: self.mover_of(entity, position),
+            steps: None,
         };
         if memory.is_none() && body.on_ground {
             // As a move would have found it.
@@ -632,6 +633,7 @@ impl Region {
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat: Default::default(),
+                steps: Default::default(),
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {

@@ -33,7 +33,7 @@ use super::random_ticks::Random;
 use super::riding::Relocated;
 use crate::api::{PlayerEvent, RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::Aabb;
-use crate::physics::body::{Body, Movement};
+use crate::physics::body::{Body, Movement, StepCount};
 use crate::physics::item::{self, Draws, Item, NEVER_PICKED_UP, SOUND_SOURCE_NEUTRAL};
 use crate::physics::{self, World};
 
@@ -54,6 +54,9 @@ pub(crate) struct Memory {
     pub(crate) cart: CartMemory,
     /// What a boat keeps beyond its record (`boats.rs`).
     pub(crate) boat: BoatMemory,
+    /// A mob's walk towards its next step (`moveDist`, `nextStep`), which the game
+    /// does not save either: after a take-in it starts again, as at the game's load.
+    pub(crate) steps: StepCount,
 }
 
 /// What the game keeps of a boat in memory and does not save: the motion's height at
@@ -258,6 +261,7 @@ impl Region {
             fell_on: None,
             noclip: None,
             mover: self.mover_of(entity, position),
+            steps: None,
         };
         if memory.is_none() && body.on_ground {
             // As a move would have found it.
@@ -476,6 +480,7 @@ impl Region {
                 ticks_since_check: 0,
                 cart: CartMemory::default(),
                 boat: BoatMemory::default(),
+                steps: StepCount::default(),
             },
         );
         let mut after = after;

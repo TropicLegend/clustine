@@ -191,6 +191,11 @@ impl MobType for Mooshroom {
         Some(cow::classic_sounds()[0])
     }
 
+    /// `AbstractCow.playStepSound` of the classic set, which a mooshroom keeps.
+    fn step_sound(&self, _: &Mob) -> Option<i32> {
+        Some(sounds::ENTITY_COW_STEP)
+    }
+
     fn ambient_interval(&self) -> u32 {
         120
     }

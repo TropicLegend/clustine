@@ -34,6 +34,7 @@ fn stand_body() -> Living {
             root: EntityId(1),
             like_a_vehicle: false,
         },
+        steps: None,
     };
     Living::new(
         body,

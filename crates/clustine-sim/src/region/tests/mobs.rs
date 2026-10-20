@@ -170,3 +170,77 @@ fn a_mob_reads_its_region_s_entities_then_its_copies_players_and_the_sky_s_light
     let below = view.light(BlockPos::new(8, -62, 8)).unwrap();
     assert_eq!((above.sky, above.block, below.sky), (15, 0, 0));
 }
+
+/// The sculk sensor the tests of a cow's steps put on the floor.
+const STEP_SENSOR: BlockPos = BlockPos::new(4, -60, 4);
+
+/// A region of the tests of R3a (a stone floor at y = -61, its chunks ticking) with a
+/// sensor at [`STEP_SENSOR`], and a cow on the floor six blocks south of it, sliding
+/// east at `speed` blocks a tick.
+fn sensor_and_cow(speed: f64) -> Region {
+    let sensor = super::redstone::state(
+        "minecraft:sculk_sensor[power=0,sculk_sensor_phase=inactive,waterlogged=false]",
+    );
+    let mut region = super::redstone::ticking_with(&[(STEP_SENSOR, sensor)]);
+    let mut sliding = cow([4.5, -60.0, 10.5], true);
+    sliding.motion = [speed, resting_motion(), 0.0];
+    lay(&mut region, &sliding);
+    region
+}
+
+fn cow_steps(output: &TickOutput) -> usize {
+    output
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(event, RegionEvent::Sound { sound, volume, pitch, .. }
+                if *sound == clustine_data::sounds::ENTITY_COW_STEP
+                    && *volume == 0.15
+                    && *pitch == 1.0)
+        })
+        .count()
+}
+
+/// A cow that slides two blocks steps (its walk passes 1 in its second tick) with its
+/// own sound, and a sensor six blocks away hears the step (`STEP`, of frequency 1); one
+/// that stands still is not heard.
+#[test]
+fn a_sculk_sensor_hears_a_cow_walk_and_not_a_cow_standing() {
+    for speed in [1.5, 0.0] {
+        let mut region = sensor_and_cow(speed);
+        let outputs: Vec<TickOutput> = (0..20)
+            .map(|_| checked(&mut region, &TickInputs::default()))
+            .collect();
+        let steps: usize = outputs.iter().map(cow_steps).sum();
+        let sensor = region.sensor(STEP_SENSOR).expect("a sensor");
+        let heard = outputs.iter().any(|output| {
+            output
+                .events
+                .iter()
+                .any(|event| matches!(event, RegionEvent::Vibration { .. }))
+        });
+        if speed > 0.0 {
+            assert!(steps >= 1, "{steps} steps");
+            assert!(heard, "the sensor heard nothing");
+            assert_eq!(sensor.last_frequency, 1);
+        } else {
+            assert_eq!(steps, 0);
+            assert!(!heard);
+        }
+    }
+}
+
+/// Two regions that are the same, with a cow stepping by a sensor, tick the same and
+/// put out the same, tick by tick: the steps' count is part of what a tick reads.
+#[test]
+fn a_tick_of_a_stepping_cow_is_a_function_of_the_region_and_its_inputs() {
+    let (mut one, mut two) = (sensor_and_cow(1.5), sensor_and_cow(1.5));
+    for _ in 0..40 {
+        let (a, b) = (
+            checked(&mut one, &TickInputs::default()),
+            checked(&mut two, &TickInputs::default()),
+        );
+        assert_eq!(a, b);
+    }
+    assert_eq!(one, two);
+}

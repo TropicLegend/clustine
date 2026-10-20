@@ -275,6 +275,16 @@ impl MobType for Chicken {
         Some(sound_set(mob)[0])
     }
 
+    /// `Chicken.playStepSound`: its set's step, a baby's its own; the picky set steps
+    /// as the classic one does (the registry of sounds has no step of its own).
+    fn step_sound(&self, mob: &Mob) -> Option<i32> {
+        Some(if animal::is_baby(mob) {
+            sounds::ENTITY_BABY_CHICKEN_STEP
+        } else {
+            sounds::ENTITY_CHICKEN_STEP
+        })
+    }
+
     fn ambient_interval(&self) -> u32 {
         120
     }

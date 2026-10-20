@@ -500,6 +500,7 @@ impl Region {
             fell_on: None,
             noclip: None,
             mover: self.mover_of(entity, chunk),
+            steps: None,
         };
         Some(Tick {
             key: entity.key,

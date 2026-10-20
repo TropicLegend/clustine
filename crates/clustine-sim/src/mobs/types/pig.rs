@@ -218,6 +218,16 @@ impl MobType for Pig {
         Some(sound_set(mob)[0])
     }
 
+    /// `Pig.playStepSound`: its set's step, a baby's its own; the big and the mini
+    /// sets step as the classic one does (the registry of sounds has no step of theirs).
+    fn step_sound(&self, mob: &Mob) -> Option<i32> {
+        Some(if animal::is_baby(mob) {
+            sounds::ENTITY_BABY_PIG_STEP
+        } else {
+            sounds::ENTITY_PIG_STEP
+        })
+    }
+
     fn ambient_interval(&self) -> u32 {
         120
     }

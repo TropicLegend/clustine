@@ -396,6 +396,7 @@ impl Region {
                         ticks_since_check: 0,
                         cart: Default::default(),
                         boat: Default::default(),
+                        steps: Default::default(),
                     },
                 );
                 let mut flags = 0;

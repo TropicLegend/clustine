@@ -58,6 +58,13 @@ pub(crate) enum Local {
     LevelEvent { kind: i32, pos: BlockPos, data: i32 },
     /// `level.gameEvent(event, pos, the mob)`, by the event's name.
     GameEvent { name: &'static str, pos: BlockPos },
+    /// `level.gameEvent(event, at, Context.of(the mob, affected))`: an event at a point
+    /// of its own (a step's, where its feet were), with the block it affects.
+    GameEventAt {
+        name: &'static str,
+        at: crate::physics::Vec3,
+        affected: Option<BlockState>,
+    },
     /// `spawnAtLocation(stack)`: an item at `at` (a chicken's egg) with its pick-up
     /// delay.
     Drop {

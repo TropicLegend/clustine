@@ -213,6 +213,12 @@ impl Region {
                         self.vibrate_at(vibration, pos, context);
                     }
                 }
+                Local::GameEventAt { name, at, affected } => {
+                    if let Some(vibration) = Vibration::named(name) {
+                        let context = Context::of(Some(Source::of(key)), affected);
+                        self.vibrate(vibration, at, context);
+                    }
+                }
                 Local::Drop {
                     stack,
                     at,

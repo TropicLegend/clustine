@@ -403,6 +403,7 @@ mod tests {
                     root: EntityId(1),
                     like_a_vehicle: true,
                 },
+                steps: None,
             },
             yaw: 0.0,
             pitch: 0.0,

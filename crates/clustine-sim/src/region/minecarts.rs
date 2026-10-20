@@ -377,6 +377,7 @@ impl Region {
             fell_on: None,
             noclip: None,
             mover: self.mover_of(entity, chunk),
+            steps: None,
         };
         let view = View {
             region: self,

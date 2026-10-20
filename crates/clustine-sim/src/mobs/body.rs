@@ -710,6 +710,7 @@ pub(crate) fn travel(tick: &mut MobTick<'_>) {
         tick.living.travel(tick.world);
     }
     tick.living.after_travel(tick.world, &mut *tick.draws);
+    sound_steps(tick);
     frost(tick);
     // The game's `tickCount` in the tick, counted at its start.
     let tick_count = tick.tick_count.wrapping_add(1);
@@ -718,6 +719,55 @@ pub(crate) fn travel(tick: &mut MobTick<'_>) {
         && tick.living.can_freeze
     {
         tick.living.hurt(Damage::Freeze, 1.0);
+    }
+}
+
+/// The steps its moves took (`vibrationAndSoundEffectsFromBlock`), in order: each its
+/// sound (`playStepSound`: the type's own at 0.15 and 1, or the block's step at 0.15 of
+/// the block's volume and at its pitch), and its `STEP` game event with the block
+/// stepped on, which wool dampens; a swim its `SWIM`.
+fn sound_steps(tick: &mut MobTick<'_>) {
+    let Some(steps) = tick.living.body.steps.as_mut() else {
+        return;
+    };
+    for step in std::mem::take(&mut steps.taken) {
+        match step {
+            physics::body::Step::Block {
+                state,
+                at,
+                sound,
+                event,
+                ..
+            } => {
+                if sound {
+                    let played = match tick.mob_type.step_sound(&tick.mob) {
+                        Some(own) => Some((own, 0.15, 1.0)),
+                        None => state
+                            .sound_type()
+                            .map(|kind| (kind.step, kind.volume * 0.15, kind.pitch)),
+                    };
+                    if let Some((sound, volume, pitch)) = played {
+                        tick.out.events.push(Event::Sound {
+                            sound,
+                            volume,
+                            pitch,
+                        });
+                    }
+                }
+                if event {
+                    tick.out.local.push(Local::GameEventAt {
+                        name: "minecraft:step",
+                        at,
+                        affected: Some(state),
+                    });
+                }
+            }
+            physics::body::Step::Swim { at } => tick.out.local.push(Local::GameEventAt {
+                name: "minecraft:swim",
+                at,
+                affected: None,
+            }),
+        }
     }
 }
 

@@ -95,6 +95,53 @@ pub(crate) struct Body {
     pub(crate) noclip: Option<Face>,
     /// What it is to the entities it may meet.
     pub(crate) mover: Mover,
+    /// Its steps (`applyMovementEmissionAndPlaySound`), for a body whose moves make
+    /// them: only a mob's has them, as the others' moves are silent here or are the
+    /// edge's (a player's).
+    pub(crate) steps: Option<Steps>,
+}
+
+/// What the game keeps of an entity's walk in memory and does not save: `moveDist`,
+/// and `nextStep`, the distance at which its next step comes, 1 at first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StepCount {
+    pub(crate) moved: f32,
+    pub(crate) next: f32,
+}
+
+impl Default for StepCount {
+    fn default() -> StepCount {
+        StepCount {
+            moved: 0.0,
+            next: 1.0,
+        }
+    }
+}
+
+/// A body's steps: its count, and what its moves of the tick stepped on, in order, for
+/// the layer above to sound and post.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct Steps {
+    pub(crate) count: StepCount,
+    pub(crate) taken: Vec<Step>,
+}
+
+/// One block a move stepped on (`vibrationAndSoundEffectsFromBlock`), or a swim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Step {
+    /// The block `pos` of `state`, where the body's feet were at `at`: whether it plays
+    /// the step's sound (`walkingStepSound`) and whether it posts the `STEP` game event.
+    Block {
+        pos: BlockPos,
+        state: BlockState,
+        at: Vec3,
+        sound: bool,
+        event: bool,
+    },
+    /// A step in water that met no block to step on: the `SWIM` game event at `at`.
+    /// Its sound (`waterSwimSound`) is left out, as the game draws its pitch from the
+    /// level's random, which a region's tick does not share.
+    Swim { at: Vec3 },
 }
 
 impl Body {
@@ -192,7 +239,8 @@ impl Body {
         self.move_with(world, no_physics, vector, piston, NOT_LIVING, &mut |_| {});
     }
 
-    /// [`Body::move_as`] for an entity that bounces as `bounce` says, and that does
+    /// [`Body::move_as`] for an entity that bounces as `bounce` says, that counts its
+    /// steps where it has [`Body::steps`], and that does
     /// `before_fall` to itself before its fall is counted (`checkFallDamage`'s own part
     /// of a kind: a living entity's update of the fluids it is in).
     pub(crate) fn move_with<W: World + ?Sized>(
@@ -274,6 +322,9 @@ impl Body {
         if (moved_y && self.vertical_collision) || self.horizontal_collision {
             self.restitute(below, x_collision, z_collision, out, bounce);
         }
+        if self.steps.is_some() {
+            self.step(world, out, on, below);
+        }
         // `AbstractMinecart.getBlockSpeedFactor`: a cart on a rail keeps its speed.
         let on_rails = bounce.rails_keep_speed
             && clustine_blocks::data::in_tag(world.state(self.block_position()), "minecraft:rails");
@@ -287,6 +338,68 @@ impl Body {
             self.motion[1] * 1.0,
             self.motion[2] * factor,
         ];
+    }
+
+    /// `applyMovementEmissionAndPlaySound(emission, movement, legacy, legacyState)` of a
+    /// body that emits everything (a mob's) and rides nothing: its walk counted, and
+    /// at each step the blocks it stepped on noted in [`Steps::taken`]. A mob neither
+    /// crouches, rides a rail nor swims (it does not sprint), so only its ground and a
+    /// climbable block let a step be one. Left out: the amethyst's chime
+    /// (`playAmethystStepSound`, which keeps a time and an intensity of its own and
+    /// draws from the entity's random), and the flap of a body in the air
+    /// (`processFlappingMovement`, a chicken's or a bee's `FLAP`).
+    fn step<W: World + ?Sized>(
+        &mut self,
+        world: &W,
+        movement: Vec3,
+        legacy: BlockPos,
+        legacy_state: BlockState,
+    ) {
+        let on = self.on_pos(world, 1.0e-5);
+        let on_state = world.state(on);
+        let length = super::length_sqr(movement).sqrt();
+        let horizontal = (movement[0] * movement[0] + movement[2] * movement[2]).sqrt();
+        let walked = if climbable(on_state) {
+            length
+        } else {
+            horizontal
+        };
+        let at = self.position;
+        let on_ground = self.on_ground;
+        let in_water = self.in_water;
+        let Some(steps) = self.steps.as_mut() else {
+            return;
+        };
+        steps.count.moved += (walked * 0.600_000_023_841_857_9) as f32;
+        if steps.count.moved <= steps.count.next || on_state.props().is_air() {
+            return;
+        }
+        let same = on == legacy;
+        let mut stepped = false;
+        let mut from_block = |pos: BlockPos, state: BlockState, sound: bool, event: bool| {
+            if state.props().is_air() || !(on_ground || climbable(state)) {
+                return false;
+            }
+            steps.taken.push(Step::Block {
+                pos,
+                state,
+                at,
+                sound,
+                event,
+            });
+            true
+        };
+        stepped |= from_block(legacy, legacy_state, true, same);
+        if !same {
+            stepped |= from_block(on, on_state, false, true);
+        }
+        // `nextStep()`: the next whole distance on.
+        if stepped || in_water {
+            steps.count.next = (steps.count.moved as i32 + 1) as f32;
+        }
+        if !stepped && in_water {
+            steps.taken.push(Step::Swim { at });
+        }
     }
 
     /// `checkSupportingBlock(onGround, movement)`.
@@ -405,6 +518,12 @@ impl Body {
     pub(crate) fn apply_gravity(&mut self) {
         self.motion[1] += -GRAVITY;
     }
+}
+
+/// `Entity.isStateClimbable`: `#climbable`, or powder snow.
+pub(crate) fn climbable(state: BlockState) -> bool {
+    clustine_blocks::data::in_tag(state, "minecraft:climbable")
+        || clustine_blocks::data::is_block(state, blocks::POWDER_SNOW)
 }
 
 /// The block's fields of movement, where the state is a block's.

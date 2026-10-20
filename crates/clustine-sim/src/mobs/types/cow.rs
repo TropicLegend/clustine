@@ -183,6 +183,18 @@ impl MobType for Cow {
         Some(sound_set(mob)[0])
     }
 
+    /// `AbstractCow.playStepSound`: its sound variant's step.
+    fn step_sound(&self, mob: &Mob) -> Option<i32> {
+        let (_, own) = animal::read::<CowState>(&mob.state);
+        Some(
+            if own.sound == variants::id(SOUND_VARIANTS, "minecraft:moody") {
+                sounds::ENTITY_COW_MOODY_STEP
+            } else {
+                sounds::ENTITY_COW_STEP
+            },
+        )
+    }
+
     fn ambient_interval(&self) -> u32 {
         120
     }

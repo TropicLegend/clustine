@@ -316,6 +316,7 @@ impl Region {
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat: Default::default(),
+                steps: Default::default(),
             },
         );
         self.write_orb(&entity, after, position, output);

@@ -449,6 +449,11 @@ impl MobType for Sheep {
         Some(sounds::ENTITY_SHEEP_AMBIENT)
     }
 
+    /// `Sheep.playStepSound`.
+    fn step_sound(&self, _: &Mob) -> Option<i32> {
+        Some(sounds::ENTITY_SHEEP_STEP)
+    }
+
     fn ambient_interval(&self) -> u32 {
         120
     }

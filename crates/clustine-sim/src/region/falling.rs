@@ -292,6 +292,7 @@ impl Region {
             fell_on: None,
             noclip: None,
             mover: self.mover_of(entity, position),
+            steps: None,
         };
         if memory.is_none() && body.on_ground {
             let view = View {
@@ -494,6 +495,7 @@ impl Region {
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat: Default::default(),
+                steps: Default::default(),
             },
         );
         let mut flags = 0;

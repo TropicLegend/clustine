@@ -5,6 +5,7 @@ mod goals;
 mod navigation;
 mod paths;
 mod selection;
+mod steps;
 
 use std::collections::BTreeMap;
 
@@ -177,6 +178,7 @@ pub(super) fn cow_body<W: World + ?Sized>(world: &W, position: Vec3) -> Living {
             root: MOB_KEY,
             like_a_vehicle: false,
         },
+        steps: None,
     };
     let mut living = Living::new(
         body,
