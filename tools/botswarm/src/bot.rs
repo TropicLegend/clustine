@@ -1265,6 +1265,16 @@ impl Bot {
     /// Uses the main hand on the entity `entity_id`, the aim meeting its box at
     /// `location` relative to the entity's position, without sneaking: what a client
     /// sends to get into a cart or a boat.
+    /// Hits the entity shown under `entity_id` (`ServerboundAttackPacket`), from where
+    /// the bot stands and looking where it looked last.
+    pub async fn attack(&mut self, entity_id: i32) -> Result<()> {
+        self.connection
+            .write(&clustine_protocol::packets::play::Attack { entity_id })
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
     pub async fn interact(&mut self, entity_id: i32, location: [f64; 3]) -> Result<()> {
         self.connection
             .write(&Interact {

@@ -6227,10 +6227,10 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
             _ => 0,
         };
         // A living entity's head is sent as it turns (`getYHeadRot`): an armour stand's
-        // always faces its yaw.
+        // always faces its yaw, and a mob's is where it was sent last.
         let head_yaw = match data {
             EntityData::ArmorStand { .. } => pairing.yaw,
-            _ => 0,
+            _ => pairing.head_yaw,
         };
         let mut packets = vec![encoded(&SpawnEntity {
             entity_id: id,

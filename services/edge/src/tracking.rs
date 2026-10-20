@@ -24,8 +24,8 @@ use clustine_protocol::packets::{
     self, Packet,
     play::{
         EntityDataValue, MoveEntityPos, MoveEntityPosRot, MoveEntityRot, PositionPath,
-        SetEntityData, SetEntityMotion, SetEquipment, SyncEntityPosition, VecDelta, entity_data,
-        pack_degrees,
+        SetEntityData, SetEntityMotion, SetEquipment, SetHeadRotation, SyncEntityPosition,
+        VecDelta, entity_data, pack_degrees,
     },
 };
 use clustine_sim::api::Tracked;
@@ -70,6 +70,9 @@ const DIRTY_TNT: u16 = 512;
 /// first update (`ServerEntity.sendDirtyEntityData` after `sendPairingData`, which reads
 /// `getNonDefaultValues` and clears nothing).
 const DIRTY_MADE: u16 = 1024;
+
+/// An experience orb's worth (`ExperienceOrb.DATA_VALUE`), the first of its own.
+const ORB_VALUE: u8 = 8;
 
 /// Primed TNT's data (`docs/groundwork/n6-brief.md`, section 1.7): its fuse, an int that
 /// is 80 by default, and the block it shows, `tnt[unstable=false]` by default.
@@ -451,6 +454,8 @@ pub(crate) enum Sent {
     Sync(SyncEntityPosition),
     Data(SetEntityData),
     Equipment(SetEquipment),
+    /// A living entity's head turned (`ClientboundRotateHeadPacket`).
+    Head(SetHeadRotation),
 }
 
 impl Sent {
@@ -466,6 +471,7 @@ impl Sent {
             Self::Sync(packet) => bytes(packet),
             Self::Data(packet) => bytes(packet),
             Self::Equipment(packet) => bytes(packet),
+            Self::Head(packet) => bytes(packet),
         }
     }
 
@@ -506,6 +512,8 @@ pub(crate) struct Pairing {
     /// In 256ths of a turn.
     pub(crate) yaw: u8,
     pub(crate) pitch: u8,
+    /// The head's yaw as sent last, which a mob's spawn carries.
+    pub(crate) head_yaw: u8,
     /// The values of its data that are not the type's defaults, as sent last
     /// (`getNonDefaultValues`); none, and no packet, if there are none.
     pub(crate) values: Vec<(u8, EntityDataValue)>,
@@ -536,6 +544,9 @@ pub(crate) struct Tracker {
     last_motion: [f64; 3],
     last_yaw: i8,
     last_pitch: i8,
+    /// The head's yaw as sent last (`lastSentYHeadRot`): a mob's head as it began to be
+    /// tracked, and 0 for what has no head of its own.
+    last_head: i8,
     was_on_ground: bool,
     /// Whether every client shown the entity holds it on the ground: the last move sent
     /// said so, and no client has been shown it since. A spawn tells a client nothing of
@@ -608,6 +619,7 @@ impl Tracker {
             last_motion: seen.motion,
             last_yaw: pack_degrees(seen.yaw),
             last_pitch: pack_degrees(seen.pitch),
+            last_head: clustine_sim::shown::head_yaw(data).map_or(0, pack_degrees),
             was_on_ground: seen.on_ground,
             // The clients it is first shown to are spawned with it, off the ground.
             sent_on_ground: std::cell::Cell::new(false),
@@ -846,6 +858,11 @@ impl Tracker {
                     }
                 }
             }
+            // `ExperienceOrb.DATA_VALUE`, 0 by default: what it is worth, by which a
+            // client sizes it. It is set as the orb is made and never changes.
+            EntityData::ExperienceOrb { value, .. } if pairing && *value != 0 => {
+                values.push((ORB_VALUE, EntityDataValue::Int(*value)));
+            }
             // An armour stand's values are its living data's, above; the other kinds of
             // N5 bring theirs with their steps.
             _ => {}
@@ -877,6 +894,7 @@ impl Tracker {
             motion: self.last_motion,
             yaw: self.last_yaw as u8,
             pitch: self.last_pitch as u8,
+            head_yaw: self.last_head as u8,
             values: self.pairing.clone(),
             equipment: self.worn.clone(),
         }
@@ -972,7 +990,9 @@ impl Tracker {
                     Sent::Pos(_) => (true, false),
                     Sent::PosRot(_) | Sent::Sync(_) => (true, true),
                     Sent::Rot(_) => (false, true),
-                    Sent::Motion(_) | Sent::Data(_) | Sent::Equipment(_) => (false, false),
+                    Sent::Motion(_) | Sent::Data(_) | Sent::Equipment(_) | Sent::Head(_) => {
+                        (false, false)
+                    }
                 };
                 if let Sent::Pos(MoveEntityPos { on_ground, .. })
                 | Sent::PosRot(MoveEntityPosRot { on_ground, .. })
@@ -993,8 +1013,19 @@ impl Tracker {
             } else {
                 self.send_dirty(id, data, &mut out);
             }
-            // A head of its own is only a living entity's: these keep theirs at 0.
             self.once &= !Tracked::NEEDS_SYNC;
+        }
+        // A mob's head, every tick it turned by a step of the packed angle at least,
+        // update tick or not (`ServerEntity.sendChanges`, after the update).
+        if let Some(head) = clustine_sim::shown::head_yaw(data) {
+            let head = pack_degrees(head);
+            if head != self.last_head {
+                out.push(Sent::Head(SetHeadRotation {
+                    entity_id: id,
+                    head_yaw: head as u8,
+                }));
+                self.last_head = head;
+            }
         }
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.once & Tracked::SYNC_VELOCITY != 0 {
@@ -2151,5 +2182,93 @@ mod tests {
             &data,
         );
         assert_eq!(caught.catch_up(ID, &data, 1000), [sync(landed, true)]);
+    }
+}
+
+#[cfg(test)]
+mod heads {
+    use clustine_world::{EntityData, Entry, TypeState};
+
+    use super::*;
+
+    /// A cow's record whose head's part says `yaw`: the part's first value, which is
+    /// all the edge reads of it.
+    fn cow_looking(yaw: f32) -> EntityData {
+        let mut bytes = yaw.to_le_bytes().to_vec();
+        bytes.extend([0; 6]);
+        EntityData::Mob {
+            body: vec![Entry {
+                id: 4,
+                version: 2,
+                bytes,
+            }],
+            mind: Vec::new(),
+            state: TypeState::default(),
+        }
+    }
+
+    /// `ServerEntity`: a mob is paired with its head as it is, and sent its head every
+    /// tick it turned by a step at least, apart from its body's, update tick or not.
+    #[test]
+    fn a_mob_is_spawned_with_its_head_and_sent_each_turn_of_it_once() {
+        let seen = Seen {
+            kind: entity_types::COW as u16,
+            position: [0.5, -60.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        let mut tracker = Tracker::new(seen, &cow_looking(90.0), 0);
+        assert_eq!(tracker.pairing().head_yaw, 64, "a quarter turn");
+        let heads = |sent: &[Sent]| -> Vec<u8> {
+            sent.iter()
+                .filter_map(|sent| match sent {
+                    Sent::Head(head) => Some(head.head_yaw),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(heads(&tracker.send_changes(7, &cow_looking(90.0))).is_empty());
+        assert_eq!(heads(&tracker.send_changes(7, &cow_looking(180.0))), [128]);
+        assert!(heads(&tracker.send_changes(7, &cow_looking(180.5))).is_empty());
+        assert_eq!(tracker.pairing().head_yaw, 128);
+    }
+}
+
+#[cfg(test)]
+mod orbs {
+    use clustine_world::EntityData;
+
+    use super::*;
+
+    /// An orb is paired with its worth at index 8, an int, by which a client sizes it;
+    /// one made just now is sent it again by its first update, as the official server
+    /// sends it.
+    #[test]
+    fn an_orb_is_shown_with_its_worth() {
+        let seen = Seen {
+            kind: entity_types::EXPERIENCE_ORB as u16,
+            position: [0.5, -60.0, 0.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let orb = EntityData::ExperienceOrb {
+            value: 2,
+            count: 1,
+            health: 5,
+            age_offset: 0,
+            following: None,
+        };
+        let mut tracker = Tracker::new(seen, &orb, 0);
+        assert_eq!(tracker.pairing().values, [(8, EntityDataValue::Int(2))]);
+        tracker.made();
+        let sent = tracker.send_changes(9, &orb);
+        assert!(sent.iter().any(|sent| matches!(
+            sent,
+            Sent::Data(data) if data.values == [(8, EntityDataValue::Int(2))]
+        )));
     }
 }

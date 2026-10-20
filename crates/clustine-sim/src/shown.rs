@@ -87,6 +87,24 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
     values
 }
 
+/// The yaw of a mob's head (`getYHeadRot`) as its record has it, which a client is sent
+/// apart from its body's (`ClientboundRotateHeadPacket`, and in its spawn); none for a
+/// record that is no mob's. Read from the head's part alone, whose first value it is in
+/// every version, as an edge reads it every tick.
+pub fn head_yaw(data: &EntityData) -> Option<f32> {
+    let EntityData::Mob { body, .. } = data else {
+        return None;
+    };
+    let head = crate::mobs::part::body_ids::HEAD;
+    let Ok(at) = body.binary_search_by_key(&head, |entry| entry.id) else {
+        // A mob whose head is as a fresh one's: at 0.
+        return Some(0.0);
+    };
+    postcard::take_from_bytes::<f32>(&body[at].bytes)
+        .ok()
+        .map(|(yaw, _)| yaw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
