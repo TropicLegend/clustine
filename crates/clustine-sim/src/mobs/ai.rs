@@ -95,8 +95,6 @@ pub(crate) struct Controls {
     pub(crate) look: LookState,
     /// `JumpControl.jump`, set and taken in one AI step.
     pub(crate) jump: bool,
-    /// `BodyRotationControl.lastStableYHeadRot`.
-    pub(crate) last_stable_head_yaw: f32,
     /// `Mob.pathfindingMalus` as goals and evaluators set it beyond the type's own, by
     /// the type's ordinal, ascending.
     pub(crate) malus: Vec<(u8, f32)>,
@@ -104,7 +102,31 @@ pub(crate) struct Controls {
 
 impl Part for Controls {
     const ID: u16 = body_ids::CONTROLS;
-    const VERSION: u8 = 1;
+    /// Version 2 left the head's last stable yaw to the head (`body::Head`).
+    const VERSION: u8 = 2;
+}
+
+/// [`Controls`] as version 1 wrote them.
+#[derive(Deserialize)]
+pub(crate) struct ControlsV1 {
+    movement: MoveState,
+    look: LookState,
+    jump: bool,
+    last_stable_head_yaw: f32,
+    malus: Vec<(u8, f32)>,
+}
+
+impl ControlsV1 {
+    /// The controls, and the head's last stable yaw they held.
+    pub(crate) fn split(self) -> (Controls, Option<f32>) {
+        let controls = Controls {
+            movement: self.movement,
+            look: self.look,
+            jump: self.jump,
+            malus: self.malus,
+        };
+        (controls, Some(self.last_stable_head_yaw))
+    }
 }
 
 /// The path a mob follows, whole as it was made (`PathNavigation.path`), with the
@@ -135,10 +157,6 @@ pub(crate) struct Progress {
     pub(crate) stuck: bool,
     /// `timeoutCachedNode`.
     pub(crate) timeout_node: [i32; 3],
-    /// `timeoutTimer`, in game ticks summed.
-    pub(crate) timeout_timer: i64,
-    /// `lastTimeoutCheck`.
-    pub(crate) last_timeout_check: i64,
     /// `timeoutLimit`.
     pub(crate) timeout_limit: f64,
     /// `hasDelayedRecomputation`.
@@ -152,7 +170,64 @@ pub(crate) struct Progress {
 
 impl Part for Progress {
     const ID: u16 = body_ids::PROGRESS;
+    /// Version 2 left the timeout's timer and check to [`Timeout`].
+    const VERSION: u8 = 2;
+}
+
+/// `PathNavigation.timeoutTimer`, in game ticks summed, and `lastTimeoutCheck`, which the
+/// navigation sets every tick its mob follows a path: a part of their own, so that the
+/// rest of the progress is written only when it changes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Timeout {
+    pub(crate) timer: i64,
+    pub(crate) last_check: i64,
+}
+
+impl Part for Timeout {
+    const ID: u16 = body_ids::TIMEOUT;
     const VERSION: u8 = 1;
+}
+
+/// [`Progress`] as version 1 wrote it.
+#[derive(Deserialize)]
+pub(crate) struct ProgressV1 {
+    next: u32,
+    speed: f64,
+    stuck_check_at: u32,
+    stuck_position: Vec3,
+    stuck: bool,
+    timeout_node: [i32; 3],
+    timeout_timer: i64,
+    last_timeout_check: i64,
+    timeout_limit: f64,
+    delayed_recompute: bool,
+    last_recompute: Option<u32>,
+    target: Option<BlockPos>,
+    reach: i32,
+}
+
+impl ProgressV1 {
+    /// The progress, and the timeout it held.
+    pub(crate) fn split(self) -> (Progress, Option<Timeout>) {
+        let progress = Progress {
+            next: self.next,
+            speed: self.speed,
+            stuck_check_at: self.stuck_check_at,
+            stuck_position: self.stuck_position,
+            stuck: self.stuck,
+            timeout_node: self.timeout_node,
+            timeout_limit: self.timeout_limit,
+            delayed_recompute: self.delayed_recompute,
+            last_recompute: self.last_recompute,
+            target: self.target,
+            reach: self.reach,
+        };
+        let timeout = Timeout {
+            timer: self.timeout_timer,
+            last_check: self.last_timeout_check,
+        };
+        (progress, Some(timeout))
+    }
 }
 
 /// A selector's state (`GoalSelector`): its running goals by their index among its

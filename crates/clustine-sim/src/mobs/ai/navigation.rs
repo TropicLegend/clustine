@@ -392,9 +392,9 @@ fn create_path_to(ai: &mut Ai<'_, '_>, target: BlockPos, reach: i32, range: f32)
 fn reset_stuck_timeout(ai: &mut Ai<'_, '_>) {
     let progress = &mut ai.tick.mob.body.progress;
     progress.timeout_node = [0; 3];
-    progress.timeout_timer = 0;
     progress.timeout_limit = 0.0;
     progress.stuck = false;
+    ai.tick.mob.body.timeout.timer = 0;
 }
 
 /// `moveTo(x, y, z, speed)`: reach 1.
@@ -683,9 +683,10 @@ fn stuck_detection(ai: &mut Ai<'_, '_>, at: Vec3) {
     let node = path.nodes[index];
     let now = ai.now();
     let cell = [node.x, node.y, node.z];
-    let progress = &mut ai.tick.mob.body.progress;
+    let body = &mut ai.tick.mob.body;
+    let (progress, timeout) = (&mut body.progress, &mut body.timeout);
     if cell == progress.timeout_node {
-        progress.timeout_timer += now - progress.last_timeout_check;
+        timeout.timer += now - timeout.last_check;
     } else {
         progress.timeout_node = cell;
         let centre = [
@@ -700,13 +701,12 @@ fn stuck_detection(ai: &mut Ai<'_, '_>, at: Vec3) {
             0.0
         };
     }
-    if progress.timeout_limit > 0.0 && progress.timeout_timer as f64 > progress.timeout_limit * 3.0
-    {
+    if progress.timeout_limit > 0.0 && timeout.timer as f64 > progress.timeout_limit * 3.0 {
         // `timeoutPath`.
         reset_stuck_timeout(ai);
         stop(ai);
     }
-    ai.tick.mob.body.progress.last_timeout_check = now;
+    ai.tick.mob.body.timeout.last_check = now;
 }
 
 /// `recomputePath()`: at most once in 20 ticks; a refusal is retried at the

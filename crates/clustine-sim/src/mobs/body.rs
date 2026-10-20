@@ -142,18 +142,30 @@ impl Equipment {
     }
 }
 
-/// The head's and the body's yaw (`yHeadRot`, `yBodyRot`), and the `lived` from which
-/// its head has been still (`BodyRotationControl.headStableTime`).
+/// The head's and the body's yaw (`yHeadRot`, `yBodyRot`), the `lived` from which its
+/// head has been still (`BodyRotationControl.headStableTime`), and the head's yaw it was
+/// last still at (`lastStableYHeadRot`), which is set every tick the mob moves, as the
+/// two yaws are: kept with them, so that a moving mob writes one part for its turning
+/// (version 1 had it among the controls, `ai::Controls`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Head {
     pub(crate) head_yaw: f32,
     pub(crate) body_yaw: f32,
     pub(crate) still_since: u32,
+    pub(crate) last_stable_yaw: f32,
 }
 
 impl Part for Head {
     const ID: u16 = body_ids::HEAD;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
+}
+
+/// [`Head`] as version 1 wrote it.
+#[derive(Deserialize)]
+struct HeadV1 {
+    head_yaw: f32,
+    body_yaw: f32,
+    still_since: u32,
 }
 
 /// The movement inputs its controls set and `travel` reads: `xxa`, `yya`, `zza`,
@@ -263,6 +275,7 @@ pub(crate) struct Body {
     pub(crate) controls: super::ai::Controls,
     pub(crate) path: super::ai::Path,
     pub(crate) progress: super::ai::Progress,
+    pub(crate) timeout: super::ai::Timeout,
     pub(crate) combat: Combat,
     pub(crate) flags: Flags,
     pub(crate) home: Home,
@@ -271,15 +284,50 @@ pub(crate) struct Body {
 
 impl Body {
     pub(crate) fn decode(entries: &[Entry]) -> Result<Self, PartError> {
+        // Version 1 of the controls held the head's last stable yaw, and version 1 of the
+        // progress the timeout's timer and check: they are taken into their parts now.
+        let (controls, last_stable_yaw) = match part::decode_or_older::<
+            super::ai::Controls,
+            super::ai::ControlsV1,
+        >(entries, 1)?
+        {
+            Ok(controls) => (controls, None),
+            Err(old) => old.split(),
+        };
+        let (progress, old_timeout) = match part::decode_or_older::<
+            super::ai::Progress,
+            super::ai::ProgressV1,
+        >(entries, 1)?
+        {
+            Ok(progress) => (progress, None),
+            Err(old) => old.split(),
+        };
+        let mut head = match part::decode_or_older::<Head, HeadV1>(entries, 1)? {
+            Ok(head) => head,
+            Err(old) => Head {
+                head_yaw: old.head_yaw,
+                body_yaw: old.body_yaw,
+                still_since: old.still_since,
+                last_stable_yaw: 0.0,
+            },
+        };
+        if let Some(yaw) = last_stable_yaw {
+            head.last_stable_yaw = yaw;
+        }
+        let timeout = match old_timeout {
+            Some(timeout) => timeout,
+            None => part::decode(entries)?,
+        };
         Ok(Self {
             vitals: part::decode(entries)?,
             attributes: part::decode(entries)?,
             equipment: part::decode(entries)?,
-            head: part::decode(entries)?,
+            head,
             inputs: part::decode(entries)?,
-            controls: part::decode(entries)?,
+            controls,
             path: part::decode(entries)?,
-            progress: part::decode(entries)?,
+            progress,
+            timeout,
             combat: part::decode(entries)?,
             flags: part::decode(entries)?,
             home: part::decode(entries)?,
@@ -302,6 +350,7 @@ impl Body {
         part::put(&mut entries, &self.flags);
         part::put(&mut entries, &self.home);
         part::put(&mut entries, &self.idle);
+        part::put(&mut entries, &self.timeout);
         entries
     }
 

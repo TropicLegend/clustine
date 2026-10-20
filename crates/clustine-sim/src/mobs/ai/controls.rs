@@ -396,19 +396,18 @@ pub(crate) fn rotate_body(tick: &mut MobTick<'_>) {
     let next = tick.lived.saturating_add(1);
     let yaw = tick.yaw;
     let head = &mut tick.mob.body.head;
-    let controls = &mut tick.mob.body.controls;
     if moved {
         head.body_yaw = yaw;
         head.head_yaw = rotate_if_necessary(head.head_yaw, head.body_yaw, max);
-        controls.last_stable_head_yaw = head.head_yaw;
+        head.last_stable_yaw = head.head_yaw;
         head.still_since = next;
         return;
     }
     // **Named**: a mob carrying a mob does not count its stillness in the game; the
     // region does not yet tell a tick what its mob carries, and none of N7's does.
-    if (head.head_yaw - controls.last_stable_head_yaw).abs() > 15.0 {
+    if (head.head_yaw - head.last_stable_yaw).abs() > 15.0 {
         head.still_since = next;
-        controls.last_stable_head_yaw = head.head_yaw;
+        head.last_stable_yaw = head.head_yaw;
         head.body_yaw = rotate_if_necessary(head.body_yaw, head.head_yaw, max);
     } else {
         let stable = next.wrapping_sub(head.still_since) as i32;

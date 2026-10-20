@@ -385,3 +385,81 @@ fn a_sheep_s_wool_follows_its_colour_and_none_drops_where_it_is_sheared() {
     let drops = loot::entity_drops(&subject, &source, false, &mut draws);
     assert!(!drops.iter().any(|stack| stack.item == items::LIME_WOOL));
 }
+
+/// A body written by a build before N7f's measurement: version 1 of the head, the
+/// controls and the progress. The head's last stable yaw the controls held goes to the
+/// head, and the timeout's timer and check the progress held to the timeout; the rest is
+/// as it was.
+#[test]
+fn a_body_of_the_first_versions_is_read_with_its_moved_values_where_they_are_now() {
+    use super::Body;
+    use crate::mobs::ai::{LookState, MoveState};
+    use crate::mobs::part::body_ids;
+    use clustine_world::BlockPos;
+    let entry = |id: u16, bytes: Vec<u8>| clustine_world::Entry {
+        id,
+        version: 1,
+        bytes,
+    };
+    let head = postcard::to_allocvec(&(90.0_f32, 80.0_f32, 7_u32)).unwrap();
+    let look = LookState {
+        cooldown: 2,
+        ..LookState::default()
+    };
+    let controls = postcard::to_allocvec(&(
+        MoveState::default(),
+        look.clone(),
+        true,
+        33.5_f32,
+        vec![(3_u8, -1.0_f32)],
+    ))
+    .unwrap();
+    let progress = postcard::to_allocvec(&(
+        4_u32,
+        1.25_f64,
+        100_u32,
+        [1.0_f64, 2.0, 3.0],
+        false,
+        [5_i32, 6, 7],
+        41_i64,
+        9_000_i64,
+        12.5_f64,
+        true,
+        Some(80_u32),
+        Some(BlockPos::new(8, -60, 9)),
+        1_i32,
+    ))
+    .unwrap();
+    let entries = vec![
+        entry(body_ids::HEAD, head),
+        entry(body_ids::CONTROLS, controls),
+        entry(body_ids::PROGRESS, progress),
+    ];
+    let body = Body::decode(&entries).unwrap();
+    assert_eq!(
+        (
+            body.head.head_yaw,
+            body.head.body_yaw,
+            body.head.still_since,
+            body.head.last_stable_yaw
+        ),
+        (90.0, 80.0, 7, 33.5)
+    );
+    assert_eq!(body.controls.look, look);
+    assert!(body.controls.jump);
+    assert_eq!(body.controls.malus, [(3, -1.0)]);
+    assert_eq!((body.timeout.timer, body.timeout.last_check), (41, 9_000));
+    assert_eq!(body.progress.next, 4);
+    assert_eq!(body.progress.timeout_node, [5, 6, 7]);
+    assert_eq!(body.progress.timeout_limit, 12.5);
+    assert_eq!(body.progress.target, Some(BlockPos::new(8, -60, 9)));
+    // Written again, each in the version this build writes.
+    let written = body.encode();
+    assert!(
+        written
+            .iter()
+            .all(|entry| entry.version == 2 || entry.id == body_ids::TIMEOUT),
+        "{written:?}"
+    );
+    assert_eq!(Body::decode(&written).unwrap(), body);
+}

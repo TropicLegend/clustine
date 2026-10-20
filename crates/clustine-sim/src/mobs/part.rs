@@ -38,6 +38,9 @@ pub(crate) mod body_ids {
     /// The stamps of the counters that count every tick: the ambient sound's, the
     /// idle time's.
     pub(crate) const IDLE: u16 = 12;
+    /// The navigation's timeout timer and its last check, which move every tick a mob
+    /// follows a path: apart, so that the rest of its progress is not written with them.
+    pub(crate) const TIMEOUT: u16 = 13;
 }
 
 /// The ids of the mind's parts below [`mind_ids::FIRST_GOAL`]; a goal's part is its
@@ -94,6 +97,28 @@ pub(crate) fn decode<P: Part>(entries: &[Entry]) -> Result<P, PartError> {
         id: entry.id,
         version: entry.version,
     })
+}
+
+/// The part `P` of `entries` as [`decode`] reads it, or its entry's bytes as `Old` where
+/// they are of the version `old`, the one before, which the caller makes the part of.
+pub(crate) fn decode_or_older<P: Part, Old: serde::de::DeserializeOwned>(
+    entries: &[Entry],
+    old: u8,
+) -> Result<Result<P, Old>, PartError> {
+    let Ok(at) = entries.binary_search_by_key(&P::ID, |entry| entry.id) else {
+        return Ok(Ok(P::default()));
+    };
+    let entry = &entries[at];
+    let unreadable = || PartError::Unreadable {
+        id: entry.id,
+        version: entry.version,
+    };
+    if entry.version == old && old != P::VERSION {
+        return postcard::from_bytes(&entry.bytes)
+            .map(Err)
+            .map_err(|_| unreadable());
+    }
+    decode(entries).map(Ok)
 }
 
 /// Puts the entry of `part` into `entries`, ascending by id, unless the part is as a

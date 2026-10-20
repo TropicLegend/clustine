@@ -305,6 +305,7 @@ impl Region {
                 head_yaw: yaw,
                 body_yaw: yaw,
                 still_since: 0,
+                ..Head::default()
             };
         }
         Some(Entity {

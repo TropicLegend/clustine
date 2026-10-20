@@ -208,6 +208,7 @@ impl Region {
             head_yaw: yaw,
             body_yaw: yaw,
             still_since: 0,
+            ..Head::default()
         };
         // `finalizeSpawn`: the type's, with the biome at its block, then `Mob`'s.
         let biome = self.biome_at(crate::physics::containing([x, y, z]));
