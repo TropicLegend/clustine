@@ -10,11 +10,12 @@
 //!
 //! A throw draws its motion at random on both servers, so where a thrown item lands,
 //! and when, differs between runs by a tick or two: the item cases compare what the
-//! rules fix whatever the draw (the updates at the counts of 20 and 60 from the spawn,
-//! the landing sent whole at the update after it, the pick-up at 40 ticks, a move every
-//! tick in water), not every tick. A resting item's `set_entity_motion` is left out:
-//! Clustine reports a resting item's motion only with its committed changes (the
-//! plan's section 7). The sand draws nothing and is compared tick by tick.
+//! rules fix whatever the draw (the packets up to the landing, the landing sent at once
+//! within the moves a draw allows, the pick-up at 40 ticks, a move every tick in
+//! water), not every tick. What a landed item is sent while it slides depends on the
+//! draw as well, and is left out. The blocks of a case are compared from the first one
+//! changed, since each server builds the case where its builder joined. The sand draws
+//! nothing and is compared tick by tick.
 //!
 //! They need Java, the server jar downloaded by `cargo datagen`, and your agreement to
 //! the Minecraft EULA, so they are ignored by default. Run them on a quiet machine, with
@@ -235,6 +236,23 @@ fn spawned_with_data_next(timeline: &Timeline) -> bool {
     )
 }
 
+/// Where in `timeline` the item was sent whole on the ground first: its landing.
+fn landing(timeline: &Timeline) -> Option<usize> {
+    timeline
+        .iter()
+        .position(|(_, sent)| matches!(sent, Sent::Whole { on_ground: true }))
+}
+
+/// The packets of `sent` with their blocks from the first block changed, as
+/// [`in_the_case`] puts them.
+fn in_the_case_sent(sent: &[Sent]) -> Vec<Sent> {
+    let timeline: Timeline = sent.iter().map(|sent| (0, sent.clone())).collect();
+    in_the_case(&timeline)
+        .into_iter()
+        .map(|(_, sent)| sent)
+        .collect()
+}
+
 /// `timeline` with its blocks where they are from the first block it changed: each
 /// server builds the case where its builder joined, which are not the same place.
 fn in_the_case(timeline: &Timeline) -> Timeline {
@@ -308,6 +326,34 @@ async fn place(
     .await
 }
 
+/// Pours a water bucket into `hole` as a client does: a click on the top of `floor`,
+/// the block below it, which the game passes over for a bucket (`BucketItem` has no
+/// `useOn`), and then the use of the bucket looking at the middle of that top, which
+/// the game aims by a ray from the eyes (`BucketItem.use`).
+async fn pour(bot: &mut Bot, floor: (i32, i32, i32), hole: (i32, i32, i32)) -> Result<()> {
+    bot.take_from_creative_inventory(1, items::WATER_BUCKET)
+        .await?;
+    bot.select_slot(1).await?;
+    let (x, y, z) = bot.location;
+    let eyes = y + 1.62;
+    let target = (
+        f64::from(floor.0) + 0.5,
+        f64::from(floor.1) + 1.0,
+        f64::from(floor.2) + 0.5,
+    );
+    let (dx, dy, dz) = (target.0 - x, target.1 - eyes, target.2 - z);
+    let yaw = (-dx).atan2(dz).to_degrees() as f32;
+    let pitch = (-dy).atan2(dx.hypot(dz)).to_degrees() as f32;
+    bot.use_item_on(floor.0, floor.1, floor.2, face::TOP)
+        .await?;
+    bot.use_item(yaw, pitch).await?;
+    bot.wait_until(PATIENCE, |bot| {
+        bot.block_at(hole.0, hole.1, hole.2)
+            .is_ok_and(|state| state.is_some_and(|state| state != 0))
+    })
+    .await
+}
+
 /// Throws a stone looking straight down from where the builder stands.
 async fn throw_down(mut builder: Bot) -> Result<Connection> {
     builder
@@ -368,14 +414,7 @@ async fn into_water(address: &str) -> Result<Timeline> {
                 .is_ok_and(|state| state == Some(0))
         })
         .await?;
-    place(
-        &mut builder,
-        items::WATER_BUCKET,
-        (x + 1, GROUND - 1, z),
-        face::TOP,
-        hole,
-    )
-    .await?;
+    pour(&mut builder, (x + 1, GROUND - 1, z), hole).await?;
     builder
         .stand_at(f64::from(x + 1) + 0.5, f64::from(y), f64::from(z) + 0.5)
         .await?;
@@ -415,20 +454,6 @@ async fn sand_falls(address: &str) -> Result<Timeline> {
     recorded
 }
 
-/// The packets of a thrown item but a resting item's motion, which Clustine reports
-/// only with the item's committed changes.
-fn fixed_by_the_rules(timeline: &Timeline) -> Timeline {
-    let landed = timeline
-        .iter()
-        .position(|(_, sent)| matches!(sent, Sent::Whole { on_ground: true }));
-    let after_landing = |index: usize| landed.is_some_and(|landed| index > landed);
-    let entries = timeline.iter().enumerate();
-    entries
-        .filter(|(index, (_, sent))| !(after_landing(*index) && *sent == Sent::Motion))
-        .map(|(_, entry)| entry.clone())
-        .collect()
-}
-
 #[tokio::test]
 #[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn an_item_thrown_onto_a_slab_is_sent_like_on_the_official_server() {
@@ -438,27 +463,41 @@ async fn an_item_thrown_onto_a_slab_is_sent_like_on_the_official_server() {
     let (server, address) = start().await;
     let ours = onto_a_slab(&address).await.unwrap();
     println!("the official server: {theirs:?}\nClustine: {ours:?}");
-    // On both: the spawn and its stack; the spawn's update a move of nothing; the
-    // landing whole at the update after it, the 20th tick; the pick-up at 40, then the
-    // removal. Every update at a count of 20 from the spawn, but a pick-up's.
+    // On both: the spawn and its stack, and the update of the tick it was made in (a move
+    // of nothing and its stack again); the landing sent at once, its motion then its
+    // position whole, after four to six moves as the throw's draw has it, which differs
+    // between the servers and runs (the throw adds up to a tenth either way to its fall);
+    // the pick-up at 40 ticks, then the removal. What comes between the landing and the
+    // pick-up depends on how far the draw sent it sliding, and is not compared.
     for (server, timeline) in [("the official server", &theirs), ("Clustine", &ours)] {
         assert!(spawned_with_data_next(timeline), "{server}: {timeline:?}");
-        let landed = timeline
-            .iter()
-            .find(|(_, sent)| matches!(sent, Sent::Whole { on_ground: true }));
+        let landed = landing(timeline);
         assert!(
-            landed.is_some_and(|(tick, _)| (tick - 20).abs() <= 1),
+            landed.is_some_and(|at| (3..=8).contains(&timeline[at].0)
+                && matches!(timeline[at - 1], (tick, Sent::Motion) if tick == timeline[at].0)),
             "{server}: {timeline:?}"
         );
         let taken = timeline
             .iter()
-            .find(|(_, sent)| matches!(sent, Sent::Taken { .. }));
+            .position(|(_, sent)| matches!(sent, Sent::Taken { .. }));
         assert!(
-            taken.is_some_and(|(tick, _)| (tick - 40).abs() <= 2),
+            taken.is_some_and(|at| (timeline[at].0 - 40).abs() <= 2
+                && timeline.get(at + 1).map(|(_, sent)| sent) == Some(&Sent::Removed)),
             "{server}: {timeline:?}"
         );
     }
-    compare(&fixed_by_the_rules(&ours), &fixed_by_the_rules(&theirs)).unwrap();
+    // Up to the landing, the same packets in the same order.
+    let until_landing = |timeline: &Timeline| -> Vec<Sent> {
+        let landed = landing(timeline).expect("checked above");
+        timeline[..=landed]
+            .iter()
+            .map(|(_, sent)| sent.clone())
+            .collect()
+    };
+    assert_eq!(
+        in_the_case_sent(&until_landing(&ours)),
+        in_the_case_sent(&until_landing(&theirs))
+    );
     server.stop().await;
 }
 
