@@ -1013,19 +1013,19 @@ impl Tracker {
             } else {
                 self.send_dirty(id, data, &mut out);
             }
-            self.once &= !Tracked::NEEDS_SYNC;
-        }
-        // A mob's head, every tick it turned by a step of the packed angle at least,
-        // update tick or not (`ServerEntity.sendChanges`, after the update).
-        if let Some(head) = clustine_sim::shown::head_yaw(data) {
-            let head = pack_degrees(head);
-            if head != self.last_head {
-                out.push(Sent::Head(SetHeadRotation {
-                    entity_id: id,
-                    head_yaw: head as u8,
-                }));
-                self.last_head = head;
+            // A mob's head, where it turned by a step of the packed angle at least since
+            // it was sent, at the end of the update (`ServerEntity.sendChanges`).
+            if let Some(head) = clustine_sim::shown::head_yaw(data) {
+                let head = pack_degrees(head);
+                if head != self.last_head {
+                    out.push(Sent::Head(SetHeadRotation {
+                        entity_id: id,
+                        head_yaw: head as u8,
+                    }));
+                    self.last_head = head;
+                }
             }
+            self.once &= !Tracked::NEEDS_SYNC;
         }
         self.tick_count = self.tick_count.wrapping_add(1);
         if self.once & Tracked::SYNC_VELOCITY != 0 {
@@ -2207,10 +2207,11 @@ mod heads {
         }
     }
 
-    /// `ServerEntity`: a mob is paired with its head as it is, and sent its head every
-    /// tick it turned by a step at least, apart from its body's, update tick or not.
+    /// `ServerEntity`: a mob is paired with its head as it is, and sent its head at an
+    /// update where it turned by a step at least since it was sent, apart from its
+    /// body's; a cow is updated every third tick.
     #[test]
-    fn a_mob_is_spawned_with_its_head_and_sent_each_turn_of_it_once() {
+    fn a_mob_is_spawned_with_its_head_and_sent_each_turn_of_it_once_at_its_updates() {
         let seen = Seen {
             kind: entity_types::COW as u16,
             position: [0.5, -60.0, 0.5],
@@ -2229,10 +2230,17 @@ mod heads {
                 })
                 .collect()
         };
+        // The update of its count 0: the head as paired.
         assert!(heads(&tracker.send_changes(7, &cow_looking(90.0))).is_empty());
+        // Turned at counts 1 and 2, which are no updates; sent at 3.
+        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0))).is_empty());
+        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0))).is_empty());
         assert_eq!(heads(&tracker.send_changes(7, &cow_looking(180.0))), [128]);
-        assert!(heads(&tracker.send_changes(7, &cow_looking(180.5))).is_empty());
         assert_eq!(tracker.pairing().head_yaw, 128);
+        // Half a degree is no step of the packed angle.
+        for _ in 0..3 {
+            assert!(heads(&tracker.send_changes(7, &cow_looking(180.5))).is_empty());
+        }
     }
 }
 
