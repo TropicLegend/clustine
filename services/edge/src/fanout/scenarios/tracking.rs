@@ -265,7 +265,9 @@ async fn a_falling_block_appears_before_its_block_leaves_and_lands_before_it_goe
             clientbound::ADD_ENTITY,
             clientbound::SET_ENTITY_DATA,
             clientbound::BLOCK_UPDATE,
-            clientbound::MOVE_ENTITY_POS
+            clientbound::MOVE_ENTITY_POS,
+            // Its start again, as the official server sends a new entity's data.
+            clientbound::SET_ENTITY_DATA
         ]
     );
     let id = first.naming(key)[0].1;

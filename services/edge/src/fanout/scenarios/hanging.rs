@@ -131,9 +131,17 @@ async fn a_frame_is_spawned_at_its_blocks_corner_and_sent_only_what_changes() {
     ))];
     let before = first.ids.len();
     tick(&mut edge, &mut first, 10, spawned).await;
+    // Made just now: the update of its first tick, which its data made dirty brings
+    // about, sends the move every sixtieth count forces and its values again, as the
+    // official server sends a new entity's (`entities_oracle.rs`).
     assert_eq!(
         kinds_from(&first, before),
-        [clientbound::ADD_ENTITY, clientbound::SET_ENTITY_DATA]
+        [
+            clientbound::ADD_ENTITY,
+            clientbound::SET_ENTITY_DATA,
+            clientbound::MOVE_ENTITY_POS,
+            clientbound::SET_ENTITY_DATA
+        ]
     );
     let id = first.naming(key)[0].1;
     let spawn = first

@@ -208,6 +208,7 @@ async fn record(watching: &mut Connection, kind: i32, around: (i32, i32, i32)) -
 /// Whether two timelines hold the same packets in the same order, each within a tick of
 /// the other's; the first difference otherwise.
 fn compare(ours: &Timeline, theirs: &Timeline) -> Result<()> {
+    let (ours, theirs) = (&in_the_case(ours), &in_the_case(theirs));
     for (index, (our, their)) in ours.iter().zip(theirs).enumerate() {
         ensure!(
             our.1 == their.1 && (our.0 - their.0).abs() <= 1,
@@ -221,6 +222,41 @@ fn compare(ours: &Timeline, theirs: &Timeline) -> Result<()> {
         theirs.len()
     );
     Ok(())
+}
+
+/// Whether the entity's spawn is followed at once by its data, its start or its stack
+/// at index 8, after what was built for the case.
+fn spawned_with_data_next(timeline: &Timeline) -> bool {
+    let spawn = timeline
+        .iter()
+        .position(|(_, sent)| matches!(sent, Sent::Spawn { .. }));
+    spawn.is_some_and(
+        |at| matches!(timeline.get(at + 1), Some((_, Sent::Data(values))) if values == &[8]),
+    )
+}
+
+/// `timeline` with its blocks where they are from the first block it changed: each
+/// server builds the case where its builder joined, which are not the same place.
+fn in_the_case(timeline: &Timeline) -> Timeline {
+    let origin = timeline.iter().find_map(|(_, sent)| match sent {
+        Sent::Block(at, _) | Sent::Transient(at, _) => Some(*at),
+        _ => None,
+    });
+    let Some((ox, oy, oz)) = origin else {
+        return timeline.clone();
+    };
+    let moved = |(x, y, z): (i32, i32, i32)| (x - ox, y - oy, z - oz);
+    timeline
+        .iter()
+        .map(|(tick, sent)| {
+            let sent = match sent {
+                Sent::Block(at, state) => Sent::Block(moved(*at), *state),
+                Sent::Transient(at, state) => Sent::Transient(moved(*at), *state),
+                other => other.clone(),
+            };
+            (*tick, sent)
+        })
+        .collect()
 }
 
 /// A builder and a watcher in `address`'s world, with the chunks around the builder.
@@ -406,10 +442,7 @@ async fn an_item_thrown_onto_a_slab_is_sent_like_on_the_official_server() {
     // landing whole at the update after it, the 20th tick; the pick-up at 40, then the
     // removal. Every update at a count of 20 from the spawn, but a pick-up's.
     for (server, timeline) in [("the official server", &theirs), ("Clustine", &ours)] {
-        assert!(
-            matches!(timeline[..2], [(_, Sent::Spawn { .. }), (_, Sent::Data(ref values))] if values == &[8]),
-            "{server}: {timeline:?}"
-        );
+        assert!(spawned_with_data_next(timeline), "{server}: {timeline:?}");
         let landed = timeline
             .iter()
             .find(|(_, sent)| matches!(sent, Sent::Whole { on_ground: true }));
@@ -498,10 +531,7 @@ async fn a_block_of_sand_falls_like_on_the_official_server() {
     // transient block, then its removal, and its block comes again with the next tick's
     // changes. It draws nothing: every packet within a tick of the other server's.
     for (server, timeline) in [("the official server", &theirs), ("Clustine", &ours)] {
-        assert!(
-            matches!(timeline[..2], [(_, Sent::Spawn { .. }), (_, Sent::Data(ref values))] if values == &[8]),
-            "{server}: {timeline:?}"
-        );
+        assert!(spawned_with_data_next(timeline), "{server}: {timeline:?}");
         let transient = timeline
             .iter()
             .position(|(_, sent)| matches!(sent, Sent::Transient(..)));

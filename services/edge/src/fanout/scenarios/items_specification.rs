@@ -152,7 +152,8 @@ async fn wire_ids_are_the_edge_s_own_in_the_order_entities_are_first_shown_and_n
 }
 
 /// The plan, section 11: every client in view is sent the item's `SpawnEntity` and
-/// then, as the next packet that names an entity, its `SetEntityData`; once.
+/// then, as the next packet that names an entity, its `SetEntityData`; once, and a
+/// client shown it as it was made once more by the update of that tick.
 #[tokio::test]
 async fn every_client_in_view_is_sent_an_item_s_data_right_after_its_spawn_once() {
     let (mut edge, mut first, mut second) = two_watching().await;
@@ -165,7 +166,7 @@ async fn every_client_in_view_is_sent_an_item_s_data_right_after_its_spawn_once(
     let mut third = edge.joined(player(3), EntityId(13)).await;
     edge.quiet().await;
     edge.sync(&mut third).await;
-    for client in [&first, &second, &third] {
+    for (client, made) in [(&first, true), (&second, true), (&third, false)] {
         let id = spawned_as(client, key).expect("shown the item");
         let at = client
             .named
@@ -191,7 +192,12 @@ async fn every_client_in_view_is_sent_an_item_s_data_right_after_its_spawn_once(
             .iter()
             .filter(|data| data.entity_id == id)
             .collect();
-        assert_eq!(data.len(), 1, "{data:?}");
+        // The stack once with the spawn, and once more to a client shown it as it was
+        // made, by the update of that tick, which the official server sends too
+        // (`entities_oracle.rs`: the game's data set at its making is still marked
+        // dirty when it is paired); a client shown it later is paired alone.
+        assert_eq!(data.len(), if made { 2 } else { 1 }, "{data:?}");
+        assert_eq!(data[0], data[data.len() - 1]);
         assert_eq!(data[0].values.len(), 1);
         assert_eq!(data[0].values[0].0, 8, "the item entity's data index");
     }

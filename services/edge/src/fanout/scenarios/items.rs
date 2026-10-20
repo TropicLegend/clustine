@@ -83,7 +83,8 @@ fn of_item(client: &Client, key: u64) -> Vec<(Naming, i32)> {
 
 /// Checks that the client was shown the item `state` once, as the plan has it, and
 /// returns the wire id. What its tracker sent after, the update of the tick it was
-/// thrown in (a move of nothing: `tests::tracking`), is no showing.
+/// thrown in (a move of nothing: `tests::tracking`, and the stack it was made with
+/// again, as the official server sends it), is no showing.
 fn shown_once(client: &Client, state: &EntityState) -> i32 {
     let key = state.entity.0;
     let named = of_item(client, key);
@@ -98,7 +99,15 @@ fn shown_once(client: &Client, state: &EntityState) -> i32 {
     assert!(
         updates
             .iter()
-            .all(|(naming, _)| *naming == Naming::Position),
+            .all(|(naming, _)| matches!(naming, Naming::Position | Naming::Data)),
+        "{named:?}"
+    );
+    assert!(
+        updates
+            .iter()
+            .filter(|(naming, _)| *naming == Naming::Data)
+            .count()
+            <= 1,
         "{named:?}"
     );
     assert_eq!(id, data_id);
@@ -146,15 +155,18 @@ fn shown_once(client: &Client, state: &EntityState) -> i32 {
         item: STACK.item,
         count: STACK.count,
     };
-    assert_eq!(
-        data,
-        [&SetEntityData {
-            entity_id: id,
-            values: vec![(
-                entity_data::ITEM_STACK,
-                EntityDataValue::ItemStack(Some(stack))
-            )],
-        }]
+    let expected = SetEntityData {
+        entity_id: id,
+        values: vec![(
+            entity_data::ITEM_STACK,
+            EntityDataValue::ItemStack(Some(stack)),
+        )],
+    };
+    // With its spawn, and again by the update of the tick it was made in where the
+    // client was shown it then, as the official server sends it.
+    assert!(
+        (1..=2).contains(&data.len()) && data.iter().all(|sent| **sent == expected),
+        "{data:?}"
     );
     id
 }
@@ -280,6 +292,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
             (Naming::Spawn, id),
             (Naming::Data, id),
             (Naming::Position, id),
+            (Naming::Data, id),
             (Naming::Position, id)
         ]
     );
@@ -297,7 +310,7 @@ async fn an_item_is_shown_from_the_word_with_the_most_changes_of_holder() {
     edge.tell(WEST, snapshot_of(HOME, ask, chunk, there));
     edge.settle(WEST).await;
     edge.sync(&mut first).await;
-    assert_eq!(of_item(&first, key).len(), 4, "{:?}", of_item(&first, key));
+    assert_eq!(of_item(&first, key).len(), 5, "{:?}", of_item(&first, key));
     assert!(first.entities.contains(&key));
 
     // The east's removal of it takes it away.

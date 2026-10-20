@@ -65,6 +65,11 @@ const DIRTY_MINECART: u16 = 128;
 const DIRTY_BOAT: u16 = 256;
 /// Primed TNT's fuse or block.
 const DIRTY_TNT: u16 = 512;
+/// The values an entity was made with: the game marks dirty what its constructor and
+/// spawn set, and a client paired in the tick it was made has them sent again by the
+/// first update (`ServerEntity.sendDirtyEntityData` after `sendPairingData`, which reads
+/// `getNonDefaultValues` and clears nothing).
+const DIRTY_MADE: u16 = 1024;
 
 /// Primed TNT's data (`docs/groundwork/n6-brief.md`, section 1.7): its fuse, an int that
 /// is 80 by default, and the block it shows, `tnt[unstable=false]` by default.
@@ -625,6 +630,15 @@ impl Tracker {
         tracker
     }
 
+    /// Marks the entity as made just now, so that its first update sends again the
+    /// values it was made with (see [`DIRTY_MADE`]): an entity that came into a
+    /// region from another, or into this edge's sight, was made before and is not.
+    pub(crate) fn made(&mut self) {
+        if !self.pairing.is_empty() {
+            self.dirty |= DIRTY_MADE;
+        }
+    }
+
     /// Takes a report of the entity's tick. `data` is its data before the report, to
     /// see what changed.
     pub(crate) fn report(&mut self, tracked: &Tracked, data: &EntityData) {
@@ -874,7 +888,16 @@ impl Tracker {
         if self.dirty == 0 {
             return;
         }
-        let values = self.values(data, false);
+        let mut values = self.values(data, false);
+        if self.dirty & DIRTY_MADE != 0 {
+            // What it was made with is dirty still, besides what changed since.
+            for (index, value) in self.values(data, true) {
+                if !values.iter().any(|(at, _)| *at == index) {
+                    values.push((index, value));
+                }
+            }
+            values.sort_by_key(|(index, _)| *index);
+        }
         let equipment = self.dirty & DIRTY_EQUIPMENT != 0;
         self.dirty = 0;
         self.dirty_values = 0;
@@ -1395,6 +1418,38 @@ mod tests {
                 (12, EntityDataValue::Boolean(false)),
                 (13, EntityDataValue::Int(0)),
             ]
+        );
+    }
+
+    /// An item made just now has the stack it was made with sent again by its first
+    /// update, after the pairing sent it, as the official server does; one that came
+    /// into sight, or over a line, has nothing to send.
+    #[test]
+    fn a_new_item_s_first_update_sends_its_stack_again_and_a_seen_one_s_does_not() {
+        let mut made = item_at([0.5, 64.0, 0.5], false);
+        made.made();
+        let sent = made.send_changes(ID, &stack(1));
+        let values: Vec<Vec<u8>> = sent
+            .iter()
+            .filter_map(|sent| match sent {
+                Sent::Data(data) => Some(data.values.iter().map(|(index, _)| *index).collect()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, [vec![entity_data::ITEM_STACK]]);
+        assert!(
+            !made
+                .send_changes(ID, &stack(1))
+                .iter()
+                .any(|sent| matches!(sent, Sent::Data(_))),
+            "once"
+        );
+        let mut seen = item_at([0.5, 64.0, 0.5], false);
+        assert!(
+            !seen
+                .send_changes(ID, &stack(1))
+                .iter()
+                .any(|sent| matches!(sent, Sent::Data(_)))
         );
     }
 

@@ -3140,7 +3140,7 @@ impl Fanout {
     /// Handles something that happened in the region `from`.
     async fn handle_event(&mut self, from: RegionId, event: RegionEvent) {
         match event {
-            RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state).await,
+            RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state, true).await,
             RegionEvent::EntityRemoved { entity, .. } => {
                 if self.is_of(entity, from) {
                     self.remove_entity(entity).await;
@@ -3439,8 +3439,9 @@ impl Fanout {
     }
 
     /// Takes in an entity the region `from` described, which may be new or already
-    /// known. The entity is that region's from now on.
-    async fn upsert_entity(&mut self, from: RegionId, state: EntityState) {
+    /// known. The entity is that region's from now on. `spawned` where the region
+    /// reported it as come into existence: made just now unless it came over a line.
+    async fn upsert_entity(&mut self, from: RegionId, state: EntityState, spawned: bool) {
         if !self.replica.contains_key(&state.chunk()) {
             // Nobody watches where it is; this can be a snapshot that arrives late. An
             // entity shown here that its new holder took in out there has left the
@@ -3502,7 +3503,13 @@ impl Fanout {
                         tracker.moved(seen);
                         tracker
                     }
-                    None => Tracker::new(seen, data, start),
+                    None => {
+                        let mut tracker = Tracker::new(seen, data, start);
+                        if spawned && *hops == 0 {
+                            tracker.made();
+                        }
+                        tracker
+                    }
                 };
                 let riding = match &state.kind {
                     EntityKind::Other { riding, .. } => riding.clone(),
@@ -4775,7 +4782,7 @@ impl Fanout {
             }
         }
         for state in entities {
-            self.upsert_entity(from, state).await;
+            self.upsert_entity(from, state, false).await;
         }
     }
 
