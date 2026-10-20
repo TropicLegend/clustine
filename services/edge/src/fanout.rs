@@ -4382,15 +4382,27 @@ impl Fanout {
         let whole = whole || view.told_clocks != Some(region);
         let clocks = if whole {
             view.told_clocks = Some(region);
-            let overworld = synced_registry("minecraft:world_clock")
-                .and_then(|registry| registry.id_of("minecraft:overworld"))
-                .expect("the overworld's clock is in the world's clocks");
-            vec![ClockState {
-                clock: overworld,
-                total_ticks: clock.day as i64,
+            // Every clock of the registry, as the official server sends them: the
+            // overworld's, which sleep moves, and the End's, which nothing moves and so
+            // counts the ticks as the game time does (**inferred**: Clustine has no End
+            // yet, and the official server's two agree in a world nobody slept in).
+            let clock_of = |name: &str| {
+                synced_registry("minecraft:world_clock")
+                    .and_then(|registry| registry.id_of(name))
+                    .expect("the world's clocks are the overworld's and the End's")
+            };
+            [
+                (clock_of("minecraft:overworld"), clock.day),
+                (clock_of("minecraft:the_end"), clock.game_time),
+            ]
+            .into_iter()
+            .map(|(of, ticks)| ClockState {
+                clock: of,
+                total_ticks: ticks as i64,
                 partial_tick: 0.0,
                 rate: 1.0,
-            }]
+            })
+            .collect()
         } else {
             Vec::new()
         };
