@@ -27,6 +27,7 @@ mod block_entities;
 mod block_events;
 mod boats;
 mod breeding;
+mod changes;
 mod colliders;
 mod containers;
 mod cushions;
@@ -1155,6 +1156,9 @@ impl Region {
             self.send(edge, departed, &mut output);
         }
         self.settle_chunks(&mut output);
+        // One change of each entity that the tick changed several times, of what it
+        // changed last (`changes.rs`).
+        changes::merge(&mut output.entity_changes);
 
         // Riders who left the world, noted where they got off, then those let go.
         let mut noted = std::mem::take(&mut self.dismounted);
