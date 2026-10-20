@@ -37,6 +37,7 @@ mod lends;
 mod local;
 mod players;
 mod table;
+mod tally;
 mod tcp;
 
 #[cfg(test)]
@@ -259,6 +260,7 @@ impl Peer {
     /// Answers the handle, unless it is lost.
     fn answer(&self, reply: StoreReply) {
         if !self.is_lost() {
+            tally::count(&reply);
             // A handle that was dropped does not listen any more.
             let _ = self.replies.send(reply);
         }

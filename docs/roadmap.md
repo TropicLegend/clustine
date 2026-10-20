@@ -293,8 +293,25 @@ does not promise; it works, and nothing a player sees is gained by the change. T
 animals (N7e): cows, mooshrooms, pigs, sheep, chickens and rabbits, from their spawn
 eggs, with their goals, breeding (across a line too), growing up, their uses and
 variants; riding a pig, the killer bunny, chicken jockeys, a mooshroom's change by
-lightning and a suspicious stew's effects are left out, named in the code. Next: tests of
-the animals written from the specification (N7g), then the measurement (N7f).
+lightning and a suspicious stew's effects are left out, named in the code; their tests
+from the specification (N7g), 33, found nothing against the game.
+
+**N7f, measured** (2026-10-20, `bin/clustine/tests/herds.rs`, alike in memory and on the
+real disk with its cache): 100 cows in a pen at a line grow the world by 13 MiB a minute
+and send the region across the line 11 MiB of copies' updates; 20 sheep following wheat
+across the line, 6 MiB, with the faces 1 % of the stream; a merge of a region with 100
+cows takes the command 19 to 36 ms; a worker of a region with 500 cows killed, the region
+runs again 3.5 s later and a player who joins is shown the 500 at 3.9 s. No tick took
+longer than its 50 ms but one of 75 ms where the region was taken over. The first
+measurement had 27 and 22 MiB for the pen: a cow committed 157 bytes a tick, now 83, as
+a tick's changes of one entity are merged and a mob's every-tick values (the head's last
+still yaw, the path's timeout) are kept apart from what changes seldom. What is left is
+mostly an animal's position and motion, which every tick of an entity makes durable (the
+owner's choice). It also found that a player coming to a herd whose chunks had been let
+go was not shown an animal that went from one chunk into another as they were loaded
+again (2 of 500, every run): mended. Next: N7f's comparisons with the official server (a
+summoned mob's data and rotation, a hit, breeding's packets, `set_time`), then the second
+half.
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
