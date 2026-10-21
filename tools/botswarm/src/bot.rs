@@ -1588,6 +1588,7 @@ impl Bot {
 
         let of_a_menu = match &packet {
             ClientboundPlay::OpenScreen(_)
+            | ClientboundPlay::MountScreenOpen(_)
             | ClientboundPlay::ContainerSetSlot(_)
             | ClientboundPlay::SetCursorItem(_)
             | ClientboundPlay::ClientboundContainerClose(_) => true,
@@ -1799,6 +1800,17 @@ impl Bot {
                     window_id: packet.window_id,
                     menu: packet.menu,
                     title: clustine_protocol::text::Text::from_nbt(packet.title),
+                    slots: Vec::new(),
+                    state_id: 0,
+                });
+            }
+            // A horse's window has no menu type and no title of its own: the client
+            // names it by the horse. Shown here as of menu -1.
+            ClientboundPlay::MountScreenOpen(packet) => {
+                self.menu = Some(ShownMenu {
+                    window_id: packet.window_id,
+                    menu: -1,
+                    title: clustine_protocol::text::Text::translatable(""),
                     slots: Vec::new(),
                     state_id: 0,
                 });

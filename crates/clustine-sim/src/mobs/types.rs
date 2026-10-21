@@ -7,28 +7,40 @@
 //! what `AgeableMob` and `Animal` add, which [`animal`] holds; each has a module of its
 //! own beside it. The water creatures (part N7i: the four fish, the two squids, the
 //! dolphin and the turtle) share what [`water`] holds, the fish what [`fish`] holds.
+//!
+//! The horse family (part N7h: horses, donkeys, mules, llamas, trader llamas, skeleton
+//! and zombie horses) shares what `AbstractHorse` and `AbstractChestedHorse` add, which
+//! [`equine`] holds.
 
 pub(crate) mod animal;
 pub(crate) mod chicken;
 pub(crate) mod cod;
 pub(crate) mod cow;
 pub(crate) mod dolphin;
+pub(crate) mod donkey;
+pub(crate) mod equine;
 pub(crate) mod fish;
 pub(crate) mod glow_squid;
+pub(crate) mod horse;
+pub(crate) mod llama;
 pub(crate) mod mooshroom;
+pub(crate) mod mule;
 pub(crate) mod pig;
 pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
+pub(crate) mod skeleton_horse;
 pub(crate) mod squid;
 #[cfg(test)]
 mod tests;
+pub(crate) mod trader_llama;
 pub(crate) mod tropical_fish;
 pub(crate) mod turtle;
 pub(crate) mod water;
 #[cfg(test)]
 mod water_tests;
+pub(crate) mod zombie_horse;
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
@@ -275,7 +287,15 @@ pub(crate) trait MobType: Sync {
         let _ = (tick, air);
     }
 
-    /// What its `aiStep` does before `LivingEntity.aiStep` (a fish's flop).
+    /// `isImmobile()`: a dying mob's (`LivingEntity`'s), unless its type says otherwise
+    /// (a horse eating or rearing, a dying horse only under a saddled rider). An
+    /// immobile mob's AI does not run and its inputs stop.
+    fn immobile(&self, tick: &MobTick<'_>) -> bool {
+        tick.mob.body.vitals.dying()
+    }
+
+    /// What its `aiStep` does before `LivingEntity.aiStep` (a fish's flop, a horse's
+    /// tail's draw).
     fn before_ai_step(&self, tick: &mut MobTick<'_>) {
         let _ = tick;
     }
@@ -321,6 +341,34 @@ pub(crate) trait MobType: Sync {
         let _ = (ai, pos);
         None
     }
+
+    /// What the type's `hurtServer` does after a hurt that took (a horse rears one time
+    /// in three), from the mob's own stream, at the moment `moment`.
+    fn hurt_taken(&self, mob: &mut Mob, draws: &mut Random, moment: u32) {
+        let _ = (mob, draws, moment);
+    }
+
+    /// `dropEquipment` beyond the body's: what the type keeps of its own and drops as it
+    /// dies (a horse's inventory, a donkey's chest), in the order dropped, taken out of
+    /// the mob.
+    fn drop_equipment(&self, mob: &mut Mob) -> Vec<ItemStack> {
+        let _ = mob;
+        Vec::new()
+    }
+
+    /// `canMate(partner)` beyond both being in love, which the region asks of a
+    /// breeding it carries out: by default of one type (`Animal.canMate`'s class test);
+    /// a horse and a donkey may, each where it can parent.
+    fn can_mate(&self, this: Mate<'_>, partner: Mate<'_>) -> bool {
+        this.entity.kind == partner.entity.kind
+    }
+}
+
+/// One of the two of a breeding, as `canMate` reads it: its record and its mob.
+#[derive(Clone, Copy)]
+pub(crate) struct Mate<'a> {
+    pub(crate) entity: &'a Entity,
+    pub(crate) mob: &'a Mob,
 }
 
 /// A player's use of a mob, as `mobInteract` reads it.
@@ -392,6 +440,12 @@ pub(crate) enum Did {
     Mount,
     /// `discard()`: the mob gone, dropping nothing (a fish taken in a bucket).
     Discard,
+    /// `openCustomInventoryScreen(player)`: the player's menu of the mob's inventory
+    /// opens (a horse's saddle, armour and chest), where the player is the region's.
+    OpenInventory,
+    /// `doPlayerRide(player)`: the player gets on. **Named**: mounting a living mob is
+    /// the riding's (the lead's part of N7h), which carries it out; until then nothing.
+    Ride,
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
@@ -413,6 +467,11 @@ pub(crate) struct Spawning<'a> {
 pub(crate) struct Breeding<'a> {
     pub(crate) this: &'a Mob,
     pub(crate) partner: &'a Mob,
+    /// The partner's entity type, by id (a donkey's partner a horse: a mule).
+    pub(crate) partner_kind: u16,
+    /// The child's entity type where it is not the parent's (a mule), which
+    /// `breed_offspring` sets.
+    pub(crate) child_kind: Option<u16>,
     /// The parent's own stream: its random's draws, and the level's on its behalf at
     /// their place among them (the plan's 7.2.8).
     pub(crate) draws: &'a mut Random,
@@ -476,6 +535,13 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::GLOW_SQUID => &glow_squid::GlowSquid,
         entity_types::DOLPHIN => &dolphin::Dolphin,
         entity_types::TURTLE => &turtle::Turtle,
+        entity_types::HORSE => &horse::Horse,
+        entity_types::DONKEY => &donkey::Donkey,
+        entity_types::MULE => &mule::Mule,
+        entity_types::LLAMA => &llama::Llama,
+        entity_types::TRADER_LLAMA => &trader_llama::TraderLlama,
+        entity_types::SKELETON_HORSE => &skeleton_horse::SkeletonHorse,
+        entity_types::ZOMBIE_HORSE => &zombie_horse::ZombieHorse,
         _ => return None,
     };
     Some(found)

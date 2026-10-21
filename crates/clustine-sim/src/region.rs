@@ -66,7 +66,7 @@ mod orbs;
 mod redstone;
 mod reshape;
 mod riders;
-mod riding;
+pub(crate) mod riding;
 mod sculk;
 mod shulker_boxes;
 mod sleep;
@@ -3382,6 +3382,7 @@ mod tests {
     mod fluids;
     mod hanging;
     mod hoppers;
+    mod horses;
     mod instruments;
     mod item_physics;
     mod leashes;

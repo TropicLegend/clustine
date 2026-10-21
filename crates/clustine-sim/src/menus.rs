@@ -41,7 +41,24 @@ pub(crate) struct MenuSlots<'a> {
     /// The hotbar slot the player holds (`Inventory.selected`, 0 to 8). `Inventory.add`
     /// fills it first, which a swap whose stack does not fit back reaches.
     pub(crate) selected: usize,
+    /// What a horse's menu's saddle and body slots ask of the horse, for
+    /// [`MenuKind::Mount`]: none for any other menu.
+    pub(crate) mount: Option<MountFacts>,
 }
+
+/// What the two equipment slots of a horse's menu (`HorseInventoryMenu`'s `ArmorSlot`s)
+/// ask of the horse: its type, which the item's allowed entities name, and whether it
+/// may use each slot now (`canUseSlot`: a saddle only grown and tamed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MountFacts {
+    pub(crate) kind: u16,
+    pub(crate) saddle: bool,
+    pub(crate) body: bool,
+}
+
+/// The menu slot of a horse's saddle and of its body.
+const MOUNT_SADDLE: usize = 0;
+const MOUNT_BODY: usize = 1;
 
 /// What a click leaves beyond the slots, the carried stack and the drag.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -332,7 +349,7 @@ impl Clicker<'_, '_> {
                             || usize::try_from(carried.count).is_ok_and(|n| n >= count))
                     {
                         let here = self.get(index).map_or(0, |here| here.count);
-                        let most = max_stack_size(copy).min(self.slot_max(copy));
+                        let most = max_stack_size(copy).min(self.slot_max(index, copy));
                         let now = share.saturating_add(here).min(most);
                         left -= now - here;
                         self.set(index, Some(with_count(copy, now)));
@@ -387,7 +404,7 @@ impl Clicker<'_, '_> {
                     if here.item == carried.item {
                         let n = if primary { carried.count } else { 1 };
                         self.menu.carried = self.safe_insert(slot, carried, n);
-                    } else if carried.count <= self.slot_max(carried) {
+                    } else if carried.count <= self.slot_max(slot, carried) {
                         self.menu.carried = Some(here);
                         self.set(slot, Some(carried));
                     }
@@ -422,6 +439,9 @@ impl Clicker<'_, '_> {
     /// HopperMenu.txt 71–131); `DispenserMenu` returns nothing when the count did not
     /// change (DispenserMenu.txt 105–168), which a move that moved never leaves.
     fn quick_move_stack(&mut self, slot: usize) -> Option<ItemStack> {
+        if let MenuKind::Mount { .. } = self.slots.kind {
+            return self.quick_move_mount(slot);
+        }
         let mut stack = self.get(slot)?;
         let copy = stack;
         let containers = self.slots.kind.container_slots();
@@ -439,6 +459,43 @@ impl Clicker<'_, '_> {
         if self.slots.kind == MenuKind::Grid3x3 && stack.count == copy.count {
             return None;
         }
+        Some(copy)
+    }
+
+    /// `AbstractMountInventoryMenu.quickMoveStack` (82–235): from the saddle, the body
+    /// or the chest to the player's slots, last first; from the player's slots into the
+    /// empty body slot that takes it, else the empty saddle slot that does, else the
+    /// chest; failing those, between the main inventory and the hotbar, which answers
+    /// nothing whatever moved, so that the click's loop stops after it.
+    fn quick_move_mount(&mut self, slot: usize) -> Option<ItemStack> {
+        let mut stack = self.get(slot)?;
+        let copy = stack;
+        let inv = self.slots.kind.container_slots();
+        let all = self.slots.kind.slots();
+        let moved = if slot < inv {
+            self.move_to(&mut stack, inv, all, true)
+        } else if self.may_place(MOUNT_BODY, stack) && self.get(MOUNT_BODY).is_none() {
+            self.move_to(&mut stack, MOUNT_BODY, MOUNT_BODY + 1, false)
+        } else if self.may_place(MOUNT_SADDLE, stack) && self.get(MOUNT_SADDLE).is_none() {
+            self.move_to(&mut stack, MOUNT_SADDLE, MOUNT_SADDLE + 1, false)
+        } else if inv > 2 && self.move_to(&mut stack, 2, inv, false) {
+            true
+        } else {
+            let main_end = inv + 27;
+            let hotbar_end = main_end + 9;
+            if (main_end..hotbar_end).contains(&slot) {
+                self.move_to(&mut stack, inv, main_end, false);
+            } else if (inv..main_end).contains(&slot) {
+                self.move_to(&mut stack, main_end, hotbar_end, false);
+            }
+            // The stack moved in place, written back, and nothing answered.
+            self.set(slot, present(Some(stack)));
+            return None;
+        };
+        if !moved {
+            return None;
+        }
+        self.set(slot, present(Some(stack)));
         Some(copy)
     }
 
@@ -467,7 +524,7 @@ impl Clicker<'_, '_> {
                     continue;
                 }
                 let total = here.count + stack.count;
-                let most = self.slot_max(here);
+                let most = self.slot_max(index, here);
                 if total <= most {
                     stack.count = 0;
                     here.count = total;
@@ -484,7 +541,7 @@ impl Clicker<'_, '_> {
         if stack.count > 0 {
             for &index in &order {
                 if self.get(index).is_none() && self.may_place(index, *stack) {
-                    let most = self.slot_max(*stack);
+                    let most = self.slot_max(index, *stack);
                     let part = split(stack, stack.count.min(most));
                     self.set(index, Some(part));
                     moved = true;
@@ -509,7 +566,7 @@ impl Clicker<'_, '_> {
             }
             (Some(mut stack), None) => {
                 if self.may_place(slot, stack) {
-                    let most = self.slot_max(stack);
+                    let most = self.slot_max(slot, stack);
                     if stack.count > most {
                         let part = split(&mut stack, most);
                         self.slots.inventory.set(held, present(Some(stack)));
@@ -522,7 +579,7 @@ impl Clicker<'_, '_> {
             }
             (Some(mut stack), Some(here)) => {
                 if self.may_place(slot, stack) {
-                    let most = self.slot_max(stack);
+                    let most = self.slot_max(slot, stack);
                     if stack.count > most {
                         // The held stack is split where it lies, and the slot's stack
                         // goes back into the inventory, or out of the window if it does
@@ -643,15 +700,36 @@ impl Clicker<'_, '_> {
     }
 
     /// `Slot.mayPlace`: true but for a shulker box's slot, which refuses what may not go
-    /// inside a container (`ShulkerBoxSlot`).
+    /// inside a container (`ShulkerBoxSlot`), and a horse's saddle and body, which take
+    /// only what the horse may wear there (`ArmorSlot`: `isEquippableInSlot`).
     fn may_place(&self, index: usize, stack: ItemStack) -> bool {
+        if let MenuKind::Mount { .. } = self.slots.kind
+            && index <= MOUNT_BODY
+        {
+            let Some(facts) = self.slots.mount else {
+                return false;
+            };
+            let (slot, usable) = if index == MOUNT_SADDLE {
+                (crate::living::slots::SADDLE, facts.saddle)
+            } else {
+                (crate::living::slots::BODY, facts.body)
+            };
+            return usable
+                && crate::mobs::types::equine::equippable_by(stack.item, slot, facts.kind);
+        }
         !(self.slots.kind == MenuKind::ShulkerBox
             && index < self.slots.kind.container_slots()
             && !fits_inside_containers(stack.item))
     }
 
-    /// `Slot.getMaxStackSize(stack)`: the container's most, or the item's if less.
-    fn slot_max(&self, stack: ItemStack) -> i32 {
+    /// `Slot.getMaxStackSize(stack)`: the container's most, or the item's if less; one
+    /// in a horse's saddle and body (`ArmorSlot`).
+    fn slot_max(&self, index: usize, stack: ItemStack) -> i32 {
+        if let MenuKind::Mount { .. } = self.slots.kind
+            && index <= MOUNT_BODY
+        {
+            return 1;
+        }
         CONTAINER_MAX.min(max_stack_size(stack))
     }
 
@@ -688,7 +766,7 @@ impl Clicker<'_, '_> {
             return Some(stack);
         }
         let here = self.get(index);
-        let room = self.slot_max(stack) - here.map_or(0, |here| here.count);
+        let room = self.slot_max(index, stack) - here.map_or(0, |here| here.count);
         let m = n.min(stack.count).min(room);
         if m <= 0 {
             return Some(stack);
@@ -879,6 +957,7 @@ mod tests {
                 container: &mut self.container,
                 inventory: &mut self.inventory,
                 selected: self.selected,
+                mount: None,
             };
             click(&mut slots, &mut self.menu, slot, button, kind, creative)
         }
@@ -895,6 +974,7 @@ mod tests {
                 container: &mut self.container,
                 inventory: &mut self.inventory,
                 selected: self.selected,
+                mount: None,
             };
             menu_slot(&slots, index).expect("the menu has the slot")
         }
@@ -974,6 +1054,7 @@ mod tests {
             container: &mut fixture.container,
             inventory: &mut fixture.inventory,
             selected: 0,
+            mount: None,
         };
         assert_eq!(menu_slot(&slots, 4), Some(stack(STONE, 3)));
         assert_eq!(menu_slot(&slots, 5), Some(stack(DIRT, 2)));
@@ -1117,6 +1198,7 @@ mod tests {
             container: &mut container,
             inventory: &mut inventory,
             selected: 0,
+            mount: None,
         };
         assert!(click(&mut slots, &mut menu, 0, 0, ClickKind::Pickup, false).refused);
     }

@@ -626,6 +626,11 @@ pub enum MenuKind {
     Grid3x3,
     /// A hopper's five (`hopper`), a hopper cart's too.
     Hopper,
+    /// A horse's inventory (`HorseInventoryMenu`, opened by `mount_screen_open`): its
+    /// saddle, its body's armour or carpet, then three rows of `columns` of its chest
+    /// (none without one). `entity` is the horse, whose id the client is told. Added at
+    /// the end, so that a menu kept by an older build reads as it did.
+    Mount { columns: u8, entity: EntityId },
 }
 
 impl MenuKind {
@@ -636,6 +641,7 @@ impl MenuKind {
             Self::Rows6 => 54,
             Self::Grid3x3 => 9,
             Self::Hopper => 5,
+            Self::Mount { columns, .. } => 2 + usize::from(columns) * 3,
         }
     }
 

@@ -594,20 +594,21 @@ fn tick_death(tick: &mut MobTick<'_>) {
     }
 }
 
-/// `isImmobile()`: a dying mob's.
+/// `isImmobile()`: a dying mob's, unless its type says otherwise (a horse's).
 pub(crate) fn immobile(tick: &MobTick<'_>) -> bool {
-    tick.mob.body.vitals.dying()
+    tick.mob_type.immobile(tick)
 }
 
 /// The start of `aiStep`: the small motion zeroed, and the inputs' decay (`xxa *=
-/// 0.98`, `zza *= 0.98`); a dying mob's inputs stop (`isImmobile`). Its `noJumpDelay`
+/// 0.98`, `zza *= 0.98`); an immobile mob's inputs stop (`isImmobile`). Its `noJumpDelay`
 /// counts itself down ([`Inputs::no_jump_delay`]).
 pub(crate) fn start_ai_step(tick: &mut MobTick<'_>) {
     tick.living.zero_small_motion();
+    let still = immobile(tick);
     let inputs = &mut tick.mob.body.inputs;
     inputs.xxa *= 0.98;
     inputs.zza *= 0.98;
-    if tick.mob.body.vitals.dying() {
+    if still {
         inputs.jumping = false;
         inputs.xxa = 0.0;
         inputs.zza = 0.0;

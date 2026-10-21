@@ -289,3 +289,26 @@ fn a_kind_of_click_the_game_does_not_have_is_a_pickup() {
     assert_eq!(click_kind(7), ClickKind::Pickup);
     assert_eq!(click_kind(-1), ClickKind::Pickup);
 }
+
+#[test]
+fn a_horse_s_menu_opens_by_mount_screen_open_naming_the_horse_then_its_window_whole() {
+    let mut menus = Menus::default();
+    let kind = MenuKind::Mount {
+        columns: 5,
+        entity: clustine_world::EntityId(40),
+    };
+    let slots = vec![None; kind.slots()];
+    let packets = read(&menus.opened_with(3, 3, kind, "container.chest", slots, None, Some(17)));
+    assert!(matches!(
+        &packets[..],
+        [
+            ClientboundPlay::MountScreenOpen(MountScreenOpen {
+                window_id: 1,
+                columns: 5,
+                entity_id: 17,
+            }),
+            ClientboundPlay::SetContainerContent(SetContainerContent { window_id: 1, .. }),
+        ]
+    ));
+    assert_eq!(kind.slots(), 2 + 15 + 36);
+}

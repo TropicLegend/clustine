@@ -262,6 +262,7 @@ impl Region {
                 } => {
                     self.spawn_item_as(at, stack, pick_up_delay, Some(motion), output);
                 }
+                Local::EjectPassengers => self.eject_passengers(key, output),
             }
         }
     }

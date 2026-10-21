@@ -2876,6 +2876,14 @@ impl Fanout {
     /// region that let them go speaks of a menu that is closed (section 9 item 3).
     async fn menu_event(&mut self, from: RegionId, player: PlayerId, event: PlayerEvent) {
         let living = self.living(from);
+        // A horse's menu names the horse, by the id its client knows it by.
+        let mount = match &event {
+            PlayerEvent::MenuOpened {
+                kind: clustine_sim::api::MenuKind::Mount { entity, .. },
+                ..
+            } => Some(self.wire.of(*entity)),
+            _ => None,
+        };
         let Some(view) = self.players.get_mut(&player) else {
             return;
         };
@@ -2899,7 +2907,7 @@ impl Fanout {
                 carried,
             } => view
                 .menus
-                .opened(serial, applied, kind, &title, slots, carried),
+                .opened_with(serial, applied, kind, &title, slots, carried, mount),
             PlayerEvent::MenuChanged {
                 serial,
                 applied,

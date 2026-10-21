@@ -204,6 +204,12 @@ fn invulnerable_to(struck: &Struck<'_>, source: &DamageSource) -> bool {
 /// sound; and a mob whose health it took to nothing dies.
 pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
     let took = living_hurt_server(struck, source, amount);
+    if took {
+        // The type's own `hurtServer` after `LivingEntity`'s (a horse rearing).
+        struck
+            .mob_type
+            .hurt_taken(struck.mob, struck.draws, struck.moment);
+    }
     // What the type's own `hurtServer` does after (a squid's ink).
     struck.mob_type.after_hurt(struck, source, took);
     took
@@ -454,7 +460,9 @@ fn drop_all_death_loot(struck: &mut Struck<'_>, source: &DamageSource) {
         ));
         drops.extend(drop_custom_death_loot(struck, killed_by_player));
     }
-    // `dropEquipment` is a type's own (a horse's inventory), none of N7b's.
+    // `dropEquipment`: the type's own (a horse's inventory, a donkey's chest), baby or
+    // not.
+    drops.extend(struck.mob_type.drop_equipment(struck.mob));
     let mut orbs = Vec::new();
     if killed_by_player && !baby {
         let reward = struck

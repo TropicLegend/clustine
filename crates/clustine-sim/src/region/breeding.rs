@@ -97,7 +97,8 @@ impl Region {
                 return false;
             };
             let asker_animal = animal::animal_of(&asker_mob.state);
-            if asker_record.kind != partner_record.kind || !asker_animal.in_love(asker_record.lived)
+            if !mates(&asker_record, &asker_mob, &partner_record, &partner_mob)
+                || !asker_animal.in_love(asker_record.lived)
             {
                 return false;
             }
@@ -114,12 +115,12 @@ impl Region {
         let Some((_, asker_record)) = self.copied_entity(asker) else {
             return false;
         };
-        if asker_record.kind != partner_record.kind {
-            return false;
-        }
         let Some(asker_mob) = breeder(&asker_record) else {
             return false;
         };
+        if !mates(&asker_record, &asker_mob, &partner_record, &partner_mob) {
+            return false;
+        }
         self.spawn_child_from_breeding(&partner_record, &partner_mob, asker, &asker_mob, output)
     }
 
@@ -159,12 +160,22 @@ impl Region {
             return true;
         }
         let biome = self.biome_at(crate::physics::containing(this.position));
-        let child = types::of(this.kind).breed_offspring(&mut Breeding {
+        let partner_kind = match self.find_entity(partner) {
+            Some((_, found)) => found.kind,
+            None => self
+                .copied_entity(partner)
+                .map_or(this.kind, |(_, found)| found.kind),
+        };
+        let mut breeding = Breeding {
             this: this_mob,
             partner: partner_mob,
+            partner_kind,
+            child_kind: None,
             draws: &mut stream,
             biome,
-        });
+        };
+        let child = types::of(this.kind).breed_offspring(&mut breeding);
+        let child_kind = breeding.child_kind.unwrap_or(this.kind);
         let Some(mut child) = child else {
             self.entity_drew(this.key, stream.draws_since(&start));
             return false;
@@ -185,7 +196,7 @@ impl Region {
             });
         }
         self.add_orb(this.position, value, output);
-        if let Some(made) = self.new_mob(this.kind, child, this.position, 0.0, 0.0) {
+        if let Some(made) = self.new_mob(child_kind, child, this.position, 0.0, 0.0) {
             self.add_made_mob(made, output);
         }
         true
@@ -241,6 +252,20 @@ impl Region {
         });
         true
     }
+}
+
+/// `asker.canMate(partner)` beyond their love, by the asker's type (`MobType::can_mate`).
+fn mates(asker: &Entity, asker_mob: &Mob, partner: &Entity, partner_mob: &Mob) -> bool {
+    types::of(asker.kind).can_mate(
+        types::Mate {
+            entity: asker,
+            mob: asker_mob,
+        },
+        types::Mate {
+            entity: partner,
+            mob: partner_mob,
+        },
+    )
 }
 
 /// The mob of a farm animal's record that is alive to breed, if it is one.

@@ -364,6 +364,12 @@ fn particle_draws(draws: &mut Random, count: usize) {
 /// age lock's particles, then love's end for an animal not of age nothing and love's
 /// countdown with its hearts drawn every tenth tick.
 pub(crate) fn after_ai_step(tick: &mut MobTick<'_>) {
+    after_ai_step_growing(tick, true);
+}
+
+/// [`after_ai_step`] of a type that may not grow up where `grows` is false (a skeleton
+/// or zombie foal, whose `canAgeUp` is false).
+pub(crate) fn after_ai_step_growing(tick: &mut MobTick<'_>, grows: bool) {
     let now = tick.lived;
     let next = now.saturating_add(1);
     let alive = !tick.mob.body.vitals.dying();
@@ -373,7 +379,7 @@ pub(crate) fn after_ai_step(tick: &mut MobTick<'_>) {
     if forced > 0 && forced % 4 == 0 {
         particle_draws(tick.draws, 3);
     }
-    if alive && animal.can_age_up() && animal.age(next) == 0 {
+    if alive && grows && animal.can_age_up() && animal.age(next) == 0 {
         // `setAge(0)`: the boundary, which the record shows.
         animal.set_age(0, next);
     }

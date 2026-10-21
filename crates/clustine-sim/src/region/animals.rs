@@ -158,7 +158,7 @@ impl Region {
     }
 
     /// One thing a use of the mob `entity` did beyond it.
-    fn carry_out(
+    pub(super) fn carry_out(
         &mut self,
         entity: &Entity,
         chunk: ChunkPos,
@@ -226,6 +226,14 @@ impl Region {
                     self.remove_entity(entity.key, hops, chunk, output);
                 }
             }
+            Did::OpenInventory => {
+                if let Some(id) = self.player_with_entity(player) {
+                    self.open_mount_menu(entity.key, id, output);
+                }
+            }
+            // Mounting a living mob is the riding's, which is not built yet (named in
+            // `Did::Ride`).
+            Did::Ride => {}
         }
     }
 
@@ -311,7 +319,13 @@ impl Region {
         if self.ticks_chunk(chunk) {
             self.entity_drew(key, own.draws_since(&start));
         }
-        mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;
+        // `getMaxHealth()` as the made mob has it: its type's, or what its maker set (a
+        // foal's inherited health, which the game's first tick clamps the type's to).
+        let max_health = attribute(ids::MAX_HEALTH);
+        mob.body.vitals.health = match mob.body.attributes.made(max_health) {
+            Some(instance) => instance.value() as f32,
+            None => supplied(kind, max_health).unwrap_or(20.0) as f32,
+        };
         mob.body.vitals.air = types::of(kind).max_air();
         if mob.body.head == Head::default() {
             mob.body.head = Head {
@@ -373,18 +387,22 @@ impl Region {
         let mut stream = self.entity_stream(entity.key).random;
         let start = stream.clone();
         let biome = self.biome_at(crate::physics::containing(entity.position));
-        let child = types::of(entity.kind).breed_offspring(&mut Breeding {
+        let mut breeding = Breeding {
             this: &parent,
             partner: &parent,
+            partner_kind: entity.kind,
+            child_kind: None,
             draws: &mut stream,
             biome,
-        });
+        };
+        let child = types::of(entity.kind).breed_offspring(&mut breeding);
+        let kind = breeding.child_kind.unwrap_or(entity.kind);
         self.entity_drew(entity.key, stream.draws_since(&start));
         let Some(mut child) = child else {
             return false;
         };
         animal::made_baby(&mut child);
-        let Some(made) = self.new_mob(entity.kind, child, entity.position, 0.0, 0.0) else {
+        let Some(made) = self.new_mob(kind, child, entity.position, 0.0, 0.0) else {
             return false;
         };
         self.add_made_mob(made, output);

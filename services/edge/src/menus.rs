@@ -21,8 +21,8 @@ use bytes::Bytes;
 use clustine_protocol::item::ItemStack as WireStack;
 use clustine_protocol::packets;
 use clustine_protocol::packets::play::{
-    ClientboundContainerClose, ContainerClick, ContainerSetSlot, HashedStack, OpenScreen,
-    SetContainerContent, SetCursorItem, click, menu,
+    ClientboundContainerClose, ContainerClick, ContainerSetSlot, HashedStack, MountScreenOpen,
+    OpenScreen, SetContainerContent, SetCursorItem, click, menu,
 };
 use clustine_protocol::text::Text;
 use clustine_sim::api::{ClickKind, ItemStack, MenuKind, PlayerInput};
@@ -187,6 +187,7 @@ impl Menus {
     /// The region reported the menu `serial` whole: opened, which `openMenu` shows by
     /// closing any other window, a new id, `open_screen` and the window whole; or of the
     /// menu shown, which is sent whole again.
+    #[cfg(test)]
     pub(crate) fn opened(
         &mut self,
         serial: u64,
@@ -195,6 +196,26 @@ impl Menus {
         title: &str,
         slots: Vec<Option<ItemStack>>,
         carried: Option<ItemStack>,
+    ) -> Vec<Bytes> {
+        self.opened_with(serial, applied, kind, title, slots, carried, None)
+    }
+
+    /// [`Menus::opened`] where the menu may be a horse's: `mount` is the id the client
+    /// knows the horse by, and its window opens by `mount_screen_open`
+    /// (`ServerPlayer.openHorseInventory`) instead of `open_screen`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the opening's parts, as the region reports them, and the horse's id"
+    )]
+    pub(crate) fn opened_with(
+        &mut self,
+        serial: u64,
+        applied: u64,
+        kind: MenuKind,
+        title: &str,
+        slots: Vec<Option<ItemStack>>,
+        carried: Option<ItemStack>,
+        mount: Option<i32>,
     ) -> Vec<Bytes> {
         if applied < self.threshold {
             return Vec::new();
@@ -219,11 +240,20 @@ impl Menus {
             remote_carried: Remote::Sent(None),
             state_id: 0,
         };
-        packets.push(encoded(&OpenScreen {
-            window_id: open.window,
-            menu: menu_id(kind),
-            title: Text::translatable(title).to_nbt(),
-        }));
+        match (kind, mount) {
+            (MenuKind::Mount { columns, .. }, Some(entity_id)) => {
+                packets.push(encoded(&MountScreenOpen {
+                    window_id: open.window,
+                    columns: i32::from(columns),
+                    entity_id,
+                }));
+            }
+            _ => packets.push(encoded(&OpenScreen {
+                window_id: open.window,
+                menu: menu_id(kind),
+                title: Text::translatable(title).to_nbt(),
+            })),
+        }
         packets.push(open.whole());
         self.open = Some(open);
         packets
@@ -372,6 +402,9 @@ fn menu_id(kind: MenuKind) -> i32 {
         MenuKind::ShulkerBox => menu::SHULKER_BOX,
         MenuKind::Grid3x3 => menu::GENERIC_3X3,
         MenuKind::Hopper => menu::HOPPER,
+        // A horse's window is no menu type: it opens by `mount_screen_open`, and one whose
+        // horse has no id is shown as three rows, which its slots fit no worse.
+        MenuKind::Mount { .. } => menu::GENERIC_9X3,
     }
 }
 

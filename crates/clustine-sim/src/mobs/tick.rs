@@ -112,6 +112,8 @@ pub(crate) enum Local {
         pick_up_delay: u16,
         motion: crate::physics::Vec3,
     },
+    /// `ejectPassengers()` of the mob itself (a wild horse throwing its rider).
+    EjectPassengers,
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,
@@ -198,8 +200,8 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     }
     tick.mob_type.after_base_tick(tick, air);
     take_hurts(tick);
-    // `aiStep`: the type's own first (a fish's flop); a dying mob does not think, but
-    // falls and slides.
+    // `aiStep`: the type's own part before `LivingEntity`'s first (a fish's flop, a
+    // horse's tail); a dying mob does not think, but falls and slides.
     tick.mob_type.before_ai_step(tick);
     body::start_ai_step(tick);
     if tick.effective_ai() && !body::immobile(tick) {

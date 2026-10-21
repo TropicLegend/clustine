@@ -2795,6 +2795,39 @@ impl Decode for OpenScreen {
     }
 }
 
+/// Opens a horse's inventory window (`mount_screen_open`,
+/// `ClientboundMountScreenOpenPacket.write`): its window id, the columns of its chest
+/// (none without one) and the horse's entity id, which the client shows the window of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MountScreenOpen {
+    pub window_id: i32,
+    pub columns: i32,
+    pub entity_id: i32,
+}
+
+impl Packet for MountScreenOpen {
+    const ID: i32 = clientbound::MOUNT_SCREEN_OPEN;
+}
+
+impl Encode for MountScreenOpen {
+    fn encode(&self, w: &mut Writer) {
+        // `writeContainerId`, a VarInt, then an `int`.
+        w.put_var_int(self.window_id);
+        w.put_var_int(self.columns);
+        w.put_i32(self.entity_id);
+    }
+}
+
+impl Decode for MountScreenOpen {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            window_id: r.var_int()?,
+            columns: r.var_int()?,
+            entity_id: r.i32()?,
+        })
+    }
+}
+
 /// Sets one slot of a window (`container_set_slot`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerSetSlot {
@@ -3745,6 +3778,7 @@ packet_set! {
         Sound,
         SetContainerContent,
         OpenScreen,
+        MountScreenOpen,
         ContainerSetSlot,
         ContainerSetData,
         SetCursorItem,
@@ -4096,6 +4130,15 @@ mod tests {
             },
             Client::decode,
             Client::OpenScreen,
+        );
+        assert_round_trip(
+            MountScreenOpen {
+                window_id: 2,
+                columns: 5,
+                entity_id: 70_000,
+            },
+            Client::decode,
+            Client::MountScreenOpen,
         );
         assert_round_trip(
             ContainerSetSlot {

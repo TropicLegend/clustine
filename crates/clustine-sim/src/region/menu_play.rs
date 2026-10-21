@@ -19,6 +19,8 @@ use super::uses::distance_to_sqr;
 use super::{Knowledge, Region};
 use crate::api::{ClickKind, ItemStack, MenuKind, PlayerEvent, TickOutput};
 use crate::menus::{self, MenuSlots};
+use crate::mobs::Mob;
+use crate::mobs::types::equine;
 use crate::physics::aabb::Aabb;
 use crate::state::{Menu, MenuOf};
 
@@ -180,7 +182,111 @@ impl Region {
         else {
             return;
         };
+        // A horse's (`HasCustomInventoryScreen`): its own menu.
+        if self
+            .find_entity(vehicle)
+            .is_some_and(|(_, entity)| equine::is_equine(entity.kind))
+        {
+            self.open_mount_menu(vehicle, player, output);
+            return;
+        }
         self.use_container_vehicle(vehicle, player, output);
+    }
+
+    /// `AbstractHorse.openCustomInventoryScreen(player)`: the player's menu of the horse
+    /// `horse` (`openHorseInventory`), if it is tamed and nobody rides it but the
+    /// player, and the player is this region's and applying the input that asked.
+    pub(super) fn open_mount_menu(
+        &mut self,
+        horse: EntityId,
+        player: PlayerId,
+        output: &mut TickOutput,
+    ) {
+        if self.applying.map(|(id, _)| id) != Some(player) {
+            return;
+        }
+        let Some((_, entity)) = self.find_entity(horse) else {
+            return;
+        };
+        let Ok(mob) = Mob::decode(&entity.data) else {
+            return;
+        };
+        let own = self.players.get(&player).map(|own| own.entity_id);
+        let ridden_by_other = entity
+            .riding
+            .passengers
+            .iter()
+            .any(|seat| Some(seat.key) != own);
+        if ridden_by_other || !equine::is_tamed(&mob) {
+            return;
+        }
+        let kind = MenuKind::Mount {
+            columns: equine::inventory_columns(entity.kind, &mob),
+            entity: horse,
+        };
+        self.open_menu(player, MenuOf::Entity(horse), kind, output);
+    }
+
+    /// What a horse's menu's equipment slots ask of the horse it shows, if it shows one.
+    fn mount_facts(&self, of: MenuOf) -> Option<menus::MountFacts> {
+        let MenuOf::Entity(key) = of else {
+            return None;
+        };
+        let (_, entity) = self.find_entity(key)?;
+        if !equine::is_equine(entity.kind) {
+            return None;
+        }
+        let mob = Mob::decode(&entity.data).ok()?;
+        Some(equine::mount_facts(entity.kind, &mob))
+    }
+
+    /// Writes a horse's menu's container back into the horse `entity` of the chunk
+    /// `chunk`, its record committed, and shows what each equipment slot's change did
+    /// (`ArmorSlot.setByPlayer`'s `onEquipItem`, then `setItemSlot`'s: a stack put on
+    /// plays its sound twice, each with a seed of the horse's stream).
+    fn write_mount_slots(
+        &mut self,
+        id: PlayerId,
+        entity: &clustine_world::Entity,
+        chunk: clustine_world::ChunkPos,
+        slots: &[Option<ItemStack>],
+        output: &mut TickOutput,
+    ) {
+        let Ok(mut mob) = Mob::decode(&entity.data) else {
+            return;
+        };
+        let changed = equine::write_menu_container(&mut mob, slots);
+        let mut stream = self.entity_stream(entity.key).random;
+        let start = stream.clone();
+        let mut did = Vec::new();
+        for (slot, old, new) in changed {
+            let times = if new.is_some() { 2 } else { 1 };
+            for _ in 0..times {
+                did.extend(equine::on_equip_item(
+                    slot,
+                    old,
+                    new,
+                    entity.position,
+                    &mut stream,
+                ));
+            }
+        }
+        self.entity_drew(entity.key, stream.draws_since(&start));
+        self.commit_mob(entity, chunk, &mob, output);
+        let (player, from) = match self.players.get(&id) {
+            Some(own) => (
+                own.entity_id,
+                [
+                    own.pose.position.x,
+                    own.pose.position.y,
+                    own.pose.position.z,
+                ],
+            ),
+            None => return,
+        };
+        for done in did {
+            self.carry_out(entity, chunk, player, from, done, output);
+        }
     }
 
     /// `ServerPlayer.openMenu`: the menu open is closed, the container counts the
@@ -236,6 +342,11 @@ impl Region {
             MenuOf::Ender { .. } => Some(self.players.get(&id)?.ender.0.to_vec()),
             MenuOf::Entity(key) => {
                 let (_, entity) = self.find_entity(key)?;
+                if equine::is_equine(entity.kind) {
+                    let mob = Mob::decode(&entity.data).ok()?;
+                    let slots = equine::menu_container(entity.kind, &mob);
+                    return (slots.len() == kind.container_slots()).then_some(slots);
+                }
                 let contents = match &entity.data {
                     EntityData::Minecart { contents, .. } | EntityData::Boat { contents, .. } => {
                         contents
@@ -305,6 +416,11 @@ impl Region {
                 let Some((chunk, entity)) = self.find_entity(key) else {
                     return;
                 };
+                if equine::is_equine(entity.kind) {
+                    let entity = entity.clone();
+                    self.write_mount_slots(id, &entity, chunk, slots, output);
+                    return;
+                }
                 let contents: clustine_world::Contents = slots
                     .iter()
                     .enumerate()
@@ -338,6 +454,7 @@ impl Region {
             container: &mut container,
             inventory: &mut inventory,
             selected: usize::from(player.selected_slot),
+            mount: self.mount_facts(menu.of),
         };
         let all = (0..menu.kind.slots())
             .map(|index| menus::menu_slot(&slots, index).flatten())
@@ -483,6 +600,7 @@ impl Region {
             self.answer_empty(id, output);
             return;
         };
+        let mount = self.mount_facts(menu.of);
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
@@ -494,6 +612,7 @@ impl Region {
                 container: &mut container,
                 inventory: &mut inventory,
                 selected: usize::from(player.selected_slot),
+                mount,
             };
             // Every player of Clustine is creative until survival comes.
             menus::click(&mut slots, &mut menu, slot, button, kind, true)
@@ -703,6 +822,17 @@ impl Region {
                 if distance_to_sqr(self.entity_box(entity), eyes) >= STILL_VALID {
                     return Validity::Invalid;
                 }
+                // A horse's: alive, and its inventory the one the menu shows
+                // (`hasInventoryChanged`: a chest put on or taken off makes a new one).
+                if let MenuKind::Mount { columns, .. } = menu.kind {
+                    let same = Mob::decode(&entity.data).is_ok_and(|mob| {
+                        !mob.body.vitals.dying()
+                            && equine::inventory_columns(entity.kind, &mob) == columns
+                    });
+                    if !same {
+                        return Validity::Invalid;
+                    }
+                }
                 Validity::Valid
             }
         }
@@ -836,7 +966,7 @@ fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
                 MenuKind::Grid3x3 if is(BlockClass::DropperBlock) => "container.dropper",
                 MenuKind::Grid3x3 => "container.dispenser",
                 MenuKind::Rows3 if is(BlockClass::BarrelBlock) => "container.barrel",
-                MenuKind::Rows3 => "container.chest",
+                MenuKind::Rows3 | MenuKind::Mount { .. } => "container.chest",
             }
         }
     };
