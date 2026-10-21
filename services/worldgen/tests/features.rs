@@ -52,15 +52,17 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     assert_eq!(
         with,
         format!(
-            "terrain;features {};minecraft:overworld;seed {SEED};no templates",
-            clustine_features::GENERATION
+            "terrain;features {};entities {};minecraft:overworld;seed {SEED};no templates",
+            clustine_features::GENERATION,
+            clustine_sim::generation::ENTITIES_GENERATION
         )
     );
     assert_eq!(
         without,
         format!(
-            "terrain;features {};minecraft:overworld;seed {SEED};no structures;no templates",
-            clustine_features::GENERATION
+            "terrain;features {};entities {};minecraft:overworld;seed {SEED};no structures;no templates",
+            clustine_features::GENERATION,
+            clustine_sim::generation::ENTITIES_GENERATION
         )
     );
     let library = TemplateLibrary::from_files(Vec::<(String, Vec<u8>)>::new()).unwrap();
@@ -71,8 +73,9 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     assert_eq!(
         with_templates,
         format!(
-            "terrain;features {};minecraft:overworld;seed {SEED}",
-            clustine_features::GENERATION
+            "terrain;features {};entities {};minecraft:overworld;seed {SEED}",
+            clustine_features::GENERATION,
+            clustine_sim::generation::ENTITIES_GENERATION
         )
     );
     assert_ne!(with, preview);

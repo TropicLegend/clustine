@@ -30,7 +30,10 @@ use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, World
 /// 2 (2026-10-16): fossils and the template feature give the blocks at their edges the
 /// features' shapes (gravel beside them schedules its tick), and their shape fix-ups
 /// mark nothing, as the game's.
-pub const FEATURES_VERSION: u16 = 2;
+///
+/// 3 (2026-10-21): a chunk is made with its animals (N7l), and the identity names the
+/// generation of what is made with chunks, `clustine_sim::generation::ENTITIES_GENERATION`.
+pub const FEATURES_VERSION: u16 = 3;
 
 /// A seed's overworld with its features, as stages.
 #[derive(Debug, Clone)]
@@ -120,8 +123,9 @@ impl Stages for FeatureStages {
         };
         GeneratorSettings {
             identity: format!(
-                "terrain;features {}{placed};{};seed {}{structures}{templates}",
+                "terrain;features {}{placed};entities {};{};seed {}{structures}{templates}",
                 clustine_features::GENERATION,
+                clustine_sim::generation::ENTITIES_GENERATION,
                 self.terrain.dimension().name,
                 self.terrain.seed()
             ),

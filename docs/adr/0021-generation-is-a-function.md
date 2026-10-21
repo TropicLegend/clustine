@@ -1058,6 +1058,11 @@ marks or light. That can come from a change to
    block classes, the biome parameters (ADR-0019, section 1);
 7. the pinned jar, whose templates are read when a server starts. (A new jar is a
    new `data-version` too, and a world of another data version is refused.)
+8. what is made with chunks (N7l, `docs/groundwork/n7l-plan.md`, section 4):
+   `clustine_sim::generation` and every mob type's `construct`, `finalize_spawn`,
+   `after_finalize_spawn` and template hook, and the spawning tables of `clustine-data`.
+   A change to the set of types made raises `ENTITIES_GENERATION` as well, which the
+   identity names.
 
 A fix that makes a placement no longer fail raises it as well; that is what lets
 S8 make the marked chunks again.

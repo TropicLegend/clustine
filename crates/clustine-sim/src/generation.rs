@@ -27,8 +27,9 @@ pub use spawning::SpawnRandom;
 
 /// Raised whenever the set of types made with chunks or by structures changes, or what
 /// any of them is made with (section 4): a world made while fewer were made is refused
-/// rather than continued with a seam. 0 while none is made.
-pub const ENTITIES_GENERATION: u16 = 0;
+/// rather than continued with a seam. 0 while none was made; 1 since a chunk is made
+/// with the overworld's creatures (N7l).
+pub const ENTITIES_GENERATION: u16 = 1;
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
 /// motion height maps and its light, and the biomes of the nine around it, which the

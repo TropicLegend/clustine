@@ -45,8 +45,11 @@ pub use region::{
 /// entity's hops, and a mob is kept by the parts of its body and mind and its type's
 /// state (`docs/groundwork/n7-plan.md`, section 11.3); 11 since a player's place holds
 /// their experience after their ender chest (section 7.7 of the same plan); 12 since it
-/// holds where a bed set their respawn point after it (`docs/groundwork/n7d-plan.md`).
-pub const FORMAT_VERSION: u8 = 12;
+/// holds where a bed set their respawn point after it (`docs/groundwork/n7d-plan.md`); 13
+/// since entities made with a chunk have keys of their own above every region's, a chunk's
+/// first blocks file follows its entities, and a seat may be granted across a line
+/// (`docs/groundwork/n7l-plan.md`, section 4; `n7j-mount-across-a-line.md`).
+pub const FORMAT_VERSION: u8 = 13;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
