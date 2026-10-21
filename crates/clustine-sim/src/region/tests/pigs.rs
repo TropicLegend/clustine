@@ -383,3 +383,18 @@ fn a_later_stay_that_arrives_over_a_rider_keeps_both_stays_notes() {
     assert_eq!(off[1], -60.0, "{off:?}");
     assert_eq!(has[1].0, EntityId(77));
 }
+
+/// `getKnownMovement()` of a ridden pig, which a lead it holds pulls by: its driver's
+/// while they steer it with the stick, its own motion once they do not.
+#[test]
+fn a_ridden_pigs_known_movement_is_its_drivers_only_while_they_steer_it() {
+    let mut region = ridden();
+    region.known_movements.insert(player(1), [0.25, 0.0, -0.5]);
+    assert_eq!(
+        region.record_movement(&record(&region, PIG_KEY)),
+        [0.25, 0.0, -0.5]
+    );
+    checked(&mut region, &holding(items::STICK));
+    let pig = record(&region, PIG_KEY);
+    assert_eq!(region.record_movement(&pig), pig.motion);
+}

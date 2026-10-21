@@ -217,6 +217,8 @@ impl Region {
         if self.players[&id].riding.is_some() {
             self.dismount_player(id, output);
         }
+        // `addPassenger`'s own part comes before the seat (a happy ghast's goggles).
+        self.passenger_adding(vehicle, rider, output);
         let Some((chunk, record)) = self.find_entity(vehicle) else {
             return false;
         };
@@ -351,6 +353,10 @@ impl Region {
                     .map(|seat| seat.key)
                     .collect(),
             });
+            self.passenger_removed(&record, chunk, entity, output);
+            let record = self
+                .find_entity(riding.vehicle)
+                .map_or(record, |(_, record)| record.clone());
             at = self.dismount_location(&record, chunk, &passenger, &PLAYER_POSES);
         }
         let player = self.players.get_mut(&id).expect("found above");
@@ -408,6 +414,16 @@ impl Region {
         let Some(note) = self.dismount_note(id, player) else {
             return false;
         };
+        // The game saves the unit before the player's `stopRiding`, so the unit keeps
+        // its records as they were, and only what watchers hear of the seat's going is
+        // made (`docs/groundwork/n7j-riding-plan.md`, section 9 item 1).
+        if let Some(vehicle) = members.iter().find(|member| member.key == riding.vehicle) {
+            let mut left = vehicle.clone();
+            left.riding
+                .passengers
+                .retain(|seat| seat.key != player.entity_id);
+            self.mob_passenger_removed_heard(&left, output);
+        }
         for member in &members {
             self.take_out(chunk, member, output);
         }
@@ -472,6 +488,13 @@ impl Region {
             if !seated || returned.is_some() {
                 member.riding.passengers.remove(index);
                 continue;
+            }
+            // `startRiding(…, true, false)` at the re-entry runs `addPassenger`: the
+            // vehicle's own part, as of its seats without the player's.
+            let mut without = member.clone();
+            without.riding.passengers.remove(index);
+            if let Some(data) = self.mob_passenger_added_away(&without, output) {
+                member.data = data;
             }
             let seat = &mut member.riding.passengers[index];
             seat.key = entity;
@@ -579,6 +602,7 @@ impl Region {
                 .map(|seat| seat.key)
                 .collect(),
         });
+        self.passenger_removed(&record, chunk, player.entity_id, output);
     }
 
     /// The riding players' part of the entities' phase, after the vehicles have ticked
@@ -917,6 +941,9 @@ impl Region {
                     .map(|seat| seat.key)
                     .collect(),
             });
+            // Once for all that lapsed: what a type does at a seat's going is the same
+            // for one or several (the happy ghast's).
+            self.passenger_removed(&record, chunk, EntityId(0), output);
         }
     }
 
@@ -980,6 +1007,7 @@ impl Region {
                     .map(|seat| seat.key)
                     .collect(),
             });
+            self.passenger_removed(&record, chunk, EntityId(0), output);
         }
     }
 

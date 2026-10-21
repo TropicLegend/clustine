@@ -417,13 +417,15 @@ impl Region {
     }
 
     /// The region's player who drives `vehicle` (`getControllingPassenger`, a player):
-    /// a boat's first seat, taken.
+    /// a boat's first seat, taken, or a mob's first seat where its type lets that player
+    /// steer it now (`drives_root`: a pig without its stick, a still happy ghast, has
+    /// none; `docs/groundwork/n7j-riding-plan.md`, section 9 item 10).
     fn driver_of(&self, vehicle: &Entity) -> Option<PlayerId> {
-        if !is_boat(vehicle.kind) {
-            return None;
-        }
         let seat = vehicle.riding.passengers.first()?;
         if !seat.player || seat.pending.is_some() {
+            return None;
+        }
+        if !is_boat(vehicle.kind) && !self.drives_root(vehicle, seat.key) {
             return None;
         }
         self.player_with_entity(seat.key)

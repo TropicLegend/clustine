@@ -74,6 +74,9 @@ pub(crate) struct Root {
     /// and falls as `Entity.checkFallDamage` has it, where a boat moves and falls as a
     /// boat (`docs/groundwork/n7h-riding-plan.md`, section 10 item 3).
     pub(crate) living: bool,
+    /// `isFlyingVehicle()` (an adult happy ghast): its driver is never kicked for
+    /// floating, and its move gathers no fall (its `checkFallDamage` does nothing).
+    pub(crate) flying: bool,
 }
 
 /// What became of a move.
@@ -293,7 +296,7 @@ pub(crate) fn check_move<W: World + ?Sized>(
             }
             root.body.fall_distance = 0.0;
         }
-    } else if !root.passenger {
+    } else if !root.passenger && !root.flying {
         if moved.on_ground {
             root.body.fall_distance = 0.0;
         } else {
@@ -307,6 +310,7 @@ pub(crate) fn check_move<W: World + ?Sized>(
     check.floating = requested_dy >= -0.03125
         && !was_below
         && !allow_flight
+        && !root.flying
         && root.gravity > 0.0
         && super::boat::no_blocks_around(world, &root.body.bounds());
     check.good = Some([first_good, kept(at)]);
@@ -452,6 +456,7 @@ mod tests {
             passenger: false,
             last_yd: 0.0,
             living: false,
+            flying: false,
         }
     }
 

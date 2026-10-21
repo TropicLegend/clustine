@@ -261,6 +261,36 @@ pub(crate) trait MobType: Sync {
         false
     }
 
+    /// `addPassenger`'s own part, before a seat is added to `vehicle` (its record, its
+    /// passengers as they were): what it does to itself, and a sound it makes at itself
+    /// at volume 1 and pitch 1 (a happy ghast's goggles coming down), with `world` to read
+    /// the players above it. Nothing but where the type has its own.
+    fn passenger_added(
+        &self,
+        vehicle: &clustine_world::Entity,
+        mob: &mut Mob,
+        world: &dyn super::view::MobWorld,
+    ) -> Option<i32> {
+        let _ = (vehicle, mob, world);
+        None
+    }
+
+    /// `isFlyingVehicle()`: whether its driver is never kicked for floating, and its
+    /// move gathers no fall (an adult happy ghast). Never but where the type says.
+    fn flying_vehicle(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// `removePassenger`'s own part, after a seat left `vehicle` (its record as it is
+    /// now): what it does to itself, and a sound it makes at itself at volume 1 and
+    /// pitch 1 (a happy ghast's goggles going up). Nothing but where the type has its
+    /// own.
+    fn passenger_removed(&self, vehicle: &clustine_world::Entity, mob: &mut Mob) -> Option<i32> {
+        let _ = (vehicle, mob);
+        None
+    }
+
     /// `tickRidden(player, input)` of a mob a player steers, whose rotation is `yaw` and
     /// `pitch`: nothing but where the type has its own.
     fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {

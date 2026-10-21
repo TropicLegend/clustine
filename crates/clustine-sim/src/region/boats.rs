@@ -825,6 +825,7 @@ impl Region {
             passenger,
             last_yd: floating.last_yd,
             living: false,
+            flying: false,
         };
         vehicle_move::move_boat(&view, &mut root, vector);
         boat.body = root.body;
@@ -1753,6 +1754,7 @@ impl Region {
             passenger: root.riding.vehicle.is_some(),
             last_yd: 0.0,
             living: true,
+            flying: crate::mobs::types::of(root.kind).flying_vehicle(&mob),
         };
         Some(vehicle_move::check_move(
             &view,
@@ -1791,6 +1793,7 @@ impl Region {
             passenger: root.riding.vehicle.is_some(),
             last_yd: tick.memory.last_yd,
             living: false,
+            flying: false,
         };
         Some(vehicle_move::check_move(
             &view,

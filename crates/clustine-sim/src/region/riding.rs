@@ -564,6 +564,7 @@ impl Region {
         if rider_record.riding.vehicle.is_some() {
             self.stop_riding(rider, output);
         }
+        self.passenger_adding(vehicle, rider, output);
         let (Some((rider_chunk, rider_record)), Some((vehicle_chunk, vehicle_record))) =
             (self.find_entity(rider), self.find_entity(vehicle))
         else {
@@ -690,17 +691,22 @@ impl Region {
         }
     }
 
-    /// `removePassenger(passenger)`'s own part of the kind of `vehicle`.
-    fn passenger_removed(
+    /// `removePassenger(passenger)`'s own part of the kind of `vehicle`, whose record is
+    /// as the seat's going left it. Every path that takes a seat out of a vehicle's
+    /// passengers calls it once it has (`docs/groundwork/n7j-riding-plan.md`, section 9
+    /// item 1).
+    pub(super) fn passenger_removed(
         &mut self,
         vehicle: &Entity,
         chunk: ChunkPos,
         passenger: EntityId,
         output: &mut TickOutput,
     ) {
-        let _ = (chunk, passenger);
-        if let EntityData::Cushion { .. } = vehicle.data {
-            self.cushion_passenger_removed(vehicle, output);
+        let _ = passenger;
+        match vehicle.data {
+            EntityData::Cushion { .. } => self.cushion_passenger_removed(vehicle, output),
+            EntityData::Mob { .. } => self.mob_passenger_removed(vehicle.key, chunk, output),
+            _ => {}
         }
     }
 
@@ -731,6 +737,7 @@ impl Region {
                     output,
                 );
                 self.report_passengers(&record, chunk, output);
+                self.passenger_removed(&record, chunk, last.key, output);
             }
         }
     }
@@ -769,6 +776,7 @@ impl Region {
                     vec![EntityField::Riding(record.riding.clone())],
                     output,
                 );
+                self.passenger_removed(&record, chunk, seat.key, output);
             }
         }
     }

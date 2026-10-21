@@ -58,6 +58,7 @@ mod minecarts;
 mod mob_attacks;
 mod mob_bodies;
 mod mobs;
+mod mounts;
 mod picks;
 mod pistons;
 mod placing;
