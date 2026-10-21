@@ -61,6 +61,7 @@ fn seat(key: u64, player: bool, pending: bool) -> Seat {
         pending: pending.then_some(Pending {
             left: 100,
             edge: IDENTITY.edge,
+            granted: false,
         }),
     }
 }

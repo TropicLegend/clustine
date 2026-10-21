@@ -245,10 +245,31 @@ impl Region {
             self.take_blasted(key, damage, push, blast, output);
             return;
         }
+        // The decline of a seat granted across a line is the same for every vehicle
+        // (`granted.rs`).
+        if let clustine_world::EntityUse::SeatDeclined { player } = by {
+            self.seat_declined(key, player, output);
+            return;
+        }
         let Some((chunk, entity)) = self.find_entity(key) else {
             return;
         };
         let entity = entity.clone();
+        // A use by another region's player, sent across a line: a mount it ends in is
+        // theirs to take (`granted.rs`).
+        let across = match by {
+            clustine_world::EntityUse::Interact {
+                player,
+                from,
+                edge: Some(edge),
+                ..
+            } if self.player_with_entity(player).is_none() => Some(super::granted::Across {
+                edge,
+                from: from.map(|value| value.0),
+            }),
+            _ => None,
+        };
+        let outer = std::mem::replace(&mut self.using_across, across);
         match entity.data {
             EntityData::Minecart { .. } => self.minecart_used(&entity, chunk, by, output),
             EntityData::Boat { .. } => self.boat_used(&entity, chunk, by, output),
@@ -265,6 +286,7 @@ impl Region {
             | EntityData::PrimedTnt { .. }
             | EntityData::ExperienceOrb { .. } => {}
         }
+        self.using_across = outer;
     }
 
     /// The tick of `entity`, of the loaded chunk `position`, as its kind ticks: an item

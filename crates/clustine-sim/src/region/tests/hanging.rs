@@ -244,6 +244,7 @@ fn used_from_afar(target: &Entity, sequence: u64, held: Option<ItemStack>) -> Ti
                         location: [Double(0.0); 3],
                         sneaking: false,
                         from: [Double(0.5), Double(-60.0), Double(0.5)],
+                        edge: None,
                     },
                 },
             },

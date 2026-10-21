@@ -476,6 +476,8 @@ impl Region {
             EntityUse::BreedAsk { asker, number } => {
                 self.breed_asked(entity.key, asker, number, output);
             }
+            // Taken before the dispatch by kind (`entities.rs`).
+            EntityUse::SeatDeclined { .. } => {}
             EntityUse::BreedAnswer {
                 partner,
                 number,

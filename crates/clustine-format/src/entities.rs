@@ -102,6 +102,8 @@ const DATA_EXPERIENCE_ORB: u8 = 12;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
+/// A kept seat granted across a line and not taken yet; only with [`SEAT_PENDING`].
+const SEAT_GRANTED: u8 = 4;
 
 const LEASH_NONE: u8 = 0;
 const LEASH_ENTITY: u8 = 1;
@@ -276,8 +278,11 @@ fn put_riding(out: &mut Vec<u8>, riding: &Riding) {
         if seat.player {
             flags |= SEAT_PLAYER;
         }
-        if seat.pending.is_some() {
+        if let Some(pending) = seat.pending {
             flags |= SEAT_PENDING;
+            if pending.granted {
+                flags |= SEAT_GRANTED;
+            }
         }
         out.push(flags);
         if let Some(pending) = seat.pending {
@@ -315,8 +320,9 @@ fn take_riding(input: &mut Input<'_>) -> Result<Riding, FormatError> {
     for _ in 0..count {
         let key = EntityId(input.u64()?);
         let flags = input.u8()?;
-        if flags & !(SEAT_PLAYER | SEAT_PENDING) != 0
+        if flags & !(SEAT_PLAYER | SEAT_PENDING | SEAT_GRANTED) != 0
             || (flags & SEAT_PENDING != 0 && flags & SEAT_PLAYER == 0)
+            || (flags & SEAT_GRANTED != 0 && flags & SEAT_PENDING == 0)
         {
             return Err(FormatError::Corrupt("a seat's flags"));
         }
@@ -324,6 +330,7 @@ fn take_riding(input: &mut Input<'_>) -> Result<Riding, FormatError> {
             Some(Pending {
                 left: input.u16()?,
                 edge: EdgeId(input.u64()?),
+                granted: flags & SEAT_GRANTED != 0,
             })
         } else {
             None
@@ -1331,17 +1338,21 @@ pub(crate) mod tests {
     }
 
     fn ridings() -> impl Strategy<Value = Riding> {
-        let seat = (any::<u64>(), any::<bool>(), any::<Option<(u16, u64)>>()).prop_map(
-            |(key, player, pending)| Seat {
+        let seat = (
+            any::<u64>(),
+            any::<bool>(),
+            any::<Option<(u16, u64, bool)>>(),
+        )
+            .prop_map(|(key, player, pending)| Seat {
                 key: EntityId(key),
                 // Only a player's seat is kept for them on their way.
                 player: player || pending.is_some(),
-                pending: pending.map(|(left, edge)| Pending {
+                pending: pending.map(|(left, edge, granted)| Pending {
+                    granted,
                     left,
                     edge: EdgeId(edge),
                 }),
-            },
-        );
+            });
         let holder = prop_oneof![
             any::<u64>().prop_map(|key| LeashHolder::Entity(EntityId(key))),
             any::<(i32, i32, i32)>()

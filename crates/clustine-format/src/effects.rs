@@ -14,6 +14,11 @@
 //! | 6, exploded | the block expected u16, the blast |
 //! | 7, burnt | the block expected u16 |
 //! | 8, a player inside | the box's lower corner 3 × f64 and its upper corner 3 × f64 |
+//! | 9, given | the player's key u64, the stack (item i32, count i32), u8 0 or 1 whether no duplicates |
+//! | 10, seated | the player's key u64, the vehicle's key u64, its root's chunk x i32 and z i32 |
+//!
+//! The uses of kind 5 since: 4, a request to breed; 5, its answer; 6, a mob's hit; 7, a
+//! use as 2 followed by the player's edge u64; 8, a seat declined, the player's key u64.
 //!
 //! A blast (`clustine_world::Blast`) is the exploding entity's key u64, the tick u64, the
 //! centre 3 × f64, the radius f32, flags u8 (bit 0 its drops decay, bit 1 it has a direct
@@ -42,6 +47,7 @@ const EXPLODED: u8 = 6;
 const BURNT: u8 = 7;
 const PLAYER_INSIDE: u8 = 8;
 const GIVEN: u8 = 9;
+const SEATED: u8 = 10;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
@@ -49,6 +55,9 @@ const USE_BLASTED: u8 = 3;
 const USE_BREED_ASK: u8 = 4;
 const USE_BREED_ANSWER: u8 = 5;
 const USE_MOB_HIT: u8 = 6;
+/// A use with the player's edge (`USE_INTERACT` is one stored before, with none).
+const USE_INTERACT_FROM_EDGE: u8 = 7;
+const USE_SEAT_DECLINED: u8 = 8;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -134,8 +143,13 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     location,
                     sneaking,
                     from,
+                    edge,
                 } => {
-                    out.push(USE_INTERACT);
+                    out.push(if edge.is_some() {
+                        USE_INTERACT_FROM_EDGE
+                    } else {
+                        USE_INTERACT
+                    });
                     out.extend_from_slice(&player.0.to_be_bytes());
                     out.push(u8::from(creative) | (u8::from(sneaking) << 1));
                     match held {
@@ -148,6 +162,13 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     }
                     put_doubles(out, location);
                     put_doubles(out, from);
+                    if let Some(edge) = edge {
+                        out.extend_from_slice(&edge.0.to_be_bytes());
+                    }
+                }
+                EntityUse::SeatDeclined { player } => {
+                    out.push(USE_SEAT_DECLINED);
+                    out.extend_from_slice(&player.0.to_be_bytes());
                 }
                 EntityUse::Blasted {
                     damage,
@@ -223,6 +244,17 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.extend_from_slice(&stack.item.to_be_bytes());
             out.extend_from_slice(&stack.count.to_be_bytes());
             out.push(u8::from(no_duplicates));
+        }
+        Effected::Seated {
+            player,
+            vehicle,
+            chunk,
+        } => {
+            out.push(SEATED);
+            out.extend_from_slice(&player.0.to_be_bytes());
+            out.extend_from_slice(&vehicle.0.to_be_bytes());
+            out.extend_from_slice(&chunk.x.to_be_bytes());
+            out.extend_from_slice(&chunk.z.to_be_bytes());
         }
     }
 }
@@ -342,7 +374,8 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
         },
         ON_ENTITY => {
             let key = EntityId(input.u64()?);
-            let by = match input.u8()? {
+            let use_kind = input.u8()?;
+            let by = match use_kind {
                 USE_ATTACK => {
                     let attacker = EntityId(input.u64()?);
                     let (creative, sprinting) = take_two_flags(input)?;
@@ -354,7 +387,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         from: take_doubles(input)?,
                     }
                 }
-                USE_INTERACT => {
+                USE_INTERACT | USE_INTERACT_FROM_EDGE => {
                     let player = EntityId(input.u64()?);
                     let (creative, sneaking) = take_two_flags(input)?;
                     let held = match input.u8()? {
@@ -365,15 +398,26 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         }),
                         _ => return Err(FormatError::Corrupt("an entity use's held flag")),
                     };
+                    let location = take_doubles(input)?;
+                    let from = take_doubles(input)?;
+                    let edge = if use_kind == USE_INTERACT_FROM_EDGE {
+                        Some(clustine_world::EdgeId(input.u64()?))
+                    } else {
+                        None
+                    };
                     EntityUse::Interact {
                         player,
                         creative,
                         held,
-                        location: take_doubles(input)?,
+                        location,
                         sneaking,
-                        from: take_doubles(input)?,
+                        from,
+                        edge,
                     }
                 }
+                USE_SEAT_DECLINED => EntityUse::SeatDeclined {
+                    player: EntityId(input.u64()?),
+                },
                 USE_BLASTED => EntityUse::Blasted {
                     damage: Float(input.f32()?),
                     push: take_doubles(input)?,
@@ -434,6 +478,11 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                 1 => true,
                 _ => return Err(FormatError::Corrupt("a given stack's flag")),
             },
+        },
+        SEATED => Effected::Seated {
+            player: EntityId(input.u64()?),
+            vehicle: EntityId(input.u64()?),
+            chunk: clustine_world::ChunkPos::new(input.i32()?, input.i32()?),
         },
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };
@@ -585,7 +634,7 @@ mod tests {
         assert_eq!(take_effect(&mut Input(&good)), Ok(effect()));
         // The kind is after the block, three i32; the direction after the kind.
         let mut kind = good.clone();
-        kind[12] = 10;
+        kind[12] = 11;
         assert_eq!(
             take_effect(&mut Input(&kind)),
             Err(FormatError::Corrupt("an effect's kind"))
@@ -697,6 +746,7 @@ mod entity_uses {
                 what: Effected::OnEntity {
                     key: EntityId(1),
                     by: EntityUse::Interact {
+                        edge: None,
                         player: EntityId(5),
                         creative: false,
                         held,

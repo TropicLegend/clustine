@@ -609,6 +609,7 @@ fn a_furnace_cart_takes_coal_and_pushes_away_from_the_player() {
             location: [Double(0.0); 3],
             sneaking: false,
             from: from.map(Double),
+            edge: None,
         };
         region.minecart_used(&entity, ChunkPos::new(0, 0), by, &mut output);
     };
@@ -663,6 +664,7 @@ fn a_furnace_cart_takes_coal_and_pushes_away_from_the_player() {
         location: [Double(0.0); 3],
         sneaking: false,
         from: [Double(0.0); 3],
+        edge: None,
     };
     region.minecart_used(&entity, ChunkPos::new(0, 0), by, &mut output);
     assert!(output.entity_changes.is_empty());

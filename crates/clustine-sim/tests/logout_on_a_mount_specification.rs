@@ -566,6 +566,7 @@ fn a_player_in_a_boat_with_a_seat_kept_for_another_is_put_off_and_the_boat_stays
         key: EntityId(5 << 32 | 77),
         player: true,
         pending: Some(Pending {
+            granted: false,
             left: 80,
             edge: EDGE,
         }),
@@ -875,6 +876,7 @@ fn a_unit_told_with_the_next_stay_is_taken_and_comes_back_under_them() {
             key: back.stay,
             player: true,
             pending: Some(Pending {
+                granted: false,
                 left: PENDING_FOR,
                 edge: EDGE,
             }),

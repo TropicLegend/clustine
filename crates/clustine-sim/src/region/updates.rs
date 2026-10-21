@@ -990,6 +990,11 @@ impl Region {
                 }
             }
             Effected::OnEntity { key, by } => self.entity_used(key, by, output),
+            Effected::Seated {
+                player,
+                vehicle,
+                chunk,
+            } => self.take_seated(player, vehicle, chunk, output),
             Effected::Exploded { expected, blast } => {
                 self.take_exploded(at, expected, blast, output);
             }

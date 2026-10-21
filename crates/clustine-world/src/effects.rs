@@ -79,6 +79,15 @@ pub enum Effected {
         stack: ItemStack,
         no_duplicates: bool,
     },
+    /// The region of the vehicle `vehicle`, whose root's chunk is `chunk`, granted the
+    /// player whose entity is `player` a seat on it across a line: the player's region
+    /// hands them over to ride it, or declines (`docs/groundwork/n7j-mount-across-a-line.md`,
+    /// section 8 item 5).
+    Seated {
+        player: EntityId,
+        vehicle: EntityId,
+        chunk: crate::ChunkPos,
+    },
 }
 
 /// What an explosion's effects carry of the explosion, for the holder of a block or an
@@ -120,7 +129,9 @@ pub enum EntityUse {
         from: [Double; 3],
     },
     /// `interact`: the player, whether creative, what they hold in the hand used, where
-    /// on the entity the click landed, whether they sneak, and where they stand.
+    /// on the entity the click landed, whether they sneak, and where they stand; and
+    /// their edge, which a seat granted them across a line goes with
+    /// (`docs/groundwork/n7j-mount-across-a-line.md`; none in a use stored before).
     Interact {
         player: EntityId,
         creative: bool,
@@ -128,7 +139,12 @@ pub enum EntityUse {
         location: [Double; 3],
         sneaking: bool,
         from: [Double; 3],
+        edge: Option<crate::EdgeId>,
     },
+    /// The player whose entity is `player` does not take the seat the entity's region
+    /// granted them across a line (`docs/groundwork/n7j-mount-across-a-line.md`,
+    /// section 8 item 3): that seat goes, and no other.
+    SeatDeclined { player: EntityId },
     /// An explosion's hit (`hurtEntities`), as the exploding region worked it out from
     /// its copy: the damage, the push, and of the explosion what the entity reads of
     /// its source (`docs/groundwork/n6-plan.md`, decision 10).
@@ -183,7 +199,8 @@ impl Effect {
             | Effected::Exploded { .. }
             | Effected::Burnt { .. }
             | Effected::PlayerInside { .. }
-            | Effected::Given { .. } => None,
+            | Effected::Given { .. }
+            | Effected::Seated { .. } => None,
         }
     }
 }

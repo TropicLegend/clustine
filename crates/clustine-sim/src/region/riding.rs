@@ -469,12 +469,7 @@ impl Region {
             vehicle: vehicle.key,
             chunk,
             hops: vehicle.hops,
-            passengers: vehicle
-                .riding
-                .passengers
-                .iter()
-                .map(|seat| seat.key)
-                .collect(),
+            passengers: vehicle.riding.shown_passengers(),
         });
     }
 

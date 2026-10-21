@@ -198,7 +198,12 @@ impl Region {
         output: &mut TickOutput,
     ) -> bool {
         let Some(id) = self.player_with_entity(rider) else {
-            return false;
+            // Another region's player, by a use sent across a line: a seat is granted,
+            // which their region takes or declines (`granted.rs`).
+            return match self.using_across {
+                Some(across) => self.grant_seat(rider, vehicle, across, output),
+                None => false,
+            };
         };
         let player = &self.players[&id];
         // One on their way to their unit rides it already, and gets on nothing else
@@ -246,12 +251,7 @@ impl Region {
             vehicle,
             chunk,
             hops: record.hops,
-            passengers: record
-                .riding
-                .passengers
-                .iter()
-                .map(|seat| seat.key)
-                .collect(),
+            passengers: record.riding.shown_passengers(),
         });
         // `entity_mount`, of the rider, at the vehicle (`vibrations.rs`).
         let context = super::vibrations::Context::of(self.player_source(id), None);
@@ -349,12 +349,7 @@ impl Region {
                 vehicle: riding.vehicle,
                 chunk,
                 hops: record.hops,
-                passengers: record
-                    .riding
-                    .passengers
-                    .iter()
-                    .map(|seat| seat.key)
-                    .collect(),
+                passengers: record.riding.shown_passengers(),
             });
             self.passenger_removed(&record, chunk, entity, output);
             let record = self
@@ -502,6 +497,7 @@ impl Region {
             let seat = &mut member.riding.passengers[index];
             seat.key = entity;
             seat.pending = Some(clustine_world::Pending {
+                granted: false,
                 left: PENDING_FOR,
                 edge,
             });
@@ -598,12 +594,7 @@ impl Region {
             vehicle: riding.vehicle,
             chunk,
             hops: record.hops,
-            passengers: record
-                .riding
-                .passengers
-                .iter()
-                .map(|seat| seat.key)
-                .collect(),
+            passengers: record.riding.shown_passengers(),
         });
         self.passenger_removed(&record, chunk, player.entity_id, output);
     }
@@ -732,6 +723,7 @@ impl Region {
                 };
                 let player = self.players.get_mut(&id).expect("found above");
                 seat.pending = Some(clustine_world::Pending {
+                    granted: false,
                     left: PENDING_FOR,
                     edge: player.edge,
                 });
@@ -789,6 +781,9 @@ impl Region {
             return;
         };
         let mut record = vehicle.clone();
+        let granted = record.riding.passengers[index]
+            .pending
+            .is_some_and(|pending| pending.granted);
         if record.riding.passengers[index].pending.take().is_some() {
             self.commit_entity(
                 chunk,
@@ -805,6 +800,11 @@ impl Region {
         }
         self.journal.players.insert(id);
         self.seat_player(id, output);
+        // A seat granted across a line is taken for the first time: a mount, which the
+        // player's client and the vehicle's watchers learn of now.
+        if granted {
+            self.first_seating(id, riding.vehicle, output);
+        }
         // The moves their client sent meanwhile, each as one client tick, the check of
         // the first counting from where the vehicle is now, as `tickPlayer` would seed it
         // (`docs/groundwork/n5-plan.md`, section 7 item 4).
@@ -920,12 +920,14 @@ impl Region {
                 };
             }
         }
-        let before = record.riding.passengers.len();
+        let shown_before = record.riding.shown_passengers().len();
         record
             .riding
             .passengers
             .retain(|seat| seat.pending.is_none_or(|pending| pending.left > 0));
-        let dropped = record.riding.passengers.len() != before;
+        // A granted seat never shown goes unreported, and is no seat's going to the
+        // vehicle's type (`docs/groundwork/n7j-mount-across-a-line.md`, section 8).
+        let dropped = record.riding.shown_passengers().len() != shown_before;
         self.commit_entity(
             chunk,
             vehicle,
@@ -937,12 +939,7 @@ impl Region {
                 vehicle,
                 chunk,
                 hops: record.hops,
-                passengers: record
-                    .riding
-                    .passengers
-                    .iter()
-                    .map(|seat| seat.key)
-                    .collect(),
+                passengers: record.riding.shown_passengers(),
             });
             // Once for all that lapsed: what a type does at a seat's going is the same
             // for one or several (the happy ghast's).
@@ -992,7 +989,9 @@ impl Region {
             let Some(mut record) = self.entity_record(key, chunk).cloned() else {
                 continue;
             };
+            let shown_before = record.riding.shown_passengers().len();
             record.riding.passengers.retain(|seat| !goes(seat));
+            let shown_gone = record.riding.shown_passengers().len() != shown_before;
             self.commit_entity(
                 chunk,
                 key,
@@ -1003,14 +1002,11 @@ impl Region {
                 vehicle: key,
                 chunk,
                 hops: record.hops,
-                passengers: record
-                    .riding
-                    .passengers
-                    .iter()
-                    .map(|seat| seat.key)
-                    .collect(),
+                passengers: record.riding.shown_passengers(),
             });
-            self.passenger_removed(&record, chunk, EntityId(0), output);
+            if shown_gone {
+                self.passenger_removed(&record, chunk, EntityId(0), output);
+            }
         }
     }
 

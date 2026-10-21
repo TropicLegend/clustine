@@ -46,6 +46,7 @@ mod fluids;
 mod frogspawn;
 mod given;
 pub(crate) mod golem_chests;
+mod granted;
 mod hanging;
 pub(crate) mod hives;
 mod hoppers;
@@ -473,6 +474,10 @@ pub struct Region {
     /// restored, merged or split within those ticks has none, and the player, not seated
     /// in time, gets off where they are (a named difference).
     forwarded: BTreeMap<EntityId, (ChunkPos, u16)>,
+    /// The use across a line by another region's player that the region is doing now,
+    /// so that a mount it ends in grants a seat instead (`granted.rs`). Empty but during
+    /// such a use.
+    using_across: Option<granted::Across>,
     /// The notes of riders who left the world in this tick, each with where their
     /// vehicle let them off (`riders.rs`). Empty between ticks.
     dismounted: Vec<(PlayerId, StayNote)>,
@@ -624,6 +629,7 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
+            using_across: None,
             dismounted: Vec::new(),
             took: Vec::new(),
             gone: Vec::new(),
@@ -2197,6 +2203,7 @@ impl Region {
                     location: location.map(Double),
                     sneaking: *sneaking,
                     from: user.from(),
+                    edge: Some(player.edge),
                 };
                 self.player_used_entity(user, *entity, by, output);
             }

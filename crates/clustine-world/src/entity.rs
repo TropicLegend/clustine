@@ -139,6 +139,17 @@ impl Riding {
     pub fn is_free(&self) -> bool {
         self.vehicle.is_none() && self.passengers.is_empty() && self.leash.is_none()
     }
+
+    /// Who is shown riding it: every seat but one granted across a line and not yet
+    /// taken, whose player their region has not yet decided to send
+    /// (`docs/groundwork/n7j-mount-across-a-line.md`, section 8 item 2).
+    pub fn shown_passengers(&self) -> Vec<EntityId> {
+        self.passengers
+            .iter()
+            .filter(|seat| !seat.pending.is_some_and(|pending| pending.granted))
+            .map(|seat| seat.key)
+            .collect()
+    }
 }
 
 /// A place in a vehicle.
@@ -160,6 +171,10 @@ pub struct Pending {
     pub left: u16,
     /// The edge the player belongs to, whose going drops the seat.
     pub edge: EdgeId,
+    /// Granted to a player of another region who clicked the vehicle across a line, and
+    /// not taken yet: not shown to anyone, and its first seating a mount
+    /// (`docs/groundwork/n7j-mount-across-a-line.md`, section 8).
+    pub granted: bool,
 }
 
 /// Who holds a leash.

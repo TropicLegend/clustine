@@ -4101,7 +4101,7 @@ impl Fanout {
     /// and who holds its leash, which a client newly shown it is then told. A leash tied
     /// to a fence is held by the knot there, which the edge finds among what it shows.
     fn note_riding(&mut self, entity: EntityId, riding: &clustine_world::Riding) {
-        let passengers: Vec<EntityId> = riding.passengers.iter().map(|seat| seat.key).collect();
+        let passengers = riding.shown_passengers();
         if let Some(before) = self.passengers.remove(&entity) {
             for rider in before {
                 if self.vehicle_of.get(&rider) == Some(&entity) {

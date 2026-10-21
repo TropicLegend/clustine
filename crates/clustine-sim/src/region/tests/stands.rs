@@ -664,6 +664,7 @@ fn used_from_afar(
                         location: [Double(0.0), Double(height), Double(0.0)],
                         sneaking: false,
                         from: [Double(3.5), Double(-60.0), Double(6.5)],
+                        edge: None,
                     },
                 },
             },

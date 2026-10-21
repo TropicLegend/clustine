@@ -333,6 +333,7 @@ fn a_pig_whose_seat_is_kept_for_a_player_on_their_way_stands_still() {
         key: EntityId(900),
         player: true,
         pending: Some(clustine_world::Pending {
+            granted: false,
             left: 100,
             edge: clustine_world::EdgeId(1),
         }),

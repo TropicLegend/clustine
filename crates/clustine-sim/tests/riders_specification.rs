@@ -1192,6 +1192,7 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
         pending: Some(Pending {
             left: KEPT_FOR as u16,
             edge: EDGE,
+            granted: false,
         }),
     }];
     let mut middle = side(
@@ -1837,4 +1838,95 @@ fn a_lone_riders_leave_takes_the_boat_though_their_view_goes_in_the_same_tick() 
         "the boat goes with them: {:?}",
         output.stays
     );
+}
+
+// ------------------------------------------------------------------------------------
+// Getting on across a line (`docs/groundwork/n7j-mount-across-a-line.md`): the lead's
+// test of the whole path; the specification's own cases are written apart.
+
+/// `effect`, filed for its holder.
+fn filed(effect: clustine_world::Effect, sequence: u64) -> clustine_world::FiledEffect {
+    clustine_world::FiledEffect {
+        id: EffectId { sequence, index: 0 },
+        effect,
+        due: Due::FromTaking,
+    }
+}
+
+/// Section 8 items 1, 2, 4 and 5: a click on a boat beyond the line grants a hidden
+/// seat in its holder, the player's region hands them over to ride it, and the holder
+/// seats them as a mount: `Rides` to their client and the seat shown at last.
+#[test]
+fn a_click_on_a_boat_beyond_the_line_seats_the_player_in_its_holder() {
+    let beyond = boat(5, [16.5, -60.0, 8.5]);
+    let mut west = west(&[]);
+    let mut copy = floor();
+    copy.set_entities(vec![beyond.clone()]);
+    west.tick(&TickInputs {
+        copy_bases: vec![(BEYOND, copy)],
+        ..TickInputs::default()
+    });
+    let rider = joined(&mut west);
+    let mut hands = Hands::new();
+    let output = west.tick(&TickInputs {
+        inputs: hands.inputs(rider, vec![mount(beyond.key)]),
+        ..TickInputs::default()
+    });
+    let used = output
+        .effects
+        .iter()
+        .find(|effect| {
+            matches!(effect.what, clustine_world::Effected::OnEntity { key, .. } if key == beyond.key)
+        })
+        .copied()
+        .expect("the click goes as an effect on the boat");
+
+    let mut east = east(std::slice::from_ref(&beyond));
+    let output = east.tick(&TickInputs {
+        effects: vec![filed(used, 50)],
+        ..TickInputs::default()
+    });
+    let granted = seats(&east, beyond.key);
+    assert_eq!(granted.len(), 1, "one seat granted: {granted:?}");
+    assert!(granted[0].pending.is_some_and(|pending| pending.granted));
+    assert!(
+        passengers_reported(&output, beyond.key)
+            .iter()
+            .all(|shown| !shown.contains(&rider)),
+        "the granted seat is not shown"
+    );
+    let seated = output
+        .effects
+        .iter()
+        .find(|effect| matches!(effect.what, clustine_world::Effected::Seated { .. }))
+        .copied()
+        .expect("the player's region is told");
+    assert_eq!(
+        seated.at.chunk(),
+        ChunkPos::new(0, 0),
+        "at where they stood"
+    );
+
+    let output = west.tick(&TickInputs {
+        effects: vec![filed(seated, 60)],
+        ..TickInputs::default()
+    });
+    let mut sent = departures(&output);
+    assert_eq!(sent.len(), 1, "handed over once: {sent:?}");
+    let (transfer, to) = sent.remove(0);
+    assert_eq!(to, EAST_REGION);
+    assert_eq!(
+        transfer.riding.map(|riding| riding.vehicle),
+        Some(beyond.key)
+    );
+
+    let output = east.tick(&TickInputs {
+        player_changes: vec![arrive(&transfer)],
+        ..TickInputs::default()
+    });
+    assert_eq!(rides(&output), [Some(beyond.key)], "told they ride");
+    assert_eq!(passengers_reported(&output, beyond.key), [vec![rider]]);
+    let seats = seats(&east, beyond.key);
+    assert_eq!(seats.len(), 1);
+    assert_eq!(seats[0].pending, None, "the seat is taken");
 }

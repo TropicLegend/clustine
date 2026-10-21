@@ -1486,6 +1486,7 @@ impl Region {
             EntityUse::Blasted { .. }
             | EntityUse::BreedAsk { .. }
             | EntityUse::MobHit { .. }
+            | EntityUse::SeatDeclined { .. }
             | EntityUse::BreedAnswer { .. } => {}
         }
     }
