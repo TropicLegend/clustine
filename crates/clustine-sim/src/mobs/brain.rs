@@ -14,7 +14,21 @@
 //! nothing.
 
 pub(crate) mod activity;
+#[allow(
+    dead_code,
+    reason = "the shared behaviours the types of N7j's parts build their brains of"
+)]
+pub(crate) mod behaviours;
+#[cfg(test)]
+mod behaviours_tests;
 pub(crate) mod memory;
+#[allow(
+    dead_code,
+    reason = "the sensors the types of N7j's parts build their brains of"
+)]
+pub(crate) mod sensors;
+#[cfg(test)]
+mod sensors_tests;
 #[cfg(test)]
 mod tests;
 

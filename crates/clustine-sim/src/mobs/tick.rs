@@ -144,10 +144,6 @@ pub(crate) enum Local {
     /// the writer, as in the game. **Named**: a mob in a copy is not written; across a
     /// line the breeding protocol holds instead (`docs/groundwork/n7j-plan.md`, section 3
     /// item 4).
-    #[allow(
-        dead_code,
-        reason = "made by the brains' shared behaviours (N7j part A)"
-    )]
     SetMemories {
         key: EntityId,
         writes: Vec<crate::mobs::brain::MemoryWrite>,
@@ -236,7 +232,6 @@ impl MobTick<'_> {
     /// read at `pos`: nothing where it is not a door or is already so; otherwise the
     /// sound's pitch drawn from the mob's stream, where the game's level draws it, and
     /// the door set by the region after the tick ([`Local::OpenDoor`]).
-    #[allow(dead_code, reason = "called by `InteractWithDoor` (N7j part A)")]
     pub(crate) fn set_door_open(&mut self, pos: BlockPos, state: BlockState, open: bool) {
         // Only a door has a hinge among the blocks that open.
         if state.property("hinge").is_none() || clustine_blocks::data::flag(state, "open") == open {
