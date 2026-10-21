@@ -104,6 +104,9 @@ struct Toys {
     failing: BTreeSet<ChunkPos>,
     /// Positions whose chunks come out marked "with a failure".
     marked: BTreeSet<ChunkPos>,
+    /// Positions whose chunks come out with an animal of a generated key
+    /// ([`generated_animal`]).
+    animated: BTreeSet<ChunkPos>,
     /// The requests that are held, in the order they came.
     waiting: Vec<Waiting>,
     numbered: u64,
@@ -142,11 +145,11 @@ impl Control {
         if toys.failing.contains(&position) {
             return Err(Failed);
         }
-        Ok(made(
-            position,
-            self.version,
-            toys.marked.contains(&position),
-        ))
+        let mut chunk = made(position, self.version, toys.marked.contains(&position));
+        if toys.animated.contains(&position) {
+            chunk.set_entities(vec![generated_animal(position)]);
+        }
+        Ok(chunk)
     }
 
     /// Answers every request for `position` that is held, and every later one at once.
@@ -1700,4 +1703,114 @@ fn a_stored_chunk_with_entities_is_made_again_with_its_entities_kept() {
     assert_eq!(control.entered(A), 1);
     store.close().unwrap();
     assert_eq!(stored(&disk, A), Some(remade));
+}
+
+/// What a generator of N7l makes in the chunk `position`: one animal (an item stands for
+/// it) keyed by its chunk, class spawn, index 0, at `hops` 0 (`docs/groundwork/n7l-plan.md`,
+/// sections 2.3 and 2.5).
+fn generated_animal(position: ChunkPos) -> clustine_world::Entity {
+    let key = clustine_world::Generated {
+        dimension: 0,
+        chunk: position,
+        structure: false,
+        index: 0,
+    }
+    .key()
+    .expect("within the border");
+    let x = f64::from(position.x * 16) + 4.5;
+    let z = f64::from(position.z * 16) + 4.5;
+    clustine_world::Entity {
+        key,
+        ..crate::entities_tests::item(1, x, z)
+    }
+}
+
+/// Commits `changes` of entities through `handle` at `tick`, and waits until it is
+/// durable.
+fn commit_entities(
+    handle: &StoreHandle,
+    tick: u64,
+    changes: Vec<(ChunkPos, clustine_world::EntityChange)>,
+) {
+    handle.request(StoreRequest::Commit {
+        tick,
+        changes: Vec::new(),
+        state: whole("delta", tick),
+        stays: Vec::new(),
+        ticks: Vec::new(),
+        marks_taken: Vec::new(),
+        seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
+        events: Vec::new(),
+        entity_changes: changes,
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
+        clock: Default::default(),
+    });
+    committed(handle, tick);
+}
+
+/// The plan's taking table, its third row (`docs/groundwork/n7l-plan.md`, section 2.5): a
+/// chunk made with an animal is taken (its `hops` raised), the animal walks into the
+/// next chunk, and the store's machine stops before the chunk's note is durable. The
+/// chunk is made again at the restore with the same animal under the same key, and the
+/// log's changes by key are replayed into it: the animal is once, where it walked.
+#[test]
+fn a_generated_animal_that_walked_off_is_once_where_it_walked_after_the_note_was_lost() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (toy, control) = toy_of(VERSION);
+    control.toys().animated.insert(A);
+    let store = store_on(&disk, toy);
+    let x = open(&store, hello(EAST, 1));
+    let a = generated(&x, A);
+    let animal = generated_animal(A);
+    assert_eq!(a.entities(), std::slice::from_ref(&animal));
+    let _b = generated(&x, B);
+    let taken = clustine_world::Entity {
+        hops: 1,
+        ..animal.clone()
+    };
+    commit_entities(
+        &x,
+        1,
+        vec![(A, clustine_world::EntityChange::Whole(taken.clone()))],
+    );
+    let walked = clustine_world::Entity {
+        position: [
+            f64::from(B.x * 16) + 2.5,
+            taken.position[1],
+            taken.position[2],
+        ],
+        ..taken.clone()
+    };
+    commit_entities(
+        &x,
+        2,
+        vec![
+            (A, clustine_world::EntityChange::Gone(animal.key)),
+            (B, clustine_world::EntityChange::Whole(walked.clone())),
+        ],
+    );
+    // The machine stops now: the commits are durable, the notes of A and B are not.
+    let left = Arc::new(disk.crashed(Survival::Nothing));
+    assert!(stored(&left, A).is_none(), "the note of A was not durable");
+    drop((x, store));
+    control.wait_gone();
+
+    let (toy, control) = toy_of(VERSION);
+    control.toys().animated.insert(A);
+    let store = store_on(&left, toy);
+    let y = open(&store, hello(EAST, 2));
+    flushed(&y);
+    load(&y, A);
+    let StoreReply::Loaded { chunk: a, .. } = answer(&y) else {
+        panic!("A is loaded")
+    };
+    assert!(a.entities().is_empty(), "{:?}", a.entities());
+    load(&y, B);
+    let StoreReply::Loaded { chunk: b, .. } = answer(&y) else {
+        panic!("B is loaded")
+    };
+    assert_eq!(b.entities(), [walked]);
 }
