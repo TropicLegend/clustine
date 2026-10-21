@@ -6,7 +6,9 @@ use clustine_data::BlockState;
 use clustine_noise::{NameHash, PositionalRandom, Random, RandomSource, WorldgenRandom};
 use clustine_terrain::biome::zoom::Zoom;
 use clustine_world::generation::{FinalHeightmap, Neighbourhood, WorldgenHeightmap};
-use clustine_world::{Biome, BlockEntity, BlockPos, InChunk, ScheduledTick, Ticked};
+use clustine_world::{
+    Biome, BlockEntity, BlockPos, ChunkPos, Entity, InChunk, ScheduledTick, Ticked,
+};
 
 use crate::settings::FeatureSettings;
 
@@ -35,6 +37,23 @@ impl Heightmap {
             _ => return None,
         })
     }
+}
+
+/// A fresh region random source of a region of world generation centred on `centre`
+/// (`WorldGenRegion.getRandom`): the world's factory for
+/// `minecraft:worldgen_region_random` at the chunk's lowest corner. A feature run
+/// starts from it, and so does the spawn of the same chunk, with a new one equal to
+/// the run's first (`docs/groundwork/n7l-plan.md`, section 3.1).
+pub fn region_random(seed: i64, legacy_random_source: bool, centre: ChunkPos) -> RandomSource {
+    let world = if legacy_random_source {
+        clustine_noise::LegacyRandom::from_seed(seed as u64).next_positional()
+    } else {
+        clustine_noise::Xoroshiro::from_seed(seed as u64).next_positional()
+    };
+    world
+        .with_hash_of(&NameHash::new("minecraft:worldgen_region_random"))
+        .next_positional()
+        .at(centre.x * 16, 0, centre.z * 16)
 }
 
 /// The world a feature reads and changes: the three by three chunks of its run.
@@ -77,17 +96,15 @@ impl<'a> Level<'a> {
     /// ([`Self::carry_region_random`]).
     pub fn region_random(&mut self, seed: i64, legacy_random_source: bool) -> &mut RandomSource {
         let centre = self.view.centre();
-        self.region_random.get_or_insert_with(|| {
-            let world = if legacy_random_source {
-                clustine_noise::LegacyRandom::from_seed(seed as u64).next_positional()
-            } else {
-                clustine_noise::Xoroshiro::from_seed(seed as u64).next_positional()
-            };
-            world
-                .with_hash_of(&NameHash::new("minecraft:worldgen_region_random"))
-                .next_positional()
-                .at(centre.x * 16, 0, centre.z * 16)
-        })
+        self.region_random
+            .get_or_insert_with(|| region_random(seed, legacy_random_source, centre))
+    }
+
+    /// Keeps an entity the feature made, without its key, as the game's
+    /// `addFreshEntity` in a region of world generation: false where the view refuses
+    /// it, outside the three by three.
+    pub fn add_entity(&mut self, entity: Entity) -> bool {
+        self.view.add_entity(entity)
     }
 
     /// Gives this level the region's random source as the feature before left it, and

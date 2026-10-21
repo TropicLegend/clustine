@@ -84,6 +84,9 @@ pub struct Recorded {
     pub far_piece_reads: u64,
     /// States set of a piece whose box spans chunks more than 2 apart.
     pub far_pieces: u64,
+    /// Entities made outside the three by three, or at a position that is not a
+    /// number, which are refused.
+    pub refused_entities: u64,
 }
 
 /// What a scheduler has done since it was made.
@@ -98,7 +101,10 @@ pub struct Figures {
     pub lit: u64,
     /// Runs made again after their result was dropped from the cache.
     pub runs_made_again: u64,
-    /// Placements that failed and tasks that failed.
+    /// Placements that failed and tasks that failed. A failed placement is also an
+    /// entity whose record could not be made, a chunk's entities of a class beyond the
+    /// 65,536 of its keys, and a spawn that panicked or made an entity outside its
+    /// chunk, each counted once for its task.
     pub failed_placements: u64,
     pub failed_tasks: u64,
     pub recorded: Recorded,

@@ -473,6 +473,7 @@ name = "clustine-world"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-noise",
  "postcard",
  "serde",
  "uuid",

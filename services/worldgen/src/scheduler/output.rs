@@ -2,13 +2,17 @@
 //! into a chunk (definition D of ADR-0021, section 2).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use clustine_data::BlockState;
-use clustine_world::generation::{PieceKey, PieceState};
-use clustine_world::{BlockEntity, Chunk, ChunkPos, InChunk, ScheduledTick, SectionLight, Ticked};
+use clustine_world::generation::{MAX_GENERATED_OF_A_CLASS, Maker, PieceKey, PieceState};
+use clustine_world::{
+    BlockEntity, Chunk, ChunkPos, Entity, Generated, InChunk, ScheduledTick, SectionLight, Ticked,
+};
 
 use super::Recorded;
+use super::view::{Context, message};
 use crate::stages::{Starts, Terrain};
 
 /// The result of a task.
@@ -18,8 +22,7 @@ pub(crate) enum Output {
     Terrain(MadeTerrain),
     Run(RunResult),
     Finished(FinishedChunk),
-    /// A lit chunk, marked as generated.
-    Lit(Chunk),
+    Lit(LitChunk),
 }
 
 /// A chunk's terrain, with the starts its references name: a run of the chunk needs
@@ -57,14 +60,29 @@ pub(crate) struct Changes {
     pub(crate) ticks: Vec<ScheduledTick>,
     /// The positions it marked, ascending.
     pub(crate) marks: Vec<InChunk>,
+    /// The entities it made whose position is in the chunk, in its order, without
+    /// their keys.
+    pub(crate) entities: Vec<Entity>,
 }
 
 /// A finished chunk: definition D, before light.
 #[derive(Debug)]
 pub(crate) struct FinishedChunk {
     pub(crate) chunk: Chunk,
-    /// Whether any of the nine runs whose changes it has, or a run they saw, failed.
+    /// Whether any of the nine runs whose changes it has, or a run they saw, failed,
+    /// or putting in its entities did.
     pub(crate) tainted: bool,
+    /// What failed in putting in its entities: each entity whose record could not be
+    /// made, and the class that had more than its keys.
+    pub(crate) failures: usize,
+}
+
+/// A lit chunk, marked as generated, with the animals of its spawn.
+#[derive(Debug)]
+pub(crate) struct LitChunk {
+    pub(crate) chunk: Chunk,
+    /// What failed of its spawn, as [`FinishedChunk::failures`] counts.
+    pub(crate) failures: usize,
 }
 
 impl Output {
@@ -96,10 +114,17 @@ impl Output {
         }
     }
 
+    pub(crate) fn lit(&self) -> &LitChunk {
+        match self {
+            Output::Lit(lit) => lit,
+            other => panic!("a lit chunk was expected, not {}", other.kind()),
+        }
+    }
+
     /// The chunk a request is answered with: a lit chunk, or a finished one.
     pub(crate) fn answer(&self) -> Chunk {
         match self {
-            Output::Lit(chunk) => chunk.clone(),
+            Output::Lit(lit) => lit.chunk.clone(),
             Output::Finished(finished) => finished.chunk.clone(),
             other => panic!("only chunks answer a request, not {}", other.kind()),
         }
@@ -134,25 +159,30 @@ impl Output {
                     .changes
                     .iter()
                     .map(|changes| {
-                        let entities: usize = changes
+                        let block_entities: usize = changes
                             .blocks
                             .iter()
                             .filter_map(|(_, _, entity)| entity.as_ref())
                             .map(|entity| entity.data.len() + 32)
                             .sum();
                         48 + changes.blocks.len() * 24
-                            + entities
+                            + block_entities
                             + changes.ticks.len() * std::mem::size_of::<ScheduledTick>()
                             + changes.marks.len() * std::mem::size_of::<InChunk>()
+                            + changes.entities.len() * ENTITY_BYTES
                     })
                     .sum();
                 changes + run.pieces.len() * 48
             }
             Output::Finished(finished) => chunk_bytes(&finished.chunk),
-            Output::Lit(chunk) => chunk_bytes(chunk),
+            Output::Lit(lit) => chunk_bytes(&lit.chunk),
         }
     }
 }
+
+/// What an entity is reckoned to take: its record, and what its data holds beside it
+/// for a mob's mind and inventories, as a guess. Enough to bound the cache.
+const ENTITY_BYTES: usize = std::mem::size_of::<Entity>() + 256;
 
 fn starts_bytes(starts: &Starts) -> usize {
     starts
@@ -164,7 +194,7 @@ fn starts_bytes(starts: &Starts) -> usize {
 
 /// A chunk's size, by the forms its sections take: one that holds one state takes
 /// next to nothing, any other a palette and its indices, which for most is four bits a
-/// block (2 KiB); the four heightmaps; block entities with their data; light.
+/// block (2 KiB); the four heightmaps; block entities with their data; entities; light.
 pub(crate) fn chunk_bytes(chunk: &Chunk) -> usize {
     const SECTION: usize = 96;
     const INDICES: usize = 2048;
@@ -186,11 +216,12 @@ pub(crate) fn chunk_bytes(chunk: &Chunk) -> usize {
             SECTION + blocks + biomes
         })
         .sum();
-    let entities: usize = chunk
+    let block_entities: usize = chunk
         .block_entities()
         .values()
         .map(|entity| 48 + entity.data.len())
         .sum();
+    let entities = chunk.entities().len() * ENTITY_BYTES;
     let light = chunk.light().map_or(0, |light| {
         light
             .sky
@@ -203,6 +234,7 @@ pub(crate) fn chunk_bytes(chunk: &Chunk) -> usize {
             .sum()
     });
     sections
+        + block_entities
         + entities
         + light
         + std::mem::size_of_val(chunk.heights())
@@ -241,10 +273,16 @@ fn tick_key(tick: &ScheduledTick) -> (i16, u8, u8, bool, u16) {
 
 /// Definition D: the terrain of `e` with what the runs within 1 of it changed in it,
 /// in ascending rank. `runs` are those runs with their positions, in ascending rank.
+///
+/// The entities the runs made in `e` are put in in the same order, and keyed there
+/// (`docs/groundwork/n7l-plan.md`, section 9 item 1): by `e`, as a structure's, with
+/// their place in that order from 0. The maker makes each one's record with its key.
 pub(crate) fn finish(
     e: ChunkPos,
     terrain: &Terrain,
     runs: &[(ChunkPos, Arc<Output>)],
+    maker: &dyn Maker,
+    context: &Context,
 ) -> FinishedChunk {
     let mut chunk = terrain.chunk.clone();
     let mut ticks = chunk.ticks().to_vec();
@@ -254,6 +292,7 @@ pub(crate) fn finish(
     let mut scheduled: BTreeSet<_> = ticks.iter().map(tick_key).collect();
     let mut marks = chunk.marks().to_vec();
     let mut tainted = false;
+    let mut made = Vec::new();
     for (d, run) in runs {
         let run = run.run();
         let index =
@@ -266,9 +305,87 @@ pub(crate) fn finish(
             }
         }
         marks.extend_from_slice(&changes.marks);
+        made.extend(changes.entities.iter().cloned());
         tainted |= run.tainted;
     }
     chunk.set_ticks(ticks);
     chunk.set_marks(marks);
-    FinishedChunk { chunk, tainted }
+    let failures = add_keyed(&mut chunk, e, true, made, maker, context);
+    FinishedChunk {
+        chunk,
+        tainted: tainted || failures > 0,
+        failures,
+    }
+}
+
+/// Keys `made`, the entities of one class in `chunk` at `position` in the order they
+/// were made, by the chunk and their place in that order from 0, has the maker make
+/// their records with their keys, and adds them to the chunk. Returns what failed: one
+/// for each entity whose record could not be made, which is left out, and one if there
+/// were more than a class has keys, the rest of which are left out.
+pub(crate) fn add_keyed(
+    chunk: &mut Chunk,
+    position: ChunkPos,
+    structure: bool,
+    made: Vec<Entity>,
+    maker: &dyn Maker,
+    context: &Context,
+) -> usize {
+    if made.is_empty() {
+        return 0;
+    }
+    let class = if structure {
+        "a structure's"
+    } else {
+        "the spawn's"
+    };
+    let mut failures = 0;
+    let mut entities = chunk.entities().to_vec();
+    let count = made.len();
+    for (index, entity) in made.into_iter().enumerate() {
+        let Ok(index) = u16::try_from(index) else {
+            failures += 1;
+            tracing::error!(
+                identity = %context.identity,
+                version = context.version,
+                dimension = context.dimension,
+                chunk = ?position,
+                made = count,
+                "a chunk would get more entities of {class} than it has keys for, and gets only the first {MAX_GENERATED_OF_A_CLASS}"
+            );
+            break;
+        };
+        let generated = Generated {
+            dimension: context.dimension_number,
+            chunk: position,
+            structure,
+            index,
+        };
+        // A chunk beyond the game's border is never generated by the game, and
+        // nothing is made there (section 9 item 8).
+        let Some(key) = generated.key() else {
+            tracing::warn!(
+                chunk = ?position,
+                "an entity of a chunk beyond the world's border is not made"
+            );
+            continue;
+        };
+        match catch_unwind(AssertUnwindSafe(|| maker.record(key, entity))) {
+            Ok(record) => entities.push(record),
+            Err(payload) => {
+                failures += 1;
+                tracing::error!(
+                    identity = %context.identity,
+                    version = context.version,
+                    dimension = context.dimension,
+                    chunk = ?position,
+                    index,
+                    message = %message(&*payload),
+                    "the record of an entity of {class} could not be made, and it is left out"
+                );
+            }
+        }
+    }
+    chunk.set_entities(entities);
+    failures
 }

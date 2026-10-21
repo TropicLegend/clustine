@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use clustine_data::{BlockState, DIMENSION_TYPES, DimensionType, blocks};
 use clustine_world::generation::{
-    BlockBox, FinalHeightmap, GeneratorSettings, Neighbourhood, PieceKey, PieceState, Placing,
-    StartRef, WorldgenHeightmap,
+    BlockBox, FinalHeightmap, GeneratorSettings, MAX_GENERATED_OF_A_CLASS, Maker, Neighbourhood,
+    PieceKey, PieceState, Placing, StartRef, WorldgenHeightmap,
 };
 use clustine_world::{
-    BLOCKS_PER_SECTION, Biome, BlockEntity, BlockPos, Chunk, ChunkGenerator, ChunkPos, InChunk,
-    SECTION_SIZE, ScheduledTick, Section, Ticked,
+    BLOCKS_PER_SECTION, Biome, BlockEntity, BlockPos, Chunk, ChunkGenerator, ChunkPos, Entity,
+    EntityData, EntityId, Generated, InChunk, ItemStack, SECTION_SIZE, ScheduledTick, Section,
+    Ticked,
 };
 
 use super::lattice::{Key, around, rank};
@@ -53,6 +54,88 @@ struct Toy {
     probe: bool,
     /// The starts and terrain made, for counting.
     made: Option<Arc<Mutex<Vec<Key>>>>,
+    /// Runs make the entities of [`toy_entities`], and the doomed placement makes two
+    /// before it panics.
+    entities: bool,
+    /// The run of this chunk makes 65,537 entities in its centre.
+    crowd_at: Option<ChunkPos>,
+    /// The spawn makes this many animals in every chunk ([`toy_spawned`]).
+    spawns: usize,
+    spawn_panics_at: Option<ChunkPos>,
+    /// The spawn also makes an animal in the chunk to the east of its own.
+    spawn_strays: bool,
+}
+
+/// The toy's maker: it keys an entity, and draws its fall distance from the stream of
+/// its key, as a real maker draws a UUID.
+struct ToyMaker;
+
+impl Maker for ToyMaker {
+    fn record(&self, key: EntityId, mut entity: Entity) -> Entity {
+        entity.key = key;
+        entity.fall_distance = (mix(key.0, 5) % 1024) as f64;
+        entity
+    }
+}
+
+/// An entity of the toy at `at`, which says in its motion who made it: the run's or
+/// the spawn's centre, and its place among what that made.
+fn toy_entity(at: [f64; 3], made_by: ChunkPos, place: usize) -> Entity {
+    Entity {
+        key: EntityId(0),
+        kind: 72,
+        uuid: Default::default(),
+        position: at,
+        motion: [f64::from(made_by.x), f64::from(made_by.z), place as f64],
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: false,
+        hops: 0,
+        lived: 0,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: EntityData::Item {
+            stack: ItemStack { item: 1, count: 1 },
+            pick_up_delay: 0,
+            thrower: None,
+            health: 5,
+            age_offset: 0,
+        },
+    }
+}
+
+/// A position in the chunk `dx`, `dz` from `centre`, drawn for `place`.
+fn toy_position(centre: ChunkPos, dx: i32, dz: i32, place: u64) -> [f64; 3] {
+    let random = of_chunk(centre, 3000 + place);
+    [
+        f64::from((centre.x + dx) * 16) + (random % 160) as f64 / 10.0,
+        70.0,
+        f64::from((centre.z + dz) * 16) + ((random >> 16) % 160) as f64 / 10.0,
+    ]
+}
+
+/// What the run of `centre` makes when the toy makes entities: two in the centre,
+/// one in the chunk to its east and one to its north-west, in this order.
+fn toy_entities(centre: ChunkPos) -> Vec<Entity> {
+    [(0, 0), (1, 0), (-1, -1), (0, 0)]
+        .into_iter()
+        .enumerate()
+        .map(|(place, (dx, dz))| {
+            toy_entity(toy_position(centre, dx, dz, place as u64), centre, place)
+        })
+        .collect()
+}
+
+/// What the spawn of `position` makes, `count` of them, all in its chunk.
+fn toy_spawned(position: ChunkPos, count: usize) -> Vec<Entity> {
+    (0..count)
+        .map(|place| {
+            let at = toy_position(position, 0, 0, 500 + place as u64);
+            toy_entity(at, position, 100 + place)
+        })
+        .collect()
 }
 
 const STRUCTURE: &str = "toy:hut";
@@ -253,6 +336,31 @@ impl Stages for Toy {
                 panic!("the doomed feature fails after it wrote");
             });
             assert!(!kept);
+            if self.entities {
+                let kept = view.attempt(Placing::Feature("toy:doomed_animals"), &mut |view| {
+                    let first = toy_entity(toy_position(centre, 0, 0, 90), centre, 99);
+                    let second = toy_entity(toy_position(centre, -1, 0, 91), centre, 99);
+                    assert!(view.add_entity(first));
+                    assert!(view.add_entity(second));
+                    panic!("the doomed animals fail after they were made");
+                });
+                assert!(!kept);
+            }
+        }
+        if self.entities {
+            view.attempt(Placing::Feature("toy:animals"), &mut |view| {
+                for entity in toy_entities(centre) {
+                    assert!(view.add_entity(entity));
+                }
+            });
+        }
+        if self.crowd_at == Some(centre) {
+            view.attempt(Placing::Feature("toy:crowd"), &mut |view| {
+                let at = toy_position(centre, 0, 0, 0);
+                for place in 0..=MAX_GENERATED_OF_A_CLASS {
+                    assert!(view.add_entity(toy_entity(at, centre, place)));
+                }
+            });
         }
         // A chest with data, beside the centre's middle.
         let random = of_chunk(centre, 77);
@@ -290,6 +398,29 @@ impl Stages for Toy {
             }
         }
     }
+
+    fn spawn(&self, position: ChunkPos, lit: &Chunk, nine: [&Chunk; 9]) -> Vec<Entity> {
+        assert!(lit.light().is_some(), "the spawn is handed the lit chunk");
+        assert!(
+            lit.shows_the_same(nine[4]),
+            "the centre is the fifth of the nine"
+        );
+        assert_ne!(
+            Some(position),
+            self.spawn_panics_at,
+            "the toy's spawn fails"
+        );
+        let mut spawned = toy_spawned(position, self.spawns);
+        if self.spawn_strays {
+            let at = toy_position(position, 1, 0, 600);
+            spawned.push(toy_entity(at, position, 200));
+        }
+        spawned
+    }
+
+    fn maker(&self) -> &dyn Maker {
+        &ToyMaker
+    }
 }
 
 /// What the probe does: one of each thing the recorder counts, each once per run.
@@ -324,6 +455,9 @@ fn probe(view: &mut dyn Neighbourhood, centre: ChunkPos) {
         piece: 0,
     };
     assert_eq!(view.piece(piece), PieceState::default());
+    // An entity in the ring, refused.
+    let far = [f64::from(east + 17) + 0.5, -60.0, f64::from(north) + 0.5];
+    assert!(!view.add_entity(toy_entity(far, centre, 0)));
 }
 
 fn options(threads: usize) -> Options {
@@ -920,6 +1054,8 @@ fn the_recorder_counts_each_read_and_write_beyond_what_a_run_may() {
     assert_eq!(recorded.far_piece_reads, runs);
     // The far piece is set by the runs whose centre references a start.
     assert!(recorded.far_pieces > 0 && recorded.far_pieces <= runs);
+    assert_eq!(recorded.refused_entities, runs);
+    assert!(scheduler.finished(at).unwrap().entities().is_empty());
 }
 
 #[test]
@@ -949,4 +1085,249 @@ fn a_dropped_scheduler_ends_its_threads_with_requests_under_way() {
         .collect();
     drop(scheduler);
     drop(wanted);
+}
+
+/// What definition D says a finished chunk at `e` has of the runs' entities: for each
+/// run within 1 of `e` in ascending rank, the entities it made whose position is in
+/// `e`, in its order; each keyed by `e` as a structure's, by its place in that list
+/// from 0, and its record made by the maker with that key.
+fn definition_d_entities(e: ChunkPos) -> Vec<Entity> {
+    let mut runs: Vec<ChunkPos> = around(e, 1).collect();
+    runs.sort_by_key(|d| rank(*d));
+    let landed: Vec<Entity> = runs
+        .into_iter()
+        .flat_map(toy_entities)
+        .filter(|entity| entity.chunk() == e)
+        .collect();
+    keyed(e, true, landed)
+}
+
+/// `made` keyed in `chunk` in their order, of the class `structure`, their records made
+/// by the toy's maker, ascending by key as a chunk keeps them.
+fn keyed(chunk: ChunkPos, structure: bool, made: Vec<Entity>) -> Vec<Entity> {
+    let mut records: Vec<Entity> = made
+        .into_iter()
+        .enumerate()
+        .map(|(index, entity)| {
+            let key = Generated {
+                dimension: 0,
+                chunk,
+                structure,
+                index: index as u16,
+            }
+            .key()
+            .unwrap();
+            ToyMaker.record(key, entity)
+        })
+        .collect();
+    records.sort_by_key(|entity| entity.key);
+    records
+}
+
+fn with_entities() -> Toy {
+    Toy {
+        entities: true,
+        ..Toy::default()
+    }
+}
+
+#[test]
+fn a_run_s_entities_are_put_in_the_chunk_they_land_in_in_rank_order_and_keyed_there() {
+    let scheduler = Scheduler::new(with_entities(), options(4));
+    let mut from_several_runs = 0;
+    for e in around(ChunkPos::new(0, 0), 2) {
+        let finished = scheduler.finished(e).unwrap();
+        assert_eq!(finished.entities(), definition_d_entities(e), "{e:?}");
+        // Two of the run of `e` itself, and one from each of two neighbours' runs.
+        assert_eq!(finished.entities().len(), 4, "{e:?}");
+        let makers: BTreeSet<(i64, i64)> = finished
+            .entities()
+            .iter()
+            .map(|entity| (entity.motion[0] as i64, entity.motion[1] as i64))
+            .collect();
+        if makers.len() > 1 {
+            from_several_runs += 1;
+        }
+        for entity in finished.entities() {
+            let named = Generated::of(entity.key).unwrap();
+            assert_eq!((named.chunk, named.structure), (e, true));
+            assert_eq!(entity.chunk(), e);
+        }
+    }
+    assert_eq!(from_several_runs, 25);
+    assert_eq!(scheduler.figures().recorded, Recorded::default());
+    assert_eq!(scheduler.figures().failed_placements, 0);
+}
+
+#[test]
+fn the_entities_of_a_chunk_made_twice_or_in_any_order_have_the_same_keys_and_records() {
+    let positions: Vec<ChunkPos> = around(ChunkPos::new(-4, 5), 1).collect();
+    let lit = |options: Options| -> BTreeMap<ChunkPos, Vec<Entity>> {
+        let toy = Toy {
+            spawns: 2,
+            ..with_entities()
+        };
+        let scheduler = Scheduler::new(toy, options);
+        positions
+            .iter()
+            .map(|at| (*at, scheduler.generate(*at).entities().to_vec()))
+            .collect()
+    };
+    let one = lit(options(1));
+    assert!(one.values().all(|entities| entities.len() == 4 + 2));
+    assert_eq!(one, lit(options(8)));
+    assert_eq!(
+        one,
+        lit(Options {
+            pick: Pick::Shuffled(0x5eed),
+            ..options(3)
+        })
+    );
+    assert_eq!(
+        one,
+        lit(Options {
+            pick: Pick::Shuffled(7),
+            cache_bytes: Some(0),
+            look_ahead: true,
+            ..options(2)
+        })
+    );
+    // Made twice by one scheduler that keeps nothing.
+    let scheduler = Scheduler::new(
+        with_entities(),
+        Options {
+            cache_bytes: Some(0),
+            ..options(2)
+        },
+    );
+    let at = ChunkPos::new(-4, 5);
+    let first = scheduler.generate(at);
+    scheduler.wait_idle();
+    let finished = scheduler.figures().finished;
+    let again = scheduler.generate(at);
+    assert!(scheduler.figures().finished > finished, "made again");
+    assert_eq!(first.entities(), again.entities());
+    assert_eq!(first.entities(), definition_d_entities(at));
+}
+
+#[test]
+fn an_entity_made_in_an_attempt_that_panics_is_undone_and_its_index_given_back() {
+    let doomed = ChunkPos::new(2, 0);
+    let toy = Toy {
+        doomed_at: Some(doomed),
+        ..with_entities()
+    };
+    let without = Toy {
+        without_doomed: true,
+        ..toy.clone()
+    };
+    let failing = Scheduler::new(toy, options(4));
+    let reference = Scheduler::new(without, options(4));
+    for e in around(doomed, 1) {
+        let made = failing.finished(e).unwrap();
+        // The animals of the doomed run's later placement take the places the undone
+        // ones had: the same keys as if they had never been made.
+        assert_eq!(made.entities(), reference.finished(e).unwrap().entities());
+        assert_eq!(made.entities(), definition_d_entities(e), "{e:?}");
+        assert!(
+            made.entities()
+                .iter()
+                .all(|entity| entity.motion[2] != 99.0)
+        );
+    }
+    // The block placement and the animals' placement.
+    assert_eq!(failing.figures().failed_placements, 2);
+}
+
+#[test]
+fn a_chunk_that_would_get_a_65_537th_entity_of_a_class_gets_no_more_and_is_marked() {
+    let crowded = ChunkPos::new(1, 1);
+    let toy = Toy {
+        crowd_at: Some(crowded),
+        ..Toy::default()
+    };
+    let scheduler = Scheduler::new(toy, options(2));
+    let lit = scheduler.generate(crowded);
+    assert_eq!(lit.entities().len(), MAX_GENERATED_OF_A_CLASS);
+    assert!(lit.with_failure());
+    // The first 65,536 in their order, each at its place: the last made is the one left
+    // out.
+    let indices: BTreeSet<u16> = lit
+        .entities()
+        .iter()
+        .map(|entity| {
+            let named = Generated::of(entity.key).unwrap();
+            assert_eq!((named.chunk, named.structure), (crowded, true));
+            assert_eq!(entity.motion[2], f64::from(named.index));
+            named.index
+        })
+        .collect();
+    assert_eq!(indices.len(), MAX_GENERATED_OF_A_CLASS);
+    let figures = scheduler.figures();
+    assert_eq!(figures.failed_tasks, 0);
+    assert_eq!(figures.failed_placements, 1);
+}
+
+#[test]
+fn the_spawn_s_animals_are_keyed_as_the_spawn_s_in_their_chunk_after_the_runs_entities() {
+    let toy = Toy {
+        spawns: 3,
+        ..with_entities()
+    };
+    let scheduler = Scheduler::new(toy, options(3));
+    for at in [ChunkPos::new(0, 0), ChunkPos::new(-7, 3)] {
+        let lit = scheduler.generate(at);
+        let (runs, spawned): (Vec<Entity>, Vec<Entity>) = lit
+            .entities()
+            .iter()
+            .cloned()
+            .partition(|entity| Generated::of(entity.key).unwrap().structure);
+        assert_eq!(runs, scheduler.finished(at).unwrap().entities());
+        assert_eq!(runs, definition_d_entities(at));
+        // Indices from 0 in the order the stage made them, whatever the runs made.
+        assert_eq!(spawned, keyed(at, false, toy_spawned(at, 3)));
+        assert!(!lit.with_failure());
+    }
+    assert_eq!(scheduler.figures().failed_placements, 0);
+}
+
+#[test]
+fn a_spawn_that_panics_fails_no_lit_task_and_leaves_its_chunk_marked_with_the_runs_entities() {
+    let broken = ChunkPos::new(3, -2);
+    let toy = Toy {
+        spawns: 2,
+        spawn_panics_at: Some(broken),
+        ..with_entities()
+    };
+    let scheduler = Scheduler::new(toy, options(3));
+    let lit = scheduler.generate(broken);
+    assert!(lit.with_failure());
+    assert_eq!(
+        lit.entities(),
+        scheduler.finished(broken).unwrap().entities()
+    );
+    assert_eq!(lit.entities(), definition_d_entities(broken));
+    assert!(lit.light().is_some());
+    // Its neighbour is lit from the same finished chunks and spawns as ever.
+    let neighbour = scheduler.generate(ChunkPos::new(4, -2));
+    assert!(!neighbour.with_failure());
+    assert_eq!(neighbour.entities().len(), 4 + 2);
+    let figures = scheduler.figures();
+    assert_eq!(figures.failed_tasks, 0);
+    assert_eq!(figures.failed_placements, 1);
+}
+
+#[test]
+fn a_spawn_s_animal_outside_its_chunk_is_left_out_and_the_chunk_marked() {
+    let toy = Toy {
+        spawns: 1,
+        spawn_strays: true,
+        ..Toy::default()
+    };
+    let scheduler = Scheduler::new(toy, options(2));
+    let at = ChunkPos::new(5, 5);
+    let lit = scheduler.generate(at);
+    assert_eq!(lit.entities(), keyed(at, false, toy_spawned(at, 1)));
+    assert!(lit.with_failure());
+    assert_eq!(scheduler.figures().failed_placements, 1);
 }

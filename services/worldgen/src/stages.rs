@@ -4,11 +4,11 @@
 
 use clustine_data::DimensionType;
 use clustine_world::generation::{
-    BlockBox, GeneratorSettings, Neighbourhood, PieceState, StartRef,
+    BlockBox, GeneratorSettings, KeyOnly, Maker, Neighbourhood, PieceState, StartRef,
 };
-use clustine_world::{COLUMNS_PER_CHUNK, Chunk, ChunkPos};
+use clustine_world::{COLUMNS_PER_CHUNK, Chunk, ChunkPos, Entity};
 
-/// A generator's four stages. Every one is a function of the settings and of what it
+/// A generator's five stages. Every one is a function of the settings and of what it
 /// is handed: no clock, no thread, no earlier call.
 pub trait Stages: Send + Sync + 'static {
     fn settings(&self) -> GeneratorSettings;
@@ -25,6 +25,21 @@ pub trait Stages: Send + Sync + 'static {
     /// One feature run: structures and features of `centre`, in the game's steps,
     /// each placement in an `attempt` of the view.
     fn decorate(&self, view: &mut dyn Neighbourhood, centre: ChunkPos);
+    /// The animals of a chunk, as the game's `spawn` step makes them after its light
+    /// (`docs/groundwork/n7l-plan.md`, section 2.1): from the lit chunk at `position`
+    /// and the nine finished chunks around it, in the order of `lattice::around` (the
+    /// centre fifth). Each without its key, which is the scheduler's to give; one that
+    /// is not in the chunk at `position` is refused. None by default.
+    fn spawn(&self, position: ChunkPos, lit: &Chunk, nine: [&Chunk; 9]) -> Vec<Entity> {
+        let _ = (position, lit, nine);
+        Vec::new()
+    }
+    /// What makes the records of the entities the runs and the spawn make, once they
+    /// are keyed, and what the runs make them with: by default a maker that only keys
+    /// them, for stages that make none.
+    fn maker(&self) -> &dyn Maker {
+        &KeyOnly
+    }
 }
 
 /// The starts of the source chunks around a chunk whose terrain is made.

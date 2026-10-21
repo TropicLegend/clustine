@@ -485,8 +485,14 @@ impl Graph {
                 figures.failed_placements += run.failures as u64;
                 add(&mut figures.recorded, &run.recorded);
             }
-            Key::Finished(_) => figures.finished += 1,
-            Key::Lit(_) => figures.lit += 1,
+            Key::Finished(_) => {
+                figures.finished += 1;
+                figures.failed_placements += output.finished().failures as u64;
+            }
+            Key::Lit(_) => {
+                figures.lit += 1;
+                figures.failed_placements += output.lit().failures as u64;
+            }
         }
     }
 
@@ -587,6 +593,7 @@ fn add(sum: &mut Recorded, run: &Recorded) {
     sum.dropped += run.dropped;
     sum.far_piece_reads += run.far_piece_reads;
     sum.far_pieces += run.far_pieces;
+    sum.refused_entities += run.refused_entities;
 }
 
 /// Splitmix64: a seeded source for the shuffled pick, of the scheduler's own so that a

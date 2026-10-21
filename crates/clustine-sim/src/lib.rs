@@ -22,6 +22,7 @@
 //! crate enforces part of that.
 
 pub mod api;
+pub mod generation;
 mod living;
 pub(crate) mod menus;
 mod mobs;

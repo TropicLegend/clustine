@@ -12,7 +12,7 @@ use clustine_world::generation::{
     WorldgenHeightmap,
 };
 use clustine_world::{
-    Biome, BlockEntity, BlockPos, Chunk, ChunkPos, InChunk, SECTION_SIZE, ScheduledTick,
+    Biome, BlockEntity, BlockPos, Chunk, ChunkPos, Entity, InChunk, SECTION_SIZE, ScheduledTick,
 };
 
 use super::Recorded;
@@ -34,6 +34,8 @@ pub(crate) struct Context {
     pub(crate) identity: String,
     pub(crate) version: u16,
     pub(crate) dimension: &'static str,
+    /// The dimension's number in a generated entity's key.
+    pub(crate) dimension_number: u8,
 }
 
 /// How many events a recorder keeps beside its counts.
@@ -47,7 +49,7 @@ struct Event {
     placing: Option<Placing>,
 }
 
-/// Six counts and the first sixteen events of a run. It never panics.
+/// Seven counts and the first sixteen events of a run. It never panics.
 #[derive(Debug, Clone, Default)]
 struct Recorder {
     counts: Recorded,
@@ -63,6 +65,7 @@ enum Noted {
     Dropped,
     FarPieceRead,
     FarPiece,
+    RefusedEntity,
 }
 
 impl Recorder {
@@ -74,6 +77,7 @@ impl Recorder {
             Noted::Dropped => (&mut self.counts.dropped, "a dropped tick or mark"),
             Noted::FarPieceRead => (&mut self.counts.far_piece_reads, "a far piece read"),
             Noted::FarPiece => (&mut self.counts.far_pieces, "a far piece"),
+            Noted::RefusedEntity => (&mut self.counts.refused_entities, "a refused entity"),
         };
         *count = count.saturating_add(1);
         if self.events.len() < EVENTS {
@@ -124,6 +128,10 @@ enum Undo {
         index: usize,
         at: InChunk,
     },
+    /// An entity was added last to the live chunk `index`'s list.
+    Entity {
+        index: usize,
+    },
     Piece {
         piece: PieceKey,
         old: Option<PieceState>,
@@ -159,6 +167,8 @@ struct View<'a> {
     touched: Vec<BTreeSet<InChunk>>,
     ticks: Vec<Vec<ScheduledTick>>,
     marks: Vec<BTreeSet<InChunk>>,
+    /// The entities the run made, by the chunk of their position, in the order made.
+    entities: Vec<Vec<Entity>>,
     recorder: Recorder,
     failures: usize,
     /// Kept only while an attempt is under way.
@@ -214,6 +224,7 @@ pub(crate) fn run<S: Stages>(
         touched: vec![BTreeSet::new(); 9],
         ticks: vec![Vec::new(); 9],
         marks: vec![BTreeSet::new(); 9],
+        entities: vec![Vec::new(); 9],
         recorder: Recorder::default(),
         failures: 0,
         undo: Vec::new(),
@@ -420,6 +431,9 @@ impl View<'_> {
                 Undo::Mark { index, at } => {
                     self.marks[index].remove(&at);
                 }
+                Undo::Entity { index } => {
+                    self.entities[index].pop();
+                }
                 Undo::Piece { piece, old } => match old {
                     Some(state) => {
                         self.pieces.insert(piece, state);
@@ -457,6 +471,7 @@ impl View<'_> {
                 "a run read or wrote beyond what it may"
             );
         }
+        let mut entities = self.entities;
         let changes = (0..9)
             .map(|index| {
                 let chunk = &self.live[index];
@@ -473,6 +488,7 @@ impl View<'_> {
                     blocks,
                     ticks: self.ticks[index].clone(),
                     marks: self.marks[index].iter().copied().collect(),
+                    entities: std::mem::take(&mut entities[index]),
                 }
             })
             .collect();
@@ -633,6 +649,37 @@ impl Neighbourhood for View<'_> {
                 at: position,
             });
         }
+    }
+
+    /// Kept in the changes of the chunk its position is in. The attempt it was made in
+    /// takes it back off if it panics, so that the next entity of that chunk takes its
+    /// place. Its key is given in definition D.
+    fn add_entity(&mut self, entity: Entity) -> bool {
+        let [x, y, z] = entity.position;
+        // Where the recorder says it was: the block it is in, or the origin for a
+        // position that is not a number.
+        let block = if entity.position.iter().all(|value| value.is_finite()) {
+            Some(BlockPos::new(
+                x.floor() as i32,
+                y.floor() as i32,
+                z.floor() as i32,
+            ))
+        } else {
+            None
+        };
+        let place = block.map(|block| self.place(block.chunk()));
+        let Some(Place::Live(index)) = place else {
+            self.note(
+                Noted::RefusedEntity,
+                block.unwrap_or(BlockPos::new(0, 0, 0)),
+            );
+            return false;
+        };
+        self.entities[index].push(entity);
+        if self.attempts > 0 {
+            self.undo.push(Undo::Entity { index });
+        }
+        true
     }
 
     fn starts(&self) -> &[StartRef] {

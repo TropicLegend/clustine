@@ -7,12 +7,12 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak, mpsc};
 use std::thread::JoinHandle;
 
 use clustine_light::{Around, Scratch, Unlisted};
-use clustine_world::generation::{Done, Failed, GeneratorSettings, Wanted};
-use clustine_world::{Chunk, ChunkGenerator, ChunkPos};
+use clustine_world::generation::{Done, Failed, GeneratorSettings, Wanted, dimension_number};
+use clustine_world::{Chunk, ChunkGenerator, ChunkPos, Entity};
 
 use super::graph::{Answer, Graph};
 use super::lattice::{Key, around, rank};
-use super::output::{MadeTerrain, Output, finish};
+use super::output::{LitChunk, MadeTerrain, Output, add_keyed, finish};
 use super::view::{self, Context, Fetch};
 use super::{Figures, Options};
 use crate::stages::{Stages, Starts, StartsNear};
@@ -42,6 +42,7 @@ impl<S: Stages> Scheduler<S> {
             identity,
             version,
             dimension: stages.dimension().name,
+            dimension_number: dimension_number(stages.dimension().name),
         };
         let graph = Graph::new(
             options.order,
@@ -319,9 +320,15 @@ impl<S: Stages> Shared<S> {
                     .map(|(need, output)| (need.position(), Arc::clone(output)))
                     .collect();
                 runs.sort_by_key(|(d, _)| rank(*d));
-                Output::Finished(finish(e, &terrain.terrain().terrain, &runs))
+                Output::Finished(finish(
+                    e,
+                    &terrain.terrain().terrain,
+                    &runs,
+                    self.stages.maker(),
+                    &self.context,
+                ))
             }
-            Key::Lit(_) => {
+            Key::Lit(position) => {
                 // In the order of `around`, which is `Around`'s with the centre fifth.
                 let finished: Vec<_> = inputs.iter().map(|(_, output)| output.finished()).collect();
                 let centre = finished[4];
@@ -337,13 +344,68 @@ impl<S: Stages> Shared<S> {
                 light.beside = self.context.version;
                 let mut chunk = centre.chunk.clone();
                 chunk.set_light(light);
+                let nine: [&Chunk; 9] = std::array::from_fn(|index| &finished[index].chunk);
+                let failures = self.spawn(position, &mut chunk, nine);
                 // A chunk is marked if any run it depends on failed (section 5): the
-                // runs of the nine it is lit from, and the runs those saw.
-                let with_failure = finished.iter().any(|finished| finished.tainted);
+                // runs of the nine it is lit from, and the runs those saw; and if its
+                // spawn failed.
+                let with_failure = failures > 0 || finished.iter().any(|finished| finished.tainted);
                 chunk.mark_generated(self.context.version, with_failure);
-                Output::Lit(chunk)
+                Output::Lit(LitChunk { chunk, failures })
             }
         }
+    }
+
+    /// The spawn of the lit chunk at `position`, its entities keyed in it as the
+    /// spawn's after those of the runs (`docs/groundwork/n7l-plan.md`, sections 2.1 and
+    /// 2.3). A spawn that panics leaves the chunk none and fails it, but not the task
+    /// (section 9 item 3): the chunk is still made, as a placement that panics leaves
+    /// its run. Returns what failed.
+    fn spawn(&self, position: ChunkPos, chunk: &mut Chunk, nine: [&Chunk; 9]) -> usize {
+        let spawned = catch_unwind(AssertUnwindSafe(|| {
+            self.stages.spawn(position, chunk, nine)
+        }));
+        let made: Vec<Entity> = match spawned {
+            Ok(made) => made,
+            Err(payload) => {
+                tracing::error!(
+                    identity = %self.context.identity,
+                    version = self.context.version,
+                    dimension = self.context.dimension,
+                    chunk = ?position,
+                    placing = "the spawn",
+                    message = %view::message(&*payload),
+                    "a placement failed and was undone"
+                );
+                return 1;
+            }
+        };
+        // An animal of the spawn lands in its own chunk; one that does not is the
+        // stage's defect, and is left out.
+        let (inside, outside): (Vec<Entity>, Vec<Entity>) = made.into_iter().partition(|entity| {
+            entity.position.iter().all(|value| value.is_finite()) && entity.chunk() == position
+        });
+        let mut failures = 0;
+        if !outside.is_empty() {
+            failures += 1;
+            tracing::error!(
+                identity = %self.context.identity,
+                version = self.context.version,
+                dimension = self.context.dimension,
+                chunk = ?position,
+                outside = outside.len(),
+                "the spawn made entities outside its chunk, which are left out"
+            );
+        }
+        failures
+            + add_keyed(
+                chunk,
+                position,
+                false,
+                inside,
+                self.stages.maker(),
+                &self.context,
+            )
     }
 
     fn terrain(&self, position: ChunkPos, starts: BTreeMap<ChunkPos, Arc<Output>>) -> MadeTerrain {
