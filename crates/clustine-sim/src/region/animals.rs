@@ -384,7 +384,7 @@ impl Region {
         let start = own.clone();
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _constructor_yaw = own.next_float();
-        types::of(kind).construct(&mut mob, &mut own);
+        crate::mobs::brain::construct(types::of(kind), &mut mob, &mut own);
         if self.ticks_chunk(chunk) {
             self.entity_drew(key, own.draws_since(&start));
         }

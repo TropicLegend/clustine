@@ -388,6 +388,7 @@ impl Region {
                 self.entity_memory.insert(
                     before.key,
                     Memory {
+                        sensed: None,
                         supporting: body.supporting,
                         on_ground_no_blocks: body.on_ground_no_blocks,
                         last_movements: Vec::new(),

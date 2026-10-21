@@ -177,6 +177,10 @@ pub(crate) struct MobTick<'w> {
     /// the level's on its behalf among them, at their place (the plan's 7.2.8).
     pub(crate) draws: &'w mut Random,
     pub(crate) out: MobOutput,
+    /// The memories its brain's sensors rewrite whole, which the region keeps beside its
+    /// record: none since it was taken in, until its brain senses them again
+    /// (`mobs/brain.rs`).
+    pub(crate) sensed: Option<crate::mobs::brain::Sensed>,
 }
 
 /// How a player rides a mob, as its tick begins.

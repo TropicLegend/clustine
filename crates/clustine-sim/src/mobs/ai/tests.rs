@@ -31,7 +31,7 @@ const MOB_KEY: EntityId = EntityId(40);
 
 /// A plot of land: stone below y = 0, air above, with what a test puts in it; the land
 /// at and beyond x = `edge` is not held (neither land nor copy).
-pub(super) struct Plot {
+pub(crate) struct Plot {
     pub(super) blocks: BTreeMap<(i32, i32, i32), BlockState>,
     pub(super) edge: i32,
     pub(super) players: Vec<SeenPlayer>,
@@ -39,7 +39,7 @@ pub(super) struct Plot {
 }
 
 impl Plot {
-    pub(super) fn flat() -> Self {
+    pub(crate) fn flat() -> Self {
         Self {
             blocks: BTreeMap::new(),
             edge: 1 << 20,
@@ -210,18 +210,18 @@ pub(super) fn healthy_cow() -> Mob {
 
 /// One mob ticked again and again on a plot, as a region would tick it: the parts it
 /// keeps between ticks are its record, its body as its record has it.
-pub(super) struct Ticked {
-    pub(super) mob: Mob,
+pub(crate) struct Ticked {
+    pub(crate) mob: Mob,
     pub(super) living: Living,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
-    pub(super) lived: u32,
+    pub(crate) lived: u32,
     pub(super) mob_type: &'static dyn MobType,
     pub(super) seed: u64,
 }
 
 impl Ticked {
-    pub(super) fn new(plot: &Plot, mob_type: &'static dyn MobType, at: Vec3) -> Self {
+    pub(crate) fn new(plot: &Plot, mob_type: &'static dyn MobType, at: Vec3) -> Self {
         Self {
             mob: healthy_cow(),
             living: cow_body(plot, at),
@@ -234,7 +234,7 @@ impl Ticked {
     }
 
     /// The mob's stream in its next tick.
-    pub(super) fn stream(&self) -> Random {
+    pub(crate) fn stream(&self) -> Random {
         Random::of_entity(self.seed, MOB_KEY, self.lived)
     }
 
@@ -243,6 +243,7 @@ impl Ticked {
         let mut draws = self.stream();
         let start = draws.clone();
         let mut tick = MobTick {
+            sensed: None,
             ridden: Default::default(),
             key: MOB_KEY,
             kind: entity_types::COW as u16,
@@ -289,9 +290,10 @@ impl Ticked {
     }
 
     /// `f` run on the mob as its next AI step would have it, before its selectors.
-    pub(super) fn with_ai<R>(&mut self, plot: &Plot, f: impl FnOnce(&mut Ai<'_, '_>) -> R) -> R {
+    pub(crate) fn with_ai<R>(&mut self, plot: &Plot, f: impl FnOnce(&mut Ai<'_, '_>) -> R) -> R {
         let mut draws = self.stream();
         let mut tick = MobTick {
+            sensed: None,
             ridden: Default::default(),
             key: MOB_KEY,
             kind: entity_types::COW as u16,

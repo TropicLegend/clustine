@@ -135,6 +135,7 @@ fn in_tick(
     let world = Air;
     let mut stream = draws(1);
     let mut tick = MobTick {
+        sensed: None,
         ridden: Default::default(),
         key: EntityId(5),
         kind,

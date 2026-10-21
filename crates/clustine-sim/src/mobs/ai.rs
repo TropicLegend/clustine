@@ -266,6 +266,8 @@ pub(crate) struct Mind {
     pub(crate) targets: TargetSelector,
     /// The goals' parts, ascending by id, each in its goal's encoding.
     pub(crate) slots: Vec<Entry>,
+    /// The brain's parts (`mobs/brain.rs`), ascending by id, above every goal's.
+    pub(crate) brain: Vec<Entry>,
 }
 
 impl Mind {
@@ -275,7 +277,14 @@ impl Mind {
             targets: part::decode(entries)?,
             slots: entries
                 .iter()
-                .filter(|entry| entry.id >= mind_ids::FIRST_GOAL)
+                .filter(|entry| {
+                    entry.id >= mind_ids::FIRST_GOAL && entry.id < crate::mobs::brain::ids::STATE
+                })
+                .cloned()
+                .collect(),
+            brain: entries
+                .iter()
+                .filter(|entry| entry.id >= crate::mobs::brain::ids::STATE)
                 .cloned()
                 .collect(),
         })
@@ -287,6 +296,7 @@ impl Mind {
         part::put(&mut entries, &self.goals);
         part::put(&mut entries, &self.targets);
         entries.extend(self.slots.iter().cloned());
+        entries.extend(self.brain.iter().cloned());
         entries
     }
 }
@@ -755,4 +765,4 @@ pub(crate) fn update_control_flags(selector: &mut Selector, mob_controls: bool, 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

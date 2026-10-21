@@ -64,6 +64,9 @@ pub(crate) struct Memory {
     /// tick and the ghast's tick counts down (`leashes.rs`); the game does not save it, so
     /// it starts again at nothing at every take-in.
     pub(crate) leash_holder_time: i32,
+    /// A brain's sensed memories (`mobs/brain.rs`), which a take-in drops so that they
+    /// are sensed again.
+    pub(crate) sensed: Option<crate::mobs::brain::Sensed>,
 }
 
 /// What the game keeps of a boat in memory and does not save: the motion's height at
@@ -479,6 +482,7 @@ impl Region {
         self.entity_memory.insert(
             key,
             Memory {
+                sensed: None,
                 supporting: item.body.supporting,
                 on_ground_no_blocks: item.body.on_ground_no_blocks,
                 last_movements: item.last_movements.clone(),

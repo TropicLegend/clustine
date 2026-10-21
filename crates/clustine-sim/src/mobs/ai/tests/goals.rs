@@ -240,6 +240,7 @@ fn the_tempt_range_is_the_attribute_s() {
     let cow = Ticked::new(&plot, &TEMPTED, [0.5, 0.0, 0.5]);
     let mut draws = cow.stream();
     let tick = crate::mobs::tick::MobTick {
+        sensed: None,
         ridden: Default::default(),
         key: clustine_world::EntityId(40),
         kind: clustine_data::entity_types::COW as u16,

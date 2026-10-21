@@ -280,6 +280,7 @@ impl Region {
             world: &view,
             draws: &mut stream,
             out: MobOutput::default(),
+            sensed: memory.and_then(|memory| memory.sensed.clone()),
         };
         tick::tick(&mut ticking);
         let MobTick {
@@ -289,8 +290,12 @@ impl Region {
             pitch,
             mut out,
             mob_type,
+            sensed,
             ..
         } = ticking;
+        if sensed.is_some() {
+            self.entity_memory.entry(key).or_default().sensed = sensed;
+        }
         // What the type's tick does with the time a quad leashee keeps it a holder (a
         // happy ghast's `leashHolderTime`, kept in the region's memory).
         let mut holder_time = self
@@ -362,6 +367,7 @@ impl Region {
         self.entity_memory.insert(
             key,
             Memory {
+                sensed: kept.and_then(|memory| memory.sensed.clone()),
                 supporting: living.body.supporting,
                 on_ground_no_blocks: living.body.on_ground_no_blocks,
                 last_movements: living.last_movements.clone(),

@@ -165,6 +165,7 @@ fn in_tick(
     what: impl FnOnce(&mut MobTick<'_>),
 ) -> (Mob, MobOutput) {
     let mut tick = MobTick {
+        sensed: None,
         ridden: Default::default(),
         key: KEY,
         kind,

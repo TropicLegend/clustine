@@ -210,6 +210,13 @@ pub(crate) trait MobType: Sync {
         let _ = (mob, own);
     }
 
+    /// The type's brain (`makeBrain`'s provider), for a type whose AI is one
+    /// (`mobs/brain.rs`): none for the types of goals. A type with one ticks it from its
+    /// `custom_server_ai_step` by [`crate::mobs::brain::run`].
+    fn brain(&self) -> Option<&'static crate::mobs::brain::Provider> {
+        None
+    }
+
     /// The type's own `finalizeSpawn`, before `Mob`'s (the body's: the follow range's
     /// bonus and the hand), with the level's draws on the mob's behalf: its variant,
     /// its colour, a baby of a group. `Mob`'s adds nothing.

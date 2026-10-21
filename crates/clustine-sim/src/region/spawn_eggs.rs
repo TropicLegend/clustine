@@ -213,10 +213,11 @@ impl Region {
         let own_start = own.clone();
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _constructor_yaw = own.next_float();
-        // The type's constructor's own draws (a chicken's egg timer).
+        // Its brain's (`LivingEntity`'s constructor's `makeBrain`), then the type's
+        // constructor's own draws (a chicken's egg timer).
         let mob_type = types::of(kind);
         let mut mob = Mob::fresh();
-        mob_type.construct(&mut mob, &mut own);
+        crate::mobs::brain::construct(mob_type, &mut mob, &mut own);
         // The level's draws on its behalf, from the player's stream aside.
         let mut level = self.entity_stream(player_key).random;
         let level_start = level.clone();

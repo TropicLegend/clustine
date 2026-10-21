@@ -625,6 +625,7 @@ impl Region {
         self.entity_memory.insert(
             key,
             Memory {
+                sensed: None,
                 supporting: living.body.supporting,
                 on_ground_no_blocks: living.body.on_ground_no_blocks,
                 last_movements: living.last_movements.clone(),
