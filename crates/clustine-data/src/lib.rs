@@ -17,6 +17,7 @@ pub mod collisions;
 pub mod faces;
 pub mod loot;
 pub mod packed;
+pub mod spawns;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,7 @@ pub use generated::items::{ITEMS, ItemClass};
 pub use generated::path_types::PathType;
 pub use generated::registries::SYNCED_REGISTRIES;
 pub use generated::sound_events::SOUND_EVENTS;
+pub use generated::spawns::BIOME_SPAWNS;
 pub use generated::tags::TAGS;
 pub use generated::version::{
     DATA_VERSION, GAME_VERSION, PROTOCOL_VERSION, SERVER_JAR_SHA1, SERVER_JAR_SHA1_BYTES,

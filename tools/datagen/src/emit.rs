@@ -158,6 +158,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "registries",
             "sound_events",
             "sound_types",
+            "spawns",
             "tags",
             "version",
         ]),
@@ -179,6 +180,16 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "registries.rs", registries(data));
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
     add(DATA_DIR, "tags.rs", tags(data));
+    let biomes = data
+        .synced_registries
+        .iter()
+        .find(|registry| registry.name == "worldgen/biome")
+        .context("the registry of biomes is not among the synchronised ones")?;
+    add(
+        DATA_DIR,
+        "spawns.rs",
+        crate::spawns::emit(&biomes.entries, &data.entity_types, &data.worldgen)?,
+    );
 
     add(PROTOCOL_DIR, "mod.rs", modules(&["packet_ids"]));
     add(PROTOCOL_DIR, "packet_ids.rs", packet_ids(data)?);

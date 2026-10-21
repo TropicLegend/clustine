@@ -22,6 +22,7 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   registries.rs
   sound_events.rs
   sound_types.rs
+  spawns.rs
   state_path_types.bin
   state_sound_types.bin
   tags.rs
