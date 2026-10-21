@@ -454,3 +454,83 @@ async fn the_time_is_sent_like_on_the_official_server() {
     assert_eq!(clocks(&ours), clocks(&theirs));
     server.stop().await;
 }
+
+/// A question for the design of a logout on a mount
+/// (`docs/groundwork/n7h-logout-on-a-mount.md`, open question 1): whether the official
+/// server takes a pig with its lone rider out of the world when the rider leaves, and
+/// puts it back under them when they come back. Prints what a watcher and the rider are
+/// shown; asserts nothing.
+#[tokio::test]
+#[ignore = "a probe of the official server; run it by name"]
+async fn probe_a_rider_who_leaves_on_a_pig_on_the_official_server() {
+    let oracle = Oracle::start(false).await.unwrap();
+    let address = oracle.address().to_owned();
+    let (mut rider, mut watcher) = two_bots(&address).await.unwrap();
+    let (x, z) = (
+        rider.location.0.floor() as i32,
+        rider.location.2.floor() as i32,
+    );
+    let pig_count = |bot: &Bot| {
+        bot.entities
+            .values()
+            .filter(|entity| entity.kind == entity_types::PIG)
+            .count()
+    };
+    let egg = ItemStack {
+        item: items::PIG_SPAWN_EGG,
+        count: 1,
+    };
+    rider.put_in_hotbar(0, egg).await.unwrap();
+    rider.select_slot(0).await.unwrap();
+    rider
+        .use_item_on(x + 2, GROUND, z, face::TOP)
+        .await
+        .unwrap();
+    rider
+        .wait_until(PATIENCE, |bot| pig_count(bot) == 1)
+        .await
+        .unwrap();
+    let pig = rider
+        .entities
+        .values()
+        .find(|entity| entity.kind == entity_types::PIG)
+        .unwrap()
+        .entity_id;
+    let saddle = ItemStack {
+        item: items::SADDLE,
+        count: 1,
+    };
+    rider.put_in_hotbar(1, saddle).await.unwrap();
+    rider.select_slot(1).await.unwrap();
+    rider.interact(pig, [0.0, 0.5, 0.0]).await.unwrap();
+    rider.idle(Duration::from_millis(300)).await.unwrap();
+    rider.select_slot(2).await.unwrap();
+    rider.interact(pig, [0.0, 0.5, 0.0]).await.unwrap();
+    let seated = rider
+        .wait_until(Duration::from_secs(5), |bot| {
+            bot.passengers
+                .get(&pig)
+                .is_some_and(|riders| riders.contains(&bot.info.login.entity_id))
+        })
+        .await;
+    println!("seated: {seated:?}");
+    rider.close().await.unwrap();
+    drop(rider);
+    watcher.idle(Duration::from_secs(2)).await.unwrap();
+    println!(
+        "while the rider is away the watcher is shown {} pig(s)",
+        pig_count(&watcher)
+    );
+    let back = Bot::join(&address, "Builder").await.unwrap();
+    let mut back = back;
+    back.idle(Duration::from_secs(3)).await.unwrap();
+    let me = back.info.login.entity_id;
+    println!(
+        "back: shown {} pig(s); passengers {:?}; own id {me}; seated on something: {}",
+        pig_count(&back),
+        back.passengers,
+        back.passengers.values().any(|riders| riders.contains(&me))
+    );
+    watcher.idle(Duration::from_secs(1)).await.unwrap();
+    println!("the watcher is shown {} pig(s) after", pig_count(&watcher));
+}
