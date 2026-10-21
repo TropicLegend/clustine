@@ -590,6 +590,9 @@ pub enum PlayerInput {
     OpenVehicleInventory,
     /// The player asked to leave their bed (`player_command`'s `STOP_SLEEPING`).
     LeaveBed,
+    /// The player began the jump of what they ride with a charge of `power`, 0 to 100
+    /// (`player_command`'s `START_RIDING_JUMP`: a horse's jump bar).
+    RidingJump { power: i32 },
     /// The edge's link to the region was resumed, and player events may have been lost
     /// on it: the region answers with the player's menu whole, or with
     /// [`PlayerEvent::NoMenu`] (section 7 item 7). An input, so that the region stays a

@@ -500,13 +500,14 @@ pub(crate) fn base_tick(tick: &mut MobTick<'_>) {
     }
 }
 
-/// What the body's tick reads of its attributes and its type: the physics' values, its
-/// step, and which hurts its type is spared.
-fn prepare(tick: &mut MobTick<'_>) {
-    let kind = tick.kind;
-    let values = &tick.mob.body.attributes;
+/// What a living body of the type `kind` reads of its attributes `values`: the physics'
+/// values, and its step height. Its tick's, and a ridden mob's moves' and landing's.
+pub(crate) fn living_attributes(
+    kind: u16,
+    values: &Attributes,
+) -> (crate::living::Attributes, f32) {
     let value = |id: i32| values.value(kind, attribute(id));
-    tick.living.attributes = crate::living::Attributes {
+    let living = crate::living::Attributes {
         gravity: value(ids::GRAVITY),
         safe_fall_distance: value(ids::SAFE_FALL_DISTANCE),
         fall_damage_multiplier: value(ids::FALL_DAMAGE_MULTIPLIER),
@@ -516,10 +517,35 @@ fn prepare(tick: &mut MobTick<'_>) {
         bounciness: value(ids::BOUNCINESS),
         scale: value(ids::SCALE) as f32,
     };
-    tick.living.step_height = value(ids::STEP_HEIGHT) as f32;
+    (living, value(ids::STEP_HEIGHT) as f32)
+}
+
+/// Whose `causeFallDamage` a fall of the mob `mob` of the type `kind` takes: a llama's,
+/// the rest of the horse family's, or any living body's.
+pub(crate) fn landing(kind: u16, mob: &crate::mobs::Mob) -> crate::living::Landing {
+    use crate::mobs::types::{animal, equine};
+    if equine::is_llama(kind) {
+        crate::living::Landing::Llama
+    } else if equine::is_equine(kind) {
+        crate::living::Landing::Horse {
+            baby: animal::is_baby(mob),
+        }
+    } else {
+        crate::living::Landing::Living
+    }
+}
+
+/// What the body's tick reads of its attributes and its type: the physics' values, its
+/// step, and which hurts its type is spared.
+fn prepare(tick: &mut MobTick<'_>) {
+    let kind = tick.kind;
+    let (attributes, step_height) = living_attributes(kind, &tick.mob.body.attributes);
+    tick.living.attributes = attributes;
+    tick.living.step_height = step_height;
     tick.living.yaw = tick.yaw;
     let id = i32::from(kind);
     tick.living.fall_damage_immune = entity_in_tag(id, "minecraft:fall_damage_immune");
+    tick.living.landing = landing(kind, &tick.mob);
     tick.living.breathes_under_water = entity_in_tag(id, "minecraft:can_breathe_under_water");
     // `canFreeze`: not of the types that do not freeze, and wearing nothing that keeps
     // the cold off.

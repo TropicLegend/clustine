@@ -206,6 +206,11 @@ async fn pump(
                         if packet.action == player_command::STOP_SLEEPING {
                             send_input(shared, client, PlayerInput::LeaveBed).await?;
                         }
+                        // A horse's jump, which its rider's region begins.
+                        if packet.action == player_command::START_RIDING_JUMP {
+                            let power = packet.data;
+                            send_input(shared, client, PlayerInput::RidingJump { power }).await?;
+                        }
                         // Sprinting is what N5 reads of these; the rest are for what
                         // later steps bring (a horse's jump).
                         let sprint = match packet.action {

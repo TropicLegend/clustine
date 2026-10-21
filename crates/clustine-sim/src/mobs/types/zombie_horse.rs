@@ -59,6 +59,16 @@ pub(crate) fn generate_speed(r: &mut Random) -> f64 {
 pub(crate) struct ZombieHorse;
 
 impl MobType for ZombieHorse {
+    /// `AbstractHorse.getControllingPassenger`: a player first on a saddled one steers it,
+    /// whatever they hold.
+    fn steered_by(&self, mob: &Mob, _: [Option<clustine_world::ItemStack>; 2]) -> bool {
+        equine::riding::steered_by_rider(mob)
+    }
+
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        equine::riding::tick_ridden(tick, yaw, pitch);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         equine::register_goals(setup, &EQUINE);
     }

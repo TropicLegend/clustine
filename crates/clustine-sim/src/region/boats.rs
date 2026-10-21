@@ -1674,6 +1674,16 @@ impl Region {
             hurts: Vec::new(),
         };
         let mut living = crate::living::Living::new(body, kind, eye);
+        // Its own safe fall and multiplier: a horse's 6 and a half.
+        if let Ok(mob) = Mob::decode(&record.data) {
+            living.attributes =
+                crate::mobs::body::living_attributes(record.kind, &mob.body.attributes).0;
+            living.landing = crate::mobs::body::landing(record.kind, &mob);
+            living.fall_damage_immune = clustine_blocks::data::entity_in_tag(
+                i32::from(record.kind),
+                "minecraft:fall_damage_immune",
+            );
+        }
         let view = View {
             region: self,
             home: chunk,
@@ -1704,7 +1714,7 @@ impl Region {
         test_speed: bool,
     ) -> Option<Checked> {
         let info = EntityTypeInfo::of(i32::from(root.kind));
-        Mob::decode(&root.data).ok()?;
+        let mob = Mob::decode(&root.data).ok()?;
         let (width, height) = crate::mobs::types::own_size(root)
             .map_or((info.width, info.height), |size| (size.width, size.height));
         let mut body = self.living_body(root, width, height, chunk);
@@ -1712,12 +1722,9 @@ impl Region {
             .entity_memory
             .get(&root.key)
             .map_or_else(Vec::new, |memory| memory.boat.recorded.clone());
-        let attributes = crate::living::Attributes::LIVING;
-        let step = crate::mobs::body::attributes::supplied(
-            root.kind,
-            crate::mobs::body::attribute(clustine_data::attributes::STEP_HEIGHT),
-        )
-        .map_or(0.6, |value| value as f32);
+        // Its own attributes: a horse's step and gravity are its type's.
+        let (attributes, step) =
+            crate::mobs::body::living_attributes(root.kind, &mob.body.attributes);
         let bounce = Bounce {
             gravity: attributes.gravity,
             air_drag: 0.98,

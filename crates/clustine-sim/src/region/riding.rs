@@ -1009,6 +1009,53 @@ impl Region {
             }
             return on_top;
         }
+        // `AbstractHorse.getDismountLocationForPassenger`: the side of the rider's main arm
+        // (every player's is the right), then the other, each by
+        // `getDismountLocationInDirection`; failing both, the horse's own position.
+        if crate::mobs::types::equine::is_equine(vehicle.kind) {
+            let info = EntityTypeInfo::of(i32::from(vehicle.kind));
+            let rider = EntityTypeInfo::of(i32::from(passenger.kind));
+            let width = poses.first().map_or(rider.width, |pose| pose.width);
+            let bottom = vehicle.position[1];
+            let top = self.entity_box(vehicle).max[1] + 0.75;
+            let directions = crate::mobs::types::equine::riding::dismount_directions(
+                info.width,
+                width,
+                vehicle.yaw,
+                true,
+            );
+            for direction in directions {
+                let x = vehicle.position[0] + direction[0];
+                let z = vehicle.position[2] + direction[2];
+                for pose in poses {
+                    let half = f64::from(pose.width / 2.0);
+                    let bounds =
+                        Aabb::new([-half, 0.0, -half], [half, f64::from(pose.height), half]);
+                    let mut pos = physics::containing([x, bottom, z]);
+                    loop {
+                        let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+                        let floor =
+                            block_floor_height(empty_context_shape(view.state(pos)), || {
+                                empty_context_shape(view.state(below))
+                            });
+                        if f64::from(pos.y) + floor > top {
+                            break;
+                        }
+                        if is_floor_valid(floor) {
+                            let at = [x, f64::from(pos.y) + floor, z];
+                            if fits(&bounds.moved(at)) {
+                                return at;
+                            }
+                        }
+                        pos = BlockPos::new(pos.x, pos.y + 1, pos.z);
+                        if f64::from(pos.y) >= top {
+                            break;
+                        }
+                    }
+                }
+            }
+            return vehicle.position;
+        }
         // `Animal.getDismountLocationForPassenger`: the places about the mob's own block
         // by its way (`getMotionDirection`, of its yaw), for each of the rider's poses,
         // on a valid floor (climbables count) where the pose's box fits; else on top.
@@ -1166,7 +1213,21 @@ pub(crate) fn passenger_point(vehicle: &Entity, index: usize) -> Vec3 {
         [] => [0.0, f64::from(info.height), 0.0],
         points => points[index.min(points.len() - 1)],
     };
-    transform_point(scaled(vehicle, point), vehicle.yaw)
+    let seat = transform_point(scaled(vehicle, point), vehicle.yaw);
+    // `AbstractHorse.getPassengerAttachmentPoint`: a rearing horse's seat rises and goes
+    // back with it (a baby, which no one rides, would scale it).
+    if crate::mobs::types::equine::is_equine(vehicle.kind)
+        && let Ok(mob) = crate::mobs::Mob::decode(&vehicle.data)
+    {
+        let rearing = crate::mobs::types::equine::riding::passenger_offset(
+            vehicle.kind,
+            &mob,
+            1.0,
+            vehicle.yaw,
+        );
+        return std::array::from_fn(|axis| seat[axis] + rearing[axis]);
+    }
+    seat
 }
 
 /// `getVehicleAttachmentPoint(vehicle)` of `passenger`: its type's first vehicle point,

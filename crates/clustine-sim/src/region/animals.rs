@@ -250,9 +250,16 @@ impl Region {
                     self.open_mount_menu(entity.key, id, output);
                 }
             }
-            // Mounting a living mob is the riding's, which is not built yet (named in
-            // `Did::Ride`).
-            Did::Ride => {}
+            // `doPlayerRide`: the player's yaw and pitch set to the horse's, then on.
+            Did::Ride => {
+                if let Some(id) = self.player_with_entity(player)
+                    && let Some(rider) = self.players.get_mut(&id)
+                {
+                    rider.pose.yaw = entity.yaw;
+                    rider.pose.pitch = entity.pitch;
+                }
+                self.mount_player(player, entity.key, output);
+            }
             Did::HurtByPlayer { amount } => {
                 let source = DamageSource::by(
                     DamageType::PLAYER_ATTACK,

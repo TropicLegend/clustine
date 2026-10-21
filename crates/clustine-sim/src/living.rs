@@ -231,6 +231,8 @@ pub(crate) struct Living {
     pub(crate) step_height: f32,
     /// Of `#fall_damage_immune`: a fall costs it nothing and sounds of nothing.
     pub(crate) fall_damage_immune: bool,
+    /// Whose `causeFallDamage` a fall it ends takes.
+    pub(crate) landing: Landing,
     /// `canBreatheUnderwater`: under water it keeps its air.
     pub(crate) breathes_under_water: bool,
     /// Its air ran out under water in this tick (entity event 67's bubbles).
@@ -277,6 +279,7 @@ impl Living {
             yaw: 0.0,
             step_height: 0.0,
             fall_damage_immune: false,
+            landing: Landing::Living,
             breathes_under_water: false,
             drowned: false,
             travel_kind: Travel::Living,
@@ -583,18 +586,32 @@ impl Living {
     /// bed half the fall, slime and powder snow none); any other block is the default.
     pub(crate) fn landed<W: World + ?Sized>(&mut self, world: &W, distance: f64, on: BlockPos) {
         let state = world.state(on);
+        // A slime block's `fallOn` asks for the fall with a multiplier of nothing, which
+        // hurts nobody but still sounds a horse's landing.
         let (distance, multiplier) =
             if is_class(state, BlockClass::HayBlock) || is_class(state, BlockClass::HoneyBlock) {
                 (distance, 0.2_f32)
             } else if is_class(state, BlockClass::BedBlock) {
                 (distance * 0.5, 1.0)
-            } else if is_class(state, BlockClass::SlimeBlock)
-                || is_class(state, BlockClass::PowderSnowBlock)
-            {
+            } else if is_class(state, BlockClass::SlimeBlock) {
+                (distance, 0.0)
+            } else if is_class(state, BlockClass::PowderSnowBlock) {
                 return;
             } else {
                 (distance, 1.0)
             };
+        // `AbstractHorse.causeFallDamage`: above a block, its landing sound first,
+        // whatever it costs.
+        if let Landing::Horse { baby } = self.landing
+            && distance > 1.0
+        {
+            let sound = if baby {
+                sounds::ENTITY_BABY_HORSE_LAND
+            } else {
+                sounds::ENTITY_HORSE_LAND
+            };
+            self.play(sound, 0.4, 1.0);
+        }
         // `calculateFallDamage`: the fall beyond the safe distance, floored; nothing for
         // a type of `#fall_damage_immune`.
         if self.fall_damage_immune {
@@ -606,8 +623,17 @@ impl Living {
         if damage <= 0 {
             return;
         }
-        let sound = self.fall_sound(damage);
-        self.play(sound, 1.0, 1.0);
+        // A horse and a llama sound no fall of their own, only the block's; a llama is
+        // hurt only by a fall of six or more (`Llama.causeFallDamage`).
+        let hurt = match self.landing {
+            Landing::Living => {
+                let sound = self.fall_sound(damage);
+                self.play(sound, 1.0, 1.0);
+                true
+            }
+            Landing::Horse { .. } => true,
+            Landing::Llama => distance >= 6.0,
+        };
         // `playBlockFallSound`: the block a fifth below its feet.
         let below = BlockPos::new(
             physics::floor(self.body.position[0]),
@@ -624,11 +650,25 @@ impl Living {
                 sound_type.pitch * 0.75,
             );
         }
-        // `hurt(fall, damage)`, which a stand ignores.
-        if self.is_mob() {
+        // `hurt(fall, damage)`, which a stand ignores. The game's horse is hurt before its
+        // block's sound, which comes out the same: both are this tick's.
+        if self.is_mob() && hurt {
             self.hurt(Damage::Fall, damage as f32);
         }
     }
+}
+
+/// Whose `causeFallDamage` a body's landing takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Landing {
+    /// `LivingEntity`'s: the kind's fall sound, the block's, the hurt.
+    Living,
+    /// `AbstractHorse`'s: its landing sound above a block (a foal's own), the hurt and
+    /// the block's sound, no fall sound of the kind.
+    Horse { baby: bool },
+    /// `Llama`'s: no landing sound; hurt only by a fall of six or more, the block's
+    /// sound at any fall that would hurt.
+    Llama,
 }
 
 /// `computeModifiedFriction(friction, modifier)`, in floats.

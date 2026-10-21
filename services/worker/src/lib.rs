@@ -3622,7 +3622,8 @@ impl RegionRunner {
                 PlayerInput::OpenVehicleInventory
                 | PlayerInput::MenuResync
                 | PlayerInput::Punch
-                | PlayerInput::LeaveBed => return false,
+                | PlayerInput::LeaveBed
+                | PlayerInput::RidingJump { .. } => return false,
             },
             EdgeToWorker::Remote(action) => match &action.step {
                 RemoteStep::Break { position } => vec![chunk(*position)],

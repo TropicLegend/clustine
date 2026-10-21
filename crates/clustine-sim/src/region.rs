@@ -2164,6 +2164,7 @@ impl Region {
             PlayerInput::OpenVehicleInventory => self.open_vehicle_inventory(id, output),
             // `handlePlayerCommand`'s `STOP_SLEEPING` (`sleep.rs`).
             PlayerInput::LeaveBed => self.stop_sleep(id, false, true, output),
+            PlayerInput::RidingJump { power } => self.riding_jump(id, *power, output),
             PlayerInput::MenuResync => self.menu_resync(id, output),
             // `handlePunch`: the main hand swings with the attack animation of what it
             // holds, for everyone tracking the player.
@@ -3390,6 +3391,7 @@ mod tests {
     mod fluids;
     mod hanging;
     mod hoppers;
+    mod horse_riding;
     mod horses;
     mod instruments;
     mod item_physics;

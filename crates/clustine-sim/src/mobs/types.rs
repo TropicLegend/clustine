@@ -494,8 +494,7 @@ pub(crate) enum Did {
     /// `openCustomInventoryScreen(player)`: the player's menu of the mob's inventory
     /// opens (a horse's saddle, armour and chest), where the player is the region's.
     OpenInventory,
-    /// `doPlayerRide(player)`: the player gets on. **Named**: mounting a living mob is
-    /// the riding's (the lead's part of N7h), which carries it out; until then nothing.
+    /// `doPlayerRide(player)`: the player turned to the horse's way, and on.
     Ride,
 }
 

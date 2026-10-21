@@ -90,6 +90,58 @@ impl Region {
             .map(|(id, _)| *id)
     }
 
+    /// `handlePlayerCommand(START_RIDING_JUMP)` of the player `id`: with a charge above
+    /// nothing, a horse they drive that can jump (`canJump`: saddled) begins its jump
+    /// (`handleStartJump`: it may rear) and plays its jump sound (`playJumpSound`, 0.4 and
+    /// 1, its kind's own); the jump itself is the rider's client's.
+    pub(crate) fn riding_jump(&mut self, id: PlayerId, power: i32, output: &mut TickOutput) {
+        if power <= 0 {
+            return;
+        }
+        let Some(player) = self.players.get(&id) else {
+            return;
+        };
+        let Some(riding) = player.riding else {
+            return;
+        };
+        let rider = player.entity_id;
+        let Some((chunk, vehicle)) = self.find_entity(riding.vehicle) else {
+            return;
+        };
+        let vehicle = vehicle.clone();
+        if !crate::mobs::types::equine::is_equine(vehicle.kind)
+            || !self.drives_root(&vehicle, rider)
+        {
+            return;
+        }
+        let Ok(mut mob) = crate::mobs::Mob::decode(&vehicle.data) else {
+            return;
+        };
+        if !crate::mobs::types::equine::riding::can_jump(&mob) {
+            return;
+        }
+        crate::mobs::types::equine::riding::handle_start_jump(
+            vehicle.kind,
+            &mut mob,
+            vehicle.lived,
+        );
+        self.commit_mob(&vehicle, chunk, &mob, output);
+        let view = super::items::View {
+            region: &*self,
+            home: chunk,
+        };
+        let in_water = crate::physics::fluids::update(&view, &self.entity_box(&vehicle)).in_water();
+        let [x, y, z] = vehicle.position;
+        output.events.push(RegionEvent::Sound {
+            sound: crate::mobs::types::equine::riding::jump_sound(vehicle.kind, in_water),
+            source: crate::physics::item::SOUND_SOURCE_NEUTRAL,
+            position: clustine_world::Vec3::new(x, y, z),
+            volume: 0.4,
+            pitch: 1.0,
+            except: None,
+        });
+    }
+
     /// `FoodOnAStickItem.use` of the carrot on a stick `held` by the player `id`: the pig
     /// they drive boosts, unless it boosts already (`Pig.boost`, one draw of its own
     /// random); the stick takes no wear of a creative player, which every player is.

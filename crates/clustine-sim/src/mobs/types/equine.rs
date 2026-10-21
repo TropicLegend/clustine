@@ -301,6 +301,16 @@ pub(crate) mod riding {
         is_saddled(mob)
     }
 
+    /// `AbstractHorse.tickRidden`: the rider's yaw and half their pitch (`getRiddenRotation`),
+    /// each `% 360`, the body and the head turned to the yaw. Its jump is its rider's
+    /// client's (`isLocalInstanceAuthoritative`), and the server runs none of it.
+    pub(crate) fn tick_ridden(tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        tick.yaw = yaw % 360.0;
+        tick.pitch = (pitch * 0.5) % 360.0;
+        tick.mob.body.head.body_yaw = tick.yaw;
+        tick.mob.body.head.head_yaw = tick.yaw;
+    }
+
     /// `canJump()`: a saddled horse, whose rider's jump makes it rear
     /// ([`handle_start_jump`]).
     pub(crate) fn can_jump(mob: &Mob) -> bool {
@@ -356,6 +366,20 @@ pub(crate) mod riding {
             )
         };
         [escape(first), escape(second)]
+    }
+
+    /// `playJumpSound()` of a horse of the type `kind`, `in_water` where its box touches
+    /// water: the donkey's and the mule's own, a skeleton horse's in water, else the
+    /// horse's; each at 0.4 and 1.
+    pub(crate) fn jump_sound(kind: u16, in_water: bool) -> i32 {
+        match i32::from(kind) {
+            entity_types::DONKEY => clustine_data::sounds::ENTITY_DONKEY_JUMP,
+            entity_types::MULE => clustine_data::sounds::ENTITY_MULE_JUMP,
+            entity_types::SKELETON_HORSE if in_water => {
+                clustine_data::sounds::ENTITY_SKELETON_HORSE_JUMP_WATER
+            }
+            _ => clustine_data::sounds::ENTITY_HORSE_JUMP,
+        }
     }
 
     /// `handleStartJump(power)` of a saddled horse its rider jumps: `allowStandSliding`, the
