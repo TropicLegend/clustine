@@ -23,6 +23,7 @@ mod packed;
 mod reference;
 mod router;
 mod sha256;
+mod spawning;
 mod spawns;
 mod structure;
 mod sums;

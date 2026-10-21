@@ -199,9 +199,98 @@ public final class Extract {
             write(out, "router_" + file.getKey() + ".txt", file.getValue());
         }
         write(out, "spawn_rings.txt", spawnRings());
+        write(out, "valid_spawn.txt", validSpawn());
+        write(out, "dangerous_blocks.txt", dangerousBlocks());
+        write(out, "spawn_placements.txt", spawnPlacements());
         write(out, "feature_order.txt", featureOrder());
         // The game's start leaves threads behind that would keep the JVM alive.
         System.exit(0);
+    }
+
+    /// One line a block state, in id order: its id, then on whom a mob may spawn
+    /// (`BlockStateBase.isValidSpawn` of the state below, asked of every entity type):
+    /// `all`, `none`, or the entity type ids it is valid for. Asked of an empty level at
+    /// the origin, as the predicates read only the state (`docs/groundwork/n7l-plan.md`,
+    /// section 5.1, L0); one that would read its neighbours is noted by the recorder.
+    private static String validSpawn() {
+        Recorder level = new Recorder();
+        StringBuilder text = new StringBuilder();
+        int types = BuiltInRegistries.ENTITY_TYPE.size();
+        for (int id = 0; id < Block.BLOCK_STATE_REGISTRY.size(); id++) {
+            BlockState state = Block.BLOCK_STATE_REGISTRY.byId(id);
+            List<String> valid = new ArrayList<>();
+            level.reset();
+            for (int kind = 0; kind < types; kind++) {
+                EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(kind);
+                if (state.isValidSpawn(level, FIRST, type)) {
+                    valid.add(Integer.toString(kind));
+                }
+            }
+            TreeSet<String> consulted = new TreeSet<>();
+            note(consulted, "valid_spawn", level);
+            text.append(Integer.toString(id));
+            if (valid.size() == types) {
+                field(text, "all");
+            } else if (valid.isEmpty()) {
+                field(text, "none");
+            } else {
+                field(text, String.join(",", valid));
+            }
+            field(text, consulted.isEmpty() ? "-" : String.join(",", consulted));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line an entity type, in id order: its id, then the block states dangerous to
+    /// it (`EntityType.isBlockDangerous`: burning blocks unless it is fire immune, a
+    /// wither rose, a sweet berry bush, a cactus, powder snow, less its `immuneTo`).
+    private static String dangerousBlocks() {
+        StringBuilder text = new StringBuilder();
+        for (int kind = 0; kind < BuiltInRegistries.ENTITY_TYPE.size(); kind++) {
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(kind);
+            List<String> dangerous = new ArrayList<>();
+            for (int id = 0; id < Block.BLOCK_STATE_REGISTRY.size(); id++) {
+                if (type.isBlockDangerous(Block.BLOCK_STATE_REGISTRY.byId(id))) {
+                    dangerous.add(Integer.toString(id));
+                }
+            }
+            text.append(Integer.toString(kind));
+            field(text, dangerous.isEmpty() ? "-" : String.join(",", dangerous));
+            text.append('\n');
+        }
+        return text.toString();
+    }
+
+    /// One line an entity type, in id order: its id, its placement
+    /// (`SpawnPlacements.getPlacementType`: `on_ground`, `in_water`, `in_lava` or
+    /// `no_restrictions`) and the height map it is placed by (`getHeightmapType`).
+    private static String spawnPlacements() {
+        StringBuilder text = new StringBuilder();
+        for (int kind = 0; kind < BuiltInRegistries.ENTITY_TYPE.size(); kind++) {
+            EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.byId(kind);
+            net.minecraft.world.entity.SpawnPlacementType placement =
+                net.minecraft.world.entity.SpawnPlacements.getPlacementType(type);
+            String name;
+            if (placement == net.minecraft.world.entity.SpawnPlacementTypes.ON_GROUND) {
+                name = "on_ground";
+            } else if (placement == net.minecraft.world.entity.SpawnPlacementTypes.IN_WATER) {
+                name = "in_water";
+            } else if (placement == net.minecraft.world.entity.SpawnPlacementTypes.IN_LAVA) {
+                name = "in_lava";
+            } else if (placement
+                == net.minecraft.world.entity.SpawnPlacementTypes.NO_RESTRICTIONS) {
+                name = "no_restrictions";
+            } else {
+                throw new IllegalStateException("a placement of no known kind for " + kind);
+            }
+            text.append(Integer.toString(kind));
+            field(text, name);
+            field(text, net.minecraft.world.entity.SpawnPlacements.getHeightmapType(type)
+                .getSerializedName());
+            text.append('\n');
+        }
+        return text.toString();
     }
 
     private static void write(Path out, String name, String content) throws IOException {

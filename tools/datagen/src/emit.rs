@@ -158,6 +158,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "registries",
             "sound_events",
             "sound_types",
+            "spawning",
             "spawns",
             "tags",
             "version",
@@ -185,6 +186,11 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         .iter()
         .find(|registry| registry.name == "worldgen/biome")
         .context("the registry of biomes is not among the synchronised ones")?;
+    add(
+        DATA_DIR,
+        "spawning.rs",
+        crate::spawning::emit(&data.extract)?,
+    );
     add(
         DATA_DIR,
         "spawns.rs",

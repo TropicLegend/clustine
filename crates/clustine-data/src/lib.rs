@@ -17,6 +17,7 @@ pub mod collisions;
 pub mod faces;
 pub mod loot;
 pub mod packed;
+pub mod spawning;
 pub mod spawns;
 
 use serde::{Deserialize, Serialize};

@@ -55,6 +55,22 @@ pub struct Extract {
     pub path_type_list: Vec<(String, u32)>,
     /// One for each block state, by state id.
     pub path_types: Vec<PathTypeDump>,
+    /// For each block state, by state id, whom a mob may spawn on it
+    /// (`isValidSpawn`).
+    pub valid_spawn: Vec<ValidSpawn>,
+    /// For each entity type, by its id, the block states dangerous to it.
+    pub dangerous: Vec<Vec<u32>>,
+    /// For each entity type, by its id, its placement and its height map's name.
+    pub spawn_placements: Vec<(String, String)>,
+}
+
+/// Whom a mob may spawn on a block state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidSpawn {
+    All,
+    None,
+    /// Only the entity types of these ids.
+    Some(Vec<u16>),
 }
 
 /// An attribute: its name, its default, least and greatest values as double bits, and
@@ -307,6 +323,12 @@ impl Extract {
         }
 
         let fluids = fluids(&read("fluids.txt")?).context("reading fluids.txt")?;
+        let valid_spawn =
+            valid_spawn(&read("valid_spawn.txt")?).context("reading valid_spawn.txt")?;
+        let dangerous =
+            dangerous(&read("dangerous_blocks.txt")?).context("reading dangerous_blocks.txt")?;
+        let spawn_placements = spawn_placements(&read("spawn_placements.txt")?)
+            .context("reading spawn_placements.txt")?;
         let path_type_list =
             path_type_list(&read("path_type_list.txt")?).context("reading path_type_list.txt")?;
         Ok(Self {
@@ -337,6 +359,9 @@ impl Extract {
             path_types: path_types(&read("path_types.txt")?, &path_type_list)
                 .context("reading path_types.txt")?,
             path_type_list,
+            valid_spawn,
+            dangerous,
+            spawn_placements,
         })
     }
 }
@@ -945,6 +970,85 @@ fn boolean(text: &str) -> Result<bool> {
         "1" => Ok(true),
         other => bail!("{other:?} is neither 0 nor 1"),
     }
+}
+
+/// The lines of `valid_spawn.txt`, one a state in id order.
+fn valid_spawn(text: &str) -> Result<Vec<ValidSpawn>> {
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(
+            fields.len() == 3,
+            "line {index} has {} fields",
+            fields.len()
+        );
+        ensure!(
+            fields[0].parse::<usize>()? == index,
+            "state ids are not in order at {index}"
+        );
+        // A shulker box asks its block entity whether it is closed, which an empty level
+        // answers as closed: as a box in a generated chunk is.
+        ensure!(
+            fields[2] == "-" || fields[2] == "valid_spawn:block_entity",
+            "state {index}'s validity read its neighbours: {}",
+            fields[2]
+        );
+        out.push(match fields[1] {
+            "all" => ValidSpawn::All,
+            "none" => ValidSpawn::None,
+            some => ValidSpawn::Some(
+                some.split(',')
+                    .map(str::parse)
+                    .collect::<std::result::Result<_, _>>()?,
+            ),
+        });
+    }
+    Ok(out)
+}
+
+/// The lines of `dangerous_blocks.txt`, one an entity type in id order.
+fn dangerous(text: &str) -> Result<Vec<Vec<u32>>> {
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(
+            fields.len() == 2,
+            "line {index} has {} fields",
+            fields.len()
+        );
+        ensure!(
+            fields[0].parse::<usize>()? == index,
+            "type ids are not in order at {index}"
+        );
+        out.push(if fields[1] == "-" {
+            Vec::new()
+        } else {
+            fields[1]
+                .split(',')
+                .map(str::parse)
+                .collect::<std::result::Result<_, _>>()?
+        });
+    }
+    Ok(out)
+}
+
+/// The lines of `spawn_placements.txt`, one an entity type in id order.
+fn spawn_placements(text: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        ensure!(
+            fields.len() == 3,
+            "line {index} has {} fields",
+            fields.len()
+        );
+        ensure!(
+            fields[0].parse::<usize>()? == index,
+            "type ids are not in order at {index}"
+        );
+        out.push((fields[1].to_owned(), fields[2].to_owned()));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

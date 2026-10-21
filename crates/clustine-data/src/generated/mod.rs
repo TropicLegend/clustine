@@ -14,6 +14,7 @@ pub mod path_types;
 pub mod registries;
 pub mod sound_events;
 pub mod sound_types;
+pub mod spawning;
 pub mod spawns;
 pub mod tags;
 pub mod version;
