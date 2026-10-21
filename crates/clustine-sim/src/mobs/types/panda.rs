@@ -90,7 +90,7 @@ pub(crate) mod gene {
 
 /// `Gene.getRandom(random)`: one of sixteen, a weak gene five times, normal five, brown
 /// twice, the others once.
-pub(crate) fn random_gene(random: &mut crate::region::Random) -> u8 {
+pub(crate) fn random_gene(random: &mut dyn clustine_world::generation::Draws) -> u8 {
     match random.next_int(16) {
         0 => gene::LAZY,
         1 => gene::WORRIED,

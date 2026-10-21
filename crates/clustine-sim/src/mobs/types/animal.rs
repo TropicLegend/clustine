@@ -555,7 +555,6 @@ pub(crate) fn biome_in_tag(biome: Option<&str>, tag: &str) -> bool {
 /// their ids are their places in the registries the server sends, by name.
 pub(crate) mod variants {
     use super::biome_in_tag;
-    use crate::region::Random;
 
     /// The id of the entry `name` of the registry `registry`.
     pub(crate) fn id(registry: &str, name: &str) -> u8 {
@@ -574,7 +573,11 @@ pub(crate) mod variants {
     /// (the vanilla data: cold and warm by biome tag at priority 1, temperate always at
     /// 0): the pairs of the highest priority whose condition holds, in the registry's
     /// order, one drawn even when one is left.
-    pub(crate) fn select(registry: &str, biome: Option<&str>, level: &mut Random) -> u8 {
+    pub(crate) fn select(
+        registry: &str,
+        biome: Option<&str>,
+        level: &mut dyn clustine_world::generation::Draws,
+    ) -> u8 {
         let entries =
             clustine_data::synced_registry(registry).map_or(&[][..], |known| known.entries);
         // (name, priority, condition), stably sorted by priority, highest first.

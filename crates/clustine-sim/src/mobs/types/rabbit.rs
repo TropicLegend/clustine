@@ -89,7 +89,10 @@ fn put_state(mob: &mut Mob, own: &RabbitState) {
 
 /// `getRandomRabbitVariant(level, pos)`: one draw of the level's always; white or
 /// splotched in snow, gold in deserts, else brown, salt and pepper or black.
-pub(crate) fn random_variant(biome: Option<&str>, level: &mut Random) -> i32 {
+pub(crate) fn random_variant(
+    biome: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> i32 {
     let drawn = level.next_int(100);
     if biome_in_tag(biome, "minecraft:spawns_white_rabbits") {
         if drawn < 80 {

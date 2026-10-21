@@ -62,6 +62,11 @@ fn spawned(kind: u16, seed: u64) -> (Mob, Random) {
     let replay = level.clone();
     let mut own = draws(seed.wrapping_add(1));
     of(kind).finalize_spawn(&mut Spawning {
+        reason: crate::mobs::types::SpawnReason::SpawnEgg,
+        group: &mut None,
+        structure: None,
+        moon_brightness: 1.0,
+        difficulty: (0.0, 0.0),
         mob: &mut mob,
         level: &mut level,
         own: &mut own,

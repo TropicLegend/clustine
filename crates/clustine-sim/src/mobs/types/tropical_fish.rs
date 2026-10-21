@@ -104,7 +104,7 @@ pub(crate) fn pack(pattern: i32, base: i32, pattern_colour: i32) -> i32 {
 /// `finalizeSpawn`'s variant, of the level's random after the parent's draws: nine times
 /// in ten (`nextFloat() < 0.9`, compared in double) one of the common ones
 /// (`nextInt(22)`), else a pattern (`nextInt(12)`) and two colours (`nextInt(16)` each).
-pub(crate) fn random_variant(level: &mut Random) -> i32 {
+pub(crate) fn random_variant(level: &mut dyn clustine_world::generation::Draws) -> i32 {
     if f64::from(level.next_float()) < 0.9 {
         let (pattern, base, colour) = COMMON[level.next_int(22) as usize];
         return pack(pattern, base, colour);

@@ -319,6 +319,11 @@ fn an_egg_s_axolotl_draws_its_group_s_two_colours_then_its_own_of_them_and_nothi
         let mut replay = level.clone();
         let mut mob = Mob::fresh();
         of(AXOLOTL).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             game_time: 0,
             mob: &mut mob,
             level: &mut level,
@@ -364,6 +369,11 @@ fn an_egg_s_frog_is_of_its_biome_s_variant_by_one_draw_then_draws_its_long_jump_
         let mut replay = level.clone();
         let mut mob = Mob::fresh();
         of(FROG).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             game_time: 0,
             mob: &mut mob,
             level: &mut level,
@@ -389,6 +399,11 @@ fn a_tadpole_s_egg_draws_nothing_of_its_own() {
     let mut mob = Mob::fresh();
     let mut own = draws(99);
     let mut spawning = Spawning {
+        reason: crate::mobs::types::SpawnReason::SpawnEgg,
+        group: &mut None,
+        structure: None,
+        moon_brightness: 1.0,
+        difficulty: (0.0, 0.0),
         game_time: 0,
         mob: &mut mob,
         level: &mut level,

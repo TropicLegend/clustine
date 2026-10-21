@@ -198,13 +198,16 @@ pub(crate) mod brain {
     }
 
     /// `UniformInt.of(min, max).sample(random)`: `nextInt(max − min + 1) + min`.
-    pub(crate) fn sample((min, max): (i32, i32), draws: &mut Random) -> i32 {
+    pub(crate) fn sample(
+        (min, max): (i32, i32),
+        draws: &mut dyn clustine_world::generation::Draws,
+    ) -> i32 {
         draws.next_int((max - min + 1) as u32) as i32 + min
     }
 
     /// `GoatAi.initMemories(goat, random)`: the long jump's cooldown, then the ram's, of
     /// the plain goat's range even for a screamer (screaming is decided after).
-    pub(crate) fn init_memories(draws: &mut Random) -> Cooldowns {
+    pub(crate) fn init_memories(draws: &mut dyn clustine_world::generation::Draws) -> Cooldowns {
         let long_jump = sample(TIME_BETWEEN_LONG_JUMPS, draws);
         let ram = sample(TIME_BETWEEN_RAMS, draws);
         Cooldowns { long_jump, ram }

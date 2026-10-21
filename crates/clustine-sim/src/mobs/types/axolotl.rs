@@ -95,14 +95,14 @@ pub(crate) fn variant_by_id(id: i32) -> i32 {
 }
 
 /// `Variant.getCommonSpawnVariant(random)`: one of the four common ones, `nextInt(4)`.
-pub(crate) fn common_variant(random: &mut Random) -> i32 {
+pub(crate) fn common_variant(random: &mut dyn clustine_world::generation::Draws) -> i32 {
     COMMON[random.next_int(COMMON.len() as u32) as usize]
 }
 
 /// `finalizeSpawn`'s variant for the first of a group (an egg's): the group's two
 /// colours, then this one's of them (`AxolotlGroupData.getVariant`, `nextInt(2)`), all
 /// of the level's random.
-pub(crate) fn spawn_variant(level: &mut Random) -> i32 {
+pub(crate) fn spawn_variant(level: &mut dyn clustine_world::generation::Draws) -> i32 {
     let group = [common_variant(level), common_variant(level)];
     group[level.next_int(2) as usize]
 }

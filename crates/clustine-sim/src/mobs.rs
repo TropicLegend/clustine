@@ -15,6 +15,7 @@
 
 pub(crate) mod ai;
 pub(crate) mod body;
+pub(crate) mod making;
 // The brain's engine (N7j1) is the contract its sensors, behaviours and types are
 // built on next; until the first type with a brain calls it, only its tests do.
 #[allow(dead_code, unused_imports)]

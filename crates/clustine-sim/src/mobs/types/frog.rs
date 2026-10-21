@@ -22,7 +22,6 @@ use crate::mobs::ai::{HeadLimits, MoveKind, Setup};
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::tick::MobTick;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
-use crate::region::Random;
 use crate::shown::{DataShown, Holder};
 
 /// `#frog_food`: slime balls.
@@ -140,7 +139,10 @@ pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut FrogState)) {
 /// the highest priority whose condition holds, one drawn of them (`getRandomSafe`, a
 /// `nextInt` even of one), of the level's random; the tags are disjoint, so it is always
 /// one of one.
-pub(crate) fn spawn_variant(biome: Option<&str>, level: &mut Random) -> Variant {
+pub(crate) fn spawn_variant(
+    biome: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> Variant {
     let entries = clustine_data::synced_registry(REGISTRY).map_or(&[][..], |known| known.entries);
     let mut ranked: Vec<(Variant, i32, Option<&str>)> = entries
         .iter()
@@ -170,7 +172,7 @@ pub(crate) fn spawn_variant(biome: Option<&str>, level: &mut Random) -> Variant 
 
 /// `FrogAi.initMemories(frog, random)`'s draw: `LONG_JUMP_COOLDOWN_TICKS` of
 /// `UniformInt(100, 140)`, `nextInt(41) + 100`, which the brain keeps.
-pub(crate) fn init_memories(mob: &mut Mob, random: &mut Random) {
+pub(crate) fn init_memories(mob: &mut Mob, random: &mut dyn clustine_world::generation::Draws) {
     let cooldown = 100 + random.next_int(41) as i32;
     super::frog_ai::set_long_jump_cooldown(mob, cooldown);
 }

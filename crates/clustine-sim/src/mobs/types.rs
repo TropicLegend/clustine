@@ -906,7 +906,10 @@ pub(crate) enum Did {
 /// on its behalf, its own random, and the biome at its block.
 pub(crate) struct Spawning<'a> {
     pub(crate) mob: &'a mut Mob,
-    pub(crate) level: &'a mut Random,
+    /// The level's random: the player's stream aside for an egg, the run's region
+    /// random (R) or the spawn's (W and R) for generation (`docs/groundwork/n7l-plan.md`,
+    /// sections 2.1 and 3).
+    pub(crate) level: &'a mut dyn clustine_world::generation::Draws,
     /// The mob's own stream, on from its constructor's draws (a salmon draws its size
     /// from it).
     pub(crate) own: &'a mut Random,
@@ -920,6 +923,73 @@ pub(crate) struct Spawning<'a> {
     /// The world's game time (`Level.getGameTime()`), which a camel's pose is stamped
     /// with.
     pub(crate) game_time: i64,
+    /// Why it is made (`EntitySpawnReason`): an egg's, a chunk's generation, a
+    /// structure's.
+    #[allow(
+        dead_code,
+        reason = "read by the creatures' `finalizeSpawn` by reason (N7l's D1)"
+    )]
+    pub(crate) reason: SpawnReason,
+    /// What the first `finalizeSpawn` of a group returned, which the group's later
+    /// members are given (`SpawnGroupData`): none for an egg or the first of a group.
+    #[allow(
+        dead_code,
+        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
+    )]
+    pub(crate) group: &'a mut Option<SpawnGroup>,
+    /// The structure whose piece places it (the swamp hut's black cat), if one does.
+    #[allow(
+        dead_code,
+        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
+    )]
+    pub(crate) structure: Option<&'static str>,
+    /// The moon's brightness (`getMoonBrightness`): the clock's for an egg; a full moon,
+    /// 1, for generation, whose region has no time layer.
+    #[allow(
+        dead_code,
+        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
+    )]
+    pub(crate) moon_brightness: f32,
+    /// The difficulty at its block (`DifficultyInstance`): its effective value and its
+    /// special multiplier, which a zombie's and a villager's draws are weighed against.
+    #[allow(
+        dead_code,
+        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
+    )]
+    pub(crate) difficulty: (f32, f32),
+}
+
+/// `EntitySpawnReason`, as far as a mob's making reads it.
+#[allow(
+    dead_code,
+    reason = "the reasons generation and breeding make mobs for (N7l)"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnReason {
+    SpawnEgg,
+    Breeding,
+    ChunkGeneration,
+    Structure,
+    Natural,
+    /// A mob made of another (a tadpole grown into a frog).
+    Conversion,
+}
+
+/// `SpawnGroupData` that a group's first `finalizeSpawn` makes and its later members are
+/// given.
+#[allow(
+    dead_code,
+    reason = "made by the creatures' `finalizeSpawn` (N7l's D1)"
+)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum SpawnGroup {
+    /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far, and the
+    /// chance that a later one is a baby, with whether babies may be.
+    Ageable {
+        made: u32,
+        baby_chance: f32,
+        babies: bool,
+    },
 }
 
 /// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its

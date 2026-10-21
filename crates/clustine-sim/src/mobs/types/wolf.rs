@@ -185,13 +185,16 @@ impl Pet for Wolf {
 }
 
 /// `pickRandomSoundVariant(random)`: one of the seven voices, by id.
-fn random_voice(draws: &mut Random) -> u8 {
+fn random_voice(draws: &mut dyn clustine_world::generation::Draws) -> u8 {
     draws.next_int(variants::count(SOUND_VARIANTS)) as u8
 }
 
 /// `VariantUtils.selectVariantToSpawn` of `wolf_variant` (the brief's 5.5): the
 /// biome's variant at priority 1, else pale, one drawn even when one is left.
-pub(crate) fn select_variant(biome: Option<&str>, level: &mut Random) -> u8 {
+pub(crate) fn select_variant(
+    biome: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> u8 {
     let entries = clustine_data::synced_registry(VARIANTS).map_or(&[][..], |known| known.entries);
     let condition = |name: &str| -> Option<(i32, Option<&'static str>)> {
         let biome = match name {

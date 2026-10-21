@@ -1125,13 +1125,13 @@ fn do_player_ride(used: &mut Used<'_>) {
 }
 
 /// `generateMaxHealth(r::nextInt)`: `15 + nextInt(8) + nextInt(9)` in floats, 15 to 30.
-pub(crate) fn generate_max_health(r: &mut Random) -> f64 {
+pub(crate) fn generate_max_health(r: &mut dyn clustine_world::generation::Draws) -> f64 {
     let health = 15.0_f32 + r.next_int(8) as f32 + r.next_int(9) as f32;
     f64::from(health)
 }
 
 /// `generateSpeed(r::nextDouble)`: `(0.45 + a·0.3 + b·0.3 + c·0.3) · 0.25`.
-pub(crate) fn generate_speed(r: &mut Random) -> f64 {
+pub(crate) fn generate_speed(r: &mut dyn clustine_world::generation::Draws) -> f64 {
     let mut speed = 0.449_999_988_079_071_04;
     for _ in 0..3 {
         speed += r.next_double() * 0.3;
@@ -1140,7 +1140,7 @@ pub(crate) fn generate_speed(r: &mut Random) -> f64 {
 }
 
 /// `generateJumpStrength(r::nextDouble)`: `0.4 + a·0.2 + b·0.2 + c·0.2`.
-pub(crate) fn generate_jump_strength(r: &mut Random) -> f64 {
+pub(crate) fn generate_jump_strength(r: &mut dyn clustine_world::generation::Draws) -> f64 {
     let mut jump = 0.400_000_005_960_464_5;
     for _ in 0..3 {
         jump += r.next_double() * 0.2;

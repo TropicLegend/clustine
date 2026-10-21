@@ -150,6 +150,11 @@ pub trait Draws {
     fn next_double(&mut self) -> f64;
     /// `nextBoolean`.
     fn next_bool(&mut self) -> bool;
+    /// `nextIntBetweenInclusive(low, high)`: `nextInt(high − low + 1) + low`.
+    fn next_int_between(&mut self, low: i32, high: i32) -> i32 {
+        let span = u32::try_from(high - low + 1).unwrap_or(1);
+        self.next_int(span) as i32 + low
+    }
 }
 
 /// Any of the game's random sources as [`Draws`], each draw the source's own: the
@@ -204,14 +209,18 @@ pub trait Maker: Send + Sync {
     /// monument's elders), finalised for the reason `STRUCTURE` with the level's
     /// `draws`, without its key; `None` for a type this maker does not make, having
     /// drawn nothing.
+    /// `making` is its making, by the run's centre, its class and its place among what
+    /// the run made, which keys its own random; `biome` the biome at its block.
     fn mob(
         &self,
         kind: u16,
+        making: crate::Generated,
+        biome: Option<&'static str>,
         position: [f64; 3],
         yaw: f32,
         draws: &mut dyn Draws,
     ) -> Option<Entity> {
-        let _ = (kind, position, yaw, draws);
+        let _ = (kind, making, biome, position, yaw, draws);
         None
     }
 

@@ -25,7 +25,6 @@ use crate::mobs::body::hurt::{DamageSource, Struck};
 use crate::mobs::brain::behaviours::attacking;
 use crate::mobs::brain::{Activity, ActivityData, Provider};
 use crate::mobs::tick::MobTick;
-use crate::region::Random;
 use crate::shown::{DataShown, Holder};
 
 /// The synced index of `ZombieNautilus.DATA_VARIANT_ID`.
@@ -131,7 +130,10 @@ struct Entry {
 /// `VariantUtils.selectVariantToSpawn` of the zombie nautilus's variant (the brief's
 /// 7.12.6): of the variants whose condition holds, those of the highest priority, one
 /// drawn of the level's random even where one is left (`Util.getRandomSafe`).
-pub(crate) fn select_variant(biome: Option<&str>, level: &mut Random) -> u8 {
+pub(crate) fn select_variant(
+    biome: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> u8 {
     let entries = [
         Entry {
             name: "minecraft:warm",

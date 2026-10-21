@@ -19,27 +19,23 @@
 //! egg names nothing; a creative player keeps the egg, and every player is one.
 
 use clustine_blocks::data::is_class;
+use clustine_data::blocks;
 use clustine_data::{BlockClass, DEFAULT_ATTRIBUTES, EntityTypeInfo, ItemComponents, entity_types};
-use clustine_data::{attributes as ids, blocks};
 use clustine_world::{BlockPos, ChunkPos, Entity, EntityId, PlayerId};
 
 use super::Region;
 use super::block_entities::{nbt_put_string, nbt_string, skip_nbt};
-use super::entities::insecure_uuid;
 use super::items::View;
 use super::riding::wrap_degrees;
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::{Face, RegionEvent, TickOutput};
 use crate::mobs::Mob;
-use crate::mobs::body::attributes::{ADD_MULTIPLIED_BASE, RANDOM_SPAWN_BONUS, supplied};
 use crate::mobs::body::hurt::voice_pitch;
-use crate::mobs::body::{Head, Modifier, attribute};
 use crate::mobs::types;
 use crate::physics::aabb::Aabb;
 use crate::physics::collide;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
 use crate::placement::{Click, ItemUse};
-use crate::region::Random;
 
 const TAG_COMPOUND: u8 = 10;
 const TAG_STRING: u8 = 8;
@@ -66,26 +62,6 @@ fn beside(pos: BlockPos, face: Face) -> BlockPos {
         Face::West => pos.offset(-1, 0, 0),
         Face::East => pos.offset(1, 0, 0),
     }
-}
-
-/// `Mob.finalizeSpawn`'s own part, after its type's: the follow range's bonus
-/// (`random_spawn_bonus`, a triangle of ±0.11485 about 0 on the base, two `nextDouble`)
-/// where it has none, and one hand in twenty the left (`nextFloat() < 0.05f`), drawn
-/// from `level`.
-pub(crate) fn finalize_spawn(kind: u16, mob: &mut Mob, level: &mut Random) {
-    let follow = attribute(ids::FOLLOW_RANGE);
-    if let Some(instance) = mob.body.attributes.instance(kind, follow)
-        && !instance.has_modifier(RANDOM_SPAWN_BONUS)
-    {
-        // `RandomSource.triangle(mode, deviation)`.
-        let amount = 0.0 + 0.114_850_000_000_000_01 * (level.next_double() - level.next_double());
-        instance.add_modifier(Modifier {
-            id: RANDOM_SPAWN_BONUS.to_owned(),
-            amount,
-            operation: ADD_MULTIPLIED_BASE,
-        });
-    }
-    mob.body.flags.left_handed = level.next_float() < 0.05;
 }
 
 impl Region {
@@ -208,54 +184,42 @@ impl Region {
         } else {
             self.take_key()
         }?;
-        // The new mob's own draws: `Entity`'s UUID, `LivingEntity`'s yaw, turned over.
+        // The new mob's own draws (`Entity`'s UUID, `LivingEntity`'s yaw, turned over,
+        // its brain's and its type's constructor's), then the level's on its behalf,
+        // from the player's stream aside.
         let mut own = self.entity_stream(key).random;
         let own_start = own.clone();
-        let uuid = insecure_uuid(own.next_u64(), own.next_u64());
-        let _constructor_yaw = own.next_float();
-        // Its brain's (`LivingEntity`'s constructor's `makeBrain`), then the type's
-        // constructor's own draws (a chicken's egg timer).
-        let mob_type = types::of(kind);
-        let mut mob = Mob::fresh();
-        crate::mobs::brain::construct(mob_type, &mut mob, &mut own);
-        // The level's draws on its behalf, from the player's stream aside.
         let mut level = self.entity_stream(player_key).random;
         let level_start = level.clone();
+        let mob_type = types::of(kind);
+        // The yaw is the level's draw, after the constructor's.
+        let (uuid, mut mob) = crate::mobs::making::construct(kind, &mut own, 0.0);
         let yaw = wrap_degrees(level.next_float() * 360.0);
-        // `setHealth(getMaxHealth())` in the constructor, of its type's attributes.
-        mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;
-        mob.body.vitals.air = mob_type.max_air();
-        mob.body.head = Head {
-            head_yaw: yaw,
-            body_yaw: yaw,
-            still_since: 0,
-            ..Head::default()
-        };
-        // `finalizeSpawn`: the type's, with the biome at its block, then `Mob`'s.
+        mob.body.head.head_yaw = yaw;
+        mob.body.head.body_yaw = yaw;
         let block = crate::physics::containing([x, y, z]);
         let biome = self.biome_at(block);
         let day = self.clock.day;
         let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
         if !poured || mob_type.finalizes_when_poured() {
-            mob_type.finalize_spawn(&mut types::Spawning {
-                mob: &mut mob,
-                level: &mut level,
-                own: &mut own,
-                biome,
-                at: block,
-                day,
-                game_time,
-            });
-            finalize_spawn(kind, &mut mob, &mut level);
-            mob_type.after_finalize_spawn(&mut types::Spawning {
-                mob: &mut mob,
-                level: &mut level,
-                own: &mut own,
-                biome,
-                at: block,
-                day,
-                game_time,
-            });
+            let mut group = None;
+            crate::mobs::making::finalize(
+                kind,
+                &mut types::Spawning {
+                    mob: &mut mob,
+                    level: &mut level,
+                    own: &mut own,
+                    biome,
+                    at: block,
+                    day,
+                    game_time,
+                    reason: types::SpawnReason::SpawnEgg,
+                    group: &mut group,
+                    structure: None,
+                    moon_brightness: crate::mobs::making::moon_brightness(day),
+                    difficulty: (0.0, 0.0),
+                },
+            );
         }
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));

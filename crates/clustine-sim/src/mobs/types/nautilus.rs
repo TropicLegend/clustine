@@ -65,7 +65,6 @@ use crate::mobs::brain::{
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::Vec3;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
-use crate::region::Random;
 use crate::shown::DataShown;
 
 /// The synced index of `AbstractNautilus.DASH`.
@@ -251,7 +250,7 @@ pub(crate) fn food(mob: &Mob) -> Items {
 
 /// `UniformInt(2400, 3600).sample(random)`: the cooldown before a wild nautilus picks a
 /// fight again (`NautilusAi.initMemories`, and `findNearestValidAttackTarget`).
-pub(crate) fn attack_target_cooldown(level: &mut Random) -> i32 {
+pub(crate) fn attack_target_cooldown(level: &mut dyn clustine_world::generation::Draws) -> i32 {
     level.next_int_between(2400, 3600)
 }
 

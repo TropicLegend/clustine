@@ -67,7 +67,7 @@ pub(crate) fn coat_and_markings(variant: i32) -> (i32, i32) {
 }
 
 /// `Horse.randomizeAttributes(r)`: health, then speed, then jump.
-pub(crate) fn randomize(mob: &mut Mob, r: &mut Random) {
+pub(crate) fn randomize(mob: &mut Mob, r: &mut dyn clustine_world::generation::Draws) {
     let kind = entity_types::HORSE as u16;
     let health = equine::generate_max_health(r);
     equine::set_base(mob, kind, ids::MAX_HEALTH, health);

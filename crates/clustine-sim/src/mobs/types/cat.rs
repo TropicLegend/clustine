@@ -139,7 +139,7 @@ impl Pet for Cat {
 /// `VariantUtils.selectVariantToSpawn` of `cat_variant` (the brief's 5.5): of the ten
 /// of priority 0, and all black besides at the full moon, one drawn. **Named**: no
 /// structure is known at a block, so the witch hut's black of priority 1 never holds.
-pub(crate) fn select_variant(day: u64, level: &mut Random) -> u8 {
+pub(crate) fn select_variant(day: u64, level: &mut dyn clustine_world::generation::Draws) -> u8 {
     let entries = clustine_data::synced_registry(VARIANTS).map_or(&[][..], |known| known.entries);
     // `MoonBrightnessCheck`: the full moon, the phase of the moon's timeline at 0.
     let full_moon = (day / crate::time::DAY).is_multiple_of(8);

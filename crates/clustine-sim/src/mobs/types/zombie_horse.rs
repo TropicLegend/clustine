@@ -38,7 +38,7 @@ pub(crate) const EQUINE: Equine = Equine {
 };
 
 /// `generateZombieHorseJumpStrength(r::nextDouble)`: `0.5 + a/15 + b/15 + c/15`.
-pub(crate) fn generate_jump_strength(r: &mut Random) -> f64 {
+pub(crate) fn generate_jump_strength(r: &mut dyn clustine_world::generation::Draws) -> f64 {
     let mut jump = 0.5;
     for _ in 0..3 {
         jump += r.next_double() * 0.066_666_666_666_666_67;
@@ -47,7 +47,7 @@ pub(crate) fn generate_jump_strength(r: &mut Random) -> f64 {
 }
 
 /// `generateZombieHorseSpeed(r::nextDouble)`: `(9 + a + b + c) / 42.16`.
-pub(crate) fn generate_speed(r: &mut Random) -> f64 {
+pub(crate) fn generate_speed(r: &mut dyn clustine_world::generation::Draws) -> f64 {
     let mut speed = 9.0;
     for _ in 0..3 {
         speed += r.next_double() * 1.0;

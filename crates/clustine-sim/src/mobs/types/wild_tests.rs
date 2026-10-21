@@ -76,6 +76,11 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
         let mut mob = Mob::fresh();
         let mut level = draws(3);
         of(entity_types::FOX as u16).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             mob: &mut mob,
             level: &mut level,
             own: &mut draws(99),
@@ -95,6 +100,11 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
         let mut level = draws(seed);
         let mut replay = level.clone();
         of(entity_types::FOX as u16).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             mob: &mut mob,
             level: &mut level,
             own: &mut draws(99),
@@ -294,6 +304,11 @@ fn an_egg_s_panda_draws_its_two_genes_and_a_weak_one_has_ten_health_at_most_and_
         let mut level = draws(seed);
         let mut replay = level.clone();
         of(entity_types::PANDA as u16).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             mob: &mut mob,
             level: &mut level,
             own: &mut draws(99),

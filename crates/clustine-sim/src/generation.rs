@@ -15,7 +15,9 @@
 
 use clustine_data::BlockState;
 use clustine_world::generation::{Draws, FinalHeightmap, Maker};
-use clustine_world::{Biome, BlockPos, ChunkPos, Entity, EntityId};
+use clustine_world::{Biome, BlockPos, ChunkPos, Entity, EntityId, Generated};
+
+use crate::mobs::types::{SpawnGroup, SpawnReason, Spawning};
 
 use crate::region::Random;
 
@@ -23,27 +25,6 @@ use crate::region::Random;
 /// any of them is made with (section 4): a world made while fewer were made is refused
 /// rather than continued with a seam. 0 while none is made.
 pub const ENTITIES_GENERATION: u16 = 0;
-
-/// Why a mob is made, as the game's `EntitySpawnReason` says it to `finalizeSpawn`, of
-/// the reasons generation has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reason {
-    /// `CHUNK_GENERATION`: by the spawn of a chunk.
-    ChunkGeneration,
-    /// `STRUCTURE`: by a structure's piece, from its code or its template.
-    Structure,
-}
-
-/// What the members of one group of the spawn share (`SpawnGroupData`): what the first
-/// member's `finalizeSpawn` returned, which the later members are handed. Each type's
-/// own (a herd's variant, a pack's) comes with the creatures' hooks (section 5.2).
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum Group {
-    /// `AgeableMobGroupData`: how many of the group have been made, and the chance that
-    /// a later one is a baby.
-    Ageable { made: u32, baby_chance: f32 },
-}
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
 /// motion height maps and its light, and the biomes of the nine around it, which the
@@ -76,23 +57,112 @@ pub fn spawn_chunk(view: &dyn SpawnView, seed: i64, region: &mut dyn Draws) -> V
     Vec::new()
 }
 
-/// A mob of the type `kind` made for `reason` at `position` facing `yaw`, finalised
-/// with the level's `draws`, as a member of `group` where it is one: its record without
-/// its key and without what it draws from its own stream, which [`record`] adds. `None`
-/// for a type that is not made so, having drawn nothing.
-///
-/// The creatures' `finalizeSpawn` by reason and group are section 5.2's: until then it
-/// makes none.
+/// The making of a generated entity, which keys its own stream
+/// (`docs/groundwork/n7l-plan.md`, section 2.2): the run's centre (the spawn's for the
+/// spawn's), its class and its place among what that run or spawn made, counting from
+/// 0, in the parts of a key ([`Generated`]). Known when the entity is made, so that its
+/// constructor, `construct` and `finalizeSpawn` draw from its own random in the game's
+/// order there; its key is the chunk's it lands in, set by [`record`] (section 9 item 1).
+pub(crate) fn making_stream(world: u64, making: Generated) -> Option<Random> {
+    Some(Random::of_generated(world, making.key()?))
+}
+
+/// A mob of the type `kind` a structure's code makes at `position` facing `yaw` (the
+/// swamp hut's witch, the monument's elders), made as an egg's is
+/// ([`crate::mobs::making`]) and finalised for the reason `STRUCTURE`, with the biome
+/// `biome` at its block and the level's `level` (the run's region random). Without its
+/// key. `None` for a type that is no mob, or a making beyond the border.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a structure's code knows of its mob"
+)]
 pub fn mob(
+    world: u64,
+    making: Generated,
     kind: u16,
-    reason: Reason,
-    group: Option<&mut Group>,
+    structure: Option<&'static str>,
+    biome: Option<&'static str>,
     position: [f64; 3],
     yaw: f32,
-    draws: &mut dyn Draws,
+    level: &mut dyn Draws,
 ) -> Option<Entity> {
-    let _ = (kind, reason, group, position, yaw, draws);
-    None
+    let mut group = None;
+    made_mob(
+        world,
+        making,
+        kind,
+        SpawnReason::Structure,
+        &mut group,
+        structure,
+        biome,
+        position,
+        yaw,
+        level,
+    )
+}
+
+/// A mob made for `reason` with the group `group` of its spawn (none for the first of a
+/// group, which leaves it what its `finalizeSpawn` returns), as [`mob`] makes one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what a generated mob's making reads"
+)]
+pub(crate) fn made_mob(
+    world: u64,
+    making: Generated,
+    kind: u16,
+    reason: SpawnReason,
+    group: &mut Option<SpawnGroup>,
+    structure: Option<&'static str>,
+    biome: Option<&'static str>,
+    position: [f64; 3],
+    yaw: f32,
+    level: &mut dyn Draws,
+) -> Option<Entity> {
+    // A type whose making is not built yet makes nothing, as its egg makes nothing.
+    if !crate::mobs::types::is_built(kind) {
+        return None;
+    }
+    let mut own = making_stream(world, making)?;
+    let (uuid, mut mob) = crate::mobs::making::construct(kind, &mut own, yaw);
+    let at = crate::physics::containing(position);
+    crate::mobs::making::finalize(
+        kind,
+        &mut Spawning {
+            mob: &mut mob,
+            level,
+            own: &mut own,
+            biome,
+            at,
+            // A `WorldGenRegion` has no time layer: its day is the first, under a full
+            // moon (`docs/groundwork/n7l-plan.md`, section 2.1), and its game time is
+            // set at the first take (`MobType::first_take`).
+            day: 0,
+            game_time: 0,
+            reason,
+            group,
+            structure,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
+        },
+    );
+    Some(Entity {
+        key: EntityId(0),
+        kind,
+        uuid,
+        position,
+        motion: [0.0; 3],
+        yaw,
+        pitch: 0.0,
+        on_ground: false,
+        hops: 0,
+        lived: 0,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: mob.encode(),
+    })
 }
 
 /// An entity of a template from its tag (a compound with its `id`, in the binary form
@@ -112,23 +182,11 @@ pub fn template_entity(
     None
 }
 
-/// The record of an entity a run or a spawn made, now that its key is `key`: the key
-/// set, and what the entity draws from its own stream at its making drawn from the
-/// stream of the world `world` and `key` (section 2.2).
-pub fn record(world: u64, key: EntityId, mut entity: Entity) -> Entity {
+/// The record of an entity a run or a spawn made, now that its key is `key`, the chunk's
+/// it lands in: the key set. Its own draws were made at its making, from the stream of
+/// its making ([`making_stream`]).
+pub fn record(key: EntityId, mut entity: Entity) -> Entity {
     entity.key = key;
-    let Ok(mut mob) = crate::mobs::Mob::decode(&entity.data) else {
-        return entity;
-    };
-    // What a mob's making draws from its own random, as `Region::new_mob` does for an
-    // egg's: its UUID, its constructor's yaw, then its type's `construct` (a brain's
-    // sensors' delays, a squid's strokes), from a stream of its own that no region
-    // counts (`docs/groundwork/n7l-plan.md`, sections 2.2 and 9 item 10).
-    let mut own = Random::of_generated(world, key);
-    entity.uuid = crate::region::insecure_uuid(own.next_u64(), own.next_u64());
-    let _constructor_yaw = own.next_float();
-    crate::mobs::brain::construct(crate::mobs::types::of(entity.kind), &mut mob, &mut own);
-    entity.data = mob.encode();
     entity
 }
 
@@ -141,17 +199,19 @@ pub struct Generation {
 
 impl Maker for Generation {
     fn record(&self, key: EntityId, entity: Entity) -> Entity {
-        record(self.world, key, entity)
+        record(key, entity)
     }
 
     fn mob(
         &self,
         kind: u16,
+        making: Generated,
+        biome: Option<&'static str>,
         position: [f64; 3],
         yaw: f32,
         draws: &mut dyn Draws,
     ) -> Option<Entity> {
-        mob(kind, Reason::Structure, None, position, yaw, draws)
+        mob(self.world, making, kind, None, biome, position, yaw, draws)
     }
 
     fn template_entity(
@@ -221,20 +281,45 @@ mod tests {
         }
     }
 
-    /// A generated mob's record: its key, and a UUID drawn from a stream of its own
-    /// keyed by it, the same however often the chunk is made and another for another
-    /// key; the stream is no egg's (`Random::of_entity`).
+    /// A generated mob is made from the stream of its making, as an egg's is from its
+    /// own: the same making makes the same mob however often the chunk is made, another
+    /// making another UUID; its record then only sets its key.
     #[test]
-    fn a_generated_mobs_record_is_keyed_and_its_uuid_drawn_from_its_own_stream() {
-        let made = record(11, generated(0), cow());
-        assert_eq!(made.key, generated(0));
-        assert_ne!(made.uuid, uuid::Uuid::nil());
-        assert_eq!(record(11, generated(0), cow()), made);
-        assert_ne!(record(11, generated(1), cow()).uuid, made.uuid);
-        assert_ne!(record(12, generated(0), cow()).uuid, made.uuid);
-        let mut egg = Random::of_entity(11, generated(0), 0);
-        let egg_uuid = crate::region::insecure_uuid(egg.next_u64(), egg.next_u64());
-        assert_ne!(egg_uuid, made.uuid);
+    fn a_generated_mob_is_made_from_its_makings_stream_and_its_record_sets_its_key() {
+        let making = |index| clustine_world::Generated {
+            dimension: 0,
+            chunk: ChunkPos::new(4, -2),
+            structure: true,
+            index,
+        };
+        let make = |world, index| {
+            let mut level = Random::of_entity(3, EntityId(5), 0);
+            mob(
+                world,
+                making(index),
+                clustine_data::entity_types::COW as u16,
+                None,
+                Some("minecraft:plains"),
+                [64.5, 70.0, -30.5],
+                90.0,
+                &mut level,
+            )
+            .expect("a cow is made")
+        };
+        let made = make(11, 0);
+        assert_eq!(make(11, 0), made);
+        assert_ne!(make(11, 1).uuid, made.uuid);
+        assert_ne!(make(12, 0).uuid, made.uuid);
+        let mut own = making_stream(11, making(0)).expect("within the border");
+        let (uuid, _) = crate::mobs::making::construct(made.kind, &mut own, 90.0);
+        assert_eq!(made.uuid, uuid);
+        assert_eq!(
+            record(generated(7), made.clone()),
+            Entity {
+                key: generated(7),
+                ..made
+            }
+        );
     }
 
     /// An entity that is no mob is given its key only.
@@ -248,7 +333,7 @@ mod tests {
             health: 5,
             age_offset: 0,
         };
-        let made = record(11, generated(3), item.clone());
+        let made = record(generated(3), item.clone());
         assert_eq!(
             made,
             Entity {

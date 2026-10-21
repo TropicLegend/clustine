@@ -159,26 +159,24 @@ impl Region {
         let biome = self.biome_at(block);
         let day = self.clock.day;
         let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
-        let mob_type = types::of(kind);
-        mob_type.finalize_spawn(&mut Spawning {
-            mob: &mut grown,
-            level: &mut level,
-            own: &mut own,
-            biome,
-            at: block,
-            day,
-            game_time,
-        });
-        super::spawn_eggs::finalize_spawn(kind, &mut grown, &mut level);
-        mob_type.after_finalize_spawn(&mut Spawning {
-            mob: &mut grown,
-            level: &mut level,
-            own: &mut own,
-            biome,
-            at: block,
-            day,
-            game_time,
-        });
+        let mut group = None;
+        crate::mobs::making::finalize(
+            kind,
+            &mut Spawning {
+                mob: &mut grown,
+                level: &mut level,
+                own: &mut own,
+                biome,
+                at: block,
+                day,
+                game_time,
+                reason: types::SpawnReason::Conversion,
+                group: &mut group,
+                structure: None,
+                moon_brightness: crate::mobs::making::moon_brightness(day),
+                difficulty: (0.0, 0.0),
+            },
+        );
         grown.body.flags.persistent = true;
         self.entity_drew(key, level.draws_since(&start));
         made.data = grown.encode();

@@ -148,7 +148,10 @@ pub(crate) struct Sheep;
 
 /// `SheepColorSpawnRules.getSheepColor(biome, random)`: one of the biome's few colours,
 /// else its common one, and one in 500 of those pink.
-pub(crate) fn spawn_colour(biome: Option<&str>, level: &mut Random) -> u8 {
+pub(crate) fn spawn_colour(
+    biome: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> u8 {
     let (few, common) = if biome_in_tag(biome, "minecraft:spawns_warm_variant_farm_animals") {
         ([(GRAY, 5), (LIGHT_GRAY, 5), (WHITE, 5), (BLACK, 3)], BROWN)
     } else if biome_in_tag(biome, "minecraft:spawns_cold_variant_farm_animals") {

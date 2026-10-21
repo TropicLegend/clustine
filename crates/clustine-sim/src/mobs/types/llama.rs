@@ -68,7 +68,7 @@ pub(crate) const EQUINE: Equine = Equine {
 };
 
 /// `setRandomStrength(r)`: one in 25 may reach five, the others three.
-pub(crate) fn random_strength(r: &mut Random) -> i32 {
+pub(crate) fn random_strength(r: &mut dyn clustine_world::generation::Draws) -> i32 {
     let most = if r.next_float() < 0.04 { 5 } else { 3 };
     (1 + r.next_int(most) as i32).clamp(1, 5)
 }

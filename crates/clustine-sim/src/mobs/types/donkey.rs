@@ -33,7 +33,11 @@ pub(crate) const EQUINE: Equine = Equine {
 };
 
 /// `AbstractChestedHorse.randomizeAttributes(r)`: its health alone, of two draws.
-pub(crate) fn randomize_chested(mob: &mut Mob, kind: u16, r: &mut Random) {
+pub(crate) fn randomize_chested(
+    mob: &mut Mob,
+    kind: u16,
+    r: &mut dyn clustine_world::generation::Draws,
+) {
     let health = equine::generate_max_health(r);
     equine::set_base(mob, kind, ids::MAX_HEALTH, health);
 }

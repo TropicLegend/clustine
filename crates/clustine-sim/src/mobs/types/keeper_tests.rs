@@ -270,6 +270,11 @@ fn a_nautilus_s_spawn_draws_its_attack_cooldown_of_the_level_and_a_zombie_its_va
         let mut own = draws();
         let mut mob = nautilus_with(NAUTILUS, &Animal::default(), &NautilusState::default());
         of(NAUTILUS).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             game_time: 0,
             mob: &mut mob,
             level: &mut level,
@@ -295,6 +300,11 @@ fn a_nautilus_s_spawn_draws_its_attack_cooldown_of_the_level_and_a_zombie_its_va
         let mut own = draws();
         let mut mob = nautilus_with(ZOMBIE, &Animal::default(), &NautilusState::default());
         of(ZOMBIE).finalize_spawn(&mut Spawning {
+            reason: crate::mobs::types::SpawnReason::SpawnEgg,
+            group: &mut None,
+            structure: None,
+            moon_brightness: 1.0,
+            difficulty: (0.0, 0.0),
             game_time: 0,
             mob: &mut mob,
             level: &mut level,

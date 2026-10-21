@@ -286,6 +286,11 @@ fn sounds_of(out: &MobOutput) -> Vec<i32> {
 
 fn spawned(kind: u16, mob: &mut Mob, level: &mut Random, game_time: i64) {
     of(kind).finalize_spawn(&mut Spawning {
+        reason: crate::mobs::types::SpawnReason::SpawnEgg,
+        group: &mut None,
+        structure: None,
+        moon_brightness: 1.0,
+        difficulty: (0.0, 0.0),
         mob,
         level,
         own: &mut draws(99),

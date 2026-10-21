@@ -391,6 +391,11 @@ fn none_of_the_three_draws_anything_of_its_own_in_its_spawn_or_its_constructor()
         of(kind).construct(&mut mob, &mut own);
         for after in [false, true] {
             let mut spawn = Spawning {
+                reason: crate::mobs::types::SpawnReason::SpawnEgg,
+                group: &mut None,
+                structure: None,
+                moon_brightness: 1.0,
+                difficulty: (0.0, 0.0),
                 game_time: 0,
                 mob: &mut mob,
                 level: &mut level,
