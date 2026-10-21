@@ -231,6 +231,8 @@ pub struct PlayerFace {
     pub last_hurt_by: Option<(EntityId, u64)>,
     /// `hasMovedHorizontallyRecently`.
     pub moved_horizontally: bool,
+    /// `isSprinting` (an armadillo's scare reads it).
+    pub sprinting: bool,
 }
 
 impl PlayerFace {
@@ -265,6 +267,7 @@ impl PlayerFace {
             last_hurt_mob: None,
             last_hurt_by: None,
             moved_horizontally: false,
+            sprinting: false,
         }
     }
 

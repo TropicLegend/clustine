@@ -1152,14 +1152,17 @@ impl Region {
                     ender: transfer.ender.clone(),
                     experience: transfer.experience,
                 },
-                face: PlayerFace::of(
-                    &transfer.pose,
-                    transfer.keys.sneak,
-                    transfer.flying,
-                    &transfer.inventory,
-                    transfer.selected_slot,
-                    transfer.riding.map(|riding| riding.vehicle),
-                ),
+                face: PlayerFace {
+                    sprinting: transfer.keys.sprint,
+                    ..PlayerFace::of(
+                        &transfer.pose,
+                        transfer.keys.sneak,
+                        transfer.flying,
+                        &transfer.inventory,
+                        transfer.selected_slot,
+                        transfer.riding.map(|riding| riding.vehicle),
+                    )
+                },
                 let_go: true,
             };
             // Its mobs keep seeing the player until the next region's face comes.
@@ -3319,6 +3322,7 @@ impl Player {
         );
         face.sleeping = self.sleeping.map(|sleep| sleep.since);
         face.last_hurt_mob = self.last_hurt_mob;
+        face.sprinting = self.keys.sprint;
         face
     }
 

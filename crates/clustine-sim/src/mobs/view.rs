@@ -46,6 +46,8 @@ pub(crate) struct SeenPlayer {
     /// `hasMovedHorizontallyRecently`: they moved sideways between their last two
     /// ticks (a dolphin follows a boat whose rider does).
     pub(crate) moved_horizontally: bool,
+    /// `isSprinting`: an armadillo rolls up at a sprinting player near it.
+    pub(crate) sprinting: bool,
     /// Whether they live (`isAlive`).
     pub(crate) alive: bool,
     /// The game time they lay down at, while they sleep in a bed (`isSleeping`, and

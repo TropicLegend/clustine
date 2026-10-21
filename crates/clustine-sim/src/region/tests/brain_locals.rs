@@ -2,7 +2,7 @@
 //! `DoorBlock.setOpen` and `RamTarget`'s hit (`docs/groundwork/n7j-plan.md`, section 4.1
 //! item 5): a door opened with its other half, its sound and its event, and none where
 //! it is already open; a hit's knockback after the hurt, and none where the hurt did not
-//! take.
+//! take; and a player's sprint in the face mobs of other regions see.
 
 use clustine_data::{BlockState, entity_types, sounds};
 use clustine_world::{Entity, EntityChange, EntityId};
@@ -180,4 +180,35 @@ fn a_hits_knockback_pushes_the_hurt_mob_after_the_hurts_own() {
 fn a_hit_that_does_not_take_pushes_nothing() {
     // A dead mob's `hurtServer` refuses the hurt before anything else.
     assert_eq!(rammed(false, Some([0.5, -1.0, 0.0])), [0.0; 3]);
+}
+
+/// The face of the player 1 the region last wrote in `output`.
+fn written_face(output: &TickOutput) -> Option<crate::api::PlayerFace> {
+    output.stays.iter().rev().find_map(|note| match note {
+        StayNote::Has { face, .. } => Some(face.clone()),
+        _ => None,
+    })
+}
+
+/// The armadillo's scare reads `isSprinting` of players in other regions too, so their
+/// face carries it (`docs/groundwork/n7j-plan.md`, section 3 item 1).
+#[test]
+fn a_players_face_says_whether_they_sprint() {
+    let mut region = on_ticking_floor_with(&[]);
+    let keys = |sprint| {
+        moves(vec![numbered(
+            1,
+            PlayerInput::Keys(crate::api::Keys {
+                sprint,
+                ..Default::default()
+            }),
+        )])
+    };
+    let output = region.tick(&keys(true));
+    assert_eq!(written_face(&output).map(|face| face.sprinting), Some(true));
+    let output = region.tick(&keys(false));
+    assert_eq!(
+        written_face(&output).map(|face| face.sprinting),
+        Some(false)
+    );
 }

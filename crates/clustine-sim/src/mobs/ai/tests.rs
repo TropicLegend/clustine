@@ -137,6 +137,7 @@ pub(super) fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer 
         spectator: false,
         vehicle: None,
         moved_horizontally: false,
+        sprinting: false,
         alive: true,
         sleeping: None,
         last_hurt_mob: None,

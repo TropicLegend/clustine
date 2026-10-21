@@ -248,6 +248,7 @@ mod tests {
             last_hurt_mob: None,
             last_hurt_by: None,
             moved_horizontally: false,
+            sprinting: false,
         }
     }
 

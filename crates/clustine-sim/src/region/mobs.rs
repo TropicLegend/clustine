@@ -515,6 +515,7 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         spectator: face.game_mode == 3,
         vehicle: face.vehicle,
         moved_horizontally: face.moved_horizontally,
+        sprinting: face.sprinting,
         alive: face.alive,
         sleeping: face.sleeping,
         last_hurt_mob: face.last_hurt_mob,
