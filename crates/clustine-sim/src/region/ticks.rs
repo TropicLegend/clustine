@@ -514,8 +514,13 @@ impl Region {
         if self.sensor_tick(pos, state, output) {
             return;
         }
-        // Frogspawn hatches, or goes where it cannot stay (`frogspawn.rs`).
-        if self.frogspawn_tick(pos, state, output) {
+        // Frogspawn hatches, or goes where it cannot stay (`frogspawn.rs`); a sniffer
+        // egg cracks or hatches (`sniffer_eggs.rs`); a dried ghast takes water
+        // (`dried_ghasts.rs`).
+        if self.frogspawn_tick(pos, state, output)
+            || self.sniffer_egg_tick(pos, state, output)
+            || self.dried_ghast_tick(pos, state, output)
+        {
             return;
         }
         // `SpeleothemBlock.tick`: a stalagmite that its support left goes, with its

@@ -557,7 +557,8 @@ fn prepare(tick: &mut MobTick<'_>) {
     let id = i32::from(kind);
     tick.living.fall_damage_immune = entity_in_tag(id, "minecraft:fall_damage_immune");
     tick.living.landing = landing(kind, &tick.mob);
-    tick.living.breathes_under_water = entity_in_tag(id, "minecraft:can_breathe_under_water");
+    tick.living.breathes_under_water = entity_in_tag(id, "minecraft:can_breathe_under_water")
+        || tick.mob_type.breathes_under_water(&tick.mob);
     // `canFreeze`: not of the types that do not freeze, and wearing nothing that keeps
     // the cold off.
     let worn = &tick.mob.body.equipment.slots;

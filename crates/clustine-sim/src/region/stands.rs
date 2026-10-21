@@ -635,6 +635,7 @@ impl Region {
                 cart: Default::default(),
                 boat: Default::default(),
                 steps: Default::default(),
+                leash_holder_time: 0,
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {

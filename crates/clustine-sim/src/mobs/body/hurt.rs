@@ -175,7 +175,7 @@ impl Struck<'_> {
             * self.mob_type.voice_pitch_factor();
         self.out.events.push(Event::Sound {
             sound,
-            volume: self.mob_type.sound_volume(),
+            volume: self.mob_type.sound_volume_of(self.mob),
             pitch,
         });
     }
@@ -221,6 +221,10 @@ pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount
 /// `LivingEntity.hurtServer`, before what a type adds after it, but for what the type
 /// does first once the hurt is not refused for its being invulnerable to it.
 fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
+    // The type's own refusal before anything (an allay's liked player).
+    if struck.mob_type.refuses_hurt(struck.mob, source) {
+        return false;
+    }
     if invulnerable_to(struck, source) {
         return false;
     }
@@ -431,6 +435,8 @@ pub(crate) fn die(struck: &mut Struck<'_>, source: &DamageSource) {
     }
     // A player's kill counts no score, and a named mob logs nothing: Clustine keeps
     // neither scores nor names.
+    // The type's own `die` before `LivingEntity`'s (a sniffer idle again).
+    struck.mob_type.before_die(struck.mob);
     struck.mob.body.vitals.died_from = Some(struck.moment);
     struck
         .out

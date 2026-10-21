@@ -733,7 +733,11 @@ impl Region {
         };
         let friction = self.angular_friction(boat, chunk);
         let mut momentum = leash.angular_momentum.0;
-        let snapped = leashes::leash_tick(
+        // A boat is held by four (`supportQuadLeash`) where its holder holds by four, and
+        // tells such a holder so (`notifyLeashHolder`).
+        self.notify_leash_holder(held.key, true);
+        let spring = self.spring_of(boat.kind, true, held.key);
+        let snapped = leashes::leash_tick_with(
             &leashee,
             &held.end,
             &mut boat.body.motion,
@@ -741,7 +745,9 @@ impl Region {
             &mut boat.yaw,
             &mut momentum,
             friction,
-        );
+            spring,
+        )
+        .snapped;
         if snapped {
             let [x, y, z] = held.end.position;
             output.events.push(RegionEvent::Sound {

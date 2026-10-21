@@ -518,9 +518,15 @@ fn golden_dandelion(used: &mut Used<'_>) -> Interaction {
     Interaction::Success
 }
 
-/// A baby made by a breeding or an egg: `setBaby(true)` at its first moment.
+/// A baby made by a breeding or an egg: `setBaby(true)` at its first moment, of the
+/// usual start age unless its type made it a baby of its own (`getBabyStartAge`: a
+/// snifflet's twice as long).
 pub(crate) fn made_baby(mob: &mut Mob) {
-    update(mob, |animal| animal.set_age(BABY_START_AGE, 0));
+    update(mob, |animal| {
+        if !animal.is_baby() {
+            animal.set_age(BABY_START_AGE, 0);
+        }
+    });
 }
 
 /// A held stack of `item`, as tests and the tables of food name it.

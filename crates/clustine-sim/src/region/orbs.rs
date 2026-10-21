@@ -318,6 +318,7 @@ impl Region {
                 cart: Default::default(),
                 boat: Default::default(),
                 steps: Default::default(),
+                leash_holder_time: 0,
             },
         );
         self.write_orb(&entity, after, position, output);

@@ -166,6 +166,10 @@ pub(crate) enum Travel {
     Swims { speed: f32, sinks: Sinks },
     /// `travel` that is `move(SELF, motion)` and nothing more (a squid's).
     Bare,
+    /// `travelFlying(input, water, lava, air)` (an allay's, a happy ghast's): no gravity,
+    /// `moveRelative` at the speed of where it is, its move, and its motion slowed to
+    /// 0.8 in water, a half in lava and 0.91 in the air.
+    Flying { water: f32, lava: f32, air: f32 },
 }
 
 /// Whether a swimmer's own `travelInWater` sinks it after its move.

@@ -101,6 +101,49 @@ impl Region {
         self.remove_entity(item, hops, chunk, output);
     }
 
+    /// `take(item, count)` of `count` of the region's item `item` by the mob `taker`: shown
+    /// as taken, and the rest left lying, or the item gone where none is left.
+    pub(crate) fn item_partly_taken_by_mob(
+        &mut self,
+        taker: EntityId,
+        item: EntityId,
+        count: i32,
+        output: &mut TickOutput,
+    ) {
+        let Some((chunk, record)) = self.find_entity(item) else {
+            return;
+        };
+        let EntityData::Item { stack, .. } = record.data else {
+            return;
+        };
+        if count >= stack.count {
+            self.item_taken_by_mob(taker, item, count, output);
+            return;
+        }
+        let mut left = record.clone();
+        if let EntityData::Item { stack, .. } = &mut left.data {
+            stack.count -= count;
+        }
+        output.events.push(RegionEvent::ItemTaken {
+            item,
+            collector: taker,
+            count,
+            chunk,
+        });
+        let data = left.data.clone();
+        self.commit_entity(
+            chunk,
+            item,
+            vec![clustine_world::EntityField::Data(data)],
+            output,
+        );
+        output
+            .events
+            .push(RegionEvent::EntityTracked(super::items::tracked(
+                &left, 0, true,
+            )));
+    }
+
     /// The fish of the region's own among `followers` follow `leader`, which gains
     /// `leader_gains` in its school where the region holds it (`startFollowing` of each,
     /// written by another fish's gathering).

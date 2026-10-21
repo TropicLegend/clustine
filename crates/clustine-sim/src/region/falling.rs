@@ -497,6 +497,7 @@ impl Region {
                 cart: Default::default(),
                 boat: Default::default(),
                 steps: Default::default(),
+                leash_holder_time: 0,
             },
         );
         let mut flags = 0;

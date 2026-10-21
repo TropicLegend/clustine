@@ -159,6 +159,38 @@ impl Region {
             self.add_orb(this.position, value, output);
             return true;
         }
+        if let Some(laid) = types::of(this.kind).laid_from_breeding() {
+            // A sniffer's breeding (`Sniffer.spawnChildFromBreeding`): an item laid at its
+            // feet, then `finalizeSpawnChildFromBreeding` (the cooldowns and the love as
+            // ever, the hearts, an orb of one to seven), then its sound, whose pitch is two
+            // draws of its own; the item added last. No child.
+            let value = stream.next_int(7) as i32 + 1;
+            let pitch = (stream.next_float() - stream.next_float()) * 0.2 + laid.pitch_base;
+            self.entity_drew(this.key, stream.draws_since(&start));
+            self.update_animal(this.key, |shared, now| shared.bred(now), output);
+            if self.find_entity(partner).is_some() {
+                self.update_animal(partner, |shared, now| shared.bred(now), output);
+            }
+            if let Some((chunk, _)) = self.find_entity(this.key) {
+                output.events.push(RegionEvent::EntityEvent {
+                    entity: this.key,
+                    chunk,
+                    event: 18,
+                });
+            }
+            self.add_orb(this.position, value, output);
+            let [x, y, z] = this.position;
+            output.events.push(RegionEvent::Sound {
+                sound: laid.sound,
+                source: crate::physics::item::SOUND_SOURCE_NEUTRAL,
+                position: clustine_world::Vec3::new(x, y, z),
+                volume: 1.0,
+                pitch,
+                except: None,
+            });
+            self.spawn_item(this.position, laid.stack, output);
+            return true;
+        }
         let biome = self.biome_at(crate::physics::containing(this.position));
         let partner_kind = match self.find_entity(partner) {
             Some((_, found)) => found.kind,

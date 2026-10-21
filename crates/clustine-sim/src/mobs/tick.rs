@@ -84,6 +84,10 @@ pub(crate) enum Local {
     /// `take(item, count)` and the item's `discard()`: the region's item entity `item`
     /// taken whole by the mob (a dolphin's pick-up), shown to clients as taken.
     TakeItem { item: EntityId, count: i32 },
+    /// `take(item, count)` of `count` of the region's item entity `item`, the rest left
+    /// lying (an allay's pick-up into a slot with room for only some), or gone where it
+    /// took all.
+    TakeSome { item: EntityId, count: i32 },
     /// `startFollowing(leader)` of each of `followers` (fish of the region's own, never
     /// the mob itself), and `leader_gains` more in the leader's school (none where the
     /// mob leads, which it counts itself).

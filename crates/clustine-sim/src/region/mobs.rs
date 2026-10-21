@@ -152,6 +152,13 @@ impl MobWorld for View<'_> {
         Some(seen(known.player, known.entity, &face))
     }
 
+    fn motion_blocking_height(&self, x: i32, z: i32) -> Option<i32> {
+        let pos = BlockPos::new(x, 0, z);
+        let chunk = self.region.readable_chunk(pos.chunk())?;
+        let (x, z) = pos.in_chunk();
+        Some(chunk.min_y() + i32::from(chunk.heights().motion_blocking[z << 4 | x]))
+    }
+
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
         let chunk = self.region.readable_chunk(pos.chunk())?;
         let (x, z) = pos.in_chunk();
@@ -281,8 +288,19 @@ impl Region {
             yaw,
             pitch,
             mut out,
+            mob_type,
             ..
         } = ticking;
+        // What the type's tick does with the time a quad leashee keeps it a holder (a
+        // happy ghast's `leashHolderTime`, kept in the region's memory).
+        let mut holder_time = self
+            .entity_memory
+            .get(&key)
+            .map_or(0, |memory| memory.leash_holder_time);
+        mob_type.leash_holder_tick(&mut mob, &mut holder_time);
+        if holder_time != 0 || self.entity_memory.contains_key(&key) {
+            self.entity_memory.entry(key).or_default().leash_holder_time = holder_time;
+        }
         // Its writes to others come after its own record is written, so that what they
         // do to it (a breeding it asked for) is not written over.
         let locals = std::mem::take(&mut out.local);
@@ -354,6 +372,7 @@ impl Region {
                 cart: Default::default(),
                 boat,
                 steps,
+                leash_holder_time: kept.map_or(0, |memory| memory.leash_holder_time),
             },
         );
         let to = match self.relocate(position, before.position, &mut after, output) {

@@ -280,6 +280,11 @@ impl Region {
                 position: pos,
                 data,
             }),
+            Did::Spawn { kind, mob } => {
+                if let Some(made) = self.new_mob(kind, *mob, entity.position, 0.0, 0.0) {
+                    self.add_made_mob(made, output);
+                }
+            }
             Did::HurtByPlayer { amount } => {
                 let source = DamageSource::by(
                     DamageType::PLAYER_ATTACK,
@@ -474,7 +479,7 @@ impl Region {
     }
 
     /// `Mob.attemptToShearEquipment`: shears take off the first thing the mob `entity`
-    /// wears that may be shorn (a saddle), dropped at the middle of its passengers'
+    /// wears that may be shorn (a harness, a saddle), dropped at the middle of its passengers'
     /// seats with its shearing sound and `GameEvent.SHEAR`. Whether there was one.
     pub(crate) fn shear_equipment(
         &mut self,
@@ -486,14 +491,26 @@ impl Region {
         let Ok(mut mob) = Mob::decode(&entity.data) else {
             return false;
         };
-        // Of the slots in `EquipmentSlot.VALUES` order, a saddle's alone may be shorn.
+        // Of the slots in `EquipmentSlot.VALUES` order, the first that holds what may be
+        // shorn: a harness on the body (a happy ghast's), a saddle.
+        let body = usize::from(slots::BODY);
         let saddle = usize::from(slots::SADDLE);
-        let Some(stack) =
+        let harness = mob.body.equipment.slots[body]
+            .filter(|stack| clustine_blocks::data::item_in_tag(stack.item, "minecraft:harnesses"));
+        let (slot, stack, sound) = if let Some(stack) = harness {
+            (
+                body,
+                stack,
+                clustine_data::sounds::ENTITY_HAPPY_GHAST_UNEQUIP,
+            )
+        } else if let Some(stack) =
             mob.body.equipment.slots[saddle].filter(|stack| stack.item == items::SADDLE)
-        else {
+        {
+            (saddle, stack, clustine_data::sounds::ITEM_SADDLE_UNEQUIP)
+        } else {
             return false;
         };
-        mob.body.equipment.slots[saddle] = None;
+        mob.body.equipment.slots[slot] = None;
         self.commit_mob(entity, chunk, &mob, output);
         if let Some(vibration) = Vibration::named("minecraft:shear") {
             let context = Context::of(Some(Source::of(player)), None);
@@ -515,7 +532,7 @@ impl Region {
         let at = crate::physics::add(entity.position, offset);
         self.spawn_item(at, stack, output);
         output.events.push(RegionEvent::Sound {
-            sound: clustine_data::sounds::ITEM_SADDLE_UNEQUIP,
+            sound,
             source: SOUND_SOURCE_NEUTRAL,
             position: clustine_world::Vec3::new(
                 entity.position[0],

@@ -16,13 +16,15 @@
 //! bat) are animals but for the bat; the bear and the bee are angry as [`neutral`] has
 //! it.
 //!
-//! The amphibians (part N7j's B: the axolotl, the frog and the tadpole) have brains,
-//! which come with N7j's machinery; until then each has its body, its state and its
-//! interactions, and its brain's seams named in its module.
-//! The keepers (part N7j E: the nautilus, the zombie nautilus and the copper golem) have
-//! brains in the game; until the brain's machinery comes they have no mind at all, and
-//! each module names the seam its provider will be wired at.
+//! The animals of N7j have brains, which come with its machinery: until then each has
+//! its body, its state and its interactions, and its module names the seam its brain's
+//! provider will be wired at. They are the amphibians (part B: the axolotl, the frog and
+//! the tadpole), the highland animals (part C: the goat, the camel, the camel husk and
+//! the armadillo), the fliers (part D: the sniffer, the allay and the happy ghast, whose
+//! grown adult the game drives by goals) and the keepers (part E: the nautilus, the
+//! zombie nautilus and the copper golem).
 
+pub(crate) mod allay;
 #[cfg(test)]
 mod amphibian_tests;
 pub(crate) mod animal;
@@ -38,9 +40,12 @@ pub(crate) mod dolphin;
 pub(crate) mod donkey;
 pub(crate) mod equine;
 pub(crate) mod fish;
+#[cfg(test)]
+mod flier_tests;
 pub(crate) mod fox;
 pub(crate) mod frog;
 pub(crate) mod glow_squid;
+pub(crate) mod happy_ghast;
 pub(crate) mod horse;
 #[cfg(test)]
 mod keeper_tests;
@@ -59,6 +64,7 @@ pub(crate) mod rabbit;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod skeleton_horse;
+pub(crate) mod sniffer;
 pub(crate) mod squid;
 pub(crate) mod tadpole;
 pub(crate) mod tamable;
@@ -538,6 +544,75 @@ pub(crate) trait MobType: Sync {
             fish::set_from_bucket(kind, mob);
         }
     }
+    /// What the type's `die` does before `LivingEntity`'s (a sniffer is idle again).
+    fn before_die(&self, mob: &mut Mob) {
+        let _ = mob;
+    }
+
+    /// Whether the type's `hurtServer` refuses `source` before anything else (an allay
+    /// is not hurt by the player it likes).
+    fn refuses_hurt(&self, mob: &Mob, source: &DamageSource) -> bool {
+        let _ = (mob, source);
+        false
+    }
+
+    /// `spawnChildFromBreeding` of a type that lays an item instead of a child (a
+    /// sniffer's egg): the item, laid at the parent's feet, and its sound.
+    fn laid_from_breeding(&self) -> Option<Laid> {
+        None
+    }
+
+    /// `supportQuadLeash()`: whether a lead holds it by four points where its holder
+    /// holds by four (`supportQuadLeashAsHolder`): `AbstractHorse`'s but a llama's.
+    fn quad_leash(&self, kind: u16) -> bool {
+        equine::is_equine(kind) && !equine::is_llama(kind)
+    }
+
+    /// `supportQuadLeashAsHolder()`: a happy ghast's.
+    fn quad_leash_holder(&self) -> bool {
+        false
+    }
+
+    /// `leashElasticDistance()` and `leashSnapDistance()` of it leashed: 6 and 12.
+    fn leash_distances(&self) -> (f64, f64) {
+        (6.0, 12.0)
+    }
+
+    /// What its `onElasticLeashPull` does beyond the fall it stops (a happy ghast's move
+    /// control waits).
+    fn on_elastic_leash_pull(&self, mob: &mut Mob) {
+        let _ = mob;
+    }
+
+    /// What its tick does with the time a quad leashee keeps it a leash holder
+    /// (`leashHolderTime`, which the game does not save and the region keeps in its
+    /// memory), after the whole of its tick: nothing but for a happy ghast.
+    fn leash_holder_tick(&self, mob: &mut Mob, time: &mut i32) {
+        let _ = (mob, time);
+    }
+
+    /// `canBreatheUnderwater()` beyond `#can_breathe_under_water` (a ghastling).
+    fn breathes_under_water(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// `getSoundVolume()` where the type's depends on the mob (a ghastling's 1, a happy
+    /// ghast's 4): [`MobType::sound_volume`] by default.
+    fn sound_volume_of(&self, mob: &Mob) -> f32 {
+        let _ = mob;
+        self.sound_volume()
+    }
+}
+
+/// What a breeding lays instead of a child ([`MobType::laid_from_breeding`]): the item,
+/// and the sound it is laid with, at a pitch about `pitch_base` drawn of the parent's own
+/// random (`(a - b) * 0.2 + pitch_base`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Laid {
+    pub(crate) stack: ItemStack,
+    pub(crate) sound: i32,
+    pub(crate) pitch_base: f32,
 }
 
 /// One of the two of a breeding, as `canMate` reads it: its record and its mob.
@@ -637,6 +712,8 @@ pub(crate) enum Did {
     GrowUp,
     /// `BehaviorUtils.throwItem`: an item thrown from `at` with its motion set after its
     /// constructor's draws (what a copper golem holds, taken by an empty hand).
+    /// `BehaviorUtils.throwItem`: an item at `at` whose motion is set after its
+    /// constructor's draws (an allay's gathered items, thrown at its own feet).
     Throw {
         stack: ItemStack,
         at: Vec3,
@@ -645,6 +722,9 @@ pub(crate) enum Did {
     },
     /// `level.levelEvent(kind, pos, data)` (a copper golem waxed or scraped).
     LevelEvent { kind: i32, pos: BlockPos, data: i32 },
+    /// `addFreshEntity` of a mob of `kind` made where the used mob stands, with no
+    /// `finalizeSpawn` (an allay's duplicate).
+    Spawn { kind: u16, mob: Box<Mob> },
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
@@ -762,6 +842,9 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::NAUTILUS => &nautilus::Nautilus,
         entity_types::ZOMBIE_NAUTILUS => &zombie_nautilus::ZombieNautilus,
         entity_types::COPPER_GOLEM => &copper_golem::CopperGolem,
+        entity_types::SNIFFER => &sniffer::Sniffer,
+        entity_types::ALLAY => &allay::Allay,
+        entity_types::HAPPY_GHAST => &happy_ghast::HappyGhast,
         _ => return None,
     };
     Some(found)

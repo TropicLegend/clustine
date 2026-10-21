@@ -224,6 +224,9 @@ impl Region {
         // A sensor that comes with power and no tick loses it (`SculkSensorBlock.onPlace`,
         // `sculk.rs`).
         self.sensor_on_place(pos, state, old, output);
+        // A sniffer egg, placed or cracked, waits for its next stage
+        // (`SnifferEggBlock.onPlace`, `sniffer_eggs.rs`).
+        self.sniffer_egg_on_place(pos, state, output);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up, a dragon egg five (`FallingBlock.onPlace`,
         // `BrushableBlock`'s), and scaffolding one on how far it is held

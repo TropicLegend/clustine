@@ -74,6 +74,11 @@ impl Region {
             self.drop_leash(key, true, output);
             return None;
         };
+        // `whenLeashedTo`'s `notifyLeashHolder`: a happy ghast holding it by four shows it.
+        let mob_type = types::of(entity.kind);
+        let quad = mob_type.quad_leash(entity.kind);
+        self.notify_leash_holder(held.key, quad);
+        let spring = self.spring_of(entity.kind, quad, held.key);
         // `PathfinderMob.whenLeashedTo`: home at the holder's block, as far as the
         // elastic distance less one.
         let [x, y, z] = held.end.position;
@@ -100,7 +105,7 @@ impl Region {
         };
         let mut momentum = leash.angular_momentum.0;
         let friction = self.mob_angular_friction(&record, chunk);
-        let snapped = leashes::leash_tick(
+        let ticked = leashes::leash_tick_with(
             &leashee,
             &held.end,
             &mut pull.motion,
@@ -108,8 +113,12 @@ impl Region {
             &mut pull.yaw,
             &mut momentum,
             friction,
+            spring,
         );
-        if snapped {
+        if ticked.pulled {
+            mob_type.on_elastic_leash_pull(mob);
+        }
+        if ticked.snapped {
             output.events.push(RegionEvent::Sound {
                 sound: sounds::ITEM_LEAD_BREAK,
                 source: SOUND_SOURCE_NEUTRAL,
@@ -241,6 +250,9 @@ impl Region {
                     except: None,
                 }),
                 Local::TakeItem { item, count } => self.item_taken_by_mob(key, item, count, output),
+                Local::TakeSome { item, count } => {
+                    self.item_partly_taken_by_mob(key, item, count, output);
+                }
                 Local::JoinSchool {
                     leader,
                     followers,

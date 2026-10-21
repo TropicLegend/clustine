@@ -60,6 +60,10 @@ pub(crate) struct Memory {
     /// A mob's walk towards its next step (`moveDist`, `nextStep`), which the game
     /// does not save either: after a take-in it starts again, as at the game's load.
     pub(crate) steps: StepCount,
+    /// A happy ghast's `leashHolderTime`, which a leashee held by four sets to five every
+    /// tick and the ghast's tick counts down (`leashes.rs`); the game does not save it, so
+    /// it starts again at nothing at every take-in.
+    pub(crate) leash_holder_time: i32,
 }
 
 /// What the game keeps of a boat in memory and does not save: the motion's height at
@@ -485,6 +489,7 @@ impl Region {
                 cart: CartMemory::default(),
                 boat: BoatMemory::default(),
                 steps: StepCount::default(),
+                leash_holder_time: 0,
             },
         );
         let mut after = after;

@@ -306,7 +306,7 @@ impl Region {
                 sound,
                 source: SOUND_SOURCE_NEUTRAL,
                 position: clustine_world::Vec3::new(at[0], at[1], at[2]),
-                volume: mob_type.sound_volume(),
+                volume: mob_type.sound_volume_of(&mob),
                 pitch,
                 except: None,
             });

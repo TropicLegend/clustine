@@ -2,7 +2,14 @@
 //! leash's part of `Entity.interact`; `docs/groundwork/n5-brief.md`, sections 0.8, 0.17,
 //! 0.36 and 7; step N5g of `docs/groundwork/n5-plan.md`, with its section 7 item 3).
 //! Boats are the only kind of N5 a leash holds; anything holds one: a player, a fence's
-//! knot, another boat.
+//! knot, another boat, a mob.
+//!
+//! A holder that holds by four points (`supportQuadLeashAsHolder`: a happy ghast) holds a
+//! leashee that is held by four (`supportQuadLeash`: a boat, a horse, a sniffer) by four
+//! springs, a quarter of each; the leashee then tells it every tick that it holds one
+//! (`notifyLeashHolder`), which a happy ghast shows (`IS_LEASH_HOLDER`,
+//! `docs/groundwork/n7j-plan.md`, section 8 item 10). A leashee's own distances are its
+//! type's (a happy ghast's 10 and 16).
 //!
 //! A leash's holder is kept by key, or, for a knot, by its fence's position, as the
 //! game saves it, so that a knot found or made again at the fence holds what was tied
@@ -69,6 +76,34 @@ const ELASTIC_DISTANCE: f64 = 6.0;
 /// height and width: where a single leash is tied on the leashee and on its holder.
 const ENTITY_ATTACHMENT_POINT: Vec3 = [0.0, 0.5, 0.5];
 const LEASHER_ATTACHMENT_POINT: Vec3 = [0.0, 0.5, 0.0];
+
+/// `SHARED_QUAD_ATTACHMENT_POINTS`: where the four springs of a quad leash are tied, on
+/// both ends alike, in parts of the width, height and width.
+const QUAD_ATTACHMENT_POINTS: [Vec3; 4] = [
+    [-0.5, 0.5, 0.5],
+    [-0.5, 0.5, -0.5],
+    [0.5, 0.5, -0.5],
+    [0.5, 0.5, 0.5],
+];
+
+/// How a leash pulls: by four springs or one, and its leashee's elastic and snap
+/// distances (`leashElasticDistance`, `leashSnapDistance`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Spring {
+    pub(crate) quad: bool,
+    pub(crate) elastic: f64,
+    pub(crate) snap: f64,
+}
+
+impl Spring {
+    /// The single spring of every N5 holder, at the default distances.
+    #[cfg(test)]
+    pub(crate) const SINGLE: Spring = Spring {
+        quad: false,
+        elastic: ELASTIC_DISTANCE,
+        snap: SNAP_DISTANCE,
+    };
+}
 
 /// `AXIS_SPECIFIC_ELASTICITY`.
 const AXIS_SPECIFIC_ELASTICITY: Vec3 = [0.8, 0.2, 0.8];
@@ -153,16 +188,17 @@ pub(crate) fn leash_distance(leashee: &End, holder: &End) -> f64 {
 fn spring(
     holder_point: Vec3,
     leashee_point: Vec3,
+    elastic: f64,
     movement: Vec3,
     offset: Vec3,
 ) -> Option<(Vec3, f64)> {
     let length = distance(leashee_point, holder_point);
-    if length < ELASTIC_DISTANCE {
+    if length < elastic {
         return None;
     }
     let mut force = physics::scale(
         physics::normalize(physics::sub(holder_point, leashee_point)),
-        length - ELASTIC_DISTANCE,
+        length - elastic,
     );
     // `Wrench.torqueFromForce(offset, force)`.
     let torque = offset[2] * force[0] - offset[0] * force[2];
@@ -176,11 +212,25 @@ fn spring(
 /// uses: where the spring pulls, the wrench's torque turns the angular momentum by ten
 /// times itself, and the leashee's motion gains the force by axis and a part of the
 /// difference of the two movements. Whether it pulled.
+#[cfg(test)]
 pub(crate) fn elastic_pull(
     leashee: &End,
     holder: &End,
     motion: &mut Vec3,
     momentum: &mut f64,
+) -> bool {
+    elastic_pull_with(leashee, holder, motion, momentum, Spring::SINGLE)
+}
+
+/// `checkElasticInteractions(holder, data)` of a leash that pulls as `kind` says: each
+/// of its springs (four where both ends hold by four, else one) where it is stretched,
+/// their wrenches summed in order and a quarter of them taken for four; then as for one.
+pub(crate) fn elastic_pull_with(
+    leashee: &End,
+    holder: &End,
+    motion: &mut Vec3,
+    momentum: &mut f64,
+    kind: Spring,
 ) -> bool {
     // `computeElasticInteraction`: the leashee's own movement is the one its springs
     // read.
@@ -196,23 +246,40 @@ pub(crate) fn elastic_pull(
         f64::from(holder.height),
         f64::from(holder.width),
     ];
-    let offset = y_rot(
-        multiply(ENTITY_ATTACHMENT_POINT, leashee_size),
-        -leashee_angle,
-    );
-    let leashee_point = physics::add(leashee.position, offset);
-    let holder_offset = y_rot(
-        multiply(LEASHER_ATTACHMENT_POINT, holder_size),
-        -holder_angle,
-    );
-    let holder_point = physics::add(holder.position, holder_offset);
-    let Some((force, torque)) = spring(holder_point, leashee_point, leashee.movement, offset)
-    else {
-        return false;
+    let (leashee_points, holder_points): (&[Vec3], &[Vec3]) = if kind.quad {
+        (&QUAD_ATTACHMENT_POINTS, &QUAD_ATTACHMENT_POINTS)
+    } else {
+        (&[ENTITY_ATTACHMENT_POINT], &[LEASHER_ATTACHMENT_POINT])
     };
-    // `Wrench.accumulate` of the one wrench, summed from nothing, and `scale(1.0)`.
-    let force = physics::scale([0.0 + force[0], 0.0 + force[1], 0.0 + force[2]], 1.0);
-    let torque = (0.0 + torque) * 1.0;
+    let mut wrenches = Vec::with_capacity(leashee_points.len());
+    for (leashee_at, holder_at) in leashee_points.iter().zip(holder_points) {
+        let offset = y_rot(multiply(*leashee_at, leashee_size), -leashee_angle);
+        let leashee_point = physics::add(leashee.position, offset);
+        let holder_offset = y_rot(multiply(*holder_at, holder_size), -holder_angle);
+        let holder_point = physics::add(holder.position, holder_offset);
+        if let Some(wrench) = spring(
+            holder_point,
+            leashee_point,
+            kind.elastic,
+            leashee.movement,
+            offset,
+        ) {
+            wrenches.push(wrench);
+        }
+    }
+    if wrenches.is_empty() {
+        return false;
+    }
+    // `Wrench.accumulate`, summed from nothing in order, and its `scale`.
+    let mut sum = [0.0_f64; 3];
+    let mut torque = 0.0_f64;
+    for (force, turn) in wrenches {
+        sum = [sum[0] + force[0], sum[1] + force[1], sum[2] + force[2]];
+        torque += turn;
+    }
+    let share = if kind.quad { 0.25 } else { 1.0 };
+    let force = physics::scale(sum, share);
+    let torque = torque * share;
     *momentum += TORSIONAL_ELASTICITY * torque;
     let relative = physics::sub(holder.movement, leashee.movement);
     let pull = physics::add(
@@ -228,6 +295,7 @@ pub(crate) fn elastic_pull(
 /// elastic distance less both widths it pulls, and a pull stops a fall from counting
 /// beyond a block (`onElasticLeashPull`); and then, broken or not, the leashee turns by
 /// the angular momentum, which `friction` then slows.
+#[cfg(test)]
 pub(crate) fn leash_tick(
     leashee: &End,
     holder: &End,
@@ -237,23 +305,57 @@ pub(crate) fn leash_tick(
     momentum: &mut f64,
     friction: f32,
 ) -> bool {
+    leash_tick_with(
+        leashee,
+        holder,
+        motion,
+        fall_distance,
+        yaw,
+        momentum,
+        friction,
+        Spring::SINGLE,
+    )
+    .snapped
+}
+
+/// What a leash's tick did: whether it broke, and whether it pulled
+/// (`onElasticLeashPull`, which a type may add to).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ticked {
+    pub(crate) snapped: bool,
+    pub(crate) pulled: bool,
+}
+
+/// [`leash_tick`] of a leash that pulls as `kind` says ([`Spring`]).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`tickLeash`'s state of its leashee, and the leash's kind"
+)]
+pub(crate) fn leash_tick_with(
+    leashee: &End,
+    holder: &End,
+    motion: &mut Vec3,
+    fall_distance: &mut f64,
+    yaw: &mut f32,
+    momentum: &mut f64,
+    friction: f32,
+    kind: Spring,
+) -> Ticked {
     let length = leash_distance(leashee, holder);
-    let snapped = length > SNAP_DISTANCE;
-    if !snapped
-        && length > ELASTIC_DISTANCE - f64::from(holder.width) - f64::from(leashee.width)
-        && elastic_pull(leashee, holder, motion, momentum)
-    {
-        // `checkFallDistanceAccumulation`.
-        if motion[1] > -0.5 && *fall_distance > 1.0 {
-            *fall_distance = 1.0;
-        }
+    let snapped = length > kind.snap;
+    let pulled = !snapped
+        && length > kind.elastic - f64::from(holder.width) - f64::from(leashee.width)
+        && elastic_pull_with(leashee, holder, motion, momentum, kind);
+    // `checkFallDistanceAccumulation`.
+    if pulled && motion[1] > -0.5 && *fall_distance > 1.0 {
+        *fall_distance = 1.0;
     }
     let turned = (f64::from(*yaw) - *momentum) as f32;
     if turned.is_finite() {
         *yaw = turned;
     }
     *momentum *= f64::from(friction);
-    snapped
+    Ticked { snapped, pulled }
 }
 
 /// Who holds a leash, found.
@@ -340,15 +442,59 @@ impl Region {
         }
     }
 
-    /// `record` as an end of a leash.
+    /// `record` as an end of a leash, of its own size where its type gives one (a
+    /// ghastling's).
     pub(crate) fn record_end(&self, record: &Entity) -> End {
         let info = EntityTypeInfo::of(i32::from(record.kind));
+        let (width, height) = crate::mobs::types::own_size(record)
+            .map_or((info.width, info.height), |size| (size.width, size.height));
         End {
             position: record.position,
             yaw: record.yaw,
-            width: info.width,
-            height: info.height,
+            width,
+            height,
             movement: self.record_movement(record),
+        }
+    }
+
+    /// How the leash of a leashee of the type `kind` (held by four where `quad` says it
+    /// may be) pulls towards the holder `holder`: by four where the holder holds by four
+    /// (`supportQuadLeashAsHolder`), at the leashee's type's distances.
+    pub(crate) fn spring_of(&self, kind: u16, quad: bool, holder: EntityId) -> Spring {
+        let (elastic, snap) = if is_boat(kind) {
+            (ELASTIC_DISTANCE, SNAP_DISTANCE)
+        } else {
+            crate::mobs::types::of(kind).leash_distances()
+        };
+        Spring {
+            quad: quad && self.holds_by_four(holder),
+            elastic,
+            snap,
+        }
+    }
+
+    /// Whether the entity `key` holds leashes by four points (a mob of a type that does,
+    /// the region's own or a copy's).
+    fn holds_by_four(&self, key: EntityId) -> bool {
+        let kind = match self.find_entity(key) {
+            Some((_, record)) => Some(record.kind),
+            None => self.copied_entity(key).map(|(_, record)| record.kind),
+        };
+        kind.is_some_and(|kind| {
+            crate::mobs::types::is_built(kind) && crate::mobs::types::of(kind).quad_leash_holder()
+        })
+    }
+
+    /// `holder.notifyLeashHolder(leashee)` (`Leashable.whenLeashedTo`): a happy ghast of the
+    /// region's that a leashee held by four hangs on keeps showing that it holds one for
+    /// five more of its ticks (`leashHolderTime`, kept in the region's memory as the game
+    /// keeps it unsaved).
+    pub(crate) fn notify_leash_holder(&mut self, holder: EntityId, quad_leashee: bool) {
+        if quad_leashee && self.find_entity(holder).is_some() && self.holds_by_four(holder) {
+            self.entity_memory
+                .entry(holder)
+                .or_default()
+                .leash_holder_time = crate::mobs::types::happy_ghast::LEASH_HOLDER_TIME;
         }
     }
 
@@ -454,7 +600,11 @@ impl Region {
         let (Some(leashee), Some(held)) = (self.entity_end(key), self.entity_end(holder)) else {
             return false;
         };
-        leash_distance(&leashee.end, &held.end) <= SNAP_DISTANCE
+        // `leashSnapDistance()` of the leashee's type.
+        let snap = self.find_entity(key).map_or(SNAP_DISTANCE, |(_, record)| {
+            self.spring_of(record.kind, false, holder).snap
+        });
+        leash_distance(&leashee.end, &held.end) <= snap
     }
 
     /// `leashableInArea(centre, l -> l.getLeashHolder() == holder)` among the region's

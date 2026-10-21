@@ -112,7 +112,8 @@ fn class_rule(class: BlockClass) -> Option<Rule> {
         | C::GlazedTerracottaBlock
         | C::EnderChestBlock
         | C::ChiseledBookShelfBlock
-        | C::EndPortalFrameBlock => Rule::FacingAway,
+        | C::EndPortalFrameBlock
+        | C::DriedGhastBlock => Rule::FacingAway,
         C::CalibratedSculkSensorBlock => Rule::FacingAlong,
         C::ChestBlock => Rule::Chest,
         C::DiodeBlock => Rule::Diode,

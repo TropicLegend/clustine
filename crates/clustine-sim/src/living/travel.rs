@@ -29,11 +29,32 @@ impl Living {
             self.move_self(world, motion);
             return;
         }
+        if let Travel::Flying { water, lava, air } = self.travel_kind {
+            self.travel_flying(world, water, lava, air);
+            return;
+        }
         if self.body.in_water || self.in_lava() {
             self.travel_in_fluid(world);
         } else {
             self.travel_in_air(world);
         }
+    }
+
+    /// `travelFlying(input, water, lava, air)`: in water (looked at first), in lava,
+    /// else in the air, a push along its input at that speed, its move, and its motion
+    /// slowed by the fluid's or the air's drag (`0.8f`, `0.5`, `0.91f` widened).
+    fn travel_flying<R: Holds + ?Sized>(&mut self, world: &R, water: f32, lava: f32, air: f32) {
+        let (speed, drag) = if self.body.in_water {
+            (water, FLUID_VERTICAL_DRAG)
+        } else if self.in_lava() {
+            (lava, 0.5)
+        } else {
+            (air, 0.910_000_026_226_043_7)
+        };
+        self.move_relative(speed);
+        let motion = self.body.motion;
+        self.move_self(world, motion);
+        self.body.motion = physics::scale(self.body.motion, drag);
     }
 
     /// `travelInAir(Vec3.ZERO)`.
