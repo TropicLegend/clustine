@@ -101,10 +101,13 @@ impl Region {
         chunk: ChunkPos,
         output: &mut TickOutput,
     ) {
-        let Some(id) = self.player_with_entity(player) else {
-            return;
-        };
-        let Some(rider) = self.players.get(&id) else {
+        // One who is no longer the region's (handed over since the click) is declined,
+        // so that the seat does not wait for them (section 8 item 6: "still A's").
+        let Some((id, rider)) = self
+            .player_with_entity(player)
+            .and_then(|id| self.players.get(&id).map(|rider| (id, rider)))
+        else {
+            self.decline_seat(player, vehicle);
             return;
         };
         if rider.riding.is_some_and(|riding| riding.vehicle == vehicle) {
@@ -119,7 +122,8 @@ impl Region {
             sneaking: rider.keys.sneak,
         };
         let waiting = rider.riding.is_some_and(|riding| riding.pending.is_some());
-        let busy = rider.sleeping.is_some() || rider.menu.is_some() || waiting;
+        // A player who sneaks gets on nothing (`canRide`), as `mount_player` says.
+        let busy = rider.keys.sneak || rider.sleeping.is_some() || rider.menu.is_some() || waiting;
         // Within reach of what the region sees of it, with a block's slack for the ticks
         // the grant took.
         let reach = (CREATIVE_ENTITY_REACH + 1.0) * (CREATIVE_ENTITY_REACH + 1.0);

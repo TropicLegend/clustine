@@ -130,9 +130,10 @@ amended by them, and where this section and the ones above differ, this one hold
    a face. `SeatDeclined` is an `EntityUse` on the vehicle, taken in `entity_used` before
    the dispatch by kind, as `Blasted` is. B adds the seat only where it `sends_to` that
    block.
-6. **A's checks at the grant** (finding 8): still A's, not sleeping, no menu open, not on
-   their way to a vehicle, and within reach of A's copy of the vehicle with a block's
-   slack; one who rides another vehicle is let off it first and then handed over, as
+6. **A's checks at the grant** (finding 8): still A's (one handed over since is declined,
+   so that the seat does not wait for them), not sneaking, not sleeping, no menu open, not
+   on their way to a vehicle, and within reach of A's copy of the vehicle with a block's
+   slack (the tests from the specification found the first two missing); one who rides another vehicle is let off it first and then handed over, as
    `mount_player` dismounts then mounts.
 7. **Lost grants and gone edges** (findings 9, 10): a granted seat is kept 40 ticks, not
    100, and is invisible meanwhile (item 2); an edge B never knew lets it lapse.
