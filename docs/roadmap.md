@@ -330,10 +330,21 @@ leaves alone on a mount takes it out of the world with them and comes back on it
 game does, also when the server is stopped with them aboard
 ([design](groundwork/n7h-logout-on-a-mount.md), reviewed three times and tested from the
 specification). The animals with brains (N7j, [plan](groundwork/n7j-plan.md), reviewed):
-the axolotl, frog and tadpole, goat, camel and camel husk, armadillo, sniffer, allay, happy
-ghast, nautilus and zombie nautilus and the copper golem are built but for their brains,
-which the brain's machinery brings next; until then they stand where their eggs put them
-(the grown happy ghast, which the game drives by goals, floats about).
+the brain's engine (memories with their expiries, sensors, activities, the game's three
+kinds of behaviour and its gates, all kept in the mob's record and sensed again after a
+take-in), the shared sensors and behaviours, and the brains of the axolotl, frog and
+tadpole, goat, camel and camel husk, armadillo, sniffer, allay, happy ghast, nautilus and
+zombie nautilus and the copper golem, each tested from the game's rules, at a pinned line
+and through a restore. Hits a mob deals to a mob only a copy shows now reach it through
+its holder, a mob's last damage source is kept (so fire and lava panic an animal too), and
+a player's face says whether they sprint. Riding the camel, the nautilus and the happy
+ghast (part R, [research](groundwork/n7j-riding-research.md),
+[plan](groundwork/n7j-riding-plan.md), reviewed) has its region's side built and its
+types' side next; until then none of the three can be mounted. Named: a frog's tongue
+finds no prey until slimes come (N9); an allay does not hear note blocks or jukeboxes
+(entity listeners); a playing-dead axolotl gets no Regeneration (mob effects); a copper
+golem looks for chests by reading every block within its reach, which is slow but rare (it
+rests 140 ticks between searches).
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
@@ -373,9 +384,22 @@ which the brain's machinery brings next; until then they stand where their eggs 
    dawn. Wild animals: a fox sleeps by day and sneaks up on chickens, a panda rolls and
    sneezes, a polar bear defends its cub, bees fly between flowers and their hive, a bat
    hangs from a ceiling and flies off when you come near.
-0. Next in N7: the brains (axolotls, frogs, goats, camels, armadillos and the rest,
-   [plan](groundwork/n7j-plan.md)) and the mobs made with each new chunk
-   ([plan](groundwork/n7l-plan.md)), each plan reviewed.
+0. Animals with brains, from their spawn eggs. An axolotl in water hunts fish and plays
+   dead when hit (it lies still for ten seconds); a bucket of tropical fish tempts it.
+   Two frogs fed slimeballs breed, one lays frogspawn on water beside land, which hatches
+   tadpoles that grow into frogs of the biome's colour; frogs croak and make long jumps.
+   A goat leaps up ledges and, after a while, rams what stands before it (a mob, not a
+   creative player), sometimes dropping a horn. A camel sits down and gets up again, and
+   runs when hit. Sprint past an armadillo: it rolls up, peeks, and unrolls once you are
+   gone; spider eyes tempt it. A sniffer sniffs, digs and brings up torchflower seeds or
+   pitcher pods. Give an allay an item: it fetches more of it from the ground and brings
+   it to you. A ghastling follows you while you hold a snowball. A nautilus follows fish
+   and charges what hurt it. Place a carved pumpkin on a copper block for a copper golem
+   with its chest: it carries items from that chest to the chests about it, opening their
+   lids, and waits while you have one open. With pins, tempt each across x = 64 and breed
+   two across it.
+0. Next in N7: riding the camel, the nautilus and the happy ghast, and the mobs made with
+   each new chunk ([plan](groundwork/n7l-plan.md)).
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
