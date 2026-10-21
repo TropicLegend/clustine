@@ -393,3 +393,10 @@ the design stands amended by them:
    arrival's round through the store, a tick or two.
 4. **Leashes from a member to beyond the unit** are kept in the unit as they are; the
    probe of `UNLOADED_WITH_PLAYER` (section 5's last paragraph) is still to come.
+5. **The returning stay waits at the record's place**, the place it got off at, beside
+   its unit, not at the unit's seat (section 5 item 4): the tests from the specification
+   found that a wait which lapsed left the player at the seat, in the air or in the floor,
+   where section 13 item 4 wants them beside the unit. Waiting there from the first, the
+   client stands rather than hangs in the air until the unit comes and the seating puts
+   them in it, and a lapse leaves them where they are, which is the right place. The
+   specification's test of the seat is amended so.

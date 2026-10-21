@@ -895,9 +895,13 @@ fn a_unit_told_with_the_next_stay_is_taken_and_comes_back_under_them() {
         "waiting for `PENDING_FOR` ticks: {:?}",
         riding.pending
     );
+    // Waiting where they got off, beside the unit, not in its seat in the air: the
+    // lead's amendment of section 5 (section 14 item 5), which section 13 item 4's
+    // lapse asks for, the place a lapse leaves them at being the one they wait at.
     assert!(
-        across(state.pose.position, root.position) < 1.0,
-        "at the seat: {:?} on {:?}",
+        across(state.pose.position, root.position) < 2.0
+            && state.pose.position.y >= root.position[1],
+        "beside the unit: {:?} by {:?}",
         state.pose.position,
         root.position
     );
@@ -1065,7 +1069,6 @@ fn an_answer_with_a_unit_for_a_stay_no_longer_entering_takes_nothing() {
 /// Section 13 item 4: where the wait lapses, the player is put at the record's place,
 /// the dismount pose, and not left at the seat in the air.
 #[test]
-#[ignore = "finding: section 13 item 4 says a player whose re-entry's wait lapses is put at the record's place (the dismount pose, beside the boat); Clustine leaves them at the seat pose where they waited, at the boat's centre and below the floor's top"]
 fn a_player_whose_unit_never_comes_is_put_at_the_place_they_got_off_at() {
     let (mut scene, back) = put_back_in_the_home_region();
     for _ in 0..=PENDING_FOR {

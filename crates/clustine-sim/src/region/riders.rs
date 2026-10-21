@@ -446,9 +446,8 @@ impl Region {
     /// record (a `Took` in this tick's commit) and sent, every member at the `hops` it
     /// left with, to its root's chunk as an arrival, whose taker raises them. Where
     /// `seated`, the player's seat in it names the stay and is kept pending for it, and
-    /// the stay's riding and its seat's position are returned, the stay waiting for its
-    /// unit as one handed over before it (N5); else the seat is dropped and the unit
-    /// comes back empty.
+    /// the stay's riding is returned, the stay waiting for its unit as one handed over
+    /// before it (N5); else the seat is dropped and the unit comes back empty.
     pub(super) fn unit_returning(
         &mut self,
         id: PlayerId,
@@ -457,7 +456,7 @@ impl Region {
         unit: crate::api::Unit,
         seated: bool,
         output: &mut TickOutput,
-    ) -> Option<(PlayerRiding, clustine_world::Vec3)> {
+    ) -> Option<PlayerRiding> {
         let mut members = unit.0;
         let root = members.first()?.clone();
         let to = root.chunk();
@@ -480,17 +479,12 @@ impl Region {
                 left: PENDING_FOR,
                 edge,
             });
-            let point = passenger_point(member, index);
-            let attach = player_vehicle_point();
-            let at: [f64; 3] =
-                std::array::from_fn(|axis| (member.position[axis] + point[axis]) - attach[axis]);
-            let riding = PlayerRiding {
+            returned = Some(PlayerRiding {
                 vehicle: member.key,
                 chunk: to,
                 check: Default::default(),
                 pending: Some(PENDING_FOR),
-            };
-            returned = Some((riding, clustine_world::Vec3::new(at[0], at[1], at[2])));
+            });
         }
         for member in members {
             output.arrivals.push((to, member));

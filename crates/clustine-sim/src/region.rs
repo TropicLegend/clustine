@@ -1725,8 +1725,10 @@ impl Region {
             .unwrap_or_default();
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
-        // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). Below the
-        // world they come back without it, and it goes back empty.
+        // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). They wait at
+        // the place they got off at, standing beside it, and are seated when it comes;
+        // if it does not, they stand there (section 14 item 5). Below the world they
+        // come back without it, and it goes back empty.
         let below = kept.is_some_and(|(_, below)| below);
         let returning = answer
             .unit
@@ -1741,12 +1743,6 @@ impl Region {
                 place.selected_slot,
             ),
             Some((place, false)) => {
-                let seated = |mut pose: Pose| {
-                    if let Some((_, seat)) = &returning {
-                        pose.position = *seat;
-                    }
-                    pose
-                };
                 if let Some(to) = answer.holder {
                     // Another region held the place: the stay goes there without
                     // being placed here. Nothing is claimed and no entity is shown; the
@@ -1759,7 +1755,7 @@ impl Region {
                         respawn: None,
                         entity_id,
                         name,
-                        pose: seated(place.pose),
+                        pose: place.pose,
                         inventory: place.inventory.clone(),
                         selected_slot: place.selected_slot,
                         ender: ender.clone(),
@@ -1767,7 +1763,7 @@ impl Region {
                         hops: 1,
                         flying: place.flying,
                         attempt: Some(attempt),
-                        riding: returning.map(|(riding, _)| riding),
+                        riding: returning,
                         keys: Default::default(),
                         kept: Vec::new(),
                         experience: place.experience,
@@ -1780,14 +1776,14 @@ impl Region {
                 // the chunk it is claimed at the end of the tick, as for an arrival,
                 // and the player is let go when the store says it is another's.
                 (
-                    seated(place.pose),
+                    place.pose,
                     place.flying,
                     place.inventory.clone(),
                     place.selected_slot,
                 )
             }
         };
-        let riding = returning.map(|(riding, _)| riding);
+        let riding = returning;
         let player = Player {
             sleeping: None,
             respawn: None,
