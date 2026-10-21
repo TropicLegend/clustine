@@ -99,3 +99,53 @@ side of a pinned line clicks a boat on the other and drives it.
    before the grant does not ask twice.
 3. Whether the few ticks' wait is acceptable to a player, or a mount across a line should
    instead merge the two regions as an explosion at a line does (N7n).
+
+## 8. The review (2026-10-21) and what the design is now
+
+An independent review found six defects, five risks and four nits; the design stands
+amended by them, and where this section and the ones above differ, this one holds.
+
+1. **The first seating is a mount** (finding 1). `rider_arrived` only takes the kept
+   seat; it sends no `Rides` and no `entity_mount`, since a crossing rider rides already.
+   A seat granted across a line is marked **granted** (a flag of `Seat`, the entity
+   format's `Seat` raised with a default of not granted), and its first seating does what
+   `mount_player` does after the seat: the `entity_mount` vibration, `Rides` with the
+   pose, and the vehicle's head yaw for a `Did::Ride` (finding 12: the turn is B's, the
+   message carries none); the flag is then cleared.
+2. **A granted seat is not shown until it is taken** (finding 2). B's `Passengers`
+   reports leave out a granted, untaken seat, so no client (the clicker's own among them)
+   is shown the player seated before their region has decided; the edge is unchanged.
+3. **Idempotent on both sides** (finding 3, Q2). B grants nothing where any seat of the
+   vehicle already names the player. A ignores, without declining, a grant for the
+   vehicle it already rides or waits for. A decline drops only the granted seat of that
+   player on the vehicle it is addressed to.
+4. **A that holds the vehicle mounts at once** (findings 4, 5). At the grant, where A
+   now holds the vehicle itself (merged, lent, or the unit came into A), A mounts the
+   player by `mount_player`, which replaces the stale seat and sends `Rides`; A hands the
+   player over only where it knows the vehicle's chunk as another's (`Foreign`), and
+   declines otherwise.
+5. **The grant is an `Effected` of its own** (finding 6, Q1): `Effected::Seated { player,
+   vehicle, chunk }` on `Given`'s model, taken by the region that has the player by its
+   entity key, addressed at the use's `from` (finding 7), which reaches A's land without
+   a face. `SeatDeclined` is an `EntityUse` on the vehicle, taken in `entity_used` before
+   the dispatch by kind, as `Blasted` is. B adds the seat only where it `sends_to` that
+   block.
+6. **A's checks at the grant** (finding 8): still A's, not sleeping, no menu open, not on
+   their way to a vehicle, and within reach of A's copy of the vehicle with a block's
+   slack; one who rides another vehicle is let off it first and then handed over, as
+   `mount_player` dismounts then mounts.
+7. **Lost grants and gone edges** (findings 9, 10): a granted seat is kept 40 ticks, not
+   100, and is invisible meanwhile (item 2); an edge B never knew lets it lapse.
+8. **No boarding cooldown** for players (finding 11): the step says so.
+9. **Why not the hand-over first** (finding 15, N5's first review): every use across a
+   line (feeding, saddling) would bounce the player through two hand-overs; granting first
+   costs nothing for uses that mount nobody.
+10. **The wait is kept; no merge** (Q3): about four to six ticks, a crossing's; pinned
+    lines never merge.
+11. **Tests** (finding 14), from the specification by someone who did not write it,
+    beside the section 6 cases: a double click on a two-seat vehicle, two vehicles in one
+    tick, a decline reaching B before the hand-over, the unit crossing into A before the
+    grant, a merge between grant and take, an edge gone mid-way, and at the edge, that
+    the clicker's client gets no `SetPassengers` naming them before the seating and gets
+    `Rides` at it. The format's table at the head of `clustine-format/src/effects.rs` is
+    brought up to date with the new numbers (finding 13).
