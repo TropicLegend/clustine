@@ -430,12 +430,37 @@ impl Region {
                         .iter()
                         .any(|seat| seat.key == entity)
                 });
-            if sneaking || !seated {
+            if sneaking || !seated || self.rider_under_water(id, riding.vehicle) {
                 self.dismount_player(id, output);
             } else {
                 self.seat_player(id, output);
             }
         }
+    }
+
+    /// `LivingEntity.baseTick`'s rule for a rider whose eyes are in water: off a
+    /// vehicle of `#dismounts_underwater` (a pig, a horse), but in a bubble column. The
+    /// eyes are a standing player's, 1.62 above their feet, in water where the block
+    /// they are in holds water (**inferred**: the game's camera-height test of the
+    /// fluid is taken as the block's).
+    fn rider_under_water(&self, id: PlayerId, vehicle: EntityId) -> bool {
+        let (Some(player), Some((_, vehicle))) = (self.players.get(&id), self.find_entity(vehicle))
+        else {
+            return false;
+        };
+        if !clustine_blocks::data::entity_in_tag(
+            i32::from(vehicle.kind),
+            "minecraft:dismounts_underwater",
+        ) {
+            return false;
+        }
+        let at = player.pose.position;
+        let eyes = crate::physics::containing([at.x, at.y + 1.62, at.z]);
+        let Some(state) = self.block(eyes) else {
+            return false;
+        };
+        clustine_blocks::data::has_water(state)
+            && !clustine_blocks::data::is_class(state, clustine_data::BlockClass::BubbleColumnBlock)
     }
 }
 

@@ -874,7 +874,6 @@ fn up_and_down(scene: &mut Scene, at: [f64; 3], height: u32) -> (Entity, Entity)
 /// less the pig's before it, SGPLI 661–732; `Entity.move` skips its own fall check for a
 /// pig the server does not simulate, Entity.txt 1491–, offset 466.)
 #[test]
-#[ignore = "finding: the landing move's own drop is not counted, so a fall of 4 does no damage where Entity.checkFallDamage adds it before landing"]
 fn a_driven_pig_brought_down_four_blocks_takes_one_point() {
     let (mut scene, at) = driving(&[]);
     let (top, landed) = up_and_down(&mut scene, at, 4);
@@ -900,7 +899,6 @@ fn a_driven_pig_brought_down_three_blocks_takes_nothing() {
 
 /// A fall of 8 is five points, the landing move's block among the eight.
 #[test]
-#[ignore = "finding: the landing move's own drop is not counted, so a fall of 8 does 4 points where Entity.checkFallDamage makes it 5"]
 fn a_driven_pig_brought_down_eight_blocks_takes_five_points() {
     let (mut scene, at) = driving(&[]);
     let (_, landed) = up_and_down(&mut scene, at, 8);
@@ -1019,7 +1017,6 @@ fn a_rider_walled_in_on_every_side_gets_off_on_top_of_the_pig() {
 /// `baseTick` offsets 364–389) is reached whether or not the air branch ran, so a
 /// creative rider's invulnerability does not keep them on.
 #[test]
-#[ignore = "finding: a rider whose eyes are under water stays on the pig, where LivingEntity.baseTick calls stopRiding for a vehicle in #dismounts_underwater"]
 fn a_rider_whose_eyes_go_under_water_is_put_off() {
     let water = state("minecraft:water[level=0]");
     let mut pool = Vec::new();

@@ -300,17 +300,15 @@ fn sneaking_puts_the_rider_off_beside_the_pig() {
     );
 }
 
-/// `LivingEntity.causeFallDamage` of a driven pig: its driver's moves up six blocks,
+/// `LivingEntity.causeFallDamage` of a driven pig: its driver's moves up five blocks,
 /// then down a block at a time, the last onto the ground, end a fall of five (the
-/// landing move's own drop does not count: `Entity.checkFallDamage` ends the fall
-/// on the ground first), which hurts it by `floor(5 - 3) = 2`; a move up counts nothing.
+/// landing move's own drop counts: `Entity.checkFallDamage` adds it before it ends the
+/// fall on the ground), which hurts it by `floor(5 - 3) = 2`; a move up counts nothing.
 #[test]
 fn a_driven_pig_whose_drivers_moves_end_a_fall_of_five_is_hurt_by_two() {
     let mut region = ridden();
     let [x, _, z] = record(&region, PIG_KEY).position;
-    for y in [
-        -59.0, -57.0, -55.0, -54.0, -55.0, -56.0, -57.0, -58.0, -59.0,
-    ] {
+    for y in [-59.0, -57.0, -55.0, -56.0, -57.0, -58.0, -59.0] {
         checked(&mut region, &move_vehicle([x, y, z], 0.0, 0.0, false));
     }
     assert_eq!(

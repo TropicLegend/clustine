@@ -278,17 +278,20 @@ pub(crate) fn check_move<W: World + ?Sized>(
     root.body.check_supporting_block(world, Some(moved_by));
     root.last_yd = root.body.motion[1];
     if !root.passenger && root.living {
-        // `Entity.checkFallDamage`: the ground the client says ends the fall, which
-        // `LivingEntity.causeFallDamage` then hurts it by (the region, from
-        // `fell_on`); a fall its own move ended already is in `fell_on`.
+        // `Entity.checkFallDamage` with the client's ground, which ends the fall that
+        // `LivingEntity.causeFallDamage` then hurts it by (the region, from `fell_on`).
+        // The drop first, where it is not in water, then the landing, as the game's
+        // order has it.
         let below = root.body.on_pos_legacy(world);
+        let in_water = clustine_blocks::data::has_water(world.state(root.body.block_position()));
+        if !in_water && moved_by[1] < 0.0 {
+            root.body.fall_distance -= f64::from(moved_by[1] as f32);
+        }
         if moved.on_ground {
             if root.body.fall_distance > 0.0 {
                 root.body.fell_on = Some((root.body.fall_distance, below));
             }
             root.body.fall_distance = 0.0;
-        } else if moved_by[1] < 0.0 {
-            root.body.fall_distance -= f64::from(moved_by[1] as f32);
         }
     } else if !root.passenger {
         if moved.on_ground {
