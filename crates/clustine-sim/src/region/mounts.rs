@@ -144,3 +144,56 @@ fn heard(at: &Entity, sound: i32, output: &mut TickOutput) {
         except: None,
     });
 }
+
+impl Region {
+    /// `handleStartJump(power)` of the region's mob `vehicle`, which its rider steers and
+    /// which is no horse (`MobType::riding_jump`): what it does to itself, its sound with
+    /// the voice pitch's two draws of its own stream where it has one, and its
+    /// `entity_action` game event. The server tests no cooldown before it (the research
+    /// note, section 3): a command sent again sounds again.
+    pub(crate) fn mob_riding_jump(
+        &mut self,
+        vehicle: &Entity,
+        chunk: ChunkPos,
+        power: i32,
+        output: &mut TickOutput,
+    ) {
+        let Ok(mut mob) = Mob::decode(&vehicle.data) else {
+            return;
+        };
+        let Some(jump) = types::of(vehicle.kind).riding_jump(&mut mob, power, vehicle.lived) else {
+            return;
+        };
+        let pitch = if jump.voice {
+            let mut stream = self.entity_stream(vehicle.key).random;
+            let start = stream.clone();
+            let pitch = (stream.next_float() - stream.next_float()) * 0.2 + 1.0;
+            self.entity_drew(vehicle.key, stream.draws_since(&start));
+            pitch
+        } else {
+            1.0
+        };
+        output.events.push(RegionEvent::Sound {
+            sound: jump.sound,
+            source: SOUND_SOURCE_NEUTRAL,
+            position: clustine_world::Vec3::new(
+                vehicle.position[0],
+                vehicle.position[1],
+                vehicle.position[2],
+            ),
+            volume: jump.volume,
+            pitch,
+            except: None,
+        });
+        if jump.action
+            && let Some(action) = super::vibrations::Vibration::named("minecraft:entity_action")
+        {
+            let context = super::vibrations::Context::of(
+                Some(super::vibrations::Source::of(vehicle.key)),
+                None,
+            );
+            self.vibrate(action, vehicle.position, context);
+        }
+        self.mob_seats_changed(chunk, vehicle, &mob, None, output);
+    }
+}

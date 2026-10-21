@@ -480,12 +480,18 @@ impl Region {
 
     /// `canAddPassenger(rider)` of the vehicle `vehicle`: a boat takes two, a chest boat
     /// or a chest raft one, and none whose eye is under water; anything else one
-    /// (minecarts, cushions). A seat kept for a player on their way counts.
+    /// (minecarts, cushions), and a mob as its type says (`MobType::can_add_passenger`).
+    /// A seat kept for a player on their way counts.
     pub(crate) fn can_add_passenger(&self, vehicle: &Entity, chunk: ChunkPos) -> bool {
         let taken = vehicle.riding.passengers.len();
         if is_boat(vehicle.kind) {
             let most = if is_chest_boat(vehicle.kind) { 1 } else { 2 };
             return taken < most && !self.eye_in_water(vehicle, chunk);
+        }
+        if let EntityData::Mob { .. } = vehicle.data
+            && let Ok(mob) = crate::mobs::Mob::decode(&vehicle.data)
+        {
+            return crate::mobs::types::of(vehicle.kind).can_add_passenger(&mob, taken);
         }
         taken == 0
     }
@@ -876,7 +882,8 @@ impl Region {
         else {
             return;
         };
-        let point = passenger_point(carrier, index);
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let point = passenger_point(carrier, index, rider.kind, game_time);
         let attach = vehicle_point(rider);
         let at: Vec3 =
             std::array::from_fn(|axis| (carrier.position[axis] + point[axis]) - attach[axis]);
@@ -1195,7 +1202,12 @@ pub(crate) fn non_climbable(state: BlockState) -> Option<clustine_data::collisio
 /// `index`, turned as the vehicle faces: a boat's own seats (`AbstractBoat`, the
 /// brief's 4.6), otherwise the type's points, the last for any seat beyond them
 /// (`EntityAttachments.getClamped`).
-pub(crate) fn passenger_point(vehicle: &Entity, index: usize) -> Vec3 {
+pub(crate) fn passenger_point(
+    vehicle: &Entity,
+    index: usize,
+    passenger: u16,
+    game_time: i64,
+) -> Vec3 {
     let info = EntityTypeInfo::of(i32::from(vehicle.kind));
     if is_boat(vehicle.kind) {
         let mut along: f32 = if is_chest_boat(vehicle.kind) {
@@ -1216,6 +1228,20 @@ pub(crate) fn passenger_point(vehicle: &Entity, index: usize) -> Vec3 {
             [0.0, height, f64::from(along)],
             -vehicle.yaw * DEGREES_TO_RADIANS,
         );
+    }
+    // A type's own seats (a camel's by its pose), already turned.
+    if let EntityData::Mob { .. } = vehicle.data
+        && let Ok(mob) = crate::mobs::Mob::decode(&vehicle.data)
+        && let Some(seat) = crate::mobs::types::of(vehicle.kind).seat(
+            vehicle,
+            &mob,
+            index,
+            vehicle.riding.passengers.len(),
+            passenger,
+            game_time,
+        )
+    {
+        return seat;
     }
     let point = match info.passenger_points {
         [] => [0.0, f64::from(info.height), 0.0],

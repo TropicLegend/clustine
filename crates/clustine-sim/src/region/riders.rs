@@ -109,9 +109,11 @@ impl Region {
             return;
         };
         let vehicle = vehicle.clone();
-        if !crate::mobs::types::equine::is_equine(vehicle.kind)
-            || !self.drives_root(&vehicle, rider)
-        {
+        if !self.drives_root(&vehicle, rider) {
+            return;
+        }
+        if !crate::mobs::types::equine::is_equine(vehicle.kind) {
+            self.mob_riding_jump(&vehicle, chunk, power, output);
             return;
         }
         let Ok(mut mob) = crate::mobs::Mob::decode(&vehicle.data) else {
@@ -297,7 +299,8 @@ impl Region {
         else {
             return;
         };
-        let point = passenger_point(vehicle, index);
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let point = passenger_point(vehicle, index, super::mob_bodies::player_kind(), game_time);
         let attach = player_vehicle_point();
         let at: [f64; 3] =
             std::array::from_fn(|axis| (vehicle.position[axis] + point[axis]) - attach[axis]);

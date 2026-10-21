@@ -275,6 +275,40 @@ pub(crate) trait MobType: Sync {
         None
     }
 
+    /// `canAddPassenger(passenger)` of a mob carrying `passengers` (seats kept for players
+    /// on their way counted): one seat but where the type has more (a camel's three, a
+    /// happy ghast's four).
+    fn can_add_passenger(&self, mob: &Mob, passengers: usize) -> bool {
+        let _ = mob;
+        passengers == 0
+    }
+
+    /// `getPassengerAttachmentPoint(passenger, …)` where the type has its own: the seat of
+    /// the `index`th of `count` passengers (of the type `passenger`), **already turned by
+    /// the vehicle's yaw**, at the game time `game_time` (a camel's by its pose). `None`
+    /// keeps the type's extracted points, and a horse's rearing offset.
+    fn seat(
+        &self,
+        vehicle: &clustine_world::Entity,
+        mob: &Mob,
+        index: usize,
+        count: usize,
+        passenger: u16,
+        game_time: i64,
+    ) -> Option<crate::physics::Vec3> {
+        let _ = (vehicle, mob, index, count, passenger, game_time);
+        None
+    }
+
+    /// `handlePlayerCommand(START_RIDING_JUMP)` of a mob its rider steers, other than the
+    /// horse family's (`canJump`, then `handleStartJump`): what it does to itself and what
+    /// it is heard to do, or `None` where it cannot jump (sitting, unsaddled, no jump at
+    /// all). Nothing but where the type has its own.
+    fn riding_jump(&self, mob: &mut Mob, power: i32, moment: u32) -> Option<JumpStart> {
+        let _ = (mob, power, moment);
+        None
+    }
+
     /// `isFlyingVehicle()`: whether its driver is never kicked for floating, and its
     /// move gathers no fall (an adult happy ghast). Never but where the type says.
     fn flying_vehicle(&self, mob: &Mob) -> bool {
@@ -871,6 +905,20 @@ pub(crate) struct Dimensions {
     pub(crate) width: f32,
     pub(crate) height: f32,
     pub(crate) eye_height: f32,
+}
+
+/// What a mob's riding jump is heard as (`handleStartJump`'s `makeSound` and
+/// `gameEvent`; `docs/groundwork/n7j-riding-plan.md`, section 9 item 9).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct JumpStart {
+    pub(crate) sound: i32,
+    /// `getSoundVolume()`.
+    pub(crate) volume: f32,
+    /// Whether its pitch is `getVoicePitch()`, `(nextFloat() − nextFloat()) · 0.2 + 1` of
+    /// its own random (else 1).
+    pub(crate) voice: bool,
+    /// Whether `gameEvent(ENTITY_ACTION)` follows.
+    pub(crate) action: bool,
 }
 
 /// `InteractionResult` as a use of a mob answers.
