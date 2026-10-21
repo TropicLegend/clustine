@@ -467,3 +467,58 @@ fn a_body_of_the_first_versions_is_read_with_its_moved_values_where_they_are_now
     );
     assert_eq!(Body::decode(&written).unwrap(), body);
 }
+
+/// `lastDamageSource` and its stamp: set by every hurt that comes as far as the sounds,
+/// of whatever cause, with its cause only where that is living; given for 40 game ticks
+/// and none after; left as it was by a hurt the cooldown refuses.
+#[test]
+fn the_last_damage_is_kept_of_any_cause_and_given_for_forty_ticks() {
+    let mut mob = cow();
+    let mut motion = RESTING;
+    let mut draws = Random::of_entity(1, EntityId(5), 0);
+    let fire = DamageSource::of(DamageType::ON_FIRE);
+    let (took, _) = hurt_at(
+        &mut mob,
+        &types::Plain,
+        &mut motion,
+        0,
+        &fire,
+        1.0,
+        &mut draws,
+    );
+    assert!(took);
+    let on_fire = DamageType::ON_FIRE.id().unwrap();
+    assert_eq!(mob.body.last_damage.source(40), Some((on_fire, None)));
+    assert_eq!(mob.body.last_damage.source(41), None);
+
+    // A smaller hurt within the cooldown is refused, and changes nothing.
+    let hit = DamageSource::by(DamageType::PLAYER_ATTACK, player_at([1.0, 0.0, 0.0]));
+    let (took, _) = hurt_at(
+        &mut mob,
+        &types::Plain,
+        &mut motion,
+        1,
+        &hit,
+        0.5,
+        &mut draws,
+    );
+    assert!(!took);
+    assert_eq!(mob.body.last_damage.source(0), Some((on_fire, None)));
+
+    // A larger one takes, with its living cause.
+    let (took, _) = hurt_at(
+        &mut mob,
+        &types::Plain,
+        &mut motion,
+        2,
+        &hit,
+        3.0,
+        &mut draws,
+    );
+    assert!(took);
+    let attack = DamageType::PLAYER_ATTACK.id().unwrap();
+    assert_eq!(
+        mob.body.last_damage.source(0),
+        Some((attack, Some(EntityId(9))))
+    );
+}

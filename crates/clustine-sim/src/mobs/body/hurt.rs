@@ -49,6 +49,12 @@ impl DamageType {
         synced_registry("minecraft:damage_type")?.id_of(self.0)
     }
 
+    /// The type of the id `id` in that registry.
+    pub(crate) fn of_id(id: i32) -> Option<Self> {
+        let registry = synced_registry("minecraft:damage_type")?;
+        Some(Self(registry.entries.get(usize::try_from(id).ok()?)?))
+    }
+
     /// Whether it is in the damage type tag `tag` (its name without `#`).
     pub(crate) fn is(self, tag: &str) -> bool {
         let Some(id) = self.id() else {
@@ -317,6 +323,16 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
         struck.mob.body.idle.ambient_since = struck.moment + struck.mob_type.ambient_interval();
         let sound = struck.mob_type.hurt_sound(struck.mob, source);
         struck.make_sound(sound);
+    }
+    // `lastDamageSource` and its stamp, after the death and the sounds; no mob blocks,
+    // so every hurt that came this far sets them.
+    if let Some(id) = kind.id() {
+        let cause = source
+            .cause
+            .as_ref()
+            .filter(|cause| cause.living)
+            .map(|cause| cause.key);
+        struck.mob.body.last_damage.last = Some((id, cause, struck.game_time));
     }
     true
 }

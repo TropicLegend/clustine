@@ -41,6 +41,8 @@ pub(crate) mod body_ids {
     /// The navigation's timeout timer and its last check, which move every tick a mob
     /// follows a path: apart, so that the rest of its progress is not written with them.
     pub(crate) const TIMEOUT: u16 = 13;
+    /// What last hurt it, and the game time of it (`lastDamageSource`).
+    pub(crate) const LAST_DAMAGE: u16 = 14;
 }
 
 /// The ids of the mind's parts below [`mind_ids::FIRST_GOAL`]; a goal's part is its

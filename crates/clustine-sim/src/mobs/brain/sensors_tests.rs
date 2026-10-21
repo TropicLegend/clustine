@@ -124,6 +124,7 @@ fn the_hurt_sensor_remembers_who_hurt_and_forgets_only_the_dead() {
     field.players.push(player(77, [3.5, 0.0, 0.5], None));
     let mut run = Run::on(field, &HURTING, [0.5, 0.0, 0.5]);
     run.mob.body.combat.last_hurt_by = Some((EntityId(77), 0));
+    run.mob.body.last_damage.last = Some((player_attack(), Some(EntityId(77)), 0));
     run.mob.body.combat.last_hurt_by_player = Some((77, 0));
     let ticked = run.tick();
     assert_eq!(
@@ -175,6 +176,7 @@ fn sensing_again_after_a_take_in_writes_only_what_the_region_keeps() {
         run.tick();
     }
     run.mob.body.combat.last_hurt_by = Some((EntityId(77), 5));
+    run.mob.body.last_damage.last = Some((player_attack(), Some(EntityId(77)), 5));
     run.mob.body.combat.last_hurt_by_player = Some((77, 5));
     run.sensed = None;
     let ticked = run.tick();
@@ -376,6 +378,7 @@ fn delays_of_nothing_and_one_both_scan_at_the_first_tick() {
         let mut run = Run::new(&HURTING, [0.5, 0.0, 0.5]);
         part::put(&mut run.entries, &state);
         run.mob.body.combat.last_hurt_by = Some((EntityId(77), 0));
+        run.mob.body.last_damage.last = Some((player_attack(), Some(EntityId(77)), 0));
         let mut scanned = Vec::new();
         for _ in 0..=first + 20 {
             let now = run.lived;
@@ -386,4 +389,11 @@ fn delays_of_nothing_and_one_both_scan_at_the_first_tick() {
         }
         assert_eq!(scanned, [first], "delay {delay}");
     }
+}
+
+/// The registry id of a player's attack.
+fn player_attack() -> i32 {
+    crate::mobs::body::hurt::DamageType::PLAYER_ATTACK
+        .id()
+        .expect("a damage type")
 }

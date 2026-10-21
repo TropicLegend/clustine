@@ -280,6 +280,30 @@ pub(crate) struct Body {
     pub(crate) flags: Flags,
     pub(crate) home: Home,
     pub(crate) idle: Idle,
+    pub(crate) last_damage: LastDamage,
+}
+
+/// `lastDamageSource` and `lastDamageStamp`: what last hurt it, by its damage type's
+/// registry id and its cause where that is living (all a brain's `HurtBySensor` reads of
+/// the source), and the game time of the hurt. The game keeps the field for good and
+/// gives it for 40 ticks after (`getLastDamageSource()`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LastDamage {
+    pub(crate) last: Option<(i32, Option<EntityId>, i64)>,
+}
+
+impl Part for LastDamage {
+    const ID: u16 = body_ids::LAST_DAMAGE;
+    const VERSION: u8 = 1;
+}
+
+impl LastDamage {
+    /// `getLastDamageSource()` at the game time `now`: the type and the living cause,
+    /// within 40 ticks of the hurt.
+    pub(crate) fn source(&self, now: i64) -> Option<(i32, Option<EntityId>)> {
+        let (kind, cause, stamp) = self.last?;
+        (now - stamp <= 40).then_some((kind, cause))
+    }
 }
 
 impl Body {
@@ -332,6 +356,7 @@ impl Body {
             flags: part::decode(entries)?,
             home: part::decode(entries)?,
             idle: part::decode(entries)?,
+            last_damage: part::decode(entries)?,
         })
     }
 
@@ -351,6 +376,7 @@ impl Body {
         part::put(&mut entries, &self.home);
         part::put(&mut entries, &self.idle);
         part::put(&mut entries, &self.timeout);
+        part::put(&mut entries, &self.last_damage);
         entries
     }
 

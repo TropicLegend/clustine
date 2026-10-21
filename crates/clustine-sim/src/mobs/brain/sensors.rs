@@ -273,31 +273,14 @@ pub(crate) struct LastDamage {
     pub(crate) cause: Option<EntityId>,
 }
 
-/// `getLastDamageSource()` as the body keeps it: what last hurt the mob, within the 40
-/// ticks the game keeps a source for. **Named**: the body keeps who last hurt it and
-/// when (`Combat::last_hurt_by`), not the source (the plan's section 8 item 2 is the
-/// lead's): a hurt by a player is taken as `player_attack` and one by a mob as
-/// `mob_attack`, both of `#panic_causes`, and a hurt of no living cause (fire, lava, a
-/// cactus) is not seen. [`HurtBySensor::last_damage`] is where the body's own source
-/// comes in once it keeps one.
+/// `getLastDamageSource()` as the body keeps it (`LastDamage`): what last hurt the
+/// mob, of whatever cause (fire, lava and a cactus too), within the 40 game ticks the
+/// game gives a source for.
 pub(crate) fn remembered_damage(cx: &Cx<'_, '_, '_>) -> Option<LastDamage> {
-    let combat = &cx.ai.tick.mob.body.combat;
-    let now = cx.ai.tick.lived;
-    let (key, at) = combat.last_hurt_by?;
-    if i64::from(now) - i64::from(at) > 40 {
-        return None;
-    }
-    let by_player = combat
-        .last_hurt_by_player
-        .is_some_and(|(_, player_at)| player_at == at);
-    let kind = if by_player {
-        DamageType::PLAYER_ATTACK
-    } else {
-        DamageType::MOB_ATTACK
-    };
+    let (id, cause) = cx.ai.tick.mob.body.last_damage.source(cx.time)?;
     Some(LastDamage {
-        kind,
-        cause: Some(key),
+        kind: DamageType::of_id(id)?,
+        cause,
     })
 }
 
