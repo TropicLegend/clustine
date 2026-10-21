@@ -46,8 +46,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use clustine_format::{
-    BlocksFile, CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH,
-    PlayersFile, RegionFile, StateFile, TableFile, read_log, read_log_with_offsets,
+    BlocksFile, CouplingsFile, LogRecord, Logged, LoggedPlace, LoggedStay, LoggedUnit,
+    MAX_RECORD_LENGTH, PlayersFile, RegionFile, StateFile, TableFile, read_log,
+    read_log_with_offsets,
 };
 use clustine_region::RegionId;
 use clustine_rpc::{
@@ -1244,6 +1245,32 @@ impl Lanes {
                 let (gone, stays): (Vec<StayNote>, Vec<StayNote>) = stays
                     .into_iter()
                     .partition(|note| matches!(note, StayNote::Gone { .. }));
+                // A commit's takings of units go before its notes, here, in the log and so
+                // in a replay (`docs/groundwork/n7h-logout-on-a-mount.md`, section 13
+                // item 3).
+                let (mut stays, notes_proper): (Vec<StayNote>, Vec<StayNote>) = stays
+                    .into_iter()
+                    .partition(|note| matches!(note, StayNote::Took { .. }));
+                stays.extend(notes_proper);
+                let mut arrivals = arrivals;
+                let home = region == self.table.home_region;
+                // Each unit a note carries is tried before anything is granted or
+                // appended: one that would not be kept with its record goes back to its
+                // root's chunk as one of the commit's arrivals, after the region's own,
+                // so that it is in exactly one of a chunk, an arrival or a record
+                // (section 4).
+                let logged: Vec<LoggedStay> = stays.iter().map(players::logged).collect();
+                for (note, counts) in stays.iter_mut().zip(self.players.trial(home, &logged)) {
+                    if counts {
+                        continue;
+                    }
+                    if let StayNote::Has { unit, .. } = note
+                        && let Some(unit) = unit.take()
+                    {
+                        let chunk = unit.root().chunk();
+                        arrivals.extend(unit.0.into_iter().map(|member| (chunk, member)));
+                    }
+                }
                 let names_all = mem::take(&mut lane.names_all);
                 // What the commit took of the arrivals is looked at before anything is
                 // appended: each filed and held by the region, or the commit is refused,
@@ -1514,31 +1541,43 @@ impl Lanes {
                         if !notes.is_empty() {
                             self.players.noted(segment, Some(&mut self.group.undo));
                         }
-                        let home = region == self.table.home_region;
                         let mut dead = Vec::new();
                         let mut written = Vec::new();
                         for (index, (note, logged)) in stays.iter().zip(&notes).enumerate() {
                             let seq = FaceSeq(at, index as u32);
                             let (StayNote::Entering { player, entity }
                             | StayNote::Has { player, entity, .. }
-                            | StayNote::Gone { player, entity, .. }) = *note;
-                            // Who holds the chunk of the place as the table is now.
-                            // It is advice: a claim later in this group can take the
-                            // chunk, and its holder can give it back a moment later.
-                            let enter = |place: Option<LoggedPlace>| StoreReply::Enter {
+                            | StayNote::Took {
                                 player,
-                                entity,
-                                place: place.as_ref().map(players::place),
-                                holder: place
-                                    .and_then(|place| self.table.holder(players::chunk_of(&place))),
+                                root: entity,
+                            }
+                            | StayNote::Gone { player, entity, .. }) = *note;
+                            // Who holds the chunk of the place as the table is now, or
+                            // of the root of the unit the player left on, where they
+                            // will be (`docs/groundwork/n7h-logout-on-a-mount.md`,
+                            // section 4). It is advice: a claim later in this group can
+                            // take the chunk, and its holder can give it back a moment
+                            // later.
+                            let enter = |place: Option<LoggedPlace>, unit: Option<LoggedUnit>| {
+                                let chunk = match &unit {
+                                    Some(unit) => Some(unit.root().chunk()),
+                                    None => place.as_ref().map(players::chunk_of),
+                                };
+                                StoreReply::Enter {
+                                    player,
+                                    entity,
+                                    place: place.as_ref().map(players::place),
+                                    holder: chunk.and_then(|chunk| self.table.holder(chunk)),
+                                    unit: unit.as_ref().map(players::unit),
+                                }
                             };
                             match self
                                 .players
                                 .take(region, home, logged, &mut self.group.undo)
                             {
-                                Taken::Raised { place } => {
+                                Taken::Raised { place, unit } => {
                                     self.group.dead.push((player, entity, 0));
-                                    owner.unsynced.push(enter(place));
+                                    owner.unsynced.push(enter(place, unit));
                                     // A later stay: the face of the one before is gone.
                                     if let Some(held) = self.faces.remove(player) {
                                         let removed = FaceChange::Removed {
@@ -1552,7 +1591,10 @@ impl Lanes {
                                         stream_faces(&mut self.group, audience, &removed);
                                     }
                                 }
-                                Taken::Again { place } => owner.unsynced.push(enter(place)),
+                                Taken::Again { place, unit } => {
+                                    owner.unsynced.push(enter(place, unit));
+                                }
+                                Taken::Took => {}
                                 Taken::Dead { stay, hops, .. } => {
                                     dead.push((player, EntityId(stay), hops));
                                 }

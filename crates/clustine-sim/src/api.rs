@@ -136,7 +136,16 @@ pub enum StayNote {
         place: Place,
         face: PlayerFace,
         let_go: bool,
+        /// The vehicle the player left the world on, with all its passengers, root
+        /// first, taken out of the world with them for their next stay
+        /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 3).
+        unit: Option<Unit>,
     },
+    /// The home region took the unit whose root is `root` out of the player's record, to
+    /// put it back under their stay that is entering (the same design, section 5). No
+    /// stay of the notes' map: it follows them in a commit, and the store takes it before
+    /// them (section 13 item 3).
+    Took { player: PlayerId, root: EntityId },
     /// The stay is no more: its player left, their edge went with them on the way to
     /// another region, or an edge said that a stay let go will arrive nowhere. The
     /// world store judges whether it ends the player's time in the world
@@ -159,6 +168,7 @@ impl StayNote {
             face: PlayerFace::standing(&place),
             place,
             let_go: false,
+            unit: None,
         }
     }
 
@@ -167,8 +177,28 @@ impl StayNote {
         match self {
             Self::Entering { player, .. }
             | Self::Has { player, .. }
+            | Self::Took { player, .. }
             | Self::Gone { player, .. } => *player,
         }
+    }
+}
+
+/// A vehicle and everything that rides it, root first, as a player takes it out of the
+/// world and back (`docs/groundwork/n7h-logout-on-a-mount.md`). Two are equal if they
+/// serialise alike, entities having no equality of their own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Unit(pub Vec<Entity>);
+
+impl Unit {
+    /// Its root, the vehicle the others ride.
+    pub fn root(&self) -> &Entity {
+        self.0.first().expect("a unit has its root")
+    }
+}
+
+impl PartialEq for Unit {
+    fn eq(&self, other: &Self) -> bool {
+        postcard::to_allocvec(self).ok() == postcard::to_allocvec(other).ok()
     }
 }
 
@@ -315,6 +345,9 @@ pub struct Entered {
     pub entity: EntityId,
     pub place: Option<Place>,
     pub holder: Option<RegionId>,
+    /// The vehicle the player left the world on, to be put back on
+    /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5).
+    pub unit: Option<Unit>,
 }
 
 /// A player entering the region.

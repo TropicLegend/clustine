@@ -601,6 +601,10 @@ pub enum StoreReply {
         entity: EntityId,
         place: Option<Place>,
         holder: Option<RegionId>,
+        /// The vehicle the player left the world on, with all that rode it, root first,
+        /// for the stay to be put back on; `holder` is then the holder of the root's
+        /// chunk (`docs/groundwork/n7h-logout-on-a-mount.md`, sections 4 and 5).
+        unit: Option<clustine_sim::Unit>,
     },
     /// Of each player named, a stay below `(stay, hops)` is dead: one with a lower
     /// entity id, or the stay `stay` with fewer hand-overs than `hops`.

@@ -1128,6 +1128,7 @@ impl Region {
         for (edge, id, transfer, to) in departing {
             // The world store is told the place the next region begins with.
             let note = StayNote::Has {
+                unit: None,
                 player: id,
                 entity: transfer.entity_id,
                 hops: transfer.hops,
@@ -1845,6 +1846,7 @@ impl Region {
         for (id, player) in &self.players {
             if first || self.journal.players.contains(id) {
                 let note = StayNote::Has {
+                    unit: None,
                     player: *id,
                     entity: player.entity_id,
                     hops: player.hops,
@@ -4028,6 +4030,7 @@ mod tests {
     /// is an input of the tick after it (ADR-0020, section 4, steps 5 to 7).
     fn store_answers(region: &Region) -> Vec<Entered> {
         let answer = |(player, entering): (&PlayerId, &EnteringState)| Entered {
+            unit: None,
             player: *player,
             entity: entering.entity_id,
             place: None,
@@ -7415,7 +7418,7 @@ mod tests {
             .iter()
             .filter_map(|note| match note {
                 StayNote::Has { place, .. } => Some(place.inventory.clone()),
-                StayNote::Entering { .. } | StayNote::Gone { .. } => None,
+                StayNote::Entering { .. } | StayNote::Took { .. } | StayNote::Gone { .. } => None,
             })
             .collect();
         assert_eq!(kept, [full_inventory()], "the store keeps it for a rejoin");
@@ -7459,7 +7462,7 @@ mod tests {
             .iter()
             .filter_map(|note| match note {
                 StayNote::Has { place, .. } => Some(place.ender.clone()),
-                StayNote::Entering { .. } | StayNote::Gone { .. } => None,
+                StayNote::Entering { .. } | StayNote::Took { .. } | StayNote::Gone { .. } => None,
             })
             .collect();
         assert_eq!(kept, [ender], "the store keeps it for a rejoin");

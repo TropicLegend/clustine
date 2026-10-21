@@ -171,6 +171,7 @@ fn with_the_stores_answers(region: &Region, inputs: &TickInputs) -> TickInputs {
     let mut inputs = inputs.clone();
     let state = region.state();
     let answers = state.entering.iter().map(|(player, entering)| Entered {
+        unit: None,
         player: *player,
         entity: entering.entity_id,
         place: None,

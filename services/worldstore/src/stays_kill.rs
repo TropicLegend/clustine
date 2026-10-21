@@ -242,6 +242,7 @@ fn the_records_are_those_of_the_commits_that_count(fault: Fault, survival: Survi
                 let record = floor(&records, crate::stays::player(player));
                 assert!(record.0 >= entity, "{case}: {note:?}, {records:?}");
             }
+            LoggedStay::Took { .. } => {}
             LoggedStay::Has {
                 player,
                 entity,

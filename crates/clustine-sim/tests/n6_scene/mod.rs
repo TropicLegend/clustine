@@ -323,6 +323,7 @@ impl Scene {
             .entity_id;
         self.region.tick(&TickInputs {
             entered: vec![Entered {
+                unit: None,
                 player: player(n),
                 entity: entering,
                 place: Some(Place {

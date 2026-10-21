@@ -156,12 +156,13 @@ fn granted(chunks: &[ChunkPos]) -> TickInputs {
 fn store_answers(output: &TickOutput) -> Vec<Entered> {
     let answer = |note: &StayNote| match note {
         StayNote::Entering { player, entity } => Some(Entered {
+            unit: None,
             player: *player,
             entity: *entity,
             place: None,
             holder: None,
         }),
-        StayNote::Has { .. } | StayNote::Gone { .. } => None,
+        StayNote::Has { .. } | StayNote::Took { .. } | StayNote::Gone { .. } => None,
     };
     output.stays.iter().filter_map(answer).collect()
 }

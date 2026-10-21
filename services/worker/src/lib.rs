@@ -1584,6 +1584,7 @@ impl RegionRunner {
                     entity,
                     place,
                     holder,
+                    unit,
                 } => {
                     // The region does not know which region it is: for a place it
                     // held itself, it is told that nobody did, and places the player.
@@ -1593,6 +1594,7 @@ impl RegionRunner {
                         entity,
                         place,
                         holder,
+                        unit,
                     });
                 }
                 // Stays that a later one has replaced: in answer to what the region
@@ -8001,6 +8003,7 @@ mod tests {
         // The store has no place for either, and says so before the second tick, which
         // puts them into the world at the spawn point.
         let nowhere = |player, entity| Entered {
+            unit: None,
             player,
             entity,
             place: None,

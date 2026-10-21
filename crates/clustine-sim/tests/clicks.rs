@@ -143,6 +143,7 @@ fn tick(region: &mut Region, inputs: &TickInputs) -> TickOutput {
         .entering
         .iter()
         .map(|(player, entering)| Entered {
+            unit: None,
             player: *player,
             entity: entering.entity_id,
             place: None,

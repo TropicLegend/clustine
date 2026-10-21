@@ -623,6 +623,7 @@ fn with_the_stores_answers(region: &Region, inputs: &TickInputs) -> TickInputs {
     let mut inputs = inputs.clone();
     let state = region.state();
     let answers = state.entering.iter().map(|(player, entering)| Entered {
+        unit: None,
         player: *player,
         entity: entering.entity_id,
         place: None,
@@ -1653,6 +1654,7 @@ impl Stays {
     /// in these runs, so each enters at the spawn point.
     fn answers(&self) -> Vec<Entered> {
         let answer = |(player, entering): (&PlayerId, &EnteringHere)| Entered {
+            unit: None,
             player: *player,
             entity: entering.entity,
             place: None,
@@ -4968,8 +4970,9 @@ impl Places {
         let (mut enter, mut dead, mut all) = (Vec::new(), Vec::new(), Vec::new());
         for note in notes {
             match note {
-                // Not judged by the store yet (step N7a2's faces).
-                StayNote::Gone { .. } => {}
+                // Not judged by the store yet (step N7a2's faces); no unit is taken in
+                // these runs.
+                StayNote::Gone { .. } | StayNote::Took { .. } => {}
                 StayNote::Entering { player, entity } => {
                     assert!(home, "{note:?} from a region that is not joined");
                     let record = self.records.entry(*player).or_insert(Kept {
@@ -4993,6 +4996,7 @@ impl Places {
                         .as_ref()
                         .and_then(|place| holder(chunk_of(place.pose.position)));
                     enter.push(Entered {
+                        unit: None,
                         player: *player,
                         entity: *entity,
                         place,

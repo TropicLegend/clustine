@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use clustine_format::{LoggedPlace, LoggedStay, PlayerRecord, PlayersFile};
+use clustine_format::{LoggedPlace, LoggedStay, LoggedUnit, PlayerRecord, PlayersFile};
 use clustine_region::RegionId;
 use clustine_rpc::{ItemStack, Place, Pose, StayNote};
 use clustine_world::{ChunkPos, Vec3};
@@ -33,7 +33,7 @@ pub(crate) struct Players {
 }
 
 /// What is kept of one player.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Record {
     /// The floor: the highest stay the store was told the home region gave the
     /// player. Never lowered.
@@ -41,6 +41,9 @@ struct Record {
     /// The highest hand-over count the store was told of that stay.
     hops: u32,
     place: Option<LoggedPlace>,
+    /// The vehicle the player left the world on, until their next stay takes it
+    /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 4).
+    unit: Option<LoggedUnit>,
 }
 
 /// A player the store was told nothing of yet. No block of entity ids has id 0.
@@ -48,6 +51,7 @@ const UNKNOWN: Record = Record {
     stay: 0,
     hops: 0,
     place: None,
+    unit: None,
 };
 
 /// What a group of commits changed of the records, by which it is taken back if the
@@ -64,14 +68,23 @@ pub(crate) struct Undo {
 }
 
 /// What the store made of a note.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Taken {
     /// An `Entering` note raised the player's floor: the stay may enter, with this
-    /// place, and every stay of the player below it is dead.
-    Raised { place: Option<LoggedPlace> },
+    /// place and the unit kept for it, and every stay of the player below it is dead.
+    Raised {
+        place: Option<LoggedPlace>,
+        unit: Option<LoggedUnit>,
+    },
     /// An `Entering` note named the stay the record has: it may enter, as was said
     /// before.
-    Again { place: Option<LoggedPlace> },
+    Again {
+        place: Option<LoggedPlace>,
+        unit: Option<LoggedUnit>,
+    },
+    /// A taking of the unit the record keeps, or of another, which changes nothing.
+    /// Nothing is answered.
+    Took,
     /// The note named a stay that is dead: one below `(stay, hops)`, which is what
     /// the record has. `why` says whether that is in order.
     Dead { stay: u64, hops: u32, why: Why },
@@ -103,6 +116,7 @@ impl Players {
                 stay: record.stay,
                 hops: record.hops,
                 place: record.place,
+                unit: record.unit,
             };
             (record.player, kept)
         });
@@ -131,6 +145,7 @@ impl Players {
             stay: record.stay,
             hops: record.hops,
             place: record.place,
+            unit: record.unit.clone(),
         });
         listed.collect()
     }
@@ -165,9 +180,10 @@ impl Players {
         home: bool,
         undo: Option<&mut Undo>,
     ) -> Taken {
-        match *note {
+        match note {
             LoggedStay::Entering { player, entity } => {
-                let record = self.records.get(&player).copied().unwrap_or(UNKNOWN);
+                let (player, entity) = (*player, *entity);
+                let record = self.records.get(&player).cloned().unwrap_or(UNKNOWN);
                 if !home {
                     return Taken::Dead {
                         stay: record.stay,
@@ -185,24 +201,28 @@ impl Players {
                 if entity == record.stay {
                     return Taken::Again {
                         place: record.place,
+                        unit: record.unit,
                     };
                 }
                 if let Some(undo) = undo {
-                    let before = self.records.get(&player).copied();
+                    let before = self.records.get(&player).cloned();
                     undo.records.entry(player).or_insert(before);
                     undo.issued.get_or_insert(self.issued);
                 }
                 // The place stays: it is where the player was last, whatever stay
-                // they were there with.
+                // they were there with; and so does the unit they left on, which the
+                // stay is put back on.
                 let raised = Record {
                     stay: entity,
                     hops: 0,
                     place: record.place,
+                    unit: record.unit.clone(),
                 };
                 self.records.insert(player, raised);
                 self.issued = self.issued.max(entity);
                 Taken::Raised {
                     place: record.place,
+                    unit: record.unit,
                 }
             }
             LoggedStay::Has {
@@ -210,8 +230,10 @@ impl Players {
                 entity,
                 hops,
                 place,
+                unit,
             } => {
-                let record = self.records.get(&player).copied().unwrap_or(UNKNOWN);
+                let (player, entity, hops) = (*player, *entity, *hops);
+                let record = self.records.get(&player).cloned().unwrap_or(UNKNOWN);
                 if entity > record.stay {
                     return Taken::Ahead;
                 }
@@ -227,18 +249,89 @@ impl Players {
                     };
                 }
                 if let Some(undo) = undo {
-                    let before = self.records.get(&player).copied();
+                    let before = self.records.get(&player).cloned();
                     undo.records.entry(player).or_insert(before);
                 }
+                // A unit is in a note only where the trial found that it counts and that
+                // the record kept none (`trial`); a note without one leaves the record's.
                 let written = Record {
                     stay: entity,
                     hops,
-                    place: Some(place),
+                    place: Some(*place),
+                    unit: unit.clone().or(record.unit),
                 };
                 self.records.insert(player, written);
                 Taken::Written
             }
+            LoggedStay::Took { player, root } => {
+                let player = *player;
+                let takes = self
+                    .records
+                    .get(&player)
+                    .and_then(|record| record.unit.as_ref())
+                    .is_some_and(|unit| unit.root().key.0 == *root);
+                if takes {
+                    if let Some(undo) = undo {
+                        let before = self.records.get(&player).cloned();
+                        undo.records.entry(player).or_insert(before);
+                    }
+                    if let Some(record) = self.records.get_mut(&player) {
+                        record.unit = None;
+                    }
+                }
+                Taken::Took
+            }
         }
+    }
+
+    /// Which of `notes`, a commit's in their order, may keep the unit it carries: one of
+    /// the living stay that the store would write (`Taken::Written`) into a record that
+    /// keeps no unit, the records as they are now and as the notes before it in the
+    /// commit leave them; every note without a unit may. A unit that may not is sent back
+    /// to its chunk by the caller (`docs/groundwork/n7h-logout-on-a-mount.md`, section 4).
+    /// Nothing is changed.
+    pub(crate) fn trial(&self, home: bool, notes: &[LoggedStay]) -> Vec<bool> {
+        let touched = notes.iter().filter_map(|note| {
+            let player = logged_player(note);
+            self.records
+                .get(&player)
+                .map(|record| (player, record.clone()))
+        });
+        let mut scratch = Players {
+            records: touched.collect(),
+            issued: self.issued,
+            ..Players::default()
+        };
+        let mut counts = Vec::with_capacity(notes.len());
+        for note in notes {
+            let LoggedStay::Has {
+                player,
+                unit: Some(_),
+                ..
+            } = note
+            else {
+                scratch.apply(note, home, None);
+                counts.push(true);
+                continue;
+            };
+            let kept = scratch
+                .records
+                .get(player)
+                .and_then(|record| record.unit.clone());
+            let written = scratch.apply(note, home, None) == Taken::Written;
+            if written && kept.is_some() {
+                error!(
+                    player,
+                    "a note carried a unit for a record that keeps one; the note's goes back"
+                );
+                // The record keeps the unit it had.
+                if let Some(record) = scratch.records.get_mut(player) {
+                    record.unit = kept.clone();
+                }
+            }
+            counts.push(written && kept.is_none());
+        }
+        counts
     }
 
     /// As [`Players::apply`], for a commit of `region` that a running store takes:
@@ -251,8 +344,11 @@ impl Players {
         undo: &mut Undo,
     ) -> Taken {
         let taken = self.apply(note, home, Some(undo));
-        let (LoggedStay::Entering { player, entity } | LoggedStay::Has { player, entity, .. }) =
-            *note;
+        let player = logged_player(note);
+        let entity = match *note {
+            LoggedStay::Entering { entity, .. } | LoggedStay::Has { entity, .. } => entity,
+            LoggedStay::Took { root, .. } => root,
+        };
         match taken {
             Taken::Dead {
                 why: Why::NotHome, ..
@@ -302,6 +398,25 @@ impl Players {
     }
 }
 
+/// The player a logged note is of.
+pub(crate) fn logged_player(note: &LoggedStay) -> u128 {
+    match *note {
+        LoggedStay::Entering { player, .. }
+        | LoggedStay::Has { player, .. }
+        | LoggedStay::Took { player, .. } => player,
+    }
+}
+
+/// A unit as the log keeps it.
+pub(crate) fn logged_unit(unit: &clustine_rpc::Unit) -> LoggedUnit {
+    LoggedUnit(unit.0.clone())
+}
+
+/// A unit as a region is told it.
+pub(crate) fn unit(logged: &LoggedUnit) -> clustine_rpc::Unit {
+    clustine_rpc::Unit(logged.0.clone())
+}
+
 /// The note as the log keeps it.
 pub(crate) fn logged(note: &StayNote) -> LoggedStay {
     match note {
@@ -314,12 +429,18 @@ pub(crate) fn logged(note: &StayNote) -> LoggedStay {
             entity,
             hops,
             place,
+            unit,
             ..
         } => LoggedStay::Has {
             player: player.0.as_u128(),
             entity: entity.0,
             hops: *hops,
             place: logged_place(place),
+            unit: unit.as_ref().map(logged_unit),
+        },
+        StayNote::Took { player, root } => LoggedStay::Took {
+            player: player.0.as_u128(),
+            root: root.0,
         },
         StayNote::Gone { .. } => unreachable!("a commit's `Gone` notes are passed over"),
     }

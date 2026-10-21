@@ -1237,6 +1237,7 @@ fn with_the_stores_answers(region: &Region, inputs: &TickInputs) -> TickInputs {
     let state = region.state();
     for (player, entering) in &state.entering {
         let answer = Entered {
+            unit: None,
             player: *player,
             entity: entering.entity_id,
             place: None,

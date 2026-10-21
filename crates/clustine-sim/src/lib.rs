@@ -37,7 +37,8 @@ pub mod time;
 pub use api::{
     Durable, EdgeEvent, Entered, FaceChange, FaceSeq, Keys, LendAnswer, LendAsked, Misdirected,
     Place, PlayerChange, PlayerEvent, PlayerFace, PlayerJoin, PlayerTransfer, RemoteAction,
-    RemoteStep, StayNote, TickInputs, TickOutput, Ticket, VehicleMove, WorldClock, WorldPlayer,
+    RemoteStep, StayNote, TickInputs, TickOutput, Ticket, Unit, VehicleMove, WorldClock,
+    WorldPlayer,
 };
 pub use region::{Holdings, Knowledge, NoSplit, Part, Region, RegionConfig, Sides, Splitting};
 pub use state::{

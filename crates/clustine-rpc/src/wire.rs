@@ -751,6 +751,7 @@ mod tests {
                     entity: EntityId(41),
                 },
                 StayNote::Has {
+                    unit: None,
                     player,
                     entity: EntityId(41),
                     hops: 0,
@@ -759,6 +760,7 @@ mod tests {
                     let_go: false,
                 },
                 StayNote::Has {
+                    unit: None,
                     player: other,
                     entity: EntityId(u64::MAX),
                     hops: u32::MAX,
@@ -788,18 +790,21 @@ mod tests {
         });
         for reply in [
             StoreReply::Enter {
+                unit: None,
                 player,
                 entity: EntityId(41),
                 place: None,
                 holder: None,
             },
             StoreReply::Enter {
+                unit: None,
                 player,
                 entity: EntityId(41),
                 place: Some(standing),
                 holder: None,
             },
             StoreReply::Enter {
+                unit: None,
                 player: other,
                 entity: EntityId(u64::MAX),
                 place: Some(place),

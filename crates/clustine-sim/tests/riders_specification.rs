@@ -232,6 +232,7 @@ fn joined(region: &mut Region) -> EntityId {
         .entering
         .iter()
         .map(|(player, entering)| Entered {
+            unit: None,
             player: *player,
             entity: entering.entity_id,
             place: None,

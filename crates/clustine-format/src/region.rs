@@ -98,7 +98,7 @@
 use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
 
 use crate::bytes::Input;
-use crate::log::{LoggedPlace, put_place, take_place};
+use crate::log::{LoggedPlace, LoggedUnit, put_place, take_place};
 use crate::{FORMAT_VERSION, FormatError};
 
 const KIND_REGION: u8 = 1;
@@ -350,6 +350,9 @@ pub struct PlayerRecord {
     pub hops: u32,
     /// Where the player was last, if a region has said.
     pub place: Option<LoggedPlace>,
+    /// The vehicle they left the world on, kept for their next stay; only with a place
+    /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 4).
+    pub unit: Option<LoggedUnit>,
 }
 
 impl PlayersFile {
@@ -364,11 +367,17 @@ impl PlayersFile {
             out.extend_from_slice(&record.player.to_be_bytes());
             out.extend_from_slice(&record.stay.to_be_bytes());
             out.extend_from_slice(&record.hops.to_be_bytes());
-            match &record.place {
-                None => out.push(0),
-                Some(place) => {
+            // 0 no place, 1 a place, 2 a place and a unit after it.
+            match (&record.place, &record.unit) {
+                (None, _) => out.push(0),
+                (Some(place), None) => {
                     out.push(1);
                     put_place(&mut out, place);
+                }
+                (Some(place), Some(unit)) => {
+                    out.push(2);
+                    put_place(&mut out, place);
+                    crate::log::put_unit(&mut out, unit);
                 }
             }
         }
@@ -389,9 +398,13 @@ impl PlayersFile {
                 return Err(FormatError::Corrupt("players out of order"));
             }
             let (stay, hops) = (input.u64()?, input.u32()?);
-            let place = match input.u8()? {
-                0 => None,
-                1 => Some(take_place(&mut input)?),
+            let (place, unit) = match input.u8()? {
+                0 => (None, None),
+                1 => (Some(take_place(&mut input)?), None),
+                2 => (
+                    Some(take_place(&mut input)?),
+                    Some(crate::log::take_unit(&mut input)?),
+                ),
                 _ => return Err(FormatError::Corrupt("whether a player has a place")),
             };
             records.push(PlayerRecord {
@@ -399,6 +412,7 @@ impl PlayersFile {
                 stay,
                 hops,
                 place,
+                unit,
             });
         }
         input.finish()?;
@@ -990,6 +1004,26 @@ mod tests {
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
 
+    /// A record with the unit its player left the world on comes back with it, and the
+    /// records of a file written before units read as without one.
+    #[test]
+    fn a_players_record_with_a_unit_round_trips() {
+        let mut file = players();
+        file.records[1].unit = Some(LoggedUnit(vec![crate::entities::tests::item(
+            40,
+            [1.5, -60.0, 2.5],
+            None,
+        )]));
+        assert_eq!(PlayersFile::decode(&file.encode()), Ok(file));
+        assert!(
+            PlayersFile::decode(&players().encode())
+                .expect("a file")
+                .records
+                .iter()
+                .all(|record| record.unit.is_none())
+        );
+    }
+
     fn players() -> PlayersFile {
         let mut inventory = [None; crate::INVENTORY_SLOTS];
         inventory[1] = Some((7, 3));
@@ -1001,12 +1035,14 @@ mod tests {
             issued: 258,
             records: vec![
                 PlayerRecord {
+                    unit: None,
                     player: 2,
                     stay: 257,
                     hops: 0,
                     place: None,
                 },
                 PlayerRecord {
+                    unit: None,
                     player: 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10,
                     stay: 258,
                     hops: 4,
@@ -1223,12 +1259,12 @@ mod tests {
             PlayersFile::decode(&twice.encode()),
             Err(FormatError::Corrupt("players out of order"))
         );
-        // Neither with a place nor without. The byte is behind the head of 22 bytes
-        // and the first record's player, stay and hops.
+        // Neither with a place nor without, nor with a unit. The byte is behind the
+        // head of 22 bytes and the first record's player, stay and hops.
         let mut body = players().encode();
         body.truncate(body.len() - 4);
         assert_eq!(body[22 + 28], 0);
-        body[22 + 28] = 2;
+        body[22 + 28] = 3;
         assert_eq!(
             PlayersFile::decode(&seal(body)),
             Err(FormatError::Corrupt("whether a player has a place"))
@@ -1463,6 +1499,7 @@ mod tests {
                 records: records
                     .into_iter()
                     .map(|(player, ((stay, hops), place))| PlayerRecord {
+                        unit: None,
                         player,
                         stay,
                         hops,

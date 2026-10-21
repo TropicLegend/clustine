@@ -401,6 +401,7 @@ impl Region {
             self.dismounted.push((
                 id,
                 crate::api::StayNote::Has {
+                    unit: None,
                     player: id,
                     entity: player.entity_id,
                     hops: player.hops,

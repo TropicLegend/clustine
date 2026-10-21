@@ -89,6 +89,7 @@ pub(crate) fn entering(player: PlayerId, entity: u64) -> StayNote {
 
 pub(crate) fn has(player: PlayerId, entity: u64, hops: u32, place: Place) -> StayNote {
     StayNote::Has {
+        unit: None,
         player,
         entity: EntityId(entity),
         hops,
@@ -141,6 +142,7 @@ fn committed(tick: u64) -> StoreReply {
 
 fn enter(player: PlayerId, entity: u64, place: Option<Place>, holder: Option<u32>) -> StoreReply {
     StoreReply::Enter {
+        unit: None,
         player,
         entity: EntityId(entity),
         place,
@@ -198,12 +200,20 @@ pub(crate) fn note_on_disk(note: &StayNote) -> LoggedStay {
             entity,
             hops,
             place,
+            unit,
             ..
         } => LoggedStay::Has {
             player: player.0.as_u128(),
             entity: entity.0,
             hops: *hops,
             place: on_disk(place),
+            unit: unit
+                .as_ref()
+                .map(|unit| clustine_format::LoggedUnit(unit.0.clone())),
+        },
+        StayNote::Took { player, root } => LoggedStay::Took {
+            player: player.0.as_u128(),
+            root: root.0,
         },
         StayNote::Gone { .. } => unreachable!("a commit's `Gone` notes are passed over"),
     }
@@ -212,6 +222,7 @@ pub(crate) fn note_on_disk(note: &StayNote) -> LoggedStay {
 /// The record of `player` as the store is to have it.
 pub(crate) fn kept(player: PlayerId, stay: u64, hops: u32, place: Option<Place>) -> PlayerRecord {
     PlayerRecord {
+        unit: None,
         player: player.0.as_u128(),
         stay,
         hops,
@@ -251,11 +262,14 @@ impl Model {
                     self.issued = self.issued.max(entity);
                 }
             }
+            // The model keeps no units: the tests of units judge them themselves.
+            LoggedStay::Took { .. } => {}
             LoggedStay::Has {
                 player,
                 entity,
                 hops,
                 place,
+                ..
             } => {
                 if let Some(record) = self.records.get_mut(&player)
                     && record.0 == entity
@@ -273,6 +287,7 @@ impl Model {
             .records
             .iter()
             .map(|(player, (stay, hops, place))| PlayerRecord {
+                unit: None,
                 player: *player,
                 stay: *stay,
                 hops: *hops,
@@ -600,6 +615,7 @@ fn what_the_record_calls_an_error_is_said_in_the_log_and_nothing_else_is() {
 fn entity_of(note: &StayNote) -> u64 {
     let (StayNote::Entering { entity, .. }
     | StayNote::Has { entity, .. }
+    | StayNote::Took { root: entity, .. }
     | StayNote::Gone { entity, .. }) = note;
     entity.0
 }

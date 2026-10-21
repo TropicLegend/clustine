@@ -25,8 +25,8 @@ mod seams;
 pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use entities::{EntitiesFile, KIND_ENTITIES};
 pub use log::{
-    ENDER_SLOTS, INVENTORY_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, MAX_RECORD_LENGTH,
-    read_log, read_log_with_offsets,
+    ENDER_SLOTS, INVENTORY_SLOTS, LogRecord, Logged, LoggedPlace, LoggedStay, LoggedUnit,
+    MAX_RECORD_LENGTH, read_log, read_log_with_offsets,
 };
 pub use region::{
     BlocksFile, CoupledRegion, CouplingsFile, Handshake, PlayerRecord, PlayersFile, RegionFile,

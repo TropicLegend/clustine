@@ -226,6 +226,7 @@ fn arrive(edge: EdgeId, n: u128, transfer: PlayerTransfer) -> PlayerChange {
 /// The store's answer to the note of an entering stay.
 fn entered(n: u128, entity: EntityId, place: Option<Place>, holder: Option<RegionId>) -> Entered {
     Entered {
+        unit: None,
         player: player(n),
         entity,
         place,
@@ -330,6 +331,7 @@ fn silent(output: &TickOutput) -> bool {
 
 fn has(n: u128, entity: EntityId, hops: u32, place: Place) -> StayNote {
     StayNote::Has {
+        unit: None,
         player: player(n),
         entity,
         hops,
@@ -342,6 +344,7 @@ fn has(n: u128, entity: EntityId, hops: u32, place: Place) -> StayNote {
 /// The note of a stay let go in the tick.
 fn let_go_note(n: u128, entity: EntityId, hops: u32, place: Place) -> StayNote {
     StayNote::Has {
+        unit: None,
         player: player(n),
         entity,
         hops,
@@ -386,8 +389,15 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
         StayNote::Entering { player, .. } => (*player, 0),
         StayNote::Has { player, .. } => (*player, 1),
         StayNote::Gone { player, entity, .. } => (*player, 2 + entity.0),
+        StayNote::Took { .. } => unreachable!("takings are left out"),
     };
-    let keys: Vec<_> = output.stays.iter().map(key).collect();
+    // A unit's takings follow the notes, outside their order.
+    let keys: Vec<_> = output
+        .stays
+        .iter()
+        .filter(|note| !matches!(note, StayNote::Took { .. }))
+        .map(key)
+        .collect();
     assert!(
         keys.windows(2).all(|pair| pair[0] < pair[1]),
         "tick {tick}: {:?}",
@@ -395,7 +405,7 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
     );
     for note in &output.stays {
         match note {
-            StayNote::Gone { .. } => {}
+            StayNote::Gone { .. } | StayNote::Took { .. } => {}
             StayNote::Entering { player, entity } => {
                 let held = after.entering.get(player).map(|held| held.entity_id);
                 assert_eq!(held, Some(*entity), "tick {tick}: {note:?}");
@@ -1940,8 +1950,9 @@ impl Store {
         let (mut answers, mut all) = (Vec::new(), Vec::new());
         for note in notes {
             match note {
-                // Not judged by the store yet (step N7a2's faces).
-                StayNote::Gone { .. } => {}
+                // Not judged by the store yet (step N7a2's faces), and no unit is
+                // taken in these runs.
+                StayNote::Gone { .. } | StayNote::Took { .. } => {}
                 StayNote::Entering { player, entity } => {
                     assert!(home, "{note:?} from a region that is not joined");
                     let record = self.records.entry(*player).or_insert(Record {
@@ -1965,6 +1976,7 @@ impl Store {
                         .as_ref()
                         .and_then(|place| holder(chunk_of(place.pose.position)));
                     answers.push(Answer::Enter(Entered {
+                        unit: None,
                         player: *player,
                         entity: *entity,
                         place,
@@ -3332,6 +3344,7 @@ fn made_up_answers(random: &mut Random, output: &TickOutput) -> Vec<Entered> {
         });
         let entity = EntityId(entity.0 - u64::from(random.once_in(8)));
         answers.push(Entered {
+            unit: None,
             player: *player,
             entity,
             place,
@@ -3390,7 +3403,7 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
                     .filter_map(|note| match note {
                         StayNote::Entering { player, .. } => Some((*player, false)),
                         StayNote::Has { player, .. } => Some((*player, true)),
-                        StayNote::Gone { .. } => None,
+                        StayNote::Gone { .. } | StayNote::Took { .. } => None,
                     })
                     .collect();
                 let let_go = output.stays.iter().filter_map(|note| match note {

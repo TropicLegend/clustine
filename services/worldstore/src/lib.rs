@@ -97,6 +97,8 @@ mod syncs;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod units_tests;
+#[cfg(test)]
 mod unpinned;
 
 use std::io;

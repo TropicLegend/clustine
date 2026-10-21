@@ -71,11 +71,12 @@
 //!
 //! | Field | Type |
 //! |---|---|
-//! | Kind | u8: 1 `Entering`, 2 `Has` |
+//! | Kind | u8: 1 `Entering`, 2 `Has`, 3 `Has` with a unit, 4 a taking |
 //! | Player | u128 |
-//! | Entity | u64 |
+//! | Entity | u64: the stay's, or a taking's root |
 //! | *`Has` only:* hops | u32 |
 //! | … the place | see below |
+//! | *Kind 3 only:* the unit | a count (u32), not 0, and each member as an entity, root first |
 //!
 //! and a place ([`LoggedPlace`]) is:
 //!
@@ -130,6 +131,8 @@ const KIND_ARRIVALS_FORWARD: u8 = 18;
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
 const STAY_HAS: u8 = 2;
+const STAY_HAS_WITH_UNIT: u8 = 3;
+const STAY_TOOK: u8 = 4;
 
 /// The flags of a place.
 const ON_GROUND: u8 = 1;
@@ -179,7 +182,63 @@ pub enum LoggedStay {
         entity: u64,
         hops: u32,
         place: LoggedPlace,
+        /// The vehicle the player left the world on, with all its passengers, root first
+        /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 3), which the record keeps
+        /// until the player's next stay takes it.
+        unit: Option<LoggedUnit>,
     },
+    /// The home region took the unit whose root is `root` out of the player's record, to
+    /// put it back under the player's next stay (the same design, section 5). No stay
+    /// note: it is kept among the notes so that whatever counts and keeps notes keeps it.
+    Took { player: u128, root: u64 },
+}
+
+/// A unit kept with a player: its members, root first. Two are equal if their bytes on
+/// disk are, as places are.
+#[derive(Debug, Clone)]
+pub struct LoggedUnit(pub Vec<Entity>);
+
+impl LoggedUnit {
+    /// The unit's root, the vehicle the others ride.
+    pub fn root(&self) -> &Entity {
+        self.0.first().expect("a unit has its root")
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_unit(&mut out, self);
+        out
+    }
+}
+
+impl PartialEq for LoggedUnit {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for LoggedUnit {}
+
+/// Appends a unit: a count (u32), which is not 0, and each member as an entity.
+pub(crate) fn put_unit(out: &mut Vec<u8>, unit: &LoggedUnit) {
+    out.extend_from_slice(&(unit.0.len() as u32).to_be_bytes());
+    for member in &unit.0 {
+        crate::entities::put_entity(out, member);
+    }
+}
+
+/// Reads a unit as [`put_unit`] wrote it.
+pub(crate) fn take_unit(input: &mut Input<'_>) -> Result<LoggedUnit, FormatError> {
+    let count = input.u32()? as usize;
+    if count == 0 {
+        return Err(FormatError::Corrupt("a unit without its root"));
+    }
+    // A forged count must not reserve more than the payload can hold.
+    let mut members = Vec::with_capacity(count.min(input.0.len() / 64));
+    for _ in 0..count {
+        members.push(crate::entities::take_entity(input)?);
+    }
+    Ok(LoggedUnit(members))
 }
 
 /// Where a player is and what they hold, in plain numbers.
@@ -893,12 +952,24 @@ fn put_stays(payload: &mut Vec<u8>, stays: &[LoggedStay]) {
                 entity,
                 hops,
                 place,
+                unit,
             } => {
-                payload.push(STAY_HAS);
+                payload.push(match unit {
+                    Some(_) => STAY_HAS_WITH_UNIT,
+                    None => STAY_HAS,
+                });
                 payload.extend_from_slice(&player.to_be_bytes());
                 payload.extend_from_slice(&entity.to_be_bytes());
                 payload.extend_from_slice(&hops.to_be_bytes());
                 put_place(payload, place);
+                if let Some(unit) = unit {
+                    put_unit(payload, unit);
+                }
+            }
+            LoggedStay::Took { player, root } => {
+                payload.push(STAY_TOOK);
+                payload.extend_from_slice(&player.to_be_bytes());
+                payload.extend_from_slice(&root.to_be_bytes());
             }
         }
     }
@@ -979,6 +1050,18 @@ fn take_stays(input: &mut Input<'_>) -> Result<Vec<LoggedStay>, FormatError> {
                 entity,
                 hops: input.u32()?,
                 place: take_place(input)?,
+                unit: None,
+            },
+            STAY_HAS_WITH_UNIT => LoggedStay::Has {
+                player,
+                entity,
+                hops: input.u32()?,
+                place: take_place(input)?,
+                unit: Some(take_unit(input)?),
+            },
+            STAY_TOOK => LoggedStay::Took {
+                player,
+                root: entity,
             },
             _ => return Err(FormatError::Corrupt("stay kind")),
         });
@@ -2627,6 +2710,7 @@ mod tests {
                     entity: 258,
                 },
                 LoggedStay::Has {
+                    unit: None,
                     player: 3,
                     entity: u64::MAX,
                     hops: 5,
@@ -2643,6 +2727,78 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
         }
+    }
+
+    /// A `Has` with the unit its player left the world on, and a taking of a unit, come
+    /// back as they went (`docs/groundwork/n7h-logout-on-a-mount.md`, section 9), beside
+    /// the kinds there were before.
+    #[test]
+    fn a_commit_with_a_unit_in_a_note_and_a_taking_round_trips() {
+        let LogRecord::Commit { mut stays, .. } = commit_with_stays() else {
+            unreachable!("a commit")
+        };
+        let unit = LoggedUnit(vec![
+            crate::entities::tests::item(40, [1.5, -60.0, 2.5], None),
+            crate::entities::tests::item(41, [1.5, -59.0, 2.5], Some(7)),
+        ]);
+        stays.push(LoggedStay::Has {
+            player: 9,
+            entity: 12,
+            hops: 1,
+            place: place(),
+            unit: Some(unit.clone()),
+        });
+        stays.push(LoggedStay::Took {
+            player: 9,
+            root: 40,
+        });
+        let LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            ticks,
+            marks_taken,
+            seams,
+            effects,
+            taken,
+            events,
+            entity_changes,
+            arrivals,
+            arrivals_taken,
+            ..
+        } = commit_with_stays()
+        else {
+            unreachable!("a commit")
+        };
+        let record = LogRecord::Commit {
+            region,
+            tick,
+            epoch,
+            changes,
+            state,
+            stays,
+            ticks,
+            marks_taken,
+            seams,
+            effects,
+            taken,
+            events,
+            entity_changes,
+            arrivals,
+            arrivals_taken,
+        };
+        let bytes = record.encode();
+        assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
+        // A unit without its root is no unit.
+        let mut empty = Vec::new();
+        put_unit(&mut empty, &LoggedUnit(Vec::new()));
+        assert_eq!(
+            take_unit(&mut Input(&empty)),
+            Err(FormatError::Corrupt("a unit without its root"))
+        );
+        assert_eq!(unit.root().key.0, 40);
     }
 
     /// A commit with stay notes is a record of a kind of its own: the fields of a
@@ -2919,7 +3075,7 @@ mod tests {
         assert_eq!(read_log(&frame(&many)), Err(FormatError::Truncated));
         // A note of no kind.
         let mut unknown = payload.clone();
-        unknown[notes + 4] = 3;
+        unknown[notes + 4] = 5;
         assert_eq!(
             read_log(&frame(&unknown)),
             Err(FormatError::Corrupt("stay kind"))
@@ -2965,6 +3121,7 @@ mod tests {
             changes: Vec::new(),
             state: Vec::new(),
             stays: vec![LoggedStay::Has {
+                unit: None,
                 player: 1,
                 entity: 1,
                 hops: 0,
@@ -3030,6 +3187,7 @@ mod tests {
                 .prop_map(|(player, entity)| LoggedStay::Entering { player, entity }),
             (any::<u128>(), any::<u64>(), any::<u32>(), places()).prop_map(
                 |(player, entity, hops, place)| LoggedStay::Has {
+                    unit: None,
                     player,
                     entity,
                     hops,
