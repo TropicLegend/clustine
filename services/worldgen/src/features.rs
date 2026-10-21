@@ -16,10 +16,12 @@ use clustine_world::BlockPos;
 use clustine_world::ChunkGenerator;
 use clustine_world::ChunkPos;
 use clustine_world::generation::{
-    BlockBox, GeneratorSettings, Neighbourhood, PieceState, StartRef,
+    BlockBox, FromNoise, GeneratorSettings, Neighbourhood, PieceState, StartRef, dimension_number,
 };
+use clustine_world::{Chunk, Entity};
 
 use crate::TerrainGenerator;
+use crate::spawning::ChunkSpawnView;
 use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, WorldgenHeights};
 
 /// Raised whenever a change makes any chunk of these stages come out otherwise
@@ -205,4 +207,41 @@ impl Stages for FeatureStages {
     fn decorate(&self, view: &mut dyn Neighbourhood, centre: ChunkPos) {
         clustine_features::decorate(&self.features, view, centre);
     }
+
+    /// The game's `spawnOriginalMobs` (`docs/groundwork/n7l-plan.md`, section 3.2): W
+    /// seeded for the chunk's decoration, R the region random the chunk's run began
+    /// with, made anew.
+    fn spawn(&self, position: ChunkPos, lit: &Chunk, nine: [&Chunk; 9]) -> Vec<Entity> {
+        if !makes_mobs(Dimension::Overworld) {
+            return Vec::new();
+        }
+        let view = ChunkSpawnView {
+            position,
+            lit,
+            nine,
+            zoom: self.features.zoom(),
+            sea_level: TerrainGenerator::sea_level(),
+        };
+        let seed = self.terrain.seed();
+        let mut spawn = clustine_sim::generation::SpawnRandom::new(seed, position);
+        let mut region = clustine_features::context::region_random(
+            seed,
+            self.features.legacy_random_source(),
+            position,
+        );
+        clustine_sim::generation::spawn_chunk(
+            &view,
+            self.generation.world,
+            dimension_number(self.dimension().name),
+            &mut spawn,
+            &mut FromNoise(&mut region),
+        )
+    }
+}
+
+/// Whether a dimension makes mobs with its chunks: not where its noise settings say
+/// `disable_mob_generation`, as the End's do (`NoiseBasedChunkGenerator.spawnOriginalMobs`).
+/// The game rule `spawn_mobs`, which turns it off too, is always on here.
+pub fn makes_mobs(dimension: Dimension) -> bool {
+    !dimension.noise_settings().disable_mob_generation
 }

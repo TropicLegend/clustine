@@ -8,10 +8,10 @@
 //! stream implements as well, so that the same hook draws from a player's stream for an
 //! egg and from the game's random sources for generation.
 //!
-//! What is here is the contract of the step's first part. The bodies of the creatures'
-//! `finalizeSpawn` by reason and group, of the spawning of a chunk and of a template's
-//! entities are the plan's later parts (sections 5.2 to 5.4): until then they make
-//! nothing and draw nothing, and say so where they stand.
+//! The spawning of a chunk is in `spawning`. The bodies of the creatures'
+//! `finalizeSpawn` by reason and group and of a template's entities are the plan's
+//! other parts (sections 5.2 and 5.4): until then they make nothing and draw nothing,
+//! and say so where they stand.
 
 use clustine_data::BlockState;
 use clustine_world::generation::{Draws, FinalHeightmap, Maker};
@@ -20,6 +20,10 @@ use clustine_world::{Biome, BlockPos, ChunkPos, Entity, EntityId, Generated};
 use crate::mobs::types::{SpawnGroup, SpawnReason, Spawning};
 
 use crate::region::Random;
+
+mod spawning;
+
+pub use spawning::SpawnRandom;
 
 /// Raised whenever the set of types made with chunks or by structures changes, or what
 /// any of them is made with (section 4): a world made while fewer were made is refused
@@ -33,6 +37,14 @@ pub const ENTITIES_GENERATION: u16 = 0;
 pub trait SpawnView {
     /// The chunk being spawned in.
     fn position(&self) -> ChunkPos;
+    /// The highest block's y (`getMaxY()`): the spawn reads the biomes at the top of
+    /// the chunk's corner.
+    fn max_y(&self) -> i32;
+    /// The dimension's sea level, below which and four more a turtle may spawn.
+    fn sea_level(&self) -> i32;
+    /// The block at `at`, in the centre or the eight around it (the box of a mob at the
+    /// chunk's edge meets the shapes of blocks beside it); air beyond them or the
+    /// dimension's height.
     fn block(&self, at: BlockPos) -> BlockState;
     /// One of the final height maps (the spawning reads the two of motion): the y above
     /// the highest block that counts.
@@ -47,14 +59,21 @@ pub trait SpawnView {
     fn noise_biome(&self, at: BlockPos) -> Biome;
 }
 
-/// The spawning of a chunk (`NaturalSpawner.spawnMobsForChunkGeneration`): the mobs
-/// made, without their keys, drawing the spawn's own random from `seed` and every
-/// `finalizeSpawn` from the region random `region`.
-///
-/// Section 5.3's: until then it makes none and draws nothing.
-pub fn spawn_chunk(view: &dyn SpawnView, seed: i64, region: &mut dyn Draws) -> Vec<Entity> {
-    let _ = (view, seed, region);
-    Vec::new()
+/// The spawning of a chunk (`NaturalSpawner.spawnMobsForChunkGeneration`, section
+/// 3.2): the mobs made, without their keys, in the order the scheduler keys them as the
+/// spawn's. `spawn` is W, the spawn's `WorldgenRandom` over a legacy source seeded with
+/// `setDecorationSeed`, which draws the groups, the columns and the yaws; `region` is
+/// R, the region random, which every `finalizeSpawn` draws from. Each mob's own stream
+/// is keyed by `world` and its making in the dimension numbered `dimension`
+/// ([`making_stream`]). Whether the dimension makes mobs at all is the caller's.
+pub fn spawn_chunk(
+    view: &dyn SpawnView,
+    world: u64,
+    dimension: u8,
+    spawn: &mut dyn Draws,
+    region: &mut dyn Draws,
+) -> Vec<Entity> {
+    spawning::spawn_chunk(view, world, dimension, spawn, region)
 }
 
 /// The making of a generated entity, which keys its own stream

@@ -111,6 +111,40 @@ impl Light {
     /// The value of `made_by` for light that the official server made, in a world
     /// that was brought in from it.
     pub const IMPORTED: u16 = u16::MAX;
+
+    /// The sky's light at the block `x`, `y`, `z` of a chunk whose lowest block is at
+    /// `min_y` (`x` and `z` in `0..16`): a section left out is above everything that
+    /// casts a shadow, and so 15, as the game reads it.
+    pub fn sky_at(&self, min_y: i32, x: usize, y: i32, z: usize) -> u8 {
+        level_at(&self.sky, 15, min_y, x, y, z)
+    }
+
+    /// The blocks' light at the block `x`, `y`, `z`, as [`Light::sky_at`] reads the
+    /// sky's: a section left out has none.
+    pub fn block_at(&self, min_y: i32, x: usize, y: i32, z: usize) -> u8 {
+        level_at(&self.block, 0, min_y, x, y, z)
+    }
+}
+
+/// The level of `sections` (the section below the chunk first) at a block, `absent`
+/// where its section is left out or lies beyond those listed.
+fn level_at(sections: &[SectionLight], absent: u8, min_y: i32, x: usize, y: i32, z: usize) -> u8 {
+    let above_bottom = y - min_y;
+    // The first entry is the section below the chunk's lowest; below that, the first.
+    let index = (above_bottom.div_euclid(SECTION_SIZE as i32) + 1).max(0) as usize;
+    let Some(section) = sections.get(index) else {
+        return absent;
+    };
+    match section {
+        SectionLight::Absent => absent,
+        SectionLight::Dark => 0,
+        SectionLight::Full => 15,
+        SectionLight::Levels(levels) => {
+            let in_section = above_bottom.rem_euclid(SECTION_SIZE as i32) as usize;
+            let index = in_section << 8 | (z & 15) << 4 | (x & 15);
+            levels[index / 2] >> (index % 2 * 4) & 15
+        }
+    }
 }
 
 /// The sky light of `chunk`: one entry for the section below the column, one per
@@ -226,6 +260,37 @@ mod tests {
         }
         assert_eq!(light[5], SectionLight::Full);
         assert_eq!(light[6], SectionLight::Absent);
+    }
+
+    /// The lookup reads a block's level where its section has levels, and the game's
+    /// meaning where a section is left out: the sky's 15 above everything, the blocks'
+    /// 0.
+    #[test]
+    fn a_lookup_reads_levels_and_gives_a_section_left_out_the_games_meaning() {
+        let mut chunk = empty();
+        for y in -64..0 {
+            chunk.set(3, y, 5, blocks::STONE);
+        }
+        let mut block = vec![SectionLight::Absent; 26];
+        let mut levels = Box::new([0; LIGHT_ARRAY_LENGTH]);
+        // The block at (2, 1, 9) of section 4 (y −63 + 64 = 1 above y 0) gets 7.
+        let index = 1 << 8 | 9 << 4 | 2;
+        levels[index / 2] |= 7 << (index % 2 * 4);
+        block[5] = SectionLight::Levels(levels);
+        let light = Light {
+            made_by: 1,
+            beside: 0,
+            sky: sky_light(&chunk),
+            block,
+        };
+        assert_eq!(light.sky_at(-64, 3, -10, 5), 0);
+        assert_eq!(light.sky_at(-64, 4, -10, 5), 15);
+        assert_eq!(light.sky_at(-64, 3, 200, 5), 15);
+        assert_eq!(light.sky_at(-64, 3, 400, 5), 15);
+        assert_eq!(light.sky_at(-64, 3, -100, 5), 0);
+        assert_eq!(light.block_at(-64, 2, 1, 9), 7);
+        assert_eq!(light.block_at(-64, 3, 1, 9), 0);
+        assert_eq!(light.block_at(-64, 2, 100, 9), 0);
     }
 
     #[test]

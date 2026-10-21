@@ -7,6 +7,9 @@
 pub mod features;
 pub mod preview;
 pub mod scheduler;
+// `spawn` is the world's spawn (re-exported below); this is the spawning of chunks.
+#[path = "spawn.rs"]
+pub mod spawning;
 pub mod stages;
 pub mod templates;
 pub mod terrain;
