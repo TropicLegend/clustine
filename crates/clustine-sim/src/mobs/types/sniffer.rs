@@ -5,21 +5,33 @@
 //! bred with torchflower seeds it lays a sniffer egg (an item, never a baby), whose block
 //! (`region/sniffer_eggs.rs`) hatches a snifflet that grows for 48000 ticks.
 //!
-//! Everything here but the brain's activities is built (`docs/groundwork/n7j-plan.md`,
-//! section 4.2): the body, the state and its transitions with their sounds and the
-//! entity event, the seed's tick, the dig's game event, the box made lower while it digs,
-//! feeding, mating's rule, the egg its breeding lays, the quad leash and its sounds. Until
-//! the brain's provider comes, a sniffer has no goals and no brain, and so stays idle,
-//! walking nowhere; [`brain_seams`] are what its behaviours will call.
+//! Here are the body, the state and its transitions with their sounds and the entity
+//! event, the seed's tick, the dig's game event, the box made lower while it digs,
+//! feeding, mating's rule, the egg its breeding lays, the quad leash, and its brain
+//! (`SnifferAi`, B 7.9.3 and 7.9.4): the provider of the game's memories, sensors and four
+//! activities (core, idle, sniff, dig), and the six behaviours of its own, which
+//! [`brain_seams`] serve.
+//!
+//! **Across a line** (`docs/groundwork/n7j-plan.md`, section 3): its sensors read the
+//! region's land, copies and faces (items 1); a place to dig and the path to it are
+//! judged on the copies' blocks, and a block beyond them reads as unloaded, so not
+//! diggable and the end of a path (item 8: a sniffer near a line finds fewer places);
+//! its explored positions are absolute and travel with it; a partner only a copy shows
+//! breeds by the region's protocol (item 4), the partner's region laying the egg.
 //!
 //! Named differences: the seed's draw comes from the sniffer's own stream, not from the
 //! world's random sequence of `gameplay/sniffer_digging` (which is not extracted yet);
 //! the water's malus is not lifted while it is in water or burning
-//! (`onPathfindingStart`), which only its brain's paths read.
+//! (`onPathfindingStart`), which only its brain's paths read; `canDig` asks nothing of
+//! the world's border, which every place is within; the digging animation's clock, which
+//! the game starts again only at a state's change after a load, is not kept, as the
+//! particles it times are the client's.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_blocks::data::in_tag;
-use clustine_data::{PathType, items, sounds};
-use clustine_world::{BlockPos, ItemStack};
+use clustine_data::{PathType, entity_types, items, sounds};
+use clustine_world::{BlockPos, Entry, ItemStack};
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own};
@@ -30,6 +42,19 @@ use crate::mobs::ai::maths::{self, table_cos, table_sin};
 use crate::mobs::ai::{Ai, HeadLimits, Setup, navigation, random_pos};
 use crate::mobs::body::Event;
 use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::brain::behaviours::cooldowns::count_down;
+use crate::mobs::brain::behaviours::looking::{LookAt, look_at};
+use crate::mobs::brain::behaviours::panic::{self, AnimalPanic};
+use crate::mobs::brain::behaviours::social::{AnimalMakeLove, FollowTemptation};
+use crate::mobs::brain::behaviours::walking::{
+    MoveToTargetSink, look_sink, stroll, walk_to_look_target,
+};
+use crate::mobs::brain::behaviours::{Speed, block_of, entry, read_entry, walk, walk_target};
+use crate::mobs::brain::sensors::{self, TemptingSensor};
+use crate::mobs::brain::{
+    self, Activity, ActivityData, Behaviour, Brain, Cx, DoNothing, Gate, HeldTimed, Memories,
+    MemoryKind, Provider, Status, Tracker, Value,
+};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
 use crate::physics::{self, Vec3};
@@ -113,10 +138,6 @@ fn game_tick_count(tick: &MobTick<'_>) -> i32 {
 /// `transitionTo(state)`: the state set, with what each brings: the happy sound, the
 /// scenting sound (higher for a baby), the sniffing sound, the seed's tick and entity
 /// event 63 as digging starts, the sound of digging's end as it rises.
-#[allow(
-    dead_code,
-    reason = "what the sniffer's brain's behaviours call once its provider is wired"
-)]
 pub(crate) fn transition_to(tick: &mut MobTick<'_>, to: State) {
     let sound = |sound: i32, pitch: f32| Event::Sound {
         sound,
@@ -185,14 +206,10 @@ pub(crate) fn store_explored(explored: &[BlockPos], pos: BlockPos) -> Vec<BlockP
     kept
 }
 
-/// The seams the brain's behaviours call (`SnifferAi`'s seven, B 7.9.3 and 7.9.4), which
-/// part A's machinery wires to its provider: the predicates the behaviours read and the
-/// search for a place to dig. Its memories (`sniffer_explored_positions`, the digging and
-/// sniffing marks, `sniff_cooldown`) are the brain's; these take what they read of them.
-#[allow(
-    dead_code,
-    reason = "what the sniffer's brain calls once the machinery's provider is wired"
-)]
+/// What the brain's behaviours call (`SnifferAi`'s, B 7.9.3 and 7.9.4): the predicates
+/// they read and the search for a place to dig. Its memories (`sniffer_explored_positions`,
+/// the digging and sniffing marks, `sniff_cooldown`) are the brain's; these take what they
+/// read of them.
 pub(crate) mod brain_seams {
     use super::*;
 
@@ -203,6 +220,24 @@ pub(crate) mod brain_seams {
         pub(crate) tempted: bool,
         /// `IS_PANICKING` present (`isPanicking`).
         pub(crate) panicking: bool,
+    }
+
+    impl Marks {
+        /// The marks as `memories` hold them.
+        pub(crate) fn of(memories: &Memories) -> Self {
+            Self {
+                tempted: memories.check(MemoryKind::TemptingPlayer, Status::Present),
+                panicking: memories.check(MemoryKind::IsPanicking, Status::Present),
+            }
+        }
+    }
+
+    /// `getExploredPositions()`: the explored list, newest first, empty where it has none.
+    pub(crate) fn explored(memories: &Memories) -> Vec<BlockPos> {
+        match memories.get(MemoryKind::SnifferExploredPositions) {
+            Some(Value::Blocks(list)) => list,
+            _ => Vec::new(),
+        }
     }
 
     /// `canSniff()`: not tempted, not panicking, not in water, not in love, on the
@@ -279,6 +314,466 @@ pub(crate) mod brain_seams {
     }
 }
 
+// ------------------------------------------------------------------------------------
+// The brain (`Sniffer.brainProvider`, `SnifferAi`).
+
+/// `SNIFFING_COOLDOWN_TICKS`: how long after a dig it does not sniff again.
+pub(crate) const SNIFF_COOLDOWN: i64 = 9600;
+
+/// `FOOD_TEMPTATIONS` of a sniffer (`TemptingSensor.forAnimal`: `isFood`).
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| FOOD.test(Some(stack)),
+};
+
+/// `Sniffer.brainProvider()` (Sniffer.txt 1104–1115): its explored positions named, and
+/// its four sensors in the game's order.
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[MemoryKind::SnifferExploredPositions],
+    sensors: &[
+        &sensors::NEAREST_LIVING_ENTITIES,
+        &sensors::HURT_BY,
+        &sensors::NEAREST_PLAYERS,
+        &TEMPTATIONS,
+    ],
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `SnifferAi.getActivities()`: core, idle, sniff and dig, in that order.
+fn activities() -> Vec<ActivityData> {
+    let mut panic = AnimalPanic::new(2.0);
+    panic.on_start = reset_sniffing;
+    let mut love = AnimalMakeLove::new(entity_types::SNIFFER as u16);
+    love.on_start = reset_sniffing;
+    let mut tempted = FollowTemptation::new(Speed::Fixed(1.25));
+    tempted.close_enough = |cx| {
+        if animal::is_baby(&cx.ai.tick.mob) {
+            2.5
+        } else {
+            3.5
+        }
+    };
+    tempted.on_start = reset_sniffing;
+    let core = ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            panic::swim(0.8),
+            panic.boxed(),
+            Box::new(MoveToTargetSink::new(500, 700)),
+            count_down(MemoryKind::TemptationCooldownTicks),
+        ],
+    );
+    let mut idle = ActivityData::numbered(
+        Activity::Idle,
+        0,
+        vec![
+            love.boxed(),
+            tempted.boxed(),
+            look_sink(45, 90),
+            held(FeelingHappy),
+            Box::new(Gate::run_one(vec![
+                (walk_to_look_target(1.0, 3), 2),
+                (held(Scenting), 1),
+                (held(Sniffing), 1),
+                (look_at(LookAt::Player, 6.0), 1),
+                (stroll(1.0), 1),
+                (Box::new(HeldTimed::new(DoNothing { min: 5, max: 20 })), 2),
+            ])),
+        ],
+    );
+    idle.conditions = vec![(MemoryKind::SnifferDigging, Status::Absent)];
+    let mut sniff = ActivityData::numbered(Activity::Sniff, 0, vec![held(Searching)]);
+    sniff.conditions = vec![
+        (MemoryKind::IsPanicking, Status::Absent),
+        (MemoryKind::SnifferSniffingTarget, Status::Present),
+        (MemoryKind::WalkTarget, Status::Present),
+    ];
+    // Both at priority 0 (explicit pairs).
+    let dig = ActivityData {
+        activity: Activity::Dig,
+        behaviours: vec![(0, held(Digging)), (0, held(FinishedDigging))],
+        conditions: vec![
+            (MemoryKind::IsPanicking, Status::Absent),
+            (MemoryKind::WalkTarget, Status::Absent),
+            (MemoryKind::SnifferDigging, Status::Present),
+        ],
+        erase: Vec::new(),
+    };
+    vec![core, idle, sniff, dig]
+}
+
+/// What a fresh load of a sniffer resets (the plan's 2.10, the brief's 7.9.8): its state
+/// and its seed's tick, synced data the game does not save, so that it is idle with no
+/// seed to drop; the brain's fresh load forgets its dig, its place to sniff and its
+/// happiness (memories of no codec), so that it does not finish that dig. For the brain's
+/// `fresh_load` when it comes.
+#[allow(
+    dead_code,
+    reason = "the fresh load of N7j1's contracts, not built yet"
+)]
+pub(crate) fn fresh_load(mob: &mut Mob) {
+    update(mob, |own| *own = SnifferState::default());
+}
+
+/// `SnifferAi.updateActivity`: dig, else sniff, else idle, the first whose conditions
+/// hold (none changes nothing: a dig with a walk target and no sniffing target keeps the
+/// activity it had).
+pub(crate) fn update_activity(brain: &mut Brain) {
+    brain.set_active_to_first_valid(&[Activity::Dig, Activity::Sniff, Activity::Idle]);
+}
+
+/// `SnifferAi.resetSniffing`: no dig and no place to sniff, and idle again.
+fn reset_sniffing(cx: &mut Cx<'_, '_, '_>) {
+    cx.memories.erase(MemoryKind::SnifferDigging);
+    cx.memories.erase(MemoryKind::SnifferSniffingTarget);
+    transition_to(cx.ai.tick, State::Idling);
+}
+
+/// `canSniff()` of the sniffer in its brain's tick.
+fn can_sniff(cx: &Cx<'_, '_, '_>) -> bool {
+    brain_seams::can_sniff(cx.ai, brain_seams::Marks::of(cx.memories))
+}
+
+/// `canDig()` of the sniffer in its brain's tick: a path search.
+fn can_dig(cx: &mut Cx<'_, '_, '_>) -> bool {
+    let marks = brain_seams::Marks::of(cx.memories);
+    let explored = brain_seams::explored(cx.memories);
+    brain_seams::can_dig(cx.ai, marks, &explored)
+}
+
+/// A `Behavior` of the sniffer's own: the game's start, tick and stop, with its stop told
+/// whether it ran its whole time (`timedOut(time)` at the stop, which three of them read
+/// and which [`brain::Timed`] does not pass on).
+trait SnifferBehaviour: Sync + 'static {
+    /// The entry condition (`Map.of(...)`, a conjunction).
+    fn entry(&self) -> &'static [(MemoryKind, Status)];
+    /// `minDuration` and `maxDuration`.
+    fn durations(&self) -> (i64, i64);
+    /// `checkExtraStartConditions`.
+    fn extra_start(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let _ = cx;
+        true
+    }
+    /// `canStillUse`.
+    fn can_still_use(&self, cx: &mut Cx<'_, '_, '_>) -> bool;
+    fn start(&self, cx: &mut Cx<'_, '_, '_>);
+    /// `stop`, with `timedOut(time)`.
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, timed_out: bool);
+}
+
+/// What a sniffer's behaviour keeps: whether it runs, and its end.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+struct Run {
+    running: bool,
+    end: i64,
+}
+
+/// A [`SnifferBehaviour`] and its run.
+struct Held<B: SnifferBehaviour> {
+    behaviour: B,
+    run: Run,
+}
+
+fn held<B: SnifferBehaviour>(behaviour: B) -> Box<dyn Behaviour> {
+    Box::new(Held {
+        behaviour,
+        run: Run::default(),
+    })
+}
+
+impl<B: SnifferBehaviour> Behaviour for Held<B> {
+    fn required(&self, into: &mut BTreeSet<MemoryKind>) {
+        into.extend(self.behaviour.entry().iter().map(|(kind, _)| *kind));
+    }
+
+    fn running(&self) -> bool {
+        self.run.running
+    }
+
+    fn try_start(&mut self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let met = self
+            .behaviour
+            .entry()
+            .iter()
+            .all(|(kind, status)| cx.memories.check(*kind, *status));
+        if !met || !self.behaviour.extra_start(cx) {
+            return false;
+        }
+        self.run.running = true;
+        // `Behavior.tryStart`: one draw of the level's at every start, also where the two
+        // durations are the same.
+        let (min, max) = self.behaviour.durations();
+        let bound = u32::try_from(max + 1 - min).unwrap_or(1).max(1);
+        self.run.end = cx.time + min + i64::from(cx.ai.tick.draws.next_int(bound));
+        self.behaviour.start(cx);
+        true
+    }
+
+    fn tick_or_stop(&mut self, cx: &mut Cx<'_, '_, '_>) {
+        // None of the sniffer's own ticks.
+        if cx.time > self.run.end || !self.behaviour.can_still_use(cx) {
+            self.do_stop(cx);
+        }
+    }
+
+    fn do_stop(&mut self, cx: &mut Cx<'_, '_, '_>) {
+        let timed_out = cx.time > self.run.end;
+        self.run = Run::default();
+        self.behaviour.stop(cx, timed_out);
+    }
+
+    fn load(&mut self, first: u16, parts: &BTreeMap<u16, Entry>) {
+        self.run = read_entry(first, 1, parts);
+    }
+
+    fn save(&self, first: u16, into: &mut Vec<Entry>) {
+        if self.run != Run::default() {
+            into.push(entry(first, 1, &self.run));
+        }
+    }
+}
+
+/// `SnifferAi$Scenting(40, 80)`: idle and untempted, it scents for its whole time.
+struct Scenting;
+
+impl SnifferBehaviour for Scenting {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[
+            (MemoryKind::IsPanicking, Status::Absent),
+            (MemoryKind::SnifferDigging, Status::Absent),
+            (MemoryKind::SnifferSniffingTarget, Status::Absent),
+            (MemoryKind::SnifferHappy, Status::Absent),
+            (MemoryKind::BreedTarget, Status::Absent),
+        ]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (40, 80)
+    }
+
+    fn extra_start(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        !brain_seams::Marks::of(cx.memories).tempted
+    }
+
+    fn can_still_use(&self, _: &mut Cx<'_, '_, '_>) -> bool {
+        true
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::Scenting);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, _: bool) {
+        transition_to(cx.ai.tick, State::Idling);
+    }
+}
+
+/// `SnifferAi$Sniffing(40, 80)`: a grown sniffer that may sniff sniffs; sniffed its whole
+/// time, it chooses a place to dig and walks to it.
+struct Sniffing;
+
+impl SnifferBehaviour for Sniffing {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[
+            (MemoryKind::WalkTarget, Status::Absent),
+            (MemoryKind::SnifferSniffingTarget, Status::Absent),
+            (MemoryKind::SniffCooldown, Status::Absent),
+        ]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (40, 80)
+    }
+
+    fn extra_start(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        !animal::is_baby(&cx.ai.tick.mob) && can_sniff(cx)
+    }
+
+    fn can_still_use(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        can_sniff(cx)
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::Sniffing);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, timed_out: bool) {
+        transition_to(cx.ai.tick, State::Idling);
+        if !timed_out {
+            return;
+        }
+        let explored = brain_seams::explored(cx.memories);
+        if let Some(pos) = brain_seams::calculate_dig_position(cx.ai, &explored) {
+            cx.memories
+                .set(MemoryKind::SnifferSniffingTarget, Value::Block(pos));
+            cx.memories
+                .set(MemoryKind::WalkTarget, walk(Tracker::Block(pos), 1.25, 0));
+        }
+    }
+}
+
+/// `SnifferAi$Searching` (600): it walks to its place, searching; where it arrives and
+/// may dig there (its nose's block), it digs.
+struct Searching;
+
+impl SnifferBehaviour for Searching {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[
+            (MemoryKind::WalkTarget, Status::Present),
+            (MemoryKind::IsPanicking, Status::Absent),
+            (MemoryKind::SnifferSniffingTarget, Status::Present),
+        ]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (600, 600)
+    }
+
+    fn extra_start(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        can_sniff(cx)
+    }
+
+    fn can_still_use(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        if !can_sniff(cx) {
+            transition_to(cx.ai.tick, State::Idling);
+            return false;
+        }
+        // `WalkTarget.getTarget().currentBlockPosition()`: a block's own, never unknown.
+        let walking = walk_target(cx).and_then(|walk| block_of(cx, &walk.to));
+        let target = match cx.memories.get(MemoryKind::SnifferSniffingTarget) {
+            Some(Value::Block(pos)) => Some(pos),
+            _ => None,
+        };
+        walking.is_some() && walking == target
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::Searching);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, _: bool) {
+        if can_dig(cx) && can_sniff(cx) {
+            cx.memories
+                .set(MemoryKind::SnifferDigging, Value::Bool(true));
+        }
+        cx.memories.erase(MemoryKind::WalkTarget);
+        cx.memories.erase(MemoryKind::SnifferSniffingTarget);
+    }
+}
+
+/// `SnifferAi$Digging(160, 180)`: it digs while it may, its seed 120 ticks in; dug its
+/// whole time, it does not sniff for 9600 ticks; cut short, it is idle again.
+struct Digging;
+
+impl SnifferBehaviour for Digging {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[
+            (MemoryKind::IsPanicking, Status::Absent),
+            (MemoryKind::WalkTarget, Status::Absent),
+            (MemoryKind::SnifferDigging, Status::Present),
+            (MemoryKind::SniffCooldown, Status::Absent),
+        ]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (160, 180)
+    }
+
+    fn extra_start(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        can_sniff(cx)
+    }
+
+    fn can_still_use(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let now = cx.ai.tick.lived;
+        cx.memories
+            .check(MemoryKind::SnifferDigging, Status::Present)
+            && can_dig(cx)
+            && !animal::animal_of(&cx.ai.tick.mob.state).in_love(now)
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::Digging);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, timed_out: bool) {
+        if timed_out {
+            cx.memories
+                .set_with_expiry(MemoryKind::SniffCooldown, Value::Unit, SNIFF_COOLDOWN);
+        } else {
+            reset_sniffing(cx);
+        }
+    }
+}
+
+/// `SnifferAi$FinishedDigging(40)`: after a whole dig, it rises for 40 ticks, then
+/// remembers where it stood and is happy.
+struct FinishedDigging;
+
+impl SnifferBehaviour for FinishedDigging {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[
+            (MemoryKind::IsPanicking, Status::Absent),
+            (MemoryKind::WalkTarget, Status::Absent),
+            (MemoryKind::SnifferDigging, Status::Present),
+            (MemoryKind::SniffCooldown, Status::Present),
+        ]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (40, 40)
+    }
+
+    fn can_still_use(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        cx.memories
+            .check(MemoryKind::SnifferDigging, Status::Present)
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::Rising);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, timed_out: bool) {
+        transition_to(cx.ai.tick, State::Idling);
+        // `onDiggingComplete(timedOut)`: the block it stands on (`getOnPos()`).
+        let on_pos = cx.ai.tick.living.body.on_pos(cx.ai.tick.world, 1.0e-5);
+        let explored = brain_seams::explored(cx.memories);
+        if let Some(list) = brain_seams::on_digging_complete(&explored, on_pos, timed_out) {
+            cx.memories
+                .set(MemoryKind::SnifferExploredPositions, Value::Blocks(list));
+        }
+        cx.memories.erase(MemoryKind::SnifferDigging);
+        cx.memories.set(MemoryKind::SnifferHappy, Value::Bool(true));
+    }
+}
+
+/// `SnifferAi$FeelingHappy(40, 100)`: happy for its whole time after a dig.
+struct FeelingHappy;
+
+impl SnifferBehaviour for FeelingHappy {
+    fn entry(&self) -> &'static [(MemoryKind, Status)] {
+        &[(MemoryKind::SnifferHappy, Status::Present)]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (40, 100)
+    }
+
+    fn can_still_use(&self, _: &mut Cx<'_, '_, '_>) -> bool {
+        true
+    }
+
+    fn start(&self, cx: &mut Cx<'_, '_, '_>) {
+        transition_to(cx.ai.tick, State::FeelingHappy);
+    }
+
+    fn stop(&self, cx: &mut Cx<'_, '_, '_>, _: bool) {
+        transition_to(cx.ai.tick, State::Idling);
+        cx.memories.erase(MemoryKind::SnifferHappy);
+    }
+}
+
 /// `dropSeed()`: at its tick, a seed (a torchflower's or a pitcher pod, one draw of two)
 /// at the corner of its nose's block, with its sound.
 fn drop_seed(tick: &mut MobTick<'_>) {
@@ -348,9 +843,14 @@ impl MobType for Sniffer {
         animal::walk_target_value(ai, pos, clustine_data::blocks::GRASS_BLOCK)
     }
 
-    /// `Sniffer.customServerAiStep`: the brain's tick and its activity's update (part A's,
-    /// not wired yet), then the animal's.
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
+    }
+
+    /// `Sniffer.customServerAiStep`: the brain's tick and its activity's update, then the
+    /// animal's.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        brain::run(tick, |brain, _| update_activity(brain));
         animal::custom_server_ai_step(tick);
     }
 

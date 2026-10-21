@@ -15,9 +15,19 @@
 //! sweep and its look control, the still timeout and the scan for players on top, the
 //! home, the healing, the harness put on (and taken off by shears, `region/animals.rs`),
 //! the snowball's growing, the leash's distances and the leash holder's flag, sounds,
-//! and its synced data. The ghastling's brain is part A's: until its provider comes a
-//! ghastling has no goals and hovers where it is. Riding is the lead's (part R): the
-//! functions of [`riding`] are what it needs, and nobody gets on yet.
+//! and its synced data, and the ghastling's brain (`HappyGhastAi`, B 7.11.3): core, idle
+//! and panic, following players and adults and tempted by snowballs; growing up stops its
+//! behaviours and forgets its memories, and a grown one's brain never ticks. Riding is
+//! the lead's (part R): the functions of [`riding`] are what it needs, and nobody gets on
+//! yet.
+//!
+//! **Across a line** (`docs/groundwork/n7j-plan.md`, section 3): a ghastling's sensors
+//! read the region's land, copies and faces (item 1), so it follows and is tempted by a
+//! player or an adult a copy shows; one the view no longer shows is not followed that tick
+//! (item 2). A grown one's careful sweep takes a block beyond the copies as not passable
+//! (item 8, the brief's 11.7.4 proposal), so it waits and chooses another point; its
+//! good-target test and the surface's height read such a block as unloaded, air: it
+//! floats about less freely near a line (named).
 //!
 //! Named differences: the exact position packet as it begins to stay still and the
 //! absolute moves while it stays (`setRequiresPrecisePosition`) are the edge's, which
@@ -47,6 +57,17 @@ use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Conditions, Looked};
 use crate::mobs::ai::{Ai, MoveKind, Operation, Setup, controls};
 use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::brain::behaviours::Speed;
+use crate::mobs::brain::behaviours::cooldowns::count_down;
+use crate::mobs::brain::behaviours::panic::{AnimalPanic, swim};
+use crate::mobs::brain::behaviours::social::{FollowTemptation, follow_adult_by};
+use crate::mobs::brain::behaviours::walking::{
+    StrollTo, look_sink, sink, stroll_to, walk_to_look_target,
+};
+use crate::mobs::brain::sensors::{self, TemptingSensor};
+use crate::mobs::brain::{
+    self, Activity, ActivityData, Brain, Gate, MemoryKind, Provider, Sensed, Status,
+};
 use crate::mobs::tick::MobTick;
 use crate::physics::aabb::Aabb;
 use crate::physics::collide::{self, Context};
@@ -256,6 +277,166 @@ fn grown_up(mob: &mut Mob) {
     mob.body.controls.movement = Default::default();
     mob.body.controls.look = Default::default();
     mob.body.path = Default::default();
+}
+
+// ------------------------------------------------------------------------------------
+// The ghastling's brain (`HappyGhast.brainProvider`, `HappyGhastAi`, B 7.11.3).
+
+/// `FOOD_TEMPTATIONS` of a happy ghast (`TemptingSensor.forAnimal`: snowballs).
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| FOOD.test(Some(stack)),
+};
+
+/// `HappyGhast.brainProvider()` (HappyGhast.txt 1293–1301): no memories of its own, and
+/// its five sensors in the game's order. Every happy ghast has it (an adult's sensors
+/// draw their delays as it is made too), and only a ghastling's is ticked.
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &[
+        &sensors::NEAREST_LIVING_ENTITIES,
+        &sensors::HURT_BY,
+        &TEMPTATIONS,
+        &sensors::NEAREST_ADULT_ANY_TYPE,
+        &sensors::NEAREST_PLAYERS,
+    ],
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `HappyGhastAi.getActivities()`: core, idle and panic.
+fn activities() -> Vec<ActivityData> {
+    let core = ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            swim(0.8),
+            AnimalPanic::flying(2.0, 0).boxed(),
+            look_sink(45, 90),
+            sink(),
+            count_down(MemoryKind::TemptationCooldownTicks),
+        ],
+    );
+    let mut tempted = FollowTemptation::new(Speed::Fixed(1.25));
+    tempted.close_enough = |_| 3.0;
+    tempted.look_in_the_eyes = true;
+    let following = Speed::Of(|_| 1.1);
+    // Explicit priorities, from 1.
+    let idle = ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (1, tempted.boxed()),
+            (
+                2,
+                follow_adult_by(
+                    ADULT_FOLLOW_RANGE,
+                    following,
+                    MemoryKind::NearestVisiblePlayer,
+                    true,
+                ),
+            ),
+            (
+                3,
+                follow_adult_by(
+                    ADULT_FOLLOW_RANGE,
+                    following,
+                    MemoryKind::NearestVisibleAdult,
+                    true,
+                ),
+            ),
+            (
+                4,
+                Box::new(Gate::run_one(vec![
+                    (stroll_to(1.0, StrollTo::Fly), 1),
+                    (walk_to_look_target(1.0, 3), 1),
+                ])),
+            ),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    };
+    let panic = ActivityData {
+        activity: Activity::Panic,
+        behaviours: Vec::new(),
+        conditions: vec![(MemoryKind::IsPanicking, Status::Present)],
+        erase: Vec::new(),
+    };
+    vec![core, idle, panic]
+}
+
+/// `ADULT_FOLLOW_RANGE`: `UniformInt.of(3, 16)`, of which `BabyFollowAdult` reads only
+/// the bounds.
+const ADULT_FOLLOW_RANGE: (i32, i32) = (3, 16);
+
+/// What a fresh load of a happy ghast resets (the plan's 2.10, the brief's 7.11.6): its
+/// still timeout is saved (`still_timeout`), and read back through
+/// `setServerStillTimeout`, which sets its flag again; it holds no leash until a leashee
+/// notifies it (`leashHolderTime` 0, which the region keeps in its memory and drops at a
+/// take-in); its move control's float duration is 0, so its next impulse is at once. For
+/// the brain's `fresh_load` when it comes.
+#[allow(
+    dead_code,
+    reason = "the fresh load of N7j1's contracts, not built yet"
+)]
+pub(crate) fn fresh_load(mob: &mut Mob) {
+    update(mob, |own| {
+        let timeout = own.still_timeout;
+        *own = HappyGhastState::default();
+        own.set_server_still_timeout(timeout);
+    });
+}
+
+/// `HappyGhastAi.updateActivity`: panic while it panics, else idle.
+pub(crate) fn update_activity(brain: &mut Brain) {
+    brain.set_active_to_first_valid(&[Activity::Panic, Activity::Idle]);
+}
+
+/// `adultGhastSetup`'s part on the server for its brain: every running behaviour stopped
+/// (`brain.stopAll`, in the running pass's order, with what their stops do and draw) and
+/// every memory forgotten (`clearMemories`). What its behaviours keep at rest (a gate's
+/// order, the sink's wait) is dropped with them, where the game keeps it in a brain it
+/// never ticks again: nothing reads it.
+fn forget_brain(tick: &mut MobTick<'_>) {
+    let entries = tick.mob.mind.brain.clone();
+    let mut brain = Brain::read(&PROVIDER, &entries, tick.sensed.as_ref(), tick.lived);
+    let mut setup = Setup::default();
+    HappyGhast.register_goals_of(&tick.mob, &mut setup);
+    let config = setup.config;
+    let time = tick.world.game_time();
+    {
+        let mut ai = Ai {
+            tick,
+            config: &config,
+            sensing: Default::default(),
+            navigation_ticked: true,
+        };
+        brain.stop_all(&mut ai, time);
+    }
+    let kinds: Vec<MemoryKind> = brain.memories.slots.keys().copied().collect();
+    for kind in kinds {
+        brain.memories.erase(kind);
+    }
+    let (written, _) = brain.write();
+    tick.mob.mind.brain = written
+        .into_iter()
+        .filter(|entry| entry.id == brain::ids::STATE)
+        .collect();
+    tick.sensed = Some(Sensed::new());
+}
+
+/// Whether a grown happy ghast's brain still holds what a ghastling's had: its growing up
+/// by a use (a snowball fed), which has no tick to stop its behaviours in, is finished at
+/// its next AI step.
+fn brain_left_over(tick: &MobTick<'_>) -> bool {
+    tick.mob
+        .mind
+        .brain
+        .iter()
+        .any(|entry| entry.id != brain::ids::STATE)
+        || tick
+            .sensed
+            .as_ref()
+            .is_some_and(|sensed| !sensed.is_empty())
 }
 
 /// `HappyGhastFloatGoal`: the float goal, but not while it stays still.
@@ -483,6 +664,11 @@ fn traversal_possible(
     in_lava: bool,
 ) -> bool {
     let world = ai.tick.world;
+    // A block of a chunk the region does not read (beyond its copies) is unknown: not
+    // passable. Above and below the world, it is the void's air, as the game's.
+    if !world.has_chunk(pos.chunk()) {
+        return false;
+    }
     let state = world.state(pos);
     if state.props().is_air() {
         return true;
@@ -802,21 +988,33 @@ impl MobType for HappyGhast {
     /// is its brain's) or the grown one's `registerGoals` and ground navigation, whose
     /// move and look controls are its own ([`MobType::tick_move_control`]).
     fn register_goals_of(&self, mob: &Mob, setup: &mut Setup) {
-        super::cow::animal_maluses(setup);
         if animal::is_baby(mob) {
-            setup.config.navigation = Settings::of(Kind::Flying);
-            setup.config.navigation.flags.can_open_doors = false;
-            setup.config.navigation.set_can_float(true);
-            setup.config.navigation.set_required_path_length(48.0);
-            setup.config.move_kind = MoveKind::Flying {
-                max_turn: 180,
-                hovers: true,
-            };
+            self.register_goals(setup);
             return;
         }
+        super::cow::animal_maluses(setup);
         setup.add_goal(3, HappyGhastFloatGoal);
         setup.add_goal(4, GhastTemptGoal);
         setup.add_goal(5, RandomFloatAroundGoal);
+    }
+
+    /// The ghastling's (`babyGhastSetup`), which the brain's tick reads its navigation
+    /// and controls from (`brain::run` asks this hook, not the one of the mob, and only a
+    /// ghastling's brain ticks).
+    fn register_goals(&self, setup: &mut Setup) {
+        super::cow::animal_maluses(setup);
+        setup.config.navigation = Settings::of(Kind::Flying);
+        setup.config.navigation.flags.can_open_doors = false;
+        setup.config.navigation.set_can_float(true);
+        setup.config.navigation.set_required_path_length(48.0);
+        setup.config.move_kind = MoveKind::Flying {
+            max_turn: 180,
+            hovers: true,
+        };
+    }
+
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
     }
 
     fn tick_move_control(&self, ai: &mut Ai<'_, '_>) {
@@ -847,9 +1045,14 @@ impl MobType for HappyGhast {
         if below && ground { 10.0 } else { 5.0 }
     }
 
-    /// `customServerAiStep`: a ghastling's brain and activity (part A's, not wired yet),
-    /// its home checked at every age, then the animal's.
+    /// `customServerAiStep`: a ghastling's brain and activity, its home checked at every
+    /// age, then the animal's.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        if animal::is_baby(&tick.mob) {
+            brain::run(tick, |brain, _| update_activity(brain));
+        } else if brain_left_over(tick) {
+            forget_brain(tick);
+        }
         check_restriction(tick);
         animal::custom_server_ai_step(tick);
     }
@@ -874,6 +1077,7 @@ impl MobType for HappyGhast {
         animal::after_ai_step(tick);
         if was_baby && !animal::is_baby(&tick.mob) {
             grown_up(&mut tick.mob);
+            forget_brain(tick);
         }
         continuous_heal(tick);
     }

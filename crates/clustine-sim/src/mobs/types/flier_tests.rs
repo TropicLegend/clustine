@@ -25,6 +25,8 @@ use crate::physics::{Vec3, World};
 use crate::region::Random;
 use crate::shown::{DataShown, Serialiser};
 
+mod brains;
+
 const SNIFFER: u16 = entity_types::SNIFFER as u16;
 const ALLAY: u16 = entity_types::ALLAY as u16;
 const GHAST: u16 = entity_types::HAPPY_GHAST as u16;
@@ -274,12 +276,11 @@ fn a_fresh_one_of_each_keeps_no_type_state_and_a_changed_one_reads_back() {
         dancing: true,
         jukebox: Some(BlockPos::new(1, 2, 3)),
         cooldown_until: Some(6100),
-        liked_player: Some(77),
         inventory: one(items::DIAMOND),
         no_gravity: true,
     };
     allay::update(&mut allay, |kept| *kept = own.clone());
-    assert_eq!(allay.state.version, 1);
+    assert_eq!(allay.state.version, 2);
     assert_eq!(allay::read(&allay), own);
     let still = HappyGhastState {
         still_timeout: 10,
@@ -695,7 +696,8 @@ fn an_allay_takes_one_of_what_it_is_given_likes_the_giver_and_gives_it_back_with
     let (result, did) = interact(ALLAY, &mut mob, Some(given));
     assert_eq!(result, Interaction::Success);
     assert_eq!(mob.body.equipment.slots[0], one(items::DIAMOND));
-    assert_eq!(allay::read(&mob).liked_player, Some(77));
+    // The giver is liked, in its brain's memory.
+    assert_eq!(allay::liked_player(&mob), Some(77));
     // Its sound is not sent to the giver, whose own client plays it.
     assert_eq!(
         sounds_of(&did),
@@ -717,6 +719,7 @@ fn an_allay_takes_one_of_what_it_is_given_likes_the_giver_and_gives_it_back_with
     assert_eq!(result, Interaction::Success);
     assert_eq!(mob.body.equipment.slots[0], None);
     assert_eq!(allay::read(&mob), AllayState::default());
+    assert_eq!(allay::liked_player(&mob), None);
     let eyes = f64::from(EntityTypeInfo::of(entity_types::ALLAY).eye_height);
     assert_eq!(
         did,
@@ -858,7 +861,12 @@ fn an_allay_wants_only_what_its_hand_holds_while_its_slot_has_room_and_its_liked
     );
     assert_eq!(mob.body.equipment.slots[0], None);
     // The player it likes does no harm; anyone else does.
-    allay::update(&mut mob, |own| own.liked_player = Some(77));
+    let mut memories = crate::mobs::brain::memories_of(&allay::PROVIDER, &mob, 1);
+    memories.set(
+        crate::mobs::brain::MemoryKind::LikedPlayer,
+        crate::mobs::brain::Value::Uuid(77),
+    );
+    crate::mobs::brain::write_memories(&allay::PROVIDER, &mut mob, memories);
     let by = |player| {
         DamageSource::by(
             DamageType::PLAYER_ATTACK,

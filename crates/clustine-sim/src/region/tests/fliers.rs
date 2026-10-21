@@ -1,10 +1,15 @@
 //! The sniffer, the allay and the happy ghast in a region, from the brief's sections 7.9
-//! to 7.11, as far as a player meets them without their brains: an egg makes each with
-//! no draw of its own; a sniffer egg cracks twice and hatches, faster on moss; sniffers
-//! bred lay an egg; a dried ghast under water becomes a ghastling by its stages; a
-//! ghastling fed grows; a harness goes on and comes off; an allay takes an item, gathers
-//! what it holds and gives it back; a happy ghast holds leashes and shows the quad one,
-//! stays still under a player, and floats about.
+//! to 7.11 and `docs/groundwork/n7j-plan.md` (sections 1 and 4.3), as a player meets
+//! them: an egg makes each with no draw of its own; a sniffer egg cracks twice and
+//! hatches, faster on moss; sniffers bred lay an egg; a dried ghast under water becomes a
+//! ghastling by its stages; a ghastling fed grows; a harness goes on and comes off; an
+//! allay takes an item, gathers what it holds and gives it back; a happy ghast holds
+//! leashes and shows the quad one, stays still under a player, and floats about. With
+//! their brains: a sniffer sniffs, digs and drops its seed 120 ticks in; an allay fetches
+//! to its player and to a note block; a ghastling follows and is tempted, and grown up
+//! forgets its brain. Across a pinned line: a sniffer tempted by a player beyond it, a
+//! sniffer breeding by the region's protocol, a dig and a ghastling's panic arriving
+//! whole.
 
 use clustine_blocks::data::{number, set};
 use clustine_data::{BlockState, blocks, entity_types, items, sounds};
@@ -14,6 +19,7 @@ use super::*;
 use crate::mobs::Mob;
 use crate::mobs::body::attribute;
 use crate::mobs::body::attributes::supplied;
+use crate::mobs::brain::{self, Memories, MemoryKind, MemoryWrite, Status, Tracker, Value};
 use crate::mobs::types::allay;
 use crate::mobs::types::animal::{self, Animal};
 use crate::mobs::types::happy_ghast::{self, HappyGhastState};
@@ -434,7 +440,7 @@ fn an_allay_given_an_item_gathers_its_kind_near_and_gives_all_of_it_back() {
     let given = mob(&region, ONE);
     assert_eq!(given.body.equipment.slots[0], Some(one(items::DIAMOND)));
     let uuid = player(1).0.as_u128();
-    assert_eq!(allay::read(&given).liked_player, Some(uuid));
+    assert_eq!(allay::liked_player(&given), Some(uuid));
     // Diamonds and dirt beside it: it takes the diamonds, shown as taken, and leaves the
     // dirt.
     let at = record(&region, ONE).unwrap().position;
@@ -464,18 +470,22 @@ fn an_allay_given_an_item_gathers_its_kind_near_and_gives_all_of_it_back() {
             count: 3,
         })
     );
-    // An empty hand takes its item back, and the three fall at its eyes.
+    // An empty hand takes its item back, and what it gathered falls at its eyes: all
+    // three, those it has meanwhile thrown to the player beside it (within 3 of their
+    // eyes, one a tick) and those it held.
     holding(&mut region, None);
     let output = use_on(&mut region, ONE);
     assert!(sounds_of(&output).contains(&(sounds::ENTITY_ALLAY_ITEM_TAKEN, Some(player(1)))));
     let taken = mob(&region, ONE);
     assert_eq!(taken.body.equipment.slots[0], None);
-    assert_eq!(allay::read(&taken).liked_player, None);
-    let lying = items_lying(&region);
-    assert!(lying.contains(&ItemStack {
-        item: items::DIAMOND,
-        count: 3,
-    }));
+    assert_eq!(allay::liked_player(&taken), None);
+    assert_eq!(allay::read(&taken).inventory, None);
+    let lying: i32 = items_lying(&region)
+        .iter()
+        .filter(|stack| stack.item == items::DIAMOND)
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(lying, 3);
     assert!(
         region.players[&player(1)]
             .inventory
@@ -665,7 +675,7 @@ fn a_grown_happy_ghast_floats_about_by_impulses_and_keeps_a_home() {
     // Its home: 64 about where it was, bare and grown.
     assert_eq!(made.body.home.radius, 64);
     assert!(made.body.home.centre.is_some());
-    // A ghastling's is 32, and it does not float about without its brain.
+    // A ghastling's is 32, and its brain flies it about (it has no goals).
     let mut region = on_ticking_floor_with(&[]);
     lay(
         &mut region,
@@ -676,10 +686,23 @@ fn a_grown_happy_ghast_floats_about_by_impulses_and_keeps_a_home() {
             ghast_with(-24_000, &HappyGhastState::default()),
         ),
     );
-    idle(&mut region, 10);
+    idle(&mut region, 1);
     let after = record(&region, ONE).unwrap();
     assert_eq!(Mob::decode(&after.data).unwrap().body.home.radius, 32);
-    assert_eq!(after.position, start);
+    until(&mut region, 400, |region| {
+        record(region, ONE).unwrap().position != start
+    });
+}
+
+/// Ticks `region` until `done` holds of it, at most `most` times; how many it took.
+fn until(region: &mut Region, most: usize, mut done: impl FnMut(&Region) -> bool) -> usize {
+    for n in 1..=most {
+        checked(region, &TickInputs::default());
+        if done(region) {
+            return n;
+        }
+    }
+    panic!("not within {most} ticks");
 }
 
 #[test]
@@ -708,9 +731,520 @@ fn a_tick_of_fliers_is_a_function_of_its_inputs() {
                 Mob::fresh(),
             ),
         );
-        idle(&mut region, 30);
-        [ONE, TWO, THREE].map(|key| record(&region, key))
+        lay(
+            &mut region,
+            &mob_at(
+                FOUR,
+                entity_types::HAPPY_GHAST,
+                [12.5, -57.0, 12.5],
+                ghast_with(-24_000, &HappyGhastState::default()),
+            ),
+        );
+        // Their brains at work: a player near with seeds and snowballs, an item to want.
+        holding(&mut region, Some(one(items::SNOWBALL)));
+        idle(&mut region, 60);
+        [ONE, TWO, THREE, FOUR].map(|key| record(&region, key))
     };
-    assert_eq!(run(), run());
+    let first = run();
+    assert_eq!(first, run());
+    // A brain at work wrote its mind.
+    for record in first.iter().skip(1) {
+        let made = Mob::decode(&record.as_ref().expect("still here").data).unwrap();
+        assert!(made.mind.brain.len() > 1, "{:?}", record);
+    }
     let _ = Random::of_entity(0, ONE, 0);
+}
+
+const FOUR: EntityId = EntityId(46);
+
+// ------------------------------------------------------------------------------------
+// With their brains.
+
+/// Grass under the whole of the origin chunk, where the sniffer may dig.
+fn grass() -> Vec<(BlockPos, BlockState)> {
+    (0..16)
+        .flat_map(|x| (0..16).map(move |z| (BlockPos::new(x, -61, z), blocks::GRASS_BLOCK)))
+        .collect()
+}
+
+fn state_of(region: &Region, key: EntityId) -> sniffer::State {
+    sniffer::read(&mob(region, key)).state
+}
+
+/// The seeds a dig gave that lie in the region.
+fn seeds_lying(region: &Region) -> usize {
+    items_lying(region)
+        .iter()
+        .filter(|stack| matches!(stack.item, items::TORCHFLOWER_SEEDS | items::PITCHER_POD))
+        .count()
+}
+
+/// The memories of the region's mob `key` (of a type with a brain), as of its last tick.
+fn memories_of(region: &Region, key: EntityId) -> Memories {
+    let entity = record(region, key).expect("the mob is here");
+    let provider = crate::mobs::types::of(entity.kind)
+        .brain()
+        .expect("a brain");
+    brain::memories_of(provider, &mob(region, key), entity.lived)
+}
+
+/// `mob` with `writes` made to its brain's memories, as of its making.
+fn remembering(kind: i32, mut mob: Mob, writes: Vec<MemoryWrite>) -> Mob {
+    let provider = crate::mobs::types::of(kind as u16)
+        .brain()
+        .expect("a brain");
+    let mut memories = brain::memories_of(provider, &mob, 1);
+    for write in writes {
+        write.apply(&mut memories);
+    }
+    brain::write_memories(provider, &mut mob, memories);
+    mob
+}
+
+#[test]
+fn a_sniffer_on_grass_sniffs_searches_digs_and_drops_its_seed_120_ticks_into_its_dig() {
+    let mut region = on_ticking_floor_with(&grass());
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::SNIFFER, [8.5, -60.0, 8.5], Mob::fresh()),
+    );
+    // It sniffs, walks to a place it chose, searching, and digs where its nose then is.
+    let mut searched = false;
+    until(&mut region, 60_000, |region| {
+        let state = state_of(region, ONE);
+        searched |= state == sniffer::State::Searching;
+        searched && state == sniffer::State::Digging
+    });
+    // Its seed, 120 ticks into the dig.
+    let n = until(&mut region, 200, |region| seeds_lying(region) > 0);
+    assert_eq!(n, 120);
+    assert_eq!(state_of(&region, ONE), sniffer::State::Digging);
+    // It rises, is happy, and is idle again, not to sniff for 9600 ticks.
+    until(&mut region, 100, |region| {
+        state_of(region, ONE) == sniffer::State::Rising
+    });
+    until(&mut region, 100, |region| {
+        state_of(region, ONE) == sniffer::State::FeelingHappy
+    });
+    until(&mut region, 200, |region| {
+        state_of(region, ONE) == sniffer::State::Idling
+    });
+    let memories = memories_of(&region, ONE);
+    assert!(memories.check(MemoryKind::SniffCooldown, Status::Present));
+    assert!(matches!(
+        memories.get(MemoryKind::SnifferExploredPositions),
+        Some(Value::Blocks(list)) if list.len() == 1
+    ));
+}
+
+/// The diamonds lying within `reach` of `at`, counted.
+fn diamonds_near(region: &Region, at: [f64; 3], reach: f64) -> i32 {
+    all_of(region, entity_types::ITEM)
+        .into_iter()
+        .filter(|entity| crate::physics::distance_sqr(entity.position, at) < reach * reach)
+        .filter_map(|entity| match entity.data {
+            EntityData::Item { stack, .. } if stack.item == items::DIAMOND => Some(stack.count),
+            _ => None,
+        })
+        .sum()
+}
+
+fn diamonds_held(region: &Region) -> i32 {
+    region.players[&player(1)]
+        .inventory
+        .0
+        .iter()
+        .flatten()
+        .filter(|stack| stack.item == items::DIAMOND)
+        .map(|stack| stack.count)
+        .sum()
+}
+
+#[test]
+fn an_allay_given_a_diamond_fetches_diamonds_from_16_away_and_throws_them_to_its_player() {
+    let mut region = on_ticking_floor_with(&[]);
+    let mut made = Mob::fresh();
+    made.body.flags.persistent = true;
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::ALLAY, [2.5, -60.0, 0.5], made),
+    );
+    holding(&mut region, Some(one(items::DIAMOND)));
+    use_on(&mut region, ONE);
+    let held = diamonds_held(&region);
+    lay(
+        &mut region,
+        &item_at(
+            TWO,
+            ItemStack {
+                item: items::DIAMOND,
+                count: 3,
+            },
+            [12.5, -60.0, 12.5],
+        ),
+    );
+    // It flies to them, takes them all, and brings them back.
+    let three = Some(ItemStack {
+        item: items::DIAMOND,
+        count: 3,
+    });
+    until(&mut region, 800, |region| {
+        allay::read(&mob(region, ONE)).inventory == three
+    });
+    until(&mut region, 800, |region| {
+        allay::read(&mob(region, ONE)).inventory.is_none()
+    });
+    // All three by the player (the spawn), lying or picked up.
+    let by_the_player =
+        diamonds_near(&region, [0.5, -60.0, 0.5], 4.0) + diamonds_held(&region) - held;
+    assert_eq!(by_the_player, 3);
+    // For 60 ticks after its last throw it picks nothing up.
+    let memories = memories_of(&region, ONE);
+    assert!(memories.check(MemoryKind::ItemPickupCooldownTicks, Status::Present));
+}
+
+#[test]
+fn an_allay_takes_what_it_gathered_to_a_note_block_it_heard_rather_than_to_its_player() {
+    let note = BlockPos::new(12, -60, 12);
+    let mut region = on_ticking_floor_with(&[(note, blocks::NOTE_BLOCK)]);
+    let mut made = Mob::fresh();
+    made.body.flags.persistent = true;
+    made.body.equipment.slots[0] = Some(one(items::DIAMOND));
+    allay::update(&mut made, |own| {
+        own.inventory = Some(ItemStack {
+            item: items::DIAMOND,
+            count: 2,
+        });
+    });
+    let made = remembering(
+        entity_types::ALLAY,
+        made,
+        vec![
+            MemoryWrite::Set(MemoryKind::LikedPlayer, Value::Uuid(player(1).0.as_u128())),
+            MemoryWrite::Set(MemoryKind::LikedNoteblock, Value::Block(note)),
+            MemoryWrite::Set(
+                MemoryKind::LikedNoteblockCooldownTicks,
+                Value::Int(allay::LIKED_NOTEBLOCK_TICKS),
+            ),
+        ],
+    );
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::ALLAY, [6.5, -59.0, 6.5], made),
+    );
+    until(&mut region, 600, |region| {
+        allay::read(&mob(region, ONE)).inventory.is_none()
+    });
+    let above = [12.5, -58.5, 12.5];
+    assert_eq!(diamonds_near(&region, above, 4.0), 2);
+    assert_eq!(diamonds_near(&region, [0.5, -60.0, 0.5], 4.0), 0);
+}
+
+#[test]
+fn a_ghastling_flies_to_a_player_holding_a_snowball() {
+    let mut region = on_ticking_floor_with(&[]);
+    lay(
+        &mut region,
+        &mob_at(
+            ONE,
+            entity_types::HAPPY_GHAST,
+            [9.5, -58.0, 9.5],
+            ghast_with(-24_000, &HappyGhastState::default()),
+        ),
+    );
+    holding(&mut region, Some(one(items::SNOWBALL)));
+    let spawn = [0.5, -60.0, 0.5];
+    until(&mut region, 800, |region| {
+        crate::physics::distance_sqr(record(region, ONE).unwrap().position, spawn) < 5.0 * 5.0
+    });
+    // Tempted, it looks at them (its tempting player is sensed, not in its record).
+    let key = region.players[&player(1)].entity_id;
+    assert!(matches!(
+        memories_of(&region, ONE).get(MemoryKind::LookTarget),
+        Some(Value::Tracker(Tracker::Entity { key: looked, .. })) if looked == key
+    ));
+}
+
+#[test]
+fn a_ghastling_grown_up_forgets_its_brain_and_floats_by_its_goals() {
+    let mut region = on_ticking_floor_with(&[]);
+    let start = [8.5, -55.0, 8.5];
+    lay(
+        &mut region,
+        &mob_at(
+            ONE,
+            entity_types::HAPPY_GHAST,
+            start,
+            ghast_with(-60, &HappyGhastState::default()),
+        ),
+    );
+    until(&mut region, 200, |region| {
+        !animal::is_baby(&mob(region, ONE))
+    });
+    let grown = mob(&region, ONE);
+    assert!(
+        grown
+            .mind
+            .brain
+            .iter()
+            .all(|entry| entry.id == brain::ids::STATE)
+    );
+    // Its goals float it about its home of 64, bare and grown; its brain never ticks.
+    idle(&mut region, 40);
+    let made = mob(&region, ONE);
+    assert_eq!(made.body.home.radius, 64);
+    assert_eq!(made.mind.brain, grown.mind.brain);
+}
+
+// ------------------------------------------------------------------------------------
+// Across a pinned line.
+
+/// A region of the land west of chunk x = 2, its chunks x of -1 to 1 loaded with a stone
+/// floor, and the chunks of x = 2 another's, copied, with `beyond` in the one at z = 0.
+fn at_a_line(own: &[Entity], beyond: &[Entity]) -> Region {
+    let west = ChunkArea {
+        min_x: None,
+        max_x: Some(2),
+    };
+    let mut region = joined_in(west, &[1]);
+    let around: Vec<ChunkPos> = (-1..=1)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .collect();
+    region.tick(&tickets(around.clone(), vec![]));
+    let chunks = around.iter().map(|position| (*position, floor())).collect();
+    region.tick(&TickInputs {
+        chunks_loaded: chunks,
+        ..TickInputs::default()
+    });
+    for entity in own {
+        lay(&mut region, entity);
+    }
+    let copies: Vec<ChunkPos> = (-1..=1).map(|z| ChunkPos::new(2, z)).collect();
+    let bases = copies
+        .iter()
+        .map(|position| {
+            let mut base = floor();
+            if position.z == 0 {
+                base.set_entities(beyond.to_vec());
+            }
+            (*position, base)
+        })
+        .collect();
+    region.tick(&TickInputs {
+        foreign: copies
+            .iter()
+            .map(|position| (*position, RegionId(1)))
+            .collect(),
+        copy_bases: bases,
+        ..TickInputs::default()
+    });
+    region
+}
+
+/// The face of a player of another region, standing at `x` and holding `held`.
+fn face_at(x: f64, held: i32, seq: u64) -> crate::api::FaceChange {
+    let mut hotbar = [None; clustine_world::HOTBAR_SLOTS];
+    hotbar[0] = Some(one(held));
+    crate::api::FaceChange::Face {
+        player: player(9),
+        entity: EntityId(500),
+        hops: 0,
+        seq: crate::api::FaceSeq(seq, 0),
+        face: crate::api::PlayerFace::of(
+            &Pose::at(clustine_world::Vec3::new(x, -60.0, 0.5)),
+            false,
+            false,
+            &clustine_world::Inventory::with_hotbar(hotbar),
+            0,
+            None,
+        ),
+    }
+}
+
+#[test]
+fn a_sniffer_follows_torchflower_seeds_a_player_of_the_other_region_holds_beyond_the_line() {
+    let mut region = at_a_line(
+        &[mob_at(
+            ONE,
+            entity_types::SNIFFER,
+            [26.5, -60.0, 0.5],
+            Mob::fresh(),
+        )],
+        &[],
+    );
+    checked(
+        &mut region,
+        &TickInputs {
+            faces: vec![face_at(34.5, items::TORCHFLOWER_SEEDS, 1)],
+            ..TickInputs::default()
+        },
+    );
+    until(&mut region, 60, |region| {
+        matches!(
+            memories_of(region, ONE).get(MemoryKind::WalkTarget),
+            Some(Value::Walk {
+                to: Tracker::Entity {
+                    key: EntityId(500),
+                    ..
+                },
+                speed: 1.25,
+                ..
+            })
+        )
+    });
+    // It walks to within 3.5 of them, on its side of the line.
+    until(&mut region, 400, |region| {
+        record(region, ONE).unwrap().position[0] > 29.5
+    });
+    assert!(record(&region, ONE).unwrap().position[0] < 32.0);
+}
+
+#[test]
+fn a_ghastling_is_tempted_by_a_snowball_a_player_of_the_other_region_holds_beyond_the_line() {
+    let mut region = at_a_line(
+        &[mob_at(
+            ONE,
+            entity_types::HAPPY_GHAST,
+            [24.5, -58.0, 0.5],
+            ghast_with(-24_000, &HappyGhastState::default()),
+        )],
+        &[],
+    );
+    checked(
+        &mut region,
+        &TickInputs {
+            faces: vec![face_at(36.5, items::SNOWBALL, 1)],
+            ..TickInputs::default()
+        },
+    );
+    until(&mut region, 60, |region| {
+        matches!(
+            memories_of(region, ONE).get(MemoryKind::WalkTarget),
+            Some(Value::Walk {
+                to: Tracker::Entity {
+                    key: EntityId(500),
+                    ..
+                },
+                speed: 1.25,
+                ..
+            })
+        )
+    });
+    until(&mut region, 600, |region| {
+        record(region, ONE).unwrap().position[0] > 28.0
+    });
+}
+
+#[test]
+fn a_sniffer_in_love_asks_a_partner_beyond_the_line_by_the_region_s_protocol() {
+    let partner = mob_at(
+        EntityId(5),
+        entity_types::SNIFFER,
+        [32.5, -60.0, 0.5],
+        sniffer_in_love(),
+    );
+    let mut region = at_a_line(
+        &[mob_at(
+            ONE,
+            entity_types::SNIFFER,
+            [30.5, -60.0, 0.5],
+            sniffer_in_love(),
+        )],
+        &[partner],
+    );
+    let mut asked = None;
+    for _ in 0..200 {
+        let output = checked(&mut region, &TickInputs::default());
+        asked = output.effects.iter().find_map(|effect| match effect.what {
+            clustine_world::Effected::OnEntity {
+                key,
+                by: clustine_world::EntityUse::BreedAsk { asker, number },
+            } => Some((key, asker, number)),
+            _ => None,
+        });
+        if asked.is_some() {
+            break;
+        }
+    }
+    assert_eq!(asked, Some((EntityId(5), ONE, 1)));
+    // No egg here: the partner's region lays it, as the game's `this`.
+    assert!(items_lying(&region).is_empty());
+}
+
+/// `entity` taken in by `region` as an arrival (as a merge, a split or a restore takes a
+/// record in: whole, its sensed memories not in it).
+fn take_in(region: &mut Region, entity: Entity) {
+    checked(
+        region,
+        &TickInputs {
+            arrivals: vec![clustine_world::Arrival {
+                id: clustine_world::EffectId {
+                    sequence: 7,
+                    index: 0,
+                },
+                chunk: entity.chunk(),
+                entity,
+                due: clustine_world::Due::FromTaking,
+            }],
+            ..TickInputs::default()
+        },
+    );
+}
+
+#[test]
+fn a_digging_sniffer_arriving_in_another_region_digs_on_and_drops_its_seed_at_its_tick() {
+    let mut region = on_ticking_floor_with(&grass());
+    let digging = remembering(
+        entity_types::SNIFFER,
+        Mob::fresh(),
+        vec![MemoryWrite::Set(
+            MemoryKind::SnifferDigging,
+            Value::Bool(true),
+        )],
+    );
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::SNIFFER, [8.5, -60.0, 8.5], digging),
+    );
+    until(&mut region, 20, |region| {
+        state_of(region, ONE) == sniffer::State::Digging
+    });
+    idle(&mut region, 30);
+    let mut other = on_ticking_floor_with(&grass());
+    take_in(&mut other, record(&region, ONE).unwrap());
+    // It digs on, and its seed comes at its tick, 120 into the dig: the arrival's tick is
+    // the 32nd of the dig.
+    let n = until(&mut other, 200, |region| {
+        assert_eq!(state_of(region, ONE), sniffer::State::Digging);
+        seeds_lying(region) > 0
+    });
+    assert_eq!(n, 120 - 31);
+    until(&mut other, 100, |region| {
+        state_of(region, ONE) == sniffer::State::Rising
+    });
+}
+
+#[test]
+fn a_panicking_ghastling_arriving_in_another_region_panics_on_to_its_end() {
+    let mut region = on_ticking_floor_with(&[]);
+    let panicking = remembering(
+        entity_types::HAPPY_GHAST,
+        ghast_with(-24_000, &HappyGhastState::default()),
+        vec![MemoryWrite::Set(MemoryKind::IsPanicking, Value::Bool(true))],
+    );
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::HAPPY_GHAST, [8.5, -57.0, 8.5], panicking),
+    );
+    idle(&mut region, 10);
+    assert!(memories_of(&region, ONE).check(MemoryKind::IsPanicking, Status::Present));
+    let mut other = on_ticking_floor_with(&[]);
+    take_in(&mut other, record(&region, ONE).unwrap());
+    assert!(memories_of(&other, ONE).check(MemoryKind::IsPanicking, Status::Present));
+    // It panics on, and its panic ends 101 to 121 ticks after it began, in its first
+    // tick: 11 ticks behind it as it arrived.
+    let n = until(&mut other, 200, |region| {
+        memories_of(region, ONE).check(MemoryKind::IsPanicking, Status::Absent)
+    });
+    assert!((101 - 11..=121 - 11).contains(&n), "{n}");
 }
