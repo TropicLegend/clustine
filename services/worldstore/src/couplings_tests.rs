@@ -356,7 +356,7 @@ fn a_region_preparing_to_reshape_is_uncoupled_and_not_asked_to_couple() {
 fn couplings_outlive_a_restart_of_the_store() {
     let hands = Hands::default();
     let disk = Arc::new(MemoryDisk::default());
-    {
+    let left = {
         let store = store_on(&disk, &hands);
         let (west, east) = needing(&store);
         coupled(&west, &east);
@@ -365,12 +365,15 @@ fn couplings_outlive_a_restart_of_the_store() {
         commit(&east, 40, &[]);
         flushed(&west);
         flushed(&east);
-        // The store dies with its owners attached. Were the handles dropped first, a
-        // store that got to their closing would end the couplings, as for a lost owner,
-        // and write their file before the crash.
+        // The store dies with its owners attached: what survives is taken while the
+        // handles are there. Were it taken after they were dropped, a store whose
+        // thread got to their closing first would end the couplings, as for a lost
+        // owner, and write their file before the crash; on a busy machine it did.
+        let left = Arc::new(disk.crashed(Survival::Nothing));
         drop(store);
-    }
-    let left = Arc::new(disk.crashed(Survival::Nothing));
+        drop((west, east));
+        left
+    };
     let store = store_on(&left, &hands);
     let (_west, restored) = store.open_region(hello(WEST, 2)).unwrap();
     assert_eq!(restored.offset, Some(0));
