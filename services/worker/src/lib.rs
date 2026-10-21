@@ -2401,6 +2401,7 @@ impl RegionRunner {
                     .player_state(player)
                     .filter(|state| from_state && state.edge == edge)?;
                 Some(Presence::Present {
+                    riding: state.riding.map(|riding| riding.vehicle),
                     entity: state.entity_id,
                     pose: state.pose,
                     inventory: state.inventory.clone(),
@@ -5593,6 +5594,7 @@ mod tests {
             assert_eq!(
                 spawned,
                 Some(PlayerEvent::Spawned {
+                    riding: None,
                     attempt: attempt_of(player()),
                     entity_id: EntityId(1),
                     pose: Pose::at(SPAWN),
@@ -7198,6 +7200,7 @@ mod tests {
         assert_eq!(
             *answer,
             Presence::Present {
+                riding: None,
                 entity,
                 pose,
                 inventory: Inventory::default(),
@@ -7359,6 +7362,7 @@ mod tests {
         step(&mut runner);
 
         let present = Presence::Present {
+            riding: None,
             entity,
             // As of before the tick that took the step.
             pose: Pose::at(SPAWN),

@@ -390,6 +390,7 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                 flying,
                 inventory,
                 selected_slot,
+                ..
             } if of == attempt => {
                 let place = Place {
                     respawn: None,

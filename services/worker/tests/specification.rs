@@ -1764,6 +1764,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
     assert_eq!(
         *answer,
         Presence::Present {
+            riding: None,
             entity,
             pose: Pose {
                 position: Vec3::new(12.5, FEET, 8.5),

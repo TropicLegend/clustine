@@ -369,6 +369,173 @@ impl Region {
         ));
     }
 
+    /// The leave of the player `id`, whose stay `player` the region has just taken out:
+    /// where they are seated (not on their way) in a unit of the region's whose seats,
+    /// over every member, hold no player but them, the whole unit leaves the world with
+    /// them, as the game's `PlayerList.remove` takes a root vehicle with exactly one
+    /// player passenger (`docs/groundwork/n7h-logout-on-a-mount.md`, section 3): every
+    /// member is gone from its chunk at its `hops`, its seat for the player kept, and the
+    /// leave's note carries it with the place the vehicle would let them off at, where
+    /// they stand if it is not put under them again. Whether it was taken.
+    pub(super) fn take_unit_leaving(
+        &mut self,
+        id: PlayerId,
+        player: &Player,
+        output: &mut TickOutput,
+    ) -> bool {
+        let Some(riding) = player.riding else {
+            return false;
+        };
+        if riding.pending.is_some() {
+            return false;
+        }
+        let root = self.root_of(riding.vehicle);
+        let Some((chunk, record)) = self.find_entity(root) else {
+            return false;
+        };
+        let members = self.unit_records(chunk, record.clone());
+        let mut players = members
+            .iter()
+            .flat_map(|member| &member.riding.passengers)
+            .filter(|seat| seat.player);
+        let alone = players
+            .next()
+            .is_some_and(|seat| seat.key == player.entity_id && seat.pending.is_none())
+            && players.next().is_none();
+        if !alone {
+            return false;
+        }
+        let Some(note) = self.dismount_note(id, player) else {
+            return false;
+        };
+        for member in &members {
+            self.take_out(chunk, member, output);
+        }
+        let crate::api::StayNote::Has {
+            player,
+            entity,
+            hops,
+            place,
+            mut face,
+            let_go,
+            ..
+        } = note
+        else {
+            unreachable!("a dismount note is a `Has`")
+        };
+        // Their face goes with them; the vehicle is out of the world.
+        face.vehicle = None;
+        self.dismounted.push((
+            id,
+            crate::api::StayNote::Has {
+                player,
+                entity,
+                hops,
+                place,
+                face,
+                let_go,
+                unit: Some(crate::api::Unit(members)),
+            },
+        ));
+        true
+    }
+
+    /// Puts the unit `unit`, which the player `id` left the world on, back under their
+    /// stay `entity` of the edge `edge`, which enters
+    /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5): it is taken out of their
+    /// record (a `Took` in this tick's commit) and sent, every member at the `hops` it
+    /// left with, to its root's chunk as an arrival, whose taker raises them. Where
+    /// `seated`, the player's seat in it names the stay and is kept pending for it, and
+    /// the stay's riding and its seat's position are returned, the stay waiting for its
+    /// unit as one handed over before it (N5); else the seat is dropped and the unit
+    /// comes back empty.
+    pub(super) fn unit_returning(
+        &mut self,
+        id: PlayerId,
+        entity: EntityId,
+        edge: clustine_world::EdgeId,
+        unit: crate::api::Unit,
+        seated: bool,
+        output: &mut TickOutput,
+    ) -> Option<(PlayerRiding, clustine_world::Vec3)> {
+        let mut members = unit.0;
+        let root = members.first()?.clone();
+        let to = root.chunk();
+        self.took.push(crate::api::StayNote::Took {
+            player: id,
+            root: root.key,
+        });
+        let mut returned = None;
+        for member in &mut members {
+            let Some(index) = member.riding.passengers.iter().position(|seat| seat.player) else {
+                continue;
+            };
+            if !seated || returned.is_some() {
+                member.riding.passengers.remove(index);
+                continue;
+            }
+            let seat = &mut member.riding.passengers[index];
+            seat.key = entity;
+            seat.pending = Some(clustine_world::Pending {
+                left: PENDING_FOR,
+                edge,
+            });
+            let point = passenger_point(member, index);
+            let attach = player_vehicle_point();
+            let at: [f64; 3] =
+                std::array::from_fn(|axis| (member.position[axis] + point[axis]) - attach[axis]);
+            let riding = PlayerRiding {
+                vehicle: member.key,
+                chunk: to,
+                check: Default::default(),
+                pending: Some(PENDING_FOR),
+            };
+            returned = Some((riding, clustine_world::Vec3::new(at[0], at[1], at[2])));
+        }
+        for member in members {
+            output.arrivals.push((to, member));
+        }
+        returned
+    }
+
+    /// A member of a unit leaving the world with its player: gone from the chunk `from`
+    /// as an entity removed, at its `hops`, and what the region kept of it beyond its
+    /// record dropped, as a member handed on has it dropped.
+    fn take_out(&mut self, from: ChunkPos, member: &Entity, output: &mut TickOutput) {
+        let key = member.key;
+        self.remove_entity(key, member.hops, from, output);
+        self.entity_draws.remove(&key);
+        self.aside_draws.remove(&key);
+        self.piston_deltas.remove(&key);
+    }
+
+    /// The note of a rider who leaves the world, at the place their vehicle lets them off
+    /// at, if the vehicle is here to say.
+    fn dismount_note(&self, id: PlayerId, player: &Player) -> Option<crate::api::StayNote> {
+        let riding = player.riding?;
+        let (chunk, record) = self.find_entity(riding.vehicle)?;
+        let at = self.dismount_location(
+            record,
+            chunk,
+            &player.as_passenger(riding.vehicle),
+            &PLAYER_POSES,
+        );
+        let mut place = player.place();
+        place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
+        let mut face = player.face();
+        face.position = at;
+        face.vehicle = None;
+        Some(crate::api::StayNote::Has {
+            player: id,
+            entity: player.entity_id,
+            hops: player.hops,
+            place,
+            face,
+            let_go: false,
+            unit: None,
+        })
+    }
+
     /// Takes the player `player`, who is leaving the region, out of their vehicle's
     /// seats, so that it keeps no seat for nobody (`docs/groundwork/n5-plan.md`,
     /// section 7, item 6). Nothing is told to them: they are gone. One who leaves the
@@ -385,31 +552,9 @@ impl Region {
             return;
         };
         if let Some(id) = left
-            && let Some((chunk, record)) = self.find_entity(riding.vehicle)
+            && let Some(note) = self.dismount_note(id, player)
         {
-            let at = self.dismount_location(
-                record,
-                chunk,
-                &player.as_passenger(riding.vehicle),
-                &PLAYER_POSES,
-            );
-            let mut place = player.place();
-            place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
-            let mut face = player.face();
-            face.position = at;
-            face.vehicle = None;
-            self.dismounted.push((
-                id,
-                crate::api::StayNote::Has {
-                    unit: None,
-                    player: id,
-                    entity: player.entity_id,
-                    hops: player.hops,
-                    place,
-                    face,
-                    let_go: false,
-                },
-            ));
+            self.dismounted.push((id, note));
         }
         let Some((chunk, record)) = self.find_entity(riding.vehicle) else {
             return;

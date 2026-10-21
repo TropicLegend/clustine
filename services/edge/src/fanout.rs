@@ -124,6 +124,13 @@ pub(crate) enum Command {
         session: SessionId,
         player: PlayerId,
     },
+    /// The edge is to stop: every player leaves as though their connection had ended,
+    /// and `done` is told once every region has applied and made durable all that the
+    /// edge sent it, those leaves among it (`PlayerList.removeAll`;
+    /// `docs/groundwork/n7h-logout-on-a-mount.md`, section 13 item 1).
+    Drain {
+        done: tokio::sync::oneshot::Sender<()>,
+    },
     /// The client has processed a chunk batch and wants this many chunks per tick.
     ChunkBatchReceived {
         session: SessionId,
@@ -766,6 +773,8 @@ pub(crate) struct Fanout {
     identity: EdgeIdentity,
     /// What is kept for each region, by region id.
     regions: BTreeMap<RegionId, RegionPort>,
+    /// Whom to tell once a drain is through: every region has confirmed all it was sent.
+    draining: Option<tokio::sync::oneshot::Sender<()>>,
     /// Each region's clock as it last said, from which its players are told the time.
     clocks: BTreeMap<RegionId, WorldClock>,
     /// The links to start with, until [`Fanout::run`] takes them up.
@@ -1003,6 +1012,7 @@ impl Fanout {
             world_spawn: routing.spawn,
             identity: routing.identity,
             regions: BTreeMap::new(),
+            draining: None,
             clocks: BTreeMap::new(),
             first_links: routing.links,
             relinks: routing.relinks,
@@ -1691,6 +1701,14 @@ impl Fanout {
                     self.remove_player(player).await;
                 }
             }
+            Command::Drain { done } => {
+                let players: Vec<PlayerId> = self.players.keys().copied().collect();
+                for player in players {
+                    self.remove_player(player).await;
+                }
+                self.draining = Some(done);
+                self.check_drained();
+            }
             Command::ChunkBatchReceived {
                 session,
                 player,
@@ -1781,6 +1799,7 @@ impl Fanout {
                         flying,
                         inventory,
                         selected_slot,
+                        riding,
                     },
             } => {
                 // Only the connection whose join this answers enters by it. An answer
@@ -1797,6 +1816,7 @@ impl Fanout {
                         pose,
                         flying,
                         inventory: inventory_packets(&inventory, selected_slot),
+                        riding,
                     };
                     self.spawn_player(player, entering).await;
                 }
@@ -2221,6 +2241,7 @@ impl Fanout {
             handled,
             flying,
             attempt,
+            riding,
         } = answer
         else {
             if self
@@ -2254,11 +2275,18 @@ impl Fanout {
                     pose,
                     flying,
                     inventory: inventory_packets(&inventory, selected_slot),
+                    riding,
                 };
                 self.spawn_player(player, entering).await;
             }
-            // The stay the edge has, where it has it.
-            Some((Some(shown), region)) if shown == entity && region == from => {}
+            // The stay the edge has, where it has it. A riding word lost with the link
+            // is mended (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6); one the
+            // edge has had since is not unsaid by the durable tick's.
+            Some((Some(shown), region)) if shown == entity && region == from => {
+                if riding.is_some() {
+                    self.take_rides_word(entity, riding).await;
+                }
+            }
             // The stay the edge has, under another region: it came here with a merge
             // or a split that the edge has not caught up with, and is this region's.
             Some((Some(shown), _)) if shown == entity => {
@@ -2728,6 +2756,16 @@ impl Fanout {
     /// The region `from` has applied this edge's messages up to `applied` and made that
     /// durable, and with them the inputs of `inputs` up to the numbers given. None of
     /// that has to be sent again.
+    /// Tells whoever drains the edge that it is through, once no region has anything of
+    /// the edge's left to apply and make durable.
+    fn check_drained(&mut self) {
+        if self.regions.values().all(|port| port.kept.is_empty())
+            && let Some(done) = self.draining.take()
+        {
+            let _ = done.send(());
+        }
+    }
+
     fn progress(&mut self, from: RegionId, applied: u64, inputs: &[(PlayerId, u64)]) {
         let port = &mut self.regions.entry(from).or_default();
         port.applied = port.applied.max(applied);
@@ -2738,6 +2776,7 @@ impl Fanout {
         {
             port.kept.pop_front();
         }
+        self.check_drained();
         for (player, last_input) in inputs {
             let Some(view) = self.players.get_mut(player) else {
                 continue;
@@ -4365,8 +4404,16 @@ impl Fanout {
             return;
         }
         let position = entering.pose.position;
+        let (entity, riding) = (entering.entity, entering.riding);
         if !self.tell_entered(player, entering).await {
             return;
+        }
+        // A player put back on their unit rides it from the first: the word is taken
+        // after their login and before their view, so that the unit is introduced to
+        // them and to everyone with them in its seats
+        // (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6).
+        if riding.is_some() {
+            self.take_rides_word(entity, riding).await;
         }
         let center = ChunkPos::containing(position.x, position.z);
         self.move_view(player, center).await;
@@ -4432,6 +4479,7 @@ impl Fanout {
         let entity = transfer.entity_id;
         let position = transfer.pose.position;
         let entering = Entering {
+            riding: transfer.riding.map(|riding| riding.vehicle),
             entity,
             pose: transfer.pose,
             flying: transfer.flying,
@@ -4443,12 +4491,18 @@ impl Fanout {
         if !self.note_entered(player, entity).await {
             return;
         }
+        let riding = entering.riding;
         let center = ChunkPos::containing(position.x, position.z);
         let view_packets = self.shift_view(player, center).await;
         self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
             .await;
         if !self.tell_entered(player, entering).await {
             return;
+        }
+        // One put back on the unit they left on rides it from the first, as
+        // `spawn_player` has it.
+        if riding.is_some() {
+            self.take_rides_word(entity, riding).await;
         }
         if let Some(packets) = view_packets
             && self.send_to_player(player, packets).await
@@ -4489,6 +4543,7 @@ impl Fanout {
             pose,
             flying,
             inventory,
+            ..
         } = entering;
         let Some(view) = self.players.get_mut(&player) else {
             return false;
@@ -6491,6 +6546,8 @@ struct Entering {
     pose: Pose,
     flying: bool,
     inventory: [Bytes; 2],
+    /// What they ride, whose word is taken before their client is told anything.
+    riding: Option<EntityId>,
 }
 
 /// The light a chunk is shown with where none could be made for it: the sky light
@@ -6838,6 +6895,7 @@ mod tests {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                riding: None,
                 attempt,
                 entity_id: entity,
                 pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
@@ -6881,6 +6939,7 @@ mod tests {
 
     fn present(entity: EntityId, last_input: u64) -> Presence {
         Presence::Present {
+            riding: None,
             entity,
             pose: Pose::at(Vec3::new(0.5, -60.0, 0.5)),
             inventory: Inventory::default(),
@@ -6909,6 +6968,7 @@ mod tests {
             unreachable!("`present` makes a `Present`");
         };
         Presence::Present {
+            riding: None,
             entity,
             pose,
             inventory,
@@ -9793,6 +9853,7 @@ mod scenarios {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                riding: None,
                 attempt,
                 entity_id: entity,
                 pose: Pose::at(SPAWN),
@@ -9935,6 +9996,7 @@ mod scenarios {
         WorkerToEdge::Presence {
             player,
             answer: Presence::Present {
+                riding: None,
                 entity,
                 pose: Pose::at(SPAWN),
                 inventory: Inventory::default(),
@@ -14676,6 +14738,7 @@ mod scenarios {
             let present = |player: &PlayerId, resident: &Resident| WorkerToEdge::Presence {
                 player: *player,
                 answer: Presence::Present {
+                    riding: None,
                     entity: resident.entity,
                     pose: Pose::at(within(resident.chunk)),
                     inventory: Inventory::default(),
@@ -15801,6 +15864,7 @@ mod scenarios {
         WorkerToEdge::Presence {
             player,
             answer: Presence::Present {
+                riding: None,
                 entity,
                 pose: Pose::at(SPAWN),
                 inventory: Inventory::default(),

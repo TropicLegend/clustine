@@ -304,6 +304,9 @@ pub enum Presence {
         /// it: until a region has applied an input of it. See
         /// `docs/adr/0020-one-stay-per-player.md`, section 4.3.
         attempt: Option<u64>,
+        /// What the player rides, seated or waiting for it
+        /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6).
+        riding: Option<EntityId>,
     },
     Absent,
     /// The region holds a stay of the player as entering, for this edge, from the join

@@ -395,6 +395,7 @@ mod tests {
             WorkerToEdge::ToPlayer {
                 player: player(),
                 event: PlayerEvent::Spawned {
+                    riding: None,
                     attempt: 12,
                     entity_id: EntityId(5),
                     pose: Pose {
@@ -544,6 +545,7 @@ mod tests {
             WorkerToEdge::Presence {
                 player: player(),
                 answer: Presence::Present {
+                    riding: None,
                     entity: EntityId(5),
                     pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
                     inventory: Inventory(Box::new(
@@ -559,6 +561,7 @@ mod tests {
             WorkerToEdge::Presence {
                 player: player(),
                 answer: Presence::Present {
+                    riding: None,
                     entity: EntityId(5),
                     pose: Pose::at(Vec3::new(1.5, -60.0, 2.5)),
                     inventory: Inventory::default(),

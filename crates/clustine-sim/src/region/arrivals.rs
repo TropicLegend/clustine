@@ -121,10 +121,23 @@ impl Region {
             if self.entity_chunks.contains_key(&key) {
                 continue;
             }
-            let entity = Entity {
+            let mut entity = Entity {
                 hops: arrival.entity.hops.saturating_add(1),
                 ..arrival.entity.clone()
             };
+            // A seat of a player who is not here riding it, and kept for nobody, is no
+            // seat, as at a load (`entities.rs`): a unit the store sent back from a
+            // player's leave comes with the seat of one who has left, and arrives empty
+            // (`docs/groundwork/n7h-logout-on-a-mount.md`, section 3).
+            let players = &self.players;
+            entity.riding.passengers.retain(|seat| {
+                !seat.player
+                    || seat.pending.is_some()
+                    || players.values().any(|player| {
+                        player.entity_id == seat.key
+                            && player.riding.is_some_and(|riding| riding.vehicle == key)
+                    })
+            });
             output
                 .events
                 .push(RegionEvent::EntitySpawned(state_of(&entity)));

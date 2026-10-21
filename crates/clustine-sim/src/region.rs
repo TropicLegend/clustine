@@ -468,6 +468,10 @@ pub struct Region {
     /// The notes of riders who left the world in this tick, each with where their
     /// vehicle let them off (`riders.rs`). Empty between ticks.
     dismounted: Vec<(PlayerId, StayNote)>,
+    /// The units the region took out of players' records in this tick, to put them back
+    /// under the stays that enter (`riders.rs`), as `StayNote::Took`s. Empty between
+    /// ticks.
+    took: Vec<StayNote>,
     /// The stays that are no more in this tick: a player who left, or whose edge went
     /// with them on the way to another region, or whose discard came. Empty between
     /// ticks.
@@ -613,6 +617,7 @@ impl Region {
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
             dismounted: Vec::new(),
+            took: Vec::new(),
             gone: Vec::new(),
             faces: faces::Faces::default(),
             sleep: sleep::SleepMemory::default(),
@@ -920,6 +925,7 @@ impl Region {
             clock_jumped,
             ..TickOutput::default()
         };
+        self.hold_leaving_units(inputs);
         self.update_chunks(inputs, &mut output);
 
         for event in &inputs.edges {
@@ -1174,6 +1180,10 @@ impl Region {
         let dismounted = std::mem::take(&mut self.dismounted);
         let gone = mem::take(&mut self.gone);
         output.stays = self.notes(first, dismounted, let_go, gone);
+        // A unit's takings after the notes, outside their map, so that no note replaces
+        // one (`docs/groundwork/n7h-logout-on-a-mount.md`, section 4); the store takes
+        // them first.
+        output.stays.append(&mut self.took);
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
@@ -1330,13 +1340,20 @@ impl Region {
 
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
+        eprintln!(
+            "DEBUG remove_player {id:?} here {}",
+            self.players.contains_key(&id)
+        );
         // A sleeper gets up first (`ServerPlayer.disconnect`'s `stopSleepInBed(true,
         // false)`): the bed is freed and the place kept is beside it.
         self.stop_sleep(id, true, false, output);
         self.menu_leaving(id, true, output);
         if let Some(player) = self.players.remove(&id) {
             self.gone.push((id, player.entity_id, player.hops));
-            self.unseat_leaving(Some(id), &player, output);
+            // Alone on a unit, they take it with them; else they are put off beside it.
+            if !self.take_unit_leaving(id, &player, output) {
+                self.unseat_leaving(Some(id), &player, output);
+            }
             self.journal.players.insert(id);
             output.events.push(RegionEvent::EntityRemoved {
                 entity: player.entity_id,
@@ -1450,6 +1467,7 @@ impl Region {
                 flying: player.flying,
                 inventory: player.inventory.clone(),
                 selected_slot: player.selected_slot,
+                riding: player.riding.map(|riding| riding.vehicle),
             },
         ));
         // A client begins with none (`ServerPlayer`'s first `set_experience`).
@@ -1701,6 +1719,15 @@ impl Region {
             .as_ref()
             .map(|place| place.experience)
             .unwrap_or_default();
+        // The unit they left the world on goes back under them: taken out of their
+        // record and sent to its root's chunk, their seat in it theirs again and kept
+        // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). Below the
+        // world they come back without it, and it goes back empty.
+        let below = kept.is_some_and(|(_, below)| below);
+        let returning = answer
+            .unit
+            .clone()
+            .and_then(|unit| self.unit_returning(id, entity_id, edge, unit, !below, output));
         let (pose, flying, inventory, selected_slot) = match kept {
             None => (at_spawn, false, self.config.starting_inventory.clone(), 0),
             Some((place, true)) => (
@@ -1710,16 +1737,25 @@ impl Region {
                 place.selected_slot,
             ),
             Some((place, false)) => {
+                let seated = |mut pose: Pose| {
+                    if let Some((_, seat)) = &returning {
+                        pose.position = *seat;
+                    }
+                    pose
+                };
                 if let Some(to) = answer.holder {
                     // Another region held the place: the stay goes there without
                     // being placed here. Nothing is claimed and no entity is shown; the
                     // edge finds its view by the attempt the transfer carries.
+                    // One who comes back on their unit goes with it: the unit's
+                    // arrival and their departure are in this tick's commit, and meet
+                    // in its holder in either order, as a crossing's do (N5).
                     let transfer = PlayerTransfer {
                         sleeping: None,
                         respawn: None,
                         entity_id,
                         name,
-                        pose: place.pose,
+                        pose: seated(place.pose),
                         inventory: place.inventory.clone(),
                         selected_slot: place.selected_slot,
                         ender: ender.clone(),
@@ -1727,7 +1763,7 @@ impl Region {
                         hops: 1,
                         flying: place.flying,
                         attempt: Some(attempt),
-                        riding: None,
+                        riding: returning.map(|(riding, _)| riding),
                         keys: Default::default(),
                         kept: Vec::new(),
                         experience: place.experience,
@@ -1740,13 +1776,14 @@ impl Region {
                 // the chunk it is claimed at the end of the tick, as for an arrival,
                 // and the player is let go when the store says it is another's.
                 (
-                    place.pose,
+                    seated(place.pose),
                     place.flying,
                     place.inventory.clone(),
                     place.selected_slot,
                 )
             }
         };
+        let riding = returning.map(|(riding, _)| riding);
         let player = Player {
             sleeping: None,
             respawn: None,
@@ -1764,7 +1801,7 @@ impl Region {
             hops: 0,
             flying,
             attempt: Some(attempt),
-            riding: None,
+            riding,
             keys: Keys::default(),
             kept: Vec::new(),
             menu: None,
@@ -2891,6 +2928,45 @@ impl Region {
     /// The first thing of a tick: what the store answered, the subscriptions that began
     /// and ended, and what storage delivered. See
     /// `docs/adr/0012-the-tick-on-chunks.md`, section 2.1, step 2.
+    /// Keeps loaded through this tick the chunk of the unit of every seated player who
+    /// leaves in it, by a leave or an edge's reset or going, so that the unit is there to
+    /// go with them when the leave is applied (`riders.rs`, `take_unit_leaving`): a
+    /// rider's view goes with their leave, and with nobody else watching, the tickets'
+    /// release would let the chunk go first. The game removes a player and their vehicle
+    /// before their chunks unload. Held as an arrival's ticket that ends with this tick,
+    /// whose end lets the chunk go where nothing else keeps it.
+    fn hold_leaving_units(&mut self, inputs: &TickInputs) {
+        let edges: BTreeSet<EdgeId> = inputs
+            .edges
+            .iter()
+            .filter_map(|event| match event {
+                EdgeEvent::Started { edge, .. } | EdgeEvent::Gone { edge } => Some(*edge),
+                EdgeEvent::Confirmed { .. } => None,
+            })
+            .collect();
+        let leaving: BTreeSet<PlayerId> = inputs
+            .player_changes
+            .iter()
+            .filter_map(|change| match change {
+                PlayerChange::Leave(_, id, ..) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let held: Vec<ChunkPos> = self
+            .players
+            .iter()
+            .filter(|(id, player)| leaving.contains(id) || edges.contains(&player.edge))
+            .filter_map(|(_, player)| player.riding)
+            .filter(|riding| riding.pending.is_none())
+            .map(|riding| riding.chunk)
+            .filter(|chunk| self.chunks.contains_key(chunk))
+            .collect();
+        let ends = self.tick.saturating_sub(1);
+        for chunk in held {
+            self.arrival_tickets.entry(chunk).or_insert(ends);
+        }
+    }
+
     fn update_chunks(&mut self, inputs: &TickInputs, output: &mut TickOutput) {
         // What the last tick let go of for a lend, or gave back as lent, goes first.
         self.drop_let_go();
@@ -4121,6 +4197,7 @@ mod tests {
         assert!(told(&output).is_empty() && output.events.is_empty());
         let output = enter(&mut region);
         let spawned = |entity, number| PlayerEvent::Spawned {
+            riding: None,
             attempt: attempt(number),
             entity_id: EntityId(entity),
             pose: Pose::at(SPAWN),
@@ -4243,6 +4320,7 @@ mod tests {
         );
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
+            riding: None,
             attempt: attempt(1),
             entity_id: EntityId(2),
             pose: Pose::at(SPAWN),
@@ -6326,6 +6404,7 @@ mod tests {
         assert!(told(&output).is_empty());
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
+            riding: None,
             attempt: attempt(1),
             entity_id: EntityId(1),
             pose: Pose::at(SPAWN),

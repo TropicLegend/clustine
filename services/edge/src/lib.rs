@@ -273,6 +273,35 @@ struct Shared {
 }
 
 /// A listening edge that has not started accepting connections yet.
+/// Drains an edge that is about to stop.
+#[derive(Debug, Clone)]
+pub struct Drainer {
+    commands: mpsc::Sender<fanout::Command>,
+}
+
+impl Drainer {
+    /// Every player of the edge leaves as though their connection had ended, and this
+    /// returns once every region has applied and made durable all that the edge sent it,
+    /// those leaves among it, as the game's `PlayerList.removeAll` disconnects everyone
+    /// at a stop: so that a player who leaves on a mount takes it with them, and comes
+    /// back on it however soon they join again
+    /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 13 item 1). It returns at
+    /// once if the edge has stopped. A region that does not answer holds it up for as
+    /// long as the caller waits.
+    pub async fn drain(&self) {
+        let (done, drained) = oneshot::channel();
+        if self
+            .commands
+            .send(fanout::Command::Drain { done })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let _ = drained.await;
+    }
+}
+
 pub struct Edge {
     listener: TcpListener,
     shared: Arc<Shared>,
@@ -370,6 +399,13 @@ impl Edge {
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
+    }
+
+    /// What drains the edge before it is stopped: see [`Drainer::drain`].
+    pub fn drainer(&self) -> Drainer {
+        Drainer {
+            commands: self.shared.fanout.clone(),
+        }
     }
 
     /// Accepts and serves connections until the edge has to stop, which it says why, or

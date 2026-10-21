@@ -796,6 +796,7 @@ fn a_join_of_a_player_the_region_has_under_the_same_edge_begins_a_new_stay() {
         vec![(
             player(1),
             PlayerEvent::Spawned {
+                riding: None,
                 attempt: attempt(player(1)),
                 entity_id: entity(2),
                 pose: Pose::at(IN_THE_DUG_SPAWN),

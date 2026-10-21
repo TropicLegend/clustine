@@ -374,3 +374,22 @@ the design stands amended by them:
 6. Accuracy: a unit goes as one arrival per member, the root first, in `send_entity`'s
    order, and the stale-seat rule is applied member by member; section 9's list of changed
    messages also names `StoreRequest::Commit` (it gains `units_taken`) and `StayNote::Has`.
+
+## 14. What the building found (2026-10-21)
+
+1. **The riding word is taken after the login**, not before the client's first packets
+   (section 6): the word's `set_passengers` can reach the rider's own client, which must
+   be sent its login first. It is taken after the login and before the view, so the unit
+   is still introduced to them, and to everyone with them, with them in its seats.
+2. **A leaving rider's unit chunk is held through the tick** (section 3): a rider's view
+   goes with their leave, and with nobody else watching, the release of their tickets at
+   the start of the tick let the chunk go before the leave was applied, and the unit was
+   not there to take. The chunk of every seated player who leaves in the tick (a leave,
+   an edge's reset or going) is held by an arrival's ticket that ends with the tick, and
+   let go at its end where nothing else keeps it.
+3. **The re-entry always sends the unit back as an arrival**, never makes it whole in the
+   home region at once (section 5, first case): the review found the arrival the usual
+   path, and one path for every case leaves fewer orders to get wrong. The cost is the
+   arrival's round through the store, a tick or two.
+4. **Leashes from a member to beyond the unit** are kept in the unit as they are; the
+   probe of `UNLOADED_WITH_PLAYER` (section 5's last paragraph) is still to come.

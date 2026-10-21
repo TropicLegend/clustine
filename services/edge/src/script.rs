@@ -1274,6 +1274,7 @@ impl Script {
         for who in named.iter().chain(others) {
             let answer = match here(who) {
                 Some(person) => Presence::Present {
+                    riding: None,
                     entity: person.entity,
                     pose: Pose::at(within(person.chunk)),
                     inventory: Inventory::default(),
@@ -1482,6 +1483,7 @@ impl Script {
         let spawned = WorkerToEdge::ToPlayer {
             player: who,
             event: PlayerEvent::Spawned {
+                riding: None,
                 attempt: session.0,
                 entity_id: entity,
                 pose: Pose::at(within(HOME)),

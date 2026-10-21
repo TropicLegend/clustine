@@ -1218,6 +1218,9 @@ pub enum PlayerEvent {
         flying: bool,
         inventory: Inventory,
         selected_slot: u8,
+        /// What they ride, seated or waiting for it: a player put back on the unit they
+        /// left the world on (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6).
+        riding: Option<EntityId>,
     },
     /// Everything the player did with a sequence number up to `sequence` has been
     /// handled, whether it took effect or not. The client then stops showing its own

@@ -1476,13 +1476,15 @@ fn a_merge_keeps_a_seat_kept_with_time_left_and_seats_the_player_in_the_survivor
 // ------------------------------------------------------------------------------------
 // Leaving, and a hit across the line.
 
-/// The plan, section 7 items 1 and 6, and section 8 item 6: a player who leaves while
-/// riding gets off in the commit that removes them, the vehicle stays in its chunk,
-/// their seat is freed and reported, and their stay note has the place they got off
-/// to, not their seat.
+/// The plan, section 7 items 1 and 6, and section 8 item 6, as
+/// `docs/groundwork/n7h-logout-on-a-mount.md` section 3 narrows them: a player who leaves
+/// alone on a boat takes it out of the world with them in the commit that removes them,
+/// and their stay note carries it with the place it would let them off at, not their
+/// seat, where they stand if it is not put under them again.
 #[test]
-fn a_rider_who_leaves_gets_off_the_boat_stays_and_their_note_has_where_they_got_off() {
+fn a_rider_who_leaves_alone_takes_the_boat_and_their_note_has_where_they_would_get_off() {
     let mut seated = seated();
+    let (_, boat) = record(&seated.west, key(1)).expect("the boat");
     let output = seated.west.tick(&TickInputs {
         player_changes: vec![PlayerChange::Leave(
             EDGE,
@@ -1493,34 +1495,18 @@ fn a_rider_who_leaves_gets_off_the_boat_stays_and_their_note_has_where_they_got_
         ..TickInputs::default()
     });
     assert!(seated.west.player(player(1)).is_none());
-    let (_, boat) = record(&seated.west, key(1)).expect("the boat stays");
-    assert!(boat.riding.passengers.is_empty(), "the seat is free");
-    assert!(
-        passengers_reported(&output, key(1))
-            .iter()
-            .any(|list| list.is_empty()),
-        "and reported free"
-    );
+    assert!(record(&seated.west, key(1)).is_none(), "the boat goes too");
     let note = output.stays.iter().find_map(|note| match note {
         clustine_sim::StayNote::Has {
-            player: who, place, ..
-        } if *who == player(1) => Some(place.clone()),
+            player: who,
+            place,
+            unit,
+            ..
+        } if *who == player(1) => Some((place.clone(), unit.clone())),
         _ => None,
     });
-    let output = if output.stays.is_empty() {
-        idle(&mut seated.west)
-    } else {
-        output
-    };
-    let note = note.or_else(|| {
-        output.stays.iter().find_map(|note| match note {
-            clustine_sim::StayNote::Has {
-                player: who, place, ..
-            } if *who == player(1) => Some(place.clone()),
-            _ => None,
-        })
-    });
-    let place = note.expect("a note of where they got off");
+    let (place, unit) = note.expect("a note of where they would get off");
+    assert_eq!(unit.expect("the boat in the note").root().key, key(1));
     let sat_y = boat.position[1] + 0.1;
     assert!(
         (place.pose.position.y - sat_y).abs() > 0.05 || place.pose.position.x != boat.position[0],
@@ -1710,5 +1696,145 @@ fn a_cart_pushed_across_a_line_by_its_rider_takes_them_with_it_and_rolls_on_beyo
             .map(|seat| seat.key)
             .collect::<Vec<_>>(),
         [rider]
+    );
+}
+
+/// `docs/groundwork/n7h-logout-on-a-mount.md`, section 5: a player who left alone on a
+/// boat and joins again is put back on it. The home region told of the unit with the
+/// stay that enters takes it out of the record (a `Took` in that tick's commit) and
+/// sends it to its root's chunk as an arrival, the player's seat in it naming the new
+/// stay and kept pending; the stay enters at the seat, riding it and waiting, its client
+/// told what it rides; and once the arrival is taken, one hop higher, it is seated.
+#[test]
+fn a_player_who_left_alone_on_a_boat_is_put_back_on_it_when_they_join_again() {
+    let mut seated = seated();
+    let output = seated.west.tick(&TickInputs {
+        player_changes: vec![PlayerChange::Leave(
+            EDGE,
+            player(1),
+            Some(seated.rider),
+            None,
+        )],
+        ..TickInputs::default()
+    });
+    let (place, unit) = output
+        .stays
+        .iter()
+        .find_map(|note| match note {
+            clustine_sim::StayNote::Has {
+                place,
+                unit: Some(unit),
+                ..
+            } => Some((place.clone(), unit.clone())),
+            _ => None,
+        })
+        .expect("the leave's note carries the boat");
+    let left_hops = unit.root().hops;
+
+    // The join, and the store's word: the place and the unit.
+    seated.west.tick(&TickInputs {
+        player_changes: vec![PlayerChange::Join(
+            EDGE,
+            PlayerJoin {
+                player: player(1),
+                name: "Rider".to_owned(),
+                attempt: 7002,
+            },
+        )],
+        ..TickInputs::default()
+    });
+    let entering = seated.west.state().entering[&player(1)].entity_id;
+    let output = seated.west.tick(&TickInputs {
+        entered: vec![Entered {
+            player: player(1),
+            entity: entering,
+            place: Some(place),
+            holder: None,
+            unit: Some(unit),
+        }],
+        ..TickInputs::default()
+    });
+    assert!(
+        output.stays.iter().any(|note| matches!(
+            note,
+            clustine_sim::StayNote::Took { player: who, root } if *who == player(1) && *root == key(1)
+        )),
+        "the taking: {:?}",
+        output.stays
+    );
+    let sent: Vec<&Entity> = output
+        .arrivals
+        .iter()
+        .filter(|(chunk, entity)| entity.key == key(1) && *chunk == entity.chunk())
+        .map(|(_, entity)| entity)
+        .collect();
+    let [boat_back] = sent[..] else {
+        panic!("the boat sent back to its chunk: {:?}", output.arrivals);
+    };
+    assert_eq!(boat_back.hops, left_hops, "at the hops it left with");
+    let seat = boat_back.riding.passengers.first().expect("a seat");
+    assert!(seat.player && seat.key == entering && seat.pending.is_some());
+    let spawned = output
+        .player_events
+        .iter()
+        .find_map(|(who, event)| match event {
+            PlayerEvent::Spawned { riding, .. } if *who == player(1) => Some(*riding),
+            _ => None,
+        });
+    assert_eq!(
+        spawned,
+        Some(Some(key(1))),
+        "the client is told what it rides"
+    );
+    let state = seated.west.player_state(player(1)).expect("entered");
+    assert!(state.riding.is_some_and(|riding| riding.pending.is_some()));
+
+    // The arrival is taken, and the player seated in it.
+    let chunk = boat_back.chunk();
+    let boat_back = boat_back.clone();
+    seated.west.tick(&TickInputs {
+        arrivals: vec![arrival(900, chunk, &boat_back)],
+        ..TickInputs::default()
+    });
+    idle(&mut seated.west);
+    let (_, boat) = record(&seated.west, key(1)).expect("the boat is back");
+    assert_eq!(boat.hops, left_hops + 1);
+    let state = seated.west.player_state(player(1)).expect("there");
+    assert_eq!(
+        state.riding.map(|riding| (riding.vehicle, riding.pending)),
+        Some((key(1), None)),
+        "seated"
+    );
+}
+
+/// `docs/groundwork/n7h-logout-on-a-mount.md`, section 3: the rider's view goes with
+/// their leave, in the same tick, and with nobody else watching the chunks would be let
+/// go before the leave is applied; the boat's chunk is kept for the tick, so that the
+/// boat goes with them. (It is let go at the end of the tick as an arrival's ticket's
+/// chunk is, which the arrivals' tests judge; this boat stands in the home chunk, which
+/// stays loaded.)
+#[test]
+fn a_lone_riders_leave_takes_the_boat_though_their_view_goes_in_the_same_tick() {
+    let mut seated = seated();
+    let output = seated.west.tick(&TickInputs {
+        player_changes: vec![PlayerChange::Leave(
+            EDGE,
+            player(1),
+            Some(seated.rider),
+            None,
+        )],
+        tickets_removed: around(3)
+            .into_iter()
+            .map(|chunk| (chunk, Ticket::Viewer))
+            .collect(),
+        ..TickInputs::default()
+    });
+    assert!(
+        output.stays.iter().any(|note| matches!(
+            note,
+            clustine_sim::StayNote::Has { unit: Some(unit), .. } if unit.root().key == key(1)
+        )),
+        "the boat goes with them: {:?}",
+        output.stays
     );
 }

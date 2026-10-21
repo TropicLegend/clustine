@@ -553,6 +553,7 @@ fn learn(region: &mut Region, chunk: ChunkPos, holder: RegionId) {
 /// What the player is told when the stay of [`entering`] is placed as `place` has it.
 fn spawned(place: &Place) -> (PlayerId, PlayerEvent) {
     let event = PlayerEvent::Spawned {
+        riding: None,
         attempt: ATTEMPT,
         entity_id: entity(1),
         pose: place.pose,

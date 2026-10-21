@@ -238,10 +238,15 @@ fn stopping() -> io::Error {
 ///
 /// Dropping it without calling [`Server::stop`] leaves it running until the runtime
 /// shuts down.
+/// How long a stop waits for the players' leaves to be durable.
+const DRAIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Server {
     address: SocketAddr,
     /// The edge and what keeps it linked to the regions.
     edge: JoinHandle<()>,
+    /// What ends every player's stay before the edge is stopped.
+    drainer: clustine_edge::Drainer,
     /// The loop of the one worker, with what it ended for.
     worker: JoinHandle<Result<()>>,
     coordinator: JoinHandle<()>,
@@ -401,6 +406,7 @@ impl Server {
                 worker.abort();
             })?;
         let address = edge.local_addr()?;
+        let drainer = edge.drainer();
         let linking = Linking::Local {
             serving: serving.clone(),
             serialise: config.serialise_link,
@@ -415,6 +421,7 @@ impl Server {
         Ok(Self {
             address,
             edge,
+            drainer,
             worker,
             coordinator,
             store,
@@ -491,7 +498,12 @@ impl Server {
     /// started on the same directory right away finds the world as the last confirmed
     /// tick left it.
     pub async fn stop(self) {
-        // The edge first, which closes every client and every link.
+        // Every player leaves first, as at the game's stop (`PlayerList.removeAll`), and
+        // their leaves are durable before the edge goes: a rider takes their mount with
+        // them (`docs/groundwork/n7h-logout-on-a-mount.md`, section 13 item 1). A region
+        // that does not answer is not waited for long.
+        let _ = tokio::time::timeout(DRAIN_PATIENCE, self.drainer.drain()).await;
+        // The edge, which closes every client and every link.
         self.edge.abort();
         // The tasks are ended on purpose, so how they ended carries no information.
         let _ = self.edge.await;

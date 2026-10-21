@@ -1344,26 +1344,35 @@ fn a_player_who_sneaks_gets_off_beside_the_cushion_and_its_seat_is_free_again() 
     assert!(region.players[&player(1)].riding.is_none());
 }
 
+/// `PlayerList.remove`: a player who leaves alone on a root vehicle takes it out of the
+/// world with them, a cushion as much as a boat: it is gone from its chunk, and the
+/// leave's note carries it, its seat theirs still
+/// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 3).
 #[test]
-fn a_player_who_leaves_while_seated_leaves_the_seat_free() {
+fn a_player_who_leaves_alone_on_a_cushion_takes_it_with_them() {
     let mut region = on_ticking_floor_with(&[]);
     let seat = cushion(1, [2.5, -60.0, 0.5], 0);
     lay(&mut region, &seat);
     checked(&mut region, &use_entity(&seat));
-    checked(
+    let output = checked(
         &mut region,
         &TickInputs {
             player_changes: vec![leave_as(1, 1)],
             ..TickInputs::default()
         },
     );
-    assert!(
-        record(&region, seat.key)
-            .unwrap()
-            .riding
-            .passengers
-            .is_empty()
-    );
+    assert!(record(&region, seat.key).is_none(), "out of the world");
+    let carried: Vec<Vec<EntityId>> = output
+        .stays
+        .iter()
+        .filter_map(|note| match note {
+            StayNote::Has {
+                unit: Some(unit), ..
+            } => Some(unit.0.iter().map(|member| member.key).collect()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(carried, [vec![seat.key]]);
 }
 
 #[test]

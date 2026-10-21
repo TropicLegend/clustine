@@ -714,11 +714,12 @@ fn a_riding_player_s_moves_turn_their_head_and_move_them_nowhere() {
     assert_eq!(scene.rides(1), Some(seat));
 }
 
-/// Plan, section 7 item 6, and section 8 item 6: a player who leaves while riding is
-/// taken out of the vehicle's passengers in the commit that removes them, which is
-/// reported; the stay's note has the place they are dismounted to, not their seat.
+/// Plan, section 7 item 6 and section 8 item 6, as `docs/groundwork/n7h-logout-on-a-mount.md`
+/// section 3 narrows them: a player who leaves alone on a vehicle takes it out of the
+/// world in the commit that removes them, as the game's `PlayerList.remove` does: it is
+/// gone from its chunk, and the stay's note carries it, its seat still theirs.
 #[test]
-fn a_rider_who_leaves_frees_the_seat_in_that_tick_and_their_note_has_where_they_got_off() {
+fn a_rider_who_leaves_alone_takes_the_seat_out_of_the_world_in_that_tick() {
     let (mut scene, seat) = on_a_cushion(1);
     scene.tick(vec![(1, use_entity(seat))]);
     let rider = scene.key(1);
@@ -727,31 +728,29 @@ fn a_rider_who_leaves_frees_the_seat_in_that_tick_and_their_note_has_where_they_
         ..TickInputs::default()
     });
     assert!(scene.region.player(player(1)).is_none(), "gone");
-    assert_eq!(
-        passengers_reported(&output, seat),
-        vec![Vec::<EntityId>::new()]
-    );
-    assert!(scene.passengers(seat).is_empty());
-    let committed = output
-        .entity_changes
-        .iter()
-        .any(|(_, change)| match change {
-            EntityChange::Whole(entity) => {
-                entity.key == seat && entity.riding.passengers.is_empty()
-            }
-            EntityChange::Set(key, fields) => {
-                *key == seat
-                    && fields.iter().any(|field| {
-                        matches!(field, clustine_world::EntityField::Riding(riding)
-                        if riding.passengers.is_empty())
-                    })
-            }
-            EntityChange::Gone(_) => false,
-        });
     assert!(
-        committed,
-        "the seat freed in the commit: {:?}",
+        output
+            .entity_changes
+            .iter()
+            .any(|(_, change)| matches!(change, EntityChange::Gone(key) if *key == seat)),
+        "the seat gone in the commit: {:?}",
         output.entity_changes
+    );
+    let unit = output.stays.iter().find_map(|note| match note {
+        StayNote::Has {
+            unit: Some(unit), ..
+        } => Some(unit.clone()),
+        _ => None,
+    });
+    let unit = unit.expect("the note carries the unit");
+    assert_eq!(unit.root().key, seat);
+    assert!(
+        unit.root()
+            .riding
+            .passengers
+            .iter()
+            .any(|kept| kept.key == rider && kept.player),
+        "the seat is theirs still"
     );
 }
 
@@ -801,9 +800,10 @@ fn a_rider_whose_stay_is_dead_frees_the_seat_in_that_tick() {
     assert!(scene.passengers(seat).is_empty());
 }
 
-/// Plan, section 7 item 6: the edge's reset takes its riders out of their seats too.
+/// Plan, section 7 item 6, as the logout design's section 8 row 6 has it: an edge's
+/// reset is a leave, and its lone rider takes their seat with them too.
 #[test]
-fn a_rider_whose_edge_is_reset_frees_the_seat_in_that_tick() {
+fn a_rider_whose_edge_is_reset_takes_the_seat_with_them() {
     let (mut scene, seat) = on_a_cushion(1);
     scene.tick(vec![(1, use_entity(seat))]);
     let output = scene.region.tick(&TickInputs {
@@ -814,11 +814,16 @@ fn a_rider_whose_edge_is_reset_frees_the_seat_in_that_tick() {
         ..TickInputs::default()
     });
     assert!(scene.region.player(player(1)).is_none(), "reset");
-    assert_eq!(
-        passengers_reported(&output, seat),
-        vec![Vec::<EntityId>::new()]
+    assert!(
+        output
+            .entity_changes
+            .iter()
+            .any(|(_, change)| matches!(change, EntityChange::Gone(key) if *key == seat))
     );
-    assert!(scene.passengers(seat).is_empty());
+    assert!(output.stays.iter().any(|note| matches!(
+        note,
+        StayNote::Has { unit: Some(unit), .. } if unit.root().key == seat
+    )));
 }
 
 /// Plan, section 7 item 6: a player who joins again while seated is a new stay; the old

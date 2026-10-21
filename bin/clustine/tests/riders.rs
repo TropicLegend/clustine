@@ -11,8 +11,9 @@
 //! shown dismounted at every crossing" was the defect mended); the rider's own client is
 //! sent no dismount, no teleport and no correction of its moves (section 4, item 3: the
 //! new region "applies the kept `MoveVehicle` as the old one would have, with no
-//! correction"). A rider who leaves gets off, the boat staying where it was, and comes
-//! back beside it (section 7, item 1; section 8, item 6). With each process killed at
+//! correction"). A rider who leaves alone takes the boat out of the world with them and
+//! comes back on it, as the game does (`docs/groundwork/n7h-logout-on-a-mount.md`, which
+//! narrows N5's section 7, item 1 and section 8, item 6). With each process killed at
 //! each moment of a crossing, the player and the boat are each in exactly one place
 //! afterwards, the player riding it or standing, and no phantom seat is left (section 7,
 //! items 5 and 6; section 8, items 1, 8 and 9).
@@ -450,16 +451,14 @@ fn across(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
     (a.0 - b.0).hypot(a.2 - b.2)
 }
 
-/// The plan, section 7 item 1 and section 8 item 6: "a leaving player, and one who dies,
-/// ends or is reset by their edge, is dismounted in the commit that removes them, and the
-/// vehicle stays in its chunk", and "the commit that removes a rider writes a `Has` note
-/// with the place they are dismounted to"; section 1: "they come back beside it". A
-/// rider drives across the pinned line and leaves; the boat stays where it was, empty,
-/// and is there once after the server is stopped and started, with the rider, joining
-/// again, standing beside it.
+/// `docs/groundwork/n7h-logout-on-a-mount.md`, sections 1, 3 and 5, which narrow N5's
+/// "the vehicle stays in its chunk" to a vehicle with another player aboard: a rider who
+/// leaves alone takes their boat out of the world with them, as the game's
+/// `PlayerList.remove` does, and comes back on it. A rider drives across the pinned line
+/// and leaves; a watcher sees the boat go with them; after the server is stopped and
+/// started, the rider joins again riding it, where it was, and it is there once.
 #[tokio::test]
-async fn a_rider_who_leaves_after_crossing_gets_off_and_comes_back_beside_the_boat_after_a_restart()
-{
+async fn a_rider_who_leaves_after_crossing_takes_the_boat_and_comes_back_on_it_after_a_restart() {
     let directory = tempfile::tempdir().unwrap();
     let (server, address) = start_with(pinned(directory.path())).await;
     let mut watcher = watcher(&address, "Watcher").await;
@@ -473,34 +472,70 @@ async fn a_rider_who_leaves_after_crossing_gets_off_and_comes_back_beside_the_bo
     rider.bot.close().await.unwrap();
     drop(rider);
 
-    let boat = shown_empty(&mut watcher, uuid).await;
-    round_trip(&mut watcher).await;
-    assert!(
-        across(boat.position, left_at) < 0.5 && boat.position.0 > LINE,
-        "the boat stays where it was left, east of the line: {boat:?}, left at {left_at:?}"
-    );
-    assert!(
-        watcher.seen_player("Rider").is_none(),
-        "the rider is gone with their leave"
-    );
+    watcher
+        .wait_until(PATIENCE, |bot| {
+            bot.seen_player("Rider").is_none() && shown(bot, uuid).is_empty()
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{error:#}: the boat goes with its rider"));
     drop(watcher);
     server.stop().await;
 
     let (server, address) = start_with(pinned(directory.path())).await;
     let mut back = join(&address, "Rider").await;
-    let boat = shown_empty(&mut back, uuid).await;
+    back.wait_until(PATIENCE, |bot| {
+        bot.riding().is_some_and(|vehicle| {
+            shown(bot, uuid)
+                .iter()
+                .any(|boat| boat.entity_id == vehicle)
+        })
+    })
+    .await
+    .unwrap_or_else(|error| panic!("{error:#}: the rider comes back on the boat"));
     round_trip(&mut back).await;
     assert_eq!(boats_of(&back).len(), 1, "one boat: {:?}", boats_of(&back));
-    assert_eq!(back.riding(), None, "the rider comes back standing");
-    assert!(
-        across(back.location, boat.position) < 3.0,
-        "the rider comes back beside the boat: at {:?}, the boat at {:?}",
-        back.location,
-        boat.position
-    );
+    let boat = shown(&back, uuid)[0].clone();
     assert!(
         across(boat.position, left_at) < 0.5,
-        "the boat is where it was left: {boat:?}"
+        "the boat is where it was left: {boat:?}, left at {left_at:?}"
+    );
+    drop(back);
+    server.stop().await;
+}
+
+/// `docs/groundwork/n7h-logout-on-a-mount.md`, section 13 item 1: a server stopped while
+/// a rider is in their boat ends their stay as a leave first, as the game's
+/// `PlayerList.removeAll` does at a stop, so that the rider, joining again as soon as the
+/// server is up, is on the boat at once; it is there once.
+#[tokio::test]
+async fn a_rider_in_a_boat_when_the_server_stops_is_on_it_again_when_they_join_at_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let (server, address) = start_with(pinned(directory.path())).await;
+    let mut rider = Rider::join(&address, "Rider", -4.5, 0.5).await;
+    settle(&mut [&mut rider.bot]).await;
+    let uuid = rider.boat_uuid;
+    let left_at = rider.at;
+    // Stopped with the rider still connected.
+    server.stop().await;
+    drop(rider);
+
+    let (server, address) = start_with(pinned(directory.path())).await;
+    let mut back = join(&address, "Rider").await;
+    back.wait_until(PATIENCE, |bot| {
+        bot.riding().is_some_and(|vehicle| {
+            shown(bot, uuid)
+                .iter()
+                .any(|boat| boat.entity_id == vehicle)
+        })
+    })
+    .await
+    .unwrap_or_else(|error| panic!("{error:#}: the rider is on the boat again: riding {:?}, boats {:?}, at {:?}, passengers {:?}", back.riding(), boats_of(&back), back.location, back.passengers));
+    round_trip(&mut back).await;
+    assert_eq!(boats_of(&back).len(), 1, "one boat: {:?}", boats_of(&back));
+    let boat = shown(&back, uuid)[0].clone();
+    assert!(
+        across(boat.position, left_at) < 0.5,
+        "where it was: {boat:?}, left at {left_at:?}"
     );
     drop(back);
     server.stop().await;
@@ -1054,16 +1089,18 @@ impl Crossings {
                 });
             round_trip(&mut bot).await;
             let boat = shown(&bot, uuid)[0].clone();
-            assert_eq!(
-                bot.riding(),
-                None,
-                "{name} connected again and rides nothing"
+            // An edge's going is a leave (`docs/groundwork/n7h-logout-on-a-mount.md`,
+            // section 8 row 6): a lone rider takes the boat and comes back on it, or,
+            // where their new stay's entry raced the leave (row 2), beside it.
+            assert!(
+                bot.riding().is_none_or(|vehicle| vehicle == boat.entity_id),
+                "{name} connected again riding something else"
             );
             // The plan, section 8 item 6: the removal writes the place they are
             // dismounted to.
             assert!(
                 across(bot.location, boat.position) < 3.0,
-                "{name} comes back beside their boat: at {:?}, the boat at {boat:?}",
+                "{name} comes back on or beside their boat: at {:?}, the boat at {boat:?}",
                 bot.location
             );
             rider.bot = bot;
