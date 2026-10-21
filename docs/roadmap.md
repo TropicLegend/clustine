@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-19)
+## Where the work stands (2026-10-21)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -313,6 +313,22 @@ again (2 of 500, every run): mended. Next: N7f's comparisons with the official s
 summoned mob's data and rotation, a hit, breeding's packets, `set_time`), then the second
 half.
 
+**N7's second half so far** (2026-10-21): N7f's comparisons with the official server
+(cows made, hit and bred, and the time, `bin/clustine/tests/mobs_oracle.rs`), which found
+a mob's head turning, an orb's worth and a mob's step sounds missing, all mended. Riding a
+mob ([plan](groundwork/n7h-riding-plan.md), [research](groundwork/n7h-riding-research.md),
+reviewed): a saddled pig steered with a carrot on a stick and boosted, a horse of the
+family mounted, steered, made to rear and jump with the jump bar, and each let off by
+the game's rules, its fall hurting it as the game's does; tested from the specification
+by someone who did not write it. The horse family (horses, donkeys, mules, llamas, trader
+llamas, skeleton and zombie horses), the tamed animals (wolves, cats, ocelots, parrots),
+the wild land animals (foxes, pandas, polar bears, bees with their hives and nests, bats)
+and the water creatures and the turtle (N7i), each tested from the specification. Those
+tests found that the random streams of consecutive ticks were one draw apart, so that a
+random tick that reached a block reached it again the next tick: mended. A player who
+leaves while riding is put off beside their mount, where the game takes the mount with
+them: [its design](groundwork/n7h-logout-on-a-mount.md) is under review and not built.
+
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
 `cargo run --release -p clustine -- --seed 3` for regions that follow players):
@@ -333,6 +349,24 @@ half.
    its wool grows back) and dye it, saddle a pig, and wait for a chicken to lay an egg.
    With pins: two animals in love on either side of x = 64 breed once, and a lead you
    hold from across the line keeps an animal to you.
+0. Riding: saddle a pig and get on it; hold a carrot on a stick and it goes where you
+   look, a use of the stick speeds it up for a while; sneak to get off beside it. Tame a
+   horse by getting on it until hearts show (it throws you off a few times first),
+   saddle it, ride it with W, A and D, hold and release space to jump (it rears); a
+   donkey and a mule likewise. Ride off a ledge of more than six blocks: it lands with
+   a thud and is hurt. With pins, ride a pig or a horse across x = 64.
+0. Tamed animals: give bones to a wolf until hearts show; it follows you, sits when
+   you click it, and fights what you hit. Fish tames a cat (it sits on beds and chests)
+   and makes an ocelot trust you; seeds tame a parrot. Water creatures: the eggs of
+   cod, salmon, pufferfish, tropical fish, squid, glow squid, dolphin and turtle; fish
+   flop on land and can be taken in a water bucket; a pufferfish puffs up near you;
+   two turtles fed seagrass lay eggs on sand, which crack and hatch, quickest just before
+   dawn. Wild animals: a fox sleeps by day and sneaks up on chickens, a panda rolls and
+   sneezes, a polar bear defends its cub, bees fly between flowers and their hive, a bat
+   hangs from a ceiling and flies off when you come near.
+0. Next in N7: the brains (axolotls, frogs, goats, camels, armadillos and the rest,
+   [plan](groundwork/n7j-plan.md)) and the mobs made with each new chunk
+   ([plan](groundwork/n7l-plan.md)), each plan under review.
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.

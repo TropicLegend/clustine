@@ -1,6 +1,6 @@
 //! Comparisons with the official server of what a client is shown of mobs (N7f,
 //! `docs/groundwork/n7-plan.md`, section 7.10): a cow made by a spawn egg, a hit on it,
-//! two cows fed that breed, and the time. A builder does each beside the spawn of a flat
+//! two cows fed that breed, and the time; and riding a pig (N7h). A builder does each beside the spawn of a flat
 //! world and a watcher records what it is sent of the cows and orbs, and the sounds,
 //! each at its milliseconds from the start of the part.
 //!
@@ -452,6 +452,182 @@ async fn the_time_is_sent_like_on_the_official_server() {
         (first, rest_bare)
     };
     assert_eq!(clocks(&ours), clocks(&theirs));
+    server.stop().await;
+}
+
+/// What a watcher and the rider were shown of a pig ridden on one server: the
+/// passengers of the pig as each `set_passengers` said, the boost's total at index 18 if
+/// sent, and the rider's feet before and after getting off, with the pig's position.
+#[derive(Debug)]
+struct Rode {
+    seated: Vec<Vec<i32>>,
+    boost: Option<i32>,
+    rider: i32,
+    pig: (f64, f64, f64),
+    off_at: (f64, f64, f64),
+}
+
+/// Reads what `watching` is sent for `how_long`, answering keep-alives, and keeps the
+/// `set_passengers` of `pig` and its data's index 18.
+async fn watch_pig(
+    watching: &mut Connection,
+    pig: i32,
+    how_long: Duration,
+    rode: &mut Rode,
+) -> Result<()> {
+    let deadline = Instant::now() + how_long;
+    loop {
+        let Ok(frame) = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            watching.read_frame(),
+        )
+        .await
+        else {
+            return Ok(());
+        };
+        match ClientboundPlay::decode(&frame?) {
+            Ok(ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id })) => {
+                watching.write(&ServerboundKeepAlive { id }).await?;
+            }
+            Ok(ClientboundPlay::SetPassengers(packet)) if packet.vehicle_id == pig => {
+                rode.seated.push(packet.passengers);
+            }
+            Ok(ClientboundPlay::SetEntityData(data)) if data.entity_id == pig => {
+                if let Some(EntityDataValue::Int(total)) = value(&data.values, 18) {
+                    rode.boost = Some(*total);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The pig's case on the server at `address`: a pig from an egg beside the rider,
+/// saddled, mounted with an empty hand, boosted with a carrot on a stick, and left by
+/// sneaking; the watcher records it all.
+async fn rode(address: &str) -> Result<Rode> {
+    let (mut rider, watcher) = two_bots(address).await?;
+    let (x, z) = (
+        rider.location.0.floor() as i32,
+        rider.location.2.floor() as i32,
+    );
+    let pigs = |bot: &Bot| -> Vec<i32> {
+        bot.entities
+            .values()
+            .filter(|entity| entity.kind == entity_types::PIG)
+            .map(|entity| entity.entity_id)
+            .collect()
+    };
+    let rider_id = watcher
+        .seen_player("Builder")
+        .context("the watcher is shown the rider")?
+        .entity_id;
+    rider
+        .put_in_hotbar(
+            0,
+            ItemStack {
+                item: items::PIG_SPAWN_EGG,
+                count: 1,
+            },
+        )
+        .await?;
+    rider.select_slot(0).await?;
+    rider.use_item_on(x + 2, GROUND, z, face::TOP).await?;
+    rider
+        .wait_until(PATIENCE, |bot| pigs(bot).len() == 1)
+        .await?;
+    let pig = pigs(&rider)[0];
+    let mut watching = watcher.into_connection();
+    let mut rode = Rode {
+        seated: Vec::new(),
+        boost: None,
+        rider: rider_id,
+        pig: (0.0, 0.0, 0.0),
+        off_at: (0.0, 0.0, 0.0),
+    };
+    rider
+        .put_in_hotbar(
+            1,
+            ItemStack {
+                item: items::SADDLE,
+                count: 1,
+            },
+        )
+        .await?;
+    rider
+        .put_in_hotbar(
+            2,
+            ItemStack {
+                item: items::CARROT_ON_A_STICK,
+                count: 1,
+            },
+        )
+        .await?;
+    rider.select_slot(1).await?;
+    rider.interact(pig, [0.0, 0.5, 0.0]).await?;
+    watch_pig(&mut watching, pig, Duration::from_millis(500), &mut rode).await?;
+    // Slot 3 is empty: a hand with nothing in it mounts.
+    rider.select_slot(3).await?;
+    rider.interact(pig, [0.0, 0.5, 0.0]).await?;
+    rider
+        .wait_until(PATIENCE, |bot| bot.riding() == Some(pig))
+        .await?;
+    watch_pig(&mut watching, pig, Duration::from_millis(500), &mut rode).await?;
+    rider.select_slot(2).await?;
+    rider.use_item(0.0, 0.0).await?;
+    watch_pig(&mut watching, pig, Duration::from_secs(1), &mut rode).await?;
+    rider.sneak(true).await?;
+    rider
+        .wait_until(PATIENCE, |bot| bot.riding().is_none())
+        .await?;
+    rider.sneak(false).await?;
+    watch_pig(&mut watching, pig, Duration::from_millis(500), &mut rode).await?;
+    rider.idle(Duration::from_millis(300)).await?;
+    rode.pig = rider
+        .entities
+        .get(&pig)
+        .map(|entity| entity.position)
+        .context("the rider is shown the pig")?;
+    rode.off_at = rider.location;
+    Ok(rode)
+}
+
+/// Riding a pig (`docs/groundwork/n7h-riding-plan.md`, section 8): the watcher is told
+/// the rider sits on the pig once it is saddled and clicked with an empty hand, and that
+/// nobody does after the rider sneaks; the stick's use sends the boost's total, drawn in
+/// 140 to 980, at index 18; and the rider stands off the pig, on the ground, within two
+/// blocks of it. Where on the ground depends on where the pig wandered, so it is held to
+/// the rules, not to the other server's place.
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn a_pig_ridden_boosted_and_left_is_shown_like_on_the_official_server() {
+    let oracle = Oracle::start(false).await.unwrap();
+    let theirs = rode(oracle.address()).await.unwrap();
+    drop(oracle);
+    let (server, address) = start().await;
+    let ours = rode(&address).await.unwrap();
+    println!("the official server: {theirs:?}\nClustine: {ours:?}");
+    for (name, rode) in [("the official server", &theirs), ("Clustine", &ours)] {
+        assert_eq!(
+            rode.seated,
+            vec![vec![rode.rider], vec![]],
+            "{name}: the pig's passengers"
+        );
+        let total = rode
+            .boost
+            .unwrap_or_else(|| panic!("{name}: no boost shown"));
+        assert!((140..=980).contains(&total), "{name}: a boost of {total}");
+        let (dx, dz) = (rode.off_at.0 - rode.pig.0, rode.off_at.2 - rode.pig.2);
+        let apart = (dx * dx + dz * dz).sqrt();
+        assert!(
+            (0.5..2.0).contains(&apart),
+            "{name}: off {apart} from the pig"
+        );
+        assert!(
+            (rode.off_at.1 - f64::from(GROUND + 1)).abs() < 1e-6,
+            "{name}: {rode:?}"
+        );
+    }
     server.stop().await;
 }
 
