@@ -642,6 +642,37 @@ pub(crate) fn run(
     tick.sensed = Some(sensed);
 }
 
+/// A write of one memory of another mob, which a mob's tick makes and its region applies
+/// after it ([`super::tick::Local::SetMemories`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MemoryWrite {
+    /// `setMemory(kind, value)`.
+    Set(MemoryKind, Value),
+    /// `setMemoryWithExpiry(kind, value, ttl)`.
+    SetFor(MemoryKind, Value, i64),
+    /// `eraseMemory(kind)`.
+    Erase(MemoryKind),
+}
+
+impl MemoryWrite {
+    /// The memory it writes.
+    pub(crate) fn kind(&self) -> MemoryKind {
+        match self {
+            Self::Set(kind, _) | Self::SetFor(kind, _, _) | Self::Erase(kind) => *kind,
+        }
+    }
+
+    /// The write made to `memories`, by the brain's own rules (an unregistered kind takes
+    /// nothing).
+    pub(crate) fn apply(self, memories: &mut Memories) {
+        match self {
+            Self::Set(kind, value) => memories.set(kind, value),
+            Self::SetFor(kind, value, ttl) => memories.set_with_expiry(kind, value, ttl),
+            Self::Erase(kind) => memories.erase(kind),
+        }
+    }
+}
+
 /// The memories of a mob of a type with a brain, as code outside its tick reads and
 /// writes them (a hurt, a use, another mob's tick): as of its last brain tick, the one
 /// at `lived − 1` of its record, every countdown after that tick's lowering. Its sensed

@@ -59,6 +59,26 @@ fn a_memory_set_with_an_expiry_is_there_through_that_many_ticks_and_gone_after()
     }
 }
 
+/// A write made for another mob is the brain's own call: a set, a set with an expiry
+/// counted from the partner's last brain tick, and an erase.
+#[test]
+fn a_write_for_another_mob_is_the_set_the_expiring_set_or_the_erase_it_names() {
+    let mut memories = memories(&[MemoryKind::BreedTarget, MemoryKind::IsPanicking], 3);
+    MemoryWrite::Set(MemoryKind::BreedTarget, Value::Entity(EntityId(9))).apply(&mut memories);
+    MemoryWrite::SetFor(MemoryKind::IsPanicking, Value::Unit, 2).apply(&mut memories);
+    assert_eq!(
+        memories.get(MemoryKind::BreedTarget),
+        Some(Value::Entity(EntityId(9)))
+    );
+    assert_eq!(memories.expires_in(MemoryKind::IsPanicking), 2);
+    MemoryWrite::Erase(MemoryKind::BreedTarget).apply(&mut memories);
+    assert!(memories.check(MemoryKind::BreedTarget, Status::Absent));
+    assert_eq!(
+        MemoryWrite::Erase(MemoryKind::BreedTarget).kind(),
+        MemoryKind::BreedTarget
+    );
+}
+
 /// `setMemory` without an expiry replaces the slot's; an empty collection is none; a
 /// kind not registered takes nothing and checks false; an absent memory's time to
 /// expiry is `Long.MAX_VALUE`.

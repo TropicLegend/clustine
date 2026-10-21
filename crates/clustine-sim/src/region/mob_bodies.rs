@@ -265,7 +265,13 @@ impl Region {
                     from,
                     amount,
                     sound,
-                } => self.hurt_by_mob(key, kind, from, hurt, amount, sound, output),
+                    knockback,
+                } => {
+                    let took = self.hurt_by_mob(key, kind, from, hurt, amount, sound, output);
+                    if took && let Some([strength, x, z]) = knockback {
+                        self.knock_mob(hurt, strength, x, z, output);
+                    }
+                }
                 Local::Throw {
                     stack,
                     at,
@@ -284,6 +290,12 @@ impl Region {
                     amount,
                 } => self.stung_by_bee(key, kind, from, stung, amount, output),
                 Local::GrowUp => self.tadpole_grown_up(key, output),
+                Local::SetMemories { key: other, writes } => {
+                    self.write_mob_memories(other, writes, output);
+                }
+                Local::OpenDoor { pos, open, pitch } => {
+                    self.mob_set_door_open(key, pos, open, pitch, output);
+                }
             }
         }
     }

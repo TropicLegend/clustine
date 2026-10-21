@@ -108,6 +108,9 @@ pub(crate) enum Local {
         from: crate::physics::Vec3,
         amount: f32,
         sound: Option<i32>,
+        /// `LivingEntity.knockback(strength, x, z)` of the hurt mob where the hurt took
+        /// (a goat's ram, `RamTarget`): its strength and the direction it is pushed from.
+        knockback: Option<[f64; 3]>,
     },
     /// An item thrown by the mob (`new ItemEntity`, its pick-up delay set and its motion
     /// set after the constructor's draws: a dolphin's play).
@@ -134,6 +137,29 @@ pub(crate) enum Local {
         kind: u16,
         from: crate::physics::Vec3,
         amount: f32,
+    },
+    /// Memories of the region's mob `key`, of a type with a brain, written by this one's
+    /// tick in order (`AnimalMakeLove`'s partner's breed, look and walk targets). The
+    /// partner reads them at its next brain tick, or at this one where it ticks after
+    /// the writer, as in the game. **Named**: a mob in a copy is not written; across a
+    /// line the breeding protocol holds instead (`docs/groundwork/n7j-plan.md`, section 3
+    /// item 4).
+    #[allow(
+        dead_code,
+        reason = "made by the brains' shared behaviours (N7j part A)"
+    )]
+    SetMemories {
+        key: EntityId,
+        writes: Vec<crate::mobs::brain::MemoryWrite>,
+    },
+    /// `DoorBlock.setOpen(the mob, level, state, pos, open)`: the door at `pos` opened or
+    /// closed, with `UPDATE_CLIENTS | UPDATE_IMMEDIATE`, its sound at `pitch` (drawn in
+    /// the mob's tick, where the game's level draws it) and its game event of the mob.
+    /// Made by [`MobTick::set_door_open`] only where the door's state changes.
+    OpenDoor {
+        pos: BlockPos,
+        open: bool,
+        pitch: f32,
     },
     /// `Tadpole.ageUp()`: the mob, a tadpole of age, made a frog of its biome where it
     /// is, and gone (`region/frogspawn.rs`).
@@ -204,6 +230,20 @@ impl MobTick<'_> {
     /// game's `canSimulateMovement` is the driver's client's then).
     pub(crate) fn effective_ai(&self) -> bool {
         !self.mob.body.flags.no_ai && self.ridden == Ridden::Not
+    }
+
+    /// `DoorBlock.setOpen(the mob, level, state, pos, open)` of the door `state` the mob
+    /// read at `pos`: nothing where it is not a door or is already so; otherwise the
+    /// sound's pitch drawn from the mob's stream, where the game's level draws it, and
+    /// the door set by the region after the tick ([`Local::OpenDoor`]).
+    #[allow(dead_code, reason = "called by `InteractWithDoor` (N7j part A)")]
+    pub(crate) fn set_door_open(&mut self, pos: BlockPos, state: BlockState, open: bool) {
+        // Only a door has a hinge among the blocks that open.
+        if state.property("hinge").is_none() || clustine_blocks::data::flag(state, "open") == open {
+            return;
+        }
+        let pitch = self.draws.next_float() * 0.1 + 0.9;
+        self.out.local.push(Local::OpenDoor { pos, open, pitch });
     }
 }
 

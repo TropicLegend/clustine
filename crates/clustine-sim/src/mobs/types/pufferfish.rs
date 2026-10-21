@@ -202,6 +202,7 @@ fn sting(tick: &mut MobTick<'_>) {
             from,
             amount: (1 + fish.puff) as f32,
             sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+            knockback: None,
         });
     }
 }

@@ -1574,6 +1574,7 @@ pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
         from: ai.position(),
         amount,
         sound: None,
+        knockback: None,
     });
 }
 

@@ -205,6 +205,7 @@ impl Goal for OcelotAttackGoal {
             from: ai.position(),
             amount,
             sound: None,
+            knockback: None,
         });
     }
 }

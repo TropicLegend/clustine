@@ -209,9 +209,9 @@ impl Region {
         amount: f32,
         sound: Option<i32>,
         output: &mut TickOutput,
-    ) {
+    ) -> bool {
         if self.find_entity(key).is_none() {
-            return;
+            return false;
         }
         let source = DamageSource::by(
             DamageType::MOB_ATTACK,
@@ -234,5 +234,6 @@ impl Region {
                 except: None,
             });
         }
+        took
     }
 }

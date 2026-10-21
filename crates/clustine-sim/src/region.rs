@@ -26,6 +26,7 @@ mod attached;
 mod block_entities;
 mod block_events;
 mod boats;
+mod brains;
 mod breeding;
 mod changes;
 mod colliders;
@@ -3474,6 +3475,7 @@ mod tests {
     mod attack_strength;
     mod block_updates;
     mod boats;
+    mod brain_locals;
     mod clock;
     mod containers;
     mod diodes;
