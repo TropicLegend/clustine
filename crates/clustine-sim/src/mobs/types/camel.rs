@@ -1133,6 +1133,11 @@ impl MobType for Camel {
         riding::can_add_passenger(passengers)
     }
 
+    /// `finalizeSpawn`'s `max(0, gameTime − 53)`, which a chunk's generation leaves unset.
+    fn first_take(&self, mob: &mut Mob, game_time: i64) {
+        stand_up_instantly(mob, game_time);
+    }
+
     /// Its seats move with its pose, read at the game time. **Named**: a mob that rides
     /// it is taken as no animal, so an animal behind a player would sit 0.2 too far back
     /// (none rides a camel yet: only the husk's riders of N9 would).

@@ -324,6 +324,14 @@ pub(crate) trait MobType: Sync {
         None
     }
 
+    /// What a mob generation made is given when a region first takes it in, at the game
+    /// time `game_time`: what the game sets by the clock at its making, which a chunk's
+    /// generation cannot read (`docs/groundwork/n7l-plan.md`, section 2.2: a camel's last
+    /// pose change). Nothing but where the type has its own.
+    fn first_take(&self, mob: &mut Mob, game_time: i64) {
+        let _ = (mob, game_time);
+    }
+
     /// `getRequiresPrecisePosition()`: whether its position is sent whole (a happy ghast
     /// while it stays still). Never but where the type says.
     fn requires_precise_position(&self, mob: &Mob) -> bool {

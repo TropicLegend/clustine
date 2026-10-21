@@ -541,3 +541,61 @@ fn a_ghast_held_still_is_sent_whole_and_at_once_as_it_begins() {
         "{flags:?}"
     );
 }
+
+/// A camel generation made comes with no pose change set, which the game sets by the
+/// clock at its making (`max(0, gameTime − 53)`); the region that first takes it in sets
+/// it, and one that takes it again (its `hops` above 0) leaves it
+/// (`docs/groundwork/n7l-plan.md`, sections 2.2 and 2.5).
+#[test]
+fn a_generated_camel_first_taken_in_stands_as_one_long_stood_and_is_not_set_again() {
+    let key = clustine_world::Generated {
+        dimension: 0,
+        chunk: ChunkPos::new(0, 1),
+        structure: false,
+        index: 0,
+    }
+    .key()
+    .expect("within the border");
+    let camel = |hops: u32| Entity {
+        key,
+        kind: entity_types::CAMEL as u16,
+        uuid: uuid::Uuid::from_u128(7),
+        position: [2.5, -60.0, 18.5],
+        motion: [0.0; 3],
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: false,
+        hops,
+        lived: 0,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: Mob::fresh().encode(),
+    };
+    for (hops, set) in [(0, true), (1, false)] {
+        let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+        region.clock.game_time = 10_000;
+        checked(&mut region, &tickets(vec![ChunkPos::new(0, 1)], vec![]));
+        let mut chunk = floor();
+        chunk.set_entities(vec![camel(hops)]);
+        checked(
+            &mut region,
+            &TickInputs {
+                chunks_loaded: vec![(ChunkPos::new(0, 1), chunk)],
+                ..TickInputs::default()
+            },
+        );
+        let taken = Mob::decode(&record(&region, key).data).expect("a mob");
+        // Set from the clock of the tick that took it in, the one just run.
+        let now = i64::try_from(region.clock.game_time).expect("a clock");
+        let mut stood = Mob::fresh();
+        camel::stand_up_instantly(&mut stood, now);
+        let expected = if set {
+            camel::camel_of(&stood).pose_tick
+        } else {
+            camel::camel_of(&Mob::fresh()).pose_tick
+        };
+        assert_eq!(camel::camel_of(&taken).pose_tick, expected, "hops {hops}");
+    }
+}

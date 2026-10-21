@@ -190,12 +190,25 @@ impl Region {
             }
         }
         if !continued && let Some(output) = output {
+            let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
             let raised: Vec<Entity> = chunk
                 .entities()
                 .iter()
-                .map(|entity| Entity {
-                    hops: entity.hops.saturating_add(1),
-                    ..entity.clone()
+                .map(|entity| {
+                    let mut raised = Entity {
+                        hops: entity.hops.saturating_add(1),
+                        ..entity.clone()
+                    };
+                    // Taken for the first time: generation made it, and no take has raised
+                    // it yet (`docs/groundwork/n7l-plan.md`, section 2.5).
+                    if entity.key.is_generated()
+                        && entity.hops == 0
+                        && let Ok(mut mob) = crate::mobs::Mob::decode(&entity.data)
+                    {
+                        crate::mobs::types::of(entity.kind).first_take(&mut mob, game_time);
+                        raised.data = mob.encode();
+                    }
+                    raised
                 })
                 .collect();
             for entity in raised {
