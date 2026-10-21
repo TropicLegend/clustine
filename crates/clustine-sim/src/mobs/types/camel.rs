@@ -1193,10 +1193,19 @@ impl MobType for Camel {
         })
     }
 
-    /// `Camel.finalizeSpawn`: standing as if long since, then the family's (nothing of
-    /// its own, its stats fixed).
+    /// `Camel.finalizeSpawn`: its brain's memories (none drawn), standing as if long
+    /// since, then the family's (nothing of its own, its stats fixed): a group whose
+    /// babies come one in five. A camel husk draws for one too, but is never a baby
+    /// (`canBeABaby`), so its age is not kept.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         stand_up_instantly(spawn.mob, spawn.game_time);
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(0.2));
+        let baby = animal::ageable_draw(spawn, group);
+        if baby && self.breed.kind != entity_types::CAMEL_HUSK {
+            animal::update(spawn.mob, |shared| {
+                shared.set_age(animal::BABY_START_AGE, 0);
+            });
+        }
     }
 
     /// `Camel.getBreedOffspring`: a new camel, nothing of its parents taken; the husk's

@@ -35,6 +35,11 @@ fn glow(tick: &mut MobTick<'_>) {
 }
 
 impl MobType for GlowSquid {
+    /// `Squid.finalizeSpawn`, which `GlowSquid` keeps.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        squid::finalize_spawn(spawn);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         squid::register_goals(setup);
     }

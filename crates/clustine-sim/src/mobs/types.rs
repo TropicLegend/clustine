@@ -51,6 +51,8 @@ mod flier_tests;
 pub(crate) mod fox;
 pub(crate) mod frog;
 pub(crate) mod frog_ai;
+#[cfg(test)]
+mod generation_tests;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
 pub(crate) mod golem_transport;
@@ -84,6 +86,7 @@ pub(crate) mod tadpole_ai;
 pub(crate) mod tamable;
 #[cfg(test)]
 mod tamed_tests;
+pub(crate) mod template;
 #[cfg(test)]
 mod tests;
 pub(crate) mod trader_llama;
@@ -236,6 +239,19 @@ pub(crate) trait MobType: Sync {
     /// tropical fish's variant, of the level's draws after `Mob`'s).
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let _ = spawn;
+    }
+
+    /// What the type's `readAdditionalSaveData` takes of a structure template's tag (a
+    /// compound, its type byte first, as [`template`] reads it) that outlasts the
+    /// `finalizeSpawn` after it: a sheep's colour, a cat's collar. What every mob reads
+    /// ([`from_template`]: its persistence, its health, its attributes) is read before
+    /// it; a type that keeps nothing of its own reads nothing.
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "the name says what it reads from, as `readAdditionalSaveData` reads a tag"
+    )]
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        let _ = (mob, tag);
     }
 
     /// `getBreedOffspring(level, partner)`: the child of a breeding (or of a spawn egg
@@ -917,38 +933,32 @@ pub(crate) struct Spawning<'a> {
     pub(crate) biome: Option<&'static str>,
     /// The mob's block (`blockPosition()`: a turtle's home).
     pub(crate) at: BlockPos,
-    /// The overworld clock's day time (`world_clock`), which the moon's phase a cat's
-    /// variant asks follows.
+    /// The overworld clock's day time (`world_clock`). A cat's variant now asks the
+    /// moon's brightness, which the makers derive from it.
+    #[allow(
+        dead_code,
+        reason = "no type reads the day since the moon's brightness came; the makers still set it"
+    )]
     pub(crate) day: u64,
     /// The world's game time (`Level.getGameTime()`), which a camel's pose is stamped
     /// with.
     pub(crate) game_time: i64,
     /// Why it is made (`EntitySpawnReason`): an egg's, a chunk's generation, a
-    /// structure's.
+    /// structure's. No creature's draws differ between these three: the reasons
+    /// that change them (a bucket's, an event's, a natural spawn's) are not made here.
     #[allow(
         dead_code,
-        reason = "read by the creatures' `finalizeSpawn` by reason (N7l's D1)"
+        reason = "the reasons that change a creature's draws are not made yet"
     )]
     pub(crate) reason: SpawnReason,
     /// What the first `finalizeSpawn` of a group returned, which the group's later
-    /// members are given (`SpawnGroupData`): none for an egg or the first of a group.
-    #[allow(
-        dead_code,
-        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
-    )]
+    /// members are given (`SpawnGroupData`): none for an egg or the first of a group,
+    /// whose `finalizeSpawn` leaves here what it returns.
     pub(crate) group: &'a mut Option<SpawnGroup>,
     /// The structure whose piece places it (the swamp hut's black cat), if one does.
-    #[allow(
-        dead_code,
-        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
-    )]
     pub(crate) structure: Option<&'static str>,
     /// The moon's brightness (`getMoonBrightness`): the clock's for an egg; a full moon,
     /// 1, for generation, whose region has no time layer.
-    #[allow(
-        dead_code,
-        reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
-    )]
     pub(crate) moon_brightness: f32,
     /// The difficulty at its block (`DifficultyInstance`): its effective value and its
     /// special multiplier, which a zombie's and a villager's draws are weighed against.
@@ -975,21 +985,91 @@ pub(crate) enum SpawnReason {
     Conversion,
 }
 
+/// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far
+/// (`groupSize`), whether a later one may be a baby, and the chance that it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AgeableGroup {
+    pub(crate) made: u32,
+    pub(crate) babies: bool,
+    pub(crate) baby_chance: f32,
+}
+
+impl AgeableGroup {
+    /// `AgeableMobGroupData(shouldSpawnBaby)`: the chance 0.05.
+    pub(crate) const fn new(babies: bool) -> Self {
+        Self {
+            made: 0,
+            babies,
+            baby_chance: 0.05,
+        }
+    }
+
+    /// `AgeableMobGroupData(babySpawnChance)`: babies at that chance.
+    pub(crate) const fn with_chance(baby_chance: f32) -> Self {
+        Self {
+            made: 0,
+            babies: true,
+            baby_chance,
+        }
+    }
+}
+
 /// `SpawnGroupData` that a group's first `finalizeSpawn` makes and its later members are
-/// given.
-#[allow(
-    dead_code,
-    reason = "made by the creatures' `finalizeSpawn` (N7l's D1)"
-)]
+/// given (`docs/groundwork/n7-brief.md`, section 8.7). Each of a creature's is an
+/// [`AgeableGroup`] with what its type adds, as the game's subclasses of
+/// `AgeableMobGroupData` are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum SpawnGroup {
-    /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far, and the
-    /// chance that a later one is a baby, with whether babies may be.
-    Ageable {
-        made: u32,
-        baby_chance: f32,
-        babies: bool,
+    /// `AgeableMobGroupData` itself.
+    Ageable(AgeableGroup),
+    /// `Horse.HorseGroupData`: the herd's coat (`(true)`: babies one in twenty).
+    Horse { ageable: AgeableGroup, coat: i32 },
+    /// `Llama.LlamaGroupData`: the herd's coat (`(true)`).
+    Llama { ageable: AgeableGroup, coat: i32 },
+    /// `Rabbit.RabbitGroupData`: the group's variant (`(1.0f)`: every later one a
+    /// baby).
+    Rabbit { ageable: AgeableGroup, variant: i32 },
+    /// `Fox.FoxGroupData`: the group's variant (`(false)`: the fox makes its own babies,
+    /// from the third, by the group's size).
+    Fox { ageable: AgeableGroup, variant: i32 },
+    /// `Wolf.WolfPackData`: the pack's variant (`(false)`).
+    WolfPack { ageable: AgeableGroup, variant: u8 },
+    /// `Axolotl.AxolotlGroupData`: the group's two variants, of which each member draws
+    /// one (`(false)`: the axolotl makes its own babies, from the third).
+    Axolotl {
+        ageable: AgeableGroup,
+        variants: [i32; 2],
     },
+}
+
+impl SpawnGroup {
+    /// The group as `AgeableMobGroupData`, which every group of a creature is.
+    pub(crate) fn ageable(&mut self) -> &mut AgeableGroup {
+        match self {
+            Self::Ageable(ageable)
+            | Self::Horse { ageable, .. }
+            | Self::Llama { ageable, .. }
+            | Self::Rabbit { ageable, .. }
+            | Self::Fox { ageable, .. }
+            | Self::WolfPack { ageable, .. }
+            | Self::Axolotl { ageable, .. } => ageable,
+        }
+    }
+}
+
+/// `Mob.load` of a structure template's entity tag (`docs/groundwork/n7-brief.md`,
+/// section 8.11), as far as what it reads outlasts the `finalizeSpawn` that follows:
+/// `PersistenceRequired`, the attributes (bases and modifiers: a follow range that
+/// carries its `random_spawn_bonus` draws no triangle), the health (held to the maximum
+/// the attributes give), then the type's own ([`MobType::from_template`]). `tag` is the
+/// compound with its type byte first, as a template keeps it.
+#[allow(
+    dead_code,
+    reason = "called by the making of the structures' template entities (N7l's D3)"
+)]
+pub(crate) fn from_template(kind: u16, mob: &mut Mob, tag: &[u8]) {
+    template::read_mob(kind, mob, tag);
+    of(kind).from_template(mob, tag);
 }
 
 /// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its

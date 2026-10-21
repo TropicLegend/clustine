@@ -8,7 +8,10 @@ use clustine_data::{attributes as ids, entity_types, sounds};
 use clustine_world::BlockPos;
 
 use super::equine::{self, Behaviour, Equine};
-use super::{Breeding, Dimensions, Interaction, Mate, MobType, Spawning, Used, animal};
+use super::{
+    AgeableGroup, Breeding, Dimensions, Interaction, Mate, MobType, SpawnGroup, Spawning, Used,
+    animal, template,
+};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
 use crate::mobs::ai::{Ai, Setup};
@@ -135,16 +138,36 @@ impl MobType for Horse {
         equine::mob_interact(used, &EQUINE, true)
     }
 
-    /// `Horse.finalizeSpawn`: a coat (a herd's, or one drawn), markings drawn, then
-    /// `AbstractHorse`'s random stats, all of the level's random.
+    /// `Horse.finalizeSpawn`: a coat (the herd's, or one drawn that the herd then
+    /// shares, `HorseGroupData`), markings drawn, then `AbstractHorse`'s random stats and
+    /// the herd's foals one in twenty, all of the level's random.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        let coat = spawn.level.next_int(COATS) as i32;
+        let coat = match *spawn.group {
+            Some(SpawnGroup::Horse { coat, .. }) => coat,
+            _ => {
+                let coat = spawn.level.next_int(COATS) as i32;
+                *spawn.group = Some(SpawnGroup::Horse {
+                    ageable: AgeableGroup::new(true),
+                    coat,
+                });
+                coat
+            }
+        };
         let markings = spawn.level.next_int(MARKINGS) as i32;
         equine::update(spawn.mob, |horse| {
             horse.variant = type_variant(coat, markings);
         });
         randomize(spawn.mob, spawn.level);
         equine::clamp_health(spawn.mob, entity_types::HORSE as u16);
+        equine::finalize_ageable(spawn);
+    }
+
+    /// `Horse.readAdditionalSaveData`'s `Variant` (the coat and the markings packed),
+    /// which its `finalizeSpawn` draws again.
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        if let Some(variant) = template::int(tag, "Variant") {
+            equine::update(mob, |horse| horse.variant = variant);
+        }
     }
 
     /// `Horse.getBreedOffspring`: with a donkey a mule, its stats alone inherited; with a

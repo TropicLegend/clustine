@@ -994,6 +994,12 @@ pub(crate) mod riding {
 pub(crate) struct HappyGhast;
 
 impl MobType for HappyGhast {
+    /// `Animal.finalizeSpawn` (`HappyGhast` adds none): the group's babies one in
+    /// twenty, which no spawn of the game's makes in a group.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        animal::finalize_ageable_default(spawn);
+    }
+
     /// The ghastling's `babyGhastSetup` (a flying navigation that opens no doors, floats
     /// and plans 48, a flying move control turning 180 that hovers, no goals: its mind
     /// is its brain's) or the grown one's `registerGoals` and ground navigation, whose

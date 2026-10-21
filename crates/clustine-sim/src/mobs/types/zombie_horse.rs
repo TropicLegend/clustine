@@ -100,13 +100,15 @@ impl MobType for ZombieHorse {
         equine::mob_interact(used, &EQUINE, false)
     }
 
-    /// `ZombieHorse.randomizeAttributes`: its jump, then its speed.
+    /// `ZombieHorse.randomizeAttributes`: its jump, then its speed; then the family's
+    /// babies of a group. Its jockey, made only for a natural spawn, is not.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let kind = entity_types::ZOMBIE_HORSE as u16;
         let jump = generate_jump_strength(spawn.level);
         equine::set_base(spawn.mob, kind, ids::JUMP_STRENGTH, jump);
         let speed = generate_speed(spawn.level);
         equine::set_base(spawn.mob, kind, ids::MOVEMENT_SPEED, speed);
+        equine::finalize_ageable(spawn);
     }
 
     /// `ZombieHorse.getBreedOffspring`: a zombie foal, of nothing inherited.

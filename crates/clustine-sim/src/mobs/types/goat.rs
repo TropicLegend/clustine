@@ -744,9 +744,10 @@ impl MobType for Goat {
         result
     }
 
-    /// `Goat.finalizeSpawn`, before `Animal`'s, of the level's draws: the brain's two
-    /// cooldowns, screaming one time in fifty, and for an adult (always, here: the
-    /// group's baby comes after) a horn off one time in ten.
+    /// `Goat.finalizeSpawn`, of the level's draws: the brain's two cooldowns, screaming
+    /// one time in fifty, and for an adult (always, here: the group's kid is made
+    /// after) a horn off one time in ten; then `Animal`'s, a later goat of a group a kid
+    /// one time in twenty, which may so have lost a horn already.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let cooldowns = brain::init_memories(spawn.level);
         brain::remember(spawn.mob, cooldowns);
@@ -762,6 +763,7 @@ impl MobType for Goat {
                 }
             });
         }
+        animal::finalize_ageable_default(spawn);
     }
 
     /// `Goat.getBreedOffspring`, of the level's draws on the breeding parent's behalf:

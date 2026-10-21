@@ -79,6 +79,7 @@ impl MobType for Mule {
         let kind = entity_types::MULE as u16;
         randomize_chested(spawn.mob, kind, spawn.level);
         equine::clamp_health(spawn.mob, kind);
+        equine::finalize_ageable(spawn);
     }
 
     /// `Mule.getBreedOffspring`: a mule, of nothing inherited.

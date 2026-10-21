@@ -58,6 +58,12 @@ pub(crate) fn colour_name(mob: &Mob) -> &'static str {
 }
 
 impl MobType for Mooshroom {
+    /// `Animal.finalizeSpawn` (`MushroomCow` and `AbstractCow` add none): the group's
+    /// babies one in twenty, its colour red as its data defines it.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        animal::finalize_ageable_default(spawn);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::register_goals(setup);
     }

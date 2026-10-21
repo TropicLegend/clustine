@@ -744,6 +744,7 @@ impl MobType for Turtle {
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let at = spawn.at;
         update(spawn.mob, |turtle| turtle.home = at);
+        animal::finalize_ageable_default(spawn);
     }
 
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {

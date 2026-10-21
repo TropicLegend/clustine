@@ -322,7 +322,19 @@ pub(crate) fn shown(mob: &Mob, glows: bool) -> Vec<(u8, DataShown, bool)> {
 /// The squid.
 pub(crate) struct Squid;
 
+/// `Squid.finalizeSpawn`, the glow squid's too.
+pub(crate) fn finalize_spawn(spawn: &mut super::Spawning<'_>) {
+    let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(0.05));
+    animal::finalize_ageable(spawn, group);
+}
+
 impl MobType for Squid {
+    /// `Squid.finalizeSpawn`: a group whose babies come one in twenty
+    /// (`AgeableMobGroupData(0.05f)`) where it has none.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        finalize_spawn(spawn);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         register_goals(setup);
     }

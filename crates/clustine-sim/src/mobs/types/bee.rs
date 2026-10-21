@@ -1321,6 +1321,11 @@ fn anger_time(draws: &mut Random) -> i64 {
 }
 
 impl MobType for Bee {
+    /// `Animal.finalizeSpawn` (`Bee` adds none): the group's babies one in twenty.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        animal::finalize_ageable_default(spawn);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::animal_maluses(setup);
         setup.set_malus(PathType::Fire, -1.0);

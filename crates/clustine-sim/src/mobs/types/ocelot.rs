@@ -330,6 +330,13 @@ fn trusting_particle_draws(used: &mut Used<'_>) {
 const AVOID_SLOT: u16 = 7;
 
 impl MobType for Ocelot {
+    /// `Ocelot.finalizeSpawn`: a group every later one of which is a kitten
+    /// (`AgeableMobGroupData(1.0f)`) where it has none.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(1.0));
+        animal::finalize_ageable(spawn, group);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::animal_maluses(setup);
         setup.add_goal(1, FloatGoal);

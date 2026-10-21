@@ -82,11 +82,13 @@ impl MobType for SkeletonHorse {
         equine::abstract_mob_interact(used, &EQUINE)
     }
 
-    /// `SkeletonHorse.randomizeAttributes`: its jump alone.
+    /// `SkeletonHorse.randomizeAttributes`: its jump alone; then the family's babies of
+    /// a group.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let kind = entity_types::SKELETON_HORSE as u16;
         let jump = equine::generate_jump_strength(spawn.level);
         equine::set_base(spawn.mob, kind, ids::JUMP_STRENGTH, jump);
+        equine::finalize_ageable(spawn);
     }
 
     /// `SkeletonHorse.getBreedOffspring`: a skeleton foal, of nothing inherited.

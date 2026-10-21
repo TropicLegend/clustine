@@ -822,6 +822,15 @@ fn dig_game_event(tick: &mut MobTick<'_>) {
 pub(crate) struct Sniffer;
 
 impl MobType for Sniffer {
+    /// `Animal.finalizeSpawn` (`Sniffer` adds none): the group's babies one in twenty,
+    /// a snifflet at its own start age (`getBabyStartAge`).
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::new(true));
+        if animal::ageable_draw(spawn, group) {
+            animal::update(spawn.mob, |shared| shared.set_age(BABY_START_AGE, 0));
+        }
+    }
+
     /// The constructor's navigation and maluses (and `Animal`'s): no goals, as its mind is
     /// its brain's.
     fn register_goals(&self, setup: &mut Setup) {

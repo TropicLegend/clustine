@@ -13,7 +13,9 @@ use clustine_data::{BlockClass, BlockState, attributes as ids, blocks, entity_ty
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own, biome_in_tag};
-use super::{Breeding, Dimensions, Interaction, MobType, Spawning, Used, cow};
+use super::{
+    AgeableGroup, Breeding, Dimensions, Interaction, MobType, SpawnGroup, Spawning, Used, cow,
+};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     AvoidEntityGoal, ClimbOnTopOfPowderSnowGoal, FloatGoal, Items, LookAtPlayerGoal,
@@ -538,10 +540,25 @@ impl MobType for Rabbit {
         animal::mob_interact(used, FOOD, None)
     }
 
+    /// `Rabbit.finalizeSpawn`: a variant drawn always, the group's taken where it has
+    /// one, else a group of that variant made (`RabbitGroupData`, whose every later
+    /// member is a baby); then `Animal`'s.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        let drawn = random_variant(spawn.biome, spawn.level);
+        let variant = match *spawn.group {
+            Some(SpawnGroup::Rabbit { variant, .. }) => variant,
+            _ => {
+                *spawn.group = Some(SpawnGroup::Rabbit {
+                    ageable: AgeableGroup::with_chance(1.0),
+                    variant: drawn,
+                });
+                drawn
+            }
+        };
         let mut own = state_of(spawn.mob);
-        own.variant = random_variant(spawn.biome, spawn.level);
+        own.variant = variant;
         put_state(spawn.mob, &own);
+        animal::finalize_ageable_default(spawn);
     }
 
     fn breed_offspring(&self, breeding: &mut Breeding<'_>) -> Option<Mob> {

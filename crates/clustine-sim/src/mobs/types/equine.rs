@@ -271,6 +271,14 @@ pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut HorseState)) {
     }
 }
 
+/// `AbstractHorse.finalizeSpawn`'s group where the spawn has none (the first of a
+/// group, or an egg's: `AgeableMobGroupData(0.2f)`), then `AgeableMob`'s babies of it,
+/// after the type's own draws.
+pub(crate) fn finalize_ageable(spawn: &mut super::Spawning<'_>) {
+    let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(0.2));
+    animal::finalize_ageable(spawn, group);
+}
+
 /// `isTamed()`.
 pub(crate) fn is_tamed(mob: &Mob) -> bool {
     horse_of(mob).tame

@@ -32,7 +32,7 @@ use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack, TypeStat
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::{Did, Dimensions, Interaction, Used};
+use super::{AgeableGroup, Did, Dimensions, Interaction, SpawnGroup, Spawning, Used};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
 use crate::mobs::ai::selector::{Goal, flags};
@@ -527,6 +527,35 @@ pub(crate) fn made_baby(mob: &mut Mob) {
             animal.set_age(BABY_START_AGE, 0);
         }
     });
+}
+
+/// `AgeableMob.finalizeSpawn`'s part before `Mob`'s (`docs/groundwork/n7-brief.md`,
+/// section 8.7): the group made `group` where the spawn has none (the first of a group,
+/// or an egg's mob); a later member of a group that may have babies draws one
+/// `nextFloat()` and is a baby at or below the group's chance; then the group counts
+/// it. Whether the draw made a baby, which the caller sets as its type's
+/// `setAge(getBabyStartAge())` does.
+pub(crate) fn ageable_draw(spawn: &mut Spawning<'_>, group: SpawnGroup) -> bool {
+    let ageable = spawn.group.get_or_insert(group).ageable();
+    let baby =
+        ageable.babies && ageable.made > 0 && spawn.level.next_float() <= ageable.baby_chance;
+    ageable.made += 1;
+    baby
+}
+
+/// [`ageable_draw`] of an animal that becomes a baby by it at the usual start age: the
+/// age set at the mob's first moment, as everything of a generated mob counts from its
+/// `lived` 0 (`docs/groundwork/n7l-plan.md`, section 2.2).
+pub(crate) fn finalize_ageable(spawn: &mut Spawning<'_>, group: SpawnGroup) {
+    if ageable_draw(spawn, group) {
+        update(spawn.mob, |animal| animal.set_age(BABY_START_AGE, 0));
+    }
+}
+
+/// [`finalize_ageable`] with `AgeableMobGroupData(true)`, the group of an animal whose
+/// type makes none of its own.
+pub(crate) fn finalize_ageable_default(spawn: &mut Spawning<'_>) {
+    finalize_ageable(spawn, SpawnGroup::Ageable(AgeableGroup::new(true)));
 }
 
 /// A held stack of `item`, as tests and the tables of food name it.

@@ -35,7 +35,7 @@ use super::tamable::{
     self, FollowOwnerGoal, NonTameRandomTargetGoal, Pet, SitWhenOrderedToGoal, TamablePanicGoal,
     Tame,
 };
-use super::{Breeding, Did, Dimensions, Interaction, Mate, MobType, Spawning, Used, cow};
+use super::{Breeding, Did, Dimensions, Interaction, Mate, MobType, Spawning, Used, cow, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     FloatGoal, Items, LeapAtTargetGoal, LookAtPlayerGoal, MoveToBlockGoal, MovingToBlock,
@@ -54,7 +54,7 @@ use crate::region::Random;
 use crate::shown::{DataShown, Holder};
 
 /// The registries of a cat's variants.
-const VARIANTS: &str = "minecraft:cat_variant";
+pub(crate) const VARIANTS: &str = "minecraft:cat_variant";
 const SOUND_VARIANTS: &str = "minecraft:cat_sound_variant";
 
 /// `#cat_food`.
@@ -136,17 +136,35 @@ impl Pet for Cat {
     }
 }
 
-/// `VariantUtils.selectVariantToSpawn` of `cat_variant` (the brief's 5.5): of the ten
-/// of priority 0, and all black besides at the full moon, one drawn. **Named**: no
-/// structure is known at a block, so the witch hut's black of priority 1 never holds.
+/// [`select_variant_at`] at the day time `day`, outside any structure, as an egg's
+/// spawn asks it.
+#[cfg(test)]
 pub(crate) fn select_variant(day: u64, level: &mut dyn clustine_world::generation::Draws) -> u8 {
+    select_variant_at(crate::mobs::making::moon_brightness(day), None, level)
+}
+
+/// `VariantUtils.selectVariantToSpawn` of `cat_variant` (the brief's 5.5, 8.7) under a
+/// moon of the brightness `moon` in the structure `structure`: all black alone of
+/// priority 1 in a structure of `#cats_spawn_as_black` (the swamp hut, the tag's one
+/// entry); else of the ten of priority 0, and all black besides under a moon of 0.9 or
+/// more (the full moon), one drawn.
+pub(crate) fn select_variant_at(
+    moon: f32,
+    structure: Option<&str>,
+    level: &mut dyn clustine_world::generation::Draws,
+) -> u8 {
     let entries = clustine_data::synced_registry(VARIANTS).map_or(&[][..], |known| known.entries);
-    // `MoonBrightnessCheck`: the full moon, the phase of the moon's timeline at 0.
-    let full_moon = (day / crate::time::DAY).is_multiple_of(8);
+    let black_hut = structure == Some("minecraft:swamp_hut");
     let kept: Vec<&str> = entries
         .iter()
         .copied()
-        .filter(|name| *name != "minecraft:all_black" || full_moon)
+        .filter(|name| {
+            if black_hut {
+                *name == "minecraft:all_black"
+            } else {
+                *name != "minecraft:all_black" || moon >= 0.9
+            }
+        })
         .collect();
     let chosen = if kept.is_empty() {
         "minecraft:black"
@@ -780,9 +798,58 @@ impl MobType for Cat {
         mob_interact(used)
     }
 
+    /// `Cat.finalizeSpawn` calls its base's first: `AgeableMob`'s babies of a group,
+    /// then `Mob`'s.
+    fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        animal::finalize_ageable_default(spawn);
+    }
+
+    /// `Cat.readAdditionalSaveData`: its `variant` by name (where a tag has none, the
+    /// old `CatType` by the number the game's data fixer maps), which its
+    /// `finalizeSpawn` draws again, and its `CollarColor` by its legacy id (red where it
+    /// names none), which it keeps.
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        // `CatTypeFix`'s order of the old numbers.
+        const OLD: [&str; 11] = [
+            "minecraft:tabby",
+            "minecraft:black",
+            "minecraft:red",
+            "minecraft:siamese",
+            "minecraft:british_shorthair",
+            "minecraft:calico",
+            "minecraft:persian",
+            "minecraft:ragdoll",
+            "minecraft:white",
+            "minecraft:jellie",
+            "minecraft:all_black",
+        ];
+        let known = |name: &str| {
+            clustine_data::synced_registry(VARIANTS)
+                .and_then(|registry| registry.id_of(name))
+                .map(|_| variants::id(VARIANTS, name))
+        };
+        let variant = match template::text(tag, "variant") {
+            Some(name) => known(name),
+            None => template::int(tag, "CatType")
+                .and_then(|old| usize::try_from(old).ok())
+                .and_then(|old| OLD.get(old))
+                .and_then(|name| known(name)),
+        };
+        let collar = template::int(tag, "CollarColor")
+            .and_then(|id| u8::try_from(id).ok())
+            .filter(|&id| id < 16)
+            .unwrap_or(RED);
+        update(mob, |own| {
+            if let Some(variant) = variant {
+                own.variant = variant;
+            }
+            own.collar = collar;
+        });
+    }
+
     /// `Cat.finalizeSpawn` after its base's draws: its variant, then its voice.
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        let variant = select_variant(spawn.day, spawn.level);
+        let variant = select_variant_at(spawn.moon_brightness, spawn.structure, spawn.level);
         let sound = spawn.level.next_int(variants::count(SOUND_VARIANTS)) as u8;
         update(spawn.mob, |own| {
             own.variant = variant;

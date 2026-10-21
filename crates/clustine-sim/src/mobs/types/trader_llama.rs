@@ -162,7 +162,12 @@ impl MobType for TraderLlama {
         equine::mob_interact(used, &EQUINE, true)
     }
 
+    /// `TraderLlama.finalizeSpawn`: a group that wants no babies where it has none,
+    /// which the llama's then takes for no herd of its own and replaces with one.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        if spawn.group.is_none() {
+            *spawn.group = Some(super::SpawnGroup::Ageable(super::AgeableGroup::new(false)));
+        }
         llama::finalize_spawn(spawn, entity_types::TRADER_LLAMA as u16);
     }
 

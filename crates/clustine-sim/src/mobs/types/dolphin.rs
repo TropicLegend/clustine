@@ -708,6 +708,14 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
 }
 
 impl MobType for Dolphin {
+    /// `Dolphin.finalizeSpawn`: its air full and its pitch level, as its making leaves
+    /// them already, then a group whose babies come one in ten
+    /// (`AgeableMobGroupData(0.1f)`) where it has none.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(0.1));
+        animal::finalize_ageable(spawn, group);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         setup.config.navigation = Settings::of(Kind::WaterBound { breach: true });
         setup.config.move_kind = MoveKind::SmoothSwimming {

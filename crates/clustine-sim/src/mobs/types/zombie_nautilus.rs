@@ -226,6 +226,10 @@ impl MobType for ZombieNautilus {
         let variant = select_variant(spawn.biome, spawn.level);
         nautilus::update(spawn.mob, |own| own.variant = variant);
         nautilus::init_memories(spawn, &PROVIDER);
+        // `AgeableMob`'s draw for a baby of a group; a zombie nautilus is never one
+        // (`canBeABaby`) and keeps no age.
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::new(true));
+        let _ = animal::ageable_draw(spawn, group);
     }
 
     fn brain(&self) -> Option<&'static Provider> {

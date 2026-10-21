@@ -1234,6 +1234,7 @@ impl MobType for Nautilus {
     /// `TamableAnimal`'s (no baby of a first spawn) before `Mob`'s.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         init_memories(spawn, &PROVIDER);
+        animal::finalize_ageable_default(spawn);
     }
 
     fn brain(&self) -> Option<&'static Provider> {

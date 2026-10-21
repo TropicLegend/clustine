@@ -215,6 +215,10 @@ impl MobType for Frog {
         let variant = spawn_variant(spawn.biome, spawn.level);
         update(spawn.mob, |frog| frog.variant = variant);
         init_memories(spawn.mob, spawn.level);
+        // `Animal.finalizeSpawn` draws for a baby of a group, but a frog is never one
+        // (`canBeABaby`) and keeps no age.
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::new(true));
+        let _ = animal::ageable_draw(spawn, group);
     }
 
     /// `canBeABaby()`: never.

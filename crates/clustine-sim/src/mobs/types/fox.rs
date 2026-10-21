@@ -28,7 +28,9 @@ use clustine_world::{BlockPos, EntityData, EntityId, ItemStack};
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own, biome_in_tag};
-use super::{Breeding, Dimensions, Interaction, MobType, Spawning, Used, cow};
+use super::{
+    AgeableGroup, Breeding, Dimensions, Interaction, MobType, SpawnGroup, Spawning, Used, cow,
+};
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
@@ -1862,19 +1864,45 @@ impl MobType for Fox {
         animal::mob_interact(used, FOOD, None)
     }
 
-    /// `finalizeSpawn`: the variant its biome gives (snowy in `#spawns_snow_foxes`), its
-    /// hunting goals, and one time in five something in its mouth, all of the level's
-    /// draws.
+    /// `finalizeSpawn`: the variant its biome gives (snowy in `#spawns_snow_foxes`),
+    /// or its group's, a cub from the group's third on (`FoxGroupData`, which wants no
+    /// babies of `AgeableMob`'s); its hunting goals; one time in five something in its
+    /// mouth, all of the level's draws; then `Animal`'s.
+    ///
+    /// The hunting goals are set where the level is a `ServerLevel`, which a chunk's
+    /// generation is not; but the load of the chunk sets them again, so a generated fox
+    /// hunts as an egg's does.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        let variant = if biome_in_tag(spawn.biome, "minecraft:spawns_snow_foxes") {
+        let mut variant = if biome_in_tag(spawn.biome, "minecraft:spawns_snow_foxes") {
             variant::SNOW
         } else {
             variant::RED
         };
+        let mut cub = false;
+        match spawn.group {
+            Some(SpawnGroup::Fox {
+                ageable,
+                variant: shared,
+            }) => {
+                variant = *shared;
+                cub = ageable.made >= 2;
+            }
+            _ => {
+                *spawn.group = Some(SpawnGroup::Fox {
+                    ageable: AgeableGroup::new(false),
+                    variant,
+                });
+            }
+        }
         update(spawn.mob, |own| {
             own.variant = variant;
             own.hunts = true;
         });
+        if cub {
+            animal::update(spawn.mob, |shared| {
+                shared.set_age(animal::BABY_START_AGE, 0);
+            });
+        }
         // `populateDefaultEquipmentSlots`.
         let level = &mut *spawn.level;
         if level.next_float() < 0.2 {
@@ -1899,6 +1927,7 @@ impl MobType for Fox {
             spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
                 Some(ItemStack { item, count: 1 });
         }
+        animal::finalize_ageable_default(spawn);
     }
 
     /// `getBreedOffspring`: a cub of one parent's variant or the other's, by the

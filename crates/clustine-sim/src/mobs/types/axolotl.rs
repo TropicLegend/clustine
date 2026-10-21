@@ -21,7 +21,10 @@ use clustine_world::ItemStack;
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own};
-use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used, cow, water};
+use super::{
+    AgeableGroup, Breeding, Did, Dimensions, Interaction, MobType, SpawnGroup, Spawning, Used, cow,
+    water,
+};
 use crate::living::{Damage, Sinks, Travel};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
@@ -97,14 +100,6 @@ pub(crate) fn variant_by_id(id: i32) -> i32 {
 /// `Variant.getCommonSpawnVariant(random)`: one of the four common ones, `nextInt(4)`.
 pub(crate) fn common_variant(random: &mut dyn clustine_world::generation::Draws) -> i32 {
     COMMON[random.next_int(COMMON.len() as u32) as usize]
-}
-
-/// `finalizeSpawn`'s variant for the first of a group (an egg's): the group's two
-/// colours, then this one's of them (`AxolotlGroupData.getVariant`, `nextInt(2)`), all
-/// of the level's random.
-pub(crate) fn spawn_variant(level: &mut dyn clustine_world::generation::Draws) -> i32 {
-    let group = [common_variant(level), common_variant(level)];
-    group[level.next_int(2) as usize]
 }
 
 /// `getBreedOffspring`'s variant, of the parent's own random: blue one time in 1200
@@ -251,11 +246,34 @@ impl MobType for Axolotl {
         }
     }
 
-    /// `finalizeSpawn` before `Animal`'s: an egg's is the first of a group, which draws
-    /// the group's two colours and its own of them; never a baby.
+    /// `finalizeSpawn` before `Animal`'s: the first of a group draws the group's two
+    /// colours (`AxolotlGroupData`, which wants no babies of `AgeableMob`'s), and each
+    /// member one of them; a member from the group's third on is a baby. An egg's is
+    /// the first of its group.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        let variant = spawn_variant(spawn.level);
+        let mut baby = false;
+        let variants = match spawn.group {
+            Some(SpawnGroup::Axolotl { ageable, variants }) => {
+                baby = ageable.made >= 2;
+                *variants
+            }
+            _ => {
+                let variants = [common_variant(spawn.level), common_variant(spawn.level)];
+                *spawn.group = Some(SpawnGroup::Axolotl {
+                    ageable: AgeableGroup::new(false),
+                    variants,
+                });
+                variants
+            }
+        };
+        let variant = variants[spawn.level.next_int(2) as usize];
         update(spawn.mob, |axolotl| axolotl.variant = variant);
+        if baby {
+            animal::update(spawn.mob, |shared| {
+                shared.set_age(animal::BABY_START_AGE, 0);
+            });
+        }
+        animal::finalize_ageable_default(spawn);
     }
 
     /// `finalizeSpawn` of `BUCKET` returns before anything, `Mob`'s too.

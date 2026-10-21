@@ -709,6 +709,11 @@ impl Timed for BallUp {
 }
 
 impl MobType for Armadillo {
+    /// `Animal.finalizeSpawn` (`Armadillo` adds none): the group's babies one in twenty.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        animal::finalize_ageable_default(spawn);
+    }
+
     /// The constructor's: `Animal`'s maluses and floating. Its goals are its brain's.
     fn register_goals(&self, setup: &mut Setup) {
         super::cow::animal_maluses(setup);

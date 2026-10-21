@@ -1142,7 +1142,8 @@ impl MobType for Panda {
     }
 
     /// `finalizeSpawn`: two genes of the level's draws, and the weak and lazy genes'
-    /// attributes. An egg's panda is the first of its group: never a cub.
+    /// attributes, then a group whose cubs come one in five (`AgeableMobGroupData(0.2f)`)
+    /// where it has none. An egg's panda is the first of its group: never a cub.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let main = random_gene(spawn.level);
         let hidden = random_gene(spawn.level);
@@ -1151,6 +1152,8 @@ impl MobType for Panda {
             own.hidden_gene = hidden;
         });
         set_attributes(spawn.mob, entity_types::PANDA as u16);
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(0.2));
+        animal::finalize_ageable(spawn, group);
     }
 
     /// `getBreedOffspring`: a cub of a gene from each parent (each parent's own draw of

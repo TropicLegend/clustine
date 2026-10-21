@@ -11,7 +11,7 @@ use clustine_data::{BlockState, blocks, items, sounds};
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own, biome_in_tag};
-use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used, cow};
+use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used, cow, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     FloatGoal, Items, LookAtPlayerGoal, PanicGoal, RandomLookAroundGoal, RandomStrollGoal,
@@ -424,6 +424,20 @@ impl MobType for Sheep {
         let (animal, mut own) = animal::read::<SheepState>(&spawn.mob.state);
         own.set_colour(spawn_colour(spawn.biome, spawn.level));
         spawn.mob.state = animal::write(&animal, &own);
+        animal::finalize_ageable_default(spawn);
+    }
+
+    /// `Sheep.readAdditionalSaveData`: `Sheared`, and `Color` by its legacy id (white
+    /// where it names none), which its `finalizeSpawn` draws again.
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        let (animal, mut own) = animal::read::<SheepState>(&mob.state);
+        own.set_sheared(template::boolean(tag, "Sheared").unwrap_or(false));
+        let colour = template::int(tag, "Color")
+            .and_then(|id| u8::try_from(id).ok())
+            .filter(|&id| usize::from(id) < COLOURS.len())
+            .unwrap_or(WHITE);
+        own.set_colour(colour);
+        mob.state = animal::write(&animal, &own);
     }
 
     fn breed_offspring(&self, breeding: &mut Breeding<'_>) -> Option<Mob> {

@@ -152,6 +152,7 @@ impl MobType for Cow {
         own.variant = variants::select(VARIANTS, spawn.biome, spawn.level);
         own.sound = spawn.level.next_int(variants::count(SOUND_VARIANTS)) as u8;
         spawn.mob.state = animal::write(&animal, &own);
+        animal::finalize_ageable_default(spawn);
     }
 
     fn breed_offspring(&self, breeding: &mut Breeding<'_>) -> Option<Mob> {

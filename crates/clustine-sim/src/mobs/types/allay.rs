@@ -827,6 +827,15 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
 pub(crate) struct Allay;
 
 impl MobType for Allay {
+    /// `Mob.readAdditionalSaveData`'s `Brain`, which `makeBrain` builds anew of the
+    /// tag's memories. The census's allays (the outposts' cage) carry an empty one
+    /// (`Brain {memories {}}`), which is what a new allay's brain remembers, so the
+    /// brain its making built is kept as it is. The only memories an allay keeps (a
+    /// liked player, a liked note block) name what a newly generated world has not.
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        let _ = (mob, tag);
+    }
+
     /// Its constructor's controls and `createNavigation`: a flying navigation that opens
     /// no doors, floats and plans 48 blocks, and a flying move control that turns 20 and
     /// hovers. No goals: its mind is its brain's.

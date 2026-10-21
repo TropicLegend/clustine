@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use super::donkey::randomize_chested;
 use super::equine::{self, Behaviour, Equine, HorseBreedGoal, RunAroundLikeCrazyGoal};
 use super::horse::common;
-use super::{Breeding, Dimensions, Interaction, Mate, MobType, Spawning, Used, animal};
+use super::{
+    AgeableGroup, Breeding, Dimensions, Interaction, Mate, MobType, SpawnGroup, Spawning, Used,
+    animal,
+};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     FloatGoal, HurtByTargetGoal, Items, LookAtPlayerGoal, PanicGoal, RandomLookAroundGoal,
@@ -121,17 +124,29 @@ pub(crate) fn register_goals(
 /// The llama.
 pub(crate) struct Llama;
 
-/// A llama's (or trader llama's) `finalizeSpawn`: its strength, a coat, then the
-/// chested horse's health, all of the level's random.
+/// A llama's (or trader llama's) `finalizeSpawn`: its strength, a coat (the herd's, or
+/// one drawn that the herd then shares, `LlamaGroupData`), then the chested horse's
+/// health and the herd's babies one in twenty, all of the level's random.
 pub(crate) fn finalize_spawn(spawn: &mut Spawning<'_>, kind: u16) {
     let strength = random_strength(spawn.level);
-    let coat = spawn.level.next_int(COATS) as i32;
+    let coat = match *spawn.group {
+        Some(SpawnGroup::Llama { coat, .. }) => coat,
+        _ => {
+            let coat = spawn.level.next_int(COATS) as i32;
+            *spawn.group = Some(SpawnGroup::Llama {
+                ageable: AgeableGroup::new(true),
+                coat,
+            });
+            coat
+        }
+    };
     equine::update(spawn.mob, |horse| {
         horse.strength = strength;
         horse.llama_variant = coat;
     });
     randomize_chested(spawn.mob, kind, spawn.level);
     equine::clamp_health(spawn.mob, kind);
+    equine::finalize_ageable(spawn);
 }
 
 /// `Llama.getBreedOffspring(partner)`: its stats about its parents', then a strength of

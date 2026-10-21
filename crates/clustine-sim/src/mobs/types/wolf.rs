@@ -25,7 +25,10 @@ use super::tamable::{
     self, FollowOwnerGoal, Idle, NonTameRandomTargetGoal, OwnerHurtByTargetGoal,
     OwnerHurtTargetGoal, Pet, SitWhenOrderedToGoal, TamablePanicGoal, Tame, find,
 };
-use super::{Breeding, Did, Dimensions, Interaction, Mate, MobType, Spawning, Used, cow};
+use super::{
+    AgeableGroup, Breeding, Did, Dimensions, Interaction, Mate, MobType, SpawnGroup, Spawning,
+    Used, cow,
+};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     AvoidEntityGoal, Avoiding, FloatGoal, HurtByTargetGoal, Items, LeapAtTargetGoal,
@@ -707,13 +710,25 @@ impl MobType for Wolf {
         mob_interact(used)
     }
 
-    /// `Wolf.finalizeSpawn`: its biome's variant, its voice, then `AgeableMob`'s (a
-    /// pack's data, which wants no pups) before `Mob`'s.
+    /// `Wolf.finalizeSpawn`: its pack's variant, or its biome's drawn and a pack of it
+    /// made (`WolfPackData`, which wants no pups); its voice; then `AgeableMob`'s before
+    /// `Mob`'s.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let (shared, mut own) = state_of(spawn.mob);
-        own.variant = select_variant(spawn.biome, spawn.level);
+        own.variant = match *spawn.group {
+            Some(SpawnGroup::WolfPack { variant, .. }) => variant,
+            _ => {
+                let variant = select_variant(spawn.biome, spawn.level);
+                *spawn.group = Some(SpawnGroup::WolfPack {
+                    ageable: AgeableGroup::new(false),
+                    variant,
+                });
+                variant
+            }
+        };
         own.sound = random_voice(spawn.level);
         put(spawn.mob, &shared, &own);
+        animal::finalize_ageable_default(spawn);
     }
 
     /// `Wolf.getBreedOffspring`: a parent's variant by this one's coin, and where this

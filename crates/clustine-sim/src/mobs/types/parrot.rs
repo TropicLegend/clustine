@@ -486,11 +486,14 @@ impl MobType for Parrot {
         mob_interact(used)
     }
 
-    /// `Parrot.finalizeSpawn`: its variant first, then its base's (a group that wants
-    /// no babies).
+    /// `Parrot.finalizeSpawn`: its variant first, then its base's with a group that
+    /// wants no babies (`AgeableMobGroupData(false)`) where it has none.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let variant = spawn.level.next_int(VARIANTS) as i32;
         update(spawn.mob, |own| own.variant = variant);
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::new(false));
+        // A parrot is never a baby (`canBeABaby`), and its group wants none.
+        let _ = animal::ageable_draw(spawn, group);
     }
 
     fn actually_hurt(&self, mob: &mut Mob, _: u32) {

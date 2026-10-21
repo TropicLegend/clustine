@@ -88,6 +88,7 @@ impl MobType for Donkey {
         let kind = entity_types::DONKEY as u16;
         randomize_chested(spawn.mob, kind, spawn.level);
         equine::clamp_health(spawn.mob, kind);
+        equine::finalize_ageable(spawn);
     }
 
     /// `Donkey.getBreedOffspring`: with a horse a mule, else a donkey, its stats about

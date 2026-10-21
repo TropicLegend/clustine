@@ -346,6 +346,13 @@ pub(crate) fn anger_time(draws: &mut Random) -> i64 {
 }
 
 impl MobType for PolarBear {
+    /// `PolarBear.finalizeSpawn`: a group every later one of which is a cub
+    /// (`AgeableMobGroupData(1.0f)`) where it has none.
+    fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {
+        let group = super::SpawnGroup::Ageable(super::AgeableGroup::with_chance(1.0));
+        animal::finalize_ageable(spawn, group);
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::animal_maluses(setup);
         setup.add_goal(0, FloatGoal);
