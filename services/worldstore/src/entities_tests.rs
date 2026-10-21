@@ -123,7 +123,8 @@ fn expected(position: ChunkPos, blocks: &[(BlockPos, BlockState)], entities: Vec
         chunk.set(x, at.y, z, *state);
     }
     chunk.set_entities(entities);
-    chunk.clear_generated();
+    // The generated mark is a statement about the blocks: an entity's change leaves it
+    // (`docs/groundwork/n7l-plan.md`, section 9 item 4).
     chunk
 }
 
@@ -306,7 +307,9 @@ fn chunks_restored_with_entities_have_them_in_a_file_beside_their_blocks() {
     assert_eq!(entities_file(&disk, C), Some(vec![second_in_c()]));
     let stored_c = stored(&disk, C).expect("the restore stored C");
     assert_eq!(stored_c, expected(C, &[], vec![second_in_c()]));
-    assert_eq!(stored_c.generated(), 0);
+    // Still as generated: the mark is the blocks', and a blocks file beside its
+    // entities means taken (`docs/groundwork/n7l-plan.md`, sections 2.4 and 9).
+    assert_ne!(stored_c.generated(), 0);
 }
 
 /// What a region committed of the entities of a chunk it does not hold is not put into

@@ -620,7 +620,7 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
             std::fs::read(&blocks)
                 .ok()
                 .and_then(|bytes| ChunkFile::decode(&bytes).ok())
-                .is_some_and(|(file, _)| file.chunk.generated() == 0)
+                .is_some_and(|(file, _)| file.chunk.generated() != 0)
         },
     );
     // Let whatever the dig left to save settle into the files.
@@ -675,12 +675,13 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
     assert_eq!(found[0].key, key);
 }
 
-/// The plan, section 11: an entity change to a chunk that is still as generated
-/// clears that and saves its blocks too, so that the chunk is not made again over its
-/// entities. A checkpoint after the throw has the log no longer hold it; the region is
-/// lost, the store started again, and the item is there.
+/// The plan, section 11, as N7l amends it (`docs/groundwork/n7l-plan.md`, sections 2.4
+/// and 9): an entity change to a chunk still as generated has both its files saved, its
+/// blocks beside its entities, which together mean taken, and the generated mark stays,
+/// a statement about the blocks. A checkpoint after the throw has the log no longer hold
+/// it; the region is lost, the store started again, and the item is there.
 #[test]
-fn an_item_thrown_into_a_chunk_as_generated_has_its_blocks_saved_too_and_outlasts_a_checkpoint() {
+fn an_item_thrown_into_a_chunk_as_generated_has_both_its_files_saved_and_outlasts_a_checkpoint() {
     let mut world = World::new(Some(5));
     let (mut runner, _) = world.open();
     let (mut link, entity) = with_a_player(&mut runner, EdgeId(1));
@@ -698,7 +699,7 @@ fn an_item_thrown_into_a_chunk_as_generated_has_its_blocks_saved_too_and_outlast
             && std::fs::read(&blocks)
                 .ok()
                 .and_then(|bytes| ChunkFile::decode(&bytes).ok())
-                .is_some_and(|(file, _)| file.chunk.generated() == 0)
+                .is_some_and(|(file, _)| file.chunk.generated() != 0)
     });
     // Checkpoints go on; the restore below shows one was made after the throw.
     run_ticks(&mut runner, &mut link, 30);

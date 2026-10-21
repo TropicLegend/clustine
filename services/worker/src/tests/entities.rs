@@ -181,18 +181,27 @@ async fn an_entity_change_marks_only_the_entities_unsaved_and_a_stop_saves_every
     );
 }
 
-/// An entity change to a chunk that is still as generated marks its blocks unsaved
-/// too, so that the store keeps the chunk as changed and does not make it again over
-/// its entities (the plan, section 11).
+/// An entity change to a chunk still as generated marks only its entities unsaved: the
+/// runner's first save of the chunk is whole, and the store writes a chunk not stored
+/// yet whole whatever is named; after that an animal's step does not rewrite its blocks,
+/// and the generated mark stays (`docs/groundwork/n7l-plan.md`, section 9 item 5).
 #[tokio::test]
-async fn an_entity_change_to_a_chunk_as_generated_marks_its_blocks_unsaved_too() {
+async fn an_entity_change_to_a_chunk_as_generated_saves_its_blocks_only_the_first_time() {
     let world = world(false);
     let (mut runner, gate, _edge) = with_k_loaded(&world).await;
     assert_ne!(runner.region().chunk(K).unwrap().generated(), 0);
     make(&mut runner, &gate, vec![(K, EntityChange::Whole(lying()))]);
-    assert_eq!(runner.unsaved.get(&K), Some(&Parts::ALL));
+    assert_eq!(runner.unsaved.get(&K), Some(&Parts::ENTITIES));
     runner.checkpoint();
     assert_eq!(saved_parts(&gate, K), [Parts::ALL]);
+    make(
+        &mut runner,
+        &gate,
+        vec![(K, EntityChange::Gone(lying().key))],
+    );
+    runner.checkpoint();
+    assert_eq!(saved_parts(&gate, K), [Parts::ALL, Parts::ENTITIES]);
+    assert_ne!(runner.region().chunk(K).unwrap().generated(), 0);
 }
 
 /// The sim makes no entity change for a chunk it has not loaded, and the runner holds

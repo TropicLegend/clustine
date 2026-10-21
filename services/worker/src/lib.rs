@@ -2751,19 +2751,11 @@ impl RegionRunner {
             for position in blocks {
                 self.unsaved_part(position, Parts::BLOCKS);
             }
+            // A chunk not stored yet is written whole by the store's first save of it,
+            // whatever part is named (`docs/groundwork/n7l-plan.md`, section 2.4); a
+            // stored one's blocks are not rewritten for an animal's step.
             for (position, _) in &entity_changes {
-                // A chunk still as generated is saved with its blocks too, so that the
-                // store does not make it again over its entities.
-                let generated = self
-                    .region
-                    .chunk(*position)
-                    .is_some_and(|chunk| chunk.generated() != 0);
-                let parts = if generated {
-                    Parts::ALL
-                } else {
-                    Parts::ENTITIES
-                };
-                self.unsaved_part(*position, parts);
+                self.unsaved_part(*position, Parts::ENTITIES);
             }
             self.store.request(StoreRequest::Commit {
                 tick: output.tick,
@@ -3267,19 +3259,15 @@ impl RegionRunner {
         for more in [ageing, entities].into_iter().flatten() {
             parts = parts.with(more);
         }
-        if let Some(mut chunk) = self.region.saved_chunk(position) {
+        if let Some(chunk) = self.region.saved_chunk(position) {
+            // A runner's first save of a chunk is whole: what the store has of it may be
+            // a note of the generator's, or nothing (`docs/groundwork/n2-plan.md`,
+            // section 5). After it only what changed, so that an animal stepping in an
+            // unedited chunk does not rewrite its blocks at every checkpoint; the
+            // generated mark stays a statement about the blocks
+            // (`docs/groundwork/n7l-plan.md`, section 9 item 5).
             if self.saved_once.insert(position) {
                 parts = Parts::ALL;
-            }
-            // A chunk as generated is saved whole: what the store has of it may be a
-            // note of the generator's, or nothing (`docs/groundwork/n2-plan.md`,
-            // section 5). One with entities is saved as no longer as generated, so that
-            // the store does not make it again over them.
-            if chunk.generated() != 0 {
-                parts = Parts::ALL;
-                if !chunk.entities().is_empty() {
-                    chunk.clear_generated();
-                }
             }
             // The commit of the region's last tick has been sent, which the store has
             // on disk before it writes the chunk. The chunk goes with its ticks.

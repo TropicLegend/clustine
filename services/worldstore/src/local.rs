@@ -621,7 +621,9 @@ mod tests {
             let mut chunks = FileChunks::new(disk.clone(), root).with_meta(meta);
             let chunk = Versioned::new(2).generate(position);
             chunks.handed(chunk.generated());
-            chunks.note(position, &chunk).unwrap();
+            chunks
+                .note(position, &chunk, clustine_rpc::Parts::ALL)
+                .unwrap();
             let done = chunks.sync().is_ok();
             for survival in SURVIVALS {
                 let left: Arc<dyn Disk> = Arc::new(disk.crashed(survival));

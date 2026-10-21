@@ -13,7 +13,6 @@
 //! `docs/adr/0018-a-checkpoints-chunks-written-together.md`, and for the one file a
 //! chunk is, `docs/adr/0022-what-a-chunk-carries.md`, section 3.
 
-use std::collections::btree_map;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -87,10 +86,14 @@ pub(crate) trait Chunks: Send {
     /// by the next [`Chunks::sync`] (`docs/adr/0021-generation-is-a-function.md`,
     /// section 6, S2). A save of the position that is pending is kept instead: it is
     /// the chunk with a change in it. Unlike a save, a note that a failed sync was to
-    /// write is kept, and written by the next one (S5).
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
+    /// write is kept, and written by the next one (S5). A chunk made for the first time
+    /// is noted whole, its entities with it (`docs/groundwork/n7l-plan.md`, section 2.4);
+    /// one made again over a stored one (S8) only its blocks, its stored entities kept.
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
         if self.load(position)?.is_none() {
             self.save(position, 0, NO_REGION, chunk)?;
+        } else if parts.blocks {
+            self.save_parts(position, 0, NO_REGION, chunk, Parts::BLOCKS)?;
         }
         Ok(())
     }
@@ -113,13 +116,23 @@ impl Chunks for MemoryChunks {
         Ok(self.0.get(&position).cloned())
     }
 
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
-        self.0.entry(position).or_insert_with(|| chunk.clone());
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
+        match self.0.get_mut(&position) {
+            None => {
+                self.0.insert(position, chunk.clone());
+            }
+            Some(stored) if parts.blocks => {
+                let entities = stored.entities().to_vec();
+                *stored = chunk.clone();
+                stored.set_entities(entities);
+            }
+            Some(_) => {}
+        }
         Ok(())
     }
 
-    /// As files keep them: a part not named is as it was, and entities saved without
-    /// blocks of a chunk that is not stored are not either.
+    /// As files keep them: a part not named is as it was, and a chunk that is not
+    /// stored is stored whole, as a first-timer's files are written whole.
     fn save_parts(
         &mut self,
         position: ChunkPos,
@@ -130,11 +143,10 @@ impl Chunks for MemoryChunks {
     ) -> Result<(), StoreError> {
         let stored = self.0.get(&position);
         let mut kept = match (parts.blocks, stored) {
-            (true, _) => chunk.clone(),
+            (true, _) | (false, None) => chunk.clone(),
             (false, Some(stored)) => stored.clone(),
-            (false, None) => return Ok(()),
         };
-        if parts.entities {
+        if parts.entities || stored.is_none() {
             kept.set_entities(chunk.entities().to_vec());
         } else {
             kept.set_entities(stored.map_or_else(Vec::new, |stored| stored.entities().to_vec()));
@@ -192,6 +204,10 @@ struct Saved {
     entities: Option<Option<Vec<u8>>>,
     /// Noted, not saved: a chunk as the generator made it, which no handle answers for.
     noted: bool,
+    /// No blocks file of the chunk is in place: its first one is to be, which a sync
+    /// puts in place only after its entities' file (`docs/groundwork/n7l-plan.md`,
+    /// sections 2.4 and 9 item 2). Such a save is always of both parts.
+    first: bool,
 }
 
 impl Saved {
@@ -223,9 +239,13 @@ impl Saved {
             blocks,
             entities,
             noted: false,
+            first: false,
         }
     }
 }
+
+/// What a round puts in place, each file with its contents, and what it removes.
+type RoundFiles<'a> = (Vec<(PathBuf, &'a [u8])>, Vec<PathBuf>);
 
 /// The files of a round of a sync: all are written under temporary names, those are
 /// synced together, each is renamed into place, and their directories are synced
@@ -315,6 +335,16 @@ impl FileChunks {
             .join(format!("{}.{}.chunk", position.x, position.z))
     }
 
+    /// Whether a save or note of `position` would put the chunk's first blocks file in
+    /// place: none is on disk and none is pending, or the pending one is a first-timer's.
+    /// One look at the disk for each new pending position.
+    fn first_timer(&self, position: ChunkPos) -> Result<bool, StoreError> {
+        if let Some(pending) = self.pending.get(&position) {
+            return Ok(pending.first);
+        }
+        Ok(!self.disk.exists(&self.chunk_path(position))?)
+    }
+
     /// Where the entities of the chunk at `position` are kept, beside its file.
     pub(crate) fn entities_path(&self, position: ChunkPos) -> PathBuf {
         self.chunk_path(position)
@@ -380,6 +410,7 @@ impl Chunks for FileChunks {
         // of this one, with the parts of both, from the later chunk: a pending save of
         // the blocks followed by one of the entities writes both. A pending note is a
         // chunk that is not stored, whose blocks are written whatever is saved of it.
+        let first = self.first_timer(position)?;
         let parts = match self.pending.get(&position) {
             Some(pending) => pending.parts.with(parts),
             None => parts,
@@ -387,21 +418,34 @@ impl Chunks for FileChunks {
         if parts.is_none() {
             return Ok(());
         }
-        let saved = Saved::new(position, tick, epoch, chunk.clone(), parts);
+        // A blocks file means taken: none is put in place without the entities beside
+        // it, so a first-timer is written whole, an empty list removing a stale file.
+        let parts = if first { Parts::ALL } else { parts };
+        // A save merged into a note drops the note's standing: after a failed sync every
+        // handle that saved is lost, and its region restored from the log (the plan,
+        // section 9 item 7).
+        let mut saved = Saved::new(position, tick, epoch, chunk.clone(), parts);
+        saved.first = first;
         self.pending.insert(position, saved);
         Ok(())
     }
 
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
         // A save that is pending is the chunk with a change in it, and a note that is
         // pending is this very chunk, by purity.
-        // Its blocks: a chunk as the generator made it has no entities, and an entities'
-        // file there may be is left for the commits a restore replays.
-        if let btree_map::Entry::Vacant(entry) = self.pending.entry(position) {
-            let mut saved = Saved::new(position, 0, NO_REGION, chunk.clone(), Parts::BLOCKS);
-            saved.noted = true;
-            entry.insert(saved);
+        if self.pending.contains_key(&position) {
+            return Ok(());
         }
+        // A first-timer's note is of both parts: its entities as the generator made
+        // them, or none, which removes a file a crash left without its blocks (the
+        // plan, section 9 item 6). A remade chunk's is of its blocks: its stored
+        // entities' file stays.
+        let first = self.first_timer(position)?;
+        let parts = if first { Parts::ALL } else { parts };
+        let mut saved = Saved::new(position, 0, NO_REGION, chunk.clone(), parts);
+        saved.noted = true;
+        saved.first = first;
+        self.pending.insert(position, saved);
         Ok(())
     }
 
@@ -423,22 +467,42 @@ impl Chunks for FileChunks {
                 return Err(error.into());
             }
         }
-        let mut files = Vec::new();
-        let mut removed = Vec::new();
+        // Two rounds where a first blocks file is to be put in place: the first-timers'
+        // entities' files, durable with their directories, then everything else, so
+        // that a blocks file always has its entities beside it and so means taken
+        // (`docs/groundwork/n7l-plan.md`, section 2.4 item 2). An entities' file the
+        // first round leaves without its blocks file is never read, and the next note
+        // of the chunk writes it again.
+        let mut rounds: [RoundFiles<'_>; 2] = Default::default();
         for (position, saved) in &self.pending {
             if let Some(blocks) = &saved.blocks {
-                files.push((self.chunk_path(*position), blocks.as_slice()));
+                rounds[1]
+                    .0
+                    .push((self.chunk_path(*position), blocks.as_slice()));
             }
+            let round = usize::from(!saved.first);
             match &saved.entities {
                 Some(Some(entities)) => {
-                    files.push((self.entities_path(*position), entities.as_slice()));
+                    rounds[round]
+                        .0
+                        .push((self.entities_path(*position), entities.as_slice()));
                 }
-                Some(None) => removed.push(self.entities_path(*position)),
+                Some(None) => rounds[round].1.push(self.entities_path(*position)),
                 None => {}
             }
         }
+        let mut put = Ok(());
         let mut round = Round::default();
-        let put = round.put(self.disk.as_ref(), &files, &removed);
+        for (files, removed) in &rounds {
+            if files.is_empty() && removed.is_empty() {
+                continue;
+            }
+            round = Round::default();
+            put = round.put(self.disk.as_ref(), files, removed);
+            if put.is_err() {
+                break;
+            }
+        }
         if let Err(error) = put {
             round.withdraw(self.disk.as_ref());
             // After a failed sync, what it was to make durable may be lost although a
@@ -1132,11 +1196,12 @@ impl ChunkService {
         Ok(changes)
     }
 
-    /// Whether a stored chunk counts as not stored: an older generator failed in it,
-    /// and nobody changed it since, which would have taken the mark (S8). One with
-    /// entities was changed, whatever its blocks say: made again it would lose them.
+    /// Whether a stored chunk's blocks count as not stored: an older generator failed in
+    /// it, and nobody changed its blocks since, which would have taken the mark (S8).
+    /// Its stored entities are kept whatever is made (`docs/groundwork/n7l-plan.md`,
+    /// section 2.4 item 4).
     fn remakes(&self, stored: &Chunk) -> bool {
-        stored.with_failure() && stored.generated() < self.version && stored.entities().is_empty()
+        stored.with_failure() && stored.generated() < self.version
     }
 
     /// Asks the generator for the chunk at `position`. Its answer comes among the
@@ -1167,7 +1232,12 @@ impl ChunkService {
             match self.queue.remove(index) {
                 Some(Entry::Loading(loading)) => self.loaded(loading, made),
                 Some(Entry::Copying(copying)) => match made {
-                    Some(Ok(chunk)) => {
+                    Some(Ok(mut chunk)) => {
+                        // A remade chunk's copy shows its stored entities, as its
+                        // holder's load would.
+                        if let Some(stored) = &copying.stored {
+                            chunk.set_entities(stored.entities().to_vec());
+                        }
                         self.chunks.handed(chunk.generated());
                         copied(&copying, Some(chunk));
                     }
@@ -1221,7 +1291,18 @@ impl ChunkService {
             return;
         }
         match made {
-            Some(Ok(chunk)) => {
+            Some(Ok(mut chunk)) => {
+                // Made again over a stored chunk (S8): its new blocks with the stored
+                // entities, which were taken long ago and are the world's now
+                // (`docs/groundwork/n7l-plan.md`, section 2.4 item 4); only its blocks
+                // are noted.
+                let parts = match &stored {
+                    Some(stored) => {
+                        chunk.set_entities(stored.entities().to_vec());
+                        Parts::BLOCKS
+                    }
+                    None => Parts::ALL,
+                };
                 // The answer waits for nothing; the note comes behind it. Nothing that
                 // names the chunk was done since it was looked up, so what is stored
                 // there is what was then (ADR-0021, section 7, "S1 to S8").
@@ -1231,7 +1312,7 @@ impl ChunkService {
                 });
                 self.chunks.handed(chunk.generated());
                 // Under S8 in the old chunk's place.
-                self.note(position, &chunk);
+                self.note(position, &chunk, parts);
             }
             made => {
                 if made.is_none() {
@@ -1253,8 +1334,8 @@ impl ChunkService {
     /// Notes a chunk that a region was answered with, to be written by the next sync
     /// of any handle (ADR-0021, section 6, S2). It is not among any handle's saves: no
     /// handle is lost if it cannot be written, and it is tried again (S5).
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk) {
-        if let Err(error) = self.chunks.note(position, chunk) {
+    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) {
+        if let Err(error) = self.chunks.note(position, chunk, parts) {
             // It is made again when it is needed, and is the same (S3).
             warn!(?position, %error, "a generated chunk could not be noted for writing");
             return;
@@ -1610,11 +1691,8 @@ fn apply(
         .collect();
     for change in changes {
         if let Some((chunk, parts)) = bases.get_mut(&change.chunk()) {
-            // A chunk as generated that an entity change takes that from is saved with
-            // its blocks too, so that it is not made again over its entities.
-            if chunk.generated() != 0 {
-                *parts = parts.with(Parts::BLOCKS);
-            }
+            // A chunk not stored yet is written whole by its first save, whatever part
+            // changed (`Chunks::save_parts`).
             *parts = parts.with(change.part());
             put(chunk, change);
         }
@@ -1657,11 +1735,11 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
             chunk.set_events(events.clone());
             chunk.clear_generated();
         }
-        // After the commit's blocks. A chunk with an entity changed is no longer as
-        // generated either, so that remaking it does not lose its entities.
+        // After the commit's blocks. The generated mark is a statement about the blocks
+        // (ADR-0022): a remake keeps the stored entities whatever it is
+        // (`docs/groundwork/n7l-plan.md`, section 9 item 4).
         Replayed::Entity(_, change) => {
             chunk.apply_entity(change);
-            chunk.clear_generated();
         }
     }
 }
@@ -2104,6 +2182,76 @@ mod tests {
         assert!((0..NOTE_LIMIT).all(|index| durable(&disk, position(index))));
     }
 
+    /// A chunk noted for the first time with entities, its sync stopped at every one of
+    /// its steps and every kind of crash after: a blocks file is never found without the
+    /// entities beside it, so a blocks file means taken (`docs/groundwork/n7l-plan.md`,
+    /// sections 2.4 item 2 and 9 item 2).
+    #[test]
+    fn a_first_blocks_file_is_never_in_place_without_its_entities() {
+        let mut first = made(A);
+        first.set_entities(vec![crate::entities_tests::item(9, 320.5, 2.5)]);
+        let steps = {
+            let disk = Arc::new(MemoryDisk::default());
+            let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
+            chunks.note(A, &first, Parts::ALL).unwrap();
+            chunks.sync().unwrap();
+            disk.operations()
+        };
+        assert!(steps > 4, "two rounds of a sync each, {steps}");
+        for stop in 1..=steps + 1 {
+            for survival in [
+                Survival::Nothing,
+                Survival::Torn,
+                Survival::Everything,
+                Survival::Untruncated,
+            ] {
+                let disk = Arc::new(MemoryDisk::failing(Fault::Stop(stop)));
+                let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
+                chunks.note(A, &first, Parts::ALL).unwrap();
+                let _ = chunks.sync();
+                let left: Arc<dyn Disk> = Arc::new(disk.crashed(survival));
+                let mut after = FileChunks::new(left, Path::new(ROOT));
+                match after.load(A) {
+                    Ok(Some(chunk)) => assert_eq!(
+                        chunk.entities(),
+                        first.entities(),
+                        "stopped at {stop}, {survival:?}"
+                    ),
+                    Ok(None) => {}
+                    Err(error) => panic!("stopped at {stop}, {survival:?}: {error}"),
+                }
+            }
+        }
+    }
+
+    /// A first-timer's save names only its entities, as a fold of an arrival into a
+    /// chunk never generated does: it is written whole all the same, its blocks beside
+    /// its entities; a stored chunk's save of its entities leaves its blocks file.
+    #[test]
+    fn a_first_save_of_entities_alone_writes_the_blocks_too() {
+        let disk = Arc::new(MemoryDisk::default());
+        let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
+        let mut with = made(A);
+        with.set_entities(vec![crate::entities_tests::item(9, 320.5, 2.5)]);
+        chunks.save_parts(A, 1, 1, &with, Parts::ENTITIES).unwrap();
+        chunks.sync().unwrap();
+        assert!(durable(&disk, A));
+        let left: Arc<dyn Disk> = Arc::new(disk.crashed(Survival::Nothing));
+        let loaded = FileChunks::new(left, Path::new(ROOT)).load(A).unwrap();
+        assert_eq!(loaded, Some(with.clone()));
+
+        let before = disk.operations();
+        with.set_entities(Vec::new());
+        chunks.save_parts(A, 2, 1, &with, Parts::ENTITIES).unwrap();
+        chunks.sync().unwrap();
+        // One round: the entities' file removed, its directory synced, no blocks file.
+        assert!(
+            disk.operations() - before <= 2,
+            "{}",
+            disk.operations() - before
+        );
+    }
+
     /// S5: a failed sync drops the saves, whose handles are lost and save them again,
     /// and keeps the notes, which have nobody else to write them. And a note does not
     /// take the place of a save of its chunk.
@@ -2112,9 +2260,9 @@ mod tests {
         let disk = Arc::new(MemoryDisk::failing(Fault::Fail(1)));
         let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
         chunks.save(A, 3, 1, &edited()).unwrap();
-        chunks.note(A, &made(A)).unwrap();
+        chunks.note(A, &made(A), Parts::ALL).unwrap();
         assert!(chunks.load(A).unwrap() == Some(edited()));
-        chunks.note(B, &made(B)).unwrap();
+        chunks.note(B, &made(B), Parts::ALL).unwrap();
         assert_eq!((chunks.pending(), chunks.noted()), (1, 1));
 
         assert!(chunks.sync().is_err());
@@ -2197,7 +2345,7 @@ mod tests {
             let mut files = FileChunks::new(Arc::new(OsDisk::default()), directory.path());
             let noting = Instant::now();
             for (position, chunk) in &made {
-                files.note(*position, chunk).unwrap();
+                files.note(*position, chunk, Parts::ALL).unwrap();
             }
             let noted = noting.elapsed();
             let syncing = Instant::now();

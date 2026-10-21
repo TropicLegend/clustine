@@ -1403,8 +1403,13 @@ impl Chunks for HeldSaves {
         Ok(())
     }
 
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk) -> Result<(), StoreError> {
-        self.chunks.note(position, chunk)
+    fn note(
+        &mut self,
+        position: ChunkPos,
+        chunk: &Chunk,
+        parts: clustine_rpc::Parts,
+    ) -> Result<(), StoreError> {
+        self.chunks.note(position, chunk, parts)
     }
 
     fn noted(&self) -> usize {

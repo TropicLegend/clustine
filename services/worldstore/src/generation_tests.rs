@@ -1629,10 +1629,11 @@ fn lying_in_a() -> clustine_world::Entity {
 }
 
 /// A chunk stored as generated "with a failure" that a commit puts an entity into is
-/// stored by the restore with it and no longer as generated; so a newer generator does
-/// not make it again over its entity (`docs/groundwork/n2-plan.md`, section 11).
+/// stored by the restore with it, still as generated: the mark is the blocks'. A newer
+/// generator makes its blocks again and keeps its stored entity, which was taken long
+/// ago (`docs/groundwork/n7l-plan.md`, sections 2.4 item 4 and 9 item 4).
 #[test]
-fn a_chunk_given_an_entity_by_a_restore_is_no_longer_as_generated_and_is_not_made_again() {
+fn a_chunk_given_an_entity_by_a_restore_keeps_it_when_a_newer_generator_makes_it_again() {
     let (disk, chunk) = marked_world(true, false);
     let (toy, control) = toy_of(1);
     let store = store_on(&disk, toy);
@@ -1658,10 +1659,9 @@ fn a_chunk_given_an_entity_by_a_restore_is_no_longer_as_generated_and_is_not_mad
     flushed(&y);
     let mut kept = chunk.clone();
     kept.set_entities(vec![lying_in_a()]);
-    kept.mark_generated(0, false);
     let now = stored(&disk, A).expect("the restored chunk is durable");
     assert_eq!(now, kept);
-    assert_eq!((now.generated(), now.with_failure()), (0, false));
+    assert_eq!((now.generated(), now.with_failure()), (1, true));
     store.close().unwrap();
     drop((x, y, store));
     control.wait_gone();
@@ -1669,16 +1669,19 @@ fn a_chunk_given_an_entity_by_a_restore_is_no_longer_as_generated_and_is_not_mad
     let (toy, control) = toy_of(2);
     let store = store_on(&disk, toy);
     let z = open(&store, hello(EAST, 4));
-    load(&z, A);
-    assert_eq!(answer(&z), loaded(A, kept));
-    assert_eq!(control.entered(A), 0);
+    let mut remade = made(A, 2, false);
+    remade.set_entities(vec![lying_in_a()]);
+    assert_eq!(generated(&z, A), remade);
+    assert_eq!(control.entered(A), 1);
+    store.close().unwrap();
+    assert_eq!(stored(&disk, A), Some(remade));
 }
 
-/// A chunk that says it is as generated "with a failure" and has entities is not made
-/// again by a newer generator either: having them, it was changed, whatever its blocks
-/// say, and a chunk made again would be without them.
+/// A chunk that says it is as generated "with a failure" and has entities is made again
+/// by a newer generator, as one without: its blocks are the newer one's, and its stored
+/// entities are kept, both in the answer and in what is stored after.
 #[test]
-fn a_stored_chunk_with_entities_is_not_made_again_whatever_its_blocks_say() {
+fn a_stored_chunk_with_entities_is_made_again_with_its_entities_kept() {
     let (disk, chunk) = marked_world(true, false);
     let mut with_entity = chunk.clone();
     with_entity.set_entities(vec![lying_in_a()]);
@@ -1691,7 +1694,10 @@ fn a_stored_chunk_with_entities_is_not_made_again_whatever_its_blocks_say() {
     let (toy, control) = toy_of(2);
     let store = store_on(&disk, toy);
     let x = open(&store, hello(EAST, 2));
-    load(&x, A);
-    assert_eq!(answer(&x), loaded(A, with_entity));
-    assert_eq!(control.entered(A), 0);
+    let mut remade = made(A, 2, false);
+    remade.set_entities(vec![lying_in_a()]);
+    assert_eq!(generated(&x, A), remade);
+    assert_eq!(control.entered(A), 1);
+    store.close().unwrap();
+    assert_eq!(stored(&disk, A), Some(remade));
 }
