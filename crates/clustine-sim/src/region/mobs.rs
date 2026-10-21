@@ -110,6 +110,14 @@ impl MobWorld for View<'_> {
         i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
     }
 
+    fn day(&self) -> u64 {
+        self.region.clock.day
+    }
+
+    fn block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
+        self.region.block_entity_data(pos)
+    }
+
     /// Those the mob reads first, then the world's players as the store last published
     /// them: where they stand and their game mode, holding nothing a mob reads.
     fn player_anywhere(&self, uuid: u128) -> Option<SeenPlayer> {

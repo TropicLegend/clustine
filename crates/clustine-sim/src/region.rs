@@ -42,6 +42,7 @@ mod falling;
 mod fluids;
 mod given;
 mod hanging;
+pub(crate) mod hives;
 mod hoppers;
 mod instruments;
 mod items;
@@ -1043,6 +1044,8 @@ impl Region {
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
         self.run_block_entities(&mut output);
+        // The hives let their bees out after the other block entities (`hives.rs`).
+        self.run_hives(&mut output);
         // The players push the carts they stand in and pick up what lies around them,
         // as the game's connections tick after its levels, block entities and all
         // (`minecarts.rs`, `items.rs`): `LivingEntity.aiStep` pushes before the
@@ -3419,6 +3422,7 @@ mod tests {
     mod swings;
     mod tamed;
     mod water;
+    mod wild;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 

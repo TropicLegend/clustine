@@ -245,6 +245,10 @@ pub(crate) struct Living {
     pub(crate) max_air: i32,
     /// `increaseAirSupply` gives it all its air at once (a dolphin's), not four a tick.
     pub(crate) refills_at_once: bool,
+    /// `omnidirectionalAirMover()`: the air slows its fall as it slows it sideways.
+    pub(crate) omnidirectional_air: bool,
+    /// `getWaterSlowDown()`, 0.8 but for the types that swim better.
+    pub(crate) water_slow_down: f32,
 }
 
 impl Living {
@@ -286,6 +290,8 @@ impl Living {
             pushed_by_fluid: true,
             max_air: MAX_AIR,
             refills_at_once: false,
+            omnidirectional_air: false,
+            water_slow_down: 0.8,
         }
     }
 
@@ -311,7 +317,8 @@ impl Living {
 
     /// `getAirDrag`: `0.98f` changed by the air drag modifier.
     pub(crate) fn air_drag(&self) -> f32 {
-        modified_friction(0.98, self.attributes.air_drag_modifier as f32)
+        let drag = if self.omnidirectional_air { 0.91 } else { 0.98 };
+        modified_friction(drag, self.attributes.air_drag_modifier as f32)
     }
 
     fn play(&mut self, sound: i32, volume: f32, pitch: f32) {

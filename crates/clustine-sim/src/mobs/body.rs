@@ -539,9 +539,15 @@ pub(crate) fn landing(kind: u16, mob: &crate::mobs::Mob) -> crate::living::Landi
 /// step, and which hurts its type is spared.
 fn prepare(tick: &mut MobTick<'_>) {
     let kind = tick.kind;
-    let (attributes, step_height) = living_attributes(kind, &tick.mob.body.attributes);
+    let (mut attributes, step_height) = living_attributes(kind, &tick.mob.body.attributes);
+    // `getEffectiveGravity`: none for a body without gravity.
+    if tick.mob_type.no_gravity(&tick.mob) {
+        attributes.gravity = 0.0;
+    }
     tick.living.attributes = attributes;
     tick.living.step_height = step_height;
+    tick.living.omnidirectional_air = tick.mob_type.omnidirectional_air();
+    tick.living.water_slow_down = tick.mob_type.water_slow_down();
     tick.living.yaw = tick.yaw;
     let id = i32::from(kind);
     tick.living.fall_damage_immune = entity_in_tag(id, "minecraft:fall_damage_immune");
@@ -599,15 +605,37 @@ pub(crate) fn after_base_tick(tick: &mut MobTick<'_>) {
     let time = i64::from(lived) - i64::from(tick.mob.body.idle.ambient_since);
     if i64::from(tick.draws.next_int(1000)) < time {
         tick.mob.body.idle.ambient_since = lived + 1 + tick.mob_type.ambient_interval();
-        let body = &tick.living.body;
-        let (in_water, on_ground) = (body.in_water, body.on_ground);
-        let now = tick.world.game_time();
-        let place = Some((in_water, on_ground));
-        let sound = tick
-            .mob_type
-            .ambient_sound_drawn(&tick.mob, tick.draws, now, lived, place);
-        struck(tick).make_sound(sound);
+        let mob_type = tick.mob_type;
+        mob_type.play_ambient_sound(tick);
     }
+}
+
+/// `Mob.playAmbientSound()`: the type's sound as its tick asks it, at its volume and
+/// voice (what a type plays unless it plays its own, a fox's screech).
+pub(crate) fn play_ambient_sound(tick: &mut MobTick<'_>) {
+    let lived = tick.lived;
+    let body = &tick.living.body;
+    let (in_water, on_ground) = (body.in_water, body.on_ground);
+    let now = tick.world.game_time();
+    let place = Some((in_water, on_ground));
+    let sound = tick
+        .mob_type
+        .ambient_sound_drawn(&tick.mob, tick.draws, now, lived, place);
+    struck(tick).make_sound(sound);
+}
+
+/// `Mob.makeSound(sound)` at `volume`: its voice's pitch drawn of its own random.
+pub(crate) fn make_sound(tick: &mut MobTick<'_>, sound: Option<i32>, volume: f32) {
+    let Some(sound) = sound else {
+        return;
+    };
+    let pitch = hurt::voice_pitch(tick.draws, tick.mob_type.is_baby(&tick.mob))
+        * tick.mob_type.voice_pitch_factor();
+    tick.out.events.push(Event::Sound {
+        sound,
+        volume,
+        pitch,
+    });
 }
 
 /// `tickDeath()`: a dying mob's death goes on; at its twentieth tick clients see it
@@ -843,6 +871,10 @@ fn frost(tick: &mut MobTick<'_>) {
 /// cramming's 6; then each pushes it away and is pushed away (`doPush`), the mob's own
 /// share at once and the other's as a write to it.
 pub(crate) fn push_entities(tick: &mut MobTick<'_>) {
+    // A type that is not pushable pushes nothing either (a bat's `pushEntities`).
+    if !tick.mob_type.pushable() {
+        return;
+    }
     let bounds = tick.living.body.bounds();
     let mut pushable: Vec<Pushable> = tick
         .world
@@ -924,6 +956,9 @@ fn pushable(seen: &Seen<'_>, tick: &MobTick<'_>) -> Option<Pushable> {
     let passenger = entity.riding.vehicle.is_some();
     match &entity.data {
         clustine_world::EntityData::Mob { body, .. } => {
+            if !super::types::of(entity.kind).pushable() {
+                return None;
+            }
             let vitals: Vitals = part::decode(body).ok()?;
             if vitals.dying() {
                 return None;
@@ -952,6 +987,21 @@ fn pushable(seen: &Seen<'_>, tick: &MobTick<'_>) -> Option<Pushable> {
 /// `onClimbable()` of the mob.
 fn on_climbable(tick: &MobTick<'_>) -> bool {
     tick.living.on_climbable(tick.world)
+}
+
+/// `hurtServer(source, amount)` of the mob in its tick by a source of its type's own
+/// rules (a bee's sting's death); a dead mob takes no more of its effects.
+pub(crate) fn hurt_by(tick: &mut MobTick<'_>, source: &DamageSource, amount: f32) -> bool {
+    let took = {
+        let mut struck = struck(tick);
+        hurt::hurt_server(&mut struck, source, amount)
+    };
+    if tick.mob.body.vitals.dying()
+        && let Kind::Mob { .. } = tick.living.kind
+    {
+        tick.living.end = crate::living::End::Killed;
+    }
+    took
 }
 
 /// `hurtServer(source, amount)` of what the mob met of itself in its tick, in the order

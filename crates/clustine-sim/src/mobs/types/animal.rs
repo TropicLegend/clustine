@@ -872,7 +872,9 @@ impl Goal for FollowParentGoal {
 /// What the region needs of a farm animal's record to breed it: whether it is one, and
 /// what every animal shares.
 pub(crate) fn of_record(entity: &Entity) -> Option<Animal> {
-    if !super::is_built(entity.kind) {
+    // Of the built types, those of the game's `Animal` (not a bat, not a fish).
+    let family = crate::mobs::body::ladder::of(entity.kind);
+    if !super::is_built(entity.kind) || family != crate::mobs::body::ladder::Family::Animal {
         return None;
     }
     match &entity.data {

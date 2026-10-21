@@ -115,6 +115,22 @@ pub(crate) enum Local {
     },
     /// `ejectPassengers()` of the mob itself (a wild horse throwing its rider).
     EjectPassengers,
+    /// `Block.popResource(level, pos, stack)`: an item popped out of the block at `pos`
+    /// (berries a fox picks).
+    Pop { pos: BlockPos, stack: ItemStack },
+    /// `BeehiveBlockEntity.addOccupant(bee)`: the mob goes into the hive at `hive`, if
+    /// it has room (`region/hives.rs`).
+    EnterHive { hive: BlockPos },
+    /// A bee's sting (`Bee.doHurtTarget`): `hurtServer(sting(this), amount)` of the
+    /// region's mob `key` by this one (of the type `kind`, its feet at `from`), and where
+    /// it took, the sting's sound at `from`. As [`Local::Hurt`], a mob in a copy and a
+    /// player are not hurt.
+    Sting {
+        key: EntityId,
+        kind: u16,
+        from: crate::physics::Vec3,
+        amount: f32,
+    },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

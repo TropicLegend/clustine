@@ -317,8 +317,15 @@ pub(crate) fn tick_look(ai: &mut Ai<'_, '_>) {
 /// the head towards the wanted yaw, or back towards the body; kept within reach of the
 /// body while the mob paths.
 fn tick_plain_look(ai: &mut Ai<'_, '_>) {
-    // `resetXRotOnTick`.
-    ai.tick.pitch = 0.0;
+    tick_plain_look_resetting(ai, true);
+}
+
+/// `LookControl.tick()` of a type whose `resetXRotOnTick()` may be false (a pouncing
+/// fox's, a pollinating bee's), which keeps the pitch it had.
+pub(crate) fn tick_plain_look_resetting(ai: &mut Ai<'_, '_>, reset_pitch: bool) {
+    if reset_pitch {
+        ai.tick.pitch = 0.0;
+    }
     let look = ai.tick.mob.body.controls.look.clone();
     if look.cooldown > 0 {
         ai.tick.mob.body.controls.look.cooldown -= 1;

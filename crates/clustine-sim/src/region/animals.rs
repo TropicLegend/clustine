@@ -411,6 +411,7 @@ impl Region {
         &mut self,
         entity: &Entity,
         held: Option<ItemStack>,
+        player: EntityId,
         output: &mut TickOutput,
     ) -> bool {
         let Some(stack) = held.filter(|stack| stack.count > 0) else {
@@ -433,6 +434,7 @@ impl Region {
             child_kind: None,
             draws: &mut stream,
             biome,
+            egg_user: self.player_with_entity(player).map(|id| id.0.as_u128()),
         };
         let child = types::of(entity.kind).breed_offspring(&mut breeding);
         let kind = breeding.child_kind.unwrap_or(entity.kind);

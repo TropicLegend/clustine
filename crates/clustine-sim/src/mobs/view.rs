@@ -112,6 +112,20 @@ pub(crate) trait MobWorld: Holds {
         0
     }
 
+    /// The overworld clock's ticks (`WorldClock::day`), which the day's timeline
+    /// follows: what a bee's `bees_stay_in_hive` reads (the morning where a view knows
+    /// no clock).
+    fn day(&self) -> u64 {
+        0
+    }
+
+    /// The data of the block entity at `pos`, where the region's land or copies have
+    /// one (a hive's occupants).
+    fn block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
+        let _ = pos;
+        None
+    }
+
     /// The light at `pos`: the chunk's stored light, or where a change left the chunk
     /// none, the sky's above its highest block that blocks motion and none below, and no
     /// light of blocks (the plan's 9.7.2, until N8). `None` where the chunk is not read.

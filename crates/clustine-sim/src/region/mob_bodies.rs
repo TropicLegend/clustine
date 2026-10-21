@@ -263,6 +263,14 @@ impl Region {
                     self.spawn_item_as(at, stack, pick_up_delay, Some(motion), output);
                 }
                 Local::EjectPassengers => self.eject_passengers(key, output),
+                Local::Pop { pos, stack } => self.pop_resource_at(pos, stack, output),
+                Local::EnterHive { hive } => self.enter_hive(key, hive, output),
+                Local::Sting {
+                    key: stung,
+                    kind,
+                    from,
+                    amount,
+                } => self.stung_by_bee(key, kind, from, stung, amount, output),
             }
         }
     }
@@ -482,7 +490,7 @@ impl Region {
         if mob.body.vitals.dying() {
             return;
         }
-        if self.offspring_from_egg(entity, held, output) {
+        if self.offspring_from_egg(entity, held, player, output) {
             self.interacted(entity, player, Interaction::SuccessServer, output);
             return;
         }

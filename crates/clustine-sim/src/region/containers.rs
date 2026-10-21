@@ -464,7 +464,7 @@ fn shows(menu: &Menu, pos: BlockPos, kind: Counted) -> bool {
 
 impl Region {
     /// The data of the block entity at `pos`, in a chunk loaded or copied.
-    fn block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
+    pub(crate) fn block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
         let chunk = self.readable_chunk(pos.chunk())?;
         let (x, z) = pos.in_chunk();
         chunk

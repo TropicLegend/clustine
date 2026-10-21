@@ -51,7 +51,12 @@ impl Living {
         let modifier = self.attributes.air_drag_modifier as f32;
         let horizontal = modified_friction(0.91, modifier);
         let sideways = friction * horizontal;
-        let vertical = modified_friction(0.98, modifier);
+        // An omnidirectional mover's fall is slowed as its move sideways is.
+        let vertical = if self.omnidirectional_air {
+            horizontal
+        } else {
+            modified_friction(0.98, modifier)
+        };
         self.body.motion = [
             moved[0] * f64::from(sideways),
             y * f64::from(vertical),
@@ -159,7 +164,7 @@ impl Living {
         start_y: f64,
     ) {
         // `getWaterSlowDown`; a body that does not sprint, without dolphin's grace.
-        let mut slow = 0.8_f32;
+        let mut slow = self.water_slow_down;
         let mut speed = 0.02_f32;
         let mut efficiency = self.attributes.water_movement_efficiency as f32;
         if !self.body.on_ground {

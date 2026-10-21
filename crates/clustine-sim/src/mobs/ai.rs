@@ -616,14 +616,14 @@ fn malus_of(controls: &Controls, config: &Config, kind: PathType) -> f32 {
 /// what the body's jump in a fluid reads.
 pub(crate) fn can_float(tick: &MobTick<'_>) -> bool {
     let mut setup = Setup::default();
-    tick.mob_type.register_goals(&mut setup);
+    tick.mob_type.register_goals_of(&tick.mob, &mut setup);
     setup.config.navigation.flags.can_float
 }
 
 /// The mob's two selectors in its tick, with their goals' states read from its mind.
 fn selectors(tick: &MobTick<'_>) -> (Goals, Goals, Config) {
     let mut setup = Setup::default();
-    tick.mob_type.register_goals(&mut setup);
+    tick.mob_type.register_goals_of(&tick.mob, &mut setup);
     let first_target = mind_ids::FIRST_GOAL + setup.goals.len() as u16;
     let mut goals = Goals {
         slots: setup.goals,
@@ -648,7 +648,7 @@ pub(crate) fn is_panicking(tick: &MobTick<'_>) -> bool {
 /// goal of its type's. A copy's record keeps no mind, so a mob across a line is read as
 /// not panicking (named).
 pub(crate) fn panicking_record(entity: &clustine_world::Entity) -> bool {
-    let clustine_world::EntityData::Mob { mind, .. } = &entity.data else {
+    let clustine_world::EntityData::Mob { mind, state, .. } = &entity.data else {
         return false;
     };
     let Ok(selector) = part::decode::<GoalSelector>(mind) else {
@@ -658,7 +658,13 @@ pub(crate) fn panicking_record(entity: &clustine_world::Entity) -> bool {
         return false;
     }
     let mut setup = Setup::default();
-    super::types::of(entity.kind).register_goals(&mut setup);
+    // Only the type's state decides which goals it has: the body is not decoded for it.
+    let mob = super::Mob {
+        body: Default::default(),
+        mind: Default::default(),
+        state: state.clone(),
+    };
+    super::types::of(entity.kind).register_goals_of(&mob, &mut setup);
     selector.0.running.iter().any(|&index| {
         setup
             .goals
@@ -691,7 +697,9 @@ pub(crate) fn server_ai_step(tick: &mut MobTick<'_>) {
             targets.tick_running(false, &mut ai);
             goals.tick_running(false, &mut ai);
         }
-        navigation::tick(&mut ai);
+        if ai.tick.mob_type.navigation_ticks(&ai.tick.mob) {
+            navigation::tick(&mut ai);
+        }
         ai.navigation_ticked = true;
     }
     tick.mob_type.custom_server_ai_step(tick);
@@ -704,7 +712,7 @@ pub(crate) fn server_ai_step(tick: &mut MobTick<'_>) {
         };
         let mob_type = ai.tick.mob_type;
         mob_type.tick_move_control(&mut ai);
-        controls::tick_look(&mut ai);
+        mob_type.tick_look_control(&mut ai);
         mob_type.tick_jump_control(&mut ai);
     }
     let mut slots = Vec::new();

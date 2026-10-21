@@ -171,7 +171,8 @@ impl Struck<'_> {
         let Some(sound) = sound else {
             return;
         };
-        let pitch = voice_pitch(self.draws, self.mob_type.is_baby(self.mob));
+        let pitch = voice_pitch(self.draws, self.mob_type.is_baby(self.mob))
+            * self.mob_type.voice_pitch_factor();
         self.out.events.push(Event::Sound {
             sound,
             volume: self.mob_type.sound_volume(),

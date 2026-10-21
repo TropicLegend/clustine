@@ -24,7 +24,7 @@ use crate::physics::{self, Vec3};
 pub(crate) type HeldPath = Option<(FoundPath, u32)>;
 
 /// The path `made` gives, as a goal holds it.
-fn hold(ai: &Ai<'_, '_>, made: Option<Made>) -> HeldPath {
+pub(crate) fn hold(ai: &Ai<'_, '_>, made: Option<Made>) -> HeldPath {
     match made? {
         Made::Current => ai
             .tick
@@ -39,7 +39,7 @@ fn hold(ai: &Ai<'_, '_>, made: Option<Made>) -> HeldPath {
 }
 
 /// `moveTo(path, speed)` of a path a goal held.
-fn move_to_held(ai: &mut Ai<'_, '_>, held: HeldPath, speed: f64) -> bool {
+pub(crate) fn move_to_held(ai: &mut Ai<'_, '_>, held: HeldPath, speed: f64) -> bool {
     let Some((found, next)) = held else {
         return navigation::move_to_path(ai, None, speed);
     };
@@ -116,7 +116,7 @@ pub(crate) fn manhattan_ordered(
 }
 
 /// `setLookAt(entity, yawSpeed, maxPitch)`: at its feet's x and z and its eyes.
-fn look_at_thing(ai: &mut Ai<'_, '_>, thing: &Looked, yaw_speed: f32, max_pitch: f32) {
+pub(crate) fn look_at_thing(ai: &mut Ai<'_, '_>, thing: &Looked, yaw_speed: f32, max_pitch: f32) {
     controls::set_look_at(
         ai,
         [thing.position[0], thing.eye_y, thing.position[2]],
@@ -329,7 +329,7 @@ impl RandomStrollGoal {
 }
 
 /// `Entity.calculateViewVector(pitch, yaw)`: the game's table's sine and cosine.
-fn view_vector(pitch: f32, yaw: f32) -> Vec3 {
+pub(crate) fn view_vector(pitch: f32, yaw: f32) -> Vec3 {
     let pitch = pitch * maths::RADIANS;
     let yaw = -yaw * maths::RADIANS;
     let (yaw_cos, yaw_sin) = (maths::table_cos(yaw), maths::table_sin(yaw));
@@ -528,7 +528,7 @@ impl Goal for LookAtPlayerGoal {
 }
 
 /// The mob's box.
-fn ai_bounds(ai: &Ai<'_, '_>) -> crate::physics::aabb::Aabb {
+pub(crate) fn ai_bounds(ai: &Ai<'_, '_>) -> crate::physics::aabb::Aabb {
     crate::physics::aabb::Aabb::of_entity(ai.position(), ai.width(), ai.height())
 }
 
@@ -1509,12 +1509,72 @@ pub(crate) struct MeleeAttackGoal {
 impl MeleeAttackGoal {
     /// `Mob.isWithinMeleeAttackRange(target)` with no item's reach: the mob's box grown
     /// by the default reach meets the target's.
-    fn within_range(ai: &Ai<'_, '_>, target: &Looked) -> bool {
+    pub(crate) fn within_range(ai: &Ai<'_, '_>, target: &Looked) -> bool {
         let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
         ai_bounds(ai)
             .inflate([reach, 0.0, reach])
             .intersects(target.bounds)
     }
+
+    /// `canPerformAttack(target)`: its cooldown over, within reach and seen.
+    pub(crate) fn can_perform_attack(
+        state: &Attacking,
+        ai: &mut Ai<'_, '_>,
+        target: &Looked,
+    ) -> bool {
+        state.attack_cooldown <= 0
+            && Self::within_range(ai, target)
+            && sensing::has_line_of_sight(ai, target)
+    }
+
+    /// `resetAttackCooldown()`: `adjustedTickDelay(20)`.
+    pub(crate) fn reset_attack_cooldown(&self, state: &mut Attacking) {
+        state.attack_cooldown = self.adjusted_tick_delay(20);
+    }
+
+    /// `tick()` up to `checkAndPerformAttack`: the look, the chase's path recomputed now
+    /// and then, the attack's cooldown counted down. The target it chases, if any; a
+    /// type's own attack goal (a fox's, a polar bear's) performs its attack after.
+    pub(crate) fn chase(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) -> Option<Looked> {
+        let target = sensing::target(ai)?;
+        look_at_thing(ai, &target, 30.0, 30.0);
+        state.recalc = (state.recalc - 1).max(0);
+        let sees = self.following_even_if_not_seen || sensing::has_line_of_sight(ai, &target);
+        if sees
+            && state.recalc <= 0
+            && (state.pathed == [0.0; 3]
+                || target.distance_sqr(state.pathed) >= 1.0
+                || ai.tick.draws.next_float() < 0.05)
+        {
+            state.pathed = target.position;
+            state.recalc = 4 + ai.tick.draws.next_int(7) as i32;
+            let distance = target.distance_sqr(ai.position());
+            if distance > 1024.0 {
+                state.recalc += 10;
+            } else if distance > 256.0 {
+                state.recalc += 5;
+            }
+            if !navigation::move_to_entity(ai, target.block_position(), self.speed) {
+                state.recalc += 15;
+            }
+            state.recalc = self.adjusted_tick_delay(state.recalc);
+        }
+        state.attack_cooldown = (state.attack_cooldown - 1).max(0);
+        Some(target)
+    }
+}
+
+/// `Mob.doHurtTarget(level, target)` of the mob in `ai`: its attack damage as a mob's
+/// attack, which the region lands on the target after the mob's tick.
+pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
+    let amount = ai.attribute(attributes::ATTACK_DAMAGE) as f32;
+    ai.tick.out.local.push(crate::mobs::tick::Local::Hurt {
+        key: target.key,
+        kind: ai.tick.kind,
+        from: ai.position(),
+        amount,
+        sound: None,
+    });
 }
 
 impl Goal for MeleeAttackGoal {
@@ -1581,47 +1641,13 @@ impl Goal for MeleeAttackGoal {
     }
 
     fn tick(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) {
-        let Some(target) = sensing::target(ai) else {
+        let Some(target) = self.chase(state, ai) else {
             return;
         };
-        look_at_thing(ai, &target, 30.0, 30.0);
-        state.recalc = (state.recalc - 1).max(0);
-        let sees = self.following_even_if_not_seen || sensing::has_line_of_sight(ai, &target);
-        if sees
-            && state.recalc <= 0
-            && (state.pathed == [0.0; 3]
-                || target.distance_sqr(state.pathed) >= 1.0
-                || ai.tick.draws.next_float() < 0.05)
-        {
-            state.pathed = target.position;
-            state.recalc = 4 + ai.tick.draws.next_int(7) as i32;
-            let distance = target.distance_sqr(ai.position());
-            if distance > 1024.0 {
-                state.recalc += 10;
-            } else if distance > 256.0 {
-                state.recalc += 5;
-            }
-            if !navigation::move_to_entity(ai, target.block_position(), self.speed) {
-                state.recalc += 15;
-            }
-            state.recalc = self.adjusted_tick_delay(state.recalc);
-        }
-        state.attack_cooldown = (state.attack_cooldown - 1).max(0);
-        // `checkAndPerformAttack`: the cooldown's reset, and the hit (`doHurtTarget`),
-        // which the region lands on the target after the mob's tick.
-        if state.attack_cooldown == 0
-            && Self::within_range(ai, &target)
-            && sensing::has_line_of_sight(ai, &target)
-        {
-            state.attack_cooldown = self.adjusted_tick_delay(20);
-            let amount = ai.attribute(attributes::ATTACK_DAMAGE) as f32;
-            ai.tick.out.local.push(crate::mobs::tick::Local::Hurt {
-                key: target.key,
-                kind: ai.tick.kind,
-                from: ai.position(),
-                amount,
-                sound: None,
-            });
+        // `checkAndPerformAttack`.
+        if Self::can_perform_attack(state, ai, &target) {
+            self.reset_attack_cooldown(state);
+            melee_hit(ai, &target);
         }
     }
 }

@@ -173,6 +173,7 @@ impl Region {
             child_kind: None,
             draws: &mut stream,
             biome,
+            egg_user: None,
         };
         let child = types::of(this.kind).breed_offspring(&mut breeding);
         let child_kind = breeding.child_kind.unwrap_or(this.kind);

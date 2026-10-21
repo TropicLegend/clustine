@@ -449,6 +449,7 @@ fn breed(this: (&Mob, u16), partner: (&Mob, u16), r: &mut Random) -> (Option<Mob
         child_kind: None,
         draws: r,
         biome: None,
+        egg_user: None,
     };
     let child = of(this.1).breed_offspring(&mut breeding);
     (child, breeding.child_kind)

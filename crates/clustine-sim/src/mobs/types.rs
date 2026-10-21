@@ -11,8 +11,14 @@
 //! The horse family (part N7h: horses, donkeys, mules, llamas, trader llamas, skeleton
 //! and zombie horses) shares what `AbstractHorse` and `AbstractChestedHorse` add, which
 //! [`equine`] holds.
+//!
+//! The wild land animals (part N7i: the fox, the panda, the polar bear, the bee and the
+//! bat) are animals but for the bat; the bear and the bee are angry as [`neutral`] has
+//! it.
 
 pub(crate) mod animal;
+pub(crate) mod bat;
+pub(crate) mod bee;
 pub(crate) mod cat;
 pub(crate) mod chicken;
 pub(crate) mod cod;
@@ -21,6 +27,7 @@ pub(crate) mod dolphin;
 pub(crate) mod donkey;
 pub(crate) mod equine;
 pub(crate) mod fish;
+pub(crate) mod fox;
 pub(crate) mod glow_squid;
 pub(crate) mod horse;
 pub(crate) mod llama;
@@ -28,8 +35,10 @@ pub(crate) mod mooshroom;
 pub(crate) mod mule;
 pub(crate) mod neutral;
 pub(crate) mod ocelot;
+pub(crate) mod panda;
 pub(crate) mod parrot;
 pub(crate) mod pig;
+pub(crate) mod polar_bear;
 pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
 pub(crate) mod salmon;
@@ -47,6 +56,8 @@ pub(crate) mod turtle;
 pub(crate) mod water;
 #[cfg(test)]
 mod water_tests;
+#[cfg(test)]
+mod wild_tests;
 pub(crate) mod wolf;
 pub(crate) mod zombie_horse;
 
@@ -72,6 +83,62 @@ pub(crate) trait MobType: Sync {
     /// nothing of it is kept.
     fn register_goals(&self, setup: &mut Setup) {
         let _ = setup;
+    }
+
+    /// `registerGoals` where what the type adds depends on the mob (a fox's hunting,
+    /// which its variant orders and which a bred fox lacks): by default the type's
+    /// [`MobType::register_goals`].
+    fn register_goals_of(&self, mob: &Mob, setup: &mut Setup) {
+        let _ = mob;
+        self.register_goals(setup);
+    }
+
+    /// Whether the navigation ticks in this AI step: `PathNavigation.tick` of the
+    /// type's navigation (a pollinating bee's does nothing).
+    fn navigation_ticks(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        true
+    }
+
+    /// `lookControl.tick()` of the type's look control (a sleeping fox's turns nothing,
+    /// a pouncing one's keeps its pitch).
+    fn tick_look_control(&self, ai: &mut Ai<'_, '_>) {
+        controls::tick_look(ai);
+    }
+
+    /// `isNoGravity()` as the type keeps it (a bee from its first move on): no gravity
+    /// pulls it.
+    fn no_gravity(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// `omnidirectionalAirMover()`: the air slows it up and down as it does sideways
+    /// (a bee's).
+    fn omnidirectional_air(&self) -> bool {
+        false
+    }
+
+    /// `getWaterSlowDown()`: 0.8 in `LivingEntity` (a polar bear's 0.98).
+    fn water_slow_down(&self) -> f32 {
+        0.8
+    }
+
+    /// `isPushable()`, and whether its `pushEntities` pushes anything (a bat neither).
+    fn pushable(&self) -> bool {
+        true
+    }
+
+    /// `playAmbientSound()`, once its chance came: `Mob`'s (the sound as
+    /// [`MobType::ambient_sound_drawn`] gives it, at its volume and voice), unless the
+    /// type plays its own (a fox's screech at twice the volume, which reads the world).
+    fn play_ambient_sound(&self, tick: &mut MobTick<'_>) {
+        super::body::play_ambient_sound(tick);
+    }
+
+    /// What the type's `getVoicePitch()` scales `LivingEntity`'s by (a bat's 0.95).
+    fn voice_pitch_factor(&self) -> f32 {
+        1.0
     }
 
     /// `getMaxHeadXRot`, `getMaxHeadYRot`, `getHeadRotSpeed`.
@@ -530,6 +597,9 @@ pub(crate) struct Breeding<'a> {
     pub(crate) draws: &'a mut Random,
     /// The name of the biome at the parent's block, where its chunk is read.
     pub(crate) biome: Option<&'static str>,
+    /// The UUID of the player whose spawn egg used on the mob makes the child
+    /// (`onOffspringSpawnedFromEgg`: a fox's child trusts them); none for a breeding.
+    pub(crate) egg_user: Option<u128>,
 }
 
 /// An entity's size (`EntityDimensions`): its width, height and eye height.
@@ -599,6 +669,11 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::CAT => &cat::Cat,
         entity_types::OCELOT => &ocelot::Ocelot,
         entity_types::PARROT => &parrot::Parrot,
+        entity_types::FOX => &fox::Fox,
+        entity_types::PANDA => &panda::Panda,
+        entity_types::POLAR_BEAR => &polar_bear::PolarBear,
+        entity_types::BEE => &bee::Bee,
+        entity_types::BAT => &bat::Bat,
         _ => return None,
     };
     Some(found)

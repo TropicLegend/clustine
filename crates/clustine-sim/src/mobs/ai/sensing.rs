@@ -188,7 +188,7 @@ impl Class {
 }
 
 /// Whether the mob type `kind` is of the class `Monster`.
-fn is_monster(kind: u16) -> bool {
+pub(crate) fn is_monster(kind: u16) -> bool {
     let id = i32::from(kind);
     EntityTypeInfo::of(id).category == clustine_data::MobCategory::Monster
         && ![

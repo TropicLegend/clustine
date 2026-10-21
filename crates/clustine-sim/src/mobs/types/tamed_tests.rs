@@ -129,6 +129,7 @@ fn a_tamed_wolf_s_pup_takes_a_parent_s_variant_its_owner_and_the_collars_mixed_t
             child_kind: None,
             draws: &mut stream,
             biome: None,
+            egg_user: None,
         })
         .expect("a pup");
     let (_, own) = wolf::state_of(&child);
@@ -153,6 +154,7 @@ fn a_tamed_wolf_s_pup_takes_a_parent_s_variant_its_owner_and_the_collars_mixed_t
             child_kind: None,
             draws: &mut stream,
             biome: None,
+            egg_user: None,
         })
         .unwrap();
     let (_, own) = wolf::state_of(&child);
@@ -233,6 +235,7 @@ fn only_tamed_wolves_mate_and_only_with_a_tamed_wolf_not_sitting_and_cats_likewi
                 child_kind: None,
                 draws: &mut stream,
                 biome: None,
+                egg_user: None,
             })
             .is_none()
     );
