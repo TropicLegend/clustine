@@ -644,7 +644,8 @@ pub(crate) fn after_base_tick(tick: &mut MobTick<'_>) {
     // `random.nextInt(1000) < ambientSoundTime++`.
     let time = i64::from(lived) - i64::from(tick.mob.body.idle.ambient_since);
     if i64::from(tick.draws.next_int(1000)) < time {
-        tick.mob.body.idle.ambient_since = lived + 1 + tick.mob_type.ambient_interval();
+        tick.mob.body.idle.ambient_since =
+            lived + 1 + tick.mob_type.ambient_interval_while(tick.carries);
         let mob_type = tick.mob_type;
         mob_type.play_ambient_sound(tick);
     }

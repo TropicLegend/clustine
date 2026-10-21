@@ -175,6 +175,18 @@ impl MobType for ZombieNautilus {
         nautilus::register(setup);
     }
 
+    fn steered_by(&self, mob: &Mob, _: [Option<clustine_world::ItemStack>; 2]) -> bool {
+        nautilus::steers(mob)
+    }
+
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        nautilus::tick_ridden(tick, yaw, pitch);
+    }
+
+    fn riding_jump(&self, mob: &mut Mob, _: i32, moment: u32, _: i64) -> Option<super::JumpStart> {
+        nautilus::riding_jump(mob, moment, self)
+    }
+
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
         nautilus::custom_server_ai_step(tick);
     }

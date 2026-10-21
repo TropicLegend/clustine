@@ -177,6 +177,7 @@ fn use_with<'a>(
         creative: true,
         sneaking: false,
         carries: false,
+        passengers: 0,
         on_ground: true,
         from: [0.0, 0.0, 0.0],
         position: [1.0, 0.0, 1.0],
@@ -937,11 +938,10 @@ fn a_grown_happy_ghast_takes_a_harness_and_a_ghastling_does_not_and_is_grown_by_
         [(sounds::ENTITY_HAPPY_GHAST_EQUIP, 1.0, false)]
     );
     assert!(did.contains(&Did::GameEvent("minecraft:equip")));
-    // A second does not go on.
-    assert_eq!(
-        interact(GHAST, &mut adult, one(items::BLACK_HARNESS)).0,
-        Interaction::Pass
-    );
+    // A second does not go on: the click, harnessed, takes the player on instead.
+    let (result, did) = interact(GHAST, &mut adult, one(items::BLACK_HARNESS));
+    assert_eq!(result, Interaction::Success);
+    assert_eq!(did, [Did::Mount]);
     // A grown one never falls in love with snowballs.
     let mut bare = ghast_with(0, &HappyGhastState::default());
     assert_eq!(

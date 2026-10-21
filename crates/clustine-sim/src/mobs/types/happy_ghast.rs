@@ -234,8 +234,19 @@ fn continuous_heal(tick: &mut MobTick<'_>) {
 /// half its height high).
 fn scan_player_above(tick: &MobTick<'_>) -> bool {
     let body = &tick.living.body;
-    let bounds = Aabb::of_entity(body.position, body.width, body.height);
-    let size = f64::from(body.height);
+    player_above(tick.world, body.position, body.width, body.height)
+}
+
+/// [`scan_player_above`] of a ghast whose feet are at `position`, of `width` and
+/// `height`, in `world`.
+pub(crate) fn player_above(
+    world: &dyn crate::mobs::view::MobWorld,
+    position: Vec3,
+    width: f32,
+    height: f32,
+) -> bool {
+    let bounds = Aabb::of_entity(position, width, height);
+    let size = f64::from(height);
     let above = Aabb::new(
         [
             bounds.min[0] - 1.0,
@@ -248,7 +259,7 @@ fn scan_player_above(tick: &MobTick<'_>) -> bool {
             bounds.max[2] + 1.0,
         ],
     );
-    tick.world.players().into_iter().any(|player| {
+    world.players().into_iter().any(|player| {
         if player.spectator {
             return false;
         }
@@ -258,7 +269,7 @@ fn scan_player_above(tick: &MobTick<'_>) -> bool {
             let Some(key) = vehicle else {
                 break;
             };
-            let Some(seen) = tick.world.entity(key) else {
+            let Some(seen) = world.entity(key) else {
                 break;
             };
             if i32::from(seen.entity.kind) == entity_types::HAPPY_GHAST {
@@ -1128,8 +1139,8 @@ impl MobType for HappyGhast {
 
     /// `HappyGhast.mobInteract`: a ghastling as an animal fed snowballs (it grows, and
     /// never falls in love); a grown one first the item's own use (a harness put on),
-    /// then, harnessed and not sneaking, a ride (part R's: nobody gets on yet), then an
-    /// animal's use of no food.
+    /// then, harnessed and not sneaking, a ride (`doPlayerRide`: on, not turned, and a
+    /// success even where it is full), then an animal's use of no food.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if animal::is_baby(used.mob) {
             let result = animal::mob_interact(used, FOOD, None);
@@ -1142,7 +1153,69 @@ impl MobType for HappyGhast {
         if equipped != Interaction::Pass {
             return equipped;
         }
+        if harnessed(used.mob) && !used.sneaking {
+            used.did.push(Did::Mount);
+            return Interaction::Success;
+        }
         animal::mob_interact(used, Items::Of(&[]), None)
+    }
+
+    fn can_add_passenger(&self, _: &Mob, passengers: usize) -> bool {
+        riding::can_add_passenger(passengers)
+    }
+
+    /// The region asks only where its first passenger is the region's player.
+    fn steered_by(&self, mob: &Mob, _: [Option<ItemStack>; 2]) -> bool {
+        riding::steered(mob, true)
+    }
+
+    /// `HappyGhast.tickRidden`: its yaw eight hundredths of the way to its rider's, its
+    /// pitch half theirs (`setRot`, each `% 360`), its head and body to the yaw. The
+    /// server turns it a second step after the client's move, as the game's does.
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        tick.yaw = riding::ridden_yaw(tick.yaw, yaw) % 360.0;
+        tick.pitch = (pitch * 0.5) % 360.0;
+        tick.mob.body.head.body_yaw = tick.yaw;
+        tick.mob.body.head.head_yaw = tick.yaw;
+    }
+
+    /// `isFlyingVehicle()`: a grown one.
+    fn flying_vehicle(&self, mob: &Mob) -> bool {
+        !animal::is_baby(mob)
+    }
+
+    /// `addPassenger`'s: its still timeout cleared, or kept at most 10 where a player
+    /// stands on top, and the goggles down where it carried nobody.
+    fn passenger_added(
+        &self,
+        vehicle: &clustine_world::Entity,
+        mob: &mut Mob,
+        world: &dyn crate::mobs::view::MobWorld,
+    ) -> Option<i32> {
+        let (width, height) = self.dimensions(mob).map_or_else(
+            || {
+                let info = EntityTypeInfo::of(entity_types::HAPPY_GHAST);
+                (info.width, info.height)
+            },
+            |size| (size.width, size.height),
+        );
+        let above = player_above(world, vehicle.position, width, height);
+        riding::passenger_added(mob, !vehicle.riding.passengers.is_empty(), above)
+    }
+
+    /// `removePassenger`'s: still for ten ticks, and with nobody left no home and the
+    /// goggles up.
+    fn passenger_removed(&self, vehicle: &clustine_world::Entity, mob: &mut Mob) -> Option<i32> {
+        riding::passenger_removed(mob, vehicle.riding.passengers.len())
+    }
+
+    /// `getAmbientSoundInterval()`: six times as long while it carries anyone.
+    fn ambient_interval_while(&self, carries: bool) -> u32 {
+        if carries {
+            self.ambient_interval() * 6
+        } else {
+            self.ambient_interval()
+        }
     }
 
     /// `getBreedOffspring`: a happy ghast (what an egg used on one makes).

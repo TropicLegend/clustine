@@ -191,6 +191,7 @@ fn use_with<'a>(
         creative: true,
         sneaking,
         carries: false,
+        passengers: 0,
         player_uuid: None,
         game_time: 0,
         on_ground: true,

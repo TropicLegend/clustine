@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own, variants};
 use super::tamable::{self, Pet, Tame};
-use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used, water};
+use super::{Breeding, Did, Dimensions, Interaction, JumpStart, MobType, Spawning, Used, water};
 use crate::living::{Damage, Sinks, Travel, slots};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
@@ -957,7 +957,36 @@ fn animal_interact(used: &mut Used<'_>, family: &dyn Family) -> Interaction {
 /// where that left it without a rider): nobody is taken on until the riding (part R)
 /// wires it; the click is taken all the same, as the game's is.
 pub(crate) fn ride(used: &mut Used<'_>) {
-    let _ = used;
+    used.did.push(Did::MountOrClearHome);
+}
+
+/// `tickRidden(player, input)` of either nautilus, ridden by a player who looks along
+/// `rider_yaw` and `rider_pitch`: the family's, then its yaw half way to the rider's and
+/// its pitch half theirs (`setRot(yaw, xRot · 0.5)`, each `% 360`), its head and body to
+/// the yaw. The server turns it a second half step after the client's move, as the
+/// game's does (the research note, section 2.4). The jump is the client's.
+pub(crate) fn tick_ridden(tick: &mut MobTick<'_>, rider_yaw: f32, rider_pitch: f32) {
+    let yaw = ridden_yaw(tick.yaw, rider_yaw);
+    tick.yaw = yaw % 360.0;
+    tick.pitch = (rider_pitch * 0.5) % 360.0;
+    tick.mob.body.head.body_yaw = tick.yaw;
+    tick.mob.body.head.head_yaw = tick.yaw;
+}
+
+/// `canJump` (saddled) and `handleStartJump` of either nautilus: its dash's sound by the
+/// medium it is in, of its voice, and `entity_action`; its cooldown of 40 begun where
+/// none runs.
+pub(crate) fn riding_jump(mob: &mut Mob, moment: u32, family: &dyn Family) -> Option<JumpStart> {
+    if !saddled(mob) {
+        return None;
+    }
+    let sound = handle_start_jump(mob, moment, family);
+    Some(JumpStart {
+        sound,
+        volume: 1.0,
+        voice: true,
+        action: true,
+    })
 }
 
 /// `AbstractNautilus.mobInteract` (the brief's 7.12.4).
@@ -1033,7 +1062,6 @@ pub(crate) fn ridden_rotation(rider_yaw: f32, rider_pitch: f32) -> (f32, f32) {
 
 /// `tickRidden`'s turn: the yaw half way to the rider's (its head, body and old yaw set
 /// to it too).
-#[allow(dead_code, reason = "what the riding (part R) calls, which it wires")]
 pub(crate) fn ridden_yaw(own_yaw: f32, rider_yaw: f32) -> f32 {
     own_yaw + wrap_degrees(rider_yaw - own_yaw) * 0.5
 }
@@ -1087,7 +1115,6 @@ pub(crate) fn execute_riders_jump(
 /// is in, and it shows as dashing, with the cooldown of 40 where none ran
 /// (`onSyncedDataUpdated(DASH)`). The sound, for the riding to play with
 /// `GameEvent.ENTITY_ACTION`.
-#[allow(dead_code, reason = "what the riding (part R) calls, which it wires")]
 pub(crate) fn handle_start_jump(mob: &mut Mob, moment: u32, family: &dyn Family) -> i32 {
     let (_, own) = state_of(mob);
     let sound = medium(family.voices(mob).dash, &own);
@@ -1157,6 +1184,18 @@ pub(crate) fn init_memories(spawn: &mut Spawning<'_>, provider: &'static Provide
 impl MobType for Nautilus {
     fn register_goals(&self, setup: &mut Setup) {
         register(setup);
+    }
+
+    fn steered_by(&self, mob: &Mob, _: [Option<ItemStack>; 2]) -> bool {
+        steers(mob)
+    }
+
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        tick_ridden(tick, yaw, pitch);
+    }
+
+    fn riding_jump(&self, mob: &mut Mob, _: i32, moment: u32, _: i64) -> Option<JumpStart> {
+        riding_jump(mob, moment, self)
     }
 
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {

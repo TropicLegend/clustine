@@ -320,7 +320,8 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
         die(struck, source);
     } else if play_sounds {
         // `Mob.playHurtSound`: the ambient sound waits its interval again.
-        struck.mob.body.idle.ambient_since = struck.moment + struck.mob_type.ambient_interval();
+        struck.mob.body.idle.ambient_since =
+            struck.moment + struck.mob_type.ambient_interval_while(struck.carries);
         let sound = struck.mob_type.hurt_sound(struck.mob, source);
         struck.make_sound(sound);
     }

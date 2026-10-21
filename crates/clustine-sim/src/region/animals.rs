@@ -153,6 +153,12 @@ impl Region {
             creative,
             sneaking,
             carries: !entity.riding.passengers.is_empty(),
+            passengers: entity
+                .riding
+                .passengers
+                .iter()
+                .filter(|seat| seat.key != player)
+                .count(),
             on_ground: entity.on_ground,
             from,
             position: entity.position,
@@ -243,6 +249,17 @@ impl Region {
             // (named in `boats.rs`).
             Did::Mount => {
                 self.mount_player(player, entity.key, output);
+            }
+            Did::MountOrClearHome => {
+                self.mount_player(player, entity.key, output);
+                if let Some((chunk, record)) = self.find_entity(entity.key)
+                    && record.riding.passengers.is_empty()
+                    && let Ok(mut homeless) = Mob::decode(&record.data)
+                {
+                    let record = record.clone();
+                    homeless.body.home = Default::default();
+                    self.commit_mob(&record, chunk, &homeless, output);
+                }
             }
             Did::Discard => {
                 if let Some((chunk, record)) = self.find_entity(entity.key) {

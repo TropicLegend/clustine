@@ -311,9 +311,16 @@ pub(crate) trait MobType: Sync {
     /// `handlePlayerCommand(START_RIDING_JUMP)` of a mob its rider steers, other than the
     /// horse family's (`canJump`, then `handleStartJump`): what it does to itself and what
     /// it is heard to do, or `None` where it cannot jump (sitting, unsaddled, no jump at
-    /// all). Nothing but where the type has its own.
-    fn riding_jump(&self, mob: &mut Mob, power: i32, moment: u32) -> Option<JumpStart> {
-        let _ = (mob, power, moment);
+    /// all), at the mob's moment `moment` and the game time `game_time` (a camel's pose is
+    /// reckoned by it). Nothing but where the type has its own.
+    fn riding_jump(
+        &self,
+        mob: &mut Mob,
+        power: i32,
+        moment: u32,
+        game_time: i64,
+    ) -> Option<JumpStart> {
+        let _ = (mob, power, moment, game_time);
         None
     }
 
@@ -459,6 +466,13 @@ pub(crate) trait MobType: Sync {
     /// `getAmbientSoundInterval()`: 80 in `Mob`.
     fn ambient_interval(&self) -> u32 {
         80
+    }
+
+    /// `getAmbientSoundInterval()` of one that carries riders where `carries`: the type's
+    /// own interval but where a rider changes it (a happy ghast's six times as long).
+    fn ambient_interval_while(&self, carries: bool) -> u32 {
+        let _ = carries;
+        self.ambient_interval()
     }
 
     /// `getHurtSound(source)`: `generic.hurt` in `LivingEntity`.
@@ -787,6 +801,9 @@ pub(crate) struct Used<'a> {
     pub(crate) sneaking: bool,
     /// Whether anything rides the mob (`isVehicle`).
     pub(crate) carries: bool,
+    /// How many ride it, seats kept for players on their way counted and the player's
+    /// own stale seat, which getting on replaces, not (`getPassengers().size()`).
+    pub(crate) passengers: usize,
     /// Whether the mob stands on the ground (a parrot flying is not sat down).
     pub(crate) on_ground: bool,
     /// The player's feet.
@@ -840,6 +857,9 @@ pub(crate) enum Did {
     Convert { kind: u16, drops: Vec<ItemStack> },
     /// `player.startRiding(mob)`: the player who used it gets on, where they may.
     Mount,
+    /// [`Did::Mount`], and where the mob then carries nobody (the mount was refused),
+    /// `clearHome()` (a nautilus's `doPlayerRide`).
+    MountOrClearHome,
     /// `discard()`: the mob gone, dropping nothing (a fish taken in a bucket).
     Discard,
     /// `openCustomInventoryScreen(player)`: the player's menu of the mob's inventory

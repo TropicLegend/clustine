@@ -76,6 +76,7 @@ fn used(
         creative: true,
         sneaking,
         carries: false,
+        passengers: 0,
         on_ground: true,
         from: [3.0, 64.0, 0.0],
         position: [0.0, 64.0, 0.0],
@@ -477,10 +478,10 @@ fn a_saddle_and_nautilus_armour_go_on_a_tamed_adult_only_with_its_own_saddling_s
         replay.next_u64();
         assert_eq!(stream, replay);
         assert!(nautilus::steers(&mob));
-        // A second saddle does nothing more: it rides (the seam).
+        // A second saddle does nothing more: it takes the player on.
         let (result, did) = used(NAUTILUS, &mut mob, one(items::SADDLE), false, &mut draws());
         assert_eq!(result, Interaction::Success);
-        assert!(did.is_empty());
+        assert_eq!(did, [Did::MountOrClearHome]);
     }
     let mut mob = nautilus_with(ZOMBIE, &Animal::default(), &tamed());
     let (result, did) = used(
@@ -505,11 +506,11 @@ fn a_saddle_and_nautilus_armour_go_on_a_tamed_adult_only_with_its_own_saddling_s
 }
 
 #[test]
-fn a_tamed_nautilus_clicked_sneaking_or_empty_handed_takes_the_click_and_nobody_on_yet() {
+fn a_tamed_nautilus_clicked_empty_handed_takes_the_player_on_and_sneaking_takes_the_click() {
     let mut mob = nautilus_with(NAUTILUS, &Animal::default(), &tamed());
     let (result, did) = used(NAUTILUS, &mut mob, None, false, &mut draws());
     assert_eq!(result, Interaction::Success);
-    assert!(did.is_empty());
+    assert_eq!(did, [Did::MountOrClearHome]);
     let (result, did) = used(NAUTILUS, &mut mob, one(items::COD), true, &mut draws());
     assert_eq!(result, Interaction::Success);
     assert!(did.is_empty());

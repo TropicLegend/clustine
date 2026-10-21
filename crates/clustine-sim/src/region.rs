@@ -3506,6 +3506,7 @@ mod tests {
     mod minecarts;
     mod mob_bodies;
     mod mobs;
+    mod mount_riding;
     mod pigs;
     mod pistons;
     mod post_processing_and_seams;

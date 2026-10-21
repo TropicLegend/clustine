@@ -53,6 +53,7 @@ fn use_with(
         creative: true,
         sneaking: false,
         carries: false,
+        passengers: 0,
         on_ground: true,
         from: [0.0, 0.0, 2.0],
         position: [0.5, 0.0, 0.5],

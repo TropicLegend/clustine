@@ -1024,10 +1024,19 @@ impl Region {
             }
             return on_top;
         }
+        // `HappyGhast.getDismountLocationForPassenger`: on its top, at its middle, always.
+        if i32::from(vehicle.kind) == clustine_data::entity_types::HAPPY_GHAST {
+            return on_top;
+        }
         // `AbstractHorse.getDismountLocationForPassenger`: the side of the rider's main arm
         // (every player's is the right), then the other, each by
-        // `getDismountLocationInDirection`; failing both, the horse's own position.
-        if crate::mobs::types::equine::is_equine(vehicle.kind) {
+        // `getDismountLocationInDirection`; failing both, the horse's own position. A
+        // camel's and a camel husk's are the family's, of its own width.
+        let camel = matches!(
+            i32::from(vehicle.kind),
+            clustine_data::entity_types::CAMEL | clustine_data::entity_types::CAMEL_HUSK
+        );
+        if crate::mobs::types::equine::is_equine(vehicle.kind) || camel {
             let info = EntityTypeInfo::of(i32::from(vehicle.kind));
             let rider = EntityTypeInfo::of(i32::from(passenger.kind));
             let width = poses.first().map_or(rider.width, |pose| pose.width);

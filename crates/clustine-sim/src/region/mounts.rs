@@ -161,7 +161,10 @@ impl Region {
         let Ok(mut mob) = Mob::decode(&vehicle.data) else {
             return;
         };
-        let Some(jump) = types::of(vehicle.kind).riding_jump(&mut mob, power, vehicle.lived) else {
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let Some(jump) =
+            types::of(vehicle.kind).riding_jump(&mut mob, power, vehicle.lived, game_time)
+        else {
             return;
         };
         let pitch = if jump.voice {

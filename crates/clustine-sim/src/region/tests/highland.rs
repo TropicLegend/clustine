@@ -576,7 +576,7 @@ fn a_camel_fed_cactus_heals_loves_or_grows_with_its_sound_and_its_husk_eats_rabb
 }
 
 #[test]
-fn a_saddle_goes_on_a_grown_camel_with_its_own_sound_and_a_click_without_one_mounts_no_one_yet() {
+fn a_saddle_goes_on_a_grown_camel_with_its_own_sound_and_a_click_without_one_takes_the_player_on() {
     for (kind, sound) in [
         (entity_types::CAMEL, sounds::ENTITY_CAMEL_SADDLE),
         (entity_types::CAMEL_HUSK, sounds::ENTITY_CAMEL_HUSK_SADDLE),
@@ -599,10 +599,10 @@ fn a_saddle_goes_on_a_grown_camel_with_its_own_sound_and_a_click_without_one_mou
         assert!(equine::is_saddled(&saddled), "{kind}");
         assert_eq!(heard(&output, sound), 1);
         assert!(camel::riding::steered_by_rider(&saddled));
-        // An empty hand: the riding's, which mounts no one until part R.
+        // Anything else in hand: `doPlayerRide`, the player on.
         holding(&mut region, one(items::STICK));
         use_on(&mut region, ONE, false);
-        assert!(record(&region, ONE).riding.passengers.is_empty());
+        assert_eq!(record(&region, ONE).riding.passengers.len(), 1);
     }
     // A calf takes no saddle.
     let mut region = on_ticking_floor_with(&[]);

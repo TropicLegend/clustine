@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Animal};
 use super::equine::{self, Behaviour, Equine, HorseState};
-use super::{Breeding, Did, Dimensions, Interaction, Mate, MobType, Spawning, Used};
+use super::{Breeding, Did, Dimensions, Interaction, JumpStart, Mate, MobType, Spawning, Used};
 use crate::living::{Landing, slots};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
@@ -497,8 +497,8 @@ fn equip_saddle(used: &mut Used<'_>, breed: &Breed) -> Interaction {
 }
 
 /// `Camel.mobInteract`: a sneaking player opens a grown one's menu; a saddle goes on;
-/// its food is fed; a calf may be given a golden dandelion. Getting on (`doPlayerRide`)
-/// is the riding's, not wired yet: such a click does nothing until it is.
+/// its food is fed; a grown one with fewer than two aboard takes the player on
+/// (`doPlayerRide`, no saddle needed); a calf may be given a golden dandelion.
 fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
     if breed.kept_by_a_use {
         // `CamelHusk.interact`: any use makes it persistent first.
@@ -520,8 +520,13 @@ fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
             Interaction::Pass
         };
     }
+    if riding::click_mounts(used.mob, used.passengers) {
+        used.did.push(Did::Ride);
+        return Interaction::Consume;
+    }
     if !baby {
-        // The seam of part R: `doPlayerRide(player)`, where it has room for one more.
+        // The game's `FAIL`, which on the server does as a pass does: the item's own use
+        // is tried, and nothing comes of it on a grown camel.
         return Interaction::Pass;
     }
     if animal::is_item(used.held, items::GOLDEN_DANDELION) {
@@ -815,9 +820,24 @@ pub(crate) mod riding {
 
     /// `handleStartJump(power)`: the dash begins. Its sound (`makeSound`, of the
     /// camel's voice) and `ENTITY_ACTION` are the caller's.
-    pub(crate) fn handle_start_jump(kind: u16, mob: &mut Mob) -> i32 {
-        update(mob, |camel| camel.dashing = true);
+    pub(crate) fn handle_start_jump(kind: u16, mob: &mut Mob, moment: u32) -> i32 {
+        set_dashing(mob, true, moment);
         breed_of(kind).sounds.dash
+    }
+
+    /// `setDashing(dashing)` at the moment `moment`, with what the server's
+    /// `onSyncedDataUpdated(DASH)` does where the flag changes: the cooldown of 55 begun
+    /// where none runs (the research note, section 3), so that a dash from the command
+    /// ends on the ground and sounds ready 55 ticks after it.
+    pub(crate) fn set_dashing(mob: &mut Mob, dashing: bool, moment: u32) {
+        let changed = camel_of(mob).dashing != dashing;
+        let idle = dash_cooldown(mob, moment) == 0;
+        update(mob, |camel| {
+            camel.dashing = dashing;
+            if changed && idle {
+                camel.dash_until = moment.saturating_add(DASH_COOLDOWN);
+            }
+        });
     }
 
     /// `executeRidersJump(scale, input)`: the push of a dash at the moment `lived`, for
@@ -1057,7 +1077,7 @@ impl MobType for Camel {
         let settled =
             body.on_ground || body.in_water || tick.living.in_lava() || tick.vehicle.is_some();
         if camel.dashing && cooldown < DASH_ENDS_BELOW && settled {
-            update(&mut tick.mob, |camel| camel.dashing = false);
+            riding::set_dashing(&mut tick.mob, false, lived);
         }
         if cooldown == 1 {
             update(&mut tick.mob, |camel| camel.dash_until = 0);
@@ -1107,6 +1127,65 @@ impl MobType for Camel {
 
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         mob_interact(used, self.breed)
+    }
+
+    fn can_add_passenger(&self, _: &Mob, passengers: usize) -> bool {
+        riding::can_add_passenger(passengers)
+    }
+
+    /// Its seats move with its pose, read at the game time. **Named**: a mob that rides
+    /// it is taken as no animal, so an animal behind a player would sit 0.2 too far back
+    /// (none rides a camel yet: only the husk's riders of N9 would).
+    fn seat(
+        &self,
+        vehicle: &clustine_world::Entity,
+        mob: &Mob,
+        index: usize,
+        count: usize,
+        _: u16,
+        game_time: i64,
+    ) -> Option<Vec3> {
+        let height = dimensions_of(mob).map_or_else(
+            || clustine_data::EntityTypeInfo::of(self.breed.kind).height,
+            |size| size.height,
+        );
+        Some(riding::seat(
+            mob,
+            game_time,
+            index,
+            count,
+            false,
+            height,
+            riding::age_scale(mob),
+            vehicle.yaw,
+            false,
+        ))
+    }
+
+    fn steered_by(&self, mob: &Mob, _: [Option<ItemStack>; 2]) -> bool {
+        riding::steered_by_rider(mob)
+    }
+
+    /// `Camel.tickRidden` on the server, which never has its rider's keys (the research
+    /// note, section 2.1): a sitting camel is stood up only by its rider's own client.
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        riding::tick_ridden(tick, yaw, pitch, 0.0);
+    }
+
+    /// `canJump` and `handleStartJump`: the dash's sound at the camel's volume and voice,
+    /// and `entity_action`; the server tests no cooldown before it.
+    fn riding_jump(&self, mob: &mut Mob, _: i32, moment: u32, game_time: i64) -> Option<JumpStart> {
+        if !riding::can_jump(mob, game_time) {
+            return None;
+        }
+        let kind = u16::try_from(self.breed.kind).expect("entity type ids fit 16 bits");
+        let sound = riding::handle_start_jump(kind, mob, moment);
+        Some(JumpStart {
+            sound,
+            volume: self.sound_volume(),
+            voice: true,
+            action: true,
+        })
     }
 
     /// `Camel.finalizeSpawn`: standing as if long since, then the family's (nothing of
