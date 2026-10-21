@@ -90,6 +90,49 @@ impl Region {
             .map(|(id, _)| *id)
     }
 
+    /// `FoodOnAStickItem.use` of the carrot on a stick `held` by the player `id`: the pig
+    /// they drive boosts, unless it boosts already (`Pig.boost`, one draw of its own
+    /// random); the stick takes no wear of a creative player, which every player is.
+    /// Whether the use was this.
+    pub(crate) fn steered_boost(
+        &mut self,
+        id: PlayerId,
+        held: Option<i32>,
+        output: &mut TickOutput,
+    ) -> bool {
+        if held != Some(clustine_data::items::CARROT_ON_A_STICK) {
+            return false;
+        }
+        let Some(player) = self.players.get(&id) else {
+            return false;
+        };
+        let Some(riding) = player.riding else {
+            return false;
+        };
+        let rider = player.entity_id;
+        // `getControlledVehicle`: the vehicle they ride, where they are its driver.
+        let Some((chunk, vehicle)) = self.find_entity(riding.vehicle) else {
+            return false;
+        };
+        let vehicle = vehicle.clone();
+        if i32::from(vehicle.kind) != clustine_data::entity_types::PIG
+            || !self.drives_root(&vehicle, rider)
+        {
+            return false;
+        }
+        let Ok(mut mob) = crate::mobs::Mob::decode(&vehicle.data) else {
+            return false;
+        };
+        let mut stream = self.entity_stream(vehicle.key).random;
+        let start = stream.clone();
+        let boosted = crate::mobs::types::pig::boost(&mut mob, &mut stream);
+        self.entity_drew(vehicle.key, stream.draws_since(&start));
+        if boosted {
+            self.commit_mob(&vehicle, chunk, &mob, output);
+        }
+        boosted
+    }
+
     /// `startRiding(vehicle)` of the player whose entity is `rider`, after a use of the
     /// vehicle: whether they got on. A player who sneaks does not (`canRide`), nor one
     /// who rides it already; one who rides another vehicle gets off it first. The
@@ -574,6 +617,11 @@ impl Region {
 
     /// A move of their vehicle by the client of a player who waits for it: kept, the
     /// oldest let go beyond [`crate::state::KEPT_MOVES`].
+    /// **Named**: a move kept so is judged at the seating by who controls the vehicle
+    /// then, not when it came; a rider who puts their carrot on a stick away in the one
+    /// to three ticks of a crossing has those moves taken as a passenger's
+    /// (`docs/groundwork/n7h-riding-plan.md`, section 10 item 7: what is kept would have
+    /// to change the transfer's format).
     pub(crate) fn keep_vehicle_move(&mut self, id: PlayerId, moved: crate::api::VehicleMove) {
         let Some(player) = self.players.get_mut(&id) else {
             return;

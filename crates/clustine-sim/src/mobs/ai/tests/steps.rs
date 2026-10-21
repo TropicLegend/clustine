@@ -37,6 +37,7 @@ fn travel(ticked: &mut Ticked, plot: &Plot, speed: f32) -> MobOutput {
     ticked.mob.body.inputs.zza = 1.0;
     ticked.mob.body.inputs.speed = speed;
     let mut tick = MobTick {
+        ridden: Default::default(),
         key: MOB_KEY,
         kind: entity_types::COW as u16,
         lived: ticked.lived,

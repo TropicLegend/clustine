@@ -2208,7 +2208,9 @@ impl Region {
                     inventory: player.inventory.clone(),
                 };
                 let sequence = *sequence;
-                if self.entity_item_used(&item_use, id, output) {
+                if self.steered_boost(id, item_use.held, output)
+                    || self.entity_item_used(&item_use, id, output)
+                {
                     if let Some(player) = self.players.get_mut(&id) {
                         player.acknowledge(sequence);
                     }
@@ -3387,6 +3389,7 @@ mod tests {
     mod minecarts;
     mod mob_bodies;
     mod mobs;
+    mod pigs;
     mod pistons;
     mod post_processing_and_seams;
     mod pressed;

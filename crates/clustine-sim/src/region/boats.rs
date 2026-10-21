@@ -56,6 +56,7 @@ use super::leashes;
 use super::random_ticks::Random;
 use super::riding::Relocated;
 use crate::api::{PlayerEvent, RegionEvent, TickOutput, Tracked, VehicleMove};
+use crate::mobs::Mob;
 use crate::physics::aabb::Aabb;
 use crate::physics::boat::{self, Floating, NO_STATUS, OUT_OF_CONTROL, Status};
 use crate::physics::body::{Body, Bounce, Movement};
@@ -460,6 +461,26 @@ impl Region {
         })
     }
 
+    /// Whether the player whose entity is `player` drives the root `root`: a boat's
+    /// first seated player, or a mob's whom its type lets steer it as they hold what they
+    /// hold now (`getControllingPassenger`, `docs/groundwork/n7h-riding-plan.md`,
+    /// section 3 item 2).
+    pub(crate) fn drives_root(&self, root: &Entity, player: EntityId) -> bool {
+        if is_boat(root.kind) {
+            return drives(root, player);
+        }
+        let first = root.riding.passengers.first();
+        if !first.is_some_and(|seat| seat.player && seat.key == player && seat.pending.is_none()) {
+            return false;
+        }
+        Mob::decode(&root.data).is_ok_and(|mob| {
+            matches!(
+                self.ridden(root, &mob),
+                crate::mobs::tick::Ridden::Driven { .. }
+            )
+        })
+    }
+
     /// Whether the boat `key` is driven, as its record says now.
     fn is_driven(&self, key: EntityId) -> bool {
         self.find_entity(key)
@@ -797,6 +818,7 @@ impl Region {
             bounce: boat_bounce(),
             passenger,
             last_yd: floating.last_yd,
+            living: false,
         };
         vehicle_move::move_boat(&view, &mut root, vector);
         boat.body = root.body;
@@ -1544,7 +1566,7 @@ impl Region {
             return;
         };
         let root = root.clone();
-        if !drives(&root, entity) {
+        if !self.drives_root(&root, entity) {
             let (check, correction) = vehicle_move::passenger_move(
                 &riding.check,
                 root.position,
@@ -1586,6 +1608,7 @@ impl Region {
         memory.boat.vertical_collision_below = checked.body.vertical_collision_below;
         memory.boat.last_yd = checked.last_yd;
         self.entity_memory.insert(root.key, memory);
+        let fell = checked.body.fell_on;
         let mut after = Entity {
             position: checked.body.position,
             motion: checked.body.motion,
@@ -1610,12 +1633,121 @@ impl Region {
         if to == chunk {
             self.commit_moved_root(&root, &after, chunk, output);
         }
+        // A living root's landing hurts it as its own would (`causeFallDamage`), after
+        // its fall is passed on to its riders (`propagateFallToPassengers`), which hurts
+        // none of Clustine's players: they are all creative.
+        if !is_boat(root.kind)
+            && let Some((distance, on)) = fell
+        {
+            self.living_root_landed(after.key, distance, on, output);
+        }
         let mut report = tracked(&after, 0, false);
         report.chunk = to;
         output.events.push(RegionEvent::EntityTracked(report));
         if let Some((position, yaw, pitch)) = correction {
             corrected(id, position, yaw, pitch, output);
         }
+    }
+
+    /// `LivingEntity.causeFallDamage` of the region's mob `key`, which a move of its
+    /// driver's ended a fall of `distance` on the block at `on` with: its sounds, and its
+    /// hurt between its ticks, of which it may die.
+    fn living_root_landed(
+        &mut self,
+        key: EntityId,
+        distance: f64,
+        on: BlockPos,
+        output: &mut TickOutput,
+    ) {
+        let Some((chunk, record)) = self.find_entity(key) else {
+            return;
+        };
+        let record = record.clone();
+        let info = EntityTypeInfo::of(i32::from(record.kind));
+        let (width, height, eye) = crate::mobs::types::own_size(&record)
+            .map_or((info.width, info.height, info.eye_height), |size| {
+                (size.width, size.height, size.eye_height)
+            });
+        let body = self.living_body(&record, width, height, chunk);
+        let kind = crate::living::Kind::Mob {
+            kind: record.kind,
+            hurts: Vec::new(),
+        };
+        let mut living = crate::living::Living::new(body, kind, eye);
+        let view = View {
+            region: self,
+            home: chunk,
+        };
+        living.landed(&view, distance, on);
+        let hurts = match &mut living.kind {
+            crate::living::Kind::Mob { hurts, .. } => std::mem::take(hurts),
+            crate::living::Kind::ArmorStand { .. } => Vec::new(),
+        };
+        self.living_aftermath(key, &mut living, output);
+        for (damage, amount) in hurts {
+            let source = crate::mobs::body::hurt::DamageSource::of(
+                crate::mobs::body::hurt::DamageType::from(damage),
+            );
+            self.hurt_mob(key, &source, amount, output);
+        }
+    }
+
+    /// The check of one move of the living root `root` (a ridden pig) by the player who
+    /// drives it: its body as its tick would begin, its gravity, and its step raised to a
+    /// block while a player drives it (`LivingEntity.maxUpStep`).
+    fn check_living_root_move(
+        &self,
+        root: &Entity,
+        chunk: ChunkPos,
+        riding: &PlayerRiding,
+        moved: &VehicleMove,
+        test_speed: bool,
+    ) -> Option<Checked> {
+        let info = EntityTypeInfo::of(i32::from(root.kind));
+        Mob::decode(&root.data).ok()?;
+        let (width, height) = crate::mobs::types::own_size(root)
+            .map_or((info.width, info.height), |size| (size.width, size.height));
+        let mut body = self.living_body(root, width, height, chunk);
+        body.movements = self
+            .entity_memory
+            .get(&root.key)
+            .map_or_else(Vec::new, |memory| memory.boat.recorded.clone());
+        let attributes = crate::living::Attributes::LIVING;
+        let step = crate::mobs::body::attributes::supplied(
+            root.kind,
+            crate::mobs::body::attribute(clustine_data::attributes::STEP_HEIGHT),
+        )
+        .map_or(0.6, |value| value as f32);
+        let bounce = Bounce {
+            gravity: attributes.gravity,
+            air_drag: 0.98,
+            own: attributes.bounciness,
+            living: true,
+            rails_keep_speed: false,
+            max_up_step: step.max(1.0),
+        };
+        let view = View {
+            region: self,
+            home: chunk,
+        };
+        let root = Root {
+            body,
+            yaw: root.yaw,
+            pitch: root.pitch,
+            gravity: attributes.gravity,
+            bounce,
+            passenger: root.riding.vehicle.is_some(),
+            last_yd: 0.0,
+            living: true,
+        };
+        Some(vehicle_move::check_move(
+            &view,
+            &riding.check,
+            root,
+            moved,
+            false,
+            test_speed,
+        ))
     }
 
     /// The check of one move of the root `root` of the chunk `chunk` by the player whose
@@ -1628,11 +1760,14 @@ impl Region {
         moved: &VehicleMove,
         test_speed: bool,
     ) -> Option<Checked> {
-        let tick = self.boat_tick_of(root, chunk)?;
         let view = View {
             region: self,
             home: chunk,
         };
+        if !is_boat(root.kind) {
+            return self.check_living_root_move(root, chunk, riding, moved, test_speed);
+        }
+        let tick = self.boat_tick_of(root, chunk)?;
         let root = Root {
             body: tick.body,
             yaw: tick.yaw,
@@ -1641,6 +1776,7 @@ impl Region {
             bounce: boat_bounce(),
             passenger: root.riding.vehicle.is_some(),
             last_yd: tick.memory.last_yd,
+            living: false,
         };
         Some(vehicle_move::check_move(
             &view,
@@ -1713,8 +1849,16 @@ impl Region {
             let root_key = self.root_of(riding.vehicle);
             let driving = self
                 .find_entity(root_key)
-                .filter(|(_, root)| drives(root, entity))
-                .map(|(_, root)| (root.position, boat::GRAVITY));
+                .filter(|(_, root)| self.drives_root(root, entity))
+                .map(|(_, root)| {
+                    // A living root's gravity, a pig's 0.08: 80 ticks in the air at most.
+                    let gravity = if is_boat(root.kind) {
+                        boat::GRAVITY
+                    } else {
+                        crate::living::Attributes::LIVING.gravity
+                    };
+                    (root.position, gravity)
+                });
             let (check, kicked) = vehicle_move::end_of_tick(&riding.check, driving, false);
             self.set_check(id, check);
             if kicked {

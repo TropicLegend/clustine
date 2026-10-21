@@ -102,6 +102,22 @@ pub(crate) trait MobType: Sync {
         let _ = tick;
     }
 
+    /// Whether a player riding it first, holding `hands` (the main hand's, the off
+    /// hand's), steers it (`getControllingPassenger`): never but where the type says. The
+    /// region asks every tick and at every move, as the game asks, so a change of what
+    /// the player holds hands the mob back to its own mind at once
+    /// (`docs/groundwork/n7h-riding-plan.md`, section 3 item 2).
+    fn steered_by(&self, mob: &Mob, hands: [Option<ItemStack>; 2]) -> bool {
+        let _ = (mob, hands);
+        false
+    }
+
+    /// `tickRidden(player, input)` of a mob a player steers, whose rotation is `yaw` and
+    /// `pitch`: nothing but where the type has its own.
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        let _ = (tick, yaw, pitch);
+    }
+
     /// What the type's `actuallyHurt` does before the body's (an animal's love ends),
     /// at the moment `moment`.
     fn actually_hurt(&self, mob: &mut Mob, moment: u32) {
@@ -232,6 +248,8 @@ pub(crate) struct Used<'a> {
     /// Whether the player is a creative one (every player is: what they use is kept).
     pub(crate) creative: bool,
     pub(crate) sneaking: bool,
+    /// Whether anything rides the mob (`isVehicle`).
+    pub(crate) carries: bool,
     /// The player's feet.
     pub(crate) from: Vec3,
     /// The mob's feet.
@@ -278,6 +296,8 @@ pub(crate) enum Did {
     /// `convertTo(kind, single)`: the mob made a mob of `kind` where it stands, with
     /// `drops` laid at its top before the new mob is added, and itself gone.
     Convert { kind: u16, drops: Vec<ItemStack> },
+    /// `player.startRiding(mob)`: the player who used it gets on, where they may.
+    Mount,
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random

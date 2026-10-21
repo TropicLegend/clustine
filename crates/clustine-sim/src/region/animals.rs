@@ -134,6 +134,7 @@ impl Region {
             held,
             creative,
             sneaking,
+            carries: !entity.riding.passengers.is_empty(),
             from,
             position: entity.position,
             moment: entity.lived,
@@ -213,6 +214,11 @@ impl Region {
                 self.spawn_item_pushed(at, stack, pick_up_delay, push, output);
             }
             Did::Convert { kind, drops } => self.convert_mob(entity.key, kind, &drops, output),
+            // Of a player of the region: one across a line does not get on, as on a boat
+            // (named in `boats.rs`).
+            Did::Mount => {
+                self.mount_player(player, entity.key, output);
+            }
         }
     }
 

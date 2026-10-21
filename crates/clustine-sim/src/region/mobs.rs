@@ -13,7 +13,7 @@ use super::items::{Memory, View, tracked};
 use super::riding::Relocated;
 use crate::api::{PlayerFace, RegionEvent, TickOutput, Tracked};
 use crate::living::{Kind, Living};
-use crate::mobs::tick::{MobOutput, MobTick};
+use crate::mobs::tick::{MobOutput, MobTick, Ridden};
 use crate::mobs::view::{LightAt, MobWorld, Seen, SeenPlayer};
 use crate::mobs::{Mob, tick, types};
 use crate::physics::body::{Movement, Steps};
@@ -206,7 +206,9 @@ impl Region {
             .vehicle
             .and_then(|vehicle| self.find_entity(vehicle))
             .map(|(_, vehicle)| vehicle.kind);
+        let ridden = self.ridden(&entity, &mob);
         let mut ticking = MobTick {
+            ridden,
             key,
             kind: entity.kind,
             lived: entity.lived,
@@ -378,6 +380,39 @@ impl Region {
             let mut report = tracked(&after, flags, !parts.is_empty());
             report.chunk = to;
             output.events.push(RegionEvent::EntityTracked(report));
+        }
+    }
+}
+
+impl Region {
+    /// How the mob `entity` is ridden as its tick begins: its first seat a player's on
+    /// their way to it, kept still; or a player of the region its type lets steer it as
+    /// they hold what they hold now (the region's own players only, never a face).
+    pub(crate) fn ridden(&self, entity: &Entity, mob: &crate::mobs::Mob) -> Ridden {
+        let Some(seat) = entity.riding.passengers.first() else {
+            return Ridden::Not;
+        };
+        if !seat.player {
+            return Ridden::Not;
+        }
+        if seat.pending.is_some() {
+            return Ridden::Pending;
+        }
+        let Some(id) = self.player_with_entity(seat.key) else {
+            return Ridden::Not;
+        };
+        let player = &self.players[&id];
+        let hands = [
+            player.inventory.0[usize::from(player.selected_slot)],
+            player.inventory.0[clustine_world::OFF_HAND],
+        ];
+        if types::of(entity.kind).steered_by(mob, hands) {
+            Ridden::Driven {
+                yaw: player.pose.yaw,
+                pitch: player.pose.pitch,
+            }
+        } else {
+            Ridden::Not
         }
     }
 }

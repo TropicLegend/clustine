@@ -1009,6 +1009,35 @@ impl Region {
             }
             return on_top;
         }
+        // `Animal.getDismountLocationForPassenger`: the places about the mob's own block
+        // by its way (`getMotionDirection`, of its yaw), for each of the rider's poses,
+        // on a valid floor (climbables count) where the pose's box fits; else on top.
+        if matches!(vehicle.data, EntityData::Mob { .. }) {
+            let direction = direction_from_yaw(vehicle.yaw);
+            let base = physics::containing(vehicle.position);
+            for pose in poses {
+                let half = f64::from(pose.width / 2.0);
+                let bounds = Aabb::new([-half, 0.0, -half], [half, f64::from(pose.height), half]);
+                for (dx, dz) in offsets_for_direction(direction) {
+                    let pos = BlockPos::new(base.x + dx, base.y, base.z + dz);
+                    let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+                    let floor = block_floor_height(empty_context_shape(view.state(pos)), || {
+                        empty_context_shape(view.state(below))
+                    });
+                    if !is_floor_valid(floor) {
+                        continue;
+                    }
+                    let at = [
+                        f64::from(pos.x) + 0.5,
+                        f64::from(pos.y) + floor,
+                        f64::from(pos.z) + 0.5,
+                    ];
+                    if fits(&bounds.moved(at)) {
+                        return at;
+                    }
+                }
+            }
+        }
         on_top
     }
 

@@ -536,7 +536,7 @@ impl Living {
     /// **Inferred**: the blocks' own `fallOn` are not in the dump; the multipliers are
     /// the game's as the reference servers have them (a hay bale and honey a fifth, a
     /// bed half the fall, slime and powder snow none); any other block is the default.
-    fn landed<W: World + ?Sized>(&mut self, world: &W, distance: f64, on: BlockPos) {
+    pub(crate) fn landed<W: World + ?Sized>(&mut self, world: &W, distance: f64, on: BlockPos) {
         let state = world.state(on);
         let (distance, multiplier) =
             if is_class(state, BlockClass::HayBlock) || is_class(state, BlockClass::HoneyBlock) {

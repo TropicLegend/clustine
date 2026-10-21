@@ -2,9 +2,11 @@
 //! potatoes and beetroots, tempted by a carrot on a stick too, that takes a saddle, of a
 //! temperature variant drawn by its biome and a sound variant drawn at random.
 //!
-//! Named differences: a saddled pig is not ridden (riding comes with N7h), so a use of a
-//! saddled pig is an animal's; its boost is never drawn, and its synced boost time is
-//! always nothing; lightning does not make a zombified piglin of it (N9).
+//! A saddled pig takes a player on, who steers it holding a carrot on a stick and
+//! boosts it with a use of the stick (`docs/groundwork/n7h-riding-plan.md`).
+//!
+//! Named differences: lightning does not make a zombified piglin of it (N9); a player
+//! of another region does not get on it across a line, as on a boat.
 
 use clustine_blocks::data::entity_in_tag;
 use clustine_data::{items, sounds};
@@ -65,6 +67,59 @@ impl Default for PigState {
 }
 
 impl Own for PigState {}
+
+/// `ItemBasedSteering`: whether it is boosting, the ticks it has boosted, and the
+/// boost's length (`DATA_BOOST_TIME`, synced). Kept after [`PigState`] in its type's
+/// record, so that a pig kept before there was a boost reads as without one; durable,
+/// as a crossing of a line carries the record and a boost kept apart would be
+/// forgotten at every line (`docs/groundwork/n7h-riding-plan.md`, section 10 item 5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Boost {
+    pub(crate) boosting: bool,
+    pub(crate) time: u32,
+    pub(crate) total: i32,
+}
+
+/// The pig's boost, as its record has it.
+pub(crate) fn boost_of(mob: &Mob) -> Boost {
+    let rest = animal::own_bytes(&mob.state);
+    match postcard::take_from_bytes::<PigState>(rest) {
+        Ok((_, after)) if !after.is_empty() => postcard::from_bytes(after).unwrap_or_default(),
+        _ => Boost::default(),
+    }
+}
+
+/// Keeps `boost` in the pig's record, all else as it was.
+fn set_boost(mob: &mut Mob, boost: Boost) {
+    let (animal, own) = animal::read::<PigState>(&mob.state);
+    let tail = if boost == Boost::default() {
+        Vec::new()
+    } else {
+        postcard::to_allocvec(&boost).expect("a boost is encoded into memory")
+    };
+    mob.state = animal::write_with_tail(&animal, &own, &tail);
+}
+
+/// `Pig.boost()`, `ItemBasedSteering.boost(random)`: refused while it boosts; else it
+/// boosts from 0 for `nextInt(841) + 140` ticks, drawn from the pig's own random
+/// (the class's 140 and 700 are not what it draws). Whether it began.
+pub(crate) fn boost(mob: &mut Mob, draws: &mut crate::region::Random) -> bool {
+    let mut boost = boost_of(mob);
+    if boost.boosting {
+        return false;
+    }
+    boost.boosting = true;
+    boost.time = 0;
+    boost.total = draws.next_int(841) as i32 + 140;
+    set_boost(mob, boost);
+    true
+}
+
+/// `Mob.isSaddled()`: a saddle in its saddle slot.
+fn saddled(mob: &Mob) -> bool {
+    mob.body.equipment.slots[slots::SADDLE as usize]
+        .is_some_and(|stack| stack.count > 0 && stack.item == items::SADDLE)
+}
 
 /// The pig.
 pub(crate) struct Pig;
@@ -169,15 +224,48 @@ impl MobType for Pig {
         animal::after_ai_step(tick);
     }
 
-    /// `Pig.mobInteract`: an animal's use (a saddled pig is not mounted, named), then a
-    /// saddle put on.
+    /// `Pig.mobInteract`: a saddled pig that carries nobody takes on a player who does
+    /// not sneak and holds no food of it; else an animal's use, then a saddle put on.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
+        let food = FOOD.test(used.held);
+        if !food && saddled(used.mob) && !used.carries && !used.sneaking {
+            used.did.push(Did::Mount);
+            return Interaction::Success;
+        }
         let eat = sound_set(used.mob)[3];
         let result = animal::mob_interact(used, FOOD, Some(eat));
         if result != Interaction::Pass {
             return result;
         }
         equip_saddle(used)
+    }
+
+    /// `Pig.getControllingPassenger`: saddled, and the player holds a carrot on a stick
+    /// in either hand.
+    fn steered_by(&self, mob: &Mob, hands: [Option<clustine_world::ItemStack>; 2]) -> bool {
+        saddled(mob)
+            && hands.iter().any(|hand| {
+                hand.is_some_and(|stack| stack.count > 0 && stack.item == items::CARROT_ON_A_STICK)
+            })
+    }
+
+    /// `Pig.tickRidden`: the rider's yaw and half their pitch, each `% 360`, the body
+    /// and the head turned to the yaw; and `ItemBasedSteering.tickBoost`, which counts
+    /// only while it is steered: `boosting && boostTime++ > total` ends it.
+    fn tick_ridden(&self, tick: &mut MobTick<'_>, yaw: f32, pitch: f32) {
+        tick.yaw = yaw % 360.0;
+        tick.pitch = (pitch * 0.5) % 360.0;
+        tick.mob.body.head.body_yaw = tick.yaw;
+        tick.mob.body.head.head_yaw = tick.yaw;
+        let mut boost = boost_of(&tick.mob);
+        if boost.boosting {
+            let before = boost.time;
+            boost.time += 1;
+            if i64::from(before) > i64::from(boost.total) {
+                boost.boosting = false;
+            }
+            set_boost(&mut tick.mob, boost);
+        }
     }
 
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
@@ -248,7 +336,9 @@ impl MobType for Pig {
         let (_, own) = animal::read::<PigState>(&mob.state);
         let fresh = PigState::default();
         let mut values = animal::shown(mob);
-        values.push((BOOST_INDEX, DataShown::Int(0), true));
+        // `DATA_BOOST_TIME`: the last boost's length, kept when it is over.
+        let total = boost_of(mob).total;
+        values.push((BOOST_INDEX, DataShown::Int(total), total == 0));
         values.push((
             VARIANT_INDEX,
             DataShown::Holder(Holder::PigVariant, i32::from(own.variant)),

@@ -70,6 +70,10 @@ pub(crate) struct Root {
     pub(crate) passenger: bool,
     /// `lastYd`, which a boat's fall check sets (`AbstractBoat.checkFallDamage`).
     pub(crate) last_yd: f64,
+    /// Whether it is a living entity (a ridden pig), which moves as a living body steps
+    /// and falls as `Entity.checkFallDamage` has it, where a boat moves and falls as a
+    /// boat (`docs/groundwork/n7h-riding-plan.md`, section 10 item 3).
+    pub(crate) living: bool,
 }
 
 /// What became of a move.
@@ -225,7 +229,18 @@ pub(crate) fn check_move<W: World + ?Sized>(
     let vector = physics::sub(at, doubles(last_good));
     let was_below = root.body.vertical_collision_below;
     let recorded = root.body.movements.len();
-    move_boat(world, &mut root, vector);
+    if root.living {
+        // `Entity.move` checks the fall only where its instance is authoritative, which
+        // the server is not of a mob a player's client drives: its fall is the client's
+        // ground's alone, below.
+        let fall = root.body.fall_distance;
+        root.body
+            .move_with(world, false, vector, None, root.bounce, &mut |_| {});
+        root.body.fall_distance = fall;
+        root.body.fell_on = None;
+    } else {
+        move_boat(world, &mut root, vector);
+    }
     let requested_dy = vector[1];
     // Moved wrongly: only the error along x and z counts (the game zeroes every finite
     // error along y).
@@ -240,8 +255,10 @@ pub(crate) fn check_move<W: World + ?Sized>(
         root.body.old_position = start;
         root.yaw = yaw;
         root.pitch = pitch;
-        // `removeLatestMovementRecording`: the check's own move is not walked.
+        // `removeLatestMovementRecording`: the check's own move is not walked, nor a
+        // fall it ended.
         root.body.movements.truncate(recorded);
+        root.body.fell_on = None;
         return Checked {
             verdict: Verdict::Wrongly,
             correction: Some((start, yaw, pitch)),
@@ -260,7 +277,20 @@ pub(crate) fn check_move<W: World + ?Sized>(
     root.body.on_ground = moved.on_ground;
     root.body.check_supporting_block(world, Some(moved_by));
     root.last_yd = root.body.motion[1];
-    if !root.passenger {
+    if !root.passenger && root.living {
+        // `Entity.checkFallDamage`: the ground the client says ends the fall, which
+        // `LivingEntity.causeFallDamage` then hurts it by (the region, from
+        // `fell_on`); a fall its own move ended already is in `fell_on`.
+        let below = root.body.on_pos_legacy(world);
+        if moved.on_ground {
+            if root.body.fall_distance > 0.0 {
+                root.body.fell_on = Some((root.body.fall_distance, below));
+            }
+            root.body.fall_distance = 0.0;
+        } else if moved_by[1] < 0.0 {
+            root.body.fall_distance -= f64::from(moved_by[1] as f32);
+        }
+    } else if !root.passenger {
         if moved.on_ground {
             root.body.fall_distance = 0.0;
         } else {
@@ -418,6 +448,7 @@ mod tests {
             },
             passenger: false,
             last_yd: 0.0,
+            living: false,
         }
     }
 

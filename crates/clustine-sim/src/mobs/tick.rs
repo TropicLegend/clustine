@@ -100,6 +100,9 @@ pub(crate) struct MobTick<'w> {
     /// Whether this tick's `baseTick` has counted its counters down: what happens
     /// after comes at the next moment (`body::moment`).
     pub(crate) counted: bool,
+    /// Whether a player rides it, and drives it (`docs/groundwork/n7h-riding-plan.md`,
+    /// sections 3 and 10).
+    pub(crate) ridden: Ridden,
     pub(crate) mob: Mob,
     pub(crate) living: Living,
     pub(crate) mob_type: &'static dyn MobType,
@@ -110,10 +113,27 @@ pub(crate) struct MobTick<'w> {
     pub(crate) out: MobOutput,
 }
 
+/// How a player rides a mob, as its tick begins.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) enum Ridden {
+    /// No player drives it: it thinks and moves itself, a rider on it or not.
+    #[default]
+    Not,
+    /// Its first seat is kept for a player on their way to it across a line: kept still
+    /// until they come, as a driven boat is, so that the moves their client sent meanwhile
+    /// are judged from where it stood (the plan, section 10 item 2).
+    Pending,
+    /// Its first passenger is a player of the region its type lets steer it
+    /// (`getControllingPassenger`): the player's client moves it, and its tick takes the
+    /// player's rotation, `yRot` and `xRot` (`travelRidden`, `tickRidden`).
+    Driven { yaw: f32, pitch: f32 },
+}
+
 impl MobTick<'_> {
-    /// `isEffectiveAi`: its AI runs unless it has none.
+    /// `isEffectiveAi`: its AI runs unless it has none, or a player drives it (the
+    /// game's `canSimulateMovement` is the driver's client's then).
     pub(crate) fn effective_ai(&self) -> bool {
-        !self.mob.body.flags.no_ai
+        !self.mob.body.flags.no_ai && self.ridden == Ridden::Not
     }
 }
 
@@ -138,8 +158,22 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     if tick.effective_ai() && !body::immobile(tick) {
         ai::server_ai_step(tick);
     }
-    body::jump(tick);
-    body::travel(tick);
+    match tick.ridden {
+        Ridden::Not => {
+            body::jump(tick);
+            body::travel(tick);
+        }
+        // Its moves are its driver's, which come with their client's packets: its tick
+        // takes their rotation, and its motion is nothing (`travelRidden`, the move
+        // simulated elsewhere: `setDeltaMovement(ZERO)`); a living one only.
+        Ridden::Driven { yaw, pitch } => {
+            if !tick.mob.body.vitals.dying() {
+                tick.mob_type.tick_ridden(tick, yaw, pitch);
+            }
+            tick.living.body.motion = [0.0; 3];
+        }
+        Ridden::Pending => {}
+    }
     take_hurts(tick);
     body::push_entities(tick);
     // The type's `aiStep`, after `LivingEntity`'s.

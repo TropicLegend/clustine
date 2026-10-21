@@ -238,6 +238,7 @@ impl Ticked {
         let mut draws = self.stream();
         let start = draws.clone();
         let mut tick = MobTick {
+            ridden: Default::default(),
             key: MOB_KEY,
             kind: entity_types::COW as u16,
             lived: self.lived,
@@ -286,6 +287,7 @@ impl Ticked {
     pub(super) fn with_ai<R>(&mut self, plot: &Plot, f: impl FnOnce(&mut Ai<'_, '_>) -> R) -> R {
         let mut draws = self.stream();
         let mut tick = MobTick {
+            ridden: Default::default(),
             key: MOB_KEY,
             kind: entity_types::COW as u16,
             lived: self.lived,

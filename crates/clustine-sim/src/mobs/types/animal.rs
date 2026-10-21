@@ -255,6 +255,34 @@ pub(crate) fn write<O: Own>(animal: &Animal, own: &O) -> TypeState {
     }
 }
 
+/// The bytes of `state` after its shared part: the type's own, and whatever a type keeps
+/// after its own (the pig's boost), nothing for a fresh animal's or one this build
+/// cannot read.
+pub(crate) fn own_bytes(state: &TypeState) -> &[u8] {
+    if state.bytes.is_empty() || state.version != VERSION {
+        return &[];
+    }
+    postcard::take_from_bytes::<Animal>(&state.bytes).map_or(&[], |(_, rest)| rest)
+}
+
+/// [`write`], with `tail` after the type's own part, which is written then whether it is
+/// fresh or not, so that the tail is found where a reader looks for it: what a type
+/// added to its own part after records of it were kept, which those records end before
+/// and so read as nothing (the pig's boost, `docs/groundwork/n7h-riding-plan.md`,
+/// section 10 item 4).
+pub(crate) fn write_with_tail<O: Own>(animal: &Animal, own: &O, tail: &[u8]) -> TypeState {
+    if tail.is_empty() {
+        return write(animal, own);
+    }
+    let mut bytes = postcard::to_allocvec(animal).expect("a type state is encoded into memory");
+    bytes.extend(postcard::to_allocvec(own).expect("a type state is encoded into memory"));
+    bytes.extend_from_slice(tail);
+    TypeState {
+        version: VERSION,
+        bytes,
+    }
+}
+
 /// `state` with its shared part made `animal`, its type's own kept as it was.
 pub(crate) fn with_animal(state: &TypeState, animal: &Animal) -> TypeState {
     let rest: &[u8] = if state.bytes.is_empty() || state.version != VERSION {
