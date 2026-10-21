@@ -5,8 +5,8 @@
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{
-    Due, Effect, EffectId, Effected, Entity, EntityChange, EntityData, EntityId, EntityUse,
-    FiledEffect, TypeState,
+    Double, Due, Effect, EffectId, Effected, Entity, EntityChange, EntityData, EntityId, EntityUse,
+    FiledEffect, Float, TypeState,
 };
 
 use super::*;
@@ -1365,4 +1365,103 @@ fn every_farm_animal_follows_its_food_panics_when_hurt_and_breeds_when_fed_in_pa
             assert_eq!(shared(&region, parent).age, animal::BRED_AGE, "{kind}");
         }
     }
+}
+
+/// A hit on `target` from a goat at (30.5, 0.5), with a knockback and a sound.
+fn hit_on(target: EntityId) -> crate::mobs::tick::Local {
+    crate::mobs::tick::Local::Hurt {
+        key: target,
+        kind: entity_types::GOAT as u16,
+        from: [30.5, -60.0, 0.5],
+        amount: 3.0,
+        sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+        knockback: Some([1.25, -1.0, 0.0]),
+    }
+}
+
+/// A mob's hit on a mob only a copy shows goes to its holder whole, as an effect at its
+/// block (`docs/groundwork/n7j-plan.md`, section 3 item 5).
+#[test]
+fn a_mobs_hit_on_a_mob_in_a_copy_goes_to_its_holder() {
+    let beyond = EntityId(5);
+    let mut region = at_a_line(&[], &[cow_at(beyond, 32.5, 0.5, &Animal::default())]);
+    let mut output = TickOutput::default();
+    region.apply_locals(ONE, vec![hit_on(beyond)], &mut output);
+    // Effects made between ticks go with the next tick's.
+    let output = region.tick(&TickInputs::default());
+    assert_eq!(
+        asks(&output),
+        [(
+            beyond,
+            EntityUse::MobHit {
+                attacker: ONE,
+                kind: entity_types::GOAT as u16,
+                from: [Double(30.5), Double(-60.0), Double(0.5)],
+                damage: Float(3.0),
+                knockback: Some([Double(1.25), Double(-1.0), Double(0.0)]),
+                sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+            }
+        )]
+    );
+    // A mob beyond the copies is not there: nothing is sent.
+    let mut output = TickOutput::default();
+    region.apply_locals(ONE, vec![hit_on(EntityId(77))], &mut output);
+    assert!(asks(&region.tick(&TickInputs::default())).is_empty());
+}
+
+/// The holder hits its mob as a hit within the region would: the same health and motion
+/// after, and the sound where it took.
+#[test]
+fn a_holder_hits_its_mob_as_a_hit_within_its_region_would() {
+    let cow = cow_at(ONE, 20.5, 0.5, &Animal::default());
+    let mut within = at_a_line(std::slice::from_ref(&cow), &[]);
+    let mut output = TickOutput::default();
+    within.apply_locals(EntityId(5), vec![hit_on(ONE)], &mut output);
+
+    let mut held = at_a_line(&[cow], &[]);
+    let hit = TickInputs {
+        effects: vec![FiledEffect {
+            id: EffectId {
+                sequence: 4,
+                index: 0,
+            },
+            effect: Effect {
+                at: BlockPos::new(20, -60, 0),
+                what: Effected::OnEntity {
+                    key: ONE,
+                    by: EntityUse::MobHit {
+                        attacker: EntityId(5),
+                        kind: entity_types::GOAT as u16,
+                        from: [Double(30.5), Double(-60.0), Double(0.5)],
+                        damage: Float(3.0),
+                        knockback: Some([Double(1.25), Double(-1.0), Double(0.0)]),
+                        sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+                    },
+                },
+            },
+            due: Due::FromTaking,
+        }],
+        ..TickInputs::default()
+    };
+    let effected = held.tick(&hit);
+    let health = |region: &Region| {
+        Mob::decode(&record(region, ONE).unwrap().data)
+            .unwrap()
+            .body
+            .vitals
+            .health
+    };
+    let full = health(&at_a_line(
+        &[cow_at(ONE, 20.5, 0.5, &Animal::default())],
+        &[],
+    ));
+    assert!(health(&held) < full, "hurt");
+    assert_eq!(health(&held), health(&within));
+    // Its push is the same, but for the tick the holder ran after the hit.
+    let motion = record(&held, ONE).unwrap().motion;
+    assert!(motion[0] > 0.5, "{motion:?}");
+    assert!(effected.events.iter().any(|event| matches!(
+        event,
+        RegionEvent::Sound { sound, .. } if *sound == sounds::ENTITY_PUFFER_FISH_STING
+    )));
 }

@@ -266,12 +266,7 @@ impl Region {
                     amount,
                     sound,
                     knockback,
-                } => {
-                    let took = self.hurt_by_mob(key, kind, from, hurt, amount, sound, output);
-                    if took && let Some([strength, x, z]) = knockback {
-                        self.knock_mob(hurt, strength, x, z, output);
-                    }
-                }
+                } => self.hit_by_mob(key, kind, from, hurt, amount, knockback, sound, output),
                 Local::Throw {
                     stack,
                     at,
@@ -480,6 +475,23 @@ impl Region {
                 number,
                 accepted,
             } => self.bred(entity.key, partner, number, accepted, output),
+            EntityUse::MobHit {
+                attacker,
+                kind,
+                from,
+                damage,
+                knockback,
+                sound,
+            } => self.hit_by_mob(
+                attacker,
+                kind,
+                from.map(|value| value.0),
+                entity.key,
+                damage.0,
+                knockback.map(|push| push.map(|value| value.0)),
+                sound,
+                output,
+            ),
         }
     }
 

@@ -100,8 +100,8 @@ pub(crate) enum Local {
     LeaveSchool { leader: EntityId },
     /// `hurtServer(mobAttack(this), amount)` of the region's mob `key` by this one (of the
     /// type `kind`, its feet at `from`), and where it took, `sound` at `from` (a
-    /// pufferfish's sting; a melee hit's `doHurtTarget`, of no sound). **Named**: a mob
-    /// in a copy is not hurt (the entity effect across a line waits), nor a player.
+    /// pufferfish's sting; a melee hit's `doHurtTarget`, of no sound). A mob in a copy
+    /// is hit by its holder (`EntityUse::MobHit`). **Named**: a player is not hurt.
     Hurt {
         key: EntityId,
         kind: u16,

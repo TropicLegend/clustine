@@ -206,6 +206,7 @@ impl Region {
             // Only animals breed.
             EntityUse::Blasted { .. }
             | EntityUse::BreedAsk { .. }
+            | EntityUse::MobHit { .. }
             | EntityUse::BreedAnswer { .. } => {}
         }
     }

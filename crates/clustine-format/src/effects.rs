@@ -48,6 +48,7 @@ const USE_INTERACT: u8 = 2;
 const USE_BLASTED: u8 = 3;
 const USE_BREED_ASK: u8 = 4;
 const USE_BREED_ANSWER: u8 = 5;
+const USE_MOB_HIT: u8 = 6;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -172,6 +173,29 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     out.extend_from_slice(&partner.0.to_be_bytes());
                     out.extend_from_slice(&number.to_be_bytes());
                     out.push(u8::from(accepted));
+                }
+                EntityUse::MobHit {
+                    attacker,
+                    kind,
+                    from,
+                    damage,
+                    knockback,
+                    sound,
+                } => {
+                    out.push(USE_MOB_HIT);
+                    out.extend_from_slice(&attacker.0.to_be_bytes());
+                    out.extend_from_slice(&kind.to_be_bytes());
+                    put_doubles(out, from);
+                    out.extend_from_slice(&damage.0.to_be_bytes());
+                    // Each optional part after a flag of its own.
+                    out.push(u8::from(knockback.is_some()));
+                    if let Some(knockback) = knockback {
+                        put_doubles(out, knockback);
+                    }
+                    out.push(u8::from(sound.is_some()));
+                    if let Some(sound) = sound {
+                        out.extend_from_slice(&sound.to_be_bytes());
+                    }
                 }
             }
         }
@@ -366,6 +390,22 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         0 => false,
                         1 => true,
                         _ => return Err(FormatError::Corrupt("a breeding answer's flag")),
+                    },
+                },
+                USE_MOB_HIT => EntityUse::MobHit {
+                    attacker: EntityId(input.u64()?),
+                    kind: input.u16()?,
+                    from: take_doubles(input)?,
+                    damage: Float(input.f32()?),
+                    knockback: match input.u8()? {
+                        0 => None,
+                        1 => Some(take_doubles(input)?),
+                        _ => return Err(FormatError::Corrupt("a mob's hit's knockback flag")),
+                    },
+                    sound: match input.u8()? {
+                        0 => None,
+                        1 => Some(input.i32()?),
+                        _ => return Err(FormatError::Corrupt("a mob's hit's sound flag")),
                     },
                 },
                 _ => return Err(FormatError::Corrupt("an entity use's kind")),
@@ -746,6 +786,34 @@ mod entity_uses {
             },
         ];
         for by in uses {
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by,
+                },
+            });
+        }
+    }
+
+    #[test]
+    fn a_mobs_hit_is_read_back_as_written_with_and_without_its_parts() {
+        let at = BlockPos::new(15, -60, 2);
+        let hit = |knockback, sound| EntityUse::MobHit {
+            attacker: EntityId(u64::MAX - 2),
+            kind: 1 << 15,
+            from: [Double(0.5), Double(-58.25), Double(-1024.5)],
+            damage: Float(2.5),
+            knockback,
+            sound,
+        };
+        let pushed = Some([Double(1.75), Double(-0.5), Double(0.0)]);
+        for by in [
+            hit(None, None),
+            hit(pushed, None),
+            hit(None, Some(-7)),
+            hit(pushed, Some(i32::MAX)),
+        ] {
             round_trip(Effect {
                 at,
                 what: Effected::OnEntity {

@@ -272,7 +272,7 @@ impl Region {
 
     /// Sends `by` to the entity `key` that a copy of the region shows, as an effect at
     /// its block: whether it was sent.
-    fn send_on_entity(&mut self, key: EntityId, by: EntityUse) -> bool {
+    pub(crate) fn send_on_entity(&mut self, key: EntityId, by: EntityUse) -> bool {
         let Some((chunk, entity)) = self.copied_entity(key) else {
             return false;
         };

@@ -1,8 +1,9 @@
 //! What a mob's brain does to its region after its tick (`docs/groundwork/n7j-plan.md`,
-//! section 4.1 item 5): another mob's memories written, a door opened or closed.
+//! section 4.1 item 5): another mob's memories written, a door opened or closed, a mob
+//! hit here or across a line.
 
 use clustine_blocks::data::{flag, set_flag};
-use clustine_world::{BlockPos, EntityId};
+use clustine_world::{BlockPos, Double, EntityId, EntityUse, Float};
 
 use super::Region;
 use super::redstone::play;
@@ -11,6 +12,7 @@ use super::vibrations::{Context, Source, Vibration};
 use crate::api::TickOutput;
 use crate::mobs::brain::{self, MemoryWrite};
 use crate::mobs::{Mob, types};
+use crate::physics::Vec3;
 
 /// `UPDATE_CLIENTS | UPDATE_IMMEDIATE`, the flags of `DoorBlock.setOpen`'s `setBlock`;
 /// the second is the client's alone.
@@ -79,5 +81,43 @@ impl Region {
             Vibration::BLOCK_CLOSE
         };
         self.vibrate_at(event, pos, Context::of(Some(Source::of(key)), None));
+    }
+
+    /// A mob's hit on the mob `target` (`Local::Hurt`): the region's own is hurt, and
+    /// where that took, knocked back by `knockback` (strength and the direction it is
+    /// pushed from) and `sound` heard at `from`. A mob only a copy shows is hit by its
+    /// holder (`EntityUse::MobHit`, plan section 3 item 5); one beyond the copies is
+    /// not there, and nothing happens.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the hit's parts, as the attacker's tick gives them"
+    )]
+    pub(crate) fn hit_by_mob(
+        &mut self,
+        attacker: EntityId,
+        kind: u16,
+        from: Vec3,
+        target: EntityId,
+        damage: f32,
+        knockback: Option<[f64; 3]>,
+        sound: Option<i32>,
+        output: &mut TickOutput,
+    ) {
+        if self.find_entity(target).is_none() {
+            let hit = EntityUse::MobHit {
+                attacker,
+                kind,
+                from: from.map(Double),
+                damage: Float(damage),
+                knockback: knockback.map(|push| push.map(Double)),
+                sound,
+            };
+            self.send_on_entity(target, hit);
+            return;
+        }
+        let took = self.hurt_by_mob(attacker, kind, from, target, damage, sound, output);
+        if took && let Some([strength, x, z]) = knockback {
+            self.knock_mob(target, strength, x, z, output);
+        }
     }
 }

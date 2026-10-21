@@ -150,6 +150,20 @@ pub enum EntityUse {
         number: u32,
         accepted: bool,
     },
+    /// A mob's hit on the entity (`hurtServer(mobAttack(attacker), damage)`: a goat's
+    /// ram, an axolotl's bite, a pufferfish's sting), made where the attacker's region
+    /// sees it only in a copy (`docs/groundwork/n7j-plan.md`, section 3 item 5): the
+    /// attacker and its entity type, where its feet were, the damage, and where the hurt
+    /// took, the knockback after it (strength and the direction pushed from) and the
+    /// sound at the attacker's feet.
+    MobHit {
+        attacker: EntityId,
+        kind: u16,
+        from: [Double; 3],
+        damage: Float,
+        knockback: Option<[Double; 3]>,
+        sound: Option<i32>,
+    },
 }
 
 impl Effect {
