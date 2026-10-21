@@ -31,7 +31,7 @@ pub use entity::{
 };
 pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
-    BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, RegionId, Vec3,
+    BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, Generated, PlayerId, RegionId, Vec3,
 };
 pub use section::{BIOME_CELLS, Biome, Section};
 

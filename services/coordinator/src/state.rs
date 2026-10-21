@@ -5385,7 +5385,8 @@ mod tests {
         assert_eq!(indices(size - 1, size + 1), 0..2);
         assert_eq!(indices(3 * size, 5 * size), 3..5);
         assert_eq!(indices(0, 1), 0..1);
-        assert_eq!(indices(0, u64::MAX), 0..EntityIds::BLOCK_COUNT);
+        // Every key up to 2^64 is in a block of 2^32 keys, those beyond the regions' too.
+        assert_eq!(indices(0, u64::MAX), 0..u32::MAX);
         // Without an id there is nothing to keep clear of.
         for (first, end) in [(5, 5), (9, 2), (u64::MAX, 0)] {
             assert!(indices(first, end).is_empty());

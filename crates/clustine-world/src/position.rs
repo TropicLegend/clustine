@@ -98,6 +98,127 @@ impl EntityId {
     pub const fn game_id(self) -> i32 {
         self.0 as u32 as i32
     }
+
+    /// Whether generation made it, with its chunk (`docs/groundwork/n7l-plan.md`,
+    /// section 2.3): only those keys have bit 63, which no region's block reaches.
+    pub const fn is_generated(self) -> bool {
+        self.0 & GENERATED_BIT != 0
+    }
+}
+
+/// Bit 63, set in every key generation makes and in no key of a region's block.
+const GENERATED_BIT: u64 = 1 << 63;
+
+/// The 63 bits a generated key's parts are packed into and mixed within.
+const LOW_63: u64 = GENERATED_BIT - 1;
+
+/// What a generated entity's key names (`docs/groundwork/n7l-plan.md`, sections 2.3 and
+/// 9 item 1): the dimension (one of four), the chunk it lands in, whether a structure's
+/// run made it or the chunk's spawn, and its place among those of its class that chunk
+/// has, counting from 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Generated {
+    pub dimension: u8,
+    pub chunk: ChunkPos,
+    pub structure: bool,
+    pub index: u16,
+}
+
+impl Generated {
+    /// The farthest chunk from the origin along x or z within the game's world border
+    /// (29,999,984 blocks): no entity is made beyond it.
+    pub const BORDER: i32 = 1_874_999;
+
+    /// Its key: the parts packed into 63 bits (the dimension 2, x and z 22 each, signed,
+    /// the class 1, the index 16), put through a bijection of 63 bits so that the low
+    /// half, the game's `getId()`, is scattered, and bit 63 set. `None` for a chunk
+    /// beyond the border or a dimension beyond the fourth.
+    pub const fn key(self) -> Option<EntityId> {
+        if self.dimension > 3
+            || self.chunk.x < -Self::BORDER
+            || self.chunk.x > Self::BORDER
+            || self.chunk.z < -Self::BORDER
+            || self.chunk.z > Self::BORDER
+        {
+            return None;
+        }
+        let offset = 1 << 21;
+        let packed = (self.dimension as u64) << 61
+            | ((self.chunk.x + offset) as u64) << 39
+            | ((self.chunk.z + offset) as u64) << 17
+            | (self.structure as u64) << 16
+            | self.index as u64;
+        Some(EntityId(GENERATED_BIT | mix(packed)))
+    }
+
+    /// What the generated key `key` names, `None` for a key generation did not make.
+    pub const fn of(key: EntityId) -> Option<Self> {
+        if !key.is_generated() {
+            return None;
+        }
+        let packed = unmix(key.0 & LOW_63);
+        Some(Self {
+            dimension: (packed >> 61) as u8,
+            chunk: ChunkPos::new(coordinate(packed, 39), coordinate(packed, 17)),
+            structure: (packed >> 16) & 1 == 1,
+            index: packed as u16,
+        })
+    }
+}
+
+/// The signed coordinate of 22 bits at `shift` of a packed key.
+const fn coordinate(packed: u64, shift: u32) -> i32 {
+    ((packed >> shift) & ((1 << 22) - 1)) as i32 - (1 << 21)
+}
+
+/// The odd multipliers of [`mix`]: any odd number is a bijection of the 63 bits under
+/// multiplication modulo 2^63.
+const MIX_A: u64 = 0x2545_f491_4f6c_dd1d;
+const MIX_B: u64 = 0x1bd1_1bda_a9fc_1a23;
+
+/// A bijection of 63 bits: xor-shifts and multiplications by odd numbers modulo 2^63,
+/// each of which has an inverse ([`unmix`]).
+const fn mix(value: u64) -> u64 {
+    let mut v = value & LOW_63;
+    v ^= v >> 31;
+    v = v.wrapping_mul(MIX_A) & LOW_63;
+    v ^= v >> 29;
+    v = v.wrapping_mul(MIX_B) & LOW_63;
+    v ^= v >> 32;
+    v
+}
+
+/// The inverse of [`mix`].
+const fn unmix(value: u64) -> u64 {
+    let mut v = value & LOW_63;
+    v = unshift(v, 32);
+    v = v.wrapping_mul(inverse(MIX_B)) & LOW_63;
+    v = unshift(v, 29);
+    v = v.wrapping_mul(inverse(MIX_A)) & LOW_63;
+    unshift(v, 31)
+}
+
+/// The inverse of `v ^= v >> shift` within 63 bits.
+const fn unshift(value: u64, shift: u32) -> u64 {
+    let mut v = value;
+    let mut done = shift;
+    while done < 63 {
+        v = value ^ (v >> shift);
+        done += shift;
+    }
+    v & LOW_63
+}
+
+/// The inverse of the odd `odd` modulo 2^64 (and so 2^63), by Newton's iteration: each
+/// step doubles the bits that are right.
+const fn inverse(odd: u64) -> u64 {
+    let mut inverse = odd;
+    let mut step = 0;
+    while step < 6 {
+        inverse = inverse.wrapping_mul(2u64.wrapping_sub(odd.wrapping_mul(inverse)));
+        step += 1;
+    }
+    inverse
 }
 
 /// Identifies a player: the UUID of their profile.
@@ -155,17 +276,17 @@ impl EntityIds {
     /// The number of keys in a block made by [`EntityIds::block`].
     pub const BLOCK_SIZE: u64 = 1 << 32;
 
-    /// The number of blocks [`EntityIds::block`] can make.
-    pub const BLOCK_COUNT: u32 = u32::MAX;
+    /// The number of blocks [`EntityIds::block`] can make: 2^31, so that no key of a
+    /// region's block has bit 63, which generated keys have
+    /// (`docs/groundwork/n7l-plan.md`, section 2.3).
+    pub const BLOCK_COUNT: u32 = 1 << 31;
 
     /// The block with the given index, or `None` if `index` is not below
     /// [`EntityIds::BLOCK_COUNT`]. A key's high half is its block's index, so blocks with
     /// different indices share no key, and no block contains key 0, which stands for
     /// none.
     pub const fn block(index: u32) -> Option<Self> {
-        // `BLOCK_COUNT` is `u32::MAX`, so the one index not below it is itself: that
-        // block's end would be 2^64.
-        if index == Self::BLOCK_COUNT {
+        if index >= Self::BLOCK_COUNT {
             return None;
         }
         let start = index as u64 * Self::BLOCK_SIZE;
@@ -210,6 +331,101 @@ impl ChunkArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generated(x: i32, z: i32, structure: bool, index: u16) -> Generated {
+        Generated {
+            dimension: 0,
+            chunk: ChunkPos::new(x, z),
+            structure,
+            index,
+        }
+    }
+
+    /// The mixer is a bijection of 63 bits: its inverse gives back every value tried,
+    /// the extremes among them.
+    #[test]
+    fn the_mixer_is_undone_by_its_inverse() {
+        let mut value = 0x0123_4567_89ab_cdefu64;
+        for _ in 0..100_000 {
+            value = value
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let v = value & LOW_63;
+            assert_eq!(unmix(mix(v)), v);
+        }
+        for v in [0, 1, LOW_63, LOW_63 - 1, 1 << 62] {
+            assert_eq!(unmix(mix(v)), v);
+        }
+    }
+
+    /// Every generated key has bit 63 and reads back as what it names; no block of a
+    /// region's keys reaches bit 63.
+    #[test]
+    fn a_generated_key_has_bit_63_and_names_its_chunk_class_and_index() {
+        let border = Generated::BORDER;
+        for x in [-border, -1, 0, 1, 7, border] {
+            for z in [-border, -3, 0, 5, border] {
+                for structure in [false, true] {
+                    for index in [0, 1, 65_535] {
+                        for dimension in 0..4 {
+                            let made = Generated {
+                                dimension,
+                                ..generated(x, z, structure, index)
+                            };
+                            let key = made.key().expect("within the border");
+                            assert!(key.is_generated());
+                            assert_eq!(Generated::of(key), Some(made));
+                        }
+                    }
+                }
+            }
+        }
+        let last = EntityIds::block(EntityIds::BLOCK_COUNT - 1).expect("the last block");
+        assert!(!EntityId(last.end.0 - 1).is_generated());
+        assert_eq!(EntityIds::block(EntityIds::BLOCK_COUNT), None);
+        assert_eq!(Generated::of(last.first), None);
+    }
+
+    /// Beyond the world border, or of a fifth dimension, no key is made.
+    #[test]
+    fn no_key_is_made_beyond_the_border() {
+        let border = Generated::BORDER;
+        assert_eq!(generated(border + 1, 0, false, 0).key(), None);
+        assert_eq!(generated(0, -border - 1, false, 0).key(), None);
+        let fifth = Generated {
+            dimension: 4,
+            ..generated(0, 0, false, 0)
+        };
+        assert_eq!(fifth.key(), None);
+    }
+
+    /// Keys are distinct over many chunks, both classes and many indices, and a chunk's
+    /// first 64 have 64 different game ids.
+    #[test]
+    fn generated_keys_are_distinct_and_their_game_ids_spread() {
+        let mut seen = std::collections::BTreeSet::new();
+        for x in -12..12 {
+            for z in -12..12 {
+                for structure in [false, true] {
+                    for index in 0..64 {
+                        let key = generated(x * 977, z * 131, structure, index)
+                            .key()
+                            .expect("within the border");
+                        assert!(seen.insert(key), "{key:?} made twice");
+                    }
+                }
+            }
+        }
+        let ids: std::collections::BTreeSet<i32> = (0..64)
+            .map(|index| {
+                generated(3, -8, false, index)
+                    .key()
+                    .expect("within the border")
+                    .game_id()
+            })
+            .collect();
+        assert_eq!(ids.len(), 64);
+    }
 
     #[test]
     fn negative_coordinates_round_down() {

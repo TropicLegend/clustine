@@ -152,6 +152,11 @@ impl RegionFile {
             end: EntityId(input.u64()?),
         };
         input.finish()?;
+        // No region's block reaches bit 63, which only generated keys have
+        // (`docs/groundwork/n7l-plan.md`, section 9 item 8).
+        if entity_ids.end.0 > 1 << 63 {
+            return Err(FormatError::Corrupt("a block of keys beyond the regions'"));
+        }
         Ok(Self { epoch, entity_ids })
     }
 }
@@ -628,6 +633,25 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    /// A region file whose block reaches bit 63, which only generated keys have, is
+    /// refused; the last block a region may have is read.
+    #[test]
+    fn a_region_file_with_a_block_beyond_the_regions_is_refused() {
+        let beyond = RegionFile {
+            epoch: 1,
+            entity_ids: EntityIds {
+                first: EntityId(1 << 63),
+                end: EntityId((1 << 63) + (1 << 32)),
+            },
+        };
+        assert!(RegionFile::decode(&beyond.encode()).is_err());
+        let last = RegionFile {
+            epoch: 1,
+            entity_ids: EntityIds::block(EntityIds::BLOCK_COUNT - 1).unwrap(),
+        };
+        assert_eq!(RegionFile::decode(&last.encode()), Ok(last));
+    }
 
     #[test]
     fn known_answer() {
@@ -1449,7 +1473,13 @@ mod tests {
         }
 
         #[test]
-        fn files_round_trip(epoch: u64, first: u64, end: u64, tick: u64, state: Vec<u8>) {
+        fn files_round_trip(
+            epoch: u64,
+            first in 0..=1u64 << 63,
+            end in 0..=1u64 << 63,
+            tick: u64,
+            state: Vec<u8>,
+        ) {
             let region = RegionFile {
                 epoch,
                 entity_ids: EntityIds { first: EntityId(first), end: EntityId(end) },
