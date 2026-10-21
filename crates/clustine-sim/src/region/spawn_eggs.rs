@@ -282,11 +282,24 @@ impl Region {
                 let pitch = voice_pitch(&mut own, mob_type.is_baby(&mob));
                 (sound, pitch)
             });
+        // The type's own sound of its `finalizeSpawn` (a copper golem's), played before
+        // the mob is added and its ambient sound.
+        let spawned = mob_type.spawn_sound(&mob);
         if here {
             self.entity_drew(key, own.draws_since(&own_start));
             self.add_fresh_entity(entity, output);
         } else {
             self.send_made(entity, output);
+        }
+        if let Some(sound) = spawned {
+            output.events.push(RegionEvent::Sound {
+                sound,
+                source: SOUND_SOURCE_NEUTRAL,
+                position: clustine_world::Vec3::new(at[0], at[1], at[2]),
+                volume: 1.0,
+                pitch: 1.0,
+                except: None,
+            });
         }
         if let Some((sound, pitch)) = sound {
             output.events.push(RegionEvent::Sound {

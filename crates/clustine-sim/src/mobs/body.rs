@@ -431,7 +431,10 @@ fn struck<'a>(tick: &'a mut MobTick<'_>) -> Struck<'a> {
 /// starts again. Where there is no player it only idles. Read here from the players the
 /// mob's view gives (the region's own; others' with N7a2's faces).
 pub(crate) fn check_despawn(tick: &mut MobTick<'_>) {
-    let keep = tick.mob.body.flags.persistent || tick.vehicle.is_some() || tick.leashed;
+    let keep = tick.mob.body.flags.persistent
+        || tick.vehicle.is_some()
+        || tick.leashed
+        || tick.mob_type.requires_custom_persistence(&tick.mob);
     let at = tick.living.body.position;
     let nearest = tick
         .world
@@ -806,9 +809,9 @@ fn sound_steps(tick: &mut MobTick<'_>) {
                 event,
                 ..
             } => {
-                if sound {
+                if sound && tick.mob_type.plays_step_sounds() {
                     let played = match tick.mob_type.step_sound(&tick.mob) {
-                        Some(own) => Some((own, 0.15, 1.0)),
+                        Some(own) => Some((own, tick.mob_type.step_volume(), 1.0)),
                         None => state
                             .sound_type()
                             .map(|kind| (kind.step, kind.volume * 0.15, kind.pitch)),

@@ -164,6 +164,11 @@ pub(crate) fn target_of(
 
 /// Whether a click on `state` with `held` in hand is taken by the block (section 3.2).
 fn is_used(state: BlockState, held: Option<i32>) -> bool {
+    // A copper golem's statue has a use of an item (`useItemOn`), whatever is held, and
+    // no use of its own, which `used_by_click` marks.
+    if data::is(state, BlockClass::CopperGolemStatueBlock) {
+        return true;
+    }
     if !data::info(state).used_by_click {
         return false;
     }
@@ -244,6 +249,17 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     let face = geometry::from_api(click.face);
     // A bed lays its user down, which the region decides (`region/sleep.rs`).
     if data::is(state, BlockClass::AbstractBedBlock) {
+        return Clicked::ByRule { position, face };
+    }
+    // `CopperGolemStatueBlock.useItemOn`: anything but an axe turns the statue to its
+    // next pose (`region/copper_golems.rs`); an axe passes to the item.
+    if data::is(state, BlockClass::CopperGolemStatueBlock) {
+        let axe = click
+            .held
+            .is_some_and(|held| clustine_blocks::data::item_in_tag(held, "minecraft:axes"));
+        if axe {
+            return Clicked::Nothing;
+        }
         return Clicked::ByRule { position, face };
     }
     // A container opens a menu, which the region keeps (`docs/groundwork/n6-plan.md`,

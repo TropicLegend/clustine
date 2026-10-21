@@ -458,6 +458,10 @@ impl Region {
             self.use_container(pos, player, output);
             return;
         }
+        if is_class(state, BlockClass::CopperGolemStatueBlock) {
+            self.statue_used(pos, state, player, output);
+            return;
+        }
         if signal::use_reads_signal(state) && !self.ticks_chunk(pos.chunk()) {
             return;
         }

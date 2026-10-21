@@ -3222,7 +3222,9 @@ pub enum EntityDataValue {
     /// One of the serializers of a farm animal's variant or sound variant
     /// (`COW_VARIANT`, `PIG_SOUND_VARIANT` and the like, of [`entity_data_serializer`]):
     /// `ByteBufCodecs.holderRegistry`, a VarInt of the entry's id in the registry the
-    /// client was sent (no whole entry, so no one added).
+    /// client was sent (no whole entry, so no one added). The serializers of an
+    /// enumeration (`COPPER_GOLEM_STATE`, `WEATHERING_COPPER_STATE` and the like) write
+    /// a VarInt of its ordinal, and are carried so too.
     Registered { serializer: i32, id: i32 },
 }
 
@@ -3254,7 +3256,12 @@ pub mod entity_data_serializer {
     pub const PIG_SOUND_VARIANT: i32 = 29;
     pub const CHICKEN_VARIANT: i32 = 30;
     pub const CHICKEN_SOUND_VARIANT: i32 = 31;
+    pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 32;
     pub const PAINTING_VARIANT: i32 = 34;
+    pub const SNIFFER_STATE: i32 = 35;
+    pub const ARMADILLO_STATE: i32 = 36;
+    pub const COPPER_GOLEM_STATE: i32 = 37;
+    pub const WEATHERING_COPPER_STATE: i32 = 38;
     pub const DYE_COLOR: i32 = 43;
 }
 
@@ -3458,7 +3465,12 @@ impl Decode for SetEntityData {
                 | entity_data_serializer::PIG_VARIANT
                 | entity_data_serializer::PIG_SOUND_VARIANT
                 | entity_data_serializer::CHICKEN_VARIANT
-                | entity_data_serializer::CHICKEN_SOUND_VARIANT) => EntityDataValue::Registered {
+                | entity_data_serializer::CHICKEN_SOUND_VARIANT
+                | entity_data_serializer::ZOMBIE_NAUTILUS_VARIANT
+                | entity_data_serializer::SNIFFER_STATE
+                | entity_data_serializer::ARMADILLO_STATE
+                | entity_data_serializer::COPPER_GOLEM_STATE
+                | entity_data_serializer::WEATHERING_COPPER_STATE) => EntityDataValue::Registered {
                     serializer,
                     id: r.var_int()?,
                 },

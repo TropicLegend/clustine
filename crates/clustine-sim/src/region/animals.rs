@@ -267,6 +267,19 @@ impl Region {
                 }
                 self.mount_player(player, entity.key, output);
             }
+            Did::Throw {
+                stack,
+                at,
+                pick_up_delay,
+                motion,
+            } => {
+                self.spawn_item_as(at, stack, pick_up_delay, Some(motion), output);
+            }
+            Did::LevelEvent { kind, pos, data } => output.events.push(RegionEvent::LevelEvent {
+                kind,
+                position: pos,
+                data,
+            }),
             Did::HurtByPlayer { amount } => {
                 let source = DamageSource::by(
                     DamageType::PLAYER_ATTACK,

@@ -30,6 +30,7 @@ mod breeding;
 mod changes;
 mod colliders;
 mod containers;
+mod copper_golems;
 mod cushions;
 mod diodes;
 mod dispensers;
@@ -3489,6 +3490,7 @@ mod tests {
     mod horses;
     mod instruments;
     mod item_physics;
+    mod keepers;
     mod leashes;
     mod lends;
     mod lends_by_the_record;

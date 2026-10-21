@@ -717,7 +717,14 @@ impl Region {
                 .intersects(area)
             })
             .count();
-        u32::try_from(found).unwrap_or(u32::MAX)
+        // A copper golem at work at the chest counts too (`copper_golems.rs`).
+        let golems = match kind {
+            Counted::Chest => self.golems_with_chest_open(pos),
+            Counted::Barrel | Counted::EnderChest => 0,
+        };
+        u32::try_from(found)
+            .unwrap_or(u32::MAX)
+            .saturating_add(golems)
     }
 
     /// The counters' `onOpen` and `onClose`: a chest's and an ender chest's sound, and

@@ -28,6 +28,20 @@ pub enum DataShown {
     /// An entry of a registry the server sends, by its id there: a farm animal's
     /// variant or sound variant, each of its own serializer.
     Holder(Holder, i32),
+    /// A value of an enumeration of the game's own serializer, by its ordinal
+    /// (`ByteBufCodecs.idMapper` of the enumeration, a VarInt): a copper golem's state
+    /// and its weathering.
+    Serialised(Serialiser, i32),
+}
+
+/// The serializer of a [`DataShown::Serialised`] value: the enumerations the game syncs
+/// by their ordinals with serializers of their own (`EntityDataSerializers`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Serialiser {
+    ArmadilloState,
+    SnifferState,
+    CopperGolemState,
+    WeatheringCopperState,
 }
 
 /// The registry an entry of [`DataShown::Holder`] is of.
@@ -44,6 +58,7 @@ pub enum Holder {
     CatVariant,
     CatSoundVariant,
     FrogVariant,
+    ZombieNautilusVariant,
 }
 
 /// The indices of `LivingEntity`'s and `Mob`'s values (the brief's 9.1).

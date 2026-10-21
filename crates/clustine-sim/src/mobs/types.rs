@@ -19,6 +19,9 @@
 //! The amphibians (part N7j's B: the axolotl, the frog and the tadpole) have brains,
 //! which come with N7j's machinery; until then each has its body, its state and its
 //! interactions, and its brain's seams named in its module.
+//! The keepers (part N7j E: the nautilus, the zombie nautilus and the copper golem) have
+//! brains in the game; until the brain's machinery comes they have no mind at all, and
+//! each module names the seam its provider will be wired at.
 
 #[cfg(test)]
 mod amphibian_tests;
@@ -29,6 +32,7 @@ pub(crate) mod bee;
 pub(crate) mod cat;
 pub(crate) mod chicken;
 pub(crate) mod cod;
+pub(crate) mod copper_golem;
 pub(crate) mod cow;
 pub(crate) mod dolphin;
 pub(crate) mod donkey;
@@ -38,9 +42,12 @@ pub(crate) mod fox;
 pub(crate) mod frog;
 pub(crate) mod glow_squid;
 pub(crate) mod horse;
+#[cfg(test)]
+mod keeper_tests;
 pub(crate) mod llama;
 pub(crate) mod mooshroom;
 pub(crate) mod mule;
+pub(crate) mod nautilus;
 pub(crate) mod neutral;
 pub(crate) mod ocelot;
 pub(crate) mod panda;
@@ -69,6 +76,7 @@ mod water_tests;
 mod wild_tests;
 pub(crate) mod wolf;
 pub(crate) mod zombie_horse;
+pub(crate) mod zombie_nautilus;
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
@@ -300,6 +308,32 @@ pub(crate) trait MobType: Sync {
     /// The sound of its `playStepSound(pos, state)` where the type has its own (played
     /// at 0.15 and 1); `None` for `Entity`'s, the step of the block stepped on.
     fn step_sound(&self, mob: &Mob) -> Option<i32> {
+        let _ = mob;
+        None
+    }
+
+    /// The volume its own step sound ([`MobType::step_sound`]) plays at: `Entity`'s
+    /// 0.15, unless the type plays it at its own (a copper golem's at 1).
+    fn step_volume(&self) -> f32 {
+        0.15
+    }
+
+    /// Whether its `playStepSound` plays anything: the type's own or the block's, unless
+    /// the type's does nothing (a nautilus's).
+    fn plays_step_sounds(&self) -> bool {
+        true
+    }
+
+    /// `requiresCustomPersistence()` beyond riding and a lead: kept wherever it is, its
+    /// despawning not even drawn for (a tamed nautilus).
+    fn requires_custom_persistence(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// The sound its type's `finalizeSpawn` plays before `Mob`'s, at its feet at full
+    /// volume and pitch (a copper golem's `playSpawnSound`); none by default.
+    fn spawn_sound(&self, mob: &Mob) -> Option<i32> {
         let _ = mob;
         None
     }
@@ -601,6 +635,16 @@ pub(crate) enum Did {
     /// A tadpole fed to its end grows up (`Tadpole.ageUp()`): a frog of its biome made
     /// where it is, and itself gone (`region/frogspawn.rs`).
     GrowUp,
+    /// `BehaviorUtils.throwItem`: an item thrown from `at` with its motion set after its
+    /// constructor's draws (what a copper golem holds, taken by an empty hand).
+    Throw {
+        stack: ItemStack,
+        at: Vec3,
+        pick_up_delay: u16,
+        motion: Vec3,
+    },
+    /// `level.levelEvent(kind, pos, data)` (a copper golem waxed or scraped).
+    LevelEvent { kind: i32, pos: BlockPos, data: i32 },
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
@@ -715,6 +759,9 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::AXOLOTL => &axolotl::Axolotl,
         entity_types::FROG => &frog::Frog,
         entity_types::TADPOLE => &tadpole::Tadpole,
+        entity_types::NAUTILUS => &nautilus::Nautilus,
+        entity_types::ZOMBIE_NAUTILUS => &zombie_nautilus::ZombieNautilus,
+        entity_types::COPPER_GOLEM => &copper_golem::CopperGolem,
         _ => return None,
     };
     Some(found)

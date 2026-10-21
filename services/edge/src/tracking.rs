@@ -29,7 +29,7 @@ use clustine_protocol::packets::{
     },
 };
 use clustine_sim::api::Tracked;
-use clustine_sim::shown::{DataShown, Holder};
+use clustine_sim::shown::{DataShown, Holder, Serialiser};
 use clustine_world::EntityData;
 
 /// How far an entity has to be from where it was sent last for a move to be sent, the
@@ -351,6 +351,18 @@ fn holder_serializer(holder: Holder) -> i32 {
         Holder::CatVariant => serializers::CAT_VARIANT,
         Holder::CatSoundVariant => serializers::CAT_SOUND_VARIANT,
         Holder::FrogVariant => serializers::FROG_VARIANT,
+        Holder::ZombieNautilusVariant => serializers::ZOMBIE_NAUTILUS_VARIANT,
+    }
+}
+
+/// The serializer an enumeration's value is written with, by its ordinal.
+fn enumeration_serializer(serialiser: Serialiser) -> i32 {
+    use clustine_protocol::packets::play::entity_data_serializer as serializers;
+    match serialiser {
+        Serialiser::ArmadilloState => serializers::ARMADILLO_STATE,
+        Serialiser::SnifferState => serializers::SNIFFER_STATE,
+        Serialiser::CopperGolemState => serializers::COPPER_GOLEM_STATE,
+        Serialiser::WeatheringCopperState => serializers::WEATHERING_COPPER_STATE,
     }
 }
 
@@ -376,6 +388,10 @@ pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityData
                     DataShown::Holder(holder, id) => EntityDataValue::Registered {
                         serializer: holder_serializer(holder),
                         id,
+                    },
+                    DataShown::Serialised(serialiser, ordinal) => EntityDataValue::Registered {
+                        serializer: enumeration_serializer(serialiser),
+                        id: ordinal,
                     },
                 };
                 (index, value, default)
