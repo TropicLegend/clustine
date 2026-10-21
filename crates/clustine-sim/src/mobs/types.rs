@@ -15,8 +15,15 @@
 //! The wild land animals (part N7i: the fox, the panda, the polar bear, the bee and the
 //! bat) are animals but for the bat; the bear and the bee are angry as [`neutral`] has
 //! it.
+//!
+//! The amphibians (part N7j's B: the axolotl, the frog and the tadpole) have brains,
+//! which come with N7j's machinery; until then each has its body, its state and its
+//! interactions, and its brain's seams named in its module.
 
+#[cfg(test)]
+mod amphibian_tests;
 pub(crate) mod animal;
+pub(crate) mod axolotl;
 pub(crate) mod bat;
 pub(crate) mod bee;
 pub(crate) mod cat;
@@ -28,6 +35,7 @@ pub(crate) mod donkey;
 pub(crate) mod equine;
 pub(crate) mod fish;
 pub(crate) mod fox;
+pub(crate) mod frog;
 pub(crate) mod glow_squid;
 pub(crate) mod horse;
 pub(crate) mod llama;
@@ -45,6 +53,7 @@ pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod skeleton_horse;
 pub(crate) mod squid;
+pub(crate) mod tadpole;
 pub(crate) mod tamable;
 #[cfg(test)]
 mod tamed_tests;
@@ -469,6 +478,32 @@ pub(crate) trait MobType: Sync {
     fn can_mate(&self, this: Mate<'_>, partner: Mate<'_>) -> bool {
         this.entity.kind == partner.entity.kind
     }
+
+    /// What the type's `hurtServer` does before any of `LivingEntity`'s, whether or not
+    /// the hurt is then refused (an axolotl's draws for playing dead).
+    fn before_hurt_server(&self, struck: &mut Struck<'_>, source: &DamageSource, amount: f32) {
+        let _ = (struck, source, amount);
+    }
+
+    /// `AgeableMob.canBeABaby()`: whether `setBaby(true)` makes it one (never a frog).
+    fn can_be_a_baby(&self) -> bool {
+        true
+    }
+
+    /// Whether its `finalizeSpawn` runs for a mob poured from a bucket
+    /// (`EntitySpawnReason.BUCKET`): an axolotl's returns before anything, `Mob`'s
+    /// included.
+    fn finalizes_when_poured(&self) -> bool {
+        true
+    }
+
+    /// `setFromBucket(true)` of a mob of the type `kind` poured from a bucket: a fish's
+    /// mark, by default; nothing for a type that keeps none.
+    fn poured_from_bucket(&self, kind: u16, mob: &mut Mob) {
+        if fish::Species::of(kind).is_some() {
+            fish::set_from_bucket(kind, mob);
+        }
+    }
 }
 
 /// One of the two of a breeding, as `canMate` reads it: its record and its mob.
@@ -563,6 +598,9 @@ pub(crate) enum Did {
     OpenInventory,
     /// `doPlayerRide(player)`: the player turned to the horse's way, and on.
     Ride,
+    /// A tadpole fed to its end grows up (`Tadpole.ageUp()`): a frog of its biome made
+    /// where it is, and itself gone (`region/frogspawn.rs`).
+    GrowUp,
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
@@ -674,6 +712,9 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::POLAR_BEAR => &polar_bear::PolarBear,
         entity_types::BEE => &bee::Bee,
         entity_types::BAT => &bat::Bat,
+        entity_types::AXOLOTL => &axolotl::Axolotl,
+        entity_types::FROG => &frog::Frog,
+        entity_types::TADPOLE => &tadpole::Tadpole,
         _ => return None,
     };
     Some(found)

@@ -168,11 +168,13 @@ impl Region {
         deeper: bool,
         output: &mut TickOutput,
     ) -> Option<EntityId> {
-        self.spawn_mob_with(kind, player, pos, offset, deeper, |_| {}, output)
+        self.spawn_mob_with(kind, player, pos, (offset, deeper), false, |_| {}, output)
     }
 
-    /// [`Region::spawn_mob`], with `made` done to the mob after its `finalizeSpawn` and
-    /// before it is added (a bucket's `setFromBucket(true)`).
+    /// [`Region::spawn_mob`], `offset` and `deeper` as a pair, with `made` done to the
+    /// mob after its `finalizeSpawn` and before it is added (a bucket's
+    /// `setFromBucket(true)`); `poured` where a bucket pours it (`BUCKET`), whose
+    /// `finalizeSpawn` a type may skip whole.
     #[expect(
         clippy::too_many_arguments,
         reason = "`EntityType.create`'s arguments, and what its caller does after"
@@ -182,8 +184,8 @@ impl Region {
         kind: u16,
         player: PlayerId,
         pos: BlockPos,
-        offset: bool,
-        deeper: bool,
+        (offset, deeper): (bool, bool),
+        poured: bool,
         made: impl FnOnce(&mut Mob),
         output: &mut TickOutput,
     ) -> Option<EntityId> {
@@ -232,23 +234,25 @@ impl Region {
         let block = crate::physics::containing([x, y, z]);
         let biome = self.biome_at(block);
         let day = self.clock.day;
-        mob_type.finalize_spawn(&mut types::Spawning {
-            mob: &mut mob,
-            level: &mut level,
-            own: &mut own,
-            biome,
-            at: block,
-            day,
-        });
-        finalize_spawn(kind, &mut mob, &mut level);
-        mob_type.after_finalize_spawn(&mut types::Spawning {
-            mob: &mut mob,
-            level: &mut level,
-            own: &mut own,
-            biome,
-            at: block,
-            day,
-        });
+        if !poured || mob_type.finalizes_when_poured() {
+            mob_type.finalize_spawn(&mut types::Spawning {
+                mob: &mut mob,
+                level: &mut level,
+                own: &mut own,
+                biome,
+                at: block,
+                day,
+            });
+            finalize_spawn(kind, &mut mob, &mut level);
+            mob_type.after_finalize_spawn(&mut types::Spawning {
+                mob: &mut mob,
+                level: &mut level,
+                own: &mut own,
+                biome,
+                at: block,
+                day,
+            });
+        }
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
         let entity = Entity {

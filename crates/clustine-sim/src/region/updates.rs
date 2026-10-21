@@ -243,6 +243,8 @@ impl Region {
         // Fire's and coral's `onPlace` schedule their ticks, and fire that cannot stay
         // goes there and then.
         self.fire_on_place(pos, state, old, output);
+        // `FrogspawnBlock.onPlace`: its hatching scheduled (`frogspawn.rs`).
+        self.frogspawn_on_place(pos, state, old);
         // `BaseRailBlock.onPlace`: a rail joins the rails beside it and turns them
         // towards it (`rails.rs`).
         self.rail_on_place(pos, state, old, output);

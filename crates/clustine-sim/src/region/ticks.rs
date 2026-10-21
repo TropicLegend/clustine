@@ -514,6 +514,10 @@ impl Region {
         if self.sensor_tick(pos, state, output) {
             return;
         }
+        // Frogspawn hatches, or goes where it cannot stay (`frogspawn.rs`).
+        if self.frogspawn_tick(pos, state, output) {
+            return;
+        }
         // `SpeleothemBlock.tick`: a stalagmite that its support left goes, with its
         // drops; a stalactite falls, from the block ticked down to its tip.
         if is_class(state, BlockClass::SpeleothemBlock) {

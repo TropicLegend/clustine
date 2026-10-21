@@ -530,6 +530,8 @@ pub(crate) fn landing(kind: u16, mob: &crate::mobs::Mob) -> crate::living::Landi
         crate::living::Landing::Horse {
             baby: animal::is_baby(mob),
         }
+    } else if i32::from(kind) == clustine_data::entity_types::FROG {
+        crate::living::Landing::Frog
     } else {
         crate::living::Landing::Living
     }

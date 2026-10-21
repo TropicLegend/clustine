@@ -26,7 +26,8 @@ impl Region {
     /// bucket's own sound, heard by all but the player (and no `FLUID_PLACE`: the mob
     /// bucket's sound replaces the bucket's, which made it); then its mob made at that
     /// block (`MobBucketItem.spawn`, `EntityType.create` with `BUCKET`: as an egg makes
-    /// it, its `finalizeSpawn` drawn again), marked as from a bucket. The creative
+    /// it, its `finalizeSpawn` drawn again but where its type's returns at once, an
+    /// axolotl's), marked as from a bucket where its type keeps that. The creative
     /// player keeps the bucket. Whether it did anything.
     pub(crate) fn use_mob_bucket(
         &mut self,
@@ -67,9 +68,9 @@ impl Region {
             kind,
             player,
             pos,
+            (true, false),
             true,
-            false,
-            |mob| fish::set_from_bucket(kind, mob),
+            |mob| types::of(kind).poured_from_bucket(kind, mob),
             output,
         );
         true

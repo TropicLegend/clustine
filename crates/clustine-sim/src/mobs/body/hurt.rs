@@ -204,6 +204,8 @@ fn invulnerable_to(struck: &Struck<'_>, source: &DamageSource) -> bool {
 /// its damage event, the push away from where the source is and the hurt or death
 /// sound; and a mob whose health it took to nothing dies.
 pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
+    // The type's own `hurtServer` before it calls its parent's (an axolotl's draws).
+    struck.mob_type.before_hurt_server(struck, source, amount);
     let took = living_hurt_server(struck, source, amount);
     if took {
         // The type's own `hurtServer` after `LivingEntity`'s (a horse rearing).

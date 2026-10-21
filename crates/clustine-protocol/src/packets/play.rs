@@ -3249,6 +3249,7 @@ pub mod entity_data_serializer {
     pub const COW_SOUND_VARIANT: i32 = 24;
     pub const WOLF_VARIANT: i32 = 25;
     pub const WOLF_SOUND_VARIANT: i32 = 26;
+    pub const FROG_VARIANT: i32 = 27;
     pub const PIG_VARIANT: i32 = 28;
     pub const PIG_SOUND_VARIANT: i32 = 29;
     pub const CHICKEN_VARIANT: i32 = 30;

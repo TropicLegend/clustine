@@ -43,6 +43,7 @@ pub enum Holder {
     WolfSoundVariant,
     CatVariant,
     CatSoundVariant,
+    FrogVariant,
 }
 
 /// The indices of `LivingEntity`'s and `Mob`'s values (the brief's 9.1).

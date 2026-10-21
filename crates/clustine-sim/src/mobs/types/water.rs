@@ -96,12 +96,18 @@ pub(crate) fn poured_by(item: i32) -> Option<u16> {
 /// false)`: a creative player keeps the water bucket and is given a fish bucket
 /// whether or not one is held already), and the fish gone; nothing otherwise.
 pub(crate) fn bucket_pickup(used: &mut Used<'_>) -> Option<Interaction> {
+    bucket_pickup_sounding(used, sounds::ITEM_BUCKET_FILL_FISH)
+}
+
+/// [`bucket_pickup`] with the type's own filling sound (`getPickupSound()`: an
+/// axolotl's, a tadpole's).
+pub(crate) fn bucket_pickup_sounding(used: &mut Used<'_>, sound: i32) -> Option<Interaction> {
     if !animal::is_item(used.held, items::WATER_BUCKET) || used.mob.body.vitals.dying() {
         return None;
     }
     let bucket = bucket_of(used.kind)?;
     used.did.push(Did::Sound {
-        sound: sounds::ITEM_BUCKET_FILL_FISH,
+        sound,
         source: SOUND_SOURCE_NEUTRAL,
         at: used.position,
         volume: 1.0,

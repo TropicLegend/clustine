@@ -233,6 +233,7 @@ impl Region {
                 self.spawn_item_pushed(at, stack, pick_up_delay, push, output);
             }
             Did::Convert { kind, drops } => self.convert_mob(entity.key, kind, &drops, output),
+            Did::GrowUp => self.tadpole_grown_up(entity.key, output),
             // Of a player of the region: one across a line does not get on, as on a boat
             // (named in `boats.rs`).
             Did::Mount => {
@@ -448,7 +449,10 @@ impl Region {
         let Some(mut child) = child else {
             return false;
         };
-        animal::made_baby(&mut child);
+        // `setBaby(true)`, which does nothing of a type that cannot be one (a frog).
+        if types::of(kind).can_be_a_baby() {
+            animal::made_baby(&mut child);
+        }
         let Some(made) = self.new_mob(kind, child, entity.position, 0.0, 0.0) else {
             return false;
         };

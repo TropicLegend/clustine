@@ -131,6 +131,9 @@ pub(crate) enum Local {
         from: crate::physics::Vec3,
         amount: f32,
     },
+    /// `Tadpole.ageUp()`: the mob, a tadpole of age, made a frog of its biome where it
+    /// is, and gone (`region/frogspawn.rs`).
+    GrowUp,
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

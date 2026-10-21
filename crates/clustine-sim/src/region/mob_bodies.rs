@@ -271,6 +271,7 @@ impl Region {
                     from,
                     amount,
                 } => self.stung_by_bee(key, kind, from, stung, amount, output),
+                Local::GrowUp => self.tadpole_grown_up(key, output),
             }
         }
     }

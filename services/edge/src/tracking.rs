@@ -350,6 +350,7 @@ fn holder_serializer(holder: Holder) -> i32 {
         Holder::WolfSoundVariant => serializers::WOLF_SOUND_VARIANT,
         Holder::CatVariant => serializers::CAT_VARIANT,
         Holder::CatSoundVariant => serializers::CAT_SOUND_VARIANT,
+        Holder::FrogVariant => serializers::FROG_VARIANT,
     }
 }
 

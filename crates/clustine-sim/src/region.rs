@@ -40,6 +40,7 @@ mod explosions;
 mod faces;
 mod falling;
 mod fluids;
+mod frogspawn;
 mod given;
 mod hanging;
 pub(crate) mod hives;
@@ -3469,6 +3470,7 @@ mod tests {
 
     use crate::api::{Face, INVENTORY_SLOTS, PlayerJoin};
 
+    mod amphibians;
     mod arrivals;
     mod attack_strength;
     mod block_updates;
