@@ -167,6 +167,11 @@ impl Region {
         let did = std::mem::take(&mut used.did);
         self.entity_drew(entity.key, stream.draws_since(&start));
         if result == Interaction::Pass {
+            // A use that did nothing may yet have kept the mob (a camel husk's
+            // `interact` makes it persistent before anything else).
+            if Mob::decode(&entity.data).is_ok_and(|was| was != mob) {
+                self.commit_mob(entity, chunk, &mob, output);
+            }
             return;
         }
         self.commit_mob(entity, chunk, &mob, output);

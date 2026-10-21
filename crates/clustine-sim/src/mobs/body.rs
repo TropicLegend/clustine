@@ -409,6 +409,7 @@ pub(crate) fn moment(tick: &MobTick<'_>) -> u32 {
 /// The mob of `tick` as a hurt finds it now.
 fn struck<'a>(tick: &'a mut MobTick<'_>) -> Struck<'a> {
     let moment = moment(tick);
+    let in_liquid = tick.living.body.in_water || tick.living.in_lava();
     Struck {
         kind: tick.kind,
         mob: &mut tick.mob,
@@ -418,7 +419,11 @@ fn struck<'a>(tick: &'a mut MobTick<'_>) -> Struck<'a> {
         on_ground: tick.living.body.on_ground,
         on_fire: tick.living.fire_ticks > 0,
         vehicle: tick.vehicle,
+        carries: tick.carries,
+        leashed: tick.leashed,
+        in_liquid,
         moment,
+        game_time: tick.world.game_time(),
         draws: &mut *tick.draws,
         out: &mut tick.out,
     }
@@ -527,6 +532,9 @@ pub(crate) fn living_attributes(
 /// the rest of the horse family's, or any living body's.
 pub(crate) fn landing(kind: u16, mob: &crate::mobs::Mob) -> crate::living::Landing {
     use crate::mobs::types::{animal, equine};
+    if let Some(own) = crate::mobs::types::of(kind).landing(mob) {
+        return own;
+    }
     if equine::is_llama(kind) {
         crate::living::Landing::Llama
     } else if equine::is_equine(kind) {
@@ -534,7 +542,7 @@ pub(crate) fn landing(kind: u16, mob: &crate::mobs::Mob) -> crate::living::Landi
             baby: animal::is_baby(mob),
         }
     } else if i32::from(kind) == clustine_data::entity_types::FROG {
-        crate::living::Landing::Frog
+        crate::living::Landing::Lowered { by: 5 }
     } else {
         crate::living::Landing::Living
     }
@@ -778,6 +786,8 @@ pub(crate) fn travel(tick: &mut MobTick<'_>) {
     tick.living.yaw = tick.yaw;
     tick.living.travel_kind = tick.mob_type.travel(tick);
     if tick.living.travels {
+        // The type's own `travel` first (a sitting camel's), then the living body's.
+        tick.mob_type.before_travel(tick);
         tick.living.travel(tick.world);
     }
     tick.living.after_travel(tick.world, &mut *tick.draws);
@@ -811,8 +821,8 @@ fn sound_steps(tick: &mut MobTick<'_>) {
                 ..
             } => {
                 if sound && tick.mob_type.plays_step_sounds() {
-                    let played = match tick.mob_type.step_sound(&tick.mob) {
-                        Some(own) => Some((own, tick.mob_type.step_volume(), 1.0)),
+                    let played = match tick.mob_type.step_sound_on(&tick.mob, state) {
+                        Some(own) => Some(own),
                         None => state
                             .sound_type()
                             .map(|kind| (kind.step, kind.volume * 0.15, kind.pitch)),

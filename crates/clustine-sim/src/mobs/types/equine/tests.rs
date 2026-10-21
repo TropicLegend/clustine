@@ -68,6 +68,7 @@ fn spawned(kind: u16, seed: u64) -> (Mob, Random) {
         biome: Some("minecraft:plains"),
         at: clustine_world::BlockPos::new(0, -60, 0),
         day: 0,
+        game_time: 0,
     });
     (mob, replay)
 }

@@ -144,8 +144,16 @@ pub(crate) struct Struck<'a> {
     pub(crate) on_fire: bool,
     /// The type of what it rides, which its loot asks.
     pub(crate) vehicle: Option<u16>,
+    /// Whether anything rides it (`isVehicle`), it is on a lead (`isLeashed`), and it is
+    /// in water or lava (`isInLiquid`): what an armadillo asks before it rolls up.
+    pub(crate) carries: bool,
+    pub(crate) leashed: bool,
+    pub(crate) in_liquid: bool,
     /// The moment the hurt comes at ([`super::moment`]).
     pub(crate) moment: u32,
+    /// The world's game time (`Level.getGameTime()`), which a camel's pose is stamped
+    /// with.
+    pub(crate) game_time: i64,
     /// Its own stream, on from what it has drawn (in its tick, or aside from it).
     pub(crate) draws: &'a mut Random,
     pub(crate) out: &'a mut MobOutput,
@@ -206,6 +214,8 @@ fn invulnerable_to(struck: &Struck<'_>, source: &DamageSource) -> bool {
 pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
     // The type's own `hurtServer` before it calls its parent's (an axolotl's draws).
     struck.mob_type.before_hurt_server(struck, source, amount);
+    // The type's own `hurtServer` first changes the amount (a rolled-up armadillo's).
+    let amount = struck.mob_type.hurt_amount(struck.mob, amount);
     let took = living_hurt_server(struck, source, amount);
     if took {
         // The type's own `hurtServer` after `LivingEntity`'s (a horse rearing).
@@ -315,8 +325,16 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
 /// takes no wear), and what is left off its health, which sculk hears. Neither effects
 /// nor enchantments nor absorption reduce it: no mob of Clustine has any.
 fn actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) {
-    // The type's own first (an animal's love ends).
+    // The type's own first (a camel stands up, an animal's love ends), the living
+    // body's, then what the type does after its superclass's (an armadillo rolls up).
+    struck.mob_type.before_actually_hurt(struck, source);
     struck.mob_type.actually_hurt(struck.mob, struck.moment);
+    living_actually_hurt(struck, source, amount);
+    struck.mob_type.after_actually_hurt(struck, source);
+}
+
+/// `LivingEntity.actuallyHurt`.
+fn living_actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) {
     if invulnerable_to(struck, source) {
         return;
     }
@@ -410,8 +428,12 @@ pub(crate) enum GameEvent {
     EntityDie,
     /// `Mob.ate()`'s.
     Eat,
-    /// A chicken's egg laid.
+    /// A chicken's egg laid, an armadillo's scute shed.
     EntityPlace,
+    /// A camel sitting down or standing up, an armadillo rolling up or out.
+    EntityAction,
+    /// An armadillo brushed.
+    EntityInteract,
 }
 
 impl GameEvent {
@@ -422,6 +444,8 @@ impl GameEvent {
             Self::EntityDie => "minecraft:entity_die",
             Self::Eat => "minecraft:eat",
             Self::EntityPlace => "minecraft:entity_place",
+            Self::EntityAction => "minecraft:entity_action",
+            Self::EntityInteract => "minecraft:entity_interact",
         }
     }
 }

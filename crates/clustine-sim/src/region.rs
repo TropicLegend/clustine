@@ -3488,6 +3488,7 @@ mod tests {
     mod fliers;
     mod fluids;
     mod hanging;
+    mod highland;
     mod hoppers;
     mod horse_riding;
     mod horses;

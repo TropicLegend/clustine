@@ -46,10 +46,10 @@ fn cow(position: [f64; 3], on_ground: bool) -> Entity {
     mob_of(COW_KEY, entity_types::COW, position, on_ground)
 }
 
-/// A mob of a type no part has built yet (a goat, until its brain), which is a body of the
+/// A mob of a type no part has built yet (a hoglin, until N9), which is a body of the
 /// game's defaults: what the body's own rules are seen on, without a mind's moves.
 fn plain(position: [f64; 3], on_ground: bool) -> Entity {
-    mob_of(COW_KEY, entity_types::GOAT, position, on_ground)
+    mob_of(COW_KEY, entity_types::HOGLIN, position, on_ground)
 }
 
 /// Lays `entity` in its loaded chunk, as a load would have it.
@@ -214,7 +214,9 @@ fn a_fall_of_five_blocks_hurts_by_two_with_the_small_sound_and_one_of_eight_by_f
                 matches!(event, RegionEvent::DamageEvent { entity, .. } if *entity == COW_KEY)
             });
         }
-        assert_eq!(mob(&region, COW_KEY).body.vitals.health, 10.0 - damage);
+        let most = crate::mobs::body::attributes::supplied(entity_types::HOGLIN as u16, 23).unwrap()
+            as f32;
+        assert_eq!(mob(&region, COW_KEY).body.vitals.health, most - damage);
         assert!(heard.contains(&sound), "{height}: {heard:?}");
         assert!(heard.contains(&sounds::ENTITY_GENERIC_HURT));
         assert!(damaged);
@@ -443,12 +445,12 @@ fn a_spawn_egg_of_a_type_not_built_yet_makes_nothing() {
     holding(
         &mut region,
         ItemStack {
-            item: items::GOAT_SPAWN_EGG,
+            item: items::HOGLIN_SPAWN_EGG,
             count: 1,
         },
     );
     checked(&mut region, &moves(vec![place(1, 1, -61, 1, Face::Top)]));
-    assert!(mobs_of(&region, entity_types::GOAT).is_empty());
+    assert!(mobs_of(&region, entity_types::HOGLIN).is_empty());
 }
 
 #[test]
@@ -913,9 +915,9 @@ fn a_full_inventory_throws_what_is_given_unless_duplicates_are_kept_out() {
 #[test]
 fn a_mob_that_goes_into_another_chunk_is_reported_entering_it_whole() {
     let mut region = on_ticking_floor_with(&[]);
-    let mut goat = mob_of(COW_KEY, entity_types::GOAT, [15.7, -60.0, 0.5], true);
-    goat.motion = [0.8, 0.0, 0.0];
-    lay(&mut region, &goat);
+    let mut plain = plain([15.7, -60.0, 0.5], true);
+    plain.motion = [0.8, 0.0, 0.0];
+    lay(&mut region, &plain);
     let output = checked(&mut region, &TickInputs::default());
     let entered: Vec<&EntityState> = output
         .events

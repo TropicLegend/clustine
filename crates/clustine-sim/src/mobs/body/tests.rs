@@ -61,7 +61,11 @@ fn hurt_at(
             on_ground: true,
             on_fire: false,
             vehicle: None,
+            carries: false,
+            leashed: false,
+            in_liquid: false,
             moment,
+            game_time: 0,
             draws,
             out: &mut out,
         };

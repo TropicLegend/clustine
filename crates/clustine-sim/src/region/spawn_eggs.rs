@@ -234,6 +234,7 @@ impl Region {
         let block = crate::physics::containing([x, y, z]);
         let biome = self.biome_at(block);
         let day = self.clock.day;
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
         if !poured || mob_type.finalizes_when_poured() {
             mob_type.finalize_spawn(&mut types::Spawning {
                 mob: &mut mob,
@@ -242,6 +243,7 @@ impl Region {
                 biome,
                 at: block,
                 day,
+                game_time,
             });
             finalize_spawn(kind, &mut mob, &mut level);
             mob_type.after_finalize_spawn(&mut types::Spawning {
@@ -251,6 +253,7 @@ impl Region {
                 biome,
                 at: block,
                 day,
+                game_time,
             });
         }
         made(&mut mob);

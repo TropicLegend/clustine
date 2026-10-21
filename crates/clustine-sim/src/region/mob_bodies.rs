@@ -575,6 +575,24 @@ impl Region {
             .and_then(|vehicle| self.find_entity(vehicle))
             .map(|(_, vehicle)| vehicle.kind);
         let mut motion = record.motion;
+        // `isInLiquid` as its box finds the fluids now: between its ticks the record
+        // keeps no fluid of its last.
+        let in_liquid = {
+            let (width, height) = types::own_size(&record).map_or_else(
+                || {
+                    let info = EntityTypeInfo::of(i32::from(record.kind));
+                    (info.width, info.height)
+                },
+                |size| (size.width, size.height),
+            );
+            let view = View {
+                region: self,
+                home: chunk,
+            };
+            let bounds = crate::physics::aabb::Aabb::of_entity(record.position, width, height);
+            let fluids = crate::physics::fluids::update(&view, &bounds);
+            fluids.in_water() || fluids.in_lava()
+        };
         let mut stream = self.entity_stream(key).random;
         let start = stream.clone();
         let mut out = MobOutput::default();
@@ -588,7 +606,11 @@ impl Region {
                 on_ground: record.on_ground,
                 on_fire: record.fire_ticks > 0,
                 vehicle,
+                carries: !record.riding.passengers.is_empty(),
+                leashed: record.riding.leash.is_some(),
+                in_liquid,
                 moment: record.lived,
+                game_time: i64::try_from(self.clock.game_time).unwrap_or(i64::MAX),
                 draws: &mut stream,
                 out: &mut out,
             };

@@ -82,6 +82,7 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
             biome,
             at: BlockPos::new(0, -60, 0),
             day: 0,
+            game_time: 0,
         });
         let own = fox::state_of(&mob);
         assert_eq!(own.variant, expected, "{biome:?}");
@@ -100,6 +101,7 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
             biome: None,
             at: BlockPos::new(0, -60, 0),
             day: 0,
+            game_time: 0,
         });
         let hand = mob.body.equipment.slots[0];
         if replay.next_float() < 0.2 {
@@ -298,6 +300,7 @@ fn an_egg_s_panda_draws_its_two_genes_and_a_weak_one_has_ten_health_at_most_and_
             biome: None,
             at: BlockPos::new(0, -60, 0),
             day: 0,
+            game_time: 0,
         });
         let own = panda::state_of(&mob);
         assert_eq!(own.main_gene, random_gene(&mut replay));

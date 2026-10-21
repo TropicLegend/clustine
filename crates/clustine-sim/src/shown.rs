@@ -145,8 +145,8 @@ mod tests {
         mob.body.flags.left_handed = true;
         mob.body.combat.aggressive = true;
         let data = mob.encode();
-        // A type that adds nothing of its own (a goat, until its part).
-        let cow = clustine_data::entity_types::GOAT as u16;
+        // A type that adds nothing of its own (a hoglin, until its part).
+        let cow = clustine_data::entity_types::HOGLIN as u16;
         let values = mob_values(cow, &data);
         assert_eq!(
             values,

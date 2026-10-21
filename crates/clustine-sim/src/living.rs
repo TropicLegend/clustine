@@ -631,8 +631,8 @@ impl Living {
         let power = distance + 1.0e-6 - self.attributes.safe_fall_distance;
         let mut damage =
             physics::floor(power * f64::from(multiplier) * self.attributes.fall_damage_multiplier);
-        if self.landing == Landing::Frog {
-            damage -= 5;
+        if let Landing::Lowered { by } = self.landing {
+            damage -= by;
         }
         if damage <= 0 {
             return;
@@ -640,7 +640,7 @@ impl Living {
         // A horse and a llama sound no fall of their own, only the block's; a llama is
         // hurt only by a fall of six or more (`Llama.causeFallDamage`).
         let hurt = match self.landing {
-            Landing::Living | Landing::Frog => {
+            Landing::Living | Landing::Lowered { .. } => {
                 let sound = self.fall_sound(damage);
                 self.play(sound, 1.0, 1.0);
                 true
@@ -683,8 +683,8 @@ pub(crate) enum Landing {
     /// `Llama`'s: no landing sound; hurt only by a fall of six or more, the block's
     /// sound at any fall that would hurt.
     Llama,
-    /// `Frog`'s: `LivingEntity`'s, its damage five less (`calculateFallDamage`).
-    Frog,
+    /// `LivingEntity`'s, its `calculateFallDamage` less `by` (a goat's ten).
+    Lowered { by: i32 },
 }
 
 /// `computeModifiedFriction(friction, modifier)`, in floats.

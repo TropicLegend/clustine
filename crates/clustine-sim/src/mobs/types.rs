@@ -28,9 +28,12 @@ pub(crate) mod allay;
 #[cfg(test)]
 mod amphibian_tests;
 pub(crate) mod animal;
+pub(crate) mod armadillo;
 pub(crate) mod axolotl;
 pub(crate) mod bat;
 pub(crate) mod bee;
+pub(crate) mod camel;
+pub(crate) mod camel_husk;
 pub(crate) mod cat;
 pub(crate) mod chicken;
 pub(crate) mod cod;
@@ -45,7 +48,10 @@ mod flier_tests;
 pub(crate) mod fox;
 pub(crate) mod frog;
 pub(crate) mod glow_squid;
+pub(crate) mod goat;
 pub(crate) mod happy_ghast;
+#[cfg(test)]
+mod highland_tests;
 pub(crate) mod horse;
 #[cfg(test)]
 mod keeper_tests;
@@ -603,6 +609,61 @@ pub(crate) trait MobType: Sync {
         let _ = mob;
         self.sound_volume()
     }
+
+    /// What the type's `hurtServer` does to the amount before `LivingEntity`'s (a
+    /// rolled-up armadillo takes `(amount − 1) / 2`): the amount as it is by default.
+    fn hurt_amount(&self, mob: &Mob, amount: f32) -> f32 {
+        let _ = mob;
+        amount
+    }
+
+    /// What the type's `actuallyHurt` does before its superclass's, where it needs the
+    /// source or the world's clock (a camel stands up at once): nothing by default.
+    fn before_actually_hurt(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        let _ = (struck, source);
+    }
+
+    /// What the type's `actuallyHurt` does after its superclass's, whether or not the
+    /// hurt reached its health (an armadillo rolls up from what hurt it): nothing by
+    /// default.
+    fn after_actually_hurt(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        let _ = (struck, source);
+    }
+
+    /// Whose `causeFallDamage` its landing takes where its type says (a camel's is the
+    /// horse family's, a goat's the living one's less ten); `None` for its class's
+    /// ([`super::body::landing`]).
+    fn landing(&self, mob: &Mob) -> Option<crate::living::Landing> {
+        let _ = mob;
+        None
+    }
+
+    /// The sound, volume and pitch of its `playStepSound(pos, state)` on the block
+    /// `state` where the type has its own: by default [`MobType::step_sound`] at 0.15
+    /// and 1, `None` for the block's own step.
+    fn step_sound_on(
+        &self,
+        mob: &Mob,
+        state: clustine_data::BlockState,
+    ) -> Option<(i32, f32, f32)> {
+        let _ = state;
+        self.step_sound(mob)
+            .map(|sound| (sound, self.step_volume(), 1.0))
+    }
+
+    /// What the type's `travel(input)` does before its superclass's, with the input and
+    /// the motion in the living body (a sitting camel's are taken to nothing but their
+    /// height on the ground): nothing by default.
+    fn before_travel(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
+    }
+
+    /// Whether its `BodyRotationControl.clientTick` turns its body in this tick (a
+    /// sitting camel's and a rolled-up armadillo's do not): always by default.
+    fn body_rotation_ticks(&self, tick: &MobTick<'_>) -> bool {
+        let _ = tick;
+        true
+    }
 }
 
 /// What a breeding lays instead of a child ([`MobType::laid_from_breeding`]): the item,
@@ -742,6 +803,9 @@ pub(crate) struct Spawning<'a> {
     /// The overworld clock's day time (`world_clock`), which the moon's phase a cat's
     /// variant asks follows.
     pub(crate) day: u64,
+    /// The world's game time (`Level.getGameTime()`), which a camel's pose is stamped
+    /// with.
+    pub(crate) game_time: i64,
 }
 
 /// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its
@@ -845,6 +909,10 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::SNIFFER => &sniffer::Sniffer,
         entity_types::ALLAY => &allay::Allay,
         entity_types::HAPPY_GHAST => &happy_ghast::HappyGhast,
+        entity_types::GOAT => &goat::Goat,
+        entity_types::CAMEL => &camel::CAMEL,
+        entity_types::CAMEL_HUSK => &camel_husk::CAMEL_HUSK,
+        entity_types::ARMADILLO => &armadillo::Armadillo,
         _ => return None,
     };
     Some(found)

@@ -157,6 +157,7 @@ impl Region {
         let block = crate::physics::containing(made.position);
         let biome = self.biome_at(block);
         let day = self.clock.day;
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
         let mob_type = types::of(kind);
         mob_type.finalize_spawn(&mut Spawning {
             mob: &mut grown,
@@ -165,6 +166,7 @@ impl Region {
             biome,
             at: block,
             day,
+            game_time,
         });
         super::spawn_eggs::finalize_spawn(kind, &mut grown, &mut level);
         mob_type.after_finalize_spawn(&mut Spawning {
@@ -174,6 +176,7 @@ impl Region {
             biome,
             at: block,
             day,
+            game_time,
         });
         grown.body.flags.persistent = true;
         self.entity_drew(key, level.draws_since(&start));

@@ -727,7 +727,10 @@ pub(crate) fn server_ai_step(tick: &mut MobTick<'_>) {
 /// `BodyRotationControl.clientTick` on the server too), then, every five ticks,
 /// `updateControlFlags`.
 pub(crate) fn rotate_body(tick: &mut MobTick<'_>) {
-    controls::rotate_body(tick);
+    // A type's body control may hold the body still (a sitting camel's).
+    if tick.mob_type.body_rotation_ticks(tick) {
+        controls::rotate_body(tick);
+    }
     if tick.tick_count.saturating_add(1).is_multiple_of(5) {
         // `updateControlFlags`. **Named**: the region does not yet tell a mob's tick
         // what it rides or carries, so no mob is taken as controlled by a mob it
