@@ -763,3 +763,73 @@ water placed at two positions of one distance in front of an axolotl.
     villager without changing it. Recommended.
 15. **The mob's pick-up loop** (4.1, item 3), which N7i's fox shares: in N7j1 if N7i's
     wild animals have not brought it first. Recommended.
+
+## 8. The review (2026-10-21), and what the plan is now
+
+An independent review checked the activities' hash buckets for all 26 names (each
+matches), the shuffled lists, the draws, the sensors' delays, the tick's place, the brain's
+clock, the sensed lists' members, section 3 and the division of work, and found them
+sound. It found eleven things to change; the plan stands amended by them:
+
+1. **The re-sense after a take-in is the lead's, in N7j1, and is specified** (2.2.7, Q6).
+   Sensors scan every 20 ticks (the armadillo's every 5) and behaviours read their lists
+   every tick between, so lists dropped at a take-in and left empty until the next scan
+   would stop a goat tempted across a line for five seconds (`FollowTemptation`'s stop
+   and its cooldown of 100). The re-sense runs at the mob's first brain tick after a
+   take-in, after the forget pass and before the start pass; its sensors run in list
+   order and write only sensed memories (the mob sensor is passed over; the hurt-by
+   sensor writes only `hurt_by`); it makes no draws and moves no sensor's phase. Named:
+   the lists are the take-in's world, not the last scan's. Tested: an arrival in the
+   middle of a temptation keeps following and starts no cooldown.
+2. **The body keeps the last damage source** (3.1): its type id, its cause's key and its
+   game-time stamp, written at each hurt (already a write), so that the hurt-by sensor
+   judges `#panic_causes` and `#panic_environmental_causes` and a mob on fire, in lava or
+   on a cactus panics, as the armadillo's and every brain animal's panic need.
+3. **A provider names its memories** (2.2.6, 2.4.1): the allay's, the sniffer's and the
+   nautiluses' use the three-argument `Brain.provider`, whose memories are registered
+   first (Brain.txt 67–103). Without them the allay's liked player, the sniffer's explored
+   positions and the nautilus's anger would be dropped. The test of each type's
+   registration compares with the providers' lists in the dumps.
+4. **A counter lowered on some ticks only is kept as (value, the moment it resumed)**
+   (2.5, 2.8), written when its counting pauses or resumes, not at every step:
+   `SetEntityLookTargetSometimes`' `ticksUntilNextStart`, `TryFind*`'s `next`, and
+   `MoveToTargetSink.remainingCooldown`, each named and its writes counted by a test. A
+   goat in a pen would otherwise write its mind on four ticks in ten for the first alone.
+5. **The rule of one write in ten ticks checks the state's design, not the encoding**
+   (2.9): it must pass before the candidates are compared, and where it fails the state
+   changes. The expiry as an offset from `lived` is dropped (it changes every tick). Each
+   type has its own penned, unwatched case; bytes are counted after zstd, by the format's
+   codec as a dev-dependency of the sim; layer 2 leaves the sensed lists out. The bytes
+   rule and the 10 % rule of simplicity stand.
+6. **Writes and reads outside the brain's tick are defined against the record's `lived`**
+   (2.2.2, 2.2.3): a value set outside counts from the mob's next forget pass, in this
+   server tick if the mob has not yet ticked and the next otherwise, as the game's; an
+   absent memory's time to expiry is `i64::MAX` (`Long.MAX_VALUE`, which the armadillo's
+   balling up reads); a cooldown set again while it runs restarts. The `Memories` API of
+   N7j1 says so, tested in the start pass, the running pass, a hurt before and after the
+   mob's tick and an interaction. 2.2.2's bucket example goes: buckets carry nothing yet.
+7. **N7j1's contracts gain** (4.1, 4.2): a breeding hook that gives mind changes and
+   outputs, not only a type state (a frog's pregnancy, a sniffer's egg), with
+   `AnimalMakeLove` wired to the breeding ask across a line; the extension points of the
+   behaviours types extend (the camel's, armadillo's and sniffer's panics, the
+   armadillo's walk sink, the frog's long jump), fixed before parts A, C and D begin; a
+   `memory_of(&Entity, kind)` free of the encoding, "unknown" for a copy; the tick core's
+   pass and slot, which a cooldown's value at its reader's place needs; the re-sense of
+   item 1; the fox's pick-up lifted into the shared hook, the lead editing `fox.rs`; the
+   allay's vibration in flight kept in its record as a stamp. The path's evaluator is in
+   `ai/pathfinder.rs`.
+8. **"Unknown" never counts as dead, removed or in another level** (3.2, 3.6). For each
+   reader that erases on "not there" (the hurt-by sensor, `StopAttackingIfTargetInvalid`,
+   `AnimalMakeLove.canStillUse`, `LookAtTargetSink`, `MoveToTargetSink`'s start) the plan
+   says whether it keeps and skips or takes the game's out-of-sight result, reader by
+   reader, so that an axolotl hit by a player who walks over a line remembers them. A
+   copy's path for `InteractWithDoor` is read from the copy's body.
+9. **The long jump keeps** its chosen jump, its preparation's start (a stamp; 40 ticks),
+   its initial position (compared exactly) and its tries, and the frog's
+   `currentlyWantingPreferredOnes`; the drawn candidates' indices go, being read only in
+   the tick that draws them.
+10. **The happy ghast's leashes are built** (part D, with R): it holds boats and animals
+    on quad leashes and shows `IS_LEASH_HOLDER`, which a player tries within minutes.
+11. Named in what to try: a goat horn blows nothing until instruments come (agreed), and
+    `VillagerCalmDown` will erase `hurt_by` in N10, which the test of sensed-only writes
+    must allow then.
