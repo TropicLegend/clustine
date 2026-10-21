@@ -1169,11 +1169,10 @@ impl Region {
         // changed last (`changes.rs`).
         changes::merge(&mut output.entity_changes);
 
-        // Riders who left the world, noted where they got off, then those let go.
-        let mut noted = std::mem::take(&mut self.dismounted);
-        noted.extend(let_go);
+        // Riders who left the world, noted where they got off, and those let go.
+        let dismounted = std::mem::take(&mut self.dismounted);
         let gone = mem::take(&mut self.gone);
-        output.stays = self.notes(first, noted, gone);
+        output.stays = self.notes(first, dismounted, let_go, gone);
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
@@ -1809,18 +1808,30 @@ impl Region {
     }
 
     /// What the tick says to the world store of stays: see [`TickOutput::stays`].
-    /// `first` is whether this is the region's first tick, and `let_go` has the note of
+    /// `first` is whether this is the region's first tick, `dismounted` has the note of
+    /// every rider who left the world, where they got off, and `let_go` the note of
     /// every stay the tick let go. To be called before the journal is taken.
     fn notes(
         &self,
         first: bool,
+        dismounted: Vec<(PlayerId, StayNote)>,
         let_go: Vec<(PlayerId, StayNote)>,
         gone: Vec<(PlayerId, EntityId, u32)>,
     ) -> Vec<StayNote> {
-        // By the player, an entering stay before one that is or was here, and the stays
-        // that are no more last, so that the `Has` of a ride a player left in the tick
-        // they left the world does not bring them back.
+        // By the player: the notes of riders who left, each keyed by its own stay's
+        // entity, so that the `Has` of a stay that arrived over one of them in the same
+        // tick does not replace it, nor it that `Has`
+        // (`docs/groundwork/n7h-logout-on-a-mount.md`, sections 3 and 13 item 2); then
+        // an entering stay before one that is or was here, and the stays that are no
+        // more last, so that the `Has` of a ride a player left in the tick they left the
+        // world does not bring them back.
         let mut notes: BTreeMap<(PlayerId, u8, EntityId), StayNote> = BTreeMap::new();
+        for (id, note) in dismounted {
+            let StayNote::Has { entity, .. } = note else {
+                unreachable!("a rider's note is where they got off");
+            };
+            notes.insert((id, 0, entity), note);
+        }
         for (id, entering) in &self.entering {
             // An entering stay changes in a tick only by being begun.
             if first || self.journal.entering.contains(id) {
@@ -1828,7 +1839,7 @@ impl Region {
                     player: *id,
                     entity: entering.entity_id,
                 };
-                notes.insert((*id, 0, EntityId(0)), note);
+                notes.insert((*id, 1, EntityId(0)), note);
             }
         }
         for (id, player) in &self.players {
@@ -1841,12 +1852,12 @@ impl Region {
                     face: player.face(),
                     let_go: false,
                 };
-                notes.insert((*id, 1, EntityId(0)), note);
+                notes.insert((*id, 2, EntityId(0)), note);
             }
         }
         // Whoever was let go is in the region no longer, so no note is replaced.
         for (id, note) in let_go {
-            notes.insert((id, 1, EntityId(0)), note);
+            notes.insert((id, 2, EntityId(0)), note);
         }
         for (player, entity, hops) in gone {
             let note = StayNote::Gone {
@@ -1854,7 +1865,7 @@ impl Region {
                 entity,
                 hops,
             };
-            notes.insert((player, 2, entity), note);
+            notes.insert((player, 3, entity), note);
         }
         notes.into_values().collect()
     }

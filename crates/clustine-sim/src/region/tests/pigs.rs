@@ -351,3 +351,35 @@ fn a_pig_whose_seat_is_kept_for_a_player_on_their_way_stands_still() {
         before.map(f64::to_bits)
     );
 }
+
+/// A later stay of a rider that arrives while the earlier one rides ends the earlier one,
+/// which is noted where the pig lets it off, and the later one is noted as it is: two
+/// notes, each by its own stay's entity, neither in place of the other
+/// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 13 item 2).
+#[test]
+fn a_later_stay_that_arrives_over_a_rider_keeps_both_stays_notes() {
+    let mut region = ridden();
+    let later = super::transfer(1, 77, 2.5, 2);
+    let output = checked(&mut region, &changes(vec![super::arrive(1, &later)]));
+    let has: Vec<(EntityId, [f64; 3])> = output
+        .stays
+        .iter()
+        .filter_map(|note| match note {
+            StayNote::Has { entity, place, .. } => Some((
+                *entity,
+                [
+                    place.pose.position.x,
+                    place.pose.position.y,
+                    place.pose.position.z,
+                ],
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(has.len(), 2, "{:?}", output.stays);
+    let (first, off) = has[0];
+    assert_eq!(first, EntityId(1), "the ended rider's note first");
+    // Beside the pig, on the floor, not in its seat.
+    assert_eq!(off[1], -60.0, "{off:?}");
+    assert_eq!(has[1].0, EntityId(77));
+}
