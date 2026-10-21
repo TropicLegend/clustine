@@ -1280,6 +1280,13 @@ fn a_ghastling_panics_in_its_panic_activity_and_idles_else() {
     let mut pen = Pen::default();
     brainy.mob.body.combat.last_hurt_by = Some((EntityId(77), 0));
     brainy.mob.body.combat.last_hurt_by_player = Some((77, 0));
+    brainy.mob.body.last_damage.last = Some((
+        crate::mobs::body::hurt::DamageType::PLAYER_ATTACK
+            .id()
+            .expect("a damage type"),
+        Some(EntityId(77)),
+        i64::from(brainy.lived) + pen.ahead,
+    ));
     pen.players.push(player(77, [3.5, 4.0, 0.5], None));
     brainy.until(&mut pen, 25, |b| b.active() == Some(Activity::Panic));
 }

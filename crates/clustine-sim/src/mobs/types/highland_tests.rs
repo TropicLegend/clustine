@@ -2194,6 +2194,11 @@ fn a_hurt_camel_panics_standing_up_at_once_and_runs_at_four_times_its_speed() {
     // Hit by a player at its last tick: its hurt sensor sees it at its first scan.
     camel.mob.body.combat.last_hurt_by = Some((EntityId(7), 0));
     camel.mob.body.combat.last_hurt_by_player = Some((7, 0));
+    camel.mob.body.last_damage.last = Some((
+        DamageType::PLAYER_ATTACK.id().expect("a damage type"),
+        Some(EntityId(7)),
+        camel.world.game_time(),
+    ));
     let out = camel.think();
     assert!(
         camel
@@ -2322,6 +2327,11 @@ fn an_armadillo_remembers_danger_for_80_ticks_at_each_scan_that_sees_a_scare_wit
             _ => {
                 armadillo.world.put(cow.clone());
                 armadillo.mob.body.combat.last_hurt_by = Some((EntityId(8), 0));
+                armadillo.mob.body.last_damage.last = Some((
+                    DamageType::MOB_ATTACK.id().expect("a damage type"),
+                    Some(EntityId(8)),
+                    armadillo.world.game_time(),
+                ));
             }
         }
         for _ in 0..30 {
