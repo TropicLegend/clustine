@@ -46,6 +46,17 @@ pub(crate) struct SeenPlayer {
     /// `hasMovedHorizontallyRecently`: they moved sideways between their last two
     /// ticks (a dolphin follows a boat whose rider does).
     pub(crate) moved_horizontally: bool,
+    /// Whether they live (`isAlive`).
+    pub(crate) alive: bool,
+    /// The game time they lay down at, while they sleep in a bed (`isSleeping`, and
+    /// `getSleepTimer` reckoned from it).
+    pub(crate) sleeping: Option<u64>,
+    /// The mob they last hurt and the game time of it (`getLastHurtMob` and its
+    /// timestamp), which a tamed wolf attacks.
+    pub(crate) last_hurt_mob: Option<(EntityId, u64)>,
+    /// The mob that last hurt them and the game time of it (`getLastHurtByMob` and its
+    /// timestamp), which a tamed wolf defends them from.
+    pub(crate) last_hurt_by: Option<(EntityId, u64)>,
 }
 
 /// A block's light, as the chunk keeps it (`getBrightness` of each layer).
@@ -78,6 +89,22 @@ pub(crate) trait MobWorld: Holds {
     /// The players a mob reads: the region's own, then those of other regions that its
     /// copies show (N7a2's faces), each by key.
     fn players(&self) -> Vec<SeenPlayer>;
+
+    /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
+    /// a wolf's anger ends at (none where a view knows no clock).
+    fn game_time(&self) -> i64 {
+        0
+    }
+
+    /// A player of the world wherever they are, by their UUID: those the mob reads
+    /// ([`MobWorld::players`]) first, then the world's players the store publishes once
+    /// a second (position and game mode, a second late), as a pet resolves its owner
+    /// beyond the copies (`docs/groundwork/n7-plan.md`, section 7.3, item 3).
+    fn player_anywhere(&self, uuid: u128) -> Option<SeenPlayer> {
+        self.players()
+            .into_iter()
+            .find(|player| player.uuid == uuid)
+    }
 
     /// `Level.getSkyDarken()`: how far the sky's light is below full by the time of day
     /// (none where a view knows no clock).

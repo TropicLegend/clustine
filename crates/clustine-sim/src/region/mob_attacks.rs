@@ -168,6 +168,11 @@ impl Region {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_NODAMAGE, attack.feet, output);
             return;
         }
+        // `setLastHurtMob(target)`, which a tamed wolf of theirs reads.
+        let now = self.clock.game_time;
+        if let Some(held) = self.players.get_mut(&player) {
+            held.last_hurt_mob = Some((target, now));
+        }
         let (sin, cos) = look(attack.yaw);
         if attack.knockback > 0.0 {
             // `causeExtraKnockback`: the attacker's motion and sprint after it are its

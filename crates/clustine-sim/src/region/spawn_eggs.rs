@@ -231,12 +231,14 @@ impl Region {
         // `finalizeSpawn`: the type's, with the biome at its block, then `Mob`'s.
         let block = crate::physics::containing([x, y, z]);
         let biome = self.biome_at(block);
+        let day = self.clock.day;
         mob_type.finalize_spawn(&mut types::Spawning {
             mob: &mut mob,
             level: &mut level,
             own: &mut own,
             biome,
             at: block,
+            day,
         });
         finalize_spawn(kind, &mut mob, &mut level);
         mob_type.after_finalize_spawn(&mut types::Spawning {
@@ -245,6 +247,7 @@ impl Region {
             own: &mut own,
             biome,
             at: block,
+            day,
         });
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
@@ -268,10 +271,13 @@ impl Region {
         let at = entity.position;
         // `playAmbientSound()`: the voice's pitch drawn of its own random where its
         // type has a sound.
-        let sound = mob_type.ambient_sound(&mob).map(|sound| {
-            let pitch = voice_pitch(&mut own, mob_type.is_baby(&mob));
-            (sound, pitch)
-        });
+        let now = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let sound = mob_type
+            .ambient_sound_drawn(&mob, &mut own, now, 0, None)
+            .map(|sound| {
+                let pitch = voice_pitch(&mut own, mob_type.is_baby(&mob));
+                (sound, pitch)
+            });
         if here {
             self.entity_drew(key, own.draws_since(&own_start));
             self.add_fresh_entity(entity, output);

@@ -148,6 +148,7 @@ pub(in crate::region) fn add_player(
         experience: Default::default(),
         attack_reset: None,
         last_level_up: None,
+        last_hurt_mob: None,
         entity_id,
         name: format!("player{number}"),
         pose: Pose::at(Vec3::new(feet[0], feet[1], feet[2])),

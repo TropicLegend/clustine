@@ -626,6 +626,29 @@ impl AnimalSeen {
     }
 }
 
+/// `this.canMate(other)` of the mob's type beyond their love, for the animal `other` the
+/// view shows (`MobType::can_mate`), the mob's own record as its tick has it so far.
+fn mates(ai: &Ai<'_, '_>, other: &Seen<'_>) -> bool {
+    let Some(me) = ai.tick.world.entity(ai.tick.key) else {
+        return false;
+    };
+    let Ok(partner) = Mob::decode(&other.entity.data) else {
+        return false;
+    };
+    let mut entity = me.entity.clone();
+    entity.lived = ai.tick.lived;
+    ai.tick.mob_type.can_mate(
+        super::Mate {
+            entity: &entity,
+            mob: &ai.tick.mob,
+        },
+        super::Mate {
+            entity: other.entity,
+            mob: &partner,
+        },
+    )
+}
+
 /// The animal `key` of the view, if it is one.
 fn animal_seen(ai: &Ai<'_, '_>, key: EntityId) -> Option<AnimalSeen> {
     ai.tick.world.entity(key).as_ref().and_then(AnimalSeen::of)
@@ -662,6 +685,7 @@ impl BreedGoal {
             .entities_in(&bounds)
             .iter()
             .filter(|seen| seen.entity.kind == kind)
+            .filter(|seen| mates(ai, seen))
             .filter_map(AnimalSeen::of)
             .collect();
         let conditions = Conditions::non_combat().range(8.0).ignore_line_of_sight();

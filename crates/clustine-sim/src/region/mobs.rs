@@ -106,6 +106,44 @@ impl MobWorld for View<'_> {
         crate::time::sky_darken(self.region.clock.day)
     }
 
+    fn game_time(&self) -> i64 {
+        i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
+    }
+
+    /// Those the mob reads first, then the world's players as the store last published
+    /// them: where they stand and their game mode, holding nothing a mob reads.
+    fn player_anywhere(&self, uuid: u128) -> Option<SeenPlayer> {
+        if let Some(found) = self
+            .players()
+            .into_iter()
+            .find(|player| player.uuid == uuid)
+        {
+            return Some(found);
+        }
+        let known = self
+            .region
+            .faces
+            .world
+            .iter()
+            .find(|player| player.player.0.as_u128() == uuid)?;
+        let at = clustine_world::Vec3::new(known.position[0], known.position[1], known.position[2]);
+        let mut face = PlayerFace::of(
+            &crate::api::Pose::at(at),
+            false,
+            false,
+            &clustine_world::Inventory::default(),
+            0,
+            None,
+        );
+        face.game_mode = known.game_mode;
+        // Their sleep's counter as of the store's last word, as the time they lay down.
+        let now = self.region.clock.game_time;
+        face.sleeping = known
+            .sleeping
+            .map(|counter| now.saturating_sub(u64::from(counter)));
+        Some(seen(known.player, known.entity, &face))
+    }
+
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
         let chunk = self.region.readable_chunk(pos.chunk())?;
         let (x, z) = pos.in_chunk();
@@ -444,6 +482,10 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         spectator: face.game_mode == 3,
         vehicle: face.vehicle,
         moved_horizontally: face.moved_horizontally,
+        alive: face.alive,
+        sleeping: face.sleeping,
+        last_hurt_mob: face.last_hurt_mob,
+        last_hurt_by: face.last_hurt_by,
     }
 }
 

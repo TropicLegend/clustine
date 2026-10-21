@@ -20,6 +20,7 @@ use crate::api::{RegionEvent, TickOutput};
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::body::attributes::supplied;
+use crate::mobs::body::hurt::{Causer, DamageSource, DamageType};
 use crate::mobs::body::{Head, attribute};
 use crate::mobs::types::{self, Breeding, Did, Interaction, Used, animal};
 use crate::physics::Vec3;
@@ -36,6 +37,19 @@ impl Region {
         clustine_data::synced_registry("minecraft:worldgen/biome")
             .and_then(|biomes| biomes.entries.get(usize::from(biome.0)))
             .copied()
+    }
+
+    /// The UUID of the player whose stay is the entity `player`: the region's own, or a
+    /// player whose face it keeps.
+    pub(crate) fn uuid_of_player(&self, player: EntityId) -> Option<u128> {
+        if let Some(id) = self.player_with_entity(player) {
+            return Some(id.0.as_u128());
+        }
+        self.faces
+            .kept
+            .iter()
+            .find(|(_, kept)| kept.entity == player)
+            .map(|(id, _)| id.0.as_u128())
     }
 
     /// What a player's use of a mob that did something ends with: `ENTITY_INTERACT`,
@@ -126,15 +140,20 @@ impl Region {
         let mob_type = types::of(entity.kind);
         let mut stream = self.entity_stream(entity.key).random;
         let start = stream.clone();
+        let player_uuid = self.uuid_of_player(player);
+        let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
         let mut used = Used {
             key: entity.key,
             kind: entity.kind,
             mob: &mut mob,
             player,
+            player_uuid,
+            game_time,
             held,
             creative,
             sneaking,
             carries: !entity.riding.passengers.is_empty(),
+            on_ground: entity.on_ground,
             from,
             position: entity.position,
             moment: entity.lived,
@@ -234,6 +253,19 @@ impl Region {
             // Mounting a living mob is the riding's, which is not built yet (named in
             // `Did::Ride`).
             Did::Ride => {}
+            Did::HurtByPlayer { amount } => {
+                let source = DamageSource::by(
+                    DamageType::PLAYER_ATTACK,
+                    Causer {
+                        key: player,
+                        kind: super::mob_bodies::player_kind(),
+                        position: from,
+                        player: self.uuid_of_player(player),
+                        living: true,
+                    },
+                );
+                self.hurt_mob(entity.key, &source, amount, output);
+            }
         }
     }
 

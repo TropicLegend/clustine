@@ -67,6 +67,7 @@ fn spawned(kind: u16, seed: u64) -> (Mob, Random) {
         own: &mut own,
         biome: Some("minecraft:plains"),
         at: clustine_world::BlockPos::new(0, -60, 0),
+        day: 0,
     });
     (mob, replay)
 }
@@ -189,6 +190,9 @@ fn use_with<'a>(
         creative: true,
         sneaking,
         carries: false,
+        player_uuid: None,
+        game_time: 0,
+        on_ground: true,
         from: [0.0, 0.0, 0.0],
         position: [1.0, 0.0, 1.0],
         moment: 100,

@@ -527,6 +527,8 @@ fn a_llama_spits_at_a_wolf_near_it() {
     let mut wolf = Mob::fresh();
     wolf.body.vitals.health = 8.0;
     wolf.body.vitals.air = MAX_AIR;
+    // Held still: a wolf built runs from a llama, which is not what this tries.
+    wolf.body.flags.no_ai = true;
     lay(
         &mut region,
         &Entity {

@@ -574,9 +574,12 @@ pub(crate) fn after_base_tick(tick: &mut MobTick<'_>) {
     if i64::from(tick.draws.next_int(1000)) < time {
         tick.mob.body.idle.ambient_since = lived + 1 + tick.mob_type.ambient_interval();
         let body = &tick.living.body;
+        let (in_water, on_ground) = (body.in_water, body.on_ground);
+        let now = tick.world.game_time();
+        let place = Some((in_water, on_ground));
         let sound = tick
             .mob_type
-            .ambient_sound_at(&tick.mob, body.in_water, body.on_ground);
+            .ambient_sound_drawn(&tick.mob, tick.draws, now, lived, place);
         struck(tick).make_sound(sound);
     }
 }

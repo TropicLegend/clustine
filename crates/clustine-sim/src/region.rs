@@ -311,6 +311,10 @@ struct Player {
     /// The tick of their last level-up's sound (`lastLevelUpTime`), in memory only: a
     /// restore may let a level-up five levels on be heard once more.
     last_level_up: Option<u64>,
+    /// The mob they last hurt and the game time of it (`setLastHurtMob`), which their
+    /// face shows a tamed wolf. In memory only: a hand-over or a restore forgets it,
+    /// which the plan carries in the transfer (`docs/groundwork/n7-plan.md`, 8.3.6).
+    last_hurt_mob: Option<(EntityId, u64)>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1628,6 +1632,7 @@ impl Region {
                 .attack_ticks
                 .map(|ticks| self.tick.saturating_sub(u64::from(ticks))),
             last_level_up: None,
+            last_hurt_mob: None,
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1765,6 +1770,7 @@ impl Region {
             experience,
             attack_reset: None,
             last_level_up: None,
+            last_hurt_mob: None,
         };
         self.enter(id, player, attempt, output);
     }
@@ -3203,6 +3209,7 @@ impl Player {
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
+            last_hurt_mob: None,
         }
     }
 
@@ -3217,6 +3224,7 @@ impl Player {
             self.riding.map(|riding| riding.vehicle),
         );
         face.sleeping = self.sleeping.map(|sleep| sleep.since);
+        face.last_hurt_mob = self.last_hurt_mob;
         face
     }
 
@@ -3407,6 +3415,7 @@ mod tests {
     mod sleep;
     mod stands;
     mod swings;
+    mod tamed;
     mod water;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);

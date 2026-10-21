@@ -3173,6 +3173,14 @@ pub enum EntityDataValue {
     Int(i32),
     /// `EntityDataSerializers.FLOAT`: a vehicle's damage, a living entity's health.
     Float(f32),
+    /// `EntityDataSerializers.LONG`: a wolf's end of anger in game time. The codec,
+    /// `ByteBufCodecs.VAR_LONG`, is an anonymous class not dumped; a VarLong, as its
+    /// name says (**Inferred**, `docs/groundwork/n7-brief.md`, section 9.5).
+    Long(i64),
+    /// `EntityDataSerializers.OPTIONAL_LIVING_ENTITY_REFERENCE`: a pet's owner, by UUID.
+    /// `EntityReference.streamCodec()` (the UUID's) made optional: a presence flag, then
+    /// the UUID as two longs, most significant first (**Inferred**, the brief's 9.5).
+    OptionalLivingEntityReference(Option<Uuid>),
     /// `EntityDataSerializers.ITEM_STACK`: a slot, empty or not.
     ItemStack(Option<ItemStack>),
     /// `EntityDataSerializers.BOOLEAN`, one byte: a boat's paddles, a furnace cart's fuel.
@@ -3223,6 +3231,7 @@ pub enum EntityDataValue {
 pub mod entity_data_serializer {
     pub const BYTE: i32 = 0;
     pub const INT: i32 = 1;
+    pub const LONG: i32 = 2;
     pub const FLOAT: i32 = 3;
     pub const ITEM_STACK: i32 = 7;
     pub const BOOLEAN: i32 = 8;
@@ -3230,11 +3239,16 @@ pub mod entity_data_serializer {
     pub const BLOCK_POS: i32 = 10;
     pub const OPTIONAL_BLOCK_POS: i32 = 11;
     pub const DIRECTION: i32 = 12;
+    pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
     pub const POSE: i32 = 20;
+    pub const CAT_VARIANT: i32 = 21;
+    pub const CAT_SOUND_VARIANT: i32 = 22;
     pub const COW_VARIANT: i32 = 23;
     pub const COW_SOUND_VARIANT: i32 = 24;
+    pub const WOLF_VARIANT: i32 = 25;
+    pub const WOLF_SOUND_VARIANT: i32 = 26;
     pub const PIG_VARIANT: i32 = 28;
     pub const PIG_SOUND_VARIANT: i32 = 29;
     pub const CHICKEN_VARIANT: i32 = 30;
@@ -3335,6 +3349,14 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::FLOAT);
                     w.put_f32(*value);
                 }
+                EntityDataValue::Long(value) => {
+                    w.put_var_int(entity_data_serializer::LONG);
+                    w.put_var_long(*value);
+                }
+                EntityDataValue::OptionalLivingEntityReference(uuid) => {
+                    w.put_var_int(entity_data_serializer::OPTIONAL_LIVING_ENTITY_REFERENCE);
+                    w.put_option(uuid.as_ref(), |w, uuid| w.put_uuid(*uuid));
+                }
                 EntityDataValue::Boolean(value) => {
                     w.put_var_int(entity_data_serializer::BOOLEAN);
                     w.put_bool(*value);
@@ -3398,6 +3420,10 @@ impl Decode for SetEntityData {
                 entity_data_serializer::BLOCK_POS => EntityDataValue::BlockPos(r.position()?),
                 entity_data_serializer::INT => EntityDataValue::Int(r.var_int()?),
                 entity_data_serializer::FLOAT => EntityDataValue::Float(r.f32()?),
+                entity_data_serializer::LONG => EntityDataValue::Long(r.var_long()?),
+                entity_data_serializer::OPTIONAL_LIVING_ENTITY_REFERENCE => {
+                    EntityDataValue::OptionalLivingEntityReference(r.option(Reader::uuid)?)
+                }
                 entity_data_serializer::BOOLEAN => EntityDataValue::Boolean(r.bool()?),
                 entity_data_serializer::ROTATIONS => {
                     EntityDataValue::Rotations([r.f32()?, r.f32()?, r.f32()?])
@@ -3424,6 +3450,10 @@ impl Decode for SetEntityData {
                 entity_data_serializer::DYE_COLOR => EntityDataValue::DyeColor(r.var_int()?),
                 serializer @ (entity_data_serializer::COW_VARIANT
                 | entity_data_serializer::COW_SOUND_VARIANT
+                | entity_data_serializer::CAT_VARIANT
+                | entity_data_serializer::CAT_SOUND_VARIANT
+                | entity_data_serializer::WOLF_VARIANT
+                | entity_data_serializer::WOLF_SOUND_VARIANT
                 | entity_data_serializer::PIG_VARIANT
                 | entity_data_serializer::PIG_SOUND_VARIANT
                 | entity_data_serializer::CHICKEN_VARIANT
@@ -3964,7 +3994,8 @@ mod tests {
             values: Vec::new(),
         };
         assert_eq!(crate::packets::encode(&none), [id, 1, 0xFF]);
-        assert!(ClientboundPlay::decode(&[id, 1, 8, 2, 0, 0xFF]).is_err());
+        // `STRING`, 4, is not one Clustine sends.
+        assert!(ClientboundPlay::decode(&[id, 1, 8, 4, 0, 0xFF]).is_err());
     }
 
     #[test]
@@ -5368,6 +5399,95 @@ mod tests {
         );
         // A painting variant sent whole is not modelled.
         assert!(ClientboundPlay::decode(&[0x65, 1, 9, 34, 0, 0xFF]).is_err());
+    }
+
+    /// The serializers of the tamed animals (`docs/groundwork/n7-brief.md`, section 9.5):
+    /// a wolf's end of anger a VarLong, an owner a presence flag and the UUID, the wolf's
+    /// and cat's variants an entry's id; each read back as written.
+    #[test]
+    fn the_entity_data_of_tamed_animals_is_written_as_the_game_writes_it_and_read_back() {
+        let one = |index: u8, value: EntityDataValue| {
+            crate::packets::encode(&SetEntityData {
+                entity_id: 1,
+                values: vec![(index, value)],
+            })
+        };
+        let with = |body: &[u8]| {
+            let mut expected = vec![0x65, 1];
+            expected.extend(body);
+            expected.push(0xFF);
+            expected
+        };
+        // `LONG`, 2: a VarLong; no anger is -1, ten bytes.
+        assert_eq!(
+            one(22, EntityDataValue::Long(-1)),
+            with(&[
+                22, 2, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01
+            ])
+        );
+        assert_eq!(
+            one(22, EntityDataValue::Long(300)),
+            with(&[22, 2, 0xAC, 0x02])
+        );
+        // `OPTIONAL_LIVING_ENTITY_REFERENCE`, 13: none, or the UUID's two longs.
+        assert_eq!(
+            one(19, EntityDataValue::OptionalLivingEntityReference(None)),
+            with(&[19, 13, 0])
+        );
+        let owner = Uuid::from_u128(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10);
+        let mut body = vec![19, 13, 1];
+        body.extend(owner.as_bytes());
+        assert_eq!(
+            one(
+                19,
+                EntityDataValue::OptionalLivingEntityReference(Some(owner))
+            ),
+            with(&body)
+        );
+        // `CAT_VARIANT` 21, `CAT_SOUND_VARIANT` 22, `WOLF_VARIANT` 25,
+        // `WOLF_SOUND_VARIANT` 26: the entry's id as it is.
+        for (serializer, index) in [
+            (entity_data_serializer::CAT_VARIANT, 20),
+            (entity_data_serializer::CAT_SOUND_VARIANT, 24),
+            (entity_data_serializer::WOLF_VARIANT, 23),
+            (entity_data_serializer::WOLF_SOUND_VARIANT, 24),
+        ] {
+            let value = EntityDataValue::Registered { serializer, id: 3 };
+            assert_eq!(one(index, value), with(&[index, serializer as u8, 3]));
+        }
+        assert_eq!(
+            [
+                entity_data_serializer::LONG,
+                entity_data_serializer::OPTIONAL_LIVING_ENTITY_REFERENCE,
+                entity_data_serializer::CAT_VARIANT,
+                entity_data_serializer::CAT_SOUND_VARIANT,
+                entity_data_serializer::WOLF_VARIANT,
+                entity_data_serializer::WOLF_SOUND_VARIANT,
+            ],
+            [2, 13, 21, 22, 25, 26]
+        );
+        let packet = SetEntityData {
+            entity_id: 7,
+            values: vec![
+                (
+                    19,
+                    EntityDataValue::OptionalLivingEntityReference(Some(owner)),
+                ),
+                (22, EntityDataValue::Long(123_456_789_012)),
+                (
+                    23,
+                    EntityDataValue::Registered {
+                        serializer: entity_data_serializer::WOLF_VARIANT,
+                        id: 8,
+                    },
+                ),
+            ],
+        };
+        let bytes = crate::packets::encode(&packet);
+        assert_eq!(
+            ClientboundPlay::decode(&bytes),
+            Ok(ClientboundPlay::SetEntityData(packet))
+        );
     }
 
     /// A punch is its id alone (`ServerboundPunchPacket`'s codec is `StreamCodec.unit`),

@@ -1237,12 +1237,12 @@ pub(crate) struct TargetRules {
 }
 
 impl TargetRules {
-    fn follow_distance(ai: &Ai<'_, '_>) -> f64 {
+    pub(crate) fn follow_distance(ai: &Ai<'_, '_>) -> f64 {
         ai.attribute(attributes::FOLLOW_RANGE)
     }
 
     /// `TargetGoal.canContinueToUse`.
-    fn can_continue(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) -> bool {
+    pub(crate) fn can_continue(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) -> bool {
         let held = ai.tick.mob.body.combat.target.or(state.target_mob);
         let Some(target) = held.and_then(|key| sensing::find(ai, key)) else {
             return false;
@@ -1274,20 +1274,20 @@ impl TargetRules {
     }
 
     /// `TargetGoal.start`.
-    fn start(state: &mut Targeting) {
+    pub(crate) fn start(state: &mut Targeting) {
         state.reach_cache = 0;
         state.reach_cache_time = 0;
         state.unseen_ticks = 0;
     }
 
     /// `TargetGoal.stop`.
-    fn stop(state: &mut Targeting, ai: &mut Ai<'_, '_>) {
+    pub(crate) fn stop(state: &mut Targeting, ai: &mut Ai<'_, '_>) {
         sensing::set_target(ai, None);
         state.target_mob = None;
     }
 
     /// `TargetGoal.canAttack(target, conditions)`.
-    fn can_attack(
+    pub(crate) fn can_attack(
         &self,
         state: &mut Targeting,
         ai: &mut Ai<'_, '_>,
@@ -1324,7 +1324,7 @@ impl TargetRules {
     }
 
     /// `TargetGoal.canReach(target)`.
-    fn can_reach(state: &mut Targeting, ai: &mut Ai<'_, '_>, target: &Looked) -> bool {
+    pub(crate) fn can_reach(state: &mut Targeting, ai: &mut Ai<'_, '_>, target: &Looked) -> bool {
         state.reach_cache_time = reduced_tick_delay(10 + ai.tick.draws.next_int(5) as i32);
         let made = navigation::create_path(ai, target.block_position(), 0);
         let Some(made) = made else {
@@ -1498,8 +1498,8 @@ pub(crate) struct Attacking {
 }
 
 /// `MeleeAttackGoal(mob, speed, followingTargetEvenIfNotSeen)`: chase the target and hit
-/// it within reach. **Named**: the hit itself (`swingForAttack`, `doHurtTarget`) is
-/// the body's, written into another entity, and waits for it; the goal keeps its timing.
+/// it within reach (`doHurtTarget`, [`crate::mobs::tick::Local::Hurt`]). **Named**: the
+/// arm's swing (`swingForAttack`) is not shown.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MeleeAttackGoal {
     pub(crate) speed: f64,
@@ -1607,12 +1607,21 @@ impl Goal for MeleeAttackGoal {
             state.recalc = self.adjusted_tick_delay(state.recalc);
         }
         state.attack_cooldown = (state.attack_cooldown - 1).max(0);
-        // `checkAndPerformAttack`: the cooldown and its reset; the hit is the body's.
+        // `checkAndPerformAttack`: the cooldown's reset, and the hit (`doHurtTarget`),
+        // which the region lands on the target after the mob's tick.
         if state.attack_cooldown == 0
             && Self::within_range(ai, &target)
             && sensing::has_line_of_sight(ai, &target)
         {
             state.attack_cooldown = self.adjusted_tick_delay(20);
+            let amount = ai.attribute(attributes::ATTACK_DAMAGE) as f32;
+            ai.tick.out.local.push(crate::mobs::tick::Local::Hurt {
+                key: target.key,
+                kind: ai.tick.kind,
+                from: ai.position(),
+                amount,
+                sound: None,
+            });
         }
     }
 }

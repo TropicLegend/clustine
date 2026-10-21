@@ -215,9 +215,15 @@ pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount
     took
 }
 
-/// `LivingEntity.hurtServer`, before what a type adds after it.
+/// `LivingEntity.hurtServer`, before what a type adds after it, but for what the type
+/// does first once the hurt is not refused for its being invulnerable to it.
 fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
-    if invulnerable_to(struck, source) || struck.dying() {
+    if invulnerable_to(struck, source) {
+        return false;
+    }
+    // The type's own (a wolf stands up), then `LivingEntity`'s.
+    struck.mob_type.before_hurt(struck.mob);
+    if struck.dying() {
         return false;
     }
     // `noActionTime = 0`, where it counts at all.

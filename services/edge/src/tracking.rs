@@ -346,6 +346,10 @@ fn holder_serializer(holder: Holder) -> i32 {
         Holder::PigSoundVariant => serializers::PIG_SOUND_VARIANT,
         Holder::ChickenVariant => serializers::CHICKEN_VARIANT,
         Holder::ChickenSoundVariant => serializers::CHICKEN_SOUND_VARIANT,
+        Holder::WolfVariant => serializers::WOLF_VARIANT,
+        Holder::WolfSoundVariant => serializers::WOLF_SOUND_VARIANT,
+        Holder::CatVariant => serializers::CAT_VARIANT,
+        Holder::CatSoundVariant => serializers::CAT_SOUND_VARIANT,
     }
 }
 
@@ -360,6 +364,14 @@ pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityData
                     DataShown::Int(int) => EntityDataValue::Int(int),
                     DataShown::Float(float) => EntityDataValue::Float(float),
                     DataShown::Boolean(boolean) => EntityDataValue::Boolean(boolean),
+                    DataShown::Long(long) => EntityDataValue::Long(long),
+                    // An owner is a UUID, the same in every region: nothing to translate.
+                    DataShown::OptionalUuid(uuid) => {
+                        EntityDataValue::OptionalLivingEntityReference(
+                            uuid.map(uuid::Uuid::from_u128),
+                        )
+                    }
+                    DataShown::Pose(pose) => EntityDataValue::Pose(pose),
                     DataShown::Holder(holder, id) => EntityDataValue::Registered {
                         serializer: holder_serializer(holder),
                         id,

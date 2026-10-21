@@ -13,6 +13,7 @@
 //! [`equine`] holds.
 
 pub(crate) mod animal;
+pub(crate) mod cat;
 pub(crate) mod chicken;
 pub(crate) mod cod;
 pub(crate) mod cow;
@@ -25,6 +26,9 @@ pub(crate) mod horse;
 pub(crate) mod llama;
 pub(crate) mod mooshroom;
 pub(crate) mod mule;
+pub(crate) mod neutral;
+pub(crate) mod ocelot;
+pub(crate) mod parrot;
 pub(crate) mod pig;
 pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
@@ -32,6 +36,9 @@ pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod skeleton_horse;
 pub(crate) mod squid;
+pub(crate) mod tamable;
+#[cfg(test)]
+mod tamed_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) mod trader_llama;
@@ -40,6 +47,7 @@ pub(crate) mod turtle;
 pub(crate) mod water;
 #[cfg(test)]
 mod water_tests;
+pub(crate) mod wolf;
 pub(crate) mod zombie_horse;
 
 use clustine_data::{entity_types, sounds};
@@ -125,6 +133,12 @@ pub(crate) trait MobType: Sync {
     fn breed_offspring(&self, breeding: &mut Breeding<'_>) -> Option<Mob> {
         let _ = breeding;
         None
+    }
+
+    /// What the type's `hurtServer` does once a hurt is not refused for the mob's being
+    /// invulnerable to it, before `LivingEntity`'s (a wolf or a parrot stands up).
+    fn before_hurt(&self, mob: &mut Mob) {
+        let _ = mob;
     }
 
     /// What the type's `aiStep` does after `LivingEntity.aiStep` (its travel and its
@@ -221,6 +235,26 @@ pub(crate) trait MobType: Sync {
         self.ambient_sound(mob)
     }
 
+    /// `getAmbientSound()` of a type that draws for it from its own random (a wolf's
+    /// pant or whine, a cat's purreow), at the game time `now` and the mob's moment
+    /// `lived`. `place` is where its tick finds it (in water, on the ground), `None` at
+    /// a spawn egg's sound: by default [`MobType::ambient_sound_at`] there, else
+    /// [`MobType::ambient_sound`], which draw nothing.
+    fn ambient_sound_drawn(
+        &self,
+        mob: &Mob,
+        draws: &mut Random,
+        now: i64,
+        lived: u32,
+        place: Option<(bool, bool)>,
+    ) -> Option<i32> {
+        let _ = (draws, now, lived);
+        match place {
+            Some((in_water, on_ground)) => self.ambient_sound_at(mob, in_water, on_ground),
+            None => self.ambient_sound(mob),
+        }
+    }
+
     /// `getAmbientSoundInterval()`: 80 in `Mob`.
     fn ambient_interval(&self) -> u32 {
         80
@@ -263,6 +297,11 @@ pub(crate) trait MobType: Sync {
         loot::Facts::default()
     }
 
+    /// The type as a tamed animal's goals read it (`TamableAnimal`), if it is one.
+    fn pet(&self) -> Option<&'static dyn tamable::Pet> {
+        None
+    }
+
     /// `canBeLeashed()`: its class decides by default ([`ladder::can_be_leashed`]).
     fn can_be_leashed(&self, kind: u16, mob: &Mob) -> bool {
         let _ = mob;
@@ -295,7 +334,7 @@ pub(crate) trait MobType: Sync {
     }
 
     /// What its `aiStep` does before `LivingEntity.aiStep` (a fish's flop, a horse's
-    /// tail's draw).
+    /// tail's draw, a parrot's imitation).
     fn before_ai_step(&self, tick: &mut MobTick<'_>) {
         let _ = tick;
     }
@@ -358,7 +397,8 @@ pub(crate) trait MobType: Sync {
 
     /// `canMate(partner)` beyond both being in love, which the region asks of a
     /// breeding it carries out: by default of one type (`Animal.canMate`'s class test);
-    /// a horse and a donkey may, each where it can parent.
+    /// a horse and a donkey may, each where it can parent; a wolf only tamed, with a
+    /// tamed wolf not sitting.
     fn can_mate(&self, this: Mate<'_>, partner: Mate<'_>) -> bool {
         this.entity.kind == partner.entity.kind
     }
@@ -383,6 +423,12 @@ pub(crate) struct Used<'a> {
     pub(crate) mob: &'a mut Mob,
     /// The player's entity.
     pub(crate) player: EntityId,
+    /// The player's UUID, where the region knows it (its own player's, or a face's):
+    /// what `isOwnedBy` compares and taming keeps.
+    pub(crate) player_uuid: Option<u128>,
+    /// The world's game time (`Level.getGameTime()`), which a wolf's anger is reckoned
+    /// against.
+    pub(crate) game_time: i64,
     /// What the hand used holds.
     pub(crate) held: Option<ItemStack>,
     /// Whether the player is a creative one (every player is: what they use is kept).
@@ -390,6 +436,8 @@ pub(crate) struct Used<'a> {
     pub(crate) sneaking: bool,
     /// Whether anything rides the mob (`isVehicle`).
     pub(crate) carries: bool,
+    /// Whether the mob stands on the ground (a parrot flying is not sat down).
+    pub(crate) on_ground: bool,
     /// The player's feet.
     pub(crate) from: Vec3,
     /// The mob's feet.
@@ -433,6 +481,9 @@ pub(crate) enum Did {
         pick_up_delay: u16,
         push: Option<Vec3>,
     },
+    /// `hurt(playerAttack(player), amount)` of the mob, by the player who used it (a
+    /// cookie fed to a parrot).
+    HurtByPlayer { amount: f32 },
     /// `convertTo(kind, single)`: the mob made a mob of `kind` where it stands, with
     /// `drops` laid at its top before the new mob is added, and itself gone.
     Convert { kind: u16, drops: Vec<ItemStack> },
@@ -460,6 +511,9 @@ pub(crate) struct Spawning<'a> {
     pub(crate) biome: Option<&'static str>,
     /// The mob's block (`blockPosition()`: a turtle's home).
     pub(crate) at: BlockPos,
+    /// The overworld clock's day time (`world_clock`), which the moon's phase a cat's
+    /// variant asks follows.
+    pub(crate) day: u64,
 }
 
 /// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its
@@ -542,6 +596,10 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::TRADER_LLAMA => &trader_llama::TraderLlama,
         entity_types::SKELETON_HORSE => &skeleton_horse::SkeletonHorse,
         entity_types::ZOMBIE_HORSE => &zombie_horse::ZombieHorse,
+        entity_types::WOLF => &wolf::Wolf,
+        entity_types::CAT => &cat::Cat,
+        entity_types::OCELOT => &ocelot::Ocelot,
+        entity_types::PARROT => &parrot::Parrot,
         _ => return None,
     };
     Some(found)

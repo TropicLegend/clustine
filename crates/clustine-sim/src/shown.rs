@@ -18,6 +18,13 @@ pub enum DataShown {
     Int(i32),
     Float(f32),
     Boolean(bool),
+    /// A long (`EntityDataSerializers.LONG`): a wolf's end of anger, in game time.
+    Long(i64),
+    /// An entity by its UUID, or none (`OPTIONAL_LIVING_ENTITY_REFERENCE`): a pet's
+    /// owner.
+    OptionalUuid(Option<u128>),
+    /// A pose by its ordinal (`EntityDataSerializers.POSE`): a cat crouching.
+    Pose(i32),
     /// An entry of a registry the server sends, by its id there: a farm animal's
     /// variant or sound variant, each of its own serializer.
     Holder(Holder, i32),
@@ -32,6 +39,10 @@ pub enum Holder {
     PigSoundVariant,
     ChickenVariant,
     ChickenSoundVariant,
+    WolfVariant,
+    WolfSoundVariant,
+    CatVariant,
+    CatSoundVariant,
 }
 
 /// The indices of `LivingEntity`'s and `Mob`'s values (the brief's 9.1).
