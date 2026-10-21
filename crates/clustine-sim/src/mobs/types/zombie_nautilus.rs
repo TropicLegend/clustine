@@ -2,8 +2,11 @@
 //! with 9.7.5 and 10.7.5): a nautilus of the undead that is never a baby and never
 //! breeds, breathes as the undead do, never dries out, and is of the temperate variant,
 //! or the warm (coral) one in a warm ocean. It is tamed, fed, saddled and armoured as a
-//! nautilus is ([`super::nautilus`]), and its brain, without the nautilus's panic, waits
-//! for the brain's machinery at the same seam.
+//! nautilus is ([`super::nautilus`]), and its brain ([`PROVIDER`], `ZombieNautilusAi`)
+//! is the nautilus's but for the panic and the breeding, a slower temptation (0.9) and
+//! a slower charge (0.5) with its own sound. Whom it charges is found as the
+//! nautilus's (`NautilusAi::findNearestValidAttackTarget`, **Inferred**: no lambda of
+//! its own does it), and what angers it too.
 //!
 //! Named differences beyond the nautilus's: it does not burn in daylight (N9); no
 //! drowned rides it, so nothing keeps it from a lead (N9's jockeys); its bucket's
@@ -12,13 +15,15 @@
 use clustine_data::sounds;
 
 use super::animal::{self, variants};
-use super::nautilus::{self, Family, Voices, state_of};
+use super::nautilus::{self, ChargeAttack, Family, Voices, state_of};
 use super::tamable::{Pet, Tame};
 use super::{Breeding, Interaction, MobType, Spawning, Used};
 use crate::living::{Sinks, Travel};
 use crate::mobs::Mob;
 use crate::mobs::ai::Setup;
-use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::body::hurt::{DamageSource, Struck};
+use crate::mobs::brain::behaviours::attacking;
+use crate::mobs::brain::{Activity, ActivityData, Provider};
 use crate::mobs::tick::MobTick;
 use crate::region::Random;
 use crate::shown::{DataShown, Holder};
@@ -61,9 +66,46 @@ impl Family for ZombieNautilus {
     fn voices(&self, _: &Mob) -> &'static Voices {
         &VOICES
     }
+}
 
-    fn charge_speed(&self) -> f32 {
-        0.5
+/// The zombie nautilus's brain (`ZombieNautilus.BRAIN_PROVIDER`): the nautilus's
+/// memories and sensors, and its own activities (`ZombieNautilusAi.getActivities`).
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &nautilus::MEMORIES,
+    sensors: &nautilus::SENSORS,
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `ZombieNautilusAi.getActivities()`: CORE without the panic, IDLE, and FIGHT with its
+/// own charge (0.5, `ZOMBIE_NAUTILUS_DASH`).
+fn activities() -> Vec<ActivityData> {
+    vec![
+        nautilus::core_activity(false),
+        idle_activity(),
+        nautilus::fight_activity(ChargeAttack {
+            speed: 0.5,
+            sound: sounds::ENTITY_ZOMBIE_NAUTILUS_DASH,
+        }),
+    ]
+}
+
+/// `ZombieNautilusAi.initIdleActivity()`: 1 following a tempting player at 0.9, 2
+/// picking a fight, 3 a swim or a walk to what it looks at; it never breeds.
+fn idle_activity() -> ActivityData {
+    ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (1, nautilus::follow_temptation(0.9)),
+            (
+                2,
+                attacking::start_attacking(nautilus::find_nearest_valid_attack_target),
+            ),
+            (3, nautilus::swim_or_look()),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
     }
 }
 
@@ -169,7 +211,24 @@ impl MobType for ZombieNautilus {
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let variant = select_variant(spawn.biome, spawn.level);
         nautilus::update(spawn.mob, |own| own.variant = variant);
-        nautilus::init_memories(spawn);
+        nautilus::init_memories(spawn, &PROVIDER);
+    }
+
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
+    }
+
+    /// `AbstractNautilus.hurtServer` after `TamableAnimal`'s: a hurt that took angers it.
+    fn after_hurt(&self, struck: &mut Struck<'_>, source: &DamageSource, took: bool) {
+        if took {
+            nautilus::angered(struck, source);
+        }
+    }
+
+    /// `ZombieNautilus.canBeLeashed()`: not while aggravated (no mob rides it to keep
+    /// it off a lead too, until N9's jockeys).
+    fn can_be_leashed(&self, _: u16, mob: &Mob) -> bool {
+        !nautilus::aggravated(&PROVIDER, mob)
     }
 
     /// `getBreedOffspring`: none.

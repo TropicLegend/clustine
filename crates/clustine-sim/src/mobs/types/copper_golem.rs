@@ -6,19 +6,19 @@
 //! it back a stage. It is built from a carved pumpkin on a block of copper
 //! (`region/copper_golems.rs`), or comes from its egg.
 //!
-//! Its mind is a brain in the game (`CopperGolemAi`: it sorts the items of copper chests
-//! into chests), whose machinery is not built yet: until its provider is wired at
-//! [`brain_seam`] a copper golem has no mind and stands where it is put. What the brain
-//! reads and sets is kept here already: the first transport cooldown its constructor
-//! draws ([`CopperGolemState::transport_cooldown`]), the chest it has open
-//! ([`set_opened_chest_pos`], which the chests' openers count, [`has_container_open`]),
-//! and its state shown to clients ([`set_state`]).
+//! Its mind is a brain ([`PROVIDER`], `CopperGolemAi`): it sorts the items of copper
+//! chests into chests ([`super::golem_transport`]), opening wooden and copper doors on
+//! its way and closing them behind it, and while it rests from that it strolls a
+//! little or stands; it looks at players near now and then, and panics when hurt. Its
+//! one activity beside CORE is IDLE. At a chest it is one of the chest's openers
+//! ([`at_chest`], [`set_opened_chest_pos`], which the chests' rechecks count,
+//! [`has_container_open`]), and its state shown to clients ([`set_state`]) is what it
+//! does there.
 //!
 //! Named differences: lightning strikes nothing yet (the weather is always clear), so
 //! none scrapes a golem back; its statue keeps no name (no block entity's components),
-//! and a leash it wore goes as the region's removal takes it; it holds nothing a player
-//! can take until its brain gives it something to carry, and wears no poppy until N7k's
-//! iron golem gives one.
+//! and a leash it wore goes as the region's removal takes it; it wears no poppy until
+//! N7k's iron golem gives one.
 
 use clustine_blocks::data::{item_in_tag, set};
 use clustine_data::{BlockState, EntityTypeInfo, PathType, blocks, entity_types, items, sounds};
@@ -26,6 +26,7 @@ use clustine_world::{BlockPos, ItemStack, TypeState};
 use serde::{Deserialize, Serialize};
 
 use super::animal::SOUND_SOURCE_PLAYERS;
+use super::golem_transport::{self, Reached, TransportItemsBetweenContainers};
 use super::{Did, Interaction, MobType, Used};
 use crate::api::SOUND_SOURCE_BLOCKS;
 use crate::living::slots;
@@ -34,6 +35,13 @@ use crate::mobs::ai::Setup;
 use crate::mobs::ai::navigation::Settings;
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::body::{Event, Removed};
+use crate::mobs::brain::behaviours::looking::{self, LookAt};
+use crate::mobs::brain::behaviours::walking::{self, StrollTo};
+use crate::mobs::brain::behaviours::{cooldowns, doors, panic};
+use crate::mobs::brain::{
+    self, Activity, ActivityData, Behaviour, Brain, Cx, DoNothing, Gate, HeldTimed, MemoryKind,
+    Order, Provider, Running, Sensor, Status, Value, sensors,
+};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::Vec3;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
@@ -67,7 +75,7 @@ pub(crate) const CONTAINER_INTERACTION_RANGE: f64 = 3.0;
 pub(crate) const UNAFFECTED: u8 = 0;
 #[allow(
     dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
+    reason = "a stage named for its readers: the weathering steps through it by number"
 )]
 pub(crate) const EXPOSED: u8 = 1;
 pub(crate) const WEATHERED: u8 = 2;
@@ -78,25 +86,9 @@ pub(crate) const STAGES: [&str; 4] = ["", "exposed_", "weathered_", "oxidized_"]
 
 /// `CopperGolemState`, by its ordinal: what clients animate it by.
 pub(crate) const IDLE: u8 = 0;
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
 pub(crate) const GETTING_ITEM: u8 = 1;
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
 pub(crate) const GETTING_NO_ITEM: u8 = 2;
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
 pub(crate) const DROPPING_ITEM: u8 = 3;
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
 pub(crate) const DROPPING_NO_ITEM: u8 = 4;
 
 /// `CopperGolemStatueBlock.Pose` in its order (the block report's: the enum is not in
@@ -109,19 +101,15 @@ const VERSION: u8 = 1;
 
 /// What a copper golem keeps: its weathering (`DATA_WEATHER_STATE`) and its next
 /// stage's game time (`nextWeatheringTick`, or [`WAXED`], [`UNSET`]), its state shown
-/// to clients, the chest it has open (`openedChestPos`, which the game does not save
-/// and Clustine does, so that a chest's recheck in another tick finds it), and the
-/// first transport cooldown its constructor drew for its brain.
+/// to clients, and the chest it has open (`openedChestPos`, which the game does not save
+/// and Clustine does, so that a chest's recheck in another tick finds it). Its brain's
+/// memories are its brain's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CopperGolemState {
     pub(crate) weather: u8,
     pub(crate) next_weathering: i64,
     pub(crate) state: u8,
     pub(crate) opened_chest: Option<BlockPos>,
-    /// `TRANSPORT_ITEMS_COOLDOWN_TICKS` as the constructor drew it, held for the brain to
-    /// take as its memory once its provider is wired; a golem read fresh from disk has
-    /// none (the brief's 7.0.5, finding 2).
-    pub(crate) transport_cooldown: Option<i32>,
 }
 
 impl Default for CopperGolemState {
@@ -132,7 +120,6 @@ impl Default for CopperGolemState {
             next_weathering: UNSET,
             state: IDLE,
             opened_chest: None,
-            transport_cooldown: None,
         }
     }
 }
@@ -182,25 +169,17 @@ pub(crate) fn previous_stage(weather: u8) -> u8 {
     weather.saturating_sub(1)
 }
 
-/// `setState(state)`, which the brain's transport hooks set (the seam).
+/// `setState(state)`, which its interaction at a chest sets.
 pub(crate) fn set_state(mob: &mut Mob, state: u8) {
     update(mob, |own| own.state = state);
 }
 
-/// `setOpenedChestPos(pos)`, the brain's at the first tick of its interaction (the seam).
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
+/// `setOpenedChestPos(pos)`, at the first tick of its interaction.
 pub(crate) fn set_opened_chest_pos(mob: &mut Mob, pos: BlockPos) {
     update(mob, |own| own.opened_chest = Some(pos));
 }
 
-/// `clearOpenedChestPos()`, the brain's as it travels again (the seam).
-#[allow(
-    dead_code,
-    reason = "what the brain's transport (part A) sets, which it wires"
-)]
+/// `clearOpenedChestPos()`, at the last tick of its interaction and as it travels again.
 pub(crate) fn clear_opened_chest_pos(mob: &mut Mob) {
     update(mob, |own| own.opened_chest = None);
 }
@@ -219,12 +198,183 @@ pub(crate) fn has_container_open(
     opened == pos || other_half(opened) == Some(pos)
 }
 
-/// The seam of the brain (`customServerAiStep`'s `brain.tick` and
-/// `CopperGolemAi.updateActivity`, `setActiveActivityToFirstValid([IDLE])`): nothing
-/// yet. The provider (sensors `[NEAREST_LIVING_ENTITIES, HURT_BY]`, CORE and IDLE with
-/// `TransportItemsBetweenContainers` at IDLE's first priority) is wired here with part A.
-pub(crate) fn brain_seam(tick: &mut MobTick<'_>) {
-    let _ = tick;
+/// A step of a copper golem's work at a chest, which the region does after its tick
+/// ([`Local::ContainerTake`], [`Local::ContainerPut`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChestStep {
+    /// `container.startOpen(golem)`, at the interaction's first tick: both halves.
+    Open,
+    /// `container.stopOpen(golem)`, at its 60th, where it has the chest open.
+    Close,
+    /// `pickUpItems` or `putDownItem`, after the close: the stack moved between the
+    /// chest and its hand.
+    Move,
+}
+
+/// The copper golem's brain (`CopperGolem.BRAIN_PROVIDER`): no memories of its own, its
+/// sensors `NEAREST_LIVING_ENTITIES` and `HURT_BY`, and its activities
+/// (`CopperGolemAi.getActivities`).
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &SENSORS,
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// Its sensors, in their order.
+static SENSORS: [&dyn Sensor; 2] = [&sensors::NEAREST_LIVING_ENTITIES, &sensors::HURT_BY];
+
+/// `CopperGolemAi.getActivities()`: CORE and IDLE.
+fn activities() -> Vec<ActivityData> {
+    vec![core_activity(), idle_activity()]
+}
+
+/// `initCoreActivity()`: from priority 0, the panic at 1.5, the look and the walk, the
+/// doors on its way, and its gaze's and its transport's cooldowns counted down.
+fn core_activity() -> ActivityData {
+    ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            panic::panic(1.5),
+            walking::look_sink(45, 90),
+            walking::sink(),
+            doors::interact_with_door(),
+            cooldowns::count_down(MemoryKind::GazeCooldownTicks),
+            cooldowns::count_down(MemoryKind::TransportItemsCooldownTicks),
+        ],
+    )
+}
+
+/// `initIdleActivity()`: 0 its sorting, 1 a look at a player within 6 now and then
+/// (every 40 to 80 ticks a player is there), 2 while it rests with nowhere to go, a
+/// short stroll or a stand (`RunOne`, one of each weight).
+fn idle_activity() -> ActivityData {
+    ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (
+                0,
+                Box::new(HeldTimed::new(TransportItemsBetweenContainers)) as Box<dyn Behaviour>,
+            ),
+            (1, looking::look_sometimes(LookAt::Player, 6.0, (40, 80))),
+            (
+                2,
+                Box::new(Gate::new(
+                    vec![
+                        (MemoryKind::WalkTarget, Status::Absent),
+                        (MemoryKind::TransportItemsCooldownTicks, Status::Present),
+                    ],
+                    Vec::new(),
+                    Order::Shuffled,
+                    Running::RunOne,
+                    vec![
+                        (
+                            walking::stroll_to(
+                                1.0,
+                                StrollTo::Land {
+                                    horizontal: 2,
+                                    vertical: 2,
+                                    in_water: true,
+                                },
+                            ),
+                            1,
+                        ),
+                        (Box::new(HeldTimed::new(DoNothing { min: 30, max: 60 })), 1),
+                    ],
+                )),
+            ),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    }
+}
+
+/// `CopperGolemAi.updateActivity`: `setActiveActivityToFirstValid([IDLE])`.
+pub(crate) fn update_activity(brain: &mut Brain) {
+    brain.set_active_to_first_valid(&[Activity::Idle]);
+}
+
+/// `CopperGolemAi.onTravelling()`: the chest let go of, and idle again.
+pub(crate) fn on_travelling(cx: &mut Cx<'_, '_, '_>) {
+    clear_opened_chest_pos(&mut cx.ai.tick.mob);
+    set_state(&mut cx.ai.tick.mob, IDLE);
+}
+
+/// `CopperGolemAi.getTargetReachedInteractions()`: the state it shows and the sound it
+/// makes at a chest, by its interaction (the registry's `no_item_get` and
+/// `no_item_no_get` are the game's `COPPER_GOLEM_ITEM_GET` and `_ITEM_NO_GET`, by their
+/// order in it).
+fn shown_at_chest(interaction: Reached) -> (u8, i32) {
+    match interaction {
+        Reached::Pickup => (GETTING_ITEM, sounds::ENTITY_COPPER_GOLEM_NO_ITEM_GET),
+        Reached::PickupNothing => (GETTING_NO_ITEM, sounds::ENTITY_COPPER_GOLEM_NO_ITEM_NO_GET),
+        Reached::Place => (DROPPING_ITEM, sounds::ENTITY_COPPER_GOLEM_ITEM_DROP),
+        Reached::PlaceNothing => (DROPPING_NO_ITEM, sounds::ENTITY_COPPER_GOLEM_ITEM_NO_DROP),
+    }
+}
+
+/// `CopperGolemAi.onReachedTargetInteraction(state, sound)` at its `ticks`-th tick at
+/// the chest `chest`: at the first, the chest opened, kept as the one it has open, and
+/// its state shown; at the ninth, its sound; at the 60th, the chest closed where it is
+/// among those who have it open (it stands within reach), and let go of.
+pub(crate) fn at_chest(cx: &mut Cx<'_, '_, '_>, chest: BlockPos, interaction: Reached, ticks: u32) {
+    let (state, sound) = shown_at_chest(interaction);
+    let step = |step| {
+        if interaction.takes() {
+            Local::ContainerTake { chest, step }
+        } else {
+            Local::ContainerPut { chest, step }
+        }
+    };
+    if ticks == 1 {
+        cx.ai.tick.out.local.push(step(ChestStep::Open));
+        set_opened_chest_pos(&mut cx.ai.tick.mob, chest);
+        set_state(&mut cx.ai.tick.mob, state);
+    }
+    if ticks == 9 {
+        cx.ai.tick.out.events.push(Event::Sound {
+            sound,
+            volume: 1.0,
+            pitch: 1.0,
+        });
+    }
+    if ticks == golem_transport::INTERACTION_TIME {
+        let world = cx.ai.tick.world;
+        let own = state_of(&cx.ai.tick.mob);
+        let open = has_container_open(&own, chest, |opened| {
+            let halves = golem_transport::halves(world, opened)?;
+            if halves.first == opened {
+                halves.second
+            } else {
+                Some(halves.first)
+            }
+        });
+        let reach = CONTAINER_INTERACTION_RANGE + 4.0;
+        let within = crate::physics::aabb::Aabb::of_block(chest)
+            .inflate([reach; 3])
+            .intersects(cx.ai.tick.living.body.bounds());
+        if open && within {
+            cx.ai.tick.out.local.push(step(ChestStep::Close));
+        }
+        clear_opened_chest_pos(&mut cx.ai.tick.mob);
+    }
+}
+
+/// What a fresh load of a copper golem resets of its own (the plan's 2.10; the brief's
+/// 7.0.5 finding 2): the chest it had open and its state shown, which the game does not
+/// save. Its brain's unsaved memories, among them its first transport cooldown, are the
+/// brain's fresh load's: for the brain's `fresh_load` hook when it comes.
+#[allow(
+    dead_code,
+    reason = "the fresh load of N7j1's contracts, not built yet"
+)]
+pub(crate) fn fresh_load(mob: &mut Mob) {
+    update(mob, |own| {
+        own.opened_chest = None;
+        own.state = IDLE;
+    });
 }
 
 /// The copper golem.
@@ -516,6 +666,9 @@ impl MobType for CopperGolem {
         let mut navigation = Settings::default();
         navigation.set_required_path_length(48.0);
         navigation.flags.can_open_doors = true;
+        // `TransportItemsBetweenContainers.start`'s, which the game undoes as it stops
+        // (named in `golem_transport.rs`).
+        navigation.below_surface = true;
         setup.config.navigation = navigation;
         setup.set_malus(PathType::FireInNeighbor, 16.0);
         setup.set_malus(PathType::DamagingInNeighbor, 16.0);
@@ -523,15 +676,26 @@ impl MobType for CopperGolem {
     }
 
     /// Its constructor: kept wherever it is, idle, and its first transport cooldown
-    /// drawn.
+    /// drawn into its brain (without an expiry: its core counts it down).
     fn construct(&self, mob: &mut Mob, own: &mut Random) {
         mob.body.flags.persistent = true;
         let cooldown = first_transport_cooldown(own);
-        update(mob, |state| state.transport_cooldown = Some(cooldown));
+        let mut memories = brain::memories_of(&PROVIDER, mob, 0);
+        memories.set(
+            MemoryKind::TransportItemsCooldownTicks,
+            Value::Int(cooldown),
+        );
+        brain::write_memories(&PROVIDER, mob, memories);
     }
 
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
+    }
+
+    /// `customServerAiStep`: its brain's tick and `CopperGolemAi.updateActivity`, then
+    /// `AbstractGolem`'s, which is `Mob`'s.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
-        brain_seam(tick);
+        brain::run(tick, |brain, _| update_activity(brain));
     }
 
     fn after_tick(&self, tick: &mut MobTick<'_>) {

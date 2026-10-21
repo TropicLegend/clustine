@@ -2,12 +2,15 @@
 //! and 7.13.7; `docs/groundwork/n7j-plan.md`, section 3, item 9): a carved pumpkin or a
 //! jack o'lantern placed on a block of copper builds one where the pumpkin was, with a
 //! copper chest of the block's age where the copper was; a golem with a chest open counts
-//! as one of its openers at the chest's recheck; and its statue turns to its next pose
-//! when used.
+//! as one of its openers at the chest's recheck; what its sorting does to a chest after
+//! its tick (`Local::ContainerTake` and `Local::ContainerPut`: the chest opened, closed,
+//! and the stack moved between it and the golem's hand, both in one); and its statue
+//! turns to its next pose when used.
 //!
 //! At a line: a golem is built only where the pumpkin and the copper are both the
-//! region's own, and counts only at the chests of its region's land (the plan's section
-//! 3, item 9).
+//! region's own, counts only at the chests of its region's land, and works only at
+//! those: a chest of a copy is neither opened nor written, and the golem that comes to
+//! one takes it for unreachable as it closes it (the plan's section 3, item 9).
 //!
 //! Named differences: only the upright pattern (the pumpkin on top) builds a golem
 //! (`BlockPattern.find`, which may match the pattern turned about, is not in the dumps),
@@ -17,14 +20,17 @@
 use clustine_blocks::data::{in_tag, is_block, is_class, relative, same_block, set};
 use clustine_blocks::growth::chest_connected_direction;
 use clustine_data::{BLOCKS, BlockClass, BlockState, EntityTypeInfo, blocks, entity_types, sounds};
-use clustine_world::{BlockPos, PlayerId};
+use clustine_world::{BlockPos, EntityId, ItemStack, PlayerId};
 
 use super::Region;
 use super::updates::{UPDATE_CLIENTS, UPDATE_LIMIT};
 use super::vibrations::{Context, Vibration};
 use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
+use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::types::copper_golem::{self, CONTAINER_INTERACTION_RANGE, STAGES};
+use crate::mobs::brain;
+use crate::mobs::types::copper_golem::{self, CONTAINER_INTERACTION_RANGE, ChestStep, STAGES};
+use crate::mobs::types::golem_transport;
 use crate::physics::aabb::Aabb;
 
 /// `PUMPKINS_PREDICATE`: a carved pumpkin or a jack o'lantern.
@@ -204,5 +210,174 @@ impl Region {
         self.set_block(pos, copper_golem::next_pose(state), output);
         let context = Context::of(self.player_source(player), None);
         self.vibrate_at(Vibration::BLOCK_CHANGE, pos, context);
+    }
+
+    /// A copper golem's step of its taking from the chest at `chest`
+    /// (`Local::ContainerTake`).
+    pub(super) fn golem_takes(
+        &mut self,
+        golem: EntityId,
+        chest: BlockPos,
+        step: ChestStep,
+        output: &mut TickOutput,
+    ) {
+        self.golem_at_chest(golem, chest, step, true, output);
+    }
+
+    /// A copper golem's step of its putting into the chest at `chest`
+    /// (`Local::ContainerPut`).
+    pub(super) fn golem_puts(
+        &mut self,
+        golem: EntityId,
+        chest: BlockPos,
+        step: ChestStep,
+        output: &mut TickOutput,
+    ) {
+        self.golem_at_chest(golem, chest, step, false, output);
+    }
+
+    /// The golem `golem`'s step at the chest at `chest`, both halves of a double chest
+    /// (`CompoundContainer`, the first half first), where the chest is all the region's
+    /// own: opened as a player's menu opens it (the openers' count, the lid's event and
+    /// sound, the recheck), closed likewise, or the stack moved. A chest of a copy is
+    /// left as it is, and the golem takes it for unreachable as it closes it.
+    fn golem_at_chest(
+        &mut self,
+        golem: EntityId,
+        chest: BlockPos,
+        step: ChestStep,
+        takes: bool,
+        output: &mut TickOutput,
+    ) {
+        let Some(halves) = self.chest_halves(chest) else {
+            return;
+        };
+        let parts: Vec<BlockPos> = [Some(halves.first), halves.second]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !parts.iter().all(|pos| self.own_block(*pos).is_some()) {
+            if step == ChestStep::Close {
+                self.golem_finds_unreachable(golem, chest, output);
+            }
+            return;
+        }
+        match step {
+            ChestStep::Open => {
+                for pos in parts {
+                    self.start_open(pos, output);
+                }
+            }
+            ChestStep::Close => {
+                for pos in parts {
+                    self.stop_open(pos, output);
+                }
+            }
+            ChestStep::Move => self.golem_moves(golem, &parts, takes, output),
+        }
+    }
+
+    /// `pickUpItems` or `putDownItem` of the golem `golem` at the chest of `parts`: up
+    /// to 16 of the first stack into its empty hand, kept whatever kills it; or what it
+    /// holds into the chest by the game's order, the rest left in its hand. The chest is
+    /// written (and its comparators told) and the golem's hand shown, in one; nothing
+    /// where the golem is no longer the region's or its hand is not as the move needs.
+    fn golem_moves(
+        &mut self,
+        golem: EntityId,
+        parts: &[BlockPos],
+        takes: bool,
+        output: &mut TickOutput,
+    ) {
+        let Some((chunk, record)) = self
+            .find_entity(golem)
+            .map(|(chunk, record)| (chunk, record.clone()))
+        else {
+            return;
+        };
+        let Ok(mut mob) = Mob::decode(&record.data) else {
+            return;
+        };
+        let mut containers = Vec::new();
+        for pos in parts {
+            let Some(mut container) = self.container_at(*pos) else {
+                return;
+            };
+            container.unpack();
+            containers.push((*pos, container));
+        }
+        let mut slots: Vec<Option<ItemStack>> = containers
+            .iter()
+            .flat_map(|(_, container)| container.slots.iter().copied())
+            .collect();
+        let main_hand = usize::from(slots::MAIN_HAND);
+        let hand = mob.body.equipment.slots[main_hand].filter(|stack| stack.count > 0);
+        let new_hand = if takes {
+            if hand.is_some() {
+                return;
+            }
+            let Some((index, count)) = golem_transport::pickup(&slots) else {
+                return;
+            };
+            let Some(stack) = slots[index].as_mut() else {
+                return;
+            };
+            stack.count -= count;
+            let taken = ItemStack {
+                item: stack.item,
+                count,
+            };
+            if stack.count <= 0 {
+                slots[index] = None;
+            }
+            crate::mobs::types::equine::guarantee_drop(&mut mob, slots::MAIN_HAND);
+            Some(taken)
+        } else {
+            let Some(held) = hand else {
+                return;
+            };
+            golem_transport::add_items(&mut slots, held)
+        };
+        let mut rest = slots.into_iter();
+        for (pos, mut container) in containers {
+            let size = container.slots.len();
+            container.slots = rest.by_ref().take(size).collect();
+            self.set_container(pos, container, output);
+        }
+        mob.body.equipment.slots[main_hand] = new_hand;
+        let fields = mob.changes_from(&record.data);
+        if fields.is_empty() {
+            return;
+        }
+        let mut after = record.clone();
+        after.data = mob.encode();
+        self.commit_entity(chunk, golem, fields, output);
+        self.mob_shown_changes(&record, &after, chunk, output);
+    }
+
+    /// `markVisitedBlockPosAsUnreachable` of the golem `golem` for the chest at `chest`,
+    /// which the region may not write: out of its visits and into its unreachable chests
+    /// for 6000 ticks, so that its next searches pass it over.
+    fn golem_finds_unreachable(
+        &mut self,
+        golem: EntityId,
+        chest: BlockPos,
+        output: &mut TickOutput,
+    ) {
+        let Some((chunk, record)) = self
+            .find_entity(golem)
+            .map(|(chunk, record)| (chunk, record.clone()))
+        else {
+            return;
+        };
+        let Ok(mut mob) = Mob::decode(&record.data) else {
+            return;
+        };
+        let provider = &copper_golem::PROVIDER;
+        let mut memories = brain::memories_of(provider, &mob, record.lived);
+        golem_transport::mark_unreachable_in(&mut memories, chest);
+        brain::write_memories(provider, &mut mob, memories);
+        let fields = mob.changes_from(&record.data);
+        self.commit_entity(chunk, golem, fields, output);
     }
 }

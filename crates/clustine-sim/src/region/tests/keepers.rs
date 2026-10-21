@@ -3,10 +3,13 @@
 //! game's order, a nautilus is tamed, kept near where it was left and dries out on land,
 //! a copper golem is built from a pumpkin on copper, weathers, is waxed and scraped,
 //! turns into a statue whose pose a click turns, and counts as an opener of the chest it
-//! has open.
+//! has open; and their brains: a golem sorting a copper chest's items into a chest and
+//! waiting by one a player has open, a nautilus charging what hurt it and following a
+//! player's fish, and at a pinned line, a golem passing over a chest across it, a
+//! nautilus tempted, bred and carried over by its charge across it.
 
 use clustine_data::{BlockState, entity_types, items, sounds};
-use clustine_world::{Entity, EntityChange, EntityId};
+use clustine_world::{Effected, Entity, EntityChange, EntityId, EntityUse};
 
 use super::*;
 use crate::mobs::Mob;
@@ -18,6 +21,7 @@ use crate::mobs::types::nautilus::{self, NautilusState};
 use crate::mobs::types::tamable::Tame;
 use crate::region::Random;
 use crate::region::copper_golems::{chest_of, copper_age};
+use crate::region::golem_chests;
 
 const ONE: EntityId = EntityId(40);
 
@@ -228,7 +232,13 @@ fn an_egg_makes_each_keeper_with_its_defaults_and_its_draws_in_the_game_s_order(
         mob_draws(&mut level, &made);
         let (shared, own) = nautilus::state_of(&made);
         assert!(!shared.is_baby());
-        assert_eq!(own.attack_target_cooldown, Some(cooldown), "{kind}");
+        let provider = crate::mobs::types::of(kind as u16).brain().unwrap();
+        let memories = crate::mobs::brain::memories_of(provider, &made, 0);
+        assert_eq!(
+            memories.int(crate::mobs::brain::MemoryKind::AttackTargetCooldown),
+            Some(cooldown),
+            "{kind}"
+        );
         assert_eq!(own.variant, 0);
         assert!(!own.tame.is_tame() && !own.dashing);
         assert_eq!(made.body.vitals.health, 15.0);
@@ -260,14 +270,21 @@ fn an_egg_makes_each_keeper_with_its_defaults_and_its_draws_in_the_game_s_order(
         )
         .expect("made");
     let made = mob(&region, key);
-    // Its own stream: its UUID, its constructor's yaw, then its first transport cooldown.
+    // Its own stream: its UUID, its constructor's yaw, its brain's two sensors' delays,
+    // then its first transport cooldown.
     let mut own = Random::of_entity_aside(region.config.seed, key, 0, region.tick);
     own.next_u64();
     own.next_u64();
     own.next_float();
+    own.next_int(20);
+    own.next_int(20);
     let cooldown = 60 + own.next_int(40) as i32;
     let golem = copper_golem::state_of(&made);
-    assert_eq!(golem.transport_cooldown, Some(cooldown));
+    let memories = crate::mobs::brain::memories_of(&copper_golem::PROVIDER, &made, 0);
+    assert_eq!(
+        memories.int(crate::mobs::brain::MemoryKind::TransportItemsCooldownTicks),
+        Some(cooldown)
+    );
     assert_eq!(
         (golem.weather, golem.next_weathering, golem.state),
         (
@@ -631,16 +648,18 @@ fn a_golem_with_a_chest_open_is_counted_at_its_rechecks_until_it_lets_go() {
         next_weathering: copper_golem::WAXED,
         ..CopperGolemState::default()
     };
-    lay(
-        &mut region,
-        &mob_at(
-            ONE,
-            entity_types::COPPER_GOLEM,
-            [5.5, -60.0, 4.5],
-            copper_golem::write(&own),
-        ),
+    // Without its AI, so that its sorting does not let go of the chest.
+    let mut golem = mob_at(
+        ONE,
+        entity_types::COPPER_GOLEM,
+        [5.5, -60.0, 4.5],
+        copper_golem::write(&own),
     );
-    // The golem's `startOpen`, as its brain will at its interaction's first tick.
+    let mut still = Mob::decode(&golem.data).unwrap();
+    still.body.flags.no_ai = true;
+    golem.data = still.encode();
+    lay(&mut region, &golem);
+    // The golem's `startOpen`, as its brain does at its interaction's first tick.
     let mut output = TickOutput::default();
     region.start_open(chest, &mut output);
     assert_eq!(region.openers(chest), 1);
@@ -665,4 +684,770 @@ fn a_golem_with_a_chest_open_is_counted_at_its_rechecks_until_it_lets_go() {
     }
     assert!(closed);
     assert_eq!(region.openers(chest), 0);
+}
+
+// ------------------------------------------------------------------------------------
+// Their brains, as a player meets them.
+
+fn stack_of(item: i32, count: i32) -> ItemStack {
+    ItemStack { item, count }
+}
+
+/// What the container at `pos` holds, slot by slot where anything is.
+fn held_in(region: &Region, pos: BlockPos) -> Vec<(usize, ItemStack)> {
+    region
+        .container_at(pos)
+        .expect("a container")
+        .slots
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, held)| {
+            held.filter(|stack| stack.count > 0)
+                .map(|stack| (slot, stack))
+        })
+        .collect()
+}
+
+/// `slots` put into the container at `pos`.
+fn fill_with(region: &mut Region, pos: BlockPos, slots: &[(usize, ItemStack)]) {
+    let mut container = region.container_at(pos).expect("a container");
+    for (slot, stack) in slots {
+        container.slots[*slot] = Some(*stack);
+    }
+    region.set_container(pos, container, &mut TickOutput::default());
+}
+
+/// The openers' counts the lid of the chest at `pos` was said to have in `output`.
+fn lid_counts(output: &TickOutput, pos: BlockPos) -> Vec<i32> {
+    output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::BlockEvent {
+                position,
+                kind: 1,
+                data,
+                ..
+            } if *position == pos => Some(*data),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A waxed copper golem (no weathering's draws) at `position`, holding `held`.
+fn golem_holding(key: EntityId, position: [f64; 3], held: Option<ItemStack>) -> Entity {
+    let own = CopperGolemState {
+        next_weathering: copper_golem::WAXED,
+        ..CopperGolemState::default()
+    };
+    let mut golem = mob_at(
+        key,
+        entity_types::COPPER_GOLEM,
+        position,
+        copper_golem::write(&own),
+    );
+    let mut body = Mob::decode(&golem.data).unwrap();
+    body.body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)] = held;
+    golem.data = body.encode();
+    golem
+}
+
+/// What the golem `key` holds.
+fn golem_hand(region: &Region, key: EntityId) -> Option<ItemStack> {
+    mob(region, key).body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)]
+}
+
+#[test]
+fn a_golem_carries_16_of_a_copper_chest_s_first_stack_to_a_chest_with_both_lids_shown() {
+    let source = BlockPos::new(12, -60, 3);
+    let goal = BlockPos::new(3, -60, 12);
+    let mut region = on_ticking_floor_with(&[
+        (source, clustine_data::blocks::COPPER_CHEST),
+        (goal, clustine_data::blocks::CHEST),
+    ]);
+    fill_with(&mut region, source, &[(2, stack_of(items::DIRT, 20))]);
+    lay(&mut region, &golem_holding(ONE, [7.5, -60.0, 7.5], None));
+    let (mut source_lid, mut goal_lid) = (Vec::new(), Vec::new());
+    let mut states = Vec::new();
+    let mut carried = None;
+    let mut done = false;
+    for _ in 0..1500 {
+        let output = checked(&mut region, &TickInputs::default());
+        source_lid.extend(lid_counts(&output, source));
+        goal_lid.extend(lid_counts(&output, goal));
+        let state = copper_golem::state_of(&mob(&region, ONE)).state;
+        if states.last() != Some(&state) {
+            states.push(state);
+        }
+        carried = carried.or(golem_hand(&region, ONE));
+        if !held_in(&region, goal).is_empty() {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "carried within 1500 ticks; states {states:?}");
+    assert_eq!(carried, Some(stack_of(items::DIRT, 16)));
+    assert_eq!(held_in(&region, source), [(2, stack_of(items::DIRT, 4))]);
+    assert_eq!(held_in(&region, goal), [(0, stack_of(items::DIRT, 16))]);
+    assert_eq!(golem_hand(&region, ONE), None);
+    // Its state as clients animate it: taking, idle again, putting.
+    assert_eq!(
+        states[..4],
+        [
+            copper_golem::IDLE,
+            copper_golem::GETTING_ITEM,
+            copper_golem::IDLE,
+            copper_golem::DROPPING_ITEM
+        ]
+    );
+    // Each lid opened by it (a count of 1) and shut again (0).
+    assert_eq!(source_lid.first(), Some(&1));
+    assert_eq!(source_lid.last(), Some(&0));
+    assert_eq!(goal_lid.first(), Some(&1));
+    assert_eq!(region.openers(source), 0);
+}
+
+#[test]
+fn a_golem_waits_by_a_chest_a_player_has_open_and_puts_into_it_once_it_is_shut() {
+    let goal = BlockPos::new(3, -60, 3);
+    let mut region = on_ticking_floor_with(&[(goal, clustine_data::blocks::CHEST)]);
+    lay(
+        &mut region,
+        &golem_holding(ONE, [9.5, -60.0, 9.5], Some(stack_of(items::DIRT, 16))),
+    );
+    // Player 1, at the spawn, has the chest open.
+    region.players.get_mut(&player(1)).unwrap().menu = Some(crate::state::Menu {
+        serial: 1,
+        of: crate::state::MenuOf::Block {
+            at: goal,
+            other: None,
+        },
+        kind: crate::api::MenuKind::Rows3,
+        carried: None,
+        drag: None,
+    });
+    region.start_open(goal, &mut TickOutput::default());
+    let near = |region: &Region| {
+        let at = record(region, ONE).unwrap().position;
+        let dx = at[0] - 3.5;
+        let dz = at[2] - 3.5;
+        (dx * dx + dz * dz).sqrt() < 6.0
+    };
+    let mut waited = 0;
+    for _ in 0..600 {
+        checked(&mut region, &TickInputs::default());
+        assert!(held_in(&region, goal).is_empty());
+        if near(&region) {
+            waited += 1;
+            if waited == 100 {
+                break;
+            }
+        }
+    }
+    assert_eq!(waited, 100, "it came to the chest and waited");
+    assert_eq!(golem_hand(&region, ONE), Some(stack_of(items::DIRT, 16)));
+    // The player shuts it: the golem puts its stack in.
+    region.players.get_mut(&player(1)).unwrap().menu = None;
+    region.stop_open(goal, &mut TickOutput::default());
+    let mut put = false;
+    for _ in 0..300 {
+        checked(&mut region, &TickInputs::default());
+        if !held_in(&region, goal).is_empty() {
+            put = true;
+            break;
+        }
+    }
+    assert!(put);
+    assert_eq!(held_in(&region, goal), [(0, stack_of(items::DIRT, 16))]);
+}
+
+/// The health of the region's mob `key`, or none where it is gone.
+fn health(region: &Region, key: EntityId) -> Option<f32> {
+    record(region, key).map(|entity| Mob::decode(&entity.data).unwrap().body.vitals.health)
+}
+
+#[test]
+fn a_nautilus_hurt_by_a_mob_in_the_water_charges_it_and_hits_it() {
+    for kind in [entity_types::NAUTILUS, entity_types::ZOMBIE_NAUTILUS] {
+        let mut region = on_ticking_floor_with(&pool());
+        let puffer = EntityId(44);
+        lay(
+            &mut region,
+            &mob_at(
+                ONE,
+                kind,
+                [5.5, -60.0, 7.5],
+                nautilus_state(&NautilusState::default()),
+            ),
+        );
+        lay(
+            &mut region,
+            &mob_at(
+                puffer,
+                entity_types::PUFFERFISH,
+                [9.5, -60.0, 7.5],
+                Default::default(),
+            ),
+        );
+        idle(&mut region, 2);
+        let full = health(&region, puffer).unwrap();
+        // The pufferfish's hit, between ticks.
+        let from = record(&region, puffer).unwrap().position;
+        region.hit_by_mob(
+            puffer,
+            entity_types::PUFFERFISH as u16,
+            from,
+            ONE,
+            1.0,
+            None,
+            None,
+            &mut TickOutput::default(),
+        );
+        let mut hit = false;
+        for _ in 0..100 {
+            checked(&mut region, &TickInputs::default());
+            if health(&region, puffer).is_none_or(|now| now < full) {
+                hit = true;
+                break;
+            }
+        }
+        assert!(hit, "{kind}");
+        // Its charge's cooldown runs.
+        let provider = crate::mobs::types::of(kind as u16).brain().unwrap();
+        let memories = crate::mobs::brain::memories_of(provider, &mob(&region, ONE), 0);
+        assert!(memories.check(
+            crate::mobs::brain::MemoryKind::ChargeCooldownTicks,
+            crate::mobs::brain::Status::Present
+        ));
+    }
+}
+
+#[test]
+fn a_nautilus_looks_at_and_follows_a_player_holding_fish() {
+    let mut region = on_ticking_floor_with(&pool());
+    lay(
+        &mut region,
+        &mob_at(
+            ONE,
+            entity_types::NAUTILUS,
+            [4.5, -60.0, 4.5],
+            nautilus_state(&NautilusState::default()),
+        ),
+    );
+    holding(&mut region, items::SALMON);
+    let player_key = region.players[&player(1)].entity_id;
+    let mut followed = false;
+    for _ in 0..60 {
+        checked(&mut region, &TickInputs::default());
+        let provider = crate::mobs::types::of(entity_types::NAUTILUS as u16)
+            .brain()
+            .unwrap();
+        let memories = crate::mobs::brain::memories_of(provider, &mob(&region, ONE), 0);
+        if let Some(crate::mobs::brain::Value::Tracker(crate::mobs::brain::Tracker::Entity {
+            key,
+            ..
+        })) = memories.get(crate::mobs::brain::MemoryKind::LookTarget)
+            && key == player_key
+        {
+            followed = true;
+            break;
+        }
+    }
+    assert!(followed);
+}
+
+#[test]
+fn a_tick_of_the_keepers_is_a_function_of_its_inputs() {
+    let run = || {
+        let mut blocks = pool();
+        blocks.push((
+            BlockPos::new(13, -60, 1),
+            clustine_data::blocks::COPPER_CHEST,
+        ));
+        blocks.push((BlockPos::new(1, -60, 13), clustine_data::blocks::CHEST));
+        let mut region = on_ticking_floor_with(&blocks);
+        fill_with(
+            &mut region,
+            BlockPos::new(13, -60, 1),
+            &[(0, stack_of(items::COBBLESTONE, 40))],
+        );
+        lay(
+            &mut region,
+            &mob_at(
+                ONE,
+                entity_types::NAUTILUS,
+                [6.5, -60.0, 6.5],
+                nautilus_state(&NautilusState::default()),
+            ),
+        );
+        lay(
+            &mut region,
+            &mob_at(
+                EntityId(42),
+                entity_types::ZOMBIE_NAUTILUS,
+                [9.5, -60.0, 9.5],
+                nautilus_state(&NautilusState::default()),
+            ),
+        );
+        lay(
+            &mut region,
+            &mob_at(
+                EntityId(44),
+                entity_types::PUFFERFISH,
+                [8.5, -60.0, 5.5],
+                Default::default(),
+            ),
+        );
+        lay(
+            &mut region,
+            &golem_holding(EntityId(46), [13.5, -60.0, 8.5], None),
+        );
+        let mut changes = Vec::new();
+        for _ in 0..300 {
+            let output = checked(&mut region, &TickInputs::default());
+            changes.push((output.entity_changes.clone(), output.effects.clone()));
+        }
+        changes
+    };
+    assert_eq!(run(), run());
+}
+
+// ------------------------------------------------------------------------------------
+// At a pinned line.
+
+/// A region of the land west of chunk x = 2 (x below 32), its chunks x of -1 to 1 by z
+/// of -1 to 1 loaded on a stone floor with `here` set, and the chunks of x = 2
+/// another's, copied, with `beyond` set, `chest` laid with its data and `entities` in the
+/// one at z = 0.
+fn at_a_line(
+    here: &[(BlockPos, BlockState)],
+    own: &[Entity],
+    beyond: &[(BlockPos, BlockState)],
+    chest: Option<(BlockPos, Vec<u8>)>,
+    entities: &[Entity],
+) -> Region {
+    let west = ChunkArea {
+        min_x: None,
+        max_x: Some(2),
+    };
+    let mut region = joined_in(west, &[1]);
+    let around: Vec<ChunkPos> = (-1..=1)
+        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
+        .collect();
+    region.tick(&tickets(around.clone(), vec![]));
+    let set = |chunk: &mut Chunk, position: ChunkPos, blocks: &[(BlockPos, BlockState)]| {
+        for (at, state) in blocks {
+            if at.chunk() == position {
+                chunk.set(
+                    at.x.rem_euclid(16) as usize,
+                    at.y,
+                    at.z.rem_euclid(16) as usize,
+                    *state,
+                );
+            }
+        }
+    };
+    let chunks = around
+        .iter()
+        .map(|position| {
+            let mut chunk = floor();
+            set(&mut chunk, *position, here);
+            (*position, chunk)
+        })
+        .collect();
+    region.tick(&TickInputs {
+        chunks_loaded: chunks,
+        ..TickInputs::default()
+    });
+    for entity in own {
+        lay(&mut region, entity);
+    }
+    let copies: Vec<ChunkPos> = (-1..=1).map(|z| ChunkPos::new(2, z)).collect();
+    let bases = copies
+        .iter()
+        .map(|position| {
+            let mut base = floor();
+            set(&mut base, *position, beyond);
+            if let Some((at, data)) = &chest
+                && at.chunk() == *position
+            {
+                base.set_block_entity_data(
+                    clustine_world::InChunk::new(
+                        at.x.rem_euclid(16) as usize,
+                        at.y,
+                        at.z.rem_euclid(16) as usize,
+                    ),
+                    data.clone(),
+                )
+                .unwrap();
+            }
+            if position.z == 0 {
+                base.set_entities(entities.to_vec());
+            }
+            (*position, base)
+        })
+        .collect();
+    region.tick(&TickInputs {
+        foreign: copies
+            .iter()
+            .map(|position| (*position, RegionId(1)))
+            .collect(),
+        copy_bases: bases,
+        ..TickInputs::default()
+    });
+    region
+}
+
+/// Water from x of 16 to 47 and z of 0 to 15, y of -60 to -57.
+fn water_across() -> Vec<(BlockPos, BlockState)> {
+    let mut blocks = Vec::new();
+    for x in 16..48 {
+        for z in 0..16 {
+            for y in -60..=-57 {
+                blocks.push((BlockPos::new(x, y, z), clustine_data::blocks::WATER));
+            }
+        }
+    }
+    blocks
+}
+
+#[test]
+fn across_a_pinned_line_a_golem_neither_opens_nor_writes_a_chest_it_comes_to_and_passes_it_over() {
+    // The first block across the line: the golem stands at it on its own side.
+    let chest = BlockPos::new(32, -60, 4);
+    let mut slots = vec![None; 27];
+    slots[0] = Some(stack_of(items::DIRT, 10));
+    let data = golem_chests::chest_data(clustine_data::blocks::COPPER_CHEST, &slots, 0);
+    let golem = golem_holding(ONE, [29.5, -60.0, 4.5], None);
+    let mut region = at_a_line(
+        &[],
+        &[golem],
+        &[(chest, clustine_data::blocks::COPPER_CHEST)],
+        Some((chest, data.clone())),
+        &[],
+    );
+    let provider = &copper_golem::PROVIDER;
+    let mut passed_over = false;
+    for _ in 0..600 {
+        let output = checked(&mut region, &TickInputs::default());
+        assert!(lid_counts(&output, chest).is_empty());
+        assert!(output.effects.is_empty(), "{:?}", output.effects);
+        let memories = crate::mobs::brain::memories_of(provider, &mob(&region, ONE), 0);
+        if memories.get(crate::mobs::brain::MemoryKind::UnreachableTransportBlockPositions)
+            == Some(crate::mobs::brain::Value::Blocks(vec![chest]))
+        {
+            passed_over = true;
+            break;
+        }
+    }
+    assert!(passed_over);
+    assert_eq!(golem_hand(&region, ONE), None);
+    assert_eq!(region.block_entity_data(chest), Some(data.as_slice()));
+}
+
+#[test]
+fn across_a_pinned_line_a_nautilus_is_tempted_by_a_player_there() {
+    for kind in [entity_types::NAUTILUS, entity_types::ZOMBIE_NAUTILUS] {
+        let mut region = at_a_line(
+            &water_across(),
+            &[mob_at(
+                ONE,
+                kind,
+                [28.5, -60.0, 8.5],
+                nautilus_state(&NautilusState::default()),
+            )],
+            &water_across(),
+            None,
+            &[],
+        );
+        let mut inventory = clustine_world::Inventory::default();
+        inventory.0[0] = Some(stack_of(items::COD, 1));
+        let face = crate::api::FaceChange::Face {
+            player: player(9),
+            entity: EntityId(900),
+            hops: 0,
+            seq: crate::api::FaceSeq(1, 0),
+            face: crate::api::PlayerFace::of(
+                &Pose::at(Vec3::new(34.5, -60.0, 8.5)),
+                false,
+                false,
+                &inventory,
+                0,
+                None,
+            ),
+        };
+        checked(
+            &mut region,
+            &TickInputs {
+                faces: vec![face],
+                ..TickInputs::default()
+            },
+        );
+        let provider = crate::mobs::types::of(kind as u16).brain().unwrap();
+        let mut tempted = false;
+        for _ in 0..40 {
+            checked(&mut region, &TickInputs::default());
+            let memories = crate::mobs::brain::memories_of(provider, &mob(&region, ONE), 0);
+            if let Some(crate::mobs::brain::Value::Tracker(crate::mobs::brain::Tracker::Entity {
+                key,
+                ..
+            })) = memories.get(crate::mobs::brain::MemoryKind::LookTarget)
+                && key == EntityId(900)
+            {
+                tempted = true;
+                break;
+            }
+        }
+        assert!(tempted, "{kind}");
+    }
+}
+
+#[test]
+fn across_a_pinned_line_tamed_nautiluses_in_love_breed_by_the_protocol() {
+    let mut tame = Tame::default();
+    tame.set_tame_flag(true);
+    tame.owner = Some(OWNER);
+    let own = NautilusState {
+        tame,
+        ..NautilusState::default()
+    };
+    let in_love = |key: EntityId, x: f64| {
+        let mut entity = mob_at(
+            key,
+            entity_types::NAUTILUS,
+            [x, -60.0, 8.5],
+            nautilus_state(&own),
+        );
+        let mut body = Mob::decode(&entity.data).unwrap();
+        let mut shared = Animal::default();
+        shared.set_in_love(0);
+        body.state = animal::write(&shared, &own);
+        entity.data = body.encode();
+        entity
+    };
+    // The region's has the higher key: it asks the one across the line. On the floor,
+    // where neither swims off.
+    let mut region = at_a_line(
+        &[],
+        &[in_love(ONE, 31.2)],
+        &[],
+        None,
+        &[in_love(EntityId(5), 32.6)],
+    );
+    let mut asked = None;
+    for _ in 0..200 {
+        let output = checked(&mut region, &TickInputs::default());
+        if let Some(found) = output.effects.iter().find_map(|effect| match effect.what {
+            Effected::OnEntity { key, by } => Some((key, by)),
+            _ => None,
+        }) {
+            asked = Some(found);
+            break;
+        }
+    }
+    let (to, by) = asked.expect("asked");
+    assert_eq!(to, EntityId(5));
+    assert!(
+        matches!(by, EntityUse::BreedAsk { asker: ONE, .. }),
+        "{by:?}"
+    );
+}
+
+#[test]
+fn across_a_pinned_line_a_charge_carries_a_nautilus_over_with_its_brain_whole() {
+    let puffer = EntityId(5);
+    let fish = mob_at(
+        puffer,
+        entity_types::PUFFERFISH,
+        [36.5, -60.0, 8.5],
+        Default::default(),
+    );
+    let mut region = at_a_line(
+        &water_across(),
+        &[mob_at(
+            ONE,
+            entity_types::NAUTILUS,
+            [28.5, -60.0, 8.5],
+            nautilus_state(&NautilusState::default()),
+        )],
+        &water_across(),
+        None,
+        std::slice::from_ref(&fish),
+    );
+    idle(&mut region, 2);
+    // The pufferfish across the line hurts it, as its holder's effect would.
+    let provider = crate::mobs::types::of(entity_types::NAUTILUS as u16)
+        .brain()
+        .unwrap();
+    let mut nautilus = record(&region, ONE).unwrap();
+    let mut body = Mob::decode(&nautilus.data).unwrap();
+    let mut memories = crate::mobs::brain::memories_of(provider, &body, nautilus.lived);
+    memories.set(
+        crate::mobs::brain::MemoryKind::AttackTargetCooldown,
+        crate::mobs::brain::Value::Int(3000),
+    );
+    memories.set_with_expiry(
+        crate::mobs::brain::MemoryKind::AngryAt,
+        crate::mobs::brain::Value::Entity(puffer),
+        400,
+    );
+    crate::mobs::brain::write_memories(provider, &mut body, memories);
+    nautilus.data = body.encode();
+    lay(&mut region, &nautilus);
+    let mut arrived = None;
+    for _ in 0..60 {
+        let output = checked(&mut region, &TickInputs::default());
+        if let Some((_, entity)) = output.arrivals.iter().find(|(_, entity)| entity.key == ONE) {
+            arrived = Some(entity.clone());
+            break;
+        }
+    }
+    let arrived = arrived.expect("carried over the line");
+    assert!(arrived.position[0] >= 32.0);
+    // Its brain whole: its charge running, its target and its anger with it.
+    let body = Mob::decode(&arrived.data).unwrap();
+    let memories = crate::mobs::brain::memories_of(provider, &body, arrived.lived);
+    assert_eq!(
+        memories.get(crate::mobs::brain::MemoryKind::AttackTarget),
+        Some(crate::mobs::brain::Value::Entity(puffer))
+    );
+    assert!(memories.check(
+        crate::mobs::brain::MemoryKind::AngryAt,
+        crate::mobs::brain::Status::Present
+    ));
+    let charge = crate::mobs::brain::ids::FIRST_BEHAVIOUR + 12;
+    let running = body
+        .mind
+        .brain
+        .iter()
+        .find(|entry| entry.id == charge)
+        .map(|entry| {
+            postcard::from_bytes::<(bool, i64, crate::mobs::types::nautilus::Charging)>(
+                &entry.bytes,
+            )
+            .unwrap()
+            .0
+        });
+    assert_eq!(running, Some(true));
+}
+
+// ------------------------------------------------------------------------------------
+// Taken whole into another region (a split, a merge, a restore), half-way.
+
+/// A brain's part `n` (its place among its provider's behaviours) as `(running, end,
+/// own)`.
+fn behaviour_part<S: serde::de::DeserializeOwned>(mob: &Mob, n: u16) -> Option<(bool, i64, S)> {
+    let id = crate::mobs::brain::ids::FIRST_BEHAVIOUR + n;
+    mob.mind
+        .brain
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| postcard::from_bytes(&entry.bytes).unwrap())
+}
+
+#[test]
+fn a_golem_taken_into_another_region_half_way_through_its_sort_finishes_it_on_its_tick() {
+    let source = BlockPos::new(12, -60, 3);
+    let goal = BlockPos::new(3, -60, 12);
+    let build = || {
+        on_ticking_floor_with(&[
+            (source, clustine_data::blocks::COPPER_CHEST),
+            (goal, clustine_data::blocks::CHEST),
+        ])
+    };
+    let mut region = build();
+    fill_with(&mut region, source, &[(2, stack_of(items::DIRT, 20))]);
+    lay(&mut region, &golem_holding(ONE, [7.5, -60.0, 7.5], None));
+    let mut opened_at = None;
+    for _ in 0..600 {
+        checked(&mut region, &TickInputs::default());
+        if copper_golem::state_of(&mob(&region, ONE)).state == copper_golem::GETTING_ITEM {
+            opened_at = Some(record(&region, ONE).unwrap().lived);
+            break;
+        }
+    }
+    let opened_at = opened_at.expect("at the chest");
+    idle(&mut region, 20);
+    // Into another region: the golem's record as it is, and the chest's data, its
+    // slots and its count of one opener.
+    let golem = record(&region, ONE).unwrap();
+    let mut other = build();
+    other.set_container(
+        source,
+        region.container_at(source).unwrap(),
+        &mut TickOutput::default(),
+    );
+    assert_eq!(other.openers(source), 1);
+    lay(&mut other, &golem);
+    let mut taken_at = None;
+    for _ in 0..100 {
+        checked(&mut other, &TickInputs::default());
+        if golem_hand(&other, ONE).is_some() {
+            taken_at = Some(record(&other, ONE).unwrap().lived);
+            break;
+        }
+    }
+    // Its first tick at the chest was the one before `opened_at`; the 60th, 59 later.
+    assert_eq!(taken_at, Some(opened_at + 59));
+    assert_eq!(golem_hand(&other, ONE), Some(stack_of(items::DIRT, 16)));
+    assert_eq!(held_in(&other, source), [(2, stack_of(items::DIRT, 4))]);
+    // And let go of the lid, which shuts.
+    idle(&mut other, 6);
+    assert_eq!(other.openers(source), 0);
+}
+
+#[test]
+fn a_panicking_nautilus_taken_into_another_region_goes_on_panicking() {
+    let mut region = on_ticking_floor_with(&pool());
+    let puffer = EntityId(44);
+    lay(
+        &mut region,
+        &mob_at(
+            ONE,
+            entity_types::NAUTILUS,
+            [6.5, -60.0, 6.5],
+            nautilus_state(&NautilusState::default()),
+        ),
+    );
+    idle(&mut region, 2);
+    region.hit_by_mob(
+        puffer,
+        entity_types::PUFFERFISH as u16,
+        [9.5, -60.0, 6.5],
+        ONE,
+        1.0,
+        None,
+        None,
+        &mut TickOutput::default(),
+    );
+    let provider = crate::mobs::types::of(entity_types::NAUTILUS as u16)
+        .brain()
+        .unwrap();
+    let panicking = |region: &Region| {
+        crate::mobs::brain::memories_of(provider, &mob(region, ONE), 0).check(
+            crate::mobs::brain::MemoryKind::IsPanicking,
+            crate::mobs::brain::Status::Present,
+        )
+    };
+    let mut started = false;
+    for _ in 0..40 {
+        checked(&mut region, &TickInputs::default());
+        if panicking(&region) {
+            started = true;
+            break;
+        }
+    }
+    assert!(started);
+    idle(&mut region, 10);
+    let (running, end, ()) = behaviour_part::<()>(&mob(&region, ONE), 0).expect("its panic");
+    assert!(running);
+    let nautilus = record(&region, ONE).unwrap();
+    let mut other = on_ticking_floor_with(&pool());
+    lay(&mut other, &nautilus);
+    idle(&mut other, 5);
+    assert!(panicking(&other));
+    // The same run of its panic, to the same end.
+    let (running, kept_end, ()) = behaviour_part::<()>(&mob(&other, ONE), 0).expect("its panic");
+    assert!(running);
+    assert_eq!(kept_end, end);
 }

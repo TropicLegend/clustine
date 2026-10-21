@@ -53,10 +53,13 @@ pub(crate) mod frog;
 pub(crate) mod frog_ai;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
+pub(crate) mod golem_transport;
 pub(crate) mod happy_ghast;
 #[cfg(test)]
 mod highland_tests;
 pub(crate) mod horse;
+#[cfg(test)]
+mod keeper_brain_tests;
 #[cfg(test)]
 mod keeper_tests;
 pub(crate) mod llama;

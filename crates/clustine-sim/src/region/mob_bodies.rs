@@ -291,6 +291,12 @@ impl Region {
                 Local::OpenDoor { pos, open, pitch } => {
                     self.mob_set_door_open(key, pos, open, pitch, output);
                 }
+                Local::ContainerTake { chest, step } => {
+                    self.golem_takes(key, chest, step, output);
+                }
+                Local::ContainerPut { chest, step } => {
+                    self.golem_puts(key, chest, step, output);
+                }
             }
         }
     }

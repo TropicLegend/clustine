@@ -16,7 +16,8 @@ use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::body::attribute;
 use crate::mobs::body::attributes::supplied;
-use crate::mobs::body::hurt::{Causer, DamageSource, DamageType};
+use crate::mobs::body::hurt::{DamageSource, DamageType};
+use crate::mobs::brain::{self, MemoryKind};
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
 use crate::region::Random;
 use crate::shown::{DataShown, Holder, Serialiser};
@@ -86,6 +87,12 @@ fn used(
     (result, used.did)
 }
 
+/// The attack cooldown the brain of `mob`, of type `kind`, holds.
+fn attack_cooldown(kind: u16, mob: &Mob) -> Option<i32> {
+    let provider = of(kind).brain().expect("a nautilus has a brain");
+    brain::memories_of(provider, mob, 0).int(MemoryKind::AttackTargetCooldown)
+}
+
 fn sounds_of(did: &[Did]) -> Vec<i32> {
     did.iter()
         .filter_map(|done| match done {
@@ -138,7 +145,6 @@ fn a_fresh_keeper_keeps_no_state_and_a_changed_one_reads_back_as_it_was() {
         dashing: true,
         dash_ready_at: 90,
         under_water: true,
-        attack_target_cooldown: Some(3000),
         variant: variants::id(nautilus::VARIANTS, "minecraft:warm"),
         ..tamed()
     };
@@ -153,7 +159,6 @@ fn a_fresh_keeper_keeps_no_state_and_a_changed_one_reads_back_as_it_was() {
         next_weathering: 1_000_000,
         state: copper_golem::DROPPING_ITEM,
         opened_chest: Some(BlockPos::new(1, 2, 3)),
-        transport_cooldown: Some(77),
     };
     assert_eq!(copper_golem::read(&copper_golem::write(&golem)), golem);
     // A state of another version is read as a fresh one's.
@@ -273,10 +278,7 @@ fn a_nautilus_s_spawn_draws_its_attack_cooldown_of_the_level_and_a_zombie_its_va
             day: 0,
         });
         let cooldown = 2400 + replay.next_int(1201) as i32;
-        assert_eq!(
-            nautilus::state_of(&mob).1.attack_target_cooldown,
-            Some(cooldown)
-        );
+        assert_eq!(attack_cooldown(NAUTILUS, &mob), Some(cooldown));
         assert!((2400..=3600).contains(&cooldown));
         assert_eq!(level, replay);
         assert_eq!(nautilus::state_of(&mob).1.variant, 0);
@@ -309,13 +311,13 @@ fn a_nautilus_s_spawn_draws_its_attack_cooldown_of_the_level_and_a_zombie_its_va
             variants::id(nautilus::VARIANTS, expected),
             "{biome:?}"
         );
-        assert_eq!(own.attack_target_cooldown, Some(cooldown));
+        assert_eq!(attack_cooldown(ZOMBIE, &mob), Some(cooldown));
         assert_eq!(level, replay);
     }
 }
 
 #[test]
-fn a_copper_golem_s_constructor_draws_its_first_transport_cooldown_and_keeps_it() {
+fn a_copper_golem_s_constructor_draws_its_first_transport_cooldown_into_its_brain() {
     for seed in 0..100 {
         let mut own = Random::of_entity(seed, EntityId(2), 0);
         let mut replay = own.clone();
@@ -323,8 +325,9 @@ fn a_copper_golem_s_constructor_draws_its_first_transport_cooldown_and_keeps_it(
         of(GOLEM).construct(&mut mob, &mut own);
         let cooldown = 60 + replay.next_int(40) as i32;
         assert!((60..=99).contains(&cooldown));
+        let memories = brain::memories_of(&copper_golem::PROVIDER, &mob, 0);
         assert_eq!(
-            copper_golem::state_of(&mob).transport_cooldown,
+            memories.int(MemoryKind::TransportItemsCooldownTicks),
             Some(cooldown)
         );
         assert!(mob.body.flags.persistent);
@@ -658,25 +661,6 @@ fn a_baby_nautilus_is_half_the_size_and_a_tamed_one_is_kept_wherever_it_is() {
     let mut saddled = wild.clone();
     saddled.body.equipment.slots[usize::from(slots::SADDLE)] = one(items::SADDLE);
     assert_eq!(nautilus::restriction_radius(&saddled), 16);
-}
-
-#[test]
-fn a_hurt_angers_a_nautilus_at_the_living_thing_that_caused_it() {
-    let causer = |living| Causer {
-        key: EntityId(9),
-        kind: entity_types::PLAYER as u16,
-        position: [0.0; 3],
-        player: Some(PLAYER),
-        living,
-    };
-    let source = DamageSource::by(DamageType::PLAYER_ATTACK, causer(true));
-    assert_eq!(nautilus::anger_target(&source), Some(EntityId(9)));
-    let thing = DamageSource::by(DamageType::PLAYER_ATTACK, causer(false));
-    assert_eq!(nautilus::anger_target(&thing), None);
-    assert_eq!(
-        nautilus::anger_target(&DamageSource::of(DamageType::FALL)),
-        None
-    );
 }
 
 #[test]

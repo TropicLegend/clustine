@@ -160,6 +160,22 @@ pub(crate) enum Local {
     /// `Tadpole.ageUp()`: the mob, a tadpole of age, made a frog of its biome where it
     /// is, and gone (`region/frogspawn.rs`).
     GrowUp,
+    /// A copper golem's step of its taking from the chest at `chest` (its interaction
+    /// `PICKUP_ITEM` or `PICKUP_NO_ITEM`): the chest opened, closed, or what it takes
+    /// moved into its hand (`region/copper_golems.rs`). Only a chest of the region's own
+    /// is written.
+    ContainerTake {
+        chest: BlockPos,
+        step: crate::mobs::types::copper_golem::ChestStep,
+    },
+    /// A copper golem's step of its putting into the chest at `chest` (its interaction
+    /// `PLACE_ITEM` or `PLACE_NO_ITEM`): the chest opened, closed, or what it holds moved
+    /// into the chest (`region/copper_golems.rs`). Only a chest of the region's own is
+    /// written.
+    ContainerPut {
+        chest: BlockPos,
+        step: crate::mobs::types::copper_golem::ChestStep,
+    },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

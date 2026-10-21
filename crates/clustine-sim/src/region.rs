@@ -45,6 +45,7 @@ mod falling;
 mod fluids;
 mod frogspawn;
 mod given;
+pub(crate) mod golem_chests;
 mod hanging;
 pub(crate) mod hives;
 mod hoppers;
