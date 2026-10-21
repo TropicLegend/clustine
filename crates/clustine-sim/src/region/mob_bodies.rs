@@ -226,6 +226,42 @@ impl Region {
                 } => {
                     self.spawn_item_as(at, stack, pick_up_delay, None, output);
                 }
+                Local::Sound {
+                    sound,
+                    source,
+                    at,
+                    volume,
+                    pitch,
+                } => output.events.push(RegionEvent::Sound {
+                    sound,
+                    source,
+                    position: clustine_world::Vec3::new(at[0], at[1], at[2]),
+                    volume,
+                    pitch,
+                    except: None,
+                }),
+                Local::TakeItem { item, count } => self.item_taken_by_mob(key, item, count, output),
+                Local::JoinSchool {
+                    leader,
+                    followers,
+                    leader_gains,
+                } => self.join_school(leader, &followers, leader_gains, output),
+                Local::LeaveSchool { leader } => self.leave_school(leader, output),
+                Local::Hurt {
+                    key: hurt,
+                    kind,
+                    from,
+                    amount,
+                    sound,
+                } => self.hurt_by_mob(key, kind, from, hurt, amount, sound, output),
+                Local::Throw {
+                    stack,
+                    at,
+                    pick_up_delay,
+                    motion,
+                } => {
+                    self.spawn_item_as(at, stack, pick_up_delay, Some(motion), output);
+                }
             }
         }
     }

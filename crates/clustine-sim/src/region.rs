@@ -74,10 +74,12 @@ mod spawn_eggs;
 mod stands;
 mod ticks;
 mod tnt;
+mod turtle_eggs;
 mod updates;
 mod uses;
 mod vehicles;
 mod vibrations;
+mod water_creatures;
 
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
@@ -3404,6 +3406,7 @@ mod tests {
     mod sleep;
     mod stands;
     mod swings;
+    mod water;
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 

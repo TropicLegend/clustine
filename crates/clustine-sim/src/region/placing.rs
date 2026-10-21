@@ -81,8 +81,9 @@ impl Region {
             return false;
         }
         let spawned = output.events.len();
-        let placed =
-            self.place_boat(used, player, output) || self.use_spawn_egg(used, player, output);
+        let placed = self.place_boat(used, player, output)
+            || self.use_spawn_egg(used, player, output)
+            || self.use_mob_bucket(used, player, output);
         if placed {
             self.entity_placed(player, spawned, output);
         }

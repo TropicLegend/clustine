@@ -40,6 +40,8 @@ impl DamageType {
     pub(crate) const FALL: Self = Self("minecraft:fall");
     pub(crate) const FREEZE: Self = Self("minecraft:freeze");
     pub(crate) const OUT_OF_WORLD: Self = Self("minecraft:out_of_world");
+    pub(crate) const DRY_OUT: Self = Self("minecraft:dry_out");
+    pub(crate) const MOB_ATTACK: Self = Self("minecraft:mob_attack");
 
     /// Its id in the registry the server sends, which a damage event names it by
     /// (Clustine's sorted order: the brief's finding 18).
@@ -71,6 +73,7 @@ impl From<Damage> for DamageType {
             Damage::Drown => Self::DROWN,
             Damage::Fall => Self::FALL,
             Damage::Freeze => Self::FREEZE,
+            Damage::DryOut => Self::DRY_OUT,
         }
     }
 }
@@ -200,6 +203,14 @@ fn invulnerable_to(struck: &Struck<'_>, source: &DamageSource) -> bool {
 /// its damage event, the push away from where the source is and the hurt or death
 /// sound; and a mob whose health it took to nothing dies.
 pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
+    let took = living_hurt_server(struck, source, amount);
+    // What the type's own `hurtServer` does after (a squid's ink).
+    struck.mob_type.after_hurt(struck, source, took);
+    took
+}
+
+/// `LivingEntity.hurtServer`, before what a type adds after it.
+fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) -> bool {
     if invulnerable_to(struck, source) || struck.dying() {
         return false;
     }

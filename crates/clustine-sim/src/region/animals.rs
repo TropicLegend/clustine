@@ -17,7 +17,7 @@ use super::entities::insecure_uuid;
 use super::items::tracked;
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::{RegionEvent, TickOutput};
-use crate::living::{MAX_AIR, slots};
+use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::body::attributes::supplied;
 use crate::mobs::body::{Head, attribute};
@@ -219,6 +219,13 @@ impl Region {
             Did::Mount => {
                 self.mount_player(player, entity.key, output);
             }
+            Did::Discard => {
+                if let Some((chunk, record)) = self.find_entity(entity.key) {
+                    let hops = record.hops;
+                    self.unride_removed(entity.key, true, output);
+                    self.remove_entity(entity.key, hops, chunk, output);
+                }
+            }
         }
     }
 
@@ -305,7 +312,7 @@ impl Region {
             self.entity_drew(key, own.draws_since(&start));
         }
         mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;
-        mob.body.vitals.air = MAX_AIR;
+        mob.body.vitals.air = types::of(kind).max_air();
         if mob.body.head == Head::default() {
             mob.body.head = Head {
                 head_yaw: yaw,

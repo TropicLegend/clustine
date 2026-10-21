@@ -5,26 +5,40 @@
 //!
 //! The farm animals (part N7e: cows, mooshrooms, pigs, sheep, chickens and rabbits) share
 //! what `AgeableMob` and `Animal` add, which [`animal`] holds; each has a module of its
-//! own beside it.
+//! own beside it. The water creatures (part N7i: the four fish, the two squids, the
+//! dolphin and the turtle) share what [`water`] holds, the fish what [`fish`] holds.
 
 pub(crate) mod animal;
 pub(crate) mod chicken;
+pub(crate) mod cod;
 pub(crate) mod cow;
+pub(crate) mod dolphin;
+pub(crate) mod fish;
+pub(crate) mod glow_squid;
 pub(crate) mod mooshroom;
 pub(crate) mod pig;
+pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
+pub(crate) mod salmon;
 pub(crate) mod sheep;
+pub(crate) mod squid;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tropical_fish;
+pub(crate) mod turtle;
+pub(crate) mod water;
+#[cfg(test)]
+mod water_tests;
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
 
 use super::Mob;
 use super::ai::{Ai, HeadLimits, Setup, controls};
-use super::body::hurt::DamageSource;
+use super::body::hurt::{DamageSource, Struck};
 use super::body::{ladder, loot};
 use super::tick::MobTick;
+use crate::living::Travel;
 use crate::physics::Vec3;
 use crate::region::Random;
 
@@ -84,6 +98,12 @@ pub(crate) trait MobType: Sync {
     /// bonus and the hand), with the level's draws on the mob's behalf: its variant,
     /// its colour, a baby of a group. `Mob`'s adds nothing.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        let _ = spawn;
+    }
+
+    /// What the type's `finalizeSpawn` does after `Mob`'s, which it calls first (a
+    /// tropical fish's variant, of the level's draws after `Mob`'s).
+    fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let _ = spawn;
     }
 
@@ -182,6 +202,13 @@ pub(crate) trait MobType: Sync {
         None
     }
 
+    /// `getAmbientSound()` as its tick asks it, where the type's depends on where the
+    /// mob is (a dolphin's in water, a turtle's on land); the place-free one by default.
+    fn ambient_sound_at(&self, mob: &Mob, in_water: bool, on_ground: bool) -> Option<i32> {
+        let _ = (in_water, on_ground);
+        self.ambient_sound(mob)
+    }
+
     /// `getAmbientSoundInterval()`: 80 in `Mob`.
     fn ambient_interval(&self) -> u32 {
         80
@@ -228,6 +255,71 @@ pub(crate) trait MobType: Sync {
     fn can_be_leashed(&self, kind: u16, mob: &Mob) -> bool {
         let _ = mob;
         ladder::can_be_leashed(kind)
+    }
+
+    /// What the type's `tick` does before the entity's own, after the level's despawn
+    /// check (a pufferfish's puffing).
+    fn before_tick(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
+    }
+
+    /// What the type's `tick` does after the whole of the living one (a dolphin's
+    /// moistness, a school's census).
+    fn after_tick(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
+    }
+
+    /// What its `baseTick` does after `Mob.baseTick` and its ambient sound (a water
+    /// animal's own air, `handleAirSupply`), given the air it had as the tick began.
+    fn after_base_tick(&self, tick: &mut MobTick<'_>, air: i32) {
+        let _ = (tick, air);
+    }
+
+    /// What its `aiStep` does before `LivingEntity.aiStep` (a fish's flop).
+    fn before_ai_step(&self, tick: &mut MobTick<'_>) {
+        let _ = tick;
+    }
+
+    /// How it travels in this tick, where its `travel` or `travelInWater` is its own.
+    fn travel(&self, tick: &MobTick<'_>) -> Travel {
+        let _ = tick;
+        Travel::Living
+    }
+
+    /// `isPushedByFluid()`: true in `Entity`.
+    fn pushed_by_fluid(&self) -> bool {
+        true
+    }
+
+    /// `getMaxAirSupply()`: 300 in `Entity`, its air at construction too.
+    fn max_air(&self) -> i32 {
+        crate::living::MAX_AIR
+    }
+
+    /// Whether its `increaseAirSupply` fills it at once (a dolphin's).
+    fn refills_air_at_once(&self) -> bool {
+        false
+    }
+
+    /// What its `hurtServer` does after `LivingEntity`'s, which `took` says took (a
+    /// squid's ink).
+    fn after_hurt(&self, struck: &mut Struck<'_>, source: &DamageSource, took: bool) {
+        let _ = (struck, source, took);
+    }
+
+    /// A breeding of the type that makes no child but changes the parent that bred, as
+    /// a turtle's goal gives it an egg: the parent's type state so changed, or `None`
+    /// for a type whose breeding makes a child ([`MobType::breed_offspring`]).
+    fn bred_without_child(&self, this: &Mob) -> Option<clustine_world::TypeState> {
+        let _ = this;
+        None
+    }
+
+    /// `PathNavigation.isStableDestination(pos)` where its navigation has its own (a
+    /// turtle's travelling); `None` for its navigation's kind's.
+    fn stable_destination(&self, ai: &Ai<'_, '_>, pos: BlockPos) -> Option<bool> {
+        let _ = (ai, pos);
+        None
     }
 }
 
@@ -298,15 +390,22 @@ pub(crate) enum Did {
     Convert { kind: u16, drops: Vec<ItemStack> },
     /// `player.startRiding(mob)`: the player who used it gets on, where they may.
     Mount,
+    /// `discard()`: the mob gone, dropping nothing (a fish taken in a bucket).
+    Discard,
 }
 
 /// A mob being made by an egg (`finalizeSpawn`): its type, the mob, the level's random
-/// on its behalf, and the biome at its block.
+/// on its behalf, its own random, and the biome at its block.
 pub(crate) struct Spawning<'a> {
     pub(crate) mob: &'a mut Mob,
     pub(crate) level: &'a mut Random,
+    /// The mob's own stream, on from its constructor's draws (a salmon draws its size
+    /// from it).
+    pub(crate) own: &'a mut Random,
     /// The name of the biome at the mob's block, where its chunk is read.
     pub(crate) biome: Option<&'static str>,
+    /// The mob's block (`blockPosition()`: a turtle's home).
+    pub(crate) at: BlockPos,
 }
 
 /// A breeding as `getBreedOffspring` reads it: the parent that breeds (`this`) and its
@@ -369,6 +468,14 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::SHEEP => &sheep::Sheep,
         entity_types::CHICKEN => &chicken::Chicken,
         entity_types::RABBIT => &rabbit::Rabbit,
+        entity_types::COD => &cod::Cod,
+        entity_types::SALMON => &salmon::Salmon,
+        entity_types::PUFFERFISH => &pufferfish::Pufferfish,
+        entity_types::TROPICAL_FISH => &tropical_fish::TropicalFish,
+        entity_types::SQUID => &squid::Squid,
+        entity_types::GLOW_SQUID => &glow_squid::GlowSquid,
+        entity_types::DOLPHIN => &dolphin::Dolphin,
+        entity_types::TURTLE => &turtle::Turtle,
         _ => return None,
     };
     Some(found)

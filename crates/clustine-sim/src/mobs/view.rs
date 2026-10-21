@@ -43,6 +43,9 @@ pub(crate) struct SeenPlayer {
     pub(crate) spectator: bool,
     /// What they ride, if anything.
     pub(crate) vehicle: Option<EntityId>,
+    /// `hasMovedHorizontallyRecently`: they moved sideways between their last two
+    /// ticks (a dolphin follows a boat whose rider does).
+    pub(crate) moved_horizontally: bool,
 }
 
 /// A block's light, as the chunk keeps it (`getBrightness` of each layer).

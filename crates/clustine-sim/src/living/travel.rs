@@ -7,7 +7,7 @@
 use clustine_blocks::data::{in_tag, is_block, is_class};
 use clustine_data::{BlockClass, blocks};
 
-use super::{Living, modified_friction, refresh_fluids};
+use super::{Living, Sinks, Travel, modified_friction, refresh_fluids};
 use crate::physics::aabb::Aabb;
 use crate::physics::body::{Body, Bounce, physics_of};
 use crate::physics::collide;
@@ -24,6 +24,11 @@ impl Living {
     /// `travel(Vec3.ZERO)`: in a fluid where it is in one (`shouldTravelInFluid`: a
     /// living body is moved by fluids and stands on none), else in the air.
     pub(crate) fn travel<R: Holds + ?Sized>(&mut self, world: &R) {
+        if self.travel_kind == Travel::Bare {
+            let motion = self.body.motion;
+            self.move_self(world, motion);
+            return;
+        }
         if self.body.in_water || self.in_lava() {
             self.travel_in_fluid(world);
         } else {
@@ -135,6 +140,10 @@ impl Living {
         let start_y = self.body.position[1];
         let gravity = self.attributes.gravity;
         if self.body.in_water {
+            if let Travel::Swims { speed, sinks } = self.travel_kind {
+                self.swim(world, speed, sinks);
+                return;
+            }
             self.travel_in_water(world, gravity, falling, start_y);
         } else {
             self.travel_in_lava(world, gravity, falling, start_y);
@@ -174,6 +183,46 @@ impl Living {
         ];
         self.body.motion = fluid_falling_adjusted(gravity, falling, moved);
         self.jump_out_of_fluid(world, start_y);
+    }
+
+    /// A swimmer's own `travelInWater`: `moveRelative(speed, input)`, the move, the
+    /// motion times 0.9, and the sink of 0.005 as `sinks` says of where the move left it.
+    fn swim<R: Holds + ?Sized>(&mut self, world: &R, speed: f32, sinks: Sinks) {
+        self.move_relative(speed);
+        let motion = self.body.motion;
+        self.move_self(world, motion);
+        self.body.motion = physics::scale(self.body.motion, 0.9);
+        let sink = match sinks {
+            Sinks::Never => false,
+            Sinks::Always => true,
+            Sinks::UnlessNear { centre, distance } => {
+                let middle = [
+                    f64::from(centre.x) + 0.5,
+                    f64::from(centre.y) + 0.5,
+                    f64::from(centre.z) + 0.5,
+                ];
+                physics::distance_sqr(middle, self.body.position) >= distance * distance
+            }
+        };
+        if sink {
+            self.body.motion = physics::add(self.body.motion, [0.0, -0.005, 0.0]);
+        }
+    }
+
+    /// `moveRelative(speed, input)` and `move(SELF, motion)` of a goal that moves its mob
+    /// a second time in a tick (`BreathAirGoal`, `FollowPlayerRiddenEntityGoal`), with
+    /// the inputs as they are then, turned by `yaw`.
+    pub(crate) fn move_again<R: Holds + ?Sized>(
+        &mut self,
+        world: &R,
+        speed: f32,
+        input: Vec3,
+        yaw: f32,
+    ) {
+        let push = crate::physics::minecart::input_vector(input, speed, yaw);
+        self.body.motion = physics::add(self.body.motion, push);
+        let motion = self.body.motion;
+        self.move_self(world, motion);
     }
 
     /// `travelInLava(Vec3.ZERO, gravity, falling, startY)`.
@@ -233,9 +282,10 @@ impl Living {
         let mut refreshed = None;
         // `LivingEntity.checkFallDamage`: out of water the fluids are looked at again
         // before the fall counts.
+        let pushed = self.pushed_by_fluid;
         let mut before_fall = |body: &mut Body| {
             if !body.in_water {
-                refreshed = Some(refresh_fluids(body, world));
+                refreshed = Some(refresh_fluids(body, world, pushed));
             }
         };
         self.body.move_with(

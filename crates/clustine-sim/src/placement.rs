@@ -601,6 +601,14 @@ pub(crate) fn boat_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option
     bucket::boat_hit(item_use, blocks)
 }
 
+/// See [`bucket::mob_bucket`].
+pub(crate) fn mob_bucket(
+    item_use: &ItemUse,
+    blocks: &dyn Blocks,
+) -> Option<(BlockPos, Vec<(BlockPos, BlockState)>)> {
+    bucket::mob_bucket(item_use, blocks)
+}
+
 /// See [`bucket::source_hit`].
 pub(crate) fn source_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<BlockPos>, ()> {
     bucket::source_hit(item_use, blocks)

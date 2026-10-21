@@ -6,10 +6,8 @@
 //! order and as often, so that its chances are the game's. What is left out, each said
 //! again where it would be:
 //!
-//! - a turtle egg's hatching and an eyeblossom's opening and closing, in the ground or
-//!   in a pot: the game asks the time of day of them (the environment attributes
-//!   `turtle_egg_hatch_chance` and `eyeblossom_open`), and Clustine's world has no time
-//!   of day that changes yet;
+//! - an eyeblossom's opening and closing, in the ground or in a pot (the environment
+//!   attribute `eyeblossom_open`); a turtle egg's hatching is `region/turtle_eggs.rs`';
 //! - rain on farmland: there is no weather, so `isRainingAt` is false;
 //! - sounds, particles and game events (a turtle egg's crack, the drip of dripstone,
 //!   `GameEvent.BLOCK_CHANGE`), which a region does not report;
@@ -102,11 +100,11 @@ impl Region {
                     self.schedule_tick(pos, block, GHAST_HYDRATION_DELAY, 0);
                 }
             }
-            // A turtle egg hatches by a chance that the time of day sets, drawn from the
-            // level's random rather than the tick's; eyeblossoms, planted or potted,
-            // open and close as the time of day says. Without time neither does
-            // anything.
-            BlockClass::TurtleEggBlock | BlockClass::EyeblossomBlock => {}
+            // A turtle egg cracks and hatches by a chance that the time of day sets
+            // (`region/turtle_eggs.rs`); eyeblossoms, planted or potted, open and close
+            // as the time of day says, which is not ported.
+            BlockClass::TurtleEggBlock => self.turtle_egg_tick(pos, state, random, output),
+            BlockClass::EyeblossomBlock => {}
             BlockClass::FlowerPotBlock => {}
             _ => return false,
         }

@@ -630,6 +630,7 @@ impl Region {
                 last_movements: living.last_movements.clone(),
                 stuck_speed: living.body.stuck_speed,
                 no_physics: living.no_physics,
+                vertical_collision: false,
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat: Default::default(),

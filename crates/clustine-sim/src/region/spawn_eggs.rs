@@ -30,7 +30,6 @@ use super::items::View;
 use super::riding::wrap_degrees;
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::{Face, RegionEvent, TickOutput};
-use crate::living::MAX_AIR;
 use crate::mobs::Mob;
 use crate::mobs::body::attributes::{ADD_MULTIPLIED_BASE, RANDOM_SPAWN_BONUS, supplied};
 use crate::mobs::body::hurt::voice_pitch;
@@ -169,6 +168,25 @@ impl Region {
         deeper: bool,
         output: &mut TickOutput,
     ) -> Option<EntityId> {
+        self.spawn_mob_with(kind, player, pos, offset, deeper, |_| {}, output)
+    }
+
+    /// [`Region::spawn_mob`], with `made` done to the mob after its `finalizeSpawn` and
+    /// before it is added (a bucket's `setFromBucket(true)`).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "`EntityType.create`'s arguments, and what its caller does after"
+    )]
+    pub(crate) fn spawn_mob_with(
+        &mut self,
+        kind: u16,
+        player: PlayerId,
+        pos: BlockPos,
+        offset: bool,
+        deeper: bool,
+        made: impl FnOnce(&mut Mob),
+        output: &mut TickOutput,
+    ) -> Option<EntityId> {
         let chunk = pos.chunk();
         if !self.readable(chunk) {
             return None;
@@ -203,7 +221,7 @@ impl Region {
         let yaw = wrap_degrees(level.next_float() * 360.0);
         // `setHealth(getMaxHealth())` in the constructor, of its type's attributes.
         mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;
-        mob.body.vitals.air = MAX_AIR;
+        mob.body.vitals.air = mob_type.max_air();
         mob.body.head = Head {
             head_yaw: yaw,
             body_yaw: yaw,
@@ -211,13 +229,24 @@ impl Region {
             ..Head::default()
         };
         // `finalizeSpawn`: the type's, with the biome at its block, then `Mob`'s.
-        let biome = self.biome_at(crate::physics::containing([x, y, z]));
+        let block = crate::physics::containing([x, y, z]);
+        let biome = self.biome_at(block);
         mob_type.finalize_spawn(&mut types::Spawning {
             mob: &mut mob,
             level: &mut level,
+            own: &mut own,
             biome,
+            at: block,
         });
         finalize_spawn(kind, &mut mob, &mut level);
+        mob_type.after_finalize_spawn(&mut types::Spawning {
+            mob: &mut mob,
+            level: &mut level,
+            own: &mut own,
+            biome,
+            at: block,
+        });
+        made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
         let entity = Entity {
             key,

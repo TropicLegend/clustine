@@ -78,7 +78,7 @@ pub(crate) fn no_action_time(ai: &Ai<'_, '_>) -> i32 {
 /// last hurt it; a hit by a player or a mob is a player's or a mob's attack, both of
 /// the tag, and the fire, lava and cactus of the tag's environmental causes are not
 /// seen.
-fn panics_from_damage(ai: &Ai<'_, '_>) -> bool {
+pub(crate) fn panics_from_damage(ai: &Ai<'_, '_>) -> bool {
     let lived = ai.tick.lived;
     let recent = |at: u32| lived.saturating_sub(at) <= 40;
     let combat = &ai.tick.mob.body.combat;
@@ -178,7 +178,7 @@ pub(crate) struct PanicGoal {
 impl PanicGoal {
     /// `lookForWater(level, mob, 5)`: none where the mob stands in something solid,
     /// else the first water by Manhattan distance in the box of 5, 1, 5.
-    fn look_for_water(ai: &Ai<'_, '_>, range: i32) -> Option<BlockPos> {
+    pub(crate) fn look_for_water(ai: &Ai<'_, '_>, range: i32) -> Option<BlockPos> {
         let at = ai.block_position();
         let world = ai.tick.world;
         if !world.state(at).voxel_collision_shape().is_empty() {

@@ -778,6 +778,10 @@ pub(crate) fn block_changed(ai: &mut Ai<'_, '_>, changed: BlockPos) {
 
 /// `isStableDestination(pos)`: somewhere to stand, as the navigation's kind has it.
 pub(crate) fn is_stable_destination(ai: &Ai<'_, '_>, pos: BlockPos) -> bool {
+    // A type's own navigation's (a turtle's).
+    if let Some(stable) = ai.tick.mob_type.stable_destination(ai, pos) {
+        return stable;
+    }
     let world = ai.tick.world;
     let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
     match ai.config.navigation.kind {

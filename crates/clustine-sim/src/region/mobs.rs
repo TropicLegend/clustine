@@ -158,7 +158,9 @@ impl Region {
             .map_or((info.width, info.height, info.eye_height), |size| {
                 (size.width, size.height, size.eye_height)
             });
-        let body = self.living_body(&entity, width, height, position);
+        let mut body = self.living_body(&entity, width, height, position);
+        // What its last move left of its collision, which a fish's flop reads.
+        body.vertical_collision = memory_vertical(self, key);
         let kind = Kind::Mob {
             kind: entity.kind,
             hurts: Vec::new(),
@@ -301,6 +303,7 @@ impl Region {
                 last_movements: living.last_movements.clone(),
                 stuck_speed: living.body.stuck_speed,
                 no_physics: living.no_physics,
+                vertical_collision: living.body.vertical_collision,
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat,
@@ -417,6 +420,14 @@ impl Region {
     }
 }
 
+/// `verticalCollision` as the mob `key`'s last move in the region left it.
+fn memory_vertical(region: &Region, key: EntityId) -> bool {
+    region
+        .entity_memory
+        .get(&key)
+        .is_some_and(|memory| memory.vertical_collision)
+}
+
 /// What a mob reads of a player, from their face.
 fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
     SeenPlayer {
@@ -432,6 +443,7 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         creative: face.game_mode == 1,
         spectator: face.game_mode == 3,
         vehicle: face.vehicle,
+        moved_horizontally: face.moved_horizontally,
     }
 }
 

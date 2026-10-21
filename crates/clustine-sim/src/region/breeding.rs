@@ -139,6 +139,25 @@ impl Region {
     ) -> bool {
         let mut stream = self.entity_stream(this.key).random;
         let start = stream.clone();
+        if let Some(state) = types::of(this.kind).bred_without_child(this_mob) {
+            // A turtle's breeding (`TurtleBreedGoal.breed`): an egg for `this`, the
+            // cooldowns and the love as ever, an orb, and no child nor hearts.
+            let value = stream.next_int(7) as i32 + 1;
+            self.entity_drew(this.key, stream.draws_since(&start));
+            if let Some((chunk, record)) = self.own_record(this.key)
+                && let Ok(mut mob) = Mob::decode(&record.data)
+            {
+                mob.state = state;
+                let now = record.lived;
+                animal::update(&mut mob, |shared| shared.bred(now));
+                self.commit_mob(&record, chunk, &mob, output);
+            }
+            if self.find_entity(partner).is_some() {
+                self.update_animal(partner, |shared, now| shared.bred(now), output);
+            }
+            self.add_orb(this.position, value, output);
+            return true;
+        }
         let biome = self.biome_at(crate::physics::containing(this.position));
         let child = types::of(this.kind).breed_offspring(&mut Breeding {
             this: this_mob,

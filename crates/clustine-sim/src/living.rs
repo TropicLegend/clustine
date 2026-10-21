@@ -122,6 +122,8 @@ pub(crate) enum Damage {
     Fall,
     /// `freeze`: frozen through in powder snow (a mob's alone).
     Freeze,
+    /// `dryOut`: a dolphin out of water too long.
+    DryOut,
 }
 
 /// The kind of a body, for what only its kind decides: how it takes damage
@@ -150,6 +152,33 @@ pub(crate) enum End {
     Broken,
     /// It was killed and drops nothing (`kill`, the void's).
     Killed,
+}
+
+/// How a body travels where its type has a way of its own (`travel` or `travelInWater`
+/// overridden), chosen by its type for each tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Travel {
+    /// `LivingEntity.travel`.
+    Living,
+    /// A `travelInWater` of its own in water (a fish's, a dolphin's, a turtle's):
+    /// `moveRelative(speed, input)`, its move, its motion times 0.9, then a sink of 0.005
+    /// as `sinks` says, after the move; in the air and in lava the living body's.
+    Swims { speed: f32, sinks: Sinks },
+    /// `travel` that is `move(SELF, motion)` and nothing more (a squid's).
+    Bare,
+}
+
+/// Whether a swimmer's own `travelInWater` sinks it after its move.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Sinks {
+    Never,
+    Always,
+    /// Unless its feet are within `distance` of the middle of the block `centre` (a
+    /// turtle near the home it goes to).
+    UnlessNear {
+        centre: BlockPos,
+        distance: f64,
+    },
 }
 
 /// A living body in its tick: the fields the game keeps on a `LivingEntity` that its
@@ -206,6 +235,14 @@ pub(crate) struct Living {
     pub(crate) breathes_under_water: bool,
     /// Its air ran out under water in this tick (entity event 67's bubbles).
     pub(crate) drowned: bool,
+    /// How it travels in this tick, its type's choice.
+    pub(crate) travel_kind: Travel,
+    /// `isPushedByFluid`: false for the water creatures and the turtle.
+    pub(crate) pushed_by_fluid: bool,
+    /// `getMaxAirSupply`: a dolphin's is 4800.
+    pub(crate) max_air: i32,
+    /// `increaseAirSupply` gives it all its air at once (a dolphin's), not four a tick.
+    pub(crate) refills_at_once: bool,
 }
 
 impl Living {
@@ -242,6 +279,10 @@ impl Living {
             fall_damage_immune: false,
             breathes_under_water: false,
             drowned: false,
+            travel_kind: Travel::Living,
+            pushed_by_fluid: true,
+            max_air: MAX_AIR,
+            refills_at_once: false,
         }
     }
 
@@ -376,7 +417,7 @@ impl Living {
     /// water, and the currents' push (a living body is pushed as anything but a player
     /// is).
     fn update_fluids<W: World + ?Sized>(&mut self, world: &W) {
-        self.fluids = refresh_fluids(&mut self.body, world);
+        self.fluids = refresh_fluids(&mut self.body, world, self.pushed_by_fluid);
     }
 
     /// `LivingEntity.baseTick()`.
@@ -433,8 +474,12 @@ impl Living {
             }
             // A body that breathes under water keeps its air there: it is refilled
             // only by water breathing or a conduit's power, which no body has.
-        } else if self.air < MAX_AIR {
-            self.air = (self.air + 4).min(MAX_AIR);
+        } else if self.air < self.max_air {
+            self.air = if self.refills_at_once {
+                self.max_air
+            } else {
+                (self.air + 4).min(self.max_air)
+            };
         }
     }
 
@@ -474,7 +519,7 @@ impl Living {
     /// **Inferred**, as `Region::eye_in_water` has it: the game keeps this from its last
     /// fluid update (`EntityFluidInteraction`, not in the dump) with the fluid's camera
     /// height, taken here as the fluid's height.
-    fn eye_in_water<W: World + ?Sized>(&self, world: &W) -> bool {
+    pub(crate) fn eye_in_water<W: World + ?Sized>(&self, world: &W) -> bool {
         let bounds = self.body.bounds().deflate(0.001);
         let eye = self.body.position[1] + f64::from(self.eye_height);
         let block = self.body.block_position();
@@ -592,14 +637,16 @@ pub(crate) fn modified_friction(friction: f32, modifier: f32) -> f32 {
 }
 
 /// `updateFluidInteraction` of `body`: what it found, with the body's being in water,
-/// its fall ended in water, and the currents' push.
-fn refresh_fluids<W: World + ?Sized>(body: &mut Body, world: &W) -> InFluids {
+/// its fall ended in water, and the currents' push where it is `pushed` by fluids.
+fn refresh_fluids<W: World + ?Sized>(body: &mut Body, world: &W, pushed: bool) -> InFluids {
     let found = fluids::update(world, &body.bounds());
     body.in_water = found.in_water();
     if found.in_water() {
         body.fall_distance = 0.0;
     }
-    body.motion = fluids::push(&found, body.motion);
+    if pushed {
+        body.motion = fluids::push(&found, body.motion);
+    }
     found
 }
 

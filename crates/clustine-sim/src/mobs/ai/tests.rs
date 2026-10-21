@@ -136,6 +136,7 @@ pub(super) fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer 
         creative: true,
         spectator: false,
         vehicle: None,
+        moved_horizontally: false,
     }
 }
 

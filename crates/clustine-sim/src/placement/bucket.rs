@@ -128,6 +128,30 @@ fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> 
     })
 }
 
+/// A bucket of a mob (`MobBucketItem`, which aims as a water bucket does): the block
+/// the water goes into, which its mob is made at, and the changes, none where water is
+/// there already; `None` where the water goes nowhere.
+pub(crate) fn mob_bucket(
+    item_use: &ItemUse,
+    blocks: &dyn Blocks,
+) -> Option<(BlockPos, Vec<(BlockPos, BlockState)>)> {
+    let hit = ray(item_use, blocks, Fluids::None).ok()??;
+    let hit_state = blocks.block(hit.pos)?;
+    let beyond = hit.face.relative(hit.pos);
+    // `BucketItem.use`'s position, which `checkExtraContent` makes the mob at even where
+    // the water went into the block before the hit instead.
+    let first = if hit_state.property("waterlogged").is_some() {
+        hit.pos
+    } else {
+        beyond
+    };
+    let changes = match empty_into(first, true, item_use.sneaking, blocks, blocks::WATER)? {
+        Some(changes) => changes,
+        None => empty_into(beyond, false, item_use.sneaking, blocks, blocks::WATER)??,
+    };
+    Some((first, changes))
+}
+
 /// What emptying a bucket of `fluid` into `pos` changes: `Some` of the changes when it
 /// goes in (possibly none, where the fluid is there already), `Some(None)` when it does
 /// not, and `None` when `pos` is in a chunk the region cannot see.

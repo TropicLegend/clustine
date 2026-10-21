@@ -532,6 +532,9 @@ fn prepare(tick: &mut MobTick<'_>) {
             .any(|stack| item_in_tag(stack.item, "minecraft:freeze_immune_wearables"));
     tick.living.walks_on_powder_snow = entity_in_tag(id, "minecraft:powder_snow_walkable_mobs")
         || worn[usize::from(slots::FEET)].is_some_and(|stack| stack.item == items::LEATHER_BOOTS);
+    tick.living.pushed_by_fluid = tick.mob_type.pushed_by_fluid();
+    tick.living.max_air = tick.mob_type.max_air();
+    tick.living.refills_at_once = tick.mob_type.refills_air_at_once();
     // A dying mob is not `isAlive()`: no wall, no air, no effects of blocks.
     if tick.mob.body.vitals.dying() {
         tick.living.end = crate::living::End::Killed;
@@ -570,7 +573,10 @@ pub(crate) fn after_base_tick(tick: &mut MobTick<'_>) {
     let time = i64::from(lived) - i64::from(tick.mob.body.idle.ambient_since);
     if i64::from(tick.draws.next_int(1000)) < time {
         tick.mob.body.idle.ambient_since = lived + 1 + tick.mob_type.ambient_interval();
-        let sound = tick.mob_type.ambient_sound(&tick.mob);
+        let body = &tick.living.body;
+        let sound = tick
+            .mob_type
+            .ambient_sound_at(&tick.mob, body.in_water, body.on_ground);
         struck(tick).make_sound(sound);
     }
 }
@@ -706,6 +712,7 @@ pub(crate) fn travel(tick: &mut MobTick<'_>) {
     ];
     tick.living.speed = inputs.speed;
     tick.living.yaw = tick.yaw;
+    tick.living.travel_kind = tick.mob_type.travel(tick);
     if tick.living.travels {
         tick.living.travel(tick.world);
     }

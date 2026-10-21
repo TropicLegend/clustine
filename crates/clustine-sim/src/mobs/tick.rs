@@ -72,6 +72,46 @@ pub(crate) enum Local {
         at: crate::physics::Vec3,
         pick_up_delay: u16,
     },
+    /// `level.playSound(null, at, sound, source, volume, pitch)`: a sound not of the
+    /// mob's own source (a turtle's laying, of the blocks').
+    Sound {
+        sound: i32,
+        source: i32,
+        at: crate::physics::Vec3,
+        volume: f32,
+        pitch: f32,
+    },
+    /// `take(item, count)` and the item's `discard()`: the region's item entity `item`
+    /// taken whole by the mob (a dolphin's pick-up), shown to clients as taken.
+    TakeItem { item: EntityId, count: i32 },
+    /// `startFollowing(leader)` of each of `followers` (fish of the region's own, never
+    /// the mob itself), and `leader_gains` more in the leader's school (none where the
+    /// mob leads, which it counts itself).
+    JoinSchool {
+        leader: EntityId,
+        followers: Vec<EntityId>,
+        leader_gains: i32,
+    },
+    /// `stopFollowing()`'s write to the leader it left: one fewer in its school.
+    LeaveSchool { leader: EntityId },
+    /// `hurtServer(mobAttack(this), amount)` of the region's mob `key` by this one (of the
+    /// type `kind`, its feet at `from`), and where it took, `sound` at `from` (a
+    /// pufferfish's sting).
+    Hurt {
+        key: EntityId,
+        kind: u16,
+        from: crate::physics::Vec3,
+        amount: f32,
+        sound: Option<i32>,
+    },
+    /// An item thrown by the mob (`new ItemEntity`, its pick-up delay set and its motion
+    /// set after the constructor's draws: a dolphin's play).
+    Throw {
+        stack: ItemStack,
+        at: crate::physics::Vec3,
+        pick_up_delay: u16,
+        motion: crate::physics::Vec3,
+    },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,
@@ -144,16 +184,23 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     if tick.out.removed.is_some() {
         return;
     }
+    // What the type's `tick` does before the entity's.
+    tick.mob_type.before_tick(tick);
     // `baseTick`: the entity's (fluids, fire, the void), the living body's (its wall,
     // its air), the hurts these met in order, the counters, the death's tick, and
-    // `Mob.baseTick`'s ambient sound.
+    // `Mob.baseTick`'s ambient sound; then the type's own (a water animal's air).
+    let air = tick.living.air;
     body::base_tick(tick);
     take_hurts(tick);
     body::after_base_tick(tick);
     if tick.out.removed.is_some() {
         return;
     }
-    // `aiStep`: a dying mob does not think, but falls and slides.
+    tick.mob_type.after_base_tick(tick, air);
+    take_hurts(tick);
+    // `aiStep`: the type's own first (a fish's flop); a dying mob does not think, but
+    // falls and slides.
+    tick.mob_type.before_ai_step(tick);
     body::start_ai_step(tick);
     if tick.effective_ai() && !body::immobile(tick) {
         ai::server_ai_step(tick);
@@ -180,6 +227,9 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     tick.mob_type.after_ai_step(tick);
     // After `aiStep`, in `LivingEntity.tick`.
     ai::rotate_body(tick);
+    // What the type's `tick` does after the living one.
+    tick.mob_type.after_tick(tick);
+    take_hurts(tick);
 }
 
 /// The hurts the body met of itself so far in the tick, taken in the order met

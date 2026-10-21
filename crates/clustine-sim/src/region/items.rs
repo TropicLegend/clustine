@@ -47,6 +47,9 @@ pub(crate) struct Memory {
     /// `noPhysics` as its last tick left it, which a piston's push between its ticks
     /// reads.
     pub(crate) no_physics: bool,
+    /// `verticalCollision` as its last move left it, which a fish's flop reads at the
+    /// start of its next tick; false after a take-in, as at the game's load.
+    pub(crate) vertical_collision: bool,
     /// A block-attached entity's `ticksSinceLastCheck`, which starts again at a
     /// take-in as at the game's load (`docs/groundwork/n5-plan.md`, section 7 item 7).
     pub(crate) ticks_since_check: u32,
@@ -477,6 +480,7 @@ impl Region {
                 last_movements: item.last_movements.clone(),
                 stuck_speed: item.body.stuck_speed,
                 no_physics: item.no_physics,
+                vertical_collision: false,
                 ticks_since_check: 0,
                 cart: CartMemory::default(),
                 boat: BoatMemory::default(),

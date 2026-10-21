@@ -313,6 +313,7 @@ impl Region {
                 last_movements: Vec::new(),
                 stuck_speed: body.stuck_speed,
                 no_physics: false,
+                vertical_collision: false,
                 ticks_since_check: 0,
                 cart: Default::default(),
                 boat: Default::default(),

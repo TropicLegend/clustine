@@ -68,7 +68,8 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
         (
             index::AIR_SUPPLY,
             DataShown::Int(vitals.air),
-            vitals.air == 300,
+            // Defined as the type's most (a dolphin's 4800).
+            vitals.air == types::of(kind).max_air(),
         ),
         (
             index::TICKS_FROZEN,
