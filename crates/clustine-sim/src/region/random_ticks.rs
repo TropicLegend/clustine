@@ -115,9 +115,18 @@ impl Random {
         self.0.wrapping_sub(start.0).wrapping_mul(GOLDEN_INVERSE)
     }
 
+    /// Takes `value` into the seed. The state is put through SplitMix64's output mix,
+    /// which spreads every bit over all of them: without it, a seed that ends with a
+    /// tick or a `lived` and the next one's lay exactly one draw apart on every other
+    /// tick (`(S ^ t) * G` and `(S ^ (t + 1)) * G` differ by `G`, the step of a draw), so
+    /// that a section's random ticks hit the same blocks tick after tick and an entity
+    /// drew yesterday's numbers again (found by the water animals' tests from the
+    /// specification: a turtle's eggs hatched in three ticks).
     fn mix(&mut self, value: u64) {
-        self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        self.next_u64();
+        let mut z = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        self.0 = z ^ (z >> 31);
     }
 
     pub(crate) fn next_u64(&mut self) -> u64 {
@@ -321,5 +330,32 @@ mod tests {
             seen.iter().all(|count| (800..1_200).contains(count)),
             "{seen:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod streams {
+    use super::*;
+
+    /// The first draws of a stream.
+    fn draws(mut random: Random) -> Vec<u64> {
+        (0..16).map(|_| random.next_u64()).collect()
+    }
+
+    /// No stream of a tick, or of an entity's `lived`, is the one before shifted by any
+    /// number of draws: the two share none of their first sixteen.
+    #[test]
+    fn the_streams_of_consecutive_ticks_and_lives_share_no_draws() {
+        for at in 0..200_u64 {
+            let section = |tick| Random::of_section(7, ChunkPos::new(3, -2), 4, tick);
+            let this = draws(section(at));
+            let next = draws(section(at + 1));
+            assert!(this.iter().all(|draw| !next.contains(draw)), "tick {at}");
+            let lived = u32::try_from(at).expect("small");
+            let entity = |lived| Random::of_entity(7, EntityId(40), lived);
+            let this = draws(entity(lived));
+            let next = draws(entity(lived + 1));
+            assert!(this.iter().all(|draw| !next.contains(draw)), "lived {at}");
+        }
     }
 }

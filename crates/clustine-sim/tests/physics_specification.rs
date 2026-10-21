@@ -2392,8 +2392,15 @@ fn an_item_inside_a_block_is_pushed_out_to_the_nearest_open_side_and_lands_on_it
     for _ in 0..40 {
         idle(&mut region);
     }
+    // Whether one push takes it clear of the floor depends on the draw: a box still in
+    // the floor after the second tick has its middle in the air above, whose nearest open
+    // side is north (half a block, the first of the ties), and is pushed that way.
     let rested = record(&region, start.key).expect("there");
-    assert_eq!(rested.position, [8.5, FLOOR, 8.5], "{rested:?}");
+    assert_eq!(rested.position[..2], [8.5, FLOOR], "{rested:?}");
+    assert!(
+        (7.5..=8.5).contains(&rested.position[2]),
+        "out north if anywhere: {rested:?}"
+    );
     assert!(rested.on_ground);
 }
 

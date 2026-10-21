@@ -307,19 +307,21 @@ fn an_animal_follows_a_player_holding_its_food_and_strolls_and_looks_about_witho
         "tempted to the player: {near:?}"
     );
 
-    // Holding nothing it likes, the player is only looked at, and the cow strolls.
+    // Holding nothing it likes, the player is only looked at, and the cow strolls. It
+    // starts in the middle of the one chunk that ticks entities, so that a stroll does
+    // not take it into a chunk where it stands still.
     let mut region = on_ticking_floor_with(&[]);
     holding(&mut region, one(items::STICK));
-    lay(&mut region, &cow_at(ONE, 7.5, 0.5, &Animal::default()));
+    lay(&mut region, &cow_at(ONE, 7.5, 7.5, &Animal::default()));
     let mut moved = false;
     let mut turned = false;
     for _ in 0..600 {
         checked(&mut region, &TickInputs::default());
         let now = record(&region, ONE).unwrap();
-        moved |= (now.position[0] - 7.5).abs() > 1.0 || (now.position[2] - 0.5).abs() > 1.0;
+        moved |= (now.position[0] - 7.5).abs() > 1.0 || (now.position[2] - 7.5).abs() > 1.0;
         turned |= mob(&region, ONE).body.head.head_yaw != 0.0;
     }
-    assert!(moved && turned);
+    assert!(moved && turned, "moved {moved} turned {turned}");
 }
 
 #[test]
@@ -330,13 +332,13 @@ fn a_hurt_animal_panics_at_its_panic_speed() {
         &mut region,
         &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
     );
-    let mut panicked = false;
-    for _ in 0..4 {
+    // A knocked-back cow makes no path until it lands (`canUpdatePath`), so the panic's
+    // speed shows only once it is down, some ticks after the hit.
+    let panicked = (0..40).any(|_| {
         checked(&mut region, &TickInputs::default());
         let cow = record(&region, ONE).unwrap();
-        panicked |=
-            crate::mobs::ai::panicking_record(&cow) && mob(&region, ONE).body.progress.speed == 2.0;
-    }
+        crate::mobs::ai::panicking_record(&cow) && mob(&region, ONE).body.progress.speed == 2.0
+    });
     assert!(panicked);
 }
 
@@ -1314,15 +1316,15 @@ fn every_farm_animal_follows_its_food_panics_when_hurt_and_breeds_when_fed_in_pa
             &mut region,
             &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
         );
-        let mut panicked = false;
-        for _ in 0..4 {
+        // It makes no path until it lands from the knock-back (`canUpdatePath`).
+        let panicked = (0..40).any(|_| {
             checked(&mut region, &TickInputs::default());
             let hurt = record(&region, ONE).unwrap();
             let speed = mob(&region, ONE).body.progress.speed;
             // A rabbit's speed is nothing between its hops.
-            panicked |= crate::mobs::ai::panicking_record(&hurt)
-                && (speed == panic || kind == entity_types::RABBIT);
-        }
+            crate::mobs::ai::panicking_record(&hurt)
+                && (speed == panic || kind == entity_types::RABBIT)
+        });
         assert!(panicked, "{kind} panics");
 
         // Fed in pairs, they breed.
