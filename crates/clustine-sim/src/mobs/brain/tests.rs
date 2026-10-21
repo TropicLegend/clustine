@@ -810,3 +810,82 @@ static RESTING: Provider = Provider {
     core: &[Activity::Core],
     default: Activity::Idle,
 };
+
+thread_local! {
+    static LEFT: RefCell<Vec<(&'static str, u32, i64)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A behaviour that never starts and notes when its activity is left.
+struct Leaving(&'static str);
+
+impl Behaviour for Leaving {
+    fn required(&self, _: &mut BTreeSet<MemoryKind>) {}
+
+    fn running(&self) -> bool {
+        false
+    }
+
+    fn try_start(&mut self, _: &mut Cx<'_, '_, '_>) -> bool {
+        false
+    }
+
+    fn tick_or_stop(&mut self, _: &mut Cx<'_, '_, '_>) {}
+
+    fn do_stop(&mut self, _: &mut Cx<'_, '_, '_>) {}
+
+    fn load(&mut self, _: u16, _: &BTreeMap<u16, Entry>) {}
+
+    fn save(&self, _: u16, _: &mut Vec<Entry>) {}
+
+    fn left(&mut self, now: u32, time: i64) {
+        LEFT.with(|left| left.borrow_mut().push((self.0, now, time)));
+    }
+}
+
+static LEAVING: Provider = Provider {
+    memories: &[],
+    sensors: &[],
+    activities: || {
+        vec![
+            ActivityData::numbered(Activity::Core, 0, vec![Box::new(Leaving("core"))]),
+            ActivityData::numbered(Activity::Idle, 0, vec![Box::new(Leaving("idle"))]),
+            ActivityData::numbered(
+                Activity::Panic,
+                0,
+                vec![Box::new(Gate::new(
+                    Vec::new(),
+                    Vec::new(),
+                    Order::Ordered,
+                    Running::RunOne,
+                    vec![(Box::new(Leaving("panic's child")), 1)],
+                ))],
+            ),
+        ]
+    },
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// The game asks no behaviour of an activity that is not active, so each behaviour of
+/// the activity a switch leaves, a gate's children too, is told the tick it was last
+/// asked at; a core activity is never left, and setting the active one again leaves
+/// nothing.
+#[test]
+fn a_switch_tells_the_behaviours_of_the_activity_it_leaves_the_tick_they_were_last_asked() {
+    let mut run = Run::new(&LEAVING);
+    LEFT.with(|left| left.borrow_mut().clear());
+    run.tick();
+    let first = run.ticked.lived;
+    run.tick_with(|brain| brain.set_active(Activity::Panic));
+    run.tick_with(|brain| brain.set_active(Activity::Panic));
+    run.tick_with(|brain| brain.set_active(Activity::Idle));
+    let left = LEFT.with(|left| left.borrow().clone());
+    let (switched, back) = (first, first + 2);
+    assert_eq!(
+        left,
+        [
+            ("idle", switched, i64::from(switched)),
+            ("panic's child", back, i64::from(back)),
+        ]
+    );
+}

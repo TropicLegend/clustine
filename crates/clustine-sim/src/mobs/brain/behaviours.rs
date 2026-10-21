@@ -82,6 +82,11 @@ pub(crate) trait KeptShot: 'static {
 
     /// `trigger`: its conditions, left to right, and its body where they hold.
     fn trigger(&self, state: &mut Self::State, cx: &mut Cx<'_, '_, '_>) -> bool;
+
+    /// [`Behaviour::left`]: what it counts by its calls pauses.
+    fn left(&self, state: &mut Self::State, now: u32, time: i64) {
+        let _ = (state, now, time);
+    }
 }
 
 /// A [`KeptShot`], its state and whether it runs, which no tick ends with.
@@ -133,6 +138,10 @@ impl<S: KeptShot> Behaviour for HeldKept<S> {
             into.push(entry(first, S::VERSION, &self.state));
         }
     }
+
+    fn left(&mut self, now: u32, time: i64) {
+        self.shot.left(&mut self.state, now, time);
+    }
 }
 
 /// A counter the game lowers by one on some ticks only (the plan, section 8 item 4): its
@@ -140,9 +149,10 @@ impl<S: KeptShot> Behaviour for HeldKept<S> {
 /// lowered. It is written only where its lowering pauses or resumes, or it is set; one
 /// that is lowered tick after tick writes nothing.
 ///
-/// A pause is seen at the first tick its owner is asked and does not lower it. **Named**:
-/// a tick its owner is not asked at all (its activity not active) is not seen, and is
-/// counted as a lowering; a value that would so fall below nothing reads as nothing.
+/// A pause is seen at the first tick its owner is asked and does not lower it, and where
+/// its owner's activity ends ([`Behaviour::left`]), after which the game does not ask
+/// it. **Named**: a tick a gate does not ask its child is not seen, and is counted as a
+/// lowering; a value that would so fall below nothing reads as nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Counter {
     pub(crate) value: i32,

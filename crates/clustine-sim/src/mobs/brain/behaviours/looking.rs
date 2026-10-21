@@ -122,6 +122,11 @@ impl KeptShot for SetEntityLookTargetSometimes {
         );
         true
     }
+
+    fn left(&self, state: &mut Ticker, now: u32, _: i64) {
+        // As of the tick after the last it was asked at.
+        state.ticks.pause(now + 1);
+    }
 }
 
 /// `SetEntityLookTarget.create([category | type,] maxDist)` (7.3.8): with no look target,

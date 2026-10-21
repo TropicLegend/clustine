@@ -111,6 +111,13 @@ pub(crate) trait Behaviour {
     fn load(&mut self, first: u16, parts: &BTreeMap<u16, Entry>);
     /// Its parts, numbered from `first`, each only where it is not as a fresh one is.
     fn save(&self, first: u16, into: &mut Vec<Entry>);
+    /// Its activity is no longer active after the brain's tick at `lived` `now` and game
+    /// time `time`: the game does not ask it again until its activity is active once
+    /// more, so what it counts by the ticks it is asked (a ticker, a search's wait)
+    /// pauses here. Nothing for a behaviour that counts nothing.
+    fn left(&mut self, now: u32, time: i64) {
+        let _ = (now, time);
+    }
 }
 
 /// `Behavior` (the brief's 7.1.6): a behaviour with entry conditions on memories, a
@@ -484,6 +491,12 @@ impl Behaviour for Gate {
         }
     }
 
+    fn left(&mut self, now: u32, time: i64) {
+        for (child, _) in &mut self.children {
+            child.left(now, time);
+        }
+    }
+
     fn count(&self) -> usize {
         1 + self
             .children
@@ -727,6 +740,9 @@ pub(crate) struct Brain {
     /// Whether the region had nothing of its sensed memories: the brain senses again
     /// before its first start pass.
     resense: bool,
+    /// The game time of its tick, which the behaviours of an activity it leaves are
+    /// told of.
+    time: i64,
     /// The order of the start and running passes: (activity's index, behaviour's index).
     order: Vec<(usize, usize)>,
 }
@@ -800,6 +816,7 @@ impl Brain {
             activities,
             requirements,
             resense: sensed.is_none(),
+            time: 0,
             order,
         }
     }
@@ -814,6 +831,7 @@ impl Brain {
             self.state.active = Some(self.provider.default);
         }
         self.memories.forget(now);
+        self.time = time;
         let resense = std::mem::take(&mut self.resense);
         // Behaviours cannot change the activities while the passes run, so the set read
         // once is the set the game reads for each behaviour.
@@ -910,6 +928,17 @@ impl Brain {
             if let Some((_, erase)) = self.requirements.get(&other) {
                 for kind in erase.clone() {
                     self.memories.erase(kind);
+                }
+            }
+            // Its behaviours are not asked from the next tick on.
+            if !self.provider.core.contains(&other) {
+                let (now, time) = (self.memories.now, self.time);
+                for data in &mut self.activities {
+                    if data.activity == other {
+                        for (_, behaviour) in &mut data.behaviours {
+                            behaviour.left(now, time);
+                        }
+                    }
                 }
             }
         }

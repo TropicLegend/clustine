@@ -179,6 +179,11 @@ pub(crate) fn find_land_near_liquid(
 impl KeptShot for TryFindLiquid {
     type State = Wait;
 
+    fn left(&self, wait: &mut Wait, _: u32, time: i64) {
+        // As of the tick after the last it was asked at.
+        wait.pause(time + 1, 20 + 2);
+    }
+
     fn required(&self) -> &[MemoryKind] {
         &REQUIRED
     }
@@ -222,6 +227,11 @@ impl KeptShot for TryFindLiquid {
 impl KeptShot for TryFindLand {
     type State = Wait;
 
+    fn left(&self, wait: &mut Wait, _: u32, time: i64) {
+        // As of the tick after the last it was asked at.
+        wait.pause(time + 1, 60);
+    }
+
     fn required(&self) -> &[MemoryKind] {
         &REQUIRED
     }
@@ -256,6 +266,11 @@ impl KeptShot for TryFindLand {
 
 impl KeptShot for TryFindLandNearLiquid {
     type State = Wait;
+
+    fn left(&self, wait: &mut Wait, _: u32, time: i64) {
+        // As of the tick after the last it was asked at.
+        wait.pause(time + 1, 40);
+    }
 
     fn required(&self) -> &[MemoryKind] {
         &REQUIRED
