@@ -3,18 +3,34 @@
 //! its rams sooner, its horns of other instruments), one adult in ten of an egg with a
 //! horn missing; a fall hurts it ten less than another animal.
 //!
-//! Its mind is a brain (`GoatAi`), which N7j's machinery brings (part A and the lead's
-//! contracts): until its provider is wired a goat has no goals and stands and falls by
-//! its body alone. What the brain will read and call of the goat is here as plain
-//! functions in [`brain`]: the two cooldowns `initMemories` draws, the ram's ranges,
-//! knockback and sounds, the long jump's sound and size, the horn a ram knocks off.
+//! Its mind is a brain (`GoatAi`, [`PROVIDER`]): it wanders, follows wheat and adults,
+//! breeds, panics when hurt, long-jumps up to five blocks once its jump's cooldown is out,
+//! and rams a mob or an armour stand four to seven blocks away once its ram's is, never a
+//! creative player. Its two cooldowns are integer memories its core counts down, which
+//! `initMemories` sets at a spawn and a breeding ([`brain::remember`]); a goat that never
+//! had them (one of no spawn) jumps and rams at once, as the game's does. The pose and the
+//! friction of a jump ([`GoatState::long_jumping`], [`GoatState::discards_friction`]) are
+//! its type state, which copies carry, so that a jump over a line arrives in its pose.
 //!
-//! Named differences: the attack damage of a kid (1, `ageBoundaryReached`) is derived
-//! from its age by [`brain::attack_damage`] rather than kept as the attribute's base,
-//! which only a ram reads; `setYHeadRot`'s clamp of the head to 15 degrees of the body
-//! waits for the brain's looking (no goal turns a goat's head before it); a horn drops
-//! as a plain goat horn without its instrument (the owner's question 4 of the plan's
-//! 11.7), though [`brain::horn_instrument`] names the one the game would give.
+//! What reads across a line (the plan, section 3): the senses are the shared sensors'
+//! (the copies' entities, the faces' players); a long jump's candidates and arc read the
+//! copies' blocks and take what is beyond them for an unloaded chunk's air, so that a
+//! goat near the copies' edge plans shorter jumps; a jump that lands in another region
+//! arrives with its record, its brain and its pose whole; a ram's hit on a mob only a
+//! copy shows is its holder's (`Local::Hurt`, then `EntityUse::MobHit`); a target the
+//! view no longer has is not taken for dead (the shared ram's reading, plan section 8
+//! item 8).
+//!
+//! Named differences: the base of a kid's attack damage (1, `ageBoundaryReached`) is set
+//! at its first tick as a kid and again at its first as an adult, where the game sets it
+//! as the age crosses the boundary (only a ram reads it, in the goat's own tick);
+//! `setYHeadRot`'s clamp of the head to 15 degrees of the body
+//! is not made (the look control, which turns the head, sets the field without it, as the
+//! game's does; the other callers are a spawn's and a teleport's); a horn drops as a
+//! plain goat horn without its instrument (the owner's question 4 of the plan's 11.7),
+//! though [`brain::horn_instrument`] names the one the game would give; a jump's discarded
+//! friction is taken as the friction of nothing, which counts the friction of the block
+//! under it in the speed of its input too, an input no goat has in a jump.
 
 use clustine_data::{PathType, items, sounds};
 use serde::{Deserialize, Serialize};
@@ -24,9 +40,20 @@ use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used};
 use crate::living::Landing;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
+use crate::mobs::ai::sensing::Looked;
 use crate::mobs::ai::{Ai, HeadLimits, Setup};
 use crate::mobs::body::hurt::DamageSource;
-use crate::mobs::tick::MobTick;
+use crate::mobs::brain::behaviours::jumping::{Leaper, LongJumpMidJump, LongJumpToRandomPos};
+use crate::mobs::brain::behaviours::looking::{self, LookAt};
+use crate::mobs::brain::behaviours::ramming::{PrepareRamNearestTarget, RamTarget, Rammer};
+use crate::mobs::brain::behaviours::social::{self, AnimalMakeLove, FollowTemptation};
+use crate::mobs::brain::behaviours::{Speed, cooldowns, panic, walking};
+use crate::mobs::brain::sensors::{self, NearestItemSensor, TemptingSensor};
+use crate::mobs::brain::{
+    self as machinery, Activity, ActivityData, Cx, DoNothing, Gate, HeldTimed, MemoryKind,
+    Provider, Status, Value,
+};
+use crate::mobs::tick::{Local, MobTick};
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
 use crate::region::Random;
 use crate::shown::DataShown;
@@ -42,7 +69,9 @@ pub(crate) const BABY: Dimensions = Dimensions {
     eye_height: 0.593_75,
 };
 
-/// The synced data's indices: screaming, the left horn, the right horn.
+/// The synced data's indices: the pose (`Entity.DATA_POSE`), screaming, the left horn,
+/// the right horn.
+const POSE_INDEX: u8 = 6;
 const SCREAMING_INDEX: u8 = 18;
 const LEFT_HORN_INDEX: u8 = 19;
 const RIGHT_HORN_INDEX: u8 = 20;
@@ -53,23 +82,32 @@ const FALL_LESS: i32 = 10;
 /// The chance of a screaming goat at a spawn or a breeding.
 const SCREAMING_CHANCE: f64 = 0.02;
 
+/// The ordinal of `Pose.LONG_JUMPING`.
+const LONG_JUMPING: i32 = 6;
+
 /// What a goat keeps beyond an animal: whether it screams, and its two horns
-/// (`IsScreamingGoat`, `HasLeftHorn`, `HasRightHorn`). Its cooldowns are its brain's
+/// (`IsScreamingGoat`, `HasLeftHorn`, `HasRightHorn`), and in a long jump its pose
+/// (`LONG_JUMPING`) and whether it keeps its motion unslowed (`discardFriction`), which
+/// the game keeps on the entity and does not save. Its cooldowns are its brain's
 /// memories, not its own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GoatState {
     pub(crate) screaming: bool,
     pub(crate) left_horn: bool,
     pub(crate) right_horn: bool,
+    pub(crate) long_jumping: bool,
+    pub(crate) discards_friction: bool,
 }
 
 impl Default for GoatState {
-    /// `defineSynchedData`'s: not screaming, both horns.
+    /// `defineSynchedData`'s: not screaming, both horns; standing.
     fn default() -> Self {
         Self {
             screaming: false,
             left_horn: true,
             right_horn: true,
+            long_jumping: false,
+            discards_friction: false,
         }
     }
 }
@@ -133,10 +171,8 @@ fn eating_sound(used: &mut Used<'_>) {
 /// The goat.
 pub(crate) struct Goat;
 
-/// What the brain will read and call of a goat, until its provider is wired (part A
-/// and the lead's N7j1): plain functions of the game's lambdas and the goat's own
-/// methods that `GoatAi`'s behaviours call.
-#[allow(dead_code, reason = "what the goat's brain, not wired yet, reads")]
+/// What the brain reads and calls of a goat: plain functions of the game's lambdas and
+/// the goat's own methods that `GoatAi`'s behaviours call.
 pub(crate) mod brain {
     use super::*;
 
@@ -152,9 +188,6 @@ pub(crate) mod brain {
     pub(crate) const LONG_JUMP_HEIGHT: i32 = 5;
     pub(crate) const LONG_JUMP_WIDTH: i32 = 5;
     pub(crate) const MAX_JUMP_VELOCITY_MULTIPLIER: f32 = 3.571_428_8;
-    /// The entity events of a goat lowering its head and raising it again.
-    pub(crate) const LOWER_HEAD: u8 = 58;
-    pub(crate) const RAISE_HEAD: u8 = 59;
 
     /// The cooldowns `GoatAi.initMemories` gives a goat: its long jump's, then its
     /// ram's.
@@ -177,11 +210,16 @@ pub(crate) mod brain {
         Cooldowns { long_jump, ram }
     }
 
-    /// Where the two cooldowns become the brain's memories (`setMemory`, no expiry):
-    /// the seam the provider is wired at. Until then they are drawn in the game's order
-    /// and kept nowhere.
+    /// The two cooldowns made the brain's memories (`setMemory`, no expiry), at rest
+    /// until its core's countdowns start in its next tick.
     pub(crate) fn remember(mob: &mut Mob, cooldowns: Cooldowns) {
-        let _ = (mob, cooldowns);
+        let mut memories = machinery::memories_of(&PROVIDER, mob, 0);
+        memories.set(
+            MemoryKind::LongJumpCoolingDown,
+            Value::Int(cooldowns.long_jump),
+        );
+        memories.set(MemoryKind::RamCooldownTicks, Value::Int(cooldowns.ram));
+        machinery::write_memories(&PROVIDER, mob, memories);
     }
 
     /// `getTimeBetweenRams`: a screamer rams sooner.
@@ -305,6 +343,10 @@ pub(crate) mod brain {
     /// order, by one `nextInt(4)` of a `SingleThreadedRandomSource` seeded with the
     /// UUID's hash (the brief's finding 7.0.3.3; the pick **Inferred** to be
     /// `Util.getRandomSafe`). Both horns of one goat are of one instrument.
+    #[allow(
+        dead_code,
+        reason = "the instrument a horn carries once items have components"
+    )]
     pub(crate) fn horn_instrument(uuid: u128, screaming: bool) -> &'static str {
         const REGULAR: [&str; 4] = [
             "minecraft:ponder_goat_horn",
@@ -324,6 +366,10 @@ pub(crate) mod brain {
     }
 
     /// `UUID.hashCode()`: the two halves' exclusive or, folded to an int.
+    #[allow(
+        dead_code,
+        reason = "the instrument a horn carries once items have components"
+    )]
     pub(crate) fn uuid_hash(uuid: u128) -> i32 {
         let hilo = ((uuid >> 64) as u64 ^ uuid as u64) as i64;
         ((hilo >> 32) as i32) ^ (hilo as i32)
@@ -331,8 +377,16 @@ pub(crate) mod brain {
 
     /// `LegacyRandomSource` (`SingleThreadedRandomSource`'s algorithm): Java's linear
     /// congruential generator, which nothing else of Clustine draws from.
+    #[allow(
+        dead_code,
+        reason = "the instrument a horn carries once items have components"
+    )]
     pub(crate) struct JavaRandom(i64);
 
+    #[allow(
+        dead_code,
+        reason = "the instrument a horn carries once items have components"
+    )]
     impl JavaRandom {
         const MULTIPLIER: i64 = 0x5_DEEC_E66D;
         const MASK: i64 = (1 << 48) - 1;
@@ -362,9 +416,250 @@ pub(crate) mod brain {
     }
 }
 
+/// `FOOD_TEMPTATIONS` of a goat (`TemptingSensor.forAnimal`): wheat.
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| FOOD.test(Some(stack)),
+};
+
+/// `NEAREST_ITEMS` of a goat: every item (`Mob.wantsToPickUp`, `canHoldItem`'s true),
+/// a memory nothing of a goat reads but that its scan writes, as the game's.
+static ITEMS: NearestItemSensor = NearestItemSensor { wants: |_, _| true };
+
+/// `Goat.BRAIN_PROVIDER`: its sensors in the game's order, and `GoatAi`'s activities.
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &[
+        &sensors::NEAREST_LIVING_ENTITIES,
+        &sensors::NEAREST_PLAYERS,
+        &ITEMS,
+        &sensors::NEAREST_ADULT,
+        &sensors::HURT_BY,
+        &TEMPTATIONS,
+    ],
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `GoatAi.updateActivity`: the first of ram, long jump and idle whose conditions hold;
+/// none holding, the activity stays (a goat tempted while its ram's cooldown is out).
+pub(crate) const ACTIVITIES: [Activity; 3] = [Activity::Ram, Activity::LongJump, Activity::Idle];
+
+/// `GoatAi.getActivities`.
+fn activities() -> Vec<ActivityData> {
+    use MemoryKind::{
+        BreedTarget, LongJumpCoolingDown, RamCooldownTicks, TemptationCooldownTicks,
+        TemptingPlayer, WalkTarget,
+    };
+    let core = ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            panic::swim(0.8),
+            panic::panic(2.0),
+            walking::look_sink(45, 90),
+            walking::sink(),
+            cooldowns::count_down(TemptationCooldownTicks),
+            cooldowns::count_down(LongJumpCoolingDown),
+            cooldowns::count_down(RamCooldownTicks),
+        ],
+    );
+    let idle = ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (0, looking::look_sometimes(LookAt::Player, 6.0, (30, 60))),
+            (0, AnimalMakeLove::new(GOAT_KIND).boxed()),
+            (1, FollowTemptation::new(Speed::Fixed(1.25)).boxed()),
+            (2, social::follow_adult((5, 16), 1.25)),
+            (
+                3,
+                Box::new(Gate::run_one(vec![
+                    (walking::stroll(1.0), 2),
+                    (walking::walk_to_look_target(1.0, 3), 2),
+                    (Box::new(HeldTimed::new(DoNothing { min: 30, max: 60 })), 1),
+                ])),
+            ),
+        ],
+        conditions: vec![
+            (RamCooldownTicks, Status::Present),
+            (LongJumpCoolingDown, Status::Present),
+        ],
+        erase: Vec::new(),
+    };
+    let long_jump = ActivityData {
+        activity: Activity::LongJump,
+        behaviours: vec![
+            (
+                0,
+                LongJumpMidJump {
+                    interval: brain::TIME_BETWEEN_LONG_JUMPS,
+                    landing_sound: sounds::ENTITY_GOAT_STEP,
+                    leaper: &LEAPER,
+                }
+                .boxed(),
+            ),
+            (
+                1,
+                LongJumpToRandomPos {
+                    interval: brain::TIME_BETWEEN_LONG_JUMPS,
+                    max_height: brain::LONG_JUMP_HEIGHT,
+                    max_width: brain::LONG_JUMP_WIDTH,
+                    max_velocity_multiplier: brain::MAX_JUMP_VELOCITY_MULTIPLIER,
+                    leaper: &LEAPER,
+                    preferred: None,
+                }
+                .boxed(),
+            ),
+        ],
+        conditions: vec![
+            (TemptingPlayer, Status::Absent),
+            (BreedTarget, Status::Absent),
+            (WalkTarget, Status::Absent),
+            (LongJumpCoolingDown, Status::Absent),
+        ],
+        erase: Vec::new(),
+    };
+    let ram = ActivityData {
+        activity: Activity::Ram,
+        behaviours: vec![
+            (
+                0,
+                RamTarget {
+                    speed: 3.0,
+                    targets: rams_target,
+                    rammer: &RAMMER,
+                }
+                .boxed(),
+            ),
+            (
+                1,
+                PrepareRamNearestTarget {
+                    cooldown_on_fail: brain::least_ram_cooldown,
+                    min_distance: brain::RAM_DISTANCES.0,
+                    max_distance: brain::RAM_DISTANCES.1,
+                    walk_speed: 1.25,
+                    targets: rams_target,
+                    prepare_time: i64::from(brain::RAM_PREPARE_TIME),
+                    sound: brain::prepare_ram_sound,
+                }
+                .boxed(),
+            ),
+        ],
+        conditions: vec![
+            (TemptingPlayer, Status::Absent),
+            (BreedTarget, Status::Absent),
+            (RamCooldownTicks, Status::Absent),
+        ],
+        erase: Vec::new(),
+    };
+    vec![core, idle, long_jump, ram]
+}
+
+/// `ageBoundaryReached`: the base of `ATTACK_DAMAGE` a kid's 1 and an adult's 2, set
+/// where the instance has not that value (once a kid is made, once it grows up).
+fn age_boundary(mob: &mut Mob) {
+    let wanted = brain::attack_damage(mob);
+    let id = crate::mobs::body::attribute(clustine_data::attributes::ATTACK_DAMAGE);
+    if mob.body.attributes.value(GOAT_KIND, id) != wanted
+        && let Some(instance) = mob.body.attributes.instance(GOAT_KIND, id)
+    {
+        instance.base = wanted;
+    }
+}
+
+/// The goat's entity type, as the breeding's partner type.
+const GOAT_KIND: u16 = clustine_data::entity_types::GOAT as u16;
+
+/// `RAM_TARGET_CONDITIONS`' selector: anything but a goat (an armour stand too, mobs
+/// griefing always). Players pass it, and the combat targeting it is part of turns away
+/// every creative one.
+fn rams_target(looked: &Looked) -> bool {
+    looked.kind.is_none_or(brain::rams)
+}
+
+/// What a goat's long jump asks of it.
+pub(crate) struct GoatLeaper;
+
+pub(crate) static LEAPER: GoatLeaper = GoatLeaper;
+
+impl Leaper for GoatLeaper {
+    fn jump_sound(&self, mob: &Mob) -> i32 {
+        brain::long_jump_sound(mob)
+    }
+
+    /// `getDimensions(LONG_JUMPING)`: its size scaled by 0.7.
+    fn long_jumping_size(&self, cx: &Cx<'_, '_, '_>) -> (f32, f32) {
+        let size = brain::long_jumping_dimensions(&cx.ai.tick.mob);
+        (size.width, size.height)
+    }
+
+    fn set_discard_friction(&self, cx: &mut Cx<'_, '_, '_>, discard: bool) {
+        update(&mut cx.ai.tick.mob, |goat| goat.discards_friction = discard);
+    }
+
+    fn set_long_jumping(&self, cx: &mut Cx<'_, '_, '_>, jumping: bool) {
+        update(&mut cx.ai.tick.mob, |goat| goat.long_jumping = jumping);
+    }
+}
+
+/// What a goat's ram asks of it (`GoatAi`'s lambdas, `Goat.dropHorn`).
+pub(crate) struct GoatRammer;
+
+pub(crate) static RAMMER: GoatRammer = GoatRammer;
+
+impl Rammer for GoatRammer {
+    fn time_between_rams(&self, mob: &Mob) -> (i32, i32) {
+        brain::time_between_rams(mob)
+    }
+
+    fn knockback(&self, mob: &Mob) -> f64 {
+        brain::ram_knockback(mob)
+    }
+
+    fn impact_sound(&self, mob: &Mob) -> i32 {
+        brain::ram_impact_sound(mob)
+    }
+
+    fn horn_break_sound(&self, _: &Mob) -> i32 {
+        brain::HORN_BREAK_SOUND
+    }
+
+    /// `dropHorn()`: the horn, where one came off, an item at the goat's feet with the
+    /// push drawn (`new ItemEntity(level, x, y, z, horn, dx, dy, dz)`, of no pick-up
+    /// delay).
+    fn drop_horn(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let tick = &mut *cx.ai.tick;
+        let Some((stack, motion)) = brain::drop_horn(&mut tick.mob, tick.draws) else {
+            return false;
+        };
+        let at = tick.living.body.position;
+        tick.out.local.push(Local::Throw {
+            stack,
+            at,
+            pick_up_delay: 0,
+            motion,
+        });
+        true
+    }
+}
+
+/// What a fresh load of a goat resets (the plan's 2.10): its pose and friction, which
+/// the game neither saves nor sends again; for the brain's `fresh_load` hook when it
+/// comes.
+#[allow(
+    dead_code,
+    reason = "the fresh load of N7j1's contracts, not built yet"
+)]
+pub(crate) fn fresh_load(mob: &mut Mob) {
+    update(mob, |goat| {
+        goat.long_jumping = false;
+        goat.discards_friction = false;
+    });
+}
+
 impl MobType for Goat {
     /// The constructor's: `Animal`'s maluses, floating, and never into or onto powder
-    /// snow. Its goals are its brain's, which are not wired yet.
+    /// snow. Its goals are its brain's.
     fn register_goals(&self, setup: &mut Setup) {
         super::cow::animal_maluses(setup);
         setup.config.navigation.flags.can_float = true;
@@ -383,10 +678,28 @@ impl MobType for Goat {
         animal::walk_target_value(ai, pos, clustine_data::blocks::GRASS_BLOCK)
     }
 
-    /// `brain.tick` and `GoatAi.updateActivity` (the seam the provider is wired at),
-    /// then `Animal`'s.
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
+    }
+
+    /// `brain.tick` and `GoatAi.updateActivity`, then `Animal`'s; before them the base
+    /// of its attack damage as its age has it (`ageBoundaryReached`, which the game
+    /// calls as the age crosses the boundary and the ram is the first to read after).
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        age_boundary(&mut tick.mob);
+        machinery::run(tick, |brain, _| {
+            brain.set_active_to_first_valid(&ACTIVITIES)
+        });
         animal::custom_server_ai_step(tick);
+    }
+
+    /// `LivingEntity.travelInAir` of a goat in a jump (`shouldDiscardFriction`): its
+    /// motion kept whole, neither the block's friction nor the air's drag taken off.
+    fn before_travel(&self, tick: &mut MobTick<'_>) {
+        if state_of(&tick.mob).discards_friction {
+            tick.living.attributes.friction_modifier = 0.0;
+            tick.living.attributes.air_drag_modifier = 0.0;
+        }
     }
 
     fn after_ai_step(&self, tick: &mut MobTick<'_>) {
@@ -477,7 +790,11 @@ impl MobType for Goat {
         Some(Landing::Lowered { by: FALL_LESS })
     }
 
+    /// A kid's size, and in a long jump's pose its size scaled by 0.7.
     fn dimensions(&self, mob: &Mob) -> Option<Dimensions> {
+        if state_of(mob).long_jumping {
+            return Some(brain::long_jumping_dimensions(mob));
+        }
         animal::dimensions(mob, BABY)
     }
 
@@ -517,6 +834,11 @@ impl MobType for Goat {
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
         let own = state_of(mob);
         let mut values = animal::shown(mob);
+        values.push((
+            POSE_INDEX,
+            DataShown::Pose(if own.long_jumping { LONG_JUMPING } else { 0 }),
+            !own.long_jumping,
+        ));
         values.push((
             SCREAMING_INDEX,
             DataShown::Boolean(own.screaming),

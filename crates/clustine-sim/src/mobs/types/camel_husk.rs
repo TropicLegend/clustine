@@ -4,6 +4,8 @@
 //! is kept by any player's use, and sounds as its own. Its body, brain, attributes,
 //! sizes and riding are the camel's ([`super::camel`]), of this [`Breed`].
 //!
+//! Its brain is the camel's (`CamelAi`), its temptations of rabbit feet ([`PROVIDER`]).
+//!
 //! Named differences: no husk or parched rides it (N9's, which a natural husk's spawn
 //! makes); so no mob controls it (`isMobControlled`), it may always be leashed and it
 //! panics as a camel does; `chargeSpeedModifier` (4) is read by N9's spears alone.
@@ -12,6 +14,30 @@ use clustine_data::{entity_types, sounds};
 
 use super::camel::{Breed, Camel, Sounds};
 use crate::mobs::ai::goals::Items;
+use crate::mobs::brain::sensors::{self, TemptingSensor};
+use crate::mobs::brain::{Activity, Provider, Sensor};
+
+/// `FOOD_TEMPTATIONS` of a camel husk: rabbit feet.
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| BREED.food.test(Some(stack)),
+};
+
+/// The camel husk's sensors: the camel's, its temptations its own.
+static SENSORS: [&dyn Sensor; 4] = [
+    &sensors::NEAREST_LIVING_ENTITIES,
+    &sensors::HURT_BY,
+    &TEMPTATIONS,
+    &sensors::NEAREST_ADULT,
+];
+
+/// The camel husk's brain: `CamelAi`'s, of its own temptations.
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &SENSORS,
+    activities: super::camel::activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
 
 /// `chargeSpeedModifier()`, which N9's mounted husks' spears read.
 #[allow(dead_code, reason = "what N9's spears read")]
@@ -23,6 +49,7 @@ pub(crate) static BREED: Breed = Breed {
     breeds: false,
     kept_by_a_use: true,
     step_volume: 0.4,
+    provider: &PROVIDER,
     sounds: Sounds {
         ambient: sounds::ENTITY_CAMEL_HUSK_AMBIENT,
         hurt: sounds::ENTITY_CAMEL_HUSK_HURT,

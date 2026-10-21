@@ -10,14 +10,31 @@
 //! (`scuteTime`, saved) the moment it runs out, so that an armadillo at rest writes
 //! nothing.
 //!
-//! Its mind is a brain (`ArmadilloAi`), which N7j's machinery brings: until its provider
-//! is wired an armadillo has no goals and stands and falls by its body alone, and one
-//! that rolled up stays so (rolling on to scared, peeking and unrolling are its brain's
-//! `ArmadilloBallUp` and its rolling out). What the brain will call is in [`brain`]: the
-//! behaviours' bodies, the scare sensor's test, the conditions they read.
+//! Its mind is a brain (`ArmadilloAi`, [`PROVIDER`]): it wanders, follows spider eyes and
+//! adults, breeds and looks about; its scare sensor, every five ticks, remembers danger
+//! for 80 ticks where something of its `mobs` is undead, last hurt it, or is a player
+//! sprinting or riding within 7, 2 and 7 of it, and a hurt by something living does the
+//! same; with danger remembered it panics (`PANIC`, [`BallUp`]): rolls up, is scared ten
+//! ticks on with the landing's sound, peeks now and then while danger is near, starts to
+//! unroll 30 ticks before the memory runs out and is scared again if danger comes back,
+//! and the core's rolling out unrolls it the tick the memory is gone.
 //!
-//! Named differences: a baby sheds no scute (`shouldDropLoot` is false for a baby, which
-//! the brief has otherwise) and its timer waits below nothing until it grows up; the
+//! What reads across a line (the plan, section 3): its scare reads the `mobs` its living
+//! sensor took of the copies' entities and the faces' players, a face's sprint among what
+//! it shows; an entity of that list the view no longer has is passed over, as one out of
+//! sight (the shared scare sensor's reading of "unknown", plan section 8 item 8), so that
+//! it takes no danger of what it cannot see and forgets none it remembers; nothing else
+//! of its own reads another entity.
+//!
+//! Named differences: its panic (`ArmadilloPanic`, of `#panic_environmental_causes`) does
+//! not start yet, the brain's hurt sensor seeing no hurt of no living cause until the body
+//! keeps its last damage's source (the lead's, plan section 8 item 2); a hurt by something
+//! living taken in its own tick after its counters (a living attacker's hit comes between
+//! its ticks, so none does yet) would remember its danger a tick longer than the game's,
+//! its moment then being the next tick's; a peek's count goes on
+//! through ticks its AI does not run, as every count of its brain does (the plan's
+//! section 2.6); a baby sheds no scute (`shouldDropLoot` is false for a baby, which the
+//! brief has otherwise) and its timer waits below nothing until it grows up; the
 //! timer counts the ticks its AI does not run (`NoAI`), as a stamp does; the shed and
 //! brush tables, which the extraction does not compile yet (the lead's N7j1), are their
 //! one scute and draw nothing; a brush wears nothing, every player being creative.
@@ -29,9 +46,20 @@ use super::animal::{self, Own};
 use super::{Breeding, Did, Dimensions, Interaction, MobType, Used};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::Items;
+use crate::mobs::ai::sensing::Looked;
 use crate::mobs::ai::{Ai, HeadLimits, Setup};
 use crate::mobs::body::hurt::{DamageSource, GameEvent, Struck, voice_pitch};
 use crate::mobs::body::{Event, loot};
+use crate::mobs::brain::behaviours::looking::{self, LookAt};
+use crate::mobs::brain::behaviours::panic::{self, AnimalPanic};
+use crate::mobs::brain::behaviours::social::{self, AnimalMakeLove, FollowTemptation};
+use crate::mobs::brain::behaviours::walking::{self, MoveToTargetSink};
+use crate::mobs::brain::behaviours::{Counter, Speed, cooldowns};
+use crate::mobs::brain::sensors::{self, MobSensor, TemptingSensor};
+use crate::mobs::brain::{
+    self as machinery, Activity, ActivityData, Cx, DoNothing, Gate, HeldShot, HeldTimed,
+    MemoryKind, Order, Provider, Running, Shot, Status, Timed, Value,
+};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::Vec3;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
@@ -221,11 +249,9 @@ fn roll_out(mob: &mut Mob, now: u32, draws: &mut Random, events: &mut Vec<Event>
 /// The armadillo.
 pub(crate) struct Armadillo;
 
-/// What the brain will call of an armadillo, until its provider is wired (part A and
-/// the lead's N7j1): its own behaviours' bodies (`ArmadilloBallUp`, `ArmadilloPanic`'s
-/// start, the core's rolling out, the walk sink that waits while it is scared), the
-/// scare sensor's test, and the memory it sets when hurt.
-#[allow(dead_code, reason = "what the armadillo's brain, not wired yet, calls")]
+/// What the brain calls of an armadillo: its own behaviours' bodies (`ArmadilloBallUp`,
+/// `ArmadilloPanic`'s start, the core's rolling out, the walk sink that waits while it is
+/// scared), the scare sensor's test, and the memory it sets when hurt.
 pub(crate) mod brain {
     use super::*;
 
@@ -243,17 +269,23 @@ pub(crate) mod brain {
         if animal::is_baby(mob) { 1.0 } else { 2.0 }
     }
 
-    /// The seam where a hurt by something living sets `DANGER_DETECTED_RECENTLY` with
-    /// an expiry of 80 (`actuallyHurt`): kept nowhere until the brain is wired.
-    pub(crate) fn remember_danger(mob: &mut Mob) {
-        let _ = mob;
+    /// A hurt by something living at the moment `moment` (`actuallyHurt`, outside the
+    /// brain's tick): `DANGER_DETECTED_RECENTLY` set with an expiry of 80.
+    pub(crate) fn remember_danger(mob: &mut Mob, moment: u32) {
+        let mut memories = machinery::memories_of(&PROVIDER, mob, moment);
+        memories.set_with_expiry(
+            MemoryKind::DangerDetectedRecently,
+            Value::Bool(true),
+            DANGER_TICKS,
+        );
+        machinery::write_memories(&PROVIDER, mob, memories);
     }
 
-    /// `isPanicking()`: the brain's `IS_PANICKING`, which nothing sets until it is
-    /// wired.
-    pub(crate) fn panicking(mob: &Mob) -> bool {
-        let _ = mob;
-        false
+    /// `isPanicking()` outside the brain's tick, at the moment `moment`: the brain's
+    /// `IS_PANICKING`.
+    pub(crate) fn panicking(mob: &Mob, moment: u32) -> bool {
+        machinery::memories_of(&PROVIDER, mob, moment)
+            .check(MemoryKind::IsPanicking, Status::Present)
     }
 
     /// `ArmadilloBallUp`'s fields: its next peek's countdown and whether danger was about
@@ -291,10 +323,11 @@ pub(crate) mod brain {
         state_of(mob).phase.threatened()
     }
 
-    /// `ArmadilloBallUp.stop`: one that may not stay rolled up rolls out.
-    pub(crate) fn ball_up_stop(tick: &mut MobTick<'_>) {
+    /// `ArmadilloBallUp.stop`: one that may not stay rolled up rolls out; `panicking`
+    /// the brain's `IS_PANICKING`.
+    pub(crate) fn ball_up_stop(tick: &mut MobTick<'_>, panicking: bool) {
         let stays = can_stay_rolled_up(
-            panicking(&tick.mob),
+            panicking,
             tick.living.body.in_water || tick.living.in_lava(),
             tick.leashed,
             tick.vehicle.is_some(),
@@ -423,9 +456,260 @@ pub(crate) fn fresh_load(mob: &mut Mob, now: u32) {
     update(mob, |own| own.phase_since = now);
 }
 
+/// `FOOD_TEMPTATIONS` of an armadillo: spider eyes.
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| FOOD.test(Some(stack)),
+};
+
+/// `ARMADILLO_SCARE_DETECTED` (`SensorType`'s `MobSensor(5, isScaredBy, canStayRolledUp,
+/// DANGER_DETECTED_RECENTLY, 80)`, its two method references **Inferred**, the brief's
+/// 7.8.3).
+static SCARE: MobSensor = MobSensor {
+    rate: 5,
+    mob_test: scared_by,
+    ready: may_stay_rolled_up,
+    to_set: MemoryKind::DangerDetectedRecently,
+    ttl: brain::DANGER_TICKS,
+};
+
+/// `Armadillo.BRAIN_PROVIDER`: its sensors in the game's order, and `ArmadilloAi`'s
+/// activities.
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &[
+        &sensors::NEAREST_LIVING_ENTITIES,
+        &sensors::HURT_BY,
+        &TEMPTATIONS,
+        &sensors::NEAREST_ADULT,
+        &SCARE,
+    ],
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `ArmadilloAi.updateActivity`: panic where danger is remembered and it does not panic
+/// already, else idle.
+pub(crate) const ACTIVITIES: [Activity; 2] = [Activity::Panic, Activity::Idle];
+
+/// The armadillo's entity type, as the breeding's partner type.
+const ARMADILLO_KIND: u16 = clustine_data::entity_types::ARMADILLO as u16;
+
+/// `ArmadilloAi.getActivities`.
+fn activities() -> Vec<ActivityData> {
+    use MemoryKind::{
+        DangerDetectedRecently, GazeCooldownTicks, IsPanicking, TemptationCooldownTicks, WalkTarget,
+    };
+    let core = ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            panic::swim(0.8),
+            AnimalPanic {
+                causes: environmental_causes,
+                on_start: roll_out_for_the_panic,
+                ..AnimalPanic::new(2.0)
+            }
+            .boxed(),
+            walking::look_sink(45, 90),
+            Box::new(MoveToTargetSink::refusing(150, 250, not_scared)),
+            cooldowns::count_down(TemptationCooldownTicks),
+            cooldowns::count_down(GazeCooldownTicks),
+            Box::new(HeldShot::new(RollingOut)),
+        ],
+    );
+    let tempted = FollowTemptation {
+        close_enough: tempted_distance,
+        ..FollowTemptation::new(Speed::Fixed(brain::TEMPTED_SPEED))
+    };
+    let idle = ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (0, looking::look_sometimes(LookAt::Player, 6.0, (30, 60))),
+            (1, AnimalMakeLove::at(ARMADILLO_KIND, 1.0, 1).boxed()),
+            (
+                2,
+                Box::new(Gate::run_one(vec![
+                    (tempted.boxed(), 1),
+                    (social::follow_adult((5, 16), 1.25), 1),
+                ])),
+            ),
+            (3, looking::look_around((150, 250), 30.0, 0.0, 0.0)),
+            (
+                4,
+                Box::new(Gate::new(
+                    vec![(WalkTarget, Status::Absent)],
+                    Vec::new(),
+                    Order::Shuffled,
+                    Running::RunOne,
+                    vec![
+                        (walking::stroll(1.0), 1),
+                        (walking::walk_to_look_target(1.0, 3), 1),
+                        (Box::new(HeldTimed::new(DoNothing { min: 30, max: 60 })), 1),
+                    ],
+                )),
+            ),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    };
+    let scared = ActivityData {
+        activity: Activity::Panic,
+        behaviours: vec![(0, Box::new(HeldTimed::new(BallUp)))],
+        conditions: vec![
+            (DangerDetectedRecently, Status::Present),
+            (IsPanicking, Status::Absent),
+        ],
+        erase: Vec::new(),
+    };
+    vec![core, idle, scared]
+}
+
+/// `ArmadilloPanic`'s causes: `#panic_environmental_causes`.
+fn environmental_causes(_: &Cx<'_, '_, '_>) -> &'static str {
+    "minecraft:panic_environmental_causes"
+}
+
+/// `ArmadilloPanic.start` before the panic's own: it rolls out.
+fn roll_out_for_the_panic(cx: &mut Cx<'_, '_, '_>) {
+    brain::panic_start(cx.ai.tick);
+}
+
+/// `ArmadilloAi$1.checkExtraStartConditions` before the sink's own: not scared.
+fn not_scared(cx: &mut Cx<'_, '_, '_>) -> bool {
+    brain::walk_sink_may_start(&cx.ai.tick.mob)
+}
+
+/// `FollowTemptation`'s distance: 1 for a pup, 2 grown.
+fn tempted_distance(cx: &Cx<'_, '_, '_>) -> f64 {
+    brain::tempted_distance(&cx.ai.tick.mob)
+}
+
+/// `canStayRolledUp()` in the brain's tick: its own memory of panicking.
+fn may_stay_rolled_up(cx: &Cx<'_, '_, '_>) -> bool {
+    let tick = &cx.ai.tick;
+    can_stay_rolled_up(
+        cx.memories.check(MemoryKind::IsPanicking, Status::Present),
+        cx.ai.in_liquid(),
+        tick.leashed,
+        tick.vehicle.is_some(),
+        tick.carries,
+    )
+}
+
+/// `isScaredBy(entity)` of a thing of the armadillo's `mobs`: a player's sprint and
+/// riding as their face shows them, what last hurt it as its body remembers.
+fn scared_by(cx: &Cx<'_, '_, '_>, looked: &Looked) -> bool {
+    let tick = &cx.ai.tick;
+    let player = looked.is_player().then(|| {
+        let sprinting = tick
+            .world
+            .players()
+            .iter()
+            .find(|player| player.key == looked.key)
+            .is_some_and(|player| player.sprinting);
+        (looked.spectator, sprinting, looked.vehicle.is_some())
+    });
+    let near = brain::Near {
+        bounds: looked.bounds,
+        kind: looked
+            .kind
+            .unwrap_or(clustine_data::entity_types::PLAYER as u16),
+        hurt_it_last: tick
+            .mob
+            .body
+            .combat
+            .last_hurt_by
+            .is_some_and(|(key, _)| key == looked.key),
+        player,
+    };
+    brain::is_scared_by(tick.living.body.bounds(), &near)
+}
+
+/// `ARMADILLO_ROLLING_OUT`: where the danger memory is gone and the armadillo is scared,
+/// it rolls out.
+struct RollingOut;
+
+impl Shot for RollingOut {
+    fn required(&self) -> &[MemoryKind] {
+        &[MemoryKind::DangerDetectedRecently]
+    }
+
+    fn trigger(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        cx.memories
+            .check(MemoryKind::DangerDetectedRecently, Status::Absent)
+            && brain::rolling_out(cx.ai.tick)
+    }
+}
+
+/// `ArmadilloAi$ArmadilloBallUp`: a `Behavior` of no memories and 6000 ticks (its start
+/// draws `nextInt(1)`), started on the ground out of liquids, running while the
+/// armadillo is threatened, its tick [`brain::ball_up_tick`].
+pub(crate) struct BallUp;
+
+/// What [`BallUp`] keeps: `nextPeekTimer`, which its ticks lower while it is above
+/// nothing and which waits while it does not run (kept as a [`Counter`], written only
+/// where it is drawn again or its lowering pauses), and `dangerWasAround`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BallUpState {
+    pub(crate) peek: Counter,
+    pub(crate) danger_was_around: bool,
+}
+
+impl Timed for BallUp {
+    type State = BallUpState;
+
+    fn entry(&self) -> &[(MemoryKind, Status)] {
+        &[]
+    }
+
+    fn durations(&self) -> (i64, i64) {
+        (brain::BALL_UP_TICKS, brain::BALL_UP_TICKS)
+    }
+
+    fn extra_start(&self, _: &mut BallUpState, cx: &mut Cx<'_, '_, '_>) -> bool {
+        brain::ball_up_may_start(cx.ai.tick)
+    }
+
+    fn can_still_use(&self, _: &mut BallUpState, cx: &mut Cx<'_, '_, '_>) -> bool {
+        brain::ball_up_may_go_on(&cx.ai.tick.mob)
+    }
+
+    fn start(&self, _: &mut BallUpState, cx: &mut Cx<'_, '_, '_>) {
+        brain::ball_up_start(cx.ai.tick);
+    }
+
+    fn tick(&self, state: &mut BallUpState, cx: &mut Cx<'_, '_, '_>) {
+        let now = cx.memories.now;
+        let before = state.peek.at(now);
+        let mut ball = brain::BallUp {
+            next_peek_timer: before,
+            danger_was_around: state.danger_was_around,
+        };
+        let ttl = cx.memories.expires_in(MemoryKind::DangerDetectedRecently);
+        brain::ball_up_tick(cx.ai.tick, &mut ball, ttl);
+        let lowered = (before - 1).max(0);
+        if ball.next_peek_timer == lowered {
+            if before > 0 {
+                state.peek.lower(now);
+            }
+        } else {
+            // Drawn again in this tick: its count goes on from the next.
+            state.peek.set(ball.next_peek_timer, now, true);
+        }
+        state.danger_was_around = ball.danger_was_around;
+    }
+
+    fn stop(&self, state: &mut BallUpState, cx: &mut Cx<'_, '_, '_>) {
+        // Not lowered in the tick it stops, nor until it runs again.
+        state.peek.pause(cx.memories.now);
+        let panicking = cx.memories.check(MemoryKind::IsPanicking, Status::Present);
+        brain::ball_up_stop(cx.ai.tick, panicking);
+    }
+}
+
 impl MobType for Armadillo {
-    /// The constructor's: `Animal`'s maluses and floating. Its goals are its brain's,
-    /// which are not wired yet.
+    /// The constructor's: `Animal`'s maluses and floating. Its goals are its brain's.
     fn register_goals(&self, setup: &mut Setup) {
         super::cow::animal_maluses(setup);
         setup.config.navigation.flags.can_float = true;
@@ -454,10 +738,17 @@ impl MobType for Armadillo {
         !is_scared(&tick.mob)
     }
 
-    /// `brain.tick` and `ArmadilloAi.updateActivity` (the seam its provider is wired
-    /// at); then, alive, its scute's timer: run out, a grown one sheds a scute, with its
-    /// sound (two draws) and the place's game event, and draws its next; then `Animal`'s.
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(&PROVIDER)
+    }
+
+    /// `brain.tick` and `ArmadilloAi.updateActivity`; then, alive, its scute's timer: run
+    /// out, a grown one sheds a scute, with its sound (two draws) and the place's game
+    /// event, and draws its next; then `Animal`'s.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        machinery::run(tick, |brain, _| {
+            brain.set_active_to_first_valid(&ACTIVITIES)
+        });
         if !tick.mob.body.vitals.dying() {
             let next = tick.lived.saturating_add(1);
             let own = state_of(&tick.mob);
@@ -566,9 +857,9 @@ impl MobType for Armadillo {
         }
         let now = struck.moment;
         if source.cause.as_ref().is_some_and(|cause| cause.living) {
-            brain::remember_danger(struck.mob);
+            brain::remember_danger(struck.mob, now);
             let stays = can_stay_rolled_up(
-                brain::panicking(struck.mob),
+                brain::panicking(struck.mob, now),
                 struck.in_liquid,
                 struck.leashed,
                 struck.vehicle.is_some(),

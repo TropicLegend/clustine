@@ -1,8 +1,11 @@
-//! The highland animals' own rules on their state alone, from the brief's sections 7.6
-//! to 7.8 with 9.7.3 and 10.7.3, and the bytecode where the brief is silent or wrong:
-//! the goat's scream, horns and draws, the camel's pose, sizes, seats and dash, the
-//! camel husk's differences, the armadillo's state, scute and hurts, and what clients
-//! are shown of each.
+//! The highland animals' own rules, from the brief's sections 7.6 to 7.8 with 9.7.3 and
+//! 10.7.3, and the bytecode where the brief is silent or wrong: the goat's scream, horns
+//! and draws, the camel's pose, sizes, seats and dash, the camel husk's differences, the
+//! armadillo's state, scute and hurts, and what clients are shown of each; and their
+//! brains: what each registers, its sensors' delays, its activities and their switching,
+//! its own behaviours (a camel's random sitting, an armadillo's balling up and rolling
+//! out) and sensor (the armadillo's scare) with their draws in order, and that a tick of
+//! each is a function of its inputs.
 
 use clustine_data::{BlockState, EntityTypeInfo, blocks, entity_types, items, sounds};
 use clustine_world::{BlockPos, ChunkPos, EntityId, ItemStack, TypeState};
@@ -37,10 +40,14 @@ fn draws(seed: u64) -> Random {
     Random::of_entity(seed, EntityId(5), 9)
 }
 
-/// Land of stone below y = 0 and air above, at a game time of its own.
+/// Land of stone below y = 0 and air above, at a game time of its own, with the players
+/// and entities a test puts on it.
 struct Flat {
     game_time: i64,
     blocks: Vec<(BlockPos, BlockState)>,
+    players: Vec<crate::mobs::view::SeenPlayer>,
+    /// The entities and their boxes.
+    entities: Vec<(clustine_world::Entity, Aabb)>,
 }
 
 impl Flat {
@@ -48,7 +55,17 @@ impl Flat {
         Self {
             game_time,
             blocks: Vec::new(),
+            players: Vec::new(),
+            entities: Vec::new(),
         }
+    }
+
+    /// `entity` laid on the land.
+    fn put(&mut self, entity: clustine_world::Entity) {
+        let info = EntityTypeInfo::of(i32::from(entity.kind));
+        let bounds = Aabb::of_entity(entity.position, info.width, info.height);
+        self.entities.retain(|(other, _)| other.key != entity.key);
+        self.entities.push((entity, bounds));
     }
 }
 
@@ -84,12 +101,31 @@ impl MobWorld for Flat {
         true
     }
 
-    fn entities_in(&self, _: &Aabb) -> Vec<Seen<'_>> {
-        Vec::new()
+    fn entities_in(&self, bounds: &Aabb) -> Vec<Seen<'_>> {
+        self.entities
+            .iter()
+            .filter(|(_, own)| own.intersects(*bounds))
+            .map(|(entity, own)| Seen {
+                entity,
+                bounds: *own,
+                copied: false,
+            })
+            .collect()
+    }
+
+    fn entity(&self, key: EntityId) -> Option<Seen<'_>> {
+        self.entities
+            .iter()
+            .find(|(entity, _)| entity.key == key)
+            .map(|(entity, own)| Seen {
+                entity,
+                bounds: *own,
+                copied: false,
+            })
     }
 
     fn players(&self) -> Vec<crate::mobs::view::SeenPlayer> {
-        Vec::new()
+        self.players.clone()
     }
 
     fn light(&self, _: BlockPos) -> Option<crate::mobs::view::LightAt> {
@@ -314,6 +350,7 @@ fn a_fresh_goat_keeps_nothing_and_its_scream_and_horns_survive_its_record() {
         screaming: true,
         left_horn: false,
         right_horn: true,
+        ..GoatState::default()
     };
     let mob = goat_with(&own, &Animal::default());
     assert_eq!(mob.state.version, 1);
@@ -329,6 +366,7 @@ fn a_goat_shows_its_scream_and_its_horns_at_18_19_and_20_after_the_age_s() {
         [
             (16, DataShown::Boolean(false), true),
             (17, DataShown::Boolean(false), true),
+            (6, DataShown::Pose(0), true),
             (18, DataShown::Boolean(false), true),
             (19, DataShown::Boolean(true), true),
             (20, DataShown::Boolean(true), true),
@@ -339,14 +377,18 @@ fn a_goat_shows_its_scream_and_its_horns_at_18_19_and_20_after_the_age_s() {
             screaming: true,
             left_horn: true,
             right_horn: false,
+            long_jumping: true,
+            ..GoatState::default()
         },
         &baby(),
     ));
+    // In a long jump, its pose (`LONG_JUMPING`, 6) is shown too.
     assert_eq!(
         shown,
         [
             (16, DataShown::Boolean(true), false),
             (17, DataShown::Boolean(false), true),
+            (6, DataShown::Pose(6), false),
             (18, DataShown::Boolean(true), false),
             (19, DataShown::Boolean(true), true),
             (20, DataShown::Boolean(false), false),
@@ -1456,4 +1498,1060 @@ fn an_armadillo_is_scared_near_by_the_undead_what_hurt_it_and_a_sprinting_or_rid
         is_scared_by(own, &near(5.0, entity_types::COW, true, None)),
         "what hurt it"
     );
+}
+
+// ------------------------------------------------------------------------------------
+// Their brains (the brief's 7.6.3, 7.7.3, 7.8.3 and 10.7.3; `docs/groundwork/
+// n7j-plan.md`, sections 2 and 8): what each registers, its sensors' delays, its
+// activities and their switching, its own behaviours and sensor, and their draws.
+
+use crate::mobs::ai::{Ai, Setup};
+use crate::mobs::brain::{
+    self as machinery, Activity, ActivityData, Brain, BrainState, HeldTimed, Memories, MemoryKind,
+    Provider, Sensed, Status, Value,
+};
+use crate::mobs::view::SeenPlayer;
+
+/// The world's seed of the streams the ticked mobs draw from.
+const SEED: u64 = 9;
+
+/// A creative player standing at `position`, holding `held`, sprinting or not.
+fn seen_player(key: u64, position: Vec3, held: Option<i32>, sprinting: bool) -> SeenPlayer {
+    SeenPlayer {
+        key: EntityId(key),
+        uuid: u128::from(key),
+        position,
+        eye_height: 1.62,
+        yaw: 0.0,
+        pitch: 0.0,
+        main_hand: held.map(|item| ItemStack { item, count: 1 }),
+        off_hand: None,
+        sneaking: false,
+        creative: true,
+        spectator: false,
+        vehicle: None,
+        moved_horizontally: false,
+        sprinting,
+        alive: true,
+        sleeping: None,
+        last_hurt_mob: None,
+        last_hurt_by: None,
+    }
+}
+
+/// The record of the mob `mob` of the type `kind` at `position`.
+fn entity_of(key: EntityId, kind: u16, position: Vec3, mob: &Mob) -> clustine_world::Entity {
+    clustine_world::Entity {
+        key,
+        kind,
+        uuid: uuid::Uuid::from_u128(u128::from(key.0)),
+        position,
+        motion: [0.0; 3],
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: true,
+        hops: 0,
+        lived: 0,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: mob.encode(),
+    }
+}
+
+/// A mob of the type `kind` that thinks: ticked by its own `customServerAiStep` (its
+/// brain, its activity's update, the rest of its step), its record and the memories the
+/// region keeps beside it carried between ticks as a region carries them, its game time
+/// one on at each tick.
+struct Thinking {
+    world: Flat,
+    kind: u16,
+    mob: Mob,
+    living: Living,
+    sensed: Option<Sensed>,
+    lived: u32,
+}
+
+impl Thinking {
+    /// A mob made as an egg makes it (its brain's delays and its type's own draws from
+    /// its stream), with `state` as its type state, standing at the land's corner.
+    fn new(kind: u16, state: TypeState) -> Self {
+        let mut mob = healthy(kind, state);
+        machinery::construct(of(kind), &mut mob, &mut draws(1));
+        Self {
+            world: Flat::at(10_000),
+            kind,
+            mob,
+            living: living(kind, [0.5, 0.0, 0.5]),
+            sensed: None,
+            lived: 0,
+        }
+    }
+
+    fn provider(&self) -> &'static Provider {
+        of(self.kind).brain().expect("a brain")
+    }
+
+    /// The mob's stream in its next tick.
+    fn stream(&self) -> Random {
+        Random::of_entity(SEED, KEY, self.lived)
+    }
+
+    /// One tick of `what`: what it showed and how many draws it made.
+    fn step(&mut self, what: impl FnOnce(&mut MobTick<'_>)) -> (MobOutput, u64) {
+        let mut stream = self.stream();
+        let start = stream.clone();
+        let mut tick = MobTick {
+            sensed: self.sensed.take(),
+            ridden: Default::default(),
+            key: KEY,
+            kind: self.kind,
+            lived: self.lived,
+            tick_count: self.lived,
+            vehicle: None,
+            carries: false,
+            leashed: false,
+            counted: false,
+            mob: self.mob.clone(),
+            living: self.living.clone(),
+            yaw: 0.0,
+            pitch: 0.0,
+            mob_type: of(self.kind),
+            world: &self.world,
+            draws: &mut stream,
+            out: MobOutput::default(),
+        };
+        what(&mut tick);
+        self.mob = tick.mob;
+        self.living = tick.living;
+        self.sensed = tick.sensed;
+        let out = tick.out;
+        self.lived += 1;
+        self.world.game_time += 1;
+        (out, stream.draws_since(&start))
+    }
+
+    /// One tick of its own `customServerAiStep`.
+    fn think(&mut self) -> MobOutput {
+        self.step(|tick| tick.mob_type.custom_server_ai_step(tick))
+            .0
+    }
+
+    /// One tick of `provider`'s brain alone in its place, `before` on its brain ahead of
+    /// the tick: what it showed and how many draws it made.
+    fn alone(
+        &mut self,
+        provider: &'static Provider,
+        before: impl FnOnce(&mut Brain),
+    ) -> (MobOutput, u64) {
+        self.step(|tick| {
+            let now = tick.lived;
+            let time = tick.world.game_time();
+            let mut brain = Brain::read(provider, &tick.mob.mind.brain, tick.sensed.as_ref(), now);
+            before(&mut brain);
+            let mut setup = Setup::default();
+            tick.mob_type.register_goals(&mut setup);
+            let config = setup.config;
+            let (entries, sensed) = {
+                let mut ai = Ai {
+                    tick,
+                    config: &config,
+                    sensing: Default::default(),
+                    navigation_ticked: true,
+                };
+                brain.tick(&mut ai, now, time);
+                brain.write()
+            };
+            tick.mob.mind.brain = entries;
+            tick.sensed = Some(sensed);
+        })
+    }
+
+    /// Its brain as its last tick left it.
+    fn brain(&self) -> Brain {
+        Brain::read(
+            self.provider(),
+            &self.mob.mind.brain,
+            self.sensed.as_ref(),
+            self.lived.saturating_sub(1),
+        )
+    }
+
+    /// Its memories as its last tick left them, every countdown after its lowering.
+    fn memories(&self) -> Memories {
+        let mut memories = self.brain().memories;
+        memories.end_tick();
+        memories
+    }
+
+    /// What `write` does to its memories between ticks.
+    fn remember(&mut self, write: impl FnOnce(&mut Memories)) {
+        let provider = self.provider();
+        let mut memories = machinery::memories_of(provider, &self.mob, self.lived);
+        write(&mut memories);
+        machinery::write_memories(provider, &mut self.mob, memories);
+    }
+}
+
+/// The memories the brain of the type `kind` registers.
+fn registered(kind: u16) -> Vec<&'static str> {
+    let provider = of(kind).brain().expect("a brain");
+    let brain = Brain::read(provider, &[], Some(&Sensed::new()), 0);
+    brain
+        .memories
+        .registered
+        .iter()
+        .map(|kind| kind.name())
+        .collect()
+}
+
+fn sorted(mut names: Vec<&'static str>) -> Vec<&'static str> {
+    names.sort_unstable();
+    names
+}
+
+#[test]
+fn each_highland_brain_registers_the_memories_its_sensors_and_behaviours_name() {
+    // The game's: the sensors' `requires`, then every behaviour's entry conditions
+    // (`Brain.provider(sensors, activities)`, which names no memory of its own).
+    let goat = [
+        // NEAREST_LIVING_ENTITIES, NEAREST_PLAYERS, NEAREST_ITEMS, NEAREST_ADULT,
+        // HURT_BY, FOOD_TEMPTATIONS.
+        "mobs",
+        "visible_mobs",
+        "nearest_players",
+        "nearest_visible_player",
+        "nearest_visible_targetable_player",
+        "nearest_visible_targetable_players",
+        "nearest_visible_wanted_item",
+        "nearest_visible_adult",
+        "hurt_by",
+        "hurt_by_entity",
+        "tempting_player",
+        // AnimalPanic, LookAtTargetSink, MoveToTargetSink, the three countdowns.
+        "is_panicking",
+        "look_target",
+        "cant_reach_walk_target_since",
+        "path",
+        "walk_target",
+        "temptation_cooldown_ticks",
+        "long_jump_cooling_down",
+        "ram_cooldown_ticks",
+        // AnimalMakeLove, the long jump's two, the ram's two.
+        "breed_target",
+        "long_jump_mid_jump",
+        "ram_target",
+    ];
+    assert_eq!(sorted(registered(GOAT)), sorted(goat.to_vec()));
+    let camel = [
+        "mobs",
+        "visible_mobs",
+        "hurt_by",
+        "hurt_by_entity",
+        "tempting_player",
+        "nearest_visible_adult",
+        "is_panicking",
+        "look_target",
+        "cant_reach_walk_target_since",
+        "path",
+        "walk_target",
+        "temptation_cooldown_ticks",
+        "gaze_cooldown_ticks",
+        "breed_target",
+    ];
+    assert_eq!(sorted(registered(CAMEL)), sorted(camel.to_vec()));
+    assert_eq!(sorted(registered(HUSK)), sorted(camel.to_vec()));
+    // The armadillo's scare sensor requires `mobs`; its rolling out names its danger.
+    let mut armadillo = camel.to_vec();
+    armadillo.push("danger_detected_recently");
+    assert_eq!(sorted(registered(ARMADILLO)), sorted(armadillo));
+}
+
+#[test]
+fn a_highland_brain_draws_its_sensors_delays_in_their_order_before_the_type_s_own_draws() {
+    for (kind, rates) in [
+        (GOAT, vec![20, 20, 20, 20, 20, 20]),
+        (CAMEL, vec![20, 20, 20, 20]),
+        (HUSK, vec![20, 20, 20, 20]),
+        (ARMADILLO, vec![20, 20, 20, 20, 5]),
+    ] {
+        let mut mob = Mob::fresh();
+        let mut own = draws(17);
+        let mut replay = own.clone();
+        machinery::construct(of(kind), &mut mob, &mut own);
+        // Each `nextInt(scanRate)`; a delay of 0 or 1 scans at the first tick.
+        let expected: Vec<u32> = rates
+            .iter()
+            .map(|rate| replay.next_int(*rate).max(1) - 1)
+            .collect();
+        let state: BrainState = crate::mobs::part::decode(&mob.mind.brain).unwrap();
+        assert_eq!(state.next_scans, expected, "{kind}");
+        if kind == ARMADILLO {
+            // Then its constructor's scute time.
+            let time = replay.next_int(6000) + 6000;
+            assert_eq!(armadillo::state_of(&mob).scute_at, time);
+        }
+        assert_eq!(own, replay, "{kind}: the draws' count");
+    }
+}
+
+/// A brain of `provider` at rest with the memories `write` gives it, switched as the
+/// type's update switches it by `update`, from the active activity `from`.
+fn switched(
+    provider: &'static Provider,
+    from: Activity,
+    update: &[Activity],
+    write: impl FnOnce(&mut Memories),
+) -> Option<Activity> {
+    let mut brain = Brain::read(provider, &[], Some(&Sensed::new()), 5);
+    brain.state.active = Some(from);
+    write(&mut brain.memories);
+    brain.set_active_to_first_valid(update);
+    brain.state.active
+}
+
+#[test]
+fn a_goat_rams_before_it_jumps_jumps_before_it_idles_and_where_none_may_keeps_its_activity() {
+    let provider = &goat::PROVIDER;
+    let update = &goat::ACTIVITIES;
+    let ram = |memories: &mut Memories| memories.set(MemoryKind::RamCooldownTicks, Value::Int(9));
+    let jump =
+        |memories: &mut Memories| memories.set(MemoryKind::LongJumpCoolingDown, Value::Int(9));
+    // Neither cooldown (a goat of no spawn): it rams.
+    assert_eq!(
+        switched(provider, Activity::Idle, update, |_| {}),
+        Some(Activity::Ram)
+    );
+    // Its ram cooling down: it jumps.
+    assert_eq!(
+        switched(provider, Activity::Idle, update, ram),
+        Some(Activity::LongJump)
+    );
+    // Both: it idles.
+    assert_eq!(
+        switched(provider, Activity::Ram, update, |memories| {
+            ram(memories);
+            jump(memories);
+        }),
+        Some(Activity::Idle)
+    );
+    // Its ram's out but a player tempts it: neither the ram nor, its jump cooling down,
+    // the jump nor the idling may be, and it stays as it was (the brief's 7.0.3.5).
+    let tempted = |memories: &mut Memories| {
+        jump(memories);
+        memories.set(MemoryKind::TemptingPlayer, Value::Entity(EntityId(7)));
+    };
+    assert_eq!(
+        switched(provider, Activity::Idle, update, tempted),
+        Some(Activity::Idle)
+    );
+    assert_eq!(
+        switched(provider, Activity::LongJump, update, tempted),
+        Some(Activity::LongJump)
+    );
+    // A walk target keeps it from jumping; a breed target from either.
+    assert_eq!(
+        switched(provider, Activity::Ram, update, |memories| {
+            ram(memories);
+            memories.set(
+                MemoryKind::WalkTarget,
+                crate::mobs::brain::behaviours::walk(
+                    crate::mobs::brain::Tracker::Block(BlockPos::new(0, 0, 0)),
+                    1.0,
+                    0,
+                ),
+            );
+        }),
+        Some(Activity::Ram)
+    );
+    assert_eq!(
+        switched(provider, Activity::Idle, update, |memories| {
+            memories.set(MemoryKind::BreedTarget, Value::Entity(EntityId(7)));
+        }),
+        Some(Activity::Idle)
+    );
+}
+
+#[test]
+fn a_camel_idles_and_an_armadillo_panics_while_danger_is_remembered_and_it_does_not_panic() {
+    for provider in [&camel::PROVIDER, &super::camel_husk::PROVIDER] {
+        assert_eq!(
+            switched(provider, Activity::Idle, &camel::ACTIVITIES, |_| {}),
+            Some(Activity::Idle)
+        );
+    }
+    let provider = &armadillo::PROVIDER;
+    let update = &armadillo::ACTIVITIES;
+    let danger = |memories: &mut Memories| {
+        memories.set_with_expiry(MemoryKind::DangerDetectedRecently, Value::Bool(true), 80);
+    };
+    assert_eq!(
+        switched(provider, Activity::Idle, update, danger),
+        Some(Activity::Panic)
+    );
+    assert_eq!(
+        switched(provider, Activity::Panic, update, |memories| {
+            danger(memories);
+            memories.set(MemoryKind::IsPanicking, Value::Bool(true));
+        }),
+        Some(Activity::Idle)
+    );
+    assert_eq!(
+        switched(provider, Activity::Panic, update, |_| {}),
+        Some(Activity::Idle)
+    );
+}
+
+#[test]
+fn a_goat_s_spawn_makes_its_two_cooldowns_memories_at_rest_that_its_core_counts_down() {
+    let mut level = draws(4);
+    let mut replay = level.clone();
+    let mut goat = Thinking::new(GOAT, TypeState::default());
+    spawned(GOAT, &mut goat.mob, &mut level, 0);
+    let long_jump = replay.next_int(601) as i32 + 600;
+    let ram = replay.next_int(5401) as i32 + 600;
+    let memories = machinery::memories_of(&goat::PROVIDER, &goat.mob, 0);
+    assert_eq!(
+        memories.int(MemoryKind::LongJumpCoolingDown),
+        Some(long_jump)
+    );
+    assert_eq!(memories.int(MemoryKind::RamCooldownTicks), Some(ram));
+    // Its first tick idles, its countdowns lowering them from then on by one a tick.
+    goat.think();
+    assert_eq!(goat.brain().state.active, Some(Activity::Idle));
+    assert_eq!(
+        goat.memories().int(MemoryKind::LongJumpCoolingDown),
+        Some(long_jump - 1)
+    );
+    for _ in 0..9 {
+        goat.think();
+    }
+    assert_eq!(
+        goat.memories().int(MemoryKind::RamCooldownTicks),
+        Some(ram - 10)
+    );
+    // A kid of a breeding has them too.
+    let goat_parent = goat_with(&GoatState::default(), &Animal::default());
+    let mut breeding = Breeding {
+        this: &goat_parent,
+        partner: &goat_parent,
+        partner_kind: GOAT,
+        child_kind: None,
+        draws: &mut draws(8),
+        biome: None,
+        egg_user: None,
+    };
+    let kid = of(GOAT).breed_offspring(&mut breeding).unwrap();
+    let memories = machinery::memories_of(&goat::PROVIDER, &kid, 0);
+    assert!(memories.int(MemoryKind::LongJumpCoolingDown).is_some());
+    assert!(memories.int(MemoryKind::RamCooldownTicks).is_some());
+}
+
+#[test]
+fn a_kid_s_attack_damage_is_one_until_it_grows_up_and_an_adult_s_its_type_s_two() {
+    let mut kid = Thinking::new(GOAT, animal::write(&baby(), &GoatState::default()));
+    kid.remember(|memories| {
+        memories.set(MemoryKind::LongJumpCoolingDown, Value::Int(10_000));
+        memories.set(MemoryKind::RamCooldownTicks, Value::Int(10_000));
+    });
+    let damage = crate::mobs::body::attribute(clustine_data::attributes::ATTACK_DAMAGE);
+    kid.think();
+    assert_eq!(kid.mob.body.attributes.value(GOAT, damage), 1.0);
+    // Grown, its base is its type's again.
+    animal::update(&mut kid.mob, |shared| shared.set_age(0, 0));
+    kid.think();
+    assert_eq!(kid.mob.body.attributes.value(GOAT, damage), 2.0);
+    // An adult makes no instance of it.
+    let mut adult = Thinking::new(GOAT, TypeState::default());
+    adult.think();
+    assert!(adult.mob.body.attributes.made(damage).is_none());
+}
+
+#[test]
+fn a_goat_with_nothing_to_ram_gives_up_with_its_head_raised_for_the_least_of_its_cooldown() {
+    for (screaming, least) in [(false, 600), (true, 100)] {
+        let own = GoatState {
+            screaming,
+            ..GoatState::default()
+        };
+        let mut goat = Thinking::new(GOAT, animal::write(&Animal::default(), &own));
+        goat.remember(|memories| {
+            memories.set(MemoryKind::LongJumpCoolingDown, Value::Int(10_000));
+        });
+        // A creative player near is no target.
+        goat.world
+            .players
+            .push(seen_player(7, [5.5, 0.0, 0.5], None, false));
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            events.extend(goat.think().events);
+        }
+        assert_eq!(
+            goat.brain().state.active,
+            Some(Activity::Idle),
+            "{screaming}"
+        );
+        assert!(events.contains(&Event::Entity(59)));
+        assert!(!events.contains(&Event::Entity(58)));
+        // Set once as it gave up, then lowered.
+        let left = goat.memories().int(MemoryKind::RamCooldownTicks).unwrap();
+        assert!((least - 3..least).contains(&left), "{left}");
+    }
+}
+
+#[test]
+fn a_goat_s_jump_puts_it_in_its_pose_unslowed_and_its_ram_throws_a_horn_with_a_push() {
+    use crate::mobs::brain::Cx;
+    use crate::mobs::brain::behaviours::jumping::Leaper;
+    use crate::mobs::brain::behaviours::ramming::Rammer;
+    let mut goat = Thinking::new(GOAT, TypeState::default());
+    let mut replay = goat.stream();
+    let (out, _) = goat.step(|tick| {
+        let mut memories = Memories::default();
+        let config = Setup::default().config;
+        let mut ai = Ai {
+            tick,
+            config: &config,
+            sensing: Default::default(),
+            navigation_ticked: true,
+        };
+        let mut cx = Cx {
+            ai: &mut ai,
+            memories: &mut memories,
+            time: 0,
+        };
+        goat::LEAPER.set_long_jumping(&mut cx, true);
+        goat::LEAPER.set_discard_friction(&mut cx, true);
+        assert_eq!(goat::LEAPER.long_jumping_size(&cx), (0.9 * 0.7, 1.3 * 0.7));
+        assert_eq!(
+            goat::LEAPER.jump_sound(&cx.ai.tick.mob),
+            sounds::ENTITY_GOAT_LONG_JUMP
+        );
+        assert!(goat::RAMMER.drop_horn(&mut cx));
+    });
+    let own = goat::state_of(&goat.mob);
+    assert!(own.long_jumping && own.discards_friction);
+    assert_eq!(
+        of(GOAT).dimensions(&goat.mob).map(|size| size.height),
+        Some(1.3 * 0.7)
+    );
+    // The horn: a coin for which, three floats for the push, thrown at its feet of no
+    // pick-up delay.
+    let left = replay.next_bool();
+    let mut between = |min: f32, max: f32| f64::from(replay.next_float() * (max - min) + min);
+    let motion = [between(-0.2, 0.2), between(0.3, 0.7), between(-0.2, 0.2)];
+    assert_eq!(
+        out.local,
+        [Local::Throw {
+            stack: ItemStack {
+                item: items::GOAT_HORN,
+                count: 1,
+            },
+            at: [0.5, 0.0, 0.5],
+            pick_up_delay: 0,
+            motion,
+        }]
+    );
+    assert_eq!(own.left_horn, !left);
+    // Its travel keeps its motion whole: neither the air's drag nor the block's friction.
+    let (_, _) = goat.step(|tick| {
+        tick.mob_type.before_travel(tick);
+        assert_eq!(tick.living.attributes.air_drag_modifier, 0.0);
+        assert_eq!(tick.living.attributes.friction_modifier, 0.0);
+    });
+    goat::fresh_load(&mut goat.mob);
+    let own = goat::state_of(&goat.mob);
+    assert!(!own.long_jumping && !own.discards_friction);
+}
+
+/// A brain of one behaviour in its core, `RandomSitting`.
+static SITTING: Provider = Provider {
+    memories: &[MemoryKind::IsPanicking],
+    sensors: &[],
+    activities: || {
+        vec![ActivityData::numbered(
+            Activity::Core,
+            0,
+            vec![Box::new(HeldTimed::new(camel::RandomSitting))],
+        )]
+    },
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// A camel standing since the game time `since`.
+fn standing_since(since: i64) -> CamelState {
+    CamelState {
+        pose_tick: since,
+        ..CamelState::default()
+    }
+}
+
+/// A camel of the type `kind` thinking, its own state `own`.
+fn thinking_camel(kind: u16, own: CamelState) -> Thinking {
+    let mut camel = Thinking::new(
+        kind,
+        animal::write(&Animal::default(), &HorseState::default()),
+    );
+    camel::update(&mut camel.mob, |camel| *camel = own);
+    camel
+}
+
+#[test]
+fn a_camel_400_ticks_in_its_pose_sits_or_stands_at_random_sitting_s_start_of_one_draw() {
+    // 400 ticks standing: it sits, of the start's `nextInt(1)` and its sound's two.
+    let mut camel = thinking_camel(CAMEL, standing_since(10_000 - 400));
+    let mut replay = camel.stream();
+    let (out, drawn) = camel.alone(&SITTING, |_| {});
+    assert!(camel::is_sitting(&camel.mob));
+    assert_eq!(camel::camel_of(&camel.mob).pose_tick, -10_000);
+    assert_eq!(sounds_of(&out), [sounds::ENTITY_CAMEL_SIT]);
+    assert_eq!(drawn, 3);
+    replay.next_int(1);
+    let pitch = (replay.next_float() - replay.next_float()) * 0.2 + 1.0;
+    assert!(matches!(
+        out.events.as_slice(),
+        [Event::Sound { pitch: heard, .. }, Event::GameEvent(GameEvent::EntityAction)] if *heard == pitch
+    ));
+    // It starts and stops in that tick: nothing kept.
+    assert!(
+        camel
+            .mob
+            .mind
+            .brain
+            .iter()
+            .all(|entry| entry.id < machinery::ids::FIRST_BEHAVIOUR)
+    );
+    // 399 ticks: nothing, and no draw.
+    let mut camel = thinking_camel(CAMEL, standing_since(10_000 - 399));
+    let (out, drawn) = camel.alone(&SITTING, |_| {});
+    assert!(!camel::is_sitting(&camel.mob));
+    assert!(out.events.is_empty());
+    assert_eq!(drawn, 0);
+    // Sitting 400: it stands up, with its sound.
+    let mut camel = thinking_camel(CAMEL, standing_since(-(10_000 - 400)));
+    let (out, _) = camel.alone(&SITTING, |_| {});
+    assert!(!camel::is_sitting(&camel.mob));
+    assert_eq!(camel::camel_of(&camel.mob).pose_tick, 10_000);
+    assert_eq!(sounds_of(&out), [sounds::ENTITY_CAMEL_STAND]);
+    // Panicking, a standing one starts but sits not; in water neither starts.
+    let mut camel = thinking_camel(CAMEL, standing_since(0));
+    let (out, drawn) = camel.alone(&SITTING, |brain| {
+        brain
+            .memories
+            .set(MemoryKind::IsPanicking, Value::Bool(true));
+    });
+    assert!(!camel::is_sitting(&camel.mob) && out.events.is_empty());
+    assert_eq!(drawn, 1);
+    let mut camel = thinking_camel(CAMEL, standing_since(0));
+    camel.living.body.in_water = true;
+    let (_, drawn) = camel.alone(&SITTING, |_| {});
+    assert_eq!(drawn, 0);
+    // The husk's sounds are its own.
+    let mut husk = thinking_camel(HUSK, standing_since(0));
+    let (out, _) = husk.alone(&SITTING, |_| {});
+    assert_eq!(sounds_of(&out), [sounds::ENTITY_CAMEL_HUSK_SIT]);
+}
+
+/// A brain of one behaviour in its core: a stroll that only a camel free to move tries
+/// (`triggerIf(not(refuseToMove), RandomStroll.stroll(2.0))`).
+static STROLLING: Provider = Provider {
+    memories: &[],
+    sensors: &[],
+    activities: || {
+        vec![ActivityData::numbered(
+            Activity::Core,
+            0,
+            vec![crate::mobs::brain::behaviours::trigger_if(
+                |cx| camel::brain::may_stroll(cx.ai.tick),
+                crate::mobs::brain::behaviours::walking::stroll(2.0),
+            )],
+        )]
+    },
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+#[test]
+fn a_sitting_or_rising_camel_tries_no_stroll_and_draws_nothing_for_one() {
+    for (own, refuses) in [
+        (standing_since(-5000), true),
+        (standing_since(10_000 - 51), true),
+        (standing_since(10_000 - 52), false),
+    ] {
+        let mut camel = thinking_camel(CAMEL, own);
+        let (_, drawn) = camel.alone(&STROLLING, |_| {});
+        assert_eq!(drawn == 0, refuses, "{own:?}");
+        let walks = camel.memories().get(MemoryKind::WalkTarget).is_some();
+        assert_eq!(walks, !refuses, "{own:?}");
+    }
+}
+
+#[test]
+fn a_hurt_camel_panics_standing_up_at_once_and_runs_at_four_times_its_speed() {
+    let mut camel = thinking_camel(CAMEL, standing_since(-5000));
+    // Hit by a player at its last tick: its hurt sensor sees it at its first scan.
+    camel.mob.body.combat.last_hurt_by = Some((EntityId(7), 0));
+    camel.mob.body.combat.last_hurt_by_player = Some((7, 0));
+    let out = camel.think();
+    assert!(
+        camel
+            .memories()
+            .check(MemoryKind::IsPanicking, Status::Present)
+    );
+    // `standUpInstantly`: no sound, standing as if 53 ticks ago.
+    assert_eq!(camel::camel_of(&camel.mob).pose_tick, 10_000 - 53);
+    assert!(sounds_of(&out).is_empty());
+    assert!(
+        out.events
+            .contains(&Event::GameEvent(GameEvent::EntityAction))
+    );
+    let walk = camel.memories().get(MemoryKind::WalkTarget);
+    assert!(
+        matches!(walk, Some(Value::Walk { speed, .. }) if speed == 4.0),
+        "{walk:?}"
+    );
+}
+
+#[test]
+fn a_camel_is_tempted_by_cactus_and_its_husk_by_rabbit_feet_alone() {
+    for (kind, food, other) in [
+        (CAMEL, items::CACTUS, items::RABBIT_FOOT),
+        (HUSK, items::RABBIT_FOOT, items::CACTUS),
+    ] {
+        for (held, tempted) in [(food, true), (other, false)] {
+            let mut camel = thinking_camel(kind, standing_since(0));
+            camel
+                .world
+                .players
+                .push(seen_player(7, [4.5, 0.0, 0.5], Some(held), false));
+            camel.think();
+            let brain = camel.brain();
+            assert_eq!(
+                brain.memories.get(MemoryKind::TemptingPlayer).is_some(),
+                tempted,
+                "{kind} {held}"
+            );
+        }
+    }
+}
+
+/// An armadillo thinking, its scute far off.
+fn thinking_armadillo() -> Thinking {
+    let mut armadillo = Thinking::new(ARMADILLO, TypeState::default());
+    armadillo::update(&mut armadillo.mob, |own| own.scute_at = 1_000_000);
+    armadillo
+}
+
+/// The ticks of the first `ticks` at which the armadillo's scare sensor scans: from its
+/// delay on, every five.
+fn scare_scans(armadillo: &Thinking, ticks: u32) -> Vec<u32> {
+    let state: BrainState = crate::mobs::part::decode(&armadillo.mob.mind.brain).unwrap();
+    let first = state.next_scans[4];
+    (0..ticks)
+        .filter(|tick| *tick >= first && (tick - first).is_multiple_of(5))
+        .collect()
+}
+
+#[test]
+fn an_armadillo_remembers_danger_for_80_ticks_at_each_scan_that_sees_a_scare_within_7_2_7() {
+    let danger = |armadillo: &Thinking| {
+        armadillo
+            .memories()
+            .slots
+            .get(&MemoryKind::DangerDetectedRecently)
+            .cloned()
+    };
+    // A sprinting player 5 blocks off: set at the scans, each for 80 ticks.
+    let mut armadillo = thinking_armadillo();
+    armadillo
+        .world
+        .players
+        .push(seen_player(7, [5.5, 0.0, 0.5], None, true));
+    let scans = scare_scans(&armadillo, 30);
+    let mut set_at = Vec::new();
+    for _ in 0..30 {
+        let before = danger(&armadillo);
+        let now = armadillo.lived;
+        armadillo.think();
+        if danger(&armadillo) != before {
+            set_at.push(now);
+            assert_eq!(
+                danger(&armadillo),
+                Some(crate::mobs::brain::Slot::Kept {
+                    value: Value::Bool(true),
+                    expires: Some(now + 80),
+                })
+            );
+        }
+    }
+    assert_eq!(set_at, scans);
+    // A walking player, a sprinting spectator, a sprinting player 8 blocks off: none.
+    let mut walking = seen_player(7, [5.5, 0.0, 0.5], None, false);
+    let mut spectator = seen_player(7, [5.5, 0.0, 0.5], None, true);
+    spectator.spectator = true;
+    let far = seen_player(7, [8.6, 0.0, 0.5], None, true);
+    for player in [walking.clone(), spectator, far] {
+        let mut armadillo = thinking_armadillo();
+        armadillo.world.players.push(player.clone());
+        for _ in 0..30 {
+            armadillo.think();
+        }
+        assert_eq!(danger(&armadillo), None, "{player:?}");
+    }
+    // A player riding, an undead mob, and what last hurt it: all scare it.
+    walking.vehicle = Some(EntityId(99));
+    let zombie = entity_of(
+        EntityId(8),
+        entity_types::ZOMBIE as u16,
+        [4.5, 0.0, 0.5],
+        &healthy(entity_types::ZOMBIE as u16, TypeState::default()),
+    );
+    let cow = entity_of(
+        EntityId(8),
+        entity_types::COW as u16,
+        [4.5, 0.0, 0.5],
+        &healthy(entity_types::COW as u16, TypeState::default()),
+    );
+    for case in 0..3 {
+        let mut armadillo = thinking_armadillo();
+        match case {
+            0 => armadillo.world.players.push(walking.clone()),
+            1 => armadillo.world.put(zombie.clone()),
+            _ => {
+                armadillo.world.put(cow.clone());
+                armadillo.mob.body.combat.last_hurt_by = Some((EntityId(8), 0));
+            }
+        }
+        for _ in 0..30 {
+            armadillo.think();
+        }
+        assert!(danger(&armadillo).is_some(), "case {case}");
+    }
+    // In water it may not stay rolled up: the scan forgets the danger.
+    let mut armadillo = thinking_armadillo();
+    armadillo
+        .world
+        .players
+        .push(seen_player(7, [5.5, 0.0, 0.5], None, true));
+    for _ in 0..10 {
+        armadillo.think();
+    }
+    assert!(danger(&armadillo).is_some());
+    armadillo
+        .world
+        .blocks
+        .push((BlockPos::new(0, 0, 0), blocks::WATER));
+    armadillo.living.fluids =
+        crate::physics::fluids::update(&armadillo.world, &armadillo.living.body.bounds());
+    armadillo.living.body.in_water = armadillo.living.fluids.in_water();
+    assert!(armadillo.living.body.in_water);
+    for _ in 0..5 {
+        armadillo.think();
+    }
+    assert_eq!(danger(&armadillo), None);
+}
+
+/// A brain of one behaviour of the armadillo's panic, `ArmadilloBallUp`, in its core,
+/// and the memory it reads.
+static BALLING: Provider = Provider {
+    memories: &[MemoryKind::DangerDetectedRecently, MemoryKind::IsPanicking],
+    sensors: &[],
+    activities: || {
+        vec![ActivityData::numbered(
+            Activity::Core,
+            0,
+            vec![Box::new(HeldTimed::new(armadillo::BallUp))],
+        )]
+    },
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+#[test]
+fn balling_up_draws_its_start_its_roll_s_voice_and_a_peek_time_as_danger_comes_in_that_order() {
+    let mut armadillo = thinking_armadillo();
+    let mut replay = armadillo.stream();
+    let (out, drawn) = armadillo.alone(&BALLING, |_| {});
+    // `nextInt(1)` of its start, the roll's two of its voice, then its first tick: no
+    // memory is "danger" (the longest time to expire), which was not about: a peek time.
+    replay.next_int(1);
+    replay.next_float();
+    replay.next_float();
+    replay.next_int_between(100, 400);
+    assert_eq!(drawn, 4);
+    assert_eq!(sounds_of(&out), [sounds::ENTITY_ARMADILLO_ROLL]);
+    assert_eq!(armadillo::state_of(&armadillo.mob).phase, Phase::Rolling);
+    // Its next tick, rolling on with the danger as it was, draws nothing.
+    let (_, drawn) = armadillo.alone(&BALLING, |_| {});
+    assert_eq!(drawn, 0);
+}
+
+/// The game's `ArmadilloBallUp` as a plain loop over its ticks: its fields kept as the
+/// game keeps them, its tick [`armadillo::brain::ball_up_tick`] of an int lowered every
+/// tick it runs.
+#[test]
+fn balling_up_keeps_its_peek_count_as_the_game_s_and_writes_it_only_where_it_is_drawn() {
+    // Danger seen every five ticks until tick 300, then no more.
+    let ttl_at = |lived: u32, last: u32| -> i64 {
+        if lived <= last {
+            let seen = lived - lived % 5;
+            i64::from(seen + 80) - i64::from(lived)
+        } else {
+            i64::from(last - last % 5 + 80) - i64::from(lived)
+        }
+    };
+    let mut armadillo = thinking_armadillo();
+    let mut port = thinking_armadillo();
+    let mut ball = armadillo::brain::BallUp::default();
+    let mut running = false;
+    // Up to the danger's last tick (300's 80 later).
+    for _ in 0..=380 {
+        let lived = armadillo.lived;
+        let ttl = ttl_at(lived, 300);
+        let expiry = u32::try_from(i64::from(lived) + ttl).unwrap();
+        let before: Vec<_> = armadillo
+            .mob
+            .mind
+            .brain
+            .iter()
+            .filter(|entry| entry.id >= machinery::ids::FIRST_BEHAVIOUR)
+            .cloned()
+            .collect();
+        let (out, _) = armadillo.alone(&BALLING, |brain| {
+            if ttl >= 0 {
+                brain.memories.slots.insert(
+                    MemoryKind::DangerDetectedRecently,
+                    crate::mobs::brain::Slot::Kept {
+                        value: Value::Bool(true),
+                        expires: Some(expiry),
+                    },
+                );
+            } else {
+                brain.memories.erase(MemoryKind::DangerDetectedRecently);
+            }
+        });
+        // The port, of the same stream at the same places: whether its fields changed
+        // but by the count's lowering.
+        let read = if ttl >= 0 { ttl } else { i64::MAX };
+        let mut moved = false;
+        let (expected, _) = port.step(|tick| {
+            if !running {
+                if !armadillo::brain::ball_up_may_start(tick) {
+                    return;
+                }
+                tick.draws.next_int(1);
+                armadillo::brain::ball_up_start(tick);
+                running = true;
+                moved = true;
+            } else if !armadillo::brain::ball_up_may_go_on(&tick.mob) {
+                armadillo::brain::ball_up_stop(tick, false);
+                running = false;
+                moved = true;
+                return;
+            }
+            let was = ball;
+            armadillo::brain::ball_up_tick(tick, &mut ball, read);
+            moved |= ball.danger_was_around != was.danger_was_around
+                || ball.next_peek_timer != (was.next_peek_timer - 1).max(0);
+        });
+        assert_eq!(out.events, expected.events, "{lived}");
+        assert_eq!(
+            armadillo::state_of(&armadillo.mob),
+            armadillo::state_of(&port.mob),
+            "{lived}"
+        );
+        // Its part changes only where it starts, draws a peek time or stops.
+        let after: Vec<_> = armadillo
+            .mob
+            .mind
+            .brain
+            .iter()
+            .filter(|entry| entry.id >= machinery::ids::FIRST_BEHAVIOUR)
+            .cloned()
+            .collect();
+        if before != after {
+            assert!(moved, "{lived}: written as its count only went down");
+        }
+    }
+    // Over by then: unrolling as its danger ran low, it never rolled out itself, which
+    // its brain's rolling out does once the memory is gone.
+    assert_eq!(armadillo::state_of(&armadillo.mob).phase, Phase::Unrolling);
+}
+
+#[test]
+fn a_rolled_up_armadillo_unrolls_by_its_core_the_tick_its_danger_is_gone_and_stops_balling() {
+    let mut armadillo = thinking_armadillo();
+    armadillo::update(&mut armadillo.mob, |own| {
+        own.switch_to(Phase::Unrolling, 0);
+    });
+    // Its danger's last tick is its next.
+    armadillo.remember(|memories| {
+        memories.set_with_expiry(MemoryKind::DangerDetectedRecently, Value::Bool(true), 1);
+    });
+    armadillo.think();
+    assert_eq!(armadillo.brain().state.active, Some(Activity::Panic));
+    let out = armadillo.think();
+    assert_eq!(armadillo::state_of(&armadillo.mob).phase, Phase::Unrolling);
+    assert!(!sounds_of(&out).contains(&sounds::ENTITY_ARMADILLO_UNROLL_FINISH));
+    // Gone: the core's rolling out, with its sound once; idle again.
+    let out = armadillo.think();
+    assert_eq!(armadillo::state_of(&armadillo.mob).phase, Phase::Idle);
+    assert_eq!(
+        sounds_of(&out)
+            .iter()
+            .filter(|sound| **sound == sounds::ENTITY_ARMADILLO_UNROLL_FINISH)
+            .count(),
+        1
+    );
+    assert_eq!(armadillo.brain().state.active, Some(Activity::Idle));
+    // Balling up stopped with it, its stop rolling nothing out again.
+    let out = armadillo.think();
+    assert!(!sounds_of(&out).contains(&sounds::ENTITY_ARMADILLO_UNROLL_FINISH));
+}
+
+#[test]
+fn a_hurt_by_something_living_is_a_danger_an_armadillo_remembers_for_80_ticks() {
+    let mut mob = armadillo_with(ArmadilloState::default(), &Animal::default());
+    machinery::construct(of(ARMADILLO), &mut mob, &mut draws(1));
+    hurt(ARMADILLO, &mut mob, &by_player(), 2.0, 30, 0, &mut draws(1));
+    let memories = machinery::memories_of(&armadillo::PROVIDER, &mob, 30);
+    // As if set before its forget pass at 30: there through 109, gone at 110.
+    assert_eq!(
+        memories.slots.get(&MemoryKind::DangerDetectedRecently),
+        Some(&crate::mobs::brain::Slot::Kept {
+            value: Value::Bool(true),
+            expires: Some(29 + 80),
+        })
+    );
+    // A panicking armadillo hurt rolls not up.
+    let mut mob = armadillo_with(ArmadilloState::default(), &Animal::default());
+    let mut memories = machinery::memories_of(&armadillo::PROVIDER, &mob, 30);
+    memories.set(MemoryKind::IsPanicking, Value::Bool(true));
+    machinery::write_memories(&armadillo::PROVIDER, &mut mob, memories);
+    hurt(ARMADILLO, &mut mob, &by_player(), 2.0, 30, 0, &mut draws(1));
+    assert_eq!(armadillo::state_of(&mob).phase, Phase::Idle);
+}
+
+#[test]
+fn a_tick_of_each_highland_brain_is_a_function_of_its_inputs() {
+    for kind in [GOAT, CAMEL, HUSK, ARMADILLO] {
+        let run = || {
+            let mut mob = Thinking::new(kind, TypeState::default());
+            if kind == CAMEL || kind == HUSK {
+                mob = thinking_camel(kind, standing_since(0));
+            }
+            mob.world
+                .players
+                .push(seen_player(7, [4.5, 0.0, 2.5], Some(items::WHEAT), true));
+            let mut seen = Vec::new();
+            for _ in 0..300 {
+                let out = mob.think();
+                seen.push((out, mob.mob.encode(), mob.sensed.clone()));
+            }
+            seen
+        };
+        assert_eq!(run(), run(), "{kind}");
+    }
 }

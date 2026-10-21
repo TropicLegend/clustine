@@ -12,12 +12,20 @@
 //! kept after the pig's state: what the family's code writes of a horse it is called for
 //! would end the record before the camel's, so every write here keeps it.
 //!
-//! Its mind is a brain (`CamelAi`), which N7j's machinery brings: until its provider is
-//! wired a camel has no goals (`registerGoals` adds none) and stands, grazes and falls by
-//! its body alone. What the brain will call is in [`brain`]: sitting down at random,
-//! standing up when it panics, the move control's standing up for a walk. Riding is the
-//! lead's (part R): what it needs of a camel is in [`riding`] as plain functions, and no
-//! click mounts a player yet.
+//! Its mind is a brain (`CamelAi`, [`PROVIDER`]; `registerGoals` adds no goal): it
+//! wanders slowly, follows cactus and adults, breeds, looks about, panics when hurt
+//! (standing up at once), and sits down and stands up again at random once 400 ticks
+//! have passed in its pose ([`RandomSitting`]); while it sits or is between poses it
+//! does not stroll (the three `triggerIf`s of `refuseToMove`), and a walk wanted of it
+//! stands it up (its move control). The camel husk's brain is the same of its own food
+//! ([`super::camel_husk::PROVIDER`]). Riding is the lead's (part R): what it needs of a
+//! camel is in [`riding`] as plain functions, and no click mounts a player yet.
+//!
+//! What reads across a line (the plan, section 3): the senses are the shared sensors',
+//! of the copies' entities and the faces' players, but for the sliver of a second chunk
+//! that its box of 1.7 grown by 16 reaches (0.85 of a block), which no copy holds; its
+//! pose is the world's game time, so that a sitting camel just come over a line may read
+//! its pose up to a second off; nothing of its own behaviours reads another entity.
 //!
 //! Named differences: a sneaking click opens the camel's menu by the family's
 //! [`Did::OpenInventory`], which the region opens only for the horses of
@@ -40,6 +48,15 @@ use crate::mobs::ai::goals::Items;
 use crate::mobs::ai::{Ai, HeadLimits, Operation, Setup, controls};
 use crate::mobs::body::hurt::{self, DamageSource, GameEvent, Struck, voice_pitch};
 use crate::mobs::body::{Event, attribute};
+use crate::mobs::brain::behaviours::looking::{self, LookAt};
+use crate::mobs::brain::behaviours::panic::{self, AnimalPanic};
+use crate::mobs::brain::behaviours::social::{self, AnimalMakeLove, FollowTemptation};
+use crate::mobs::brain::behaviours::{self, Speed, cooldowns, walking};
+use crate::mobs::brain::sensors::{self, TemptingSensor};
+use crate::mobs::brain::{
+    self as machinery, Activity, ActivityData, Cx, DoNothing, Gate, HeldTimed, MemoryKind, Order,
+    Provider, Running, Sensor, Status, Timed,
+};
 use crate::mobs::tick::{MobTick, Ridden};
 use crate::physics::Vec3;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
@@ -117,6 +134,8 @@ pub(crate) struct Breed {
     /// Its steps' volume.
     pub(crate) step_volume: f32,
     pub(crate) sounds: Sounds,
+    /// Its brain: `CamelAi`'s, its temptations of its own food.
+    pub(crate) provider: &'static Provider,
 }
 
 pub(crate) static BREED: Breed = Breed {
@@ -125,6 +144,7 @@ pub(crate) static BREED: Breed = Breed {
     breeds: true,
     kept_by_a_use: false,
     step_volume: 1.0,
+    provider: &PROVIDER,
     sounds: Sounds {
         ambient: sounds::ENTITY_CAMEL_AMBIENT,
         hurt: sounds::ENTITY_CAMEL_HURT,
@@ -510,9 +530,8 @@ fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
     Interaction::Pass
 }
 
-/// What the brain will call of a camel, until its provider is wired (part A and the
-/// lead's N7j1): its own behaviours' bodies and the conditions it reads.
-#[allow(dead_code, reason = "what the camel's brain, not wired yet, calls")]
+/// What the brain calls of a camel: its own behaviours' bodies and the conditions it
+/// reads.
 pub(crate) mod brain {
     use super::*;
 
@@ -567,6 +586,146 @@ pub(crate) mod brain {
     pub(crate) const TEMPTED_SPEED: f32 = 2.5;
     pub(crate) fn tempted_distance(mob: &Mob) -> f64 {
         if animal::is_baby(mob) { 2.5 } else { 3.5 }
+    }
+}
+
+/// `FOOD_TEMPTATIONS` of a camel: cactus.
+static TEMPTATIONS: TemptingSensor = TemptingSensor {
+    tempts: |_, stack| BREED.food.test(Some(stack)),
+};
+
+/// The camel's sensors in the game's order (`Camel`'s static provider): living entities,
+/// hurt by, its temptations, the adult.
+static SENSORS: [&dyn Sensor; 4] = [
+    &sensors::NEAREST_LIVING_ENTITIES,
+    &sensors::HURT_BY,
+    &TEMPTATIONS,
+    &sensors::NEAREST_ADULT,
+];
+
+/// The camel's brain (`Camel`'s static provider, `CamelAi`).
+pub(crate) static PROVIDER: Provider = Provider {
+    memories: &[],
+    sensors: &SENSORS,
+    activities,
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// `CamelAi.updateActivity`: idle, where it may be.
+pub(crate) const ACTIVITIES: [Activity; 1] = [Activity::Idle];
+
+/// The camel's entity type, as the breeding's partner type (a husk's too, which never
+/// loves).
+const CAMEL_KIND: u16 = entity_types::CAMEL as u16;
+
+/// `CamelAi.getActivities`, of a camel and a camel husk alike.
+pub(crate) fn activities() -> Vec<ActivityData> {
+    use MemoryKind::{GazeCooldownTicks, TemptationCooldownTicks, WalkTarget};
+    let core = ActivityData::numbered(
+        Activity::Core,
+        0,
+        vec![
+            panic::swim(0.8),
+            AnimalPanic {
+                may_start: may_panic,
+                on_start: stand_for_the_panic,
+                ..AnimalPanic::new(4.0)
+            }
+            .boxed(),
+            walking::look_sink(45, 90),
+            walking::sink(),
+            cooldowns::count_down(TemptationCooldownTicks),
+            cooldowns::count_down(GazeCooldownTicks),
+        ],
+    );
+    let tempted = FollowTemptation {
+        close_enough: tempted_distance,
+        ..FollowTemptation::new(Speed::Fixed(brain::TEMPTED_SPEED))
+    };
+    let idle = ActivityData {
+        activity: Activity::Idle,
+        behaviours: vec![
+            (0, looking::look_sometimes(LookAt::Player, 6.0, (30, 60))),
+            (1, AnimalMakeLove::new(CAMEL_KIND).boxed()),
+            (
+                2,
+                Box::new(Gate::run_one(vec![
+                    (tempted.boxed(), 1),
+                    (
+                        behaviours::trigger_if(may_move, social::follow_adult((5, 16), 2.5)),
+                        1,
+                    ),
+                ])),
+            ),
+            (3, looking::look_around((150, 250), 30.0, 0.0, 0.0)),
+            (
+                4,
+                Box::new(Gate::new(
+                    vec![(WalkTarget, Status::Absent)],
+                    Vec::new(),
+                    Order::Shuffled,
+                    Running::RunOne,
+                    vec![
+                        (behaviours::trigger_if(may_move, walking::stroll(2.0)), 1),
+                        (
+                            behaviours::trigger_if(may_move, walking::walk_to_look_target(2.0, 3)),
+                            1,
+                        ),
+                        (Box::new(HeldTimed::new(RandomSitting)), 1),
+                        (Box::new(HeldTimed::new(DoNothing { min: 30, max: 60 })), 1),
+                    ],
+                )),
+            ),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    };
+    vec![core, idle]
+}
+
+/// `CamelPanic.checkExtraStartConditions` beyond the panic's own.
+fn may_panic(cx: &mut Cx<'_, '_, '_>) -> bool {
+    brain::panic_may_start(&cx.ai.tick.mob)
+}
+
+/// `CamelPanic.start` before the panic's own: it stands up at once.
+fn stand_for_the_panic(cx: &mut Cx<'_, '_, '_>) {
+    brain::panic_start(cx.ai.tick);
+}
+
+/// The predicate of the `triggerIf`s, `not(Camel::refuseToMove)`.
+fn may_move(cx: &mut Cx<'_, '_, '_>) -> bool {
+    brain::may_stroll(cx.ai.tick)
+}
+
+/// `FollowTemptation`'s distance: 2.5 for a calf, 3.5 grown.
+fn tempted_distance(cx: &Cx<'_, '_, '_>) -> f64 {
+    brain::tempted_distance(&cx.ai.tick.mob)
+}
+
+/// `CamelAi.RandomSitting(20)`: a `Behavior` of no memories and the default 60 ticks
+/// (its start draws `nextInt(1)`), which starts and stops in one tick: a camel 400 ticks
+/// in its pose, out of water, on no lead, on the ground, steered by no one and with room
+/// for the other pose stands up where it sits and sits down where it stands, unless it
+/// panics. It keeps nothing.
+pub(crate) struct RandomSitting;
+
+impl Timed for RandomSitting {
+    type State = ();
+
+    fn entry(&self) -> &[(MemoryKind, Status)] {
+        &[]
+    }
+
+    fn extra_start(&self, _: &mut (), cx: &mut Cx<'_, '_, '_>) -> bool {
+        brain::random_sitting_can_start(cx.ai.tick)
+    }
+
+    fn start(&self, _: &mut (), cx: &mut Cx<'_, '_, '_>) {
+        // `isPanicking()`: the brain's own memory of it.
+        let panicking = cx.memories.check(MemoryKind::IsPanicking, Status::Present);
+        brain::random_sitting_start(cx.ai.tick, panicking);
     }
 }
 
@@ -814,7 +973,7 @@ pub(crate) mod riding {
 
 impl MobType for Camel {
     /// The constructor's: `Animal`'s maluses, floating and over fences. `registerGoals`
-    /// adds nothing; its brain is not wired yet.
+    /// adds nothing; its mind is its brain.
     fn register_goals(&self, setup: &mut Setup) {
         super::cow::animal_maluses(setup);
         setup.config.navigation.flags.can_float = true;
@@ -860,9 +1019,16 @@ impl MobType for Camel {
         !refuse_to_move(&tick.mob, tick.world.game_time())
     }
 
-    /// `brain.tick` and `CamelAi.updateActivity` (the seam its provider is wired at),
-    /// then `Animal`'s.
+    /// The breed's brain: the camel's, or the husk's of its own food.
+    fn brain(&self) -> Option<&'static Provider> {
+        Some(self.breed.provider)
+    }
+
+    /// `brain.tick` and `CamelAi.updateActivity`, then `Animal`'s.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        machinery::run(tick, |brain, _| {
+            brain.set_active_to_first_valid(&ACTIVITIES)
+        });
         animal::custom_server_ai_step(tick);
     }
 
