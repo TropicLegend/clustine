@@ -1209,6 +1209,11 @@ impl MobType for HappyGhast {
         riding::passenger_removed(mob, vehicle.riding.passengers.len())
     }
 
+    /// `aiStep`'s `setRequiresPrecisePosition(isOnStillTimeout())`.
+    fn requires_precise_position(&self, mob: &Mob) -> bool {
+        read(mob).on_still_timeout()
+    }
+
     /// `getAmbientSoundInterval()`: six times as long while it carries anyone.
     fn ambient_interval_while(&self, carries: bool) -> u32 {
         if carries {

@@ -139,6 +139,7 @@ impl Region {
             key: EntityId(u64::MAX),
             root: EntityId(u64::MAX),
             like_a_vehicle: false,
+            happy_ghast: false,
         };
         no_collision(&view, context, &mover, &room)
     }

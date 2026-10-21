@@ -263,6 +263,7 @@ fn body_at(place: &Place, kind: u16, position: Vec3) -> Living {
             key: KEY,
             root: KEY,
             like_a_vehicle: false,
+            happy_ghast: false,
         },
         steps: None,
     };

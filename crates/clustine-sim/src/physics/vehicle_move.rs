@@ -439,6 +439,7 @@ mod tests {
                     key: EntityId(1),
                     root: EntityId(1),
                     like_a_vehicle: true,
+                    happy_ghast: false,
                 },
                 steps: None,
             },

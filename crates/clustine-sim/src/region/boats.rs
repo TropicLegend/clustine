@@ -364,6 +364,7 @@ impl Region {
             key: EntityId(u64::MAX),
             root: EntityId(u64::MAX),
             like_a_vehicle: true,
+            happy_ghast: false,
         };
         let context = crate::physics::collide::Context {
             bottom: hit[1],

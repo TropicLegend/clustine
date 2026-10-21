@@ -24,6 +24,8 @@ pub(crate) struct Mover {
     /// Whether it meets what is pushable as well as what is solid (boats and minecarts,
     /// `canVehicleCollide`).
     pub(crate) like_a_vehicle: bool,
+    /// Whether it is a happy ghast, which a ghast carrying riders is solid to.
+    pub(crate) happy_ghast: bool,
 }
 
 /// An entity another may meet, as its box.
@@ -32,8 +34,10 @@ pub(crate) struct Collider {
     pub(crate) key: EntityId,
     pub(crate) root: EntityId,
     pub(crate) bounds: Aabb,
-    /// `canBeCollidedWith`.
+    /// `canBeCollidedWith(mover)` of a mover that is no happy ghast.
     pub(crate) solid: bool,
+    /// `canBeCollidedWith(mover)` of a happy ghast (a ghast carrying riders is, to it).
+    pub(crate) solid_to_ghasts: bool,
     /// `isPushable`.
     pub(crate) pushable: bool,
     /// `blocksBuilding`.
@@ -145,10 +149,15 @@ impl Mover {
         if other.key == self.key || other.root == self.root {
             return false;
         }
-        if self.like_a_vehicle {
-            other.solid || other.pushable
+        let solid = if self.happy_ghast {
+            other.solid_to_ghasts
         } else {
             other.solid
+        };
+        if self.like_a_vehicle {
+            solid || other.pushable
+        } else {
+            solid
         }
     }
 }
@@ -197,6 +206,7 @@ mod tests {
             root: EntityId(root),
             bounds,
             solid,
+            solid_to_ghasts: solid,
             pushable,
             blocks_building: true,
         }
@@ -210,9 +220,11 @@ mod tests {
             key: EntityId(1),
             root: EntityId(1),
             like_a_vehicle: false,
+            happy_ghast: false,
         };
         let moving_cart = Mover {
             like_a_vehicle: true,
+            happy_ghast: false,
             ..item
         };
         assert!(item.can_collide_with(&boat));
@@ -228,6 +240,7 @@ mod tests {
             key: EntityId(3),
             root: EntityId(3),
             like_a_vehicle: true,
+            happy_ghast: false,
         };
         assert!(!cart.can_collide_with(&boat_on_the_cart));
         let bounds = Aabb::new([0.2; 3], [0.8; 3]);
@@ -241,6 +254,7 @@ mod tests {
             key: EntityId(1),
             root: EntityId(1),
             like_a_vehicle: false,
+            happy_ghast: false,
         };
         // Grown by 1e-7, a box resting on the boat's top meets it.
         let above = Aabb::new([0.2, 1.0, 0.2], [0.4, 1.2, 0.4]);

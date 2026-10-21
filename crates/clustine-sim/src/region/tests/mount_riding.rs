@@ -475,3 +475,69 @@ fn the_inventory_key_opens_a_ridden_nautilus_menu_for_its_rider_only() {
     let output = checked(&mut region, &click(2, key, true));
     assert_eq!(menu_opened(&output, 2), None);
 }
+
+/// `HappyGhast.canBeCollidedWith(other)` on the server: a grown ghast is solid to every
+/// mover while it stays still and not else, and solid to another ghast while it carries
+/// riders; so mobs, items and vehicles stop on a still one.
+#[test]
+fn a_ghast_is_solid_while_it_stays_still_and_to_another_ghast_while_it_carries_riders() {
+    let mut region = two_players();
+    let ghast = ghast_at(&mut region);
+    let solidity = |region: &Region| {
+        let bounds = region.entity_box(&record(region, ghast));
+        let collider = region
+            .colliders_in(&bounds)
+            .into_iter()
+            .find(|collider| collider.key == ghast)
+            .expect("the ghast is there");
+        (collider.solid, collider.solid_to_ghasts)
+    };
+    assert_eq!(
+        solidity(&region),
+        (false, false),
+        "free and carrying nobody"
+    );
+    checked(&mut region, &click(1, ghast, false));
+    assert_eq!(solidity(&region), (false, true), "carrying a rider");
+    // Its rider gets off: it stays still, solid to everything.
+    let sneak = moves(vec![numbered(
+        1,
+        PlayerInput::Keys(crate::api::Keys {
+            sneak: true,
+            ..Default::default()
+        }),
+    )]);
+    checked(&mut region, &sneak);
+    assert_eq!(solidity(&region), (true, true), "staying still");
+}
+
+/// `setServerStillTimeout` from nothing sends the ghast's whole position at once, and
+/// `setRequiresPrecisePosition(isOnStillTimeout())` keeps it whole while it is still:
+/// the report of the tick a rider's going holds it still is flagged both.
+#[test]
+fn a_ghast_held_still_is_sent_whole_and_at_once_as_it_begins() {
+    let mut region = two_players();
+    let ghast = ghast_at(&mut region);
+    checked(&mut region, &click(1, ghast, false));
+    let sneak = moves(vec![numbered(
+        1,
+        PlayerInput::Keys(crate::api::Keys {
+            sneak: true,
+            ..Default::default()
+        }),
+    )]);
+    let output = checked(&mut region, &sneak);
+    let flags: Vec<u8> = output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::EntityTracked(report) if report.entity == ghast => Some(report.flags),
+            _ => None,
+        })
+        .collect();
+    let whole = crate::api::Tracked::PRECISE | crate::api::Tracked::NEEDS_SYNC;
+    assert!(
+        flags.iter().any(|flags| flags & whole == whole),
+        "{flags:?}"
+    );
+}

@@ -112,6 +112,7 @@ fn body_of(kind: u16, position: Vec3) -> Living {
             key: EntityId(5),
             root: EntityId(5),
             like_a_vehicle: false,
+            happy_ghast: false,
         },
         steps: None,
     };

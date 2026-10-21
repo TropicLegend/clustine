@@ -317,6 +317,16 @@ impl Region {
         if out.needs_sync {
             flags |= Tracked::NEEDS_SYNC;
         }
+        // Sent whole while its type says (a still happy ghast), and at once in the tick
+        // it begins to be, as `setServerStillTimeout` sends its position then.
+        if mob_type.requires_precise_position(&mob) {
+            flags |= Tracked::PRECISE;
+            let was =
+                Mob::decode(&entity.data).is_ok_and(|was| mob_type.requires_precise_position(&was));
+            if !was {
+                flags |= Tracked::NEEDS_SYNC;
+            }
+        }
         if out.sync_velocity {
             flags |= Tracked::SYNC_VELOCITY;
         }

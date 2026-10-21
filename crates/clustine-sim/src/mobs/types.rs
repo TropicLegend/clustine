@@ -324,6 +324,13 @@ pub(crate) trait MobType: Sync {
         None
     }
 
+    /// `getRequiresPrecisePosition()`: whether its position is sent whole (a happy ghast
+    /// while it stays still). Never but where the type says.
+    fn requires_precise_position(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
     /// `isFlyingVehicle()`: whether its driver is never kicked for floating, and its
     /// move gathers no fall (an adult happy ghast). Never but where the type says.
     fn flying_vehicle(&self, mob: &Mob) -> bool {

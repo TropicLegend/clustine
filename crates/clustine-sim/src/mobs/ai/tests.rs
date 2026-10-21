@@ -183,6 +183,7 @@ pub(super) fn cow_body<W: World + ?Sized>(world: &W, position: Vec3) -> Living {
             key: MOB_KEY,
             root: MOB_KEY,
             like_a_vehicle: false,
+            happy_ghast: false,
         },
         steps: None,
     };

@@ -125,7 +125,18 @@ impl Region {
         self.commit_entity(chunk, before.key, fields, output);
         if let Some((_, after)) = self.find_entity(before.key) {
             let after = after.clone();
-            let mut report = tracked(&after, 0, true);
+            // A ghast that a rider's going holds still is sent whole from now on.
+            let mob_type = types::of(after.kind);
+            let mut flags = 0;
+            if mob_type.requires_precise_position(mob) {
+                flags |= crate::api::Tracked::PRECISE;
+                if Mob::decode(&before.data)
+                    .is_ok_and(|was| !mob_type.requires_precise_position(&was))
+                {
+                    flags |= crate::api::Tracked::NEEDS_SYNC;
+                }
+            }
+            let mut report = tracked(&after, flags, true);
             report.chunk = chunk;
             output.events.push(RegionEvent::EntityTracked(report));
             self.mob_shown_changes(before, &after, chunk, output);

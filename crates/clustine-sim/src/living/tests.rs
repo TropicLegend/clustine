@@ -33,6 +33,7 @@ fn stand_body() -> Living {
             key: EntityId(1),
             root: EntityId(1),
             like_a_vehicle: false,
+            happy_ghast: false,
         },
         steps: None,
     };

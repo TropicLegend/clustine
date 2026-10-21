@@ -70,6 +70,7 @@ impl Region {
             key: entity.key,
             root,
             like_a_vehicle: entities::collides_like_a_vehicle(entity.kind),
+            happy_ghast: i32::from(entity.kind) == clustine_data::entity_types::HAPPY_GHAST,
         }
     }
 
@@ -91,11 +92,13 @@ impl Region {
                     .filter_map(|entity| {
                         let own = self.entity_box(entity);
                         own.intersects(*bounds).then(|| {
+                            let (solid, solid_to_ghasts) = solidity(entity);
                             let collider = Collider {
                                 key: entity.key,
                                 root: root_among(records, entity.key),
                                 bounds: own,
-                                solid: entities::is_solid(entity.kind),
+                                solid,
+                                solid_to_ghasts,
                                 pushable: entities::is_pushable(entity.kind),
                                 blocks_building: entities::blocks_building(
                                     entity.kind,
@@ -136,4 +139,20 @@ impl Region {
         let except = except.map(|key| self.root_of(key));
         entities::unobstructed(boxes, except, &self.colliders_in(&bounds))
     }
+}
+
+/// `canBeCollidedWith(other)` of `entity`, to a mover that is no happy ghast and to one
+/// that is: a boat always; a grown happy ghast while it stays still, and to another
+/// ghast while it carries riders (`docs/groundwork/n7j-riding-plan.md`, section 9 item
+/// 14); nothing else.
+fn solidity(entity: &Entity) -> (bool, bool) {
+    if i32::from(entity.kind) == clustine_data::entity_types::HAPPY_GHAST
+        && let Ok(mob) = crate::mobs::Mob::decode(&entity.data)
+    {
+        let carries = !entity.riding.passengers.is_empty();
+        let ghast = crate::mobs::types::happy_ghast::riding::can_be_collided_with;
+        return (ghast(&mob, carries, false), ghast(&mob, carries, true));
+    }
+    let solid = entities::is_solid(entity.kind);
+    (solid, solid)
 }
