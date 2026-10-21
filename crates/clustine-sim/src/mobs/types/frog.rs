@@ -3,16 +3,13 @@
 //! and bred with slime balls, its breeding making no child but frogspawn, which a
 //! pregnant frog lays (`region/frogspawn.rs` hatches it), five less of every fall's hurt.
 //!
-//! Its mind is a brain (`FrogAi`), which N7j's machinery brings: its croak, its long
-//! jumps, its tongue and its laying are the brain's behaviours. Until then it has no
-//! activities and only floats, falls and swims as its body does. What the brain will
-//! read and write of it is named in [`brain`]: the long jump's first cooldown its spawn
-//! and its making by an egg draw, and the pregnancy its breeding gives.
+//! Its mind is a brain (`FrogAi`, [`super::frog_ai`]): its croak, its long jumps, its
+//! tongue and its laying are the brain's behaviours, its pose their sign to clients.
 //!
 //! Named difference: its swimming sounds are not made (the living body plays none yet).
 
 use clustine_data::{PathType, sounds};
-use clustine_world::TypeState;
+use clustine_world::{EntityId, TypeState};
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Own, biome_in_tag, variants};
@@ -35,8 +32,33 @@ pub(crate) const FOOD: Items = Items::Tag("minecraft:frog_food");
 const REGISTRY: &str = "minecraft:frog_variant";
 
 /// The synced index of `DATA_VARIANT_ID`, on from `AgeableMob`'s 16 and 17;
-/// `DATA_TONGUE_TARGET_ID` (19) is empty until the brain's tongue, and so a default.
+/// `DATA_TONGUE_TARGET_ID` (19) is not shown (see [`super::frog_ai`]).
 pub(crate) const VARIANT_INDEX: u8 = 18;
+
+/// The synced index of `Entity.DATA_POSE`.
+pub(crate) const POSE_INDEX: u8 = 6;
+
+/// The poses a frog takes (`Pose`), by their ordinals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Pose {
+    #[default]
+    Standing,
+    LongJumping,
+    Croaking,
+    UsingTongue,
+}
+
+impl Pose {
+    /// Its ordinal, as clients are sent it.
+    pub(crate) fn ordinal(self) -> i32 {
+        match self {
+            Self::Standing => 0,
+            Self::LongJumping => 6,
+            Self::Croaking => 8,
+            Self::UsingTongue => 9,
+        }
+    }
+}
 
 /// A frog's variant, by Clustine's own number of it, fixed for good: the registry's ids
 /// are the order the server sends it in, which another version may change.
@@ -83,10 +105,17 @@ impl Variant {
 }
 
 /// What a frog keeps beyond an animal: its variant (`DATA_VARIANT_ID`, saved as
-/// `variant`).
+/// `variant`), its pose (`DATA_POSE`, which its brain's behaviours set), its tongue's
+/// target (`DATA_TONGUE_TARGET_ID`), a pregnancy a breeding gave it that its brain has
+/// not taken yet (`IS_PREGNANT`, [`super::frog_ai::step`]), and whether its long jump
+/// has it discard friction (`setDiscardFriction`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct FrogState {
     pub(crate) variant: Variant,
+    pub(crate) pose: Pose,
+    pub(crate) tongue_target: Option<EntityId>,
+    pub(crate) pregnant: bool,
+    pub(crate) discards_friction: bool,
 }
 
 impl Own for FrogState {}
@@ -140,39 +169,20 @@ pub(crate) fn spawn_variant(biome: Option<&str>, level: &mut Random) -> Variant 
 }
 
 /// `FrogAi.initMemories(frog, random)`'s draw: `LONG_JUMP_COOLDOWN_TICKS` of
-/// `UniformInt(100, 140)`, `nextInt(41) + 100`, which the brain keeps ([`brain`]).
+/// `UniformInt(100, 140)`, `nextInt(41) + 100`, which the brain keeps.
 pub(crate) fn init_memories(mob: &mut Mob, random: &mut Random) {
     let cooldown = 100 + random.next_int(41) as i32;
-    brain::set_long_jump_cooldown(mob, cooldown);
-}
-
-/// The brain's seams: what N7j's machinery will take here. Each is small and named, so
-/// that wiring the provider changes these alone.
-pub(crate) mod brain {
-    use super::Mob;
-
-    /// `brain.setMemory(LONG_JUMP_COOLDOWN_TICKS, ticks)`: drawn as the game draws it
-    /// and kept nowhere until the brain keeps memories.
-    pub(crate) fn set_long_jump_cooldown(mob: &mut Mob, ticks: i32) {
-        let _ = (mob, ticks);
-    }
-
-    /// `brain.setMemory(IS_PREGNANT, Unit)` of the frog that bred
-    /// (`spawnChildFromBreeding`): nothing until the brain keeps memories, whose
-    /// breeding hook (the plan's 8, item 7) gives it.
-    pub(crate) fn set_pregnant(mob: &mut Mob) {
-        let _ = mob;
-    }
+    super::frog_ai::set_long_jump_cooldown(mob, cooldown);
 }
 
 /// The frog.
 pub(crate) struct Frog;
 
 impl MobType for Frog {
-    /// No goals: its mind is its brain's. Its constructor's navigation (the frog's
-    /// evaluator, which prefers lily pads and big dripleaf, comes with its long jumps),
-    /// maluses and move control (`SmoothSwimmingMoveControl(85, 10, 0.02, 0.1, true)`);
-    /// its look control is a plain one.
+    /// No goals: its mind is its brain's. Its constructor's navigation (amphibious: the
+    /// frog's own evaluator is not in the navigation, see [`super::frog_ai`]), maluses
+    /// and move control (`SmoothSwimmingMoveControl(85, 10, 0.02, 0.1, true)`); its look
+    /// control is a plain one.
     fn register_goals(&self, setup: &mut Setup) {
         setup.config.navigation = Settings::of(Kind::Amphibious);
         cow::animal_maluses(setup);
@@ -210,14 +220,30 @@ impl MobType for Frog {
         false
     }
 
-    /// `customServerAiStep`: the brain's tick and its activities (the brain's, to
-    /// come), then `Animal`'s.
+    fn brain(&self) -> Option<&'static crate::mobs::brain::Provider> {
+        Some(&super::frog_ai::PROVIDER)
+    }
+
+    /// `customServerAiStep`: the brain's tick and its activities, then `Animal`'s.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
+        super::frog_ai::step(tick);
         animal::custom_server_ai_step(tick);
     }
 
     fn after_ai_step(&self, tick: &mut MobTick<'_>) {
         animal::after_ai_step(tick);
+    }
+
+    /// `travelInAir` of a frog that discards friction (`shouldDiscardFriction`, its long
+    /// jump's): its motion kept but for gravity, which a friction and an air drag
+    /// modified to nothing give in the living body's travel. The air's drag it bounces
+    /// with on a slime block is so too, where the game's is not.
+    fn before_travel(&self, tick: &mut MobTick<'_>) {
+        if read(&tick.mob).discards_friction && !tick.living.body.in_water && !tick.living.in_lava()
+        {
+            tick.living.attributes.friction_modifier = 0.0;
+            tick.living.attributes.air_drag_modifier = 0.0;
+        }
     }
 
     /// `travelInWater`: at its own speed along its input, slowed to nine tenths, never
@@ -259,11 +285,11 @@ impl MobType for Frog {
         Some(child)
     }
 
-    /// `spawnChildFromBreeding`: no child, but the frog that bred pregnant, which the
-    /// brain keeps ([`brain::set_pregnant`]).
+    /// `spawnChildFromBreeding`: no child, but the frog that bred pregnant, which its
+    /// brain takes at its next tick ([`super::frog_ai::step`]).
     fn bred_without_child(&self, this: &Mob) -> Option<TypeState> {
         let mut bred = this.clone();
-        brain::set_pregnant(&mut bred);
+        update(&mut bred, |frog| frog.pregnant = true);
         Some(bred.state)
     }
 
@@ -288,8 +314,14 @@ impl MobType for Frog {
     }
 
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
-        let variant = read(mob).variant;
+        let own = read(mob);
+        let variant = own.variant;
         let mut values = animal::shown(mob);
+        values.push((
+            POSE_INDEX,
+            DataShown::Pose(own.pose.ordinal()),
+            own.pose == Pose::Standing,
+        ));
         values.push((
             VARIANT_INDEX,
             DataShown::Holder(Holder::FrogVariant, variant.id()),

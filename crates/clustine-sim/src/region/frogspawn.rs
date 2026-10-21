@@ -4,8 +4,9 @@
 //! cannot stay; and a tadpole grown up (`Tadpole.ageUp()`), made a frog of the biome it
 //! is in.
 //!
-//! A frog lays frogspawn by its brain's behaviour (`TryLaySpawnOnFluidNearLand`), which
-//! comes with N7j's machinery; frogspawn a player places hatches the same.
+//! A frog lays frogspawn by its brain's behaviour (`TryLaySpawnOnFluidNearLand`,
+//! `mobs/types/frog_ai.rs`), a block set like any other, which schedules its hatching
+//! here as it is placed; frogspawn a player places hatches the same.
 //!
 //! The draws of the level's random a block's tick makes come from the region's stream
 //! for rules outside a random tick ([`Region::next_draw`]); a frog's made of a tadpole,

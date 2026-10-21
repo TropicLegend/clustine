@@ -4,8 +4,8 @@
 //! 24000 is a frog of the biome it is in; a slime ball takes a tenth of what it has
 //! left, a golden dandelion stops its age, and a water bucket takes it.
 //!
-//! Beside its goals it has a brain (`TadpoleAi`), which N7j's machinery brings; until
-//! then the goals alone move it. The brain's tick goes in [`brain`]'s seam.
+//! Beside its goals it has a brain (`TadpoleAi`, [`super::tadpole_ai`]), which ticks
+//! after them in its `customServerAiStep`.
 //!
 //! Its type state is its own encoding ([`TadpoleState`]), under a version of its own
 //! that no animal's or fish's reading takes for theirs. Its age is a stamp against
@@ -134,18 +134,6 @@ pub(crate) fn hatchling() -> Mob {
     mob
 }
 
-/// The brain's seam: N7j's machinery ticks the tadpole's brain here, in
-/// `customServerAiStep` before `AbstractFish`'s (which is `Mob`'s, nothing).
-pub(crate) mod brain {
-    use crate::mobs::tick::MobTick;
-
-    /// `getBrain().tick(level, this)` and `TadpoleAi.updateActivity(this)`: nothing
-    /// until the brain's machinery.
-    pub(crate) fn tick(tick: &mut MobTick<'_>) {
-        let _ = tick;
-    }
-}
-
 /// `getRandomX(1)`, `getRandomY() + 0.5` and `getRandomZ(1)` of a particle's place,
 /// drawn and not sent (`Level.addParticle` is nothing on a server).
 fn particle_draws(draws: &mut Random) {
@@ -262,9 +250,13 @@ impl MobType for Tadpole {
         setup.add_goal(4, FishSwimGoal);
     }
 
+    fn brain(&self) -> Option<&'static crate::mobs::brain::Provider> {
+        Some(&super::tadpole_ai::PROVIDER)
+    }
+
     /// `customServerAiStep`: its brain, then `AbstractFish`'s, which is nothing.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
-        brain::tick(tick);
+        super::tadpole_ai::step(tick);
     }
 
     fn after_base_tick(&self, tick: &mut MobTick<'_>, air: i32) {

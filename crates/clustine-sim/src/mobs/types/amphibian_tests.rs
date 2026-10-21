@@ -255,7 +255,7 @@ fn an_axolotl_shows_its_variant_its_playing_dead_and_its_bucket_at_18_to_20() {
 }
 
 #[test]
-fn a_frog_shows_its_variant_of_the_registry_at_18_temperate_by_default() {
+fn a_frog_shows_its_pose_at_6_and_its_variant_of_the_registry_at_18_temperate_by_default() {
     let module = of(FROG);
     let temperate = Variant::Temperate.id();
     assert_eq!(
@@ -263,6 +263,7 @@ fn a_frog_shows_its_variant_of_the_registry_at_18_temperate_by_default() {
         [
             (16, DataShown::Boolean(false), true),
             (17, DataShown::Boolean(false), true),
+            (6, DataShown::Pose(0), true),
             (18, DataShown::Holder(Holder::FrogVariant, temperate), true),
         ]
     );
@@ -273,6 +274,19 @@ fn a_frog_shows_its_variant_of_the_registry_at_18_temperate_by_default() {
         DataShown::Holder(Holder::FrogVariant, Variant::Warm.id()),
         false
     )));
+    // Its poses by their ordinals: croaking 8, long jumping 6, using its tongue 9.
+    for (pose, ordinal) in [
+        (frog::Pose::Croaking, 8),
+        (frog::Pose::LongJumping, 6),
+        (frog::Pose::UsingTongue, 9),
+    ] {
+        frog::update(&mut mob, |own| own.pose = pose);
+        assert!(
+            module
+                .shown(&mob)
+                .contains(&(6, DataShown::Pose(ordinal), false))
+        );
+    }
 }
 
 #[test]

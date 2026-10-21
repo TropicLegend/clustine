@@ -26,10 +26,13 @@
 
 pub(crate) mod allay;
 #[cfg(test)]
+mod amphibian_brain_tests;
+#[cfg(test)]
 mod amphibian_tests;
 pub(crate) mod animal;
 pub(crate) mod armadillo;
 pub(crate) mod axolotl;
+pub(crate) mod axolotl_ai;
 pub(crate) mod bat;
 pub(crate) mod bee;
 pub(crate) mod camel;
@@ -47,6 +50,7 @@ pub(crate) mod fish;
 mod flier_tests;
 pub(crate) mod fox;
 pub(crate) mod frog;
+pub(crate) mod frog_ai;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
 pub(crate) mod happy_ghast;
@@ -73,6 +77,7 @@ pub(crate) mod skeleton_horse;
 pub(crate) mod sniffer;
 pub(crate) mod squid;
 pub(crate) mod tadpole;
+pub(crate) mod tadpole_ai;
 pub(crate) mod tamable;
 #[cfg(test)]
 mod tamed_tests;

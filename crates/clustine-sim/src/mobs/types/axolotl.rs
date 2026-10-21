@@ -5,16 +5,16 @@
 //! given a water bucket back), and is taken into a water bucket and poured out of its
 //! own as the fish are.
 //!
-//! Its mind is a brain (`AxolotlAi`), which N7j's machinery brings; until then it has no
-//! activities and only floats, falls and swims as its body does. What the brain will
-//! read and write of it is named in [`brain`]: the play-dead memory a hurt sets and its
-//! synced flag follows, and what its controls and its voice ask of that flag.
+//! Its mind is a brain (`AxolotlAi`, [`super::axolotl_ai`]): the play-dead memory a hurt
+//! sets is its brain's, and its synced flag, which its controls and its voice ask, follows
+//! it after each brain tick.
 //!
 //! Named differences: a bucket keeps nothing of it (the plan's question 4), so one
 //! poured is a fresh lucy, as a bucket from the game's creative menu pours; its swimming
 //! sounds are not made (the living body plays none yet); one poured from a bucket still
 //! draws for an idle despawn it cannot take (`requiresCustomPersistence` is not asked of
-//! a type).
+//! a type); whether a hurt finds it in water is whether its box is in water or lava (the
+//! hurt's view of it, which tells the two apart only for a mob in its own tick).
 
 use clustine_data::{PathType, attributes as ids, items, sounds};
 use clustine_world::ItemStack;
@@ -150,34 +150,6 @@ pub(crate) fn plays_dead(draws: &mut Random, hurt: &Hurt) -> bool {
         && !hurt.playing_dead
 }
 
-/// The brain's seams: what N7j's machinery will give and take here. Each is small and
-/// named, so that wiring the provider changes these alone.
-pub(crate) mod brain {
-    use super::Mob;
-    use crate::mobs::body::hurt::Struck;
-
-    /// `PLAY_DEAD_TICKS` as the brain has it after its tick, which the synced flag
-    /// follows (`customServerAiStep`): none until the brain keeps memories.
-    pub(crate) fn play_dead_ticks(mob: &Mob) -> Option<i32> {
-        let _ = mob;
-        None
-    }
-
-    /// `brain.setMemory(PLAY_DEAD_TICKS, ticks)`, of a hurt that made it play dead:
-    /// nothing until the brain keeps memories.
-    pub(crate) fn set_play_dead_ticks(mob: &mut Mob, ticks: i32) {
-        let _ = (mob, ticks);
-    }
-
-    /// `isInWater()` of a mob a hurt finds: a [`Struck`] does not carry the body's
-    /// state of its last tick, which N7j1 adds beside the memory this seam is for; till
-    /// then no hurt makes it play dead, and its draws are made as the game's are.
-    pub(crate) fn in_water(struck: &Struck<'_>) -> bool {
-        let _ = struck;
-        false
-    }
-}
-
 /// A baby's size (`BABY_DIMENSIONS`): `scalable(0.375, 0.21)`, its eyes at `0.09375`.
 pub(crate) fn baby_size() -> Dimensions {
     Dimensions {
@@ -296,15 +268,15 @@ impl MobType for Axolotl {
         update(mob, |axolotl| axolotl.from_bucket = true);
     }
 
-    /// `customServerAiStep`: the brain's tick and its activities (the brain's, to
-    /// come), then with AI the synced flag of playing dead from its memory. It does not
-    /// call `Animal`'s: its love is not ended for an age not nothing.
+    fn brain(&self) -> Option<&'static crate::mobs::brain::Provider> {
+        Some(&super::axolotl_ai::PROVIDER)
+    }
+
+    /// `customServerAiStep`: the brain's tick and its activities, then with AI the
+    /// synced flag of playing dead from its memory. It does not call `Animal`'s: its love
+    /// is not ended for an age not nothing.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
-        if tick.mob.body.flags.no_ai {
-            return;
-        }
-        let playing_dead = brain::play_dead_ticks(&tick.mob).is_some_and(|ticks| ticks > 0);
-        update(&mut tick.mob, |axolotl| axolotl.playing_dead = playing_dead);
+        super::axolotl_ai::step(tick);
     }
 
     /// The draws of its test of playing dead, before any of the hurt's.
@@ -320,12 +292,12 @@ impl MobType for Axolotl {
             amount,
             health: struck.mob.body.vitals.health,
             max_health,
-            in_water: brain::in_water(struck),
+            in_water: struck.in_liquid,
             by_entity: source.cause.is_some() || source.direct.is_some(),
             playing_dead: read(struck.mob).playing_dead,
         };
         if plays_dead(struck.draws, &hurt) {
-            brain::set_play_dead_ticks(struck.mob, PLAY_DEAD_TICKS);
+            super::axolotl_ai::set_play_dead_ticks(struck.mob, struck.moment, PLAY_DEAD_TICKS);
         }
     }
 
