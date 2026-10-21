@@ -339,8 +339,13 @@ and through a restore. Hits a mob deals to a mob only a copy shows now reach it 
 its holder, a mob's last damage source is kept (so fire and lava panic an animal too), and
 a player's face says whether they sprint. Riding the camel, the nautilus and the happy
 ghast (part R, [research](groundwork/n7j-riding-research.md),
-[plan](groundwork/n7j-riding-plan.md), reviewed) has its region's side built and its
-types' side next; until then none of the three can be mounted. Named: a frog's tongue
+[plan](groundwork/n7j-riding-plan.md), reviewed): a camel takes two players and dashes,
+a happy ghast four and flies without a kick for floating, staying still and solid for
+ten ticks after a rider gets off, a tame nautilus one; the camel's and the nautilus's
+saddle menus open by sneaking or the inventory key; tested from the specification next.
+Getting on across a line has a [design](groundwork/n7j-mount-across-a-line.md) under
+review; until it is built, a vehicle across a pinned line cannot be mounted (named, for
+boats too). Named: a frog's tongue
 finds no prey until slimes come (N9); an allay does not hear note blocks or jukeboxes
 (entity listeners); a playing-dead axolotl gets no Regeneration (mob effects); a copper
 golem looks for chests by reading every block within its reach, which is slow but rare (it
@@ -398,8 +403,16 @@ rests 140 ticks between searches).
    with its chest: it carries items from that chest to the chests about it, opening their
    lids, and waits while you have one open. With pins, tempt each across x = 64 and breed
    two across it.
-0. Next in N7: riding the camel, the nautilus and the happy ghast, and the mobs made with
-   each new chunk ([plan](groundwork/n7l-plan.md)).
+0. Riding the new mounts. Click a grown camel: you sit on it, with or without a saddle;
+   a second player sits behind you. Saddle it (sneak and click, or E while riding, opens
+   its saddle slot) and steer it; hold and release space to dash, and hear it ready again
+   about three seconds later. A sitting camel takes no steering. Put a harness on a grown
+   happy ghast and click it: the goggles come down, up to four of you get on, and the
+   first flies it with W and space; when one gets off it holds still for half a second
+   and others can stand on it while it does. Tame a nautilus with a pufferfish, saddle it
+   and ride it under water; space dashes it.
+0. Next in N7: getting on across a line, and the mobs made with each new chunk
+   ([plan](groundwork/n7l-plan.md)).
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
