@@ -998,7 +998,8 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, family: &dyn Family) -> Interact
     }
     let tamed = state_of(used.mob).1.tame.is_tame();
     if tamed && used.sneaking {
-        // `openCustomInventoryScreen`: the mount menu is the riding's (named).
+        // `openCustomInventoryScreen`: its saddle and armour, where the player may.
+        used.did.push(Did::OpenInventory);
         return Interaction::Success;
     }
     let held = used.held.filter(|stack| stack.count > 0);

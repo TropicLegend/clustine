@@ -506,14 +506,14 @@ fn a_saddle_and_nautilus_armour_go_on_a_tamed_adult_only_with_its_own_saddling_s
 }
 
 #[test]
-fn a_tamed_nautilus_clicked_empty_handed_takes_the_player_on_and_sneaking_takes_the_click() {
+fn a_tamed_nautilus_clicked_empty_handed_takes_the_player_on_and_sneaking_opens_its_menu() {
     let mut mob = nautilus_with(NAUTILUS, &Animal::default(), &tamed());
     let (result, did) = used(NAUTILUS, &mut mob, None, false, &mut draws());
     assert_eq!(result, Interaction::Success);
     assert_eq!(did, [Did::MountOrClearHome]);
     let (result, did) = used(NAUTILUS, &mut mob, one(items::COD), true, &mut draws());
     assert_eq!(result, Interaction::Success);
-    assert!(did.is_empty());
+    assert_eq!(did, [Did::OpenInventory]);
     // A wild one clicked with nothing passes.
     let mut mob = nautilus_with(NAUTILUS, &Animal::default(), &NautilusState::default());
     assert_eq!(

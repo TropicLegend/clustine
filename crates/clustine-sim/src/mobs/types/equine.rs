@@ -761,6 +761,26 @@ pub(crate) fn on_equip_item(
     at: Vec3,
     draws: &mut Random,
 ) -> Vec<Did> {
+    on_equip_item_with(
+        slot,
+        old,
+        new,
+        at,
+        draws,
+        clustine_data::sounds::ENTITY_HORSE_SADDLE,
+    )
+}
+
+/// [`on_equip_item`] of a mount whose saddle sounds as `saddle` (a camel's, a
+/// nautilus's: their `getEquipSound`).
+pub(crate) fn on_equip_item_with(
+    slot: u8,
+    old: Option<ItemStack>,
+    new: Option<ItemStack>,
+    at: Vec3,
+    draws: &mut Random,
+    saddle: i32,
+) -> Vec<Did> {
     if old.map(|stack| stack.item) == new.map(|stack| stack.item) {
         return Vec::new();
     }
@@ -771,7 +791,7 @@ pub(crate) fn on_equip_item(
     {
         let _seed = draws.next_u64();
         let sound = if slot == slots::SADDLE {
-            clustine_data::sounds::ENTITY_HORSE_SADDLE
+            saddle
         } else {
             equippable.sound
         };
@@ -826,6 +846,23 @@ pub(crate) fn write_menu_container(
     mob: &mut Mob,
     container: &[Option<ItemStack>],
 ) -> Vec<(u8, Option<ItemStack>, Option<ItemStack>)> {
+    let changed = write_menu_equipment(mob, container);
+    let items: Vec<(u8, ItemStack)> = container
+        .iter()
+        .skip(2)
+        .enumerate()
+        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
+        .collect();
+    update(mob, |horse| horse.items = items);
+    changed
+}
+
+/// The saddle and body slots of a mount's menu, `container`'s first two, written into
+/// `mob`'s equipment (a nautilus has no more): what changed, each slot's old and new.
+pub(crate) fn write_menu_equipment(
+    mob: &mut Mob,
+    container: &[Option<ItemStack>],
+) -> Vec<(u8, Option<ItemStack>, Option<ItemStack>)> {
     let mut changed = Vec::new();
     for (index, slot) in [(0, slots::SADDLE), (1, slots::BODY)] {
         let new = container.get(index).copied().flatten();
@@ -839,13 +876,6 @@ pub(crate) fn write_menu_container(
             }
         }
     }
-    let items: Vec<(u8, ItemStack)> = container
-        .iter()
-        .skip(2)
-        .enumerate()
-        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
-        .collect();
-    update(mob, |horse| horse.items = items);
     changed
 }
 

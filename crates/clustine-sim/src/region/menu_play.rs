@@ -20,7 +20,7 @@ use super::{Knowledge, Region};
 use crate::api::{ClickKind, ItemStack, MenuKind, PlayerEvent, TickOutput};
 use crate::menus::{self, MenuSlots};
 use crate::mobs::Mob;
-use crate::mobs::types::equine;
+use crate::mobs::types::{camel, equine, nautilus};
 use crate::physics::aabb::Aabb;
 use crate::state::{Menu, MenuOf};
 
@@ -182,10 +182,10 @@ impl Region {
         else {
             return;
         };
-        // A horse's (`HasCustomInventoryScreen`): its own menu.
+        // A horse's, a camel's or a nautilus's (`HasCustomInventoryScreen`): its own menu.
         if self
             .find_entity(vehicle)
-            .is_some_and(|(_, entity)| equine::is_equine(entity.kind))
+            .is_some_and(|(_, entity)| mounted(entity.kind).is_some())
         {
             self.open_mount_menu(vehicle, player, output);
             return;
@@ -217,11 +217,28 @@ impl Region {
             .passengers
             .iter()
             .any(|seat| Some(seat.key) != own);
-        if ridden_by_other || !equine::is_tamed(&mob) {
-            return;
-        }
+        let columns = match mounted(entity.kind) {
+            Some(Mounted::Horse) => {
+                if ridden_by_other || !equine::is_tamed(&mob) {
+                    return;
+                }
+                equine::inventory_columns(entity.kind, &mob)
+            }
+            // `Camel.openCustomInventoryScreen`: no test of who rides it, and a camel is
+            // always tamed (the research note, section 1.1).
+            Some(Mounted::Camel) => 0,
+            // `AbstractNautilus.openCustomInventoryScreen`: tame, and ridden by nobody
+            // or by the player.
+            Some(Mounted::Nautilus) => {
+                if ridden_by_other || !nautilus::state_of(&mob).1.tame.is_tame() {
+                    return;
+                }
+                0
+            }
+            None => return,
+        };
         let kind = MenuKind::Mount {
-            columns: equine::inventory_columns(entity.kind, &mob),
+            columns,
             entity: horse,
         };
         self.open_menu(player, MenuOf::Entity(horse), kind, output);
@@ -233,11 +250,27 @@ impl Region {
             return None;
         };
         let (_, entity) = self.find_entity(key)?;
-        if !equine::is_equine(entity.kind) {
-            return None;
-        }
         let mob = Mob::decode(&entity.data).ok()?;
-        Some(equine::mount_facts(entity.kind, &mob))
+        let grown = !mob.body.vitals.dying() && !crate::mobs::types::animal::is_baby(&mob);
+        match mounted(entity.kind)? {
+            Mounted::Horse => Some(equine::mount_facts(entity.kind, &mob)),
+            // `AbstractHorse.canUseSlot`, a camel always tamed: a saddle on a grown one;
+            // its body slot `Mob`'s, which no item a camel may wear fills.
+            Mounted::Camel => Some(menus::MountFacts {
+                kind: entity.kind,
+                saddle: grown,
+                body: true,
+            }),
+            // `AbstractNautilus.canUseSlot`: either slot on a grown, tame one.
+            Mounted::Nautilus => {
+                let usable = grown && nautilus::state_of(&mob).1.tame.is_tame();
+                Some(menus::MountFacts {
+                    kind: entity.kind,
+                    saddle: usable,
+                    body: usable,
+                })
+            }
+        }
     }
 
     /// Writes a horse's menu's container back into the horse `entity` of the chunk
@@ -255,19 +288,38 @@ impl Region {
         let Ok(mut mob) = Mob::decode(&entity.data) else {
             return;
         };
-        let changed = equine::write_menu_container(&mut mob, slots);
+        // A horse's chest is in its own state; a camel and a nautilus have only the two.
+        let (changed, saddle) = match mounted(entity.kind) {
+            Some(Mounted::Camel) => (
+                equine::write_menu_equipment(&mut mob, slots),
+                camel::breed_of(entity.kind).sounds.saddle,
+            ),
+            Some(Mounted::Nautilus) => (
+                equine::write_menu_equipment(&mut mob, slots),
+                if nautilus::state_of(&mob).1.under_water {
+                    clustine_data::sounds::ITEM_NAUTILUS_SADDLE_UNDERWATER_EQUIP
+                } else {
+                    clustine_data::sounds::ITEM_NAUTILUS_SADDLE_EQUIP
+                },
+            ),
+            _ => (
+                equine::write_menu_container(&mut mob, slots),
+                clustine_data::sounds::ENTITY_HORSE_SADDLE,
+            ),
+        };
         let mut stream = self.entity_stream(entity.key).random;
         let start = stream.clone();
         let mut did = Vec::new();
         for (slot, old, new) in changed {
             let times = if new.is_some() { 2 } else { 1 };
             for _ in 0..times {
-                did.extend(equine::on_equip_item(
+                did.extend(equine::on_equip_item_with(
                     slot,
                     old,
                     new,
                     entity.position,
                     &mut stream,
+                    saddle,
                 ));
             }
         }
@@ -342,9 +394,18 @@ impl Region {
             MenuOf::Ender { .. } => Some(self.players.get(&id)?.ender.0.to_vec()),
             MenuOf::Entity(key) => {
                 let (_, entity) = self.find_entity(key)?;
-                if equine::is_equine(entity.kind) {
+                if let Some(mount) = mounted(entity.kind) {
                     let mob = Mob::decode(&entity.data).ok()?;
-                    let slots = equine::menu_container(entity.kind, &mob);
+                    let slots = if mount == Mounted::Horse {
+                        equine::menu_container(entity.kind, &mob)
+                    } else {
+                        // A camel's and a nautilus's: their saddle and body, no chest.
+                        let worn = |slot: u8| mob.body.equipment.slots[usize::from(slot)];
+                        vec![
+                            worn(crate::living::slots::SADDLE),
+                            worn(crate::living::slots::BODY),
+                        ]
+                    };
                     return (slots.len() == kind.container_slots()).then_some(slots);
                 }
                 let contents = match &entity.data {
@@ -416,7 +477,7 @@ impl Region {
                 let Some((chunk, entity)) = self.find_entity(key) else {
                     return;
                 };
-                if equine::is_equine(entity.kind) {
+                if mounted(entity.kind).is_some() {
                     let entity = entity.clone();
                     self.write_mount_slots(id, &entity, chunk, slots, output);
                     return;
@@ -978,4 +1039,25 @@ fn box_distance_sqr(point: [f64; 3], pos: BlockPos) -> f64 {
     let low = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
     let high = low.map(|value| value + 1.0);
     distance_to_sqr(Aabb::new(low, high), point)
+}
+
+/// The mounts with a menu of their own (`HasCustomInventoryScreen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mounted {
+    Horse,
+    Camel,
+    Nautilus,
+}
+
+/// Which of them the entity type `kind` is, if any.
+fn mounted(kind: u16) -> Option<Mounted> {
+    use clustine_data::entity_types::{CAMEL, CAMEL_HUSK, NAUTILUS, ZOMBIE_NAUTILUS};
+    if equine::is_equine(kind) {
+        return Some(Mounted::Horse);
+    }
+    match i32::from(kind) {
+        CAMEL | CAMEL_HUSK => Some(Mounted::Camel),
+        NAUTILUS | ZOMBIE_NAUTILUS => Some(Mounted::Nautilus),
+        _ => None,
+    }
 }

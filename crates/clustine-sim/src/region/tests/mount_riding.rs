@@ -13,6 +13,7 @@ use clustine_world::Entity;
 
 use super::redstone::sounds as heard;
 use super::*;
+use crate::api::{ClickKind, MenuKind};
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::types::{camel, happy_ghast, nautilus, tamable};
@@ -385,4 +386,92 @@ fn a_saddled_nautilus_dashes_with_its_sound_on_land() {
         .collect();
     assert_eq!(dash.len(), 1, "{:?}", heard(&output));
     assert_eq!(dash[0].1, 1.0);
+}
+
+/// The menu the player `n` was shown opening in `output`: its serial, kind and slots.
+fn menu_opened(output: &TickOutput, n: u128) -> Option<(u64, MenuKind, usize)> {
+    output
+        .player_events
+        .iter()
+        .find_map(|(id, event)| match event {
+            PlayerEvent::MenuOpened {
+                serial,
+                kind,
+                slots,
+                ..
+            } if *id == player(n) => Some((*serial, *kind, slots.len())),
+            _ => None,
+        })
+}
+
+fn container_click(serial: u64, slot: i16) -> TickInputs {
+    moves(vec![numbered(
+        1,
+        PlayerInput::ContainerClick {
+            serial,
+            slot,
+            button: 0,
+            kind: ClickKind::Pickup,
+        },
+    )])
+}
+
+/// `Camel.mobInteract`'s first rule and `openCustomInventoryScreen`: a sneaking click
+/// opens a grown camel's menu of its saddle and body slots and no chest; a saddle put in
+/// its slot is worn, sounding the camel's own saddle sound (`getEquipSound`) once for
+/// `ArmorSlot.setByPlayer` and once for `setItemSlot`.
+#[test]
+fn a_sneaking_click_opens_a_camels_menu_and_a_saddle_put_there_sounds_as_the_camels() {
+    let mut region = two_players();
+    let camel = camel_at(&mut region, false);
+    checked(&mut region, &super::redstone::holding(items::SADDLE));
+    let output = checked(&mut region, &click(1, camel, true));
+    let (serial, kind, slots) = menu_opened(&output, 1).expect("the camel's menu opens");
+    assert_eq!(
+        kind,
+        MenuKind::Mount {
+            columns: 0,
+            entity: camel
+        }
+    );
+    assert_eq!(slots, 2 + 36);
+    checked(&mut region, &container_click(serial, 2 + 27));
+    let output = checked(&mut region, &container_click(serial, 0));
+    assert_eq!(
+        mob(&region, camel).body.equipment.slots[usize::from(slots::SADDLE)],
+        Some(ItemStack {
+            item: items::SADDLE,
+            count: 1
+        })
+    );
+    let saddled = heard(&output)
+        .into_iter()
+        .filter(|(sound, ..)| *sound == sounds::ENTITY_CAMEL_SADDLE)
+        .count();
+    assert_eq!(saddled, 2);
+}
+
+/// The inventory key on a nautilus its rider rides (`HasCustomInventoryScreen`): its
+/// menu, which a second player's sneaking click does not open while another rides it.
+#[test]
+fn the_inventory_key_opens_a_ridden_nautilus_menu_for_its_rider_only() {
+    let mut region = two_players();
+    let key = nautilus_at(&mut region, false);
+    checked(&mut region, &click(1, key, false));
+    assert_eq!(riding(&region, 1), Some(key));
+    let output = checked(
+        &mut region,
+        &moves(vec![numbered(1, PlayerInput::OpenVehicleInventory)]),
+    );
+    let (_, kind, slots) = menu_opened(&output, 1).expect("its menu opens");
+    assert_eq!(
+        kind,
+        MenuKind::Mount {
+            columns: 0,
+            entity: key
+        }
+    );
+    assert_eq!(slots, 2 + 36);
+    let output = checked(&mut region, &click(2, key, true));
+    assert_eq!(menu_opened(&output, 2), None);
 }
