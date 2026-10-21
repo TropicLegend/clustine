@@ -68,6 +68,7 @@ mod pushed;
 mod rails;
 mod random_ticks;
 pub(crate) use drops::DEFAULT_PICK_UP_DELAY;
+pub(crate) use entities::insecure_uuid;
 pub(crate) use random_ticks::Random;
 mod orbs;
 mod redstone;

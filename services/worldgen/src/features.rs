@@ -35,6 +35,9 @@ pub const FEATURES_VERSION: u16 = 2;
 pub struct FeatureStages {
     terrain: Arc<TerrainGenerator>,
     features: Arc<FeatureSettings>,
+    /// What makes the records of the entities runs and the spawn make, from the
+    /// simulation's own code (`docs/groundwork/n7l-plan.md`, section 2.1).
+    generation: clustine_sim::generation::Generation,
 }
 
 impl FeatureStages {
@@ -55,9 +58,11 @@ impl FeatureStages {
     /// for the judge, which turns some off on both sides and places the structures'
     /// blocks of `terrain`'s starts ([`FeatureSettings::with_structures`]).
     pub fn with_features(terrain: Arc<TerrainGenerator>, features: FeatureSettings) -> Self {
+        let generation = generation_of(&terrain);
         Self {
             terrain,
             features: Arc::new(features),
+            generation,
         }
     }
 
@@ -67,14 +72,28 @@ impl FeatureStages {
         if let Some(templates) = templates {
             features = features.with_templates(templates);
         }
+        let generation = generation_of(&terrain);
         Self {
             terrain,
             features: Arc::new(features),
+            generation,
         }
     }
 }
 
+/// The maker of `terrain`'s world: its entities' own streams keyed by its seed, so that
+/// a chunk made twice makes the same records.
+fn generation_of(terrain: &TerrainGenerator) -> clustine_sim::generation::Generation {
+    clustine_sim::generation::Generation {
+        world: terrain.seed().cast_unsigned(),
+    }
+}
+
 impl Stages for FeatureStages {
+    fn maker(&self) -> &dyn clustine_world::generation::Maker {
+        &self.generation
+    }
+
     fn settings(&self) -> GeneratorSettings {
         // The batches of kinds built so far are in the identity, so that a world
         // made while fewer were built is refused rather than continued with more,

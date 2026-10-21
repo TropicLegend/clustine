@@ -79,7 +79,6 @@ impl Random {
     /// region counts: the chunk's generation is a function, and its first tick at `lived`
     /// 0 then draws its own stream afresh (`docs/groundwork/n7l-plan.md`, sections 2.2
     /// and 9 item 10).
-    #[allow(dead_code, reason = "made by generation's makers (N7l's D1 to D3)")]
     pub(crate) fn of_generated(world: u64, key: EntityId) -> Self {
         /// Mixed in first, so that this is no other stream.
         const GENERATED: u64 = 0x6765_6e65_7261_7465;

@@ -487,6 +487,7 @@ dependencies = [
  "clustine-features",
  "clustine-light",
  "clustine-protocol",
+ "clustine-sim",
  "clustine-structures",
  "clustine-terrain",
  "clustine-world",

@@ -116,11 +116,19 @@ pub fn template_entity(
 /// set, and what the entity draws from its own stream at its making drawn from the
 /// stream of the world `world` and `key` (section 2.2).
 pub fn record(world: u64, key: EntityId, mut entity: Entity) -> Entity {
-    // The stream of its own (`Random::of_generated`), its UUID and its type's
-    // `construct` come with the store's side of this step; until then the record is
-    // the entity with its key.
-    let _ = world;
     entity.key = key;
+    let Ok(mut mob) = crate::mobs::Mob::decode(&entity.data) else {
+        return entity;
+    };
+    // What a mob's making draws from its own random, as `Region::new_mob` does for an
+    // egg's: its UUID, its constructor's yaw, then its type's `construct` (a brain's
+    // sensors' delays, a squid's strokes), from a stream of its own that no region
+    // counts (`docs/groundwork/n7l-plan.md`, sections 2.2 and 9 item 10).
+    let mut own = Random::of_generated(world, key);
+    entity.uuid = crate::region::insecure_uuid(own.next_u64(), own.next_u64());
+    let _constructor_yaw = own.next_float();
+    crate::mobs::brain::construct(crate::mobs::types::of(entity.kind), &mut mob, &mut own);
+    entity.data = mob.encode();
     entity
 }
 
@@ -181,6 +189,74 @@ impl Draws for Random {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generated(index: u16) -> EntityId {
+        clustine_world::Generated {
+            dimension: 0,
+            chunk: ChunkPos::new(4, -2),
+            structure: false,
+            index,
+        }
+        .key()
+        .expect("within the border")
+    }
+
+    fn cow() -> Entity {
+        Entity {
+            key: EntityId(0),
+            kind: clustine_data::entity_types::COW as u16,
+            uuid: uuid::Uuid::nil(),
+            position: [64.5, 70.0, -30.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+            hops: 0,
+            lived: 0,
+            fresh_at: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: crate::mobs::Mob::fresh().encode(),
+        }
+    }
+
+    /// A generated mob's record: its key, and a UUID drawn from a stream of its own
+    /// keyed by it, the same however often the chunk is made and another for another
+    /// key; the stream is no egg's (`Random::of_entity`).
+    #[test]
+    fn a_generated_mobs_record_is_keyed_and_its_uuid_drawn_from_its_own_stream() {
+        let made = record(11, generated(0), cow());
+        assert_eq!(made.key, generated(0));
+        assert_ne!(made.uuid, uuid::Uuid::nil());
+        assert_eq!(record(11, generated(0), cow()), made);
+        assert_ne!(record(11, generated(1), cow()).uuid, made.uuid);
+        assert_ne!(record(12, generated(0), cow()).uuid, made.uuid);
+        let mut egg = Random::of_entity(11, generated(0), 0);
+        let egg_uuid = crate::region::insecure_uuid(egg.next_u64(), egg.next_u64());
+        assert_ne!(egg_uuid, made.uuid);
+    }
+
+    /// An entity that is no mob is given its key only.
+    #[test]
+    fn a_record_of_no_mob_is_given_its_key_only() {
+        let mut item = cow();
+        item.data = clustine_world::EntityData::Item {
+            stack: clustine_world::ItemStack { item: 1, count: 1 },
+            pick_up_delay: 0,
+            thrower: None,
+            health: 5,
+            age_offset: 0,
+        };
+        let made = record(11, generated(3), item.clone());
+        assert_eq!(
+            made,
+            Entity {
+                key: generated(3),
+                ..item
+            }
+        );
+    }
 
     #[test]
     fn the_simulation_s_stream_draws_the_same_through_draws() {
