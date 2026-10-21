@@ -646,3 +646,66 @@ beside N7f's pen.
     desert and snow and see their animals, then into a village (villagers, cats, the golem,
     the pens and stables); open the same seed in the game with `/tick freeze` and find the
     same animals at the same blocks, of the same colours.
+
+## 9. The review (2026-10-21), and what the plan is now
+
+An independent review read the store's chunks, the make-over and fold, the arrivals, the
+worker's saves, the take-ins, the eggs, the pool and the dumps of `Zombie` and
+`ProtoChunk`. It found the keys, the taking table but for the fold, the determinism, the
+dependencies, the format's raise, the delegation and sections 6 and 7 sound, and twelve
+things to change. The plan stands amended by them:
+
+1. **A structure's entity is keyed by the chunk it lands in** (2.3), with its index taken
+   there in definition D, not by the run's centre. A newer `FEATURES_VERSION` (ADR-0021,
+   section 6) may make a different list in the same run, and a key of the centre could
+   then name one entity stored in the centre and another made in a neighbour not yet
+   stored. Its own-stream draws (UUID, `construct`) are made in the landing chunk, which
+   the own stream allows, being independent of R. An animal of the spawn always lands in
+   its own chunk and is keyed as before.
+2. **The round's rule is decided in `save_parts`** (2.4 item 2): a save is a first-timer
+   wherever no blocks file exists on disk and no pending entry has one (one `exists` per
+   new pending position), whatever made it: a note, a fold, a restore. Every save that
+   would place a first blocks file takes the two rounds. Without it a fold of an arrival
+   into a chunk never generated, crashed between its renames and the directory's sync,
+   loses the chunk's animals for good. Tested with the failing disk.
+3. **A panic while making mobs fails no `Lit` task** (2.1): `Stages::spawn` runs under
+   `catch_unwind`; on a panic the chunk keeps no entities of the spawn, is marked with a
+   failure, and the failure is logged as a placement's is. Named: a remake keeps stored
+   entities, so S8 does not mend it later.
+4. **The store keeps the generated mark too** (2.4 item 5): its `put` stops clearing it on
+   a replayed entity, whose reason went with item 4; `apply`'s comment and
+   `entities_specification.rs` change with it.
+5. **A chunk's blocks are rewritten only at its first save** (2.4 item 5): the worker
+   forces `Parts::ALL` for a generated chunk only on a runner's first save of it
+   (`saved_once`), since a blocks file now means taken; otherwise an animal stepping in an
+   unedited chunk would rewrite its blocks at every checkpoint. Measured in section 7.
+6. **A first-timer's note writes or removes its entities file in round 1** (2.4 item 1):
+   `Parts::ALL`, an empty list removing a stale file, so that an entities file a crash left
+   without its blocks file is never read beside a newer generator's blocks. Named:
+   ADR-0021's "crash followed at once by a newer generator" has an entities form, the newer
+   list merged by key with the replayed `Whole`s.
+7. **Section 2.4 item 3 is withdrawn**: `Saved::new` does drop a note's standing on a
+   merge, but after a failed sync every handle that saved is lost and the region is
+   restored from the log, which is right; what item 3 meant to prevent is item 2 here.
+8. **No entity is made outside the game's border**, ±1,874,999 chunks (2.3), where 22
+   bits of a coordinate hold; tested at the edge. `EntityIds::block` tests `>=` against
+   `BLOCK_COUNT` once it is 2^31, and a region file or hello with a block above it is
+   refused when read.
+9. **A chicken jockey's zombie is kept as the game keeps it** (3.5): its record taken
+   when the chicken is added (`ProtoChunk.addEntity` saves at once, and a passenger is not
+   saved again), before its door-breaking, equipment, enchantments and attributes; the
+   later draws are still made from R. A test in D3.
+10. **2.2's sentence on draws is corrected**: an egg's making counts its draws
+    (`entity_drew`, `spawn_eggs.rs`); a generated entity's are on its own mark,
+    `of_generated`, and counted by nobody, which is why the egg's path is not copied.
+11. **L1's contracts gain** the refactor of `Region::spawn_mob_with` into the shared maker
+    free of the region, R's construction made public in `clustine-features`, and
+    `Spawning` carrying the difficulty's effective value and special multiplier from the
+    start, which N7k's zombie and villager draw against.
+12. **What a player notices.** A zombie village's zombie villagers would stroll unburnt in
+    daylight, where the game burns them within seconds outside shade: a seam of ordinary
+    play, so **burning in daylight comes with N7k's monsters' bodies** (fire ticks and the
+    sky's check), not with N9. Monuments and outposts are empty of guardians and
+    pillagers, which natural spawning brings: named in what to try. The creatures (D1, D2)
+    need only N7i and N7j, so they are built after N7j and before N7k; the structures'
+    entities (D3) after N7k. The format is raised once, with the last of them.
