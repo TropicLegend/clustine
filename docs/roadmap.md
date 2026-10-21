@@ -343,9 +343,16 @@ ghast (part R, [research](groundwork/n7j-riding-research.md),
 a happy ghast four and flies without a kick for floating, staying still and solid for
 ten ticks after a rider gets off, a tame nautilus one; the camel's and the nautilus's
 saddle menus open by sneaking or the inventory key; tested from the specification next.
-Getting on across a line has a [design](groundwork/n7j-mount-across-a-line.md) under
-review; until it is built, a vehicle across a pinned line cannot be mounted (named, for
-boats too). Named: a frog's tongue
+Getting on a vehicle across a line ([design](groundwork/n7j-mount-across-a-line.md),
+reviewed): its holder keeps a hidden seat, the player's region hands them over riding it,
+and the holder seats them as a mount, about four to six ticks after the click; tested from
+the specification next. Made with each chunk (N7l, [plan](groundwork/n7l-plan.md),
+reviewed): a new seeded world's chunks have the animals the game makes with them, drawn
+from the game's spawning and each creature's `finalizeSpawn` by its group (a horse herd
+of one coat, rabbits with babies after the first), given keys of their own, stored once
+with their chunk and never made again; worlds made before are refused. The structures'
+entities (D3) come after N7k ([plan](groundwork/n7k-plan.md), drafted, with its
+[brief](groundwork/n7k-brief.md)). Named: a frog's tongue
 finds no prey until slimes come (N9); an allay does not hear note blocks or jukeboxes
 (entity listeners); a playing-dead axolotl gets no Regeneration (mob effects); a copper
 golem looks for chests by reading every block within its reach, which is slow but rare (it
@@ -411,8 +418,15 @@ rests 140 ticks between searches).
    first flies it with W and space; when one gets off it holds still for half a second
    and others can stand on it while it does. Tame a nautilus with a pufferfish, saddle it
    and ride it under water; space dashes it.
-0. Next in N7: getting on across a line, and the mobs made with each new chunk
-   ([plan](groundwork/n7l-plan.md)).
+0. Getting on across a line: with pins, stand west of x = 64 and click a boat, a saddled
+   horse or a camel just east of it; you are seated a moment later, and another player
+   sees you get on. A new seeded world (an old one is refused; delete it, or use another
+   `--world`): walk out of spawn and find cows, sheep, pigs and chickens in the plains,
+   horses of one coat in a herd, rabbits in deserts and snow, wolves and foxes in taiga,
+   llamas in savanna plateaus, parrots and pandas in jungles, polar bears on ice, turtles
+   on beaches, frogs and armadillos where the game puts them. The same seed gives the same
+   animals in the same places every time.
+0. Next in N7: golems, villagers and monsters' bodies (N7k).
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
