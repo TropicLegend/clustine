@@ -31,6 +31,8 @@ fn horse_at(kind: i32, position: [f64; 3], yaw: f32, saddled: bool) -> Entity {
     let mut mob = Mob::fresh();
     mob.body.vitals.health = health_of(kind);
     mob.body.vitals.air = MAX_AIR;
+    mob.body.head.head_yaw = yaw;
+    mob.body.head.body_yaw = yaw;
     mob.state = animal::write(
         &Animal::default(),
         &HorseState {
@@ -152,9 +154,9 @@ fn ridden(kind: i32, yaw: f32, saddled: bool) -> Region {
     region
 }
 
-/// `AbstractHorse.mobInteract` and `doPlayerRide`: a tamed grown horse clicked by a
-/// player who does not sneak takes them on, saddled or not, and turns them to its own
-/// yaw and pitch; they sit at its passenger point (1.44375 up) less their own (0.6).
+/// `AbstractHorse.mobInteract`, `doPlayerRide` and `addPassenger`: a tamed grown horse
+/// clicked by a player who does not sneak takes them on, saddled or not, and turns them
+/// to where it looks (its head, here on its yaw) and its pitch; they sit at its passenger point (1.44375 up) less their own (0.6).
 #[test]
 fn a_tamed_horse_takes_on_a_player_who_clicks_it_turned_to_its_way() {
     for saddled in [false, true] {

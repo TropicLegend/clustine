@@ -250,12 +250,18 @@ impl Region {
                     self.open_mount_menu(entity.key, id, output);
                 }
             }
-            // `doPlayerRide`: the player's yaw and pitch set to the horse's, then on.
+            // `doPlayerRide` and `AbstractHorse.addPassenger`: on, and the player turned to
+            // the horse's view (`getViewYRot(0)`), its head's yaw. The game's is the head's
+            // yaw a tick ago (`yHeadRotO`), which the record does not keep: named. The
+            // rider's client snaps itself to the horse its own way, and its next rotation
+            // is the region's then.
             Did::Ride => {
+                let head = crate::mobs::Mob::decode(&entity.data)
+                    .map_or(entity.yaw, |mob| mob.body.head.head_yaw);
                 if let Some(id) = self.player_with_entity(player)
                     && let Some(rider) = self.players.get_mut(&id)
                 {
-                    rider.pose.yaw = entity.yaw;
+                    rider.pose.yaw = head;
                     rider.pose.pitch = entity.pitch;
                 }
                 self.mount_player(player, entity.key, output);

@@ -587,21 +587,19 @@ fn a_wild_horse_takes_a_player_who_clicks_it_with_an_empty_hand() {
     }
 }
 
-/// `Horse.mobInteract` 0–61 and `AbstractHorse.mobInteract` 21–44: the inventory is
-/// opened only for a tamed horse (`isTamed() && isSecondaryUseActive()`), so a wild one
-/// takes a player who sneaks as one who does not: `Horse.mobInteract`'s flag is false,
-/// the empty hand goes on to `AbstractHorse.mobInteract`, whose `isTamed()` at 21 is false
-/// and whose empty hand at 44–54 reaches `doPlayerRide` at 107. (`Entity.interact`'s own
-/// sneaking branch, `Entity` 6475–6496, only ties the player's leashed mobs to it.)
+/// `Horse.mobInteract` 0–61 and `AbstractHorse.mobInteract` 21–44 reach `doPlayerRide`
+/// for a wild horse clicked by a player who sneaks with an empty hand, but the use's
+/// packet sets the player's shift key from its secondary action
+/// (`ServerGamePacketListenerImpl.handleInteract`, `setShiftKeyDown`), and
+/// `Entity.canRide` (6996–7007) refuses a rider whose shift key is down: nobody is
+/// taken on. (A finding of this file's first version, which missed `canRide`, checked
+/// by the lead against the dumps.)
 #[test]
-#[ignore = "finding: the game mounts a player who sneak-clicks a wild horse with an empty \
-            hand (AbstractHorse.mobInteract opens the inventory only for a tamed one); \
-            Clustine takes nobody on"]
-fn a_wild_horse_takes_a_player_who_clicks_it_with_an_empty_hand_while_sneaking() {
+fn a_wild_horse_takes_nobody_who_clicks_it_while_sneaking() {
     for kind in [entity_types::HORSE, entity_types::DONKEY] {
         let mut scene = with_horse(&[], &horses(kind).wild, 0.0);
         scene.input(used_sneaking(key(HORSE)));
-        assert_eq!(rides(&scene, 0), Some(key(HORSE)), "kind {kind}");
+        assert_eq!(rides(&scene, 0), None, "kind {kind}");
     }
 }
 
@@ -748,21 +746,21 @@ fn yaw_apart(a: f32, b: f32) -> f32 {
 }
 
 /// `doPlayerRide` 19–37 sets the player's yaw and pitch to the horse's before
-/// `startRiding`: a player who looked elsewhere, down, is turned to the horse's way and
-/// its pitch (0), and the horse, steered from that tick, takes the rider's yaw back.
+/// `startRiding`, and `addPassenger` then to its view (the next test): a player who
+/// looked elsewhere, down, is turned to where the horse looks and its pitch (0), and the
+/// horse, steered from that tick, takes the rider's yaw back.
 #[test]
 fn a_player_taken_on_is_turned_from_their_own_way_to_the_horses() {
     let mut scene = with_horse(&[], &saddled(entity_types::HORSE), 0.0);
     scene.input(turn(-120.0, 35.0));
-    let before = the_horse(&scene);
-    assert!(yaw_apart(before.yaw, -120.0) > 30.0, "{}", before.yaw);
+    let looks = head_yaw(&the_horse(&scene).data).expect("a mob's head");
     scene.input(used(key(HORSE)));
     assert_eq!(rides(&scene, 0), Some(key(HORSE)));
     let rider = pose(&scene, 0);
     assert_eq!(rider.pitch, 0.0, "the horse's pitch");
     assert!(
-        yaw_apart(rider.yaw, -120.0) > 30.0,
-        "turned from their own: {}",
+        yaw_apart(rider.yaw, looks) <= 10.0,
+        "turned to where the horse looks ({looks}): {}",
         rider.yaw
     );
     assert_eq!(the_horse(&scene).yaw, rider.yaw, "the horse takes it back");
@@ -775,9 +773,6 @@ fn a_player_taken_on_is_turned_from_their_own_way_to_the_horses() {
 /// within the 10° a head turns in a tick (`LookControl`'s), not where its body points.
 /// This horse's head is 28° from its body when it is clicked.
 #[test]
-#[ignore = "finding: the game snaps a mounting rider to the horse's head yaw \
-            (addPassenger's getViewYRot(0) is LivingEntity's, yHeadRotO); Clustine turns \
-            them to its body's yaw, and the horse then keeps its body's way"]
 fn a_player_taken_on_faces_where_the_horse_looks() {
     let horse = saddled(entity_types::HORSE);
     let head = head_yaw(&horse.data).expect("a mob's head");
