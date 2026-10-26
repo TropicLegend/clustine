@@ -98,13 +98,12 @@ impl Settings {
 }
 
 /// `Mob.getMaxFallDistance()`: three blocks without a target; with one, as far as its
-/// health allows at the normal difficulty.
+/// health allows at the world's difficulty.
 fn max_fall_distance(ai: &Ai<'_, '_>) -> i32 {
     if super::sensing::target(ai).is_none() {
         return 3;
     }
-    /// `Difficulty.NORMAL`'s id, the game's default.
-    const DIFFICULTY: i32 = 2;
+    const DIFFICULTY: i32 = clustine_world::Difficulty::WORLD as i32;
     let health = ai.tick.mob.body.vitals.health;
     let max = ai.attribute(attributes::MAX_HEALTH) as f32;
     let spare = ((health - max * 0.33) as i32 - (3 - DIFFICULTY) * 4).max(0);

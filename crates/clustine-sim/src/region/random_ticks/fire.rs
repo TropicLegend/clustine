@@ -12,7 +12,7 @@
 //!   `doFireTick`; 128 by default), which `ServerLevel.canSpreadFireAround` asks: fire
 //!   ticks wherever a region ticks, since a region does not see the players of its
 //!   neighbours and fire would stop at a region's edge if it judged by its own;
-//! - the difficulty: normal, the game's default;
+//! - the difficulty: the world's (`Difficulty::WORLD`);
 //! - the environment attribute `increased_fire_burnout`: by the biome at the block,
 //!   those whose files in the 26.3 jar set it;
 //! - TNT that fire burns is primed after it is gone (`TntBlock.prime` in
@@ -37,9 +37,8 @@ use crate::api::TickOutput;
 use crate::region::Region;
 use crate::region::updates::{RegionView, UPDATE_ALL, UPDATE_CLIENTS, UPDATE_LIMIT};
 
-/// The game's difficulty by its id (`Difficulty.NORMAL`), which makes fire spread a
-/// little faster than on easy and slower than on hard.
-const DIFFICULTY: i32 = 2;
+/// The world's difficulty by its id, which makes fire spread faster the harder it is.
+const DIFFICULTY: i32 = clustine_world::Difficulty::WORLD as i32;
 
 /// `Block.UPDATE_NONE` (`UPDATE_INVISIBLE | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`), with
 /// which fire sets its own age: no neighbour is told, though their shapes are asked

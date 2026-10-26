@@ -143,6 +143,34 @@ pub mod abilities {
     pub const INSTANT_BREAK: u8 = 0x08;
 }
 
+/// The world's difficulty, and whether a client may change it (`ClientboundChangeDifficulty`:
+/// the difficulty's id as a byte, then the lock).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChangeDifficulty {
+    pub difficulty: u8,
+    pub locked: bool,
+}
+
+impl Packet for ChangeDifficulty {
+    const ID: i32 = clientbound::CHANGE_DIFFICULTY;
+}
+
+impl Encode for ChangeDifficulty {
+    fn encode(&self, w: &mut Writer) {
+        w.put_u8(self.difficulty);
+        w.put_bool(self.locked);
+    }
+}
+
+impl Decode for ChangeDifficulty {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            difficulty: r.u8()?,
+            locked: r.bool()?,
+        })
+    }
+}
+
 /// What the player is allowed to do, mainly depending on the game mode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerAbilities {

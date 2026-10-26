@@ -24,14 +24,14 @@ use clustine_protocol::item::ItemStack as WireStack;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
-    ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState, DamageEvent,
-    Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login, PlayerAbilities,
-    PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath, RemoveEntities,
-    SectionBlocksUpdate, SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition,
-    SetEntityData, SetEntityLink, SetEquipment, SetExperience, SetHeadRotation, SetHeldSlot,
-    SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity, SwingAnimation,
-    SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk,
-    UpdateAttributes, abilities, angle, entity_data, game_event, game_mode,
+    ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
+    DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
+    PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
+    RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
+    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
+    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
+    SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity,
+    UnloadChunk, UpdateAttributes, abilities, angle, entity_data, game_event, game_mode,
     inventory as protocol_inventory, level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
@@ -4559,6 +4559,12 @@ impl Fanout {
         };
         let entered = [
             encoded(&login_packet(self.wire.of(entity), &self.config)),
+            // The world's difficulty, unlocked as a new dedicated server's is; a client's
+            // change of it is not taken (`docs/groundwork/n7k-plan.md`, section 10).
+            encoded(&ChangeDifficulty {
+                difficulty: clustine_world::Difficulty::WORLD.id() as u8,
+                locked: false,
+            }),
             encoded(&PlayerAbilities {
                 flags,
                 flying_speed: 0.05,

@@ -9,7 +9,8 @@
 //!
 //! Named differences: the game rules `universal_anger` and `forgive_dead_players` are
 //! their defaults (off and on), and nothing tells a mob of a player's death yet; the
-//! difficulty is the default, normal.
+//! difficulty is the world's, easy (`Difficulty::WORLD`), which none of these rules reads
+//! but to ask that it is not peaceful.
 
 use clustine_world::EntityId;
 use serde::{Deserialize, Serialize};
