@@ -6,6 +6,7 @@
 mod bytes;
 mod change;
 mod chunk;
+pub mod components;
 mod difficulty;
 mod effects;
 mod entity;
@@ -21,6 +22,7 @@ pub use chunk::{
     MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked,
     light_tells_apart,
 };
+pub use components::{Component, Components};
 pub use difficulty::Difficulty;
 pub use effects::{
     Arrival, Blast, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect, Thrower,
