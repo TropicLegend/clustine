@@ -467,3 +467,10 @@ the creeper's ignition now.
 5. **The difficulty** is a constant, `Difficulty::WORLD`, rather than a stored setting:
    with only easy accepted every worker reads the same; it becomes a setting of the world's
    meta when a second difficulty is allowed.
+6. **The villager's night in the open** (part K2, confirmed by the tests from the
+   specification): section 10 item 2's "`GoToClosestVillage` (no village: nothing)" is
+   wrong against the dump. Without a village every place is as far from one, so the
+   behaviour keeps the last of five `LandRandomPos.getPos(villager, 15, 7)` and walks there:
+   at night in the open a villager wanders off up to 15 blocks, as the game's does. Built so.
+7. **Spikes and fling across a line** carry flags of their own in the effects' format
+   (tags 9 and 11), and the snowball's hit is tag 10.
