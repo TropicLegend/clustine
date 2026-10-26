@@ -1838,3 +1838,49 @@ fn at_easy_fire_spreads_as_slowly_as_the_easy_difficulty_says() {
         "{set_alight} cells set alight by {count} fires: at easy about {easy}, at normal {normal}"
     );
 }
+
+/// `LivingEntity.travel`'s fall in a tick: the gravity of 0.08 taken off a motion of
+/// nothing and the air's drag of 0.98 after, in floats as the game's constants are.
+const RESTING_FALL: f64 = -0.078_400_001_525_878_9;
+
+/// `Entity.move` on the server: `verticalCollision` is whether the move asked for was
+/// cut short upwards or downwards, and the ground is under a mob only where it was
+/// cut short going down. A mob laid down at rest with a motion of nothing (as these
+/// tests lay mobs down) asks to move by nothing in its first tick, and so reads off
+/// the ground after it although it stays where it was; the gravity of that tick gives
+/// it the fall of a mob at rest, and from the second tick on its move is cut short by
+/// the floor and it is on the ground. A mob saved at rest keeps that fall in its
+/// record and is on the ground from its first tick; a new one (from an egg, a
+/// generated chunk or a structure) starts off the ground as the game's does. So a
+/// knockback in the tick a mob laid down so first ticks gives it no lift, as it would
+/// in the game, and nothing of it shows: the mob neither falls, sinks nor moves.
+#[test]
+fn a_mob_laid_down_with_no_motion_reads_off_the_ground_for_its_first_tick_only_and_does_not_move() {
+    let zombie = made(items::ZOMBIE_SPAWN_EGG, entity_types::ZOMBIE);
+    let at = [8.5, FLOOR, 8.5];
+    let still = placed(&zombie, 1, at, 0);
+    let mut scene = empty_night(&World::default().with_entities(&[still]));
+    // The region ticked the zombie in the tick its chunk was loaded, all eight
+    // neighbours being loaded with it.
+    let first = the(&scene, key(1));
+    assert!(!first.on_ground, "off the ground after a move of nothing");
+    assert_eq!(first.position, at, "and where it was laid");
+    assert_eq!(first.motion, [0.0, RESTING_FALL, 0.0]);
+    for tick in 1..4 {
+        scene.idle();
+        let now = the(&scene, key(1));
+        assert!(now.on_ground, "tick {tick}: on the ground");
+        assert_eq!(now.position, at, "tick {tick}");
+    }
+
+    // Laid down as a mob at rest is saved, it is on the ground from its first tick.
+    let mut resting = placed(&zombie, 1, at, 0);
+    resting.motion = [0.0, RESTING_FALL, 0.0];
+    let mut scene = empty_night(&World::default().with_entities(&[resting]));
+    for tick in 0..4 {
+        let now = the(&scene, key(1));
+        assert!(now.on_ground, "tick {tick}: on the ground");
+        assert_eq!(now.position, at, "tick {tick}");
+        scene.idle();
+    }
+}
