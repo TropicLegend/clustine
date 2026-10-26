@@ -50,6 +50,7 @@
 //! `tests/official.rs` compares the result with the light the official server stored
 //! for chunks it made, section by section.
 
+pub mod engine;
 mod faces;
 mod flood;
 
