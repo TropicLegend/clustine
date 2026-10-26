@@ -15,12 +15,14 @@
 //! [`Reader::components_serverbound`] steps over those and says which it dropped.
 //!
 //! The patch's own framing (the two counts, then the added, then the removed) is
-//! `DataComponentPatch$3`, and the length before a client's value `$2`; neither is in
-//! the bytecode dumps, so both are as SteelMC and earlier versions of the game have
-//! them. The mechanics of a length-prefixed value are dumped (`ByteBufCodecs$30`: the
-//! value is read from a slice of its length and what is left of it is let be); the
-//! maximum the game gives that length (2 MiB in SteelMC) is not, and is not refused
-//! here.
+//! `DataComponentPatch$3`, and the length before a client's value `$2`, whose maximum is
+//! `Integer.MAX_VALUE` (n9 DataComponentPatch$2 12–15): no length is refused for its
+//! size, here as there. The mechanics of a length-prefixed value are `ByteBufCodecs$30`:
+//! the value is read from a slice of its length and what is left of it is let be. The
+//! game reads the added components into a map (`Reference2ObjectArrayMap.put`,
+//! n9 DataComponentPatch$3 27–96), so a kind added twice is one, the last value in the
+//! first one's place; this reader keeps both as read, and the world's patch, set in the
+//! order read, comes to the same.
 
 mod values;
 
