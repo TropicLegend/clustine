@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use clustine_light::engine::{Chunks, LightAt, Lighting};
+use clustine_light::engine::{Chunks, Kept, LightAt, Lighting};
 use clustine_world::{BlockPos, Chunk, ChunkPos};
 
 use super::Region;
@@ -18,6 +18,7 @@ use super::Region;
 /// What one chunk lit whole costs of a step's budget, and one adopted with levels kept
 /// from elsewhere (the plan's 4.5).
 pub(crate) const WHOLE: u32 = 8;
+pub(crate) const ADOPTED: u32 = 1;
 
 /// How much light a step may take on: a budget of units, or none at all. The region's
 /// configuration says which (a server's has a budget; a test's has none, so that a chunk
@@ -43,6 +44,9 @@ pub(crate) struct RegionLight {
     known: BTreeSet<ChunkPos>,
     /// The chunks present that wait for their turn.
     waiting: BTreeSet<ChunkPos>,
+    /// The light some waiting chunks came with from a merge or a split, adopted when
+    /// their turn comes.
+    kept: std::collections::BTreeMap<ChunkPos, Kept>,
 }
 
 impl Default for RegionLight {
@@ -51,6 +55,7 @@ impl Default for RegionLight {
             engine: Lighting::new(true),
             known: BTreeSet::new(),
             waiting: BTreeSet::new(),
+            kept: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -91,10 +96,39 @@ impl Chunks for Present<'_> {
 }
 
 impl Region {
+    /// The light some of the chunks loaded in this tick kept from a merge or a split.
+    pub(crate) fn take_kept_light(&mut self, kept: &[(ChunkPos, Kept)]) {
+        for (at, levels) in kept {
+            self.light.kept.insert(*at, levels.clone());
+        }
+    }
+
     /// The light step (the plan's 4.1 and 4.5): the chunks that went are taken out, those
     /// replaced whole relit, the changes noted in the chunks drained into the engine, the
     /// waiting chunks taken within the budget nearest the players first, and a run.
     pub(crate) fn light_step(&mut self) {
+        self.sync_light();
+        self.take_waiting();
+        self.run_light();
+    }
+
+    /// The light of the region's loaded chunks to hand on with them at a merge or a
+    /// split, the last tick's changes lit first (ADR-0029, section 7): what the runner
+    /// keeps beside each chunk it keeps warm, and gives back in
+    /// [`crate::api::TickInputs::chunks_kept`] with it.
+    pub fn hand_over_light(&mut self) -> Vec<(ChunkPos, Kept)> {
+        self.sync_light();
+        self.run_light();
+        let taken = (self.config.seed, self.tick);
+        self.chunks
+            .keys()
+            .filter_map(|at| Some((*at, self.light.engine.kept(*at, taken)?)))
+            .collect()
+    }
+
+    /// The engine told what went, what was replaced whole and what changed; what came
+    /// waits.
+    fn sync_light(&mut self) {
         let present: BTreeSet<ChunkPos> = self
             .chunks
             .keys()
@@ -135,7 +169,11 @@ impl Region {
                 }
             }
         }
-        // The waiting chunks, nearest the region's players first, then by position.
+    }
+
+    /// The waiting chunks the budget allows, nearest the region's players first, then by
+    /// position: one with light kept from a merge or a split adopted, the rest lit whole.
+    fn take_waiting(&mut self) {
         let players: Vec<ChunkPos> = self
             .players
             .values()
@@ -148,21 +186,36 @@ impl Region {
                 .min()
                 .unwrap_or(0)
         };
+        let light = &mut self.light;
         let mut order: Vec<ChunkPos> = light.waiting.iter().copied().collect();
         order.sort_by_key(|chunk| (distance(chunk), *chunk));
         let mut left = self.config.light.budget;
         for chunk in order {
+            let kept = light.kept.remove(&chunk);
+            let cost = if kept.is_some() { ADOPTED } else { WHOLE };
             if let Some(units) = &mut left {
-                if *units < WHOLE {
+                if *units < cost {
+                    if let Some(kept) = kept {
+                        light.kept.insert(chunk, kept);
+                    }
                     break;
                 }
-                *units -= WHOLE;
+                *units -= cost;
             }
             light.waiting.remove(&chunk);
             light.known.insert(chunk);
-            light.engine.arrived(chunk);
+            match kept {
+                Some(kept) => light.engine.adopt(chunk, kept),
+                None => light.engine.arrived(chunk),
+            }
         }
-        light.engine.run(&Present {
+        let waiting = &light.waiting;
+        light.kept.retain(|chunk, _| waiting.contains(chunk));
+    }
+
+    /// A run of the engine over the region's chunks.
+    fn run_light(&mut self) {
+        self.light.engine.run(&Present {
             chunks: &self.chunks,
             copies: &self.copies,
         });

@@ -535,6 +535,12 @@ chunk ticks only once its 3×3 is lit (`crates/clustine-sim/src/region/light.rs`
 reads of the rules' views, the placement's and `MobWorld::light` on it; `restore_loaded`'s
 amended promise; the stubs of the shared files for D2 and D3. A chunk let go and loaded
 again between two steps is taken as a replacement and lit outside the budget: harmless,
-and rare. A region assumes a sky; the dimensions without one come with phase D. Not built
-yet: the incremental engine (D1), the rules (D2), the detector (D3), adoption and the
-hand-over at merges and splits and the oracle setting (N8e), saplings (N8f).
+and rare. A region assumes a sky; the dimensions without one come with phase D. The light
+handed on at a merge or a split (N8e's first part): `Region::hand_over_light` lights the
+last tick's changes and gives each loaded chunk's levels, the runner keeps them beside
+the chunk in `Warm` and hands them back in `TickInputs::chunks_kept`, and the region adopts
+them at one unit a chunk; a split's part's chunks are lit anew where they go (their levels
+do not travel with `Part` yet). Not built yet: the incremental engine (D1), which makes an
+adoption cheap (the first implementation lights an adopted chunk whole, which is exact),
+the rules (D2), the detector (D3), carried light and the oracle setting (N8e), saplings
+(N8f).

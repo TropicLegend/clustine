@@ -42,7 +42,8 @@ pub use api::{
     WorldPlayer,
 };
 pub use region::{
-    Holdings, Knowledge, LightSettings, NoSplit, Part, Region, RegionConfig, Sides, Splitting,
+    Holdings, KeptLight, Knowledge, LightSettings, NoSplit, Part, Region, RegionConfig, Sides,
+    Splitting,
 };
 pub use state::{
     Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf, PlayerRiding, PlayerState,

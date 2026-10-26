@@ -456,6 +456,9 @@ struct Warm {
     chunk: Chunk,
     /// The tick of the merge or the split the chunk is kept from.
     since: u64,
+    /// The chunk's light as the region handed it on then, which the region adopts when
+    /// the chunk comes back, its blocks unchanged since (ADR-0029, section 7).
+    light: Option<clustine_sim::KeptLight>,
 }
 
 /// How long a region did not tick for a merge or a split, and what it was then. See
@@ -1202,7 +1205,16 @@ impl RegionRunner {
     fn of_part_with(part: Part, store: Box<dyn RegionStore>) -> Self {
         let mut runner = Self::with_store(part.region, store);
         let since = runner.region.tick_number();
-        let warm = |(position, chunk)| (position, Warm { chunk, since });
+        let warm = |(position, chunk)| {
+            (
+                position,
+                Warm {
+                    chunk,
+                    since,
+                    light: None,
+                },
+            )
+        };
         runner.warm = part.chunks.into_iter().map(warm).collect();
         let warm: Vec<ChunkPos> = runner.warm.keys().copied().collect();
         runner.border.time(warm, since);
@@ -2097,10 +2109,11 @@ impl RegionRunner {
                 // The region holds what came with the merge, and what the store had
                 // granted it in answer to claims that no tick was told of.
                 let held: Vec<ChunkPos> = chunks.into_iter().chain(granted).collect();
+                let light = self.region.hand_over_light();
                 let loaded =
                     self.region
                         .take_absorbed(state, &held, &pinned, &lends.lent, &lends.lent_away);
-                self.begin_anew(loaded.into_iter().chain(delivered));
+                self.begin_anew(loaded.into_iter().chain(delivered), light);
                 // The absorbed region's chunks in use are this one's now, and timed.
                 let tick = self.region.tick_number();
                 self.border.time(in_use, tick);
@@ -2137,6 +2150,9 @@ impl RegionRunner {
                     .collect();
                 let players = splitting.part.players.len();
                 let sides = splitting.sides.clone();
+                // The part's chunks are lit anew where they go; this region's keep their
+                // light (ADR-0029, section 7).
+                let light = self.region.hand_over_light();
                 let (loaded, mut part) = self.region.take_split(splitting, &granted);
                 // What the runner has of the part's chunks beyond those that were
                 // loaded goes with them: what the store had delivered for the coming
@@ -2156,7 +2172,7 @@ impl RegionRunner {
                     of_part.entry(position).or_insert(chunk);
                 }
                 part.chunks = of_part.into_iter().collect();
-                self.begin_anew(loaded.into_iter().chain(ours));
+                self.begin_anew(loaded.into_iter().chain(ours), light);
                 info!(
                     tick = self.region.tick_number(),
                     part = region.0,
@@ -2256,7 +2272,12 @@ impl RegionRunner {
     /// the tick: there is no link to hear it. The next tick is an ordinary one, and
     /// answers the hellos of the links that edges make now from the state as of this
     /// tick, with the entries the merge or the split made among the welcome's.
-    fn begin_anew(&mut self, in_memory: impl Iterator<Item = (ChunkPos, Chunk)>) {
+    fn begin_anew(
+        &mut self,
+        in_memory: impl Iterator<Item = (ChunkPos, Chunk)>,
+        light: Vec<(ChunkPos, clustine_sim::KeptLight)>,
+    ) {
+        let mut light: BTreeMap<ChunkPos, clustine_sim::KeptLight> = light.into_iter().collect();
         // Dropping a link closes it, also one that was attached and not taken up. No
         // ticket is given back for one: the region has none.
         self.links.clear();
@@ -2276,7 +2297,12 @@ impl RegionRunner {
         self.committed = state.tick;
         for (position, chunk) in in_memory {
             let since = state.tick;
-            self.warm.entry(position).or_insert(Warm { chunk, since });
+            let light = light.remove(&position);
+            self.warm.entry(position).or_insert(Warm {
+                chunk,
+                since,
+                light,
+            });
         }
         let region = &self.region;
         self.warm
@@ -2605,6 +2631,9 @@ impl RegionRunner {
             // tick as the store's delivery would be, a tick sooner.
             if let Some(warm) = self.warm.remove(&position) {
                 self.inputs.chunks_loaded.push((position, warm.chunk));
+                if let Some(light) = warm.light {
+                    self.inputs.chunks_kept.push((position, light));
+                }
                 continue;
             }
             *self.loads.entry(position).or_default() += 1;

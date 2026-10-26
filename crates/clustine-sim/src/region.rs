@@ -98,6 +98,7 @@ mod vehicles;
 mod vibrations;
 mod water_creatures;
 
+pub use clustine_light::engine::Kept as KeptLight;
 pub use light::LightSettings;
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
@@ -1056,6 +1057,7 @@ impl Region {
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
         // Light, current with the blocks as the tick begins (ADR-0029).
+        self.take_kept_light(&inputs.chunks_kept);
         self.light_step();
         self.update_ticking();
         // What another region sent was made while it handled its tick, and is done so
@@ -3541,6 +3543,7 @@ mod tests {
     mod leashes;
     mod lends;
     mod lends_by_the_record;
+    mod light;
     mod menus;
     mod minecarts;
     mod mob_bodies;

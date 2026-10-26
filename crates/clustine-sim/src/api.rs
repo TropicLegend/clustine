@@ -983,6 +983,10 @@ pub struct TickInputs {
     pub tickets_removed: Vec<(ChunkPos, Ticket)>,
     /// Chunks that storage delivered in answer to earlier [`TickOutput::chunk_requests`].
     pub chunks_loaded: Vec<(ChunkPos, Chunk)>,
+    /// The light some of `chunks_loaded` had when the runner kept them warm at a merge or
+    /// a split, their blocks unchanged since ([`crate::Region::hand_over_light`]): the
+    /// region adopts it rather than lighting them whole (ADR-0029, section 7).
+    pub chunks_kept: Vec<(ChunkPos, clustine_light::engine::Kept)>,
     /// Chunks the world store has granted the region in answer to earlier
     /// [`TickOutput::claims`]: the region holds them from this tick on. See
     /// `docs/adr/0012-the-tick-on-chunks.md`, section 1.3.
