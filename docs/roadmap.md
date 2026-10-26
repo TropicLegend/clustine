@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-21)
+## Where the work stands (2026-10-26)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -43,11 +43,10 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: animals and monsters
-(entities, below); what needs light, crops and saplings growing, grass spreading, ice
-and snow melting (light in the simulation); sculk sensors, crafters, arrows, plates
-pressed by mobs and the daylight detector; the Nether and the End; survival mode and
-crafting.
+**What a player will miss within minutes**, all of it planned: monsters that fight,
+projectiles beyond the snowball, mob effects and natural spawning (N9, planned); sculk
+sensors, crafters, arrows, plates pressed by mobs; villagers' trades (N10); the Nether
+and the End; survival mode and crafting.
 
 **Built since M3:**
 
@@ -381,6 +380,27 @@ finds no prey until slimes come (N9); an allay does not hear note blocks or juke
 golem looks for chests by reading every block within its reach, which is slow but rare (it
 rests 140 ticks between searches).
 
+Light in the simulation (N8, [plan](groundwork/n8-plan.md), reviewed, with its
+[brief](groundwork/n8-brief.md) and [ADR-0029](adr/0029-light-in-the-simulation.md)): each
+region lights its chunks itself at a step of its tick, with an incremental engine
+checked against the whole-chunk function (in the tests every step's touched chunks, in
+the end-to-end tests four a step in turn, `CLUSTINE_LIGHT_ORACLE`); a server lights at
+most 256 units of newly come chunks a step, nearest its players first, and a chunk ticks
+only once it and its eight neighbours are lit (the lead's figure until measured; the
+owner may overrule it); light travels with chunks at a merge or a split. What reads it:
+wheat, carrots, potatoes, beetroot, the torchflower and the pitcher crop, melon and
+pumpkin stems fruiting, sweet berries, bamboo, mushrooms spreading in the dark, grass
+and mycelium spreading by day or by a torch and dying under blocks, snow and ice melting
+beside torches and glowstone, saplings growing into the game's trees (every grower, four
+spruce or dark oak saplings to a giant, bee nests by flowers, a tree beside a line
+setting its leaves across), bone meal on everything that grows (by a player and a
+dispenser), the daylight detector (plain and inverted, clicked), and the mobs' light
+(the undead burn under glass and not under leaves). Tests from the specification by
+someone who did not write the engine found one defect (block light below the world),
+mended. Named: sky light below the world's floor is read as the lowest section has it;
+bone meal under water and on kelp, vines, dripleaf and nylium; a bee nest set across a
+line is empty.
+
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
 `cargo run --release -p clustine -- --seed 3` for regions that follow players):
@@ -460,8 +480,16 @@ rests 140 ticks between searches).
    it. Put a zombie in deep water: after 45 seconds it turns into a drowned. A skeleton in
    powder snow turns into a stray. A witch drinks when hurt. In a new seeded world, find a
    village: its villagers, cats, golem and animals are there.
-0. Next in N7: comparisons with the official server and measurements (N7n), then light in
-   the simulation (N8).
+0. Light (N8): plant wheat on farmland by water and watch it grow by day; it stops at
+   night unless a torch is near. Plant a sapling: by day it grows (stage first), at night
+   in the open it does not; four spruce saplings in a square make a giant spruce. Use
+   bone meal on wheat, a sapling (twice), grass (flowers and grass come up), a mushroom
+   in the dark (a huge one). Put dirt beside grass in the sun and watch the grass spread
+   onto it; cover grass with stone and it turns to dirt. Put snow and ice two blocks from
+   a torch: they melt. A daylight detector beside a lamp lights it by day; click it to
+   invert it. A zombie under glass at noon burns, under a tree's leaves it does not. Next:
+   N9, monsters that fight, projectiles, effects and natural spawning
+   ([plan](groundwork/n9-plan.md), reviewed).
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
