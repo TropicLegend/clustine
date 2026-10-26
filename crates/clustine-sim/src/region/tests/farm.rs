@@ -1402,6 +1402,7 @@ fn a_mobs_hit_on_a_mob_in_a_copy_goes_to_its_holder() {
                 knockback: Some([Double(1.25), Double(-1.0), Double(0.0)]),
                 fling: None,
                 sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+                thorns: false,
             }
         )]
     );
@@ -1439,6 +1440,7 @@ fn a_holder_hits_its_mob_as_a_hit_within_its_region_would() {
                         knockback: Some([Double(1.25), Double(-1.0), Double(0.0)]),
                         fling: None,
                         sound: Some(sounds::ENTITY_PUFFER_FISH_STING),
+                        thorns: false,
                     },
                 },
             },

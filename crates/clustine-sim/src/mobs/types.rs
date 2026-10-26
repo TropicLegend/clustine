@@ -63,11 +63,17 @@ pub(crate) mod glow_squid;
 pub(crate) mod goat;
 pub(crate) mod golem_transport;
 pub(crate) mod guardian;
+#[cfg(test)]
+mod guardian_tests;
+pub(crate) mod guardians;
 pub(crate) mod happy_ghast;
 #[cfg(test)]
 mod highland_tests;
 pub(crate) mod horse;
 pub(crate) mod husk;
+#[cfg(test)]
+mod illager_tests;
+pub(crate) mod illagers;
 pub(crate) mod iron_golem;
 #[cfg(test)]
 mod k4_tests;
@@ -787,6 +793,14 @@ pub(crate) trait MobType: Sync {
         amount
     }
 
+    /// `getDamageAfterMagicAbsorb(source, amount)` beyond `LivingEntity`'s, after the
+    /// armour's share is taken (a witch's resistance to magic): the amount as it is by
+    /// default.
+    fn magic_absorbed(&self, mob: &Mob, source: &DamageSource, amount: f32) -> f32 {
+        let _ = (mob, source);
+        amount
+    }
+
     /// What the type's `actuallyHurt` does before its superclass's, where it needs the
     /// source or the world's clock (a camel stands up at once): nothing by default.
     fn before_actually_hurt(&self, struck: &mut Struck<'_>, source: &DamageSource) {
@@ -1321,6 +1335,12 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::CREEPER => &creeper::Creeper,
         entity_types::SPIDER => &spider::Spider,
         entity_types::CAVE_SPIDER => &cave_spider::CaveSpider,
+        entity_types::WITCH => &witch::Witch,
+        entity_types::PILLAGER => &pillager::Pillager,
+        entity_types::VINDICATOR => &vindicator::Vindicator,
+        entity_types::EVOKER => &evoker::Evoker,
+        entity_types::GUARDIAN => &guardian::Guardian,
+        entity_types::ELDER_GUARDIAN => &elder_guardian::ElderGuardian,
         _ => return None,
     };
     Some(found)

@@ -19,7 +19,8 @@
 //!
 //! The uses of kind 5 since: 4, a request to breed; 5, its answer; 6, a mob's hit; 7, a
 //! use as 2 followed by the player's edge u64; 8, a seat declined, the player's key u64;
-//! 9, a mob's hit as 6 followed by the iron golem's fling f32; 10, a thrown item's hit: the projectile's key u64, its type u16, where it was 3 × f64,
+//! 9, a mob's hit as 6 followed by the iron golem's fling f32; 11, a guardian's spikes, a
+//! mob's hit of `thorns` as 6; 10, a thrown item's hit: the projectile's key u64, its type u16, where it was 3 × f64,
 //! its motion 3 × f64, the damage f32, and u8 0 where nobody threw it, or u8 1 and the
 //! thrower's key u64, type u16 and feet 3 × f64, then u8 0, or u8 1 and the player's
 //! UUID u128 where a player threw it.
@@ -66,6 +67,8 @@ const USE_SEAT_DECLINED: u8 = 8;
 const USE_MOB_HIT_FLUNG: u8 = 9;
 /// A thrown item's hit (a snowball's).
 const USE_THROWN: u8 = 10;
+/// A guardian's spikes: a mob's hit of `thorns`, which carries no fling.
+const USE_MOB_HIT_THORNS: u8 = 11;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -211,10 +214,14 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     knockback,
                     fling,
                     sound,
+                    thorns,
                 } => {
-                    // A flung hit is a kind of its own, so that the hits the log keeps
-                    // from before it are read as they were written.
-                    out.push(if fling.is_some() {
+                    // A flung hit and a guardian's spikes are kinds of their own, so that
+                    // the hits the log keeps from before them are read as they were
+                    // written. The spikes push nothing and fling nothing.
+                    out.push(if thorns {
+                        USE_MOB_HIT_THORNS
+                    } else if fling.is_some() {
                         USE_MOB_HIT_FLUNG
                     } else {
                         USE_MOB_HIT
@@ -232,7 +239,7 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     if let Some(sound) = sound {
                         out.extend_from_slice(&sound.to_be_bytes());
                     }
-                    if let Some(fling) = fling {
+                    if let Some(fling) = fling.filter(|_| !thorns) {
                         out.extend_from_slice(&fling.0.to_be_bytes());
                     }
                 }
@@ -479,7 +486,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         _ => return Err(FormatError::Corrupt("a breeding answer's flag")),
                     },
                 },
-                USE_MOB_HIT | USE_MOB_HIT_FLUNG => {
+                USE_MOB_HIT | USE_MOB_HIT_FLUNG | USE_MOB_HIT_THORNS => {
                     let attacker = EntityId(input.u64()?);
                     let kind = input.u16()?;
                     let from = take_doubles(input)?;
@@ -507,6 +514,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         knockback,
                         fling,
                         sound,
+                        thorns: use_kind == USE_MOB_HIT_THORNS,
                     }
                 }
                 USE_THROWN => EntityUse::Thrown {
@@ -939,6 +947,7 @@ mod entity_uses {
             knockback,
             fling: None,
             sound,
+            thorns: false,
         };
         let pushed = Some([Double(1.75), Double(-0.5), Double(0.0)]);
         for by in [
@@ -968,6 +977,7 @@ mod entity_uses {
             knockback: None,
             fling,
             sound: Some(5),
+            thorns: false,
         };
         for by in [hit(Some(Float(0.4))), hit(None)] {
             round_trip(Effect {
@@ -1052,6 +1062,45 @@ mod entity_uses {
         let mut bad = out.clone();
         bad[player_flag] = 2;
         assert!(take_effect(&mut Input(&bad)).is_err());
+    }
+
+    #[test]
+    fn a_guardian_s_spikes_are_read_back_as_thorns_in_a_plain_hit_s_layout() {
+        let at = BlockPos::new(15, -60, 2);
+        let hit = |thorns| EntityUse::MobHit {
+            attacker: EntityId(3),
+            kind: 64,
+            from: [Double(0.5), Double(-60.0), Double(0.5)],
+            damage: Float(2.0),
+            knockback: None,
+            fling: None,
+            sound: None,
+            thorns,
+        };
+        let bytes = |by| {
+            let mut out = Vec::new();
+            put_effect(
+                &mut out,
+                &Effect {
+                    at,
+                    what: Effected::OnEntity {
+                        key: EntityId(9),
+                        by,
+                    },
+                },
+            );
+            out
+        };
+        round_trip(Effect {
+            at,
+            what: Effected::OnEntity {
+                key: EntityId(9),
+                by: hit(true),
+            },
+        });
+        let (plain, spikes) = (bytes(hit(false)), bytes(hit(true)));
+        assert_eq!(plain.len(), spikes.len());
+        assert_ne!(plain, spikes, "a kind of its own");
     }
 
     fn blast(owner: Option<u128>) -> Blast {

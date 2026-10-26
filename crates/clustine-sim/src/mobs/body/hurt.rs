@@ -44,6 +44,7 @@ impl DamageType {
     pub(crate) const MOB_ATTACK: Self = Self("minecraft:mob_attack");
     pub(crate) const MAGIC: Self = Self("minecraft:magic");
     pub(crate) const THROWN: Self = Self("minecraft:thrown");
+    pub(crate) const THORNS: Self = Self("minecraft:thorns");
 
     /// Its id in the registry the server sends, which a damage event names it by
     /// (Clustine's sorted order: the brief's finding 18).
@@ -390,6 +391,7 @@ fn living_actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: 
         let toughness = struck.attribute(ids::ARMOR_TOUGHNESS) as f32;
         amount = damage_after_absorb(amount, armor, toughness);
     }
+    amount = struck.mob_type.magic_absorbed(struck.mob, source, amount);
     if amount <= 0.0 {
         return;
     }

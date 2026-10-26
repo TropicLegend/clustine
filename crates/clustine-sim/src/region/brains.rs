@@ -10,6 +10,7 @@ use super::redstone::play;
 use super::updates::UPDATE_LIMIT;
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::TickOutput;
+use crate::mobs::body::hurt::DamageType;
 use crate::mobs::brain::{self, MemoryWrite};
 use crate::mobs::{Mob, types};
 use crate::physics::Vec3;
@@ -103,6 +104,48 @@ impl Region {
         sound: Option<i32>,
         output: &mut TickOutput,
     ) {
+        self.hit_by_mob_as(
+            (attacker, kind, from),
+            target,
+            (DamageType::MOB_ATTACK, damage),
+            (knockback, fling),
+            sound,
+            output,
+        );
+    }
+
+    /// A guardian's spikes on the mob `target` that hit it (`Local::Thorns`): as
+    /// [`Region::hit_by_mob`], of `thorns`, with no knockback of its own nor sound.
+    pub(crate) fn thorns_by_mob(
+        &mut self,
+        attacker: EntityId,
+        kind: u16,
+        from: Vec3,
+        target: EntityId,
+        damage: f32,
+        output: &mut TickOutput,
+    ) {
+        self.hit_by_mob_as(
+            (attacker, kind, from),
+            target,
+            (DamageType::THORNS, damage),
+            (None, None),
+            None,
+            output,
+        );
+    }
+
+    /// [`Region::hit_by_mob`] of the damage type `damage_type`: a mob's attack, or a
+    /// guardian's thorns, which crosses a line marked so.
+    pub(crate) fn hit_by_mob_as(
+        &mut self,
+        (attacker, kind, from): (EntityId, u16, Vec3),
+        target: EntityId,
+        (damage_type, damage): (DamageType, f32),
+        (knockback, fling): (Option<[f64; 3]>, Option<f32>),
+        sound: Option<i32>,
+        output: &mut TickOutput,
+    ) {
         if self.find_entity(target).is_none() {
             let hit = EntityUse::MobHit {
                 attacker,
@@ -112,11 +155,18 @@ impl Region {
                 knockback: knockback.map(|push| push.map(Double)),
                 fling: fling.map(Float),
                 sound,
+                thorns: damage_type == DamageType::THORNS,
             };
             self.send_on_entity(target, hit);
             return;
         }
-        let took = self.hurt_by_mob(attacker, kind, from, target, damage, sound, output);
+        let took = self.hurt_by_mob(
+            (attacker, kind, from),
+            target,
+            (damage_type, damage),
+            sound,
+            output,
+        );
         if took && let Some([strength, x, z]) = knockback {
             self.knock_mob(target, strength, x, z, output);
         }

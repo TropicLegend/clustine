@@ -1,13 +1,127 @@
-//! The pillager (`Pillager`; `n7k-brief.md` 3.7), part K5.
-//! A stub until its part fills it; it is in `built` only once it is.
+//! The pillager (`Pillager`; `n7k-brief.md` 3.7), part K5: an illager with a crossbow
+//! that floats, strolls, keeps away from a creaking and looks.
+//!
+//! Named differences: its crossbow is never enchanted, as item stacks carry no
+//! enchantments (the one time in 300 that would give it Piercing I is drawn and lost);
+//! its inventory of five, which it fills only once read from a save (`canPickUpLoot`),
+//! is not kept; its attack, its charging and its targets are N9's.
 
-use super::MobType;
+use clustine_data::{entity_types, items, sounds};
+use clustine_world::{BlockPos, ItemStack};
+
+use super::illagers;
+use super::{MobType, Spawning};
+use crate::living::slots;
+use crate::mobs::Mob;
+use crate::mobs::ai::goals::{AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, RandomStrollGoal};
+use crate::mobs::ai::selector::flags;
+use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::{Ai, Setup};
+use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::making::enchant_spawned_equipment;
+use crate::mobs::types::tamable::Idle;
+use crate::region::Random;
+use crate::shown::DataShown;
+
+/// The synced data's index of `IS_CHARGING_CROSSBOW`.
+pub(crate) const CHARGING_INDEX: u8 = 17;
+
+/// The creaking, which the illagers keep away from (none is made before its part).
+pub(crate) const CREAKING: [u16; 1] = [entity_types::CREAKING as u16];
+
+/// `AvoidEntityGoal(Creaking, 8, 1.0, 1.2)`.
+pub(crate) const AVOID_CREAKING: AvoidEntityGoal = AvoidEntityGoal {
+    class: Class::Kinds(&CREAKING),
+    max_distance: 8.0,
+    walk_speed: 1.0,
+    sprint_speed: 1.2,
+};
 
 /// The pillager.
-#[expect(
-    dead_code,
-    reason = "its part registers it in `built` when it is filled"
-)]
 pub(crate) struct Pillager;
 
-impl MobType for Pillager {}
+impl MobType for Pillager {
+    /// `Pillager.registerGoals`, after `Raider`'s.
+    fn register_goals(&self, setup: &mut Setup) {
+        illagers::register_raider_goals(setup);
+        setup.add_goal(0, FloatGoal);
+        setup.add_goal(1, AVOID_CREAKING);
+        // `HoldGroundAttackGoal(10)` and `RangedCrossbowAttackGoal(1.0, 8)`: a target's.
+        setup.add_goal(2, Idle { flags: flags::MOVE });
+        setup.add_goal(
+            3,
+            Idle {
+                flags: flags::MOVE | flags::LOOK,
+            },
+        );
+        setup.add_goal(8, RandomStrollGoal::new(0.6));
+        setup.add_goal(
+            9,
+            LookAtPlayerGoal {
+                probability: 1.0,
+                ..LookAtPlayerGoal::new(Class::Player, 15.0)
+            },
+        );
+        setup.add_goal(10, LookAtPlayerGoal::new(Class::Mob, 15.0));
+        // `HurtByTargetGoal(Raider)`, then players, villagers and iron golems.
+        illagers::register_targets(setup, &[1, 2, 3, 3]);
+    }
+
+    /// `Pillager.finalizeSpawn`: the crossbow, its enchantment's draws, then
+    /// `Raider`'s.
+    fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
+        // `populateDefaultEquipmentSlots`: the crossbow, with no draw.
+        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
+            item: items::CROSSBOW,
+            count: 1,
+        });
+        let special = spawn.difficulty.1;
+        // `populateDefaultEquipmentEnchantments`, whose weapon's part is the pillager's
+        // own `enchantSpawnedWeapon`: `Mob`'s draw, then one in 300 for Piercing with
+        // a crossbow, then the armour's slots, which hold nothing.
+        enchant_spawned_equipment(spawn.mob, slots::MAIN_HAND, spawn.level, 0.25, special);
+        let _piercing = spawn.level.next_int(300) == 0
+            && spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+                .is_some_and(|stack| stack.item == items::CROSSBOW);
+        for slot in [slots::FEET, slots::LEGS, slots::CHEST, slots::HEAD] {
+            enchant_spawned_equipment(spawn.mob, slot, spawn.level, 0.5, special);
+        }
+        illagers::finalize_spawn(entity_types::PILLAGER as u16, spawn, true);
+    }
+
+    /// `Pillager.getWalkTargetValue`: every place alike.
+    fn walk_target_value(&self, _: &Ai<'_, '_>, _: BlockPos) -> f32 {
+        0.0
+    }
+
+    fn remove_when_far_away(&self, _: u16, mob: &Mob, _: u32, distance: f64) -> bool {
+        illagers::remove_when_far_away(mob, distance)
+    }
+
+    fn experience_reward(&self, _: u16, mob: &Mob, draws: &mut Random) -> i32 {
+        illagers::experience(5, mob, draws)
+    }
+
+    fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
+        illagers::from_template(mob, tag, |_| {});
+    }
+
+    fn ambient_sound(&self, _: &Mob) -> Option<i32> {
+        Some(sounds::ENTITY_PILLAGER_AMBIENT)
+    }
+
+    fn hurt_sound(&self, _: &Mob, _: &DamageSource) -> Option<i32> {
+        Some(sounds::ENTITY_PILLAGER_HURT)
+    }
+
+    fn death_sound(&self, _: &Mob) -> Option<i32> {
+        Some(sounds::ENTITY_PILLAGER_DEATH)
+    }
+
+    fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
+        let charging = illagers::state_of(mob).charging;
+        let mut values = illagers::shown(mob);
+        values.push((CHARGING_INDEX, DataShown::Boolean(charging), !charging));
+        values
+    }
+}

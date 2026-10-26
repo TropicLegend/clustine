@@ -3527,6 +3527,7 @@ mod tests {
     mod pressed;
     mod pushed;
     mod r7;
+    mod raiders_and_guardians;
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;

@@ -277,6 +277,12 @@ impl Region {
                     sound,
                     output,
                 ),
+                Local::Thorns {
+                    key: hurt,
+                    kind,
+                    from,
+                    amount,
+                } => self.thorns_by_mob(key, kind, from, hurt, amount, output),
                 Local::Throw {
                     stack,
                     at,
@@ -525,19 +531,25 @@ impl Region {
                 knockback,
                 fling,
                 sound,
-            } => self.hit_by_mob(
-                attacker,
-                kind,
-                from.map(|value| value.0),
-                entity.key,
-                damage.0,
-                (
-                    knockback.map(|push| push.map(|value| value.0)),
-                    fling.map(|up| up.0),
-                ),
-                sound,
-                output,
-            ),
+                thorns,
+            } => {
+                let damage_type = if thorns {
+                    DamageType::THORNS
+                } else {
+                    DamageType::MOB_ATTACK
+                };
+                self.hit_by_mob_as(
+                    (attacker, kind, from.map(|value| value.0)),
+                    entity.key,
+                    (damage_type, damage.0),
+                    (
+                        knockback.map(|push| push.map(|value| value.0)),
+                        fling.map(|up| up.0),
+                    ),
+                    sound,
+                    output,
+                );
+            }
             // Taken before the dispatch by kind (`entities.rs`).
             EntityUse::Thrown { .. } => {}
         }

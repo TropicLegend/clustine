@@ -193,20 +193,15 @@ impl Region {
         self.commit_mob(&record, chunk, &mob, output);
     }
 
-    /// `hurtServer(mobAttack(attacker), amount)` of the region's mob `key` by the mob
-    /// `attacker` of the type `kind` standing at `from`, and where it took, `sound` at
-    /// `from` (a pufferfish's sting).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the hit's parts, as the attacker's tick gives them"
-    )]
+    /// `hurtServer(source, amount)` of the region's mob `key` by the mob `attacker` of
+    /// the type `kind` standing at `from`, of `damage` (`mobAttack(attacker)`, or a
+    /// guardian's `thorns(attacker)`), and where it took, `sound` at `from` (a
+    /// pufferfish's sting).
     pub(crate) fn hurt_by_mob(
         &mut self,
-        attacker: EntityId,
-        kind: u16,
-        from: Vec3,
+        (attacker, kind, from): (EntityId, u16, Vec3),
         key: EntityId,
-        amount: f32,
+        (damage, amount): (DamageType, f32),
         sound: Option<i32>,
         output: &mut TickOutput,
     ) -> bool {
@@ -214,7 +209,7 @@ impl Region {
             return false;
         }
         let source = DamageSource::by(
-            DamageType::MOB_ATTACK,
+            damage,
             Causer {
                 key: attacker,
                 kind,

@@ -114,6 +114,16 @@ pub(crate) enum Local {
         /// The iron golem's fling where the hurt took (`IronGolem.doHurtTarget`).
         fling: Option<f32>,
     },
+    /// A guardian's spikes (`Guardian.hurtServer`): `hurtServer(thorns(this), amount)`
+    /// of the region's mob `key` that hit this one (of the type `kind`, its feet at
+    /// `from`). As [`Local::Hurt`], a mob in a copy is hit by its holder
+    /// (`EntityUse::MobHit`, its damage thorns).
+    Thorns {
+        key: EntityId,
+        kind: u16,
+        from: crate::physics::Vec3,
+        amount: f32,
+    },
     /// An item thrown by the mob (`new ItemEntity`, its pick-up delay set and its motion
     /// set after the constructor's draws: a dolphin's play).
     Throw {

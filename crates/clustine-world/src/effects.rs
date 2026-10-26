@@ -182,6 +182,9 @@ pub enum EntityUse {
         /// the target's knockback resistance leaves, added where the hurt took.
         fling: Option<Float>,
         sound: Option<i32>,
+        /// Whether its damage is a guardian's spikes (`thorns(attacker)`) rather than a
+        /// mob's attack (`Guardian.hurtServer`).
+        thorns: bool,
     },
     /// A thrown item's hit on the entity (`onHitEntity`: a snowball's
     /// `hurt(thrown(snowball, owner), damage)`), made where the projectile's region sees

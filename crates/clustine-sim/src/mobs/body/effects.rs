@@ -310,10 +310,6 @@ fn update(layers: &mut Vec<Layer>, at: usize, new: Layer, now: u32) -> bool {
 /// (`onEffectAdded`), one it has is updated as [`update`] says and its modifiers made
 /// again where that changed it (`onEffectUpdated`). Whether anything changed; nothing
 /// for an effect its type is spared.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the witch and the wandering trader drink (N7k)")
-)]
 pub(crate) fn add(
     mob: &mut Mob,
     kind: u16,
