@@ -62,6 +62,7 @@ fn config(seed: u64) -> RegionConfig {
         lowest_y: -64,
         seed,
         light: Default::default(),
+        features: Default::default(),
     }
 }
 

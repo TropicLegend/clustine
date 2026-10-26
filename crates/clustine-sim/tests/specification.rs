@@ -63,6 +63,7 @@ fn config_a() -> RegionConfig {
         lowest_y: -64,
         seed: 0,
         light: Default::default(),
+        features: Default::default(),
     }
 }
 
@@ -89,6 +90,7 @@ fn config_b() -> RegionConfig {
         lowest_y: -64,
         seed: 0,
         light: Default::default(),
+        features: Default::default(),
     }
 }
 

@@ -1062,6 +1062,7 @@ impl RegionSettings {
             seed: world,
             // A server's budget for lighting what it loads (ADR-0029).
             light: clustine_sim::LightSettings::SERVER,
+            features: Default::default(),
         }
     }
 }

@@ -106,6 +106,7 @@ fn config() -> RegionConfig {
         lowest_y: LOWEST_Y,
         seed: 0,
         light: Default::default(),
+        features: Default::default(),
     }
 }
 

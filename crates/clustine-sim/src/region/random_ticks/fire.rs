@@ -820,6 +820,7 @@ mod tests {
             lowest_y: -64,
             seed,
             light: Default::default(),
+            features: Default::default(),
         };
         let holdings = Holdings {
             held: around.clone(),

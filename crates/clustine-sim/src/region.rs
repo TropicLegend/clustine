@@ -127,6 +127,28 @@ pub struct RegionConfig {
     /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
     /// it comes.
     pub light: LightSettings,
+    /// The world's features, which a sapling's tree and bone meal place
+    /// (`docs/groundwork/n8-plan.md`, section 7.6): none in a flat world or a test that
+    /// grows nothing.
+    pub features: Features,
+}
+
+/// The overworld's features, built once a process from the world's seed and shared by its
+/// regions: equal always and shown by whether there are any, as they are a function of the
+/// seed the region's configuration already names.
+#[derive(Clone, Default)]
+pub struct Features(pub Option<std::sync::Arc<clustine_features::FeatureSettings>>);
+
+impl PartialEq for Features {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Features {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Features").field(&self.0.is_some()).finish()
+    }
 }
 
 /// What the world store says of a region's chunks when the region is opened.
@@ -3614,6 +3636,7 @@ mod tests {
             lowest_y: -64,
             seed: 0,
             light: Default::default(),
+            features: Default::default(),
         }
     }
 

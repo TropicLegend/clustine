@@ -409,6 +409,7 @@ version = "0.0.0"
 dependencies = [
  "clustine-blocks",
  "clustine-data",
+ "clustine-features",
  "clustine-light",
  "clustine-noise",
  "clustine-world",

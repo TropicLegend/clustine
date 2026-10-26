@@ -65,6 +65,7 @@ pub fn config(inventory: Inventory) -> RegionConfig {
         lowest_y: -64,
         seed: 0,
         light: Default::default(),
+        features: Default::default(),
     }
 }
 
