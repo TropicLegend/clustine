@@ -107,7 +107,7 @@ impl Region {
 /// What `ConversionType.SINGLE` and `convertCommon` copy of the body from `old` to `new`
 /// that Clustine keeps (K 11.5): the body's yaw, the hurt time and the player's memory of
 /// a hurt, every slot of equipment with its drop chance where `keep_equipment` (and the
-/// old one's emptied), the flags (no AI, the left hand, the loot pick-up, and persistence
+/// old one's emptied), its effects, the flags (no AI, the left hand, the loot pick-up, and persistence
 /// only where the old one had it). Not its health, air, attributes or fire.
 fn copy_single(old: &mut Mob, new: &mut Mob, keep_equipment: bool) {
     new.body.head.body_yaw = old.body.head.body_yaw;
@@ -124,6 +124,8 @@ fn copy_single(old: &mut Mob, new: &mut Mob, keep_equipment: bool) {
             }
         }
     }
+    // `convertCommon`: every active effect, a copy.
+    new.body.effects = old.body.effects.clone();
     new.body.flags.no_ai = old.body.flags.no_ai;
     new.body.flags.left_handed = old.body.flags.left_handed;
     new.body.flags.picks_up_loot = old.body.flags.picks_up_loot;
