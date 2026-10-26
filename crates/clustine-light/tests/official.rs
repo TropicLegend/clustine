@@ -10,14 +10,29 @@
 //! CLUSTINE_SAMPLE_WORLD=<a world of the official server> \
 //!     cargo test --release -p clustine-light --locked -- --ignored --nocapture official
 //! ```
+//!
+//! The second comparison (`docs/groundwork/n8-plan.md`, section 9, the first of its
+//! list) makes its own world: it starts the official server, changes blocks by commands
+//! and reads what the server saved after each step, and has [`Lighting`] follow the same
+//! changes on the same stored chunks. It needs Java and the jar of `cargo datagen`:
+//!
+//! ```text
+//! CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test -p clustine-light --locked \
+//!     --test official -- --ignored --nocapture light_after_changes
+//! ```
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
 use clustine_data::BlockState;
+use clustine_light::engine::{Chunks, Lighting};
 use clustine_light::{Around, Scratch, Unlisted, VERSION, light, light_with};
-use clustine_world::{Biome, Chunk, LIGHT_ARRAY_LENGTH, SectionLight};
+use clustine_world::{
+    Biome, BlockPos, Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Light, SectionLight, light_tells_apart,
+};
+
+mod official_server;
 
 // --- NBT, as the region files have it --------------------------------------------------
 
@@ -156,11 +171,13 @@ impl Nbt {
 
 // --- A chunk of the official server ----------------------------------------------------
 
+#[derive(PartialEq)]
 enum Section {
     Uniform(BlockState),
     Mixed(Vec<BlockState>),
 }
 
+#[derive(PartialEq)]
 struct Official {
     full: bool,
     /// The section coordinate of the lowest section.
@@ -368,6 +385,121 @@ impl Tally {
             self.shown.push(line);
         }
     }
+
+    fn mismatches(&self) -> usize {
+        self.differing + self.only_stored + self.only_made
+    }
+
+    fn count(&mut self, outcome: Outcome) {
+        match outcome {
+            Outcome::Absent => self.absent += 1,
+            Outcome::Dark => self.dark += 1,
+            Outcome::Equal { full } => {
+                self.equal_arrays += 1;
+                self.full += usize::from(full);
+            }
+            Outcome::OnlyMade(line) => {
+                self.only_made += 1;
+                self.show(line);
+            }
+            Outcome::OnlyStored(line) => {
+                self.only_stored += 1;
+                self.show(line);
+            }
+            Outcome::Differs { cells, first } => {
+                self.differing += 1;
+                self.differing_cells += cells;
+                self.show(first);
+            }
+        }
+    }
+
+    fn print(&self, kind: &str) {
+        println!(
+            "{kind} light: {} of {} sections match ({} equal arrays, {} of them full; \
+             nothing stored and made dark {}, made absent {})",
+            self.matching(),
+            self.sections(),
+            self.equal_arrays,
+            self.full,
+            self.dark,
+            self.absent,
+        );
+        println!(
+            "{kind} light: {} sections differ in {} cells; {} stored only; {} made only",
+            self.differing, self.differing_cells, self.only_stored, self.only_made,
+        );
+        for line in &self.shown {
+            println!("  {line}");
+        }
+    }
+}
+
+/// How one light section of this crate compares with the one the official server
+/// stored, a mismatch written out with its place.
+enum Outcome {
+    Absent,
+    Dark,
+    Equal {
+        full: bool,
+    },
+    OnlyMade(String),
+    OnlyStored(String),
+    /// The arrays differ in `cells` cells; `first` says where the first is, its block and
+    /// the level on each side.
+    Differs {
+        cells: usize,
+        first: String,
+    },
+}
+
+/// Compares the section of light index `index` of `own` (the chunk the light is of, as
+/// this crate has its blocks): what this crate made, against what was stored. `place`
+/// names the kind of light and the chunk.
+fn compare_section(
+    place: &str,
+    lowest: i64,
+    index: usize,
+    made: &SectionLight,
+    stored: Option<&Vec<u8>>,
+    own: &Chunk,
+) -> Outcome {
+    let section_y = lowest + index as i64 - 1;
+    let place = format!("{place}, section {section_y}");
+    match (stored, array_of(made)) {
+        (None, _) if *made == SectionLight::Absent => Outcome::Absent,
+        (None, _) if *made == SectionLight::Dark => Outcome::Dark,
+        (None, _) => Outcome::OnlyMade(format!("{place}: nothing stored, made {}", case(made))),
+        (Some(_), None) => Outcome::OnlyStored(format!("{place}: an array stored, made absent")),
+        (Some(_), Some(_)) if *made == SectionLight::Dark => {
+            Outcome::OnlyStored(format!("{place}: an array stored, made dark"))
+        }
+        (Some(stored), Some(array)) if stored[..] == array[..] => Outcome::Equal {
+            full: *made == SectionLight::Full,
+        },
+        (Some(stored), Some(array)) => {
+            let level = |of: &[u8], cell: usize| of[cell / 2] >> (cell % 2 * 4) & 15;
+            let differing: Vec<usize> = (0..4096)
+                .filter(|&cell| level(stored, cell) != level(&array[..], cell))
+                .collect();
+            let cell = differing[0];
+            let (x, y, z) = (cell & 15, cell >> 8, cell >> 4 & 15);
+            let world_y = section_y * 16 + y as i64;
+            let here = own
+                .get(x, world_y as i32, z)
+                .map_or("outside the world".to_owned(), written);
+            Outcome::Differs {
+                cells: differing.len(),
+                first: format!(
+                    "{place}: at {x} {world_y} {z} in the chunk ({here}) stored {} made {}, \
+                     {} cells differ",
+                    level(stored, cell),
+                    level(&array[..], cell),
+                    differing.len(),
+                ),
+            }
+        }
+    }
 }
 
 #[test]
@@ -441,77 +573,22 @@ fn official_chunks_are_lit_as_the_official_server_lit_them() {
             (&mut block, "block", &made.block, &centre.block),
         ] {
             for (index, (made, stored)) in made.iter().zip(stored).enumerate() {
-                let section_y = centre.lowest + index as i64 - 1;
-                let place = format!("{kind} light, chunk {chunk_x} {chunk_z}, section {section_y}");
-                match (stored, array_of(made)) {
-                    (None, _) if *made == SectionLight::Absent => tally.absent += 1,
-                    (None, _) if *made == SectionLight::Dark => tally.dark += 1,
-                    (None, _) => {
-                        tally.only_made += 1;
-                        tally.show(format!("{place}: nothing stored, made {}", case(made)));
-                    }
-                    (Some(_), None) => {
-                        tally.only_stored += 1;
-                        tally.show(format!("{place}: an array stored, made absent"));
-                    }
-                    (Some(_), Some(_)) if *made == SectionLight::Dark => {
-                        tally.only_stored += 1;
-                        tally.show(format!("{place}: an array stored, made dark"));
-                    }
-                    (Some(stored), Some(array)) if stored[..] == array[..] => {
-                        tally.equal_arrays += 1;
-                        tally.full += usize::from(*made == SectionLight::Full);
-                    }
-                    (Some(stored), Some(array)) => {
-                        tally.differing += 1;
-                        let mut first = true;
-                        for cell in 0..4096 {
-                            let level = |of: &[u8]| of[cell / 2] >> (cell % 2 * 4) & 15;
-                            if level(stored) == level(&array[..]) {
-                                continue;
-                            }
-                            tally.differing_cells += 1;
-                            if !first {
-                                continue;
-                            }
-                            first = false;
-                            let (x, y, z) = (cell & 15, cell >> 8, cell >> 4 & 15);
-                            let world_y = section_y * 16 + y as i64;
-                            let here = own
-                                .get(x, world_y as i32, z)
-                                .map_or("outside the world".to_owned(), written);
-                            tally.show(format!(
-                                "{place}: at {x} {world_y} {z} ({here}) stored {} made {}",
-                                level(stored),
-                                level(&array[..]),
-                            ));
-                        }
-                    }
-                }
+                let place = format!("{kind} light, chunk {chunk_x} {chunk_z}");
+                tally.count(compare_section(
+                    &place,
+                    centre.lowest,
+                    index,
+                    made,
+                    stored.as_ref(),
+                    own,
+                ));
             }
         }
     }
 
     println!("{compared} chunks have eight finished neighbours and were lit and compared");
-    for (kind, tally) in [("sky", &sky), ("block", &block)] {
-        println!(
-            "{kind} light: {} of {} sections match ({} equal arrays, {} of them full; \
-             nothing stored and made dark {}, made absent {})",
-            tally.matching(),
-            tally.sections(),
-            tally.equal_arrays,
-            tally.full,
-            tally.dark,
-            tally.absent,
-        );
-        println!(
-            "{kind} light: {} sections differ in {} cells; {} stored only; {} made only",
-            tally.differing, tally.differing_cells, tally.only_stored, tally.only_made,
-        );
-        for line in &tally.shown {
-            println!("  {line}");
-        }
-    }
+    sky.print("sky");
+    block.print("block");
     for (how, mut times) in [
         ("lighting one chunk", times),
         (
@@ -552,4 +629,478 @@ fn case(light: &SectionLight) -> &'static str {
         SectionLight::Full => "full",
         SectionLight::Levels(_) => "levels",
     }
+}
+
+// --- Light after changes, against the official server's ---------------------------------
+
+/// The script of block changes, step by step, each by commands on the official server's
+/// console. The ground's top is at y -1 (`official_server::PROPERTIES`); the scene lies
+/// within x and z -40 to 39, the chunks -3 to 2, so that every chunk it lights is
+/// compared with eight finished neighbours. Each step is saved and compared on its own,
+/// so that a difference names the step that made it.
+const STEPS: &[(&str, &[&str])] = &[
+    ("the ground as generated", &[]),
+    (
+        "torches, one beside a chunk's border",
+        &[
+            "setblock 5 0 5 minecraft:torch",
+            "setblock 15 0 3 minecraft:torch",
+            "setblock 8 0 -12 minecraft:torch",
+        ],
+    ),
+    (
+        "glowstone in the air and in the ground",
+        &[
+            "setblock 3 4 -6 minecraft:glowstone",
+            "setblock -6 -1 -6 minecraft:glowstone",
+        ],
+    ),
+    (
+        "glass: a box round a torch, and a pane in the air",
+        &[
+            "fill 10 0 10 14 4 14 minecraft:glass hollow",
+            "setblock 12 0 12 minecraft:torch",
+            "fill 20 3 20 26 3 26 minecraft:glass",
+        ],
+    ),
+    (
+        "a roof on a wall, and a lantern under it",
+        &[
+            "fill -12 6 -12 -3 6 -3 minecraft:stone",
+            "fill -12 0 -12 -12 5 -3 minecraft:stone",
+            "setblock -8 0 -8 minecraft:lantern",
+        ],
+    ),
+    (
+        "a cave under the ground, across a chunk's border, with a torch in it",
+        &[
+            "fill 18 -30 -12 30 -24 0 minecraft:air",
+            "setblock 20 -30 -10 minecraft:torch",
+        ],
+    ),
+    (
+        "a hole dug from the ground to the cave",
+        &["fill 24 -23 -6 24 -1 -6 minecraft:air"],
+    ),
+    (
+        "water: a pool in the ground, and a source poured beside it that flows",
+        &[
+            "fill -25 -3 15 -18 -1 22 minecraft:water",
+            "setblock -10 0 25 minecraft:water",
+        ],
+    ),
+    (
+        "a floating platform of stone, and one of leaves lower down",
+        &[
+            "fill -40 100 -40 -30 100 -30 minecraft:stone",
+            "fill 35 30 -40 39 30 -36 minecraft:oak_leaves[persistent=true]",
+        ],
+    ),
+    (
+        "blocks across a chunk's corner: glowstone, a slab, stairs and a roof; and \
+         glowstone across the corner of four chunks and two sections",
+        &[
+            "fill -1 0 -1 0 2 0 minecraft:glowstone",
+            "setblock -1 3 0 minecraft:stone_slab[type=bottom]",
+            "setblock 0 3 -1 minecraft:oak_stairs[facing=north,half=bottom]",
+            "fill -3 5 -3 2 5 2 minecraft:stone",
+            "setblock 16 15 16 minecraft:glowstone",
+            "setblock 15 16 15 minecraft:glowstone",
+            "setblock 15 16 16 minecraft:stone",
+            "setblock 16 16 15 minecraft:stone",
+        ],
+    ),
+    (
+        "taken away: a torch, the roof, a hole in the platform, one glowstone of the \
+         corner, and the cave's hole capped",
+        &[
+            "setblock 5 0 5 minecraft:air",
+            "fill -12 6 -12 -3 6 -3 minecraft:air",
+            "fill -36 100 -36 -34 100 -34 minecraft:air",
+            "setblock -1 0 -1 minecraft:air",
+            "setblock 24 -1 -6 minecraft:stone",
+        ],
+    ),
+];
+
+/// The chunks kept loaded, from -5 to 4 each way: the scene's, and two rings round them
+/// so that each of the scene's has eight finished neighbours.
+const LOADED: std::ops::RangeInclusive<i64> = -5..=4;
+const LOADED_BLOCKS: &str = "forceload add -80 -80 79 79";
+
+/// The chunks the scene lights, which must be compared at every step.
+const SCENE: std::ops::RangeInclusive<i64> = -3..=2;
+
+/// The sections of the overworld.
+const SECTIONS: usize = 24;
+
+/// Game ticks between two saves that must agree before the world counts as settled.
+const SETTLE_TICKS: u64 = 20;
+
+/// The most pairs of saves the official server is given to settle after a step.
+const SETTLE_ROUNDS: usize = 40;
+
+/// Runs one command of the script, telling by its verb what answers it.
+fn run(server: &mut official_server::Server, command: &str) {
+    let verb = command.split(' ').next().unwrap_or_default();
+    let (succeeded, failed): (&[&str], &[&str]) = match verb {
+        "setblock" => (&["Changed the block"], &["Could not set the block"]),
+        "fill" => (
+            &["Successfully filled"],
+            &["No blocks were filled", "Too many blocks"],
+        ),
+        "forceload" => (&["to be force loaded"], &["No chunks were marked"]),
+        "gamerule" => (&["is now set to"], &[]),
+        "kill" => (&["Killed", "No entity was found"], &[]),
+        other => panic!("the script has no answer for `{other}`"),
+    };
+    server.command(command, succeeded, failed);
+}
+
+/// The finished chunks of a save.
+fn finished(world: &Path) -> BTreeMap<(i64, i64), Official> {
+    chunks_of(world, SECTIONS)
+        .into_iter()
+        .filter(|(_, chunk)| chunk.full)
+        .collect()
+}
+
+/// Saves until two saves `SETTLE_TICKS` ticks apart agree in every finished chunk's blocks
+/// and light and every loaded chunk is finished: the official server lights on a thread
+/// of its own and water flows for some ticks, so the state is waited for, not time.
+/// Returns the save and the game time it was made at.
+fn settle(
+    server: &mut official_server::Server,
+    step: &str,
+) -> (BTreeMap<(i64, i64), Official>, u64) {
+    let mut last: Option<BTreeMap<(i64, i64), Official>> = None;
+    let mut unsettled = String::new();
+    for _ in 0..SETTLE_ROUNDS {
+        server.let_ticks_pass(SETTLE_TICKS);
+        server.save();
+        let time = server.game_time();
+        let saved = finished(server.world());
+        let missing: Vec<(i64, i64)> = LOADED
+            .flat_map(|x| LOADED.map(move |z| (x, z)))
+            .filter(|at| !saved.contains_key(at))
+            .collect();
+        let changed: Vec<(i64, i64)> = match &last {
+            None => saved.keys().copied().collect(),
+            Some(last) => saved
+                .iter()
+                .filter(|(at, chunk)| last.get(at) != Some(chunk))
+                .map(|(at, _)| *at)
+                .chain(last.keys().filter(|at| !saved.contains_key(at)).copied())
+                .collect(),
+        };
+        if missing.is_empty() && changed.is_empty() {
+            return (saved, time);
+        }
+        unsettled = format!(
+            "at game time {time}, {} loaded chunks not finished (first {:?}), {} chunks \
+             changed since the save before (first {:?})",
+            missing.len(),
+            missing.first(),
+            changed.len(),
+            changed.first(),
+        );
+        last = Some(saved);
+    }
+    panic!(
+        "after `{step}` the official server's world did not settle in {SETTLE_ROUNDS} \
+         saves {SETTLE_TICKS} ticks apart: {unsettled}"
+    );
+}
+
+/// The chunks this crate's engine reads: those the official server finished.
+struct Held(BTreeMap<ChunkPos, Chunk>);
+
+impl Chunks for Held {
+    fn chunk(&self, at: ChunkPos) -> Option<&Chunk> {
+        self.0.get(&at)
+    }
+}
+
+fn chunk_pos((x, z): (i64, i64)) -> ChunkPos {
+    ChunkPos::new(x as i32, z as i32)
+}
+
+/// Makes the held chunks those of `saved`, block by block where a chunk was held before
+/// (`before` is the save they were made from), telling `lighting` each change light can
+/// see, as a region does. Returns how many blocks changed.
+fn follow(
+    held: &mut Held,
+    lighting: &mut Lighting,
+    before: &BTreeMap<(i64, i64), Official>,
+    saved: &BTreeMap<(i64, i64), Official>,
+) -> usize {
+    let mut changes = 0;
+    for gone in before.keys().filter(|at| !saved.contains_key(at)) {
+        held.0.remove(&chunk_pos(*gone));
+        lighting.left(chunk_pos(*gone));
+    }
+    for (&(chunk_x, chunk_z), official) in saved {
+        let at = chunk_pos((chunk_x, chunk_z));
+        let Some(old) = before.get(&(chunk_x, chunk_z)) else {
+            held.0.insert(at, official.chunk());
+            lighting.arrived(at);
+            continue;
+        };
+        let chunk = held.0.get_mut(&at).expect("a chunk saved before is held");
+        for (index, (was, is)) in old.sections.iter().zip(&official.sections).enumerate() {
+            if was == is {
+                continue;
+            }
+            for cell in 0..4096 {
+                let state = match is {
+                    Section::Uniform(state) => *state,
+                    Section::Mixed(states) => states[cell],
+                };
+                let (x, y, z) = (cell & 15, cell >> 8, cell >> 4 & 15);
+                let world_y = (official.lowest + index as i64) as i32 * 16 + y as i32;
+                let old = chunk
+                    .set(x, world_y, z, state)
+                    .expect("the cell is in the chunk");
+                if old == state {
+                    continue;
+                }
+                changes += 1;
+                if light_tells_apart(old, state) {
+                    lighting.changed(BlockPos::new(
+                        chunk_x as i32 * 16 + x as i32,
+                        world_y,
+                        chunk_z as i32 * 16 + z as i32,
+                    ));
+                }
+            }
+        }
+    }
+    changes
+}
+
+/// The first light section in which two lights differ, written out.
+fn first_difference(engine: &Light, function: &Light) -> String {
+    for (kind, engine, function) in [
+        ("sky", &engine.sky, &function.sky),
+        ("block", &engine.block, &function.block),
+    ] {
+        if engine.len() != function.len() {
+            return format!(
+                "{kind}: {} sections against {}",
+                engine.len(),
+                function.len()
+            );
+        }
+        for (index, (engine, function)) in engine.iter().zip(function).enumerate() {
+            if engine != function {
+                return format!(
+                    "{kind}, light section {index}: the engine has {}, the function {}",
+                    case(engine),
+                    case(function)
+                );
+            }
+        }
+    }
+    "the version or `beside`".to_owned()
+}
+
+/// What one step's comparison found.
+#[derive(Default)]
+struct Found {
+    sky: Tally,
+    block: Tally,
+    /// Sky light sections that differ under something floating: the crate's named
+    /// difference (`lib.rs`, "Where this is not the game"), listed apart.
+    floating: Tally,
+    compared: Vec<(i64, i64)>,
+    /// Where the engine's light is not the crate's function's of the same blocks.
+    engine: Vec<String>,
+}
+
+/// Compares the engine's light of every held chunk with eight held neighbours with what
+/// the official server saved, and with the crate's function of the same blocks.
+fn compare(
+    label: &str,
+    held: &Held,
+    lighting: &Lighting,
+    saved: &BTreeMap<(i64, i64), Official>,
+) -> Found {
+    let mut found = Found::default();
+    for (&(chunk_x, chunk_z), official) in saved {
+        let at = chunk_pos((chunk_x, chunk_z));
+        let mut nine = Vec::new();
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                nine.extend(held.0.get(&ChunkPos::new(at.x + dx, at.z + dz)));
+            }
+        }
+        let Ok([nw, n, ne, w, own, e, sw, s, se]) = <[&Chunk; 9]>::try_from(nine.clone()) else {
+            continue;
+        };
+        found.compared.push((chunk_x, chunk_z));
+        let made = lighting
+            .light(at, held)
+            .expect("a held chunk is present in the engine");
+        let function = light(&Around {
+            centre: own,
+            neighbours: [nw, n, ne, w, e, sw, s, se].map(Some),
+            sky: true,
+        });
+        if made != function {
+            found.engine.push(format!(
+                "{label}: chunk {chunk_x} {chunk_z}: the engine is not the function: {}",
+                first_difference(&made, &function)
+            ));
+        }
+
+        // Which sections of the nine hold a block, for the named case: a light section
+        // with an unlisted one above it, and a block above that, is under something
+        // floating, where the sky's light comes a way the game does not take.
+        let mut occupied = [false; SECTIONS];
+        for chunk in &nine {
+            for (index, section) in chunk.sections().iter().enumerate() {
+                occupied[index] |= section.non_air_count() > 0;
+            }
+        }
+        let under_floating = |index: usize| {
+            (index + 1..made.sky.len()).any(|gap| {
+                made.sky[gap] == SectionLight::Absent
+                    && occupied
+                        .iter()
+                        .enumerate()
+                        .any(|(section, held)| *held && section + 1 > gap)
+            })
+        };
+
+        for (kind, made, stored) in [
+            ("sky", &made.sky, &official.sky),
+            ("block", &made.block, &official.block),
+        ] {
+            for (index, (made, stored)) in made.iter().zip(stored).enumerate() {
+                let place = format!("{label}: {kind} light, chunk {chunk_x} {chunk_z}");
+                let outcome =
+                    compare_section(&place, official.lowest, index, made, stored.as_ref(), own);
+                let mismatch = !matches!(
+                    outcome,
+                    Outcome::Absent | Outcome::Dark | Outcome::Equal { .. }
+                );
+                if mismatch && kind == "sky" && under_floating(index) {
+                    found.floating.count(outcome);
+                } else if kind == "sky" {
+                    found.sky.count(outcome);
+                } else {
+                    found.block.count(outcome);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Follows one save with the engine, compares, prints what was found and gathers what
+/// fails. Returns the number of sections that differed under something floating.
+fn check(
+    label: &str,
+    saved: &BTreeMap<(i64, i64), Official>,
+    held: &mut Held,
+    lighting: &mut Lighting,
+    before: &BTreeMap<(i64, i64), Official>,
+    failures: &mut Vec<String>,
+) -> usize {
+    let changes = follow(held, lighting, before, saved);
+    let work = lighting.run(held);
+    let found = compare(label, held, lighting, saved);
+    println!(
+        "{label}: {changes} blocks changed; the engine lit {} chunks whole and worked off \
+         {} cells; {} chunks compared",
+        work.chunks_lit_whole,
+        work.cells,
+        found.compared.len()
+    );
+    found.sky.print("  sky");
+    found.block.print("  block");
+    if found.floating.sections() > 0 {
+        println!("  under something floating, the crate's named difference, listed apart:");
+        found.floating.print("    sky");
+    }
+    let missing: Vec<(i64, i64)> = SCENE
+        .flat_map(|x| SCENE.map(move |z| (x, z)))
+        .filter(|at| !found.compared.contains(at))
+        .collect();
+    if !missing.is_empty() {
+        failures.push(format!(
+            "{label}: the scene's chunks {missing:?} were not compared"
+        ));
+    }
+    failures.extend(found.engine.iter().cloned());
+    for tally in [&found.sky, &found.block] {
+        if tally.mismatches() > 0 {
+            failures.extend(tally.shown.iter().cloned());
+        }
+    }
+    found.floating.sections()
+}
+
+#[test]
+#[ignore = "needs Java and the official server's jar"]
+fn light_after_changes_is_what_the_official_server_stored() {
+    let mut server = official_server::Server::start();
+    // Nothing but the script changes a block: no random tick turns grass under a roof
+    // to dirt, and no mob is about.
+    for command in [
+        "gamerule random_tick_speed 0",
+        "gamerule spawn_mobs false",
+        "kill @e[type=!minecraft:player]",
+        LOADED_BLOCKS,
+    ] {
+        run(&mut server, command);
+    }
+
+    let mut held = Held(BTreeMap::new());
+    let mut lighting = Lighting::new(true);
+    let mut before = BTreeMap::new();
+    let mut failures = Vec::new();
+    let mut floating = 0;
+    for (step, commands) in STEPS {
+        for command in *commands {
+            run(&mut server, command);
+        }
+        let (saved, time) = settle(&mut server, step);
+        let label = format!("`{step}` (saved at game time {time})");
+        floating += check(
+            &label,
+            &saved,
+            &mut held,
+            &mut lighting,
+            &before,
+            &mut failures,
+        );
+        before = saved;
+    }
+    // What the server keeps when it stops is what is compared last.
+    let world = server.world().to_owned();
+    server.stop();
+    let saved = finished(&world);
+    floating += check(
+        "the world as the server stopped it",
+        &saved,
+        &mut held,
+        &mut lighting,
+        &before,
+        &mut failures,
+    );
+
+    println!("{floating} sky light sections differed under something floating, listed apart");
+    assert!(
+        failures.is_empty(),
+        "light after changes differs from the official server's ({} lines; each names the \
+         step, the chunk, the section and its first differing cell):\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(60)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
