@@ -455,12 +455,15 @@ pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityData
 }
 
 /// The shared flags of what an entity's data says beyond its burning: an armour
-/// stand's invisibility.
+/// stand's invisibility, and a mob's (of its effects, read by the sim). A mob's effect
+/// particles (`DATA_EFFECT_PARTICLES`) are not sent: the edge has no serializer for a
+/// list of particle options.
 fn shared_flags_of(data: &EntityData) -> u8 {
     match data {
         EntityData::ArmorStand { flags, .. } if flags & STAND_INVISIBLE != 0 => {
             entity_data::INVISIBLE
         }
+        EntityData::Mob { .. } => clustine_sim::shown::mob_shared_flags(data),
         _ => 0,
     }
 }

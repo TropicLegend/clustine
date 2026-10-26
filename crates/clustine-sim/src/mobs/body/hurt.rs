@@ -42,6 +42,7 @@ impl DamageType {
     pub(crate) const OUT_OF_WORLD: Self = Self("minecraft:out_of_world");
     pub(crate) const DRY_OUT: Self = Self("minecraft:dry_out");
     pub(crate) const MOB_ATTACK: Self = Self("minecraft:mob_attack");
+    pub(crate) const MAGIC: Self = Self("minecraft:magic");
 
     /// Its id in the registry the server sends, which a damage event names it by
     /// (Clustine's sorted order: the brief's finding 18).
@@ -247,6 +248,16 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
     // The type's own (a wolf stands up), then `LivingEntity`'s.
     struck.mob_type.before_hurt(struck.mob);
     if struck.dying() {
+        return false;
+    }
+    // Fire resistance: nothing that burns hurts it.
+    if source.kind.is("minecraft:is_fire")
+        && struck
+            .mob
+            .body
+            .effects
+            .has(super::effects::Effect::FIRE_RESISTANCE)
+    {
         return false;
     }
     // `noActionTime = 0`, where it counts at all.

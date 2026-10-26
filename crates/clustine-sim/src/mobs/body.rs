@@ -11,8 +11,8 @@
 //! set to `n` at a moment `m` is `n - (now - m)` at the moment `now`.
 //!
 //! The submodules hold its hurts and death ([`hurt`]), its attributes ([`attributes`]),
-//! its loot ([`loot`]) and the defaults its class of the game's ladder gives
-//! ([`ladder`]).
+//! its loot ([`loot`]), its effects ([`effects`]) and the defaults its class of the
+//! game's ladder gives ([`ladder`]).
 //!
 //! Named differences: the pushes of minecarts and boats by a mob, and of the entities in
 //! another region's chunk, are left out (they still count for cramming); the oxygen
@@ -24,6 +24,9 @@ pub(crate) mod attributes;
 pub(crate) mod burning;
 #[cfg(test)]
 mod burning_tests;
+pub(crate) mod effects;
+#[cfg(test)]
+mod effects_tests;
 pub(crate) mod hurt;
 pub(crate) mod ladder;
 pub(crate) mod loot;
@@ -298,6 +301,7 @@ pub(crate) struct Body {
     pub(crate) idle: Idle,
     pub(crate) idle_gained: IdleGained,
     pub(crate) last_damage: LastDamage,
+    pub(crate) effects: effects::Effects,
 }
 
 /// `lastDamageSource` and `lastDamageStamp`: what last hurt it, by its damage type's
@@ -375,6 +379,7 @@ impl Body {
             idle: part::decode(entries)?,
             idle_gained: part::decode(entries)?,
             last_damage: part::decode(entries)?,
+            effects: part::decode(entries)?,
         })
     }
 
@@ -396,6 +401,7 @@ impl Body {
         part::put(&mut entries, &self.timeout);
         part::put(&mut entries, &self.last_damage);
         part::put(&mut entries, &self.idle_gained);
+        part::put(&mut entries, &self.effects);
         entries
     }
 
@@ -610,6 +616,8 @@ fn prepare(tick: &mut MobTick<'_>) {
     tick.living.landing = landing(kind, &tick.mob);
     tick.living.breathes_under_water = entity_in_tag(id, "minecraft:can_breathe_under_water")
         || tick.mob_type.breathes_under_water(&tick.mob);
+    tick.living.water_breathing = tick.mob.body.effects.water_breathing();
+    tick.living.effects_refill_air = tick.mob.body.effects.refill_air();
     // `canFreeze`: not of the types that do not freeze, and wearing nothing that keeps
     // the cold off.
     let worn = &tick.mob.body.equipment.slots;
@@ -655,6 +663,8 @@ pub(crate) fn after_base_tick(tick: &mut MobTick<'_>) {
     {
         combat.last_hurt_by = None;
     }
+    // `tickEffects`, a dying mob's too.
+    effects::tick_effects(tick);
     if tick.mob.body.vitals.dying() {
         return;
     }

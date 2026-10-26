@@ -123,6 +123,23 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
     values
 }
 
+/// `Entity.FLAG_INVISIBLE`, the shared flags' bit 5.
+const INVISIBLE: u8 = 0x20;
+
+/// The shared flags (`DATA_SHARED_FLAGS_ID`) a mob's record sets beyond its burning,
+/// which its tick's report carries: invisible while it has invisibility. Read from the
+/// effects' part alone, as an edge reads it at every change; none for a record that is
+/// no mob's or whose effects cannot be read.
+pub fn mob_shared_flags(data: &EntityData) -> u8 {
+    let EntityData::Mob { body, .. } = data else {
+        return 0;
+    };
+    match crate::mobs::part::decode::<crate::mobs::body::effects::Effects>(body) {
+        Ok(effects) if effects.invisible() => INVISIBLE,
+        _ => 0,
+    }
+}
+
 /// The yaw of a mob's head (`getYHeadRot`) as its record has it, which a client is sent
 /// apart from its body's (`ClientboundRotateHeadPacket`, and in its spawn); none for a
 /// record that is no mob's. Read from the head's part alone, whose first value it is in

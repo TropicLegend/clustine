@@ -45,6 +45,8 @@ pub(crate) mod body_ids {
     pub(crate) const LAST_DAMAGE: u16 = 14;
     /// What a monster's idle time gained in the light.
     pub(crate) const IDLE_GAINED: u16 = 15;
+    /// The effects it has, each with its amplifier and its end.
+    pub(crate) const EFFECTS: u16 = 16;
 }
 
 /// The ids of the mind's parts below [`mind_ids::FIRST_GOAL`]; a goal's part is its

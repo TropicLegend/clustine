@@ -239,6 +239,11 @@ pub(crate) struct Living {
     pub(crate) landing: Landing,
     /// `canBreatheUnderwater`: under water it keeps its air.
     pub(crate) breathes_under_water: bool,
+    /// `MobEffectUtil.hasWaterBreathing`: an effect keeps its air under water.
+    pub(crate) water_breathing: bool,
+    /// `MobEffectUtil.shouldEffectsRefillAirsupply`: what keeps its air under water
+    /// gets back what it lacks there (but for the nautilus's breath alone).
+    pub(crate) effects_refill_air: bool,
     /// Its air ran out under water in this tick (entity event 67's bubbles).
     pub(crate) drowned: bool,
     /// How it travels in this tick, its type's choice.
@@ -289,6 +294,8 @@ impl Living {
             fall_damage_immune: false,
             landing: Landing::Living,
             breathes_under_water: false,
+            water_breathing: false,
+            effects_refill_air: true,
             drowned: false,
             travel_kind: Travel::Living,
             pushed_by_fluid: true,
@@ -474,7 +481,7 @@ impl Living {
         ];
         let at_eyes = world.state(physics::containing(eyes));
         if self.eye_in_water(world) && !is_class(at_eyes, BlockClass::BubbleColumnBlock) {
-            if !self.breathes_under_water {
+            if !self.breathes_under_water && !self.water_breathing {
                 // `decreaseAirSupply`, with no oxygen bonus, which nothing in Clustine
                 // gives and which alone would draw.
                 self.air -= 1;
@@ -487,16 +494,23 @@ impl Living {
                         self.hurt(Damage::Drown, 2.0);
                     }
                 }
+            } else if self.air < self.max_air && self.effects_refill_air {
+                // A body that breathes under water, or has water breathing, gets its
+                // air back there as it would in the open.
+                self.increase_air();
             }
-            // A body that breathes under water keeps its air there: it is refilled
-            // only by water breathing or a conduit's power, which no body has.
         } else if self.air < self.max_air {
-            self.air = if self.refills_at_once {
-                self.max_air
-            } else {
-                (self.air + 4).min(self.max_air)
-            };
+            self.increase_air();
         }
+    }
+
+    /// `increaseAirSupply`: four more a tick, or all at once for a body that refills so.
+    fn increase_air(&mut self) {
+        self.air = if self.refills_at_once {
+            self.max_air
+        } else {
+            (self.air + 4).min(self.max_air)
+        };
     }
 
     /// `isInWall()`: not moving through everything, and a block that suffocates in a

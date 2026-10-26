@@ -27,6 +27,9 @@ pub(crate) const RANDOM_SPAWN_BONUS: &str = "minecraft:random_spawn_bonus";
 /// `SPEED_MODIFIER_POWDER_SNOW_ID`, powder snow's slowing.
 pub(crate) const POWDER_SNOW: &str = "minecraft:powder_snow";
 
+/// Swiftness's speed (`MobEffects.SPEED`'s modifier, `effect.speed`).
+pub(crate) const SPEED_EFFECT: &str = "minecraft:effect.speed";
+
 /// What the type of the entity type `kind` gives the attribute `attribute`, if it has
 /// it (`AttributeSupplier`).
 pub(crate) fn supplied(kind: u16, attribute: u16) -> Option<f64> {
