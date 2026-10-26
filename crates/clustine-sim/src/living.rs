@@ -258,6 +258,11 @@ pub(crate) struct Living {
     pub(crate) omnidirectional_air: bool,
     /// `getWaterSlowDown()`, 0.8 but for the types that swim better.
     pub(crate) water_slow_down: f32,
+    /// `onClimbable()` where its type answers it itself (a spider's flag); `None` for
+    /// the block it is in.
+    pub(crate) climbs: Option<bool>,
+    /// Whether a cobweb holds it (`makeStuckInBlock`): not a spider.
+    pub(crate) stuck_in_webs: bool,
 }
 
 impl Living {
@@ -303,6 +308,8 @@ impl Living {
             refills_at_once: false,
             omnidirectional_air: false,
             water_slow_down: 0.8,
+            climbs: None,
+            stuck_in_webs: true,
         }
     }
 

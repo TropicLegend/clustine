@@ -172,6 +172,15 @@ pub(crate) enum Local {
         keep_equipment: bool,
         sound: Option<i32>,
     },
+    /// `level.explode(the mob, at, radius, ExplosionInteraction.MOB)` and then
+    /// `discard()`, with no death and no loot (a creeper's `explodeCreeper`, `at` its
+    /// feet as it exploded; `region/explosions.rs`). `in_water` is whether the mob was in
+    /// water.
+    Explode {
+        at: crate::physics::Vec3,
+        radius: f32,
+        in_water: bool,
+    },
     /// A copper golem's step of its taking from the chest at `chest` (its interaction
     /// `PICKUP_ITEM` or `PICKUP_NO_ITEM`): the chest opened, closed, or what it takes
     /// moved into its hand (`region/copper_golems.rs`). Only a chest of the region's own

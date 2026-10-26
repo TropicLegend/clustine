@@ -70,10 +70,13 @@ pub(crate) mod horse;
 pub(crate) mod husk;
 pub(crate) mod iron_golem;
 #[cfg(test)]
+mod k4_tests;
+#[cfg(test)]
 mod keeper_brain_tests;
 #[cfg(test)]
 mod keeper_tests;
 pub(crate) mod llama;
+pub(crate) mod monster_ai;
 pub(crate) mod mooshroom;
 pub(crate) mod mule;
 pub(crate) mod nautilus;
@@ -91,6 +94,7 @@ pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod skeleton;
 pub(crate) mod skeleton_horse;
+pub(crate) mod skeletons;
 pub(crate) mod sniffer;
 pub(crate) mod snow_golem;
 pub(crate) mod spider;
@@ -824,6 +828,37 @@ pub(crate) trait MobType: Sync {
         let _ = tick;
     }
 
+    /// `onClimbable()` where the type answers it itself (a spider's climbing flag, which
+    /// its last move's sideways collision set): `None` for the block it is in.
+    fn on_climbable(&self, mob: &Mob) -> Option<bool> {
+        let _ = mob;
+        None
+    }
+
+    /// `canFreeze()` beyond the freeze-immune types and what it wears: false for a
+    /// skeleton, which powder snow turns into a stray instead.
+    fn can_freeze(&self) -> bool {
+        true
+    }
+
+    /// `GroundPathNavigation.avoidSun` as the type's goals set it (a skeleton's
+    /// `RestrictSunGoal`): its paths are cut where they first meet the sky.
+    fn avoids_sun(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// Whether a cobweb holds it (`makeStuckInBlock`): not a spider.
+    fn stuck_in_webs(&self) -> bool {
+        true
+    }
+
+    /// Whether `Mob.finalizeSpawn`'s own part (the follow range's bonus and the hand)
+    /// runs for it: not for a cave spider, whose `finalizeSpawn` returns before it.
+    fn mob_finalize_spawn(&self) -> bool {
+        true
+    }
+
     /// Whether its `BodyRotationControl.clientTick` turns its body in this tick (a
     /// sitting camel's and a rolled-up armadillo's do not): always by default.
     fn body_rotation_ticks(&self, tick: &MobTick<'_>) -> bool {
@@ -1279,6 +1314,13 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::CAMEL => &camel::CAMEL,
         entity_types::CAMEL_HUSK => &camel_husk::CAMEL_HUSK,
         entity_types::ARMADILLO => &armadillo::Armadillo,
+        entity_types::SKELETON => &skeleton::Skeleton,
+        entity_types::STRAY => &stray::Stray,
+        entity_types::BOGGED => &bogged::Bogged,
+        entity_types::PARCHED => &parched::Parched,
+        entity_types::CREEPER => &creeper::Creeper,
+        entity_types::SPIDER => &spider::Spider,
+        entity_types::CAVE_SPIDER => &cave_spider::CaveSpider,
         _ => return None,
     };
     Some(found)

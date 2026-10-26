@@ -622,7 +622,8 @@ fn prepare(tick: &mut MobTick<'_>) {
     // the cold off.
     let worn = &tick.mob.body.equipment.slots;
     let armour = [slots::FEET, slots::LEGS, slots::CHEST, slots::HEAD];
-    tick.living.can_freeze = !entity_in_tag(id, "minecraft:freeze_immune_entity_types")
+    tick.living.can_freeze = tick.mob_type.can_freeze()
+        && !entity_in_tag(id, "minecraft:freeze_immune_entity_types")
         && !armour
             .into_iter()
             .filter_map(|slot| worn[usize::from(slot)])
@@ -630,6 +631,8 @@ fn prepare(tick: &mut MobTick<'_>) {
     tick.living.walks_on_powder_snow = entity_in_tag(id, "minecraft:powder_snow_walkable_mobs")
         || worn[usize::from(slots::FEET)].is_some_and(|stack| stack.item == items::LEATHER_BOOTS);
     tick.living.pushed_by_fluid = tick.mob_type.pushed_by_fluid();
+    tick.living.climbs = tick.mob_type.on_climbable(&tick.mob);
+    tick.living.stuck_in_webs = tick.mob_type.stuck_in_webs();
     tick.living.max_air = tick.mob_type.max_air();
     tick.living.refills_at_once = tick.mob_type.refills_air_at_once();
     // A dying mob is not `isAlive()`: no wall, no air, no effects of blocks.
@@ -1025,7 +1028,7 @@ fn pushable(seen: &Seen<'_>, tick: &MobTick<'_>) -> Option<Pushable> {
     let entity = seen.entity;
     let passenger = entity.riding.vehicle.is_some();
     match &entity.data {
-        clustine_world::EntityData::Mob { body, .. } => {
+        clustine_world::EntityData::Mob { body, state, .. } => {
             if !super::types::of(entity.kind).pushable() {
                 return None;
             }
@@ -1033,8 +1036,20 @@ fn pushable(seen: &Seen<'_>, tick: &MobTick<'_>) -> Option<Pushable> {
             if vitals.dying() {
                 return None;
             }
-            let block = physics::containing(entity.position);
-            if clustine_blocks::data::in_tag(tick.world.state(block), "minecraft:climbable") {
+            // `isPushable()`: not while it climbs, by its type's own answer (a spider's
+            // flag) or the block it is in.
+            let module = super::types::of(entity.kind);
+            let climbs = module
+                .on_climbable(&super::Mob {
+                    body: Default::default(),
+                    mind: Default::default(),
+                    state: state.clone(),
+                })
+                .unwrap_or_else(|| {
+                    let block = physics::containing(entity.position);
+                    clustine_blocks::data::in_tag(tick.world.state(block), "minecraft:climbable")
+                });
+            if climbs {
                 return None;
             }
             // `!e.isVehicle() && e.isPushable()` for its share.

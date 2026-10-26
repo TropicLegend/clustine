@@ -40,11 +40,16 @@ pub(crate) struct Settings {
     /// follow the modified range, as `updatePathfinderMaxVisitedNodes` does).
     pub(crate) required_path_length: f32,
     pub(crate) required_set: bool,
-    /// `GroundPathNavigation.avoidSun` (monsters', N9: **named**, its trim needs the
-    /// sky's light).
+    /// `GroundPathNavigation.avoidSun` as the constructor sets it; a goal sets it in the
+    /// type's state instead ([`crate::mobs::types::MobType::avoids_sun`], a skeleton's
+    /// `RestrictSunGoal`).
     pub(crate) avoid_sun: bool,
     /// `canPathToTargetsBelowSurface`.
     pub(crate) below_surface: bool,
+    /// `WallClimberNavigation` (a spider's): a ground navigation that walks straight at
+    /// where it was last sent (`pathToPosition`, kept in the spiders' type state) once
+    /// its path is done.
+    pub(crate) wall_climber: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +61,7 @@ impl Default for Settings {
             required_set: false,
             avoid_sun: false,
             below_surface: false,
+            wall_climber: false,
         }
     }
 }
@@ -297,6 +303,10 @@ impl Made {
 /// to the surface in its chunk (no path where that chunk is neither loaded nor
 /// copied), then the common body.
 pub(crate) fn create_path(ai: &mut Ai<'_, '_>, mut target: BlockPos, reach: i32) -> Option<Made> {
+    // `WallClimberNavigation.createPath` keeps where it was sent first.
+    if ai.config.navigation.wall_climber {
+        crate::mobs::types::spider::set_path_to(&mut ai.tick.mob, Some(target));
+    }
     if ai.config.navigation.kind == Kind::Ground {
         if !ai.tick.world.has_chunk(target.chunk()) {
             return None;
@@ -409,7 +419,17 @@ pub(crate) fn move_to_reach(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32, speed: f6
 
 /// `moveTo(entity, speed)`: to the block it stands in, reach 1 (every navigation of
 /// N7's searches the box of a block for it, or one whose difference it does not read).
+/// A wall climber's reach is 0, and without a path it is sent there all the same.
 pub(crate) fn move_to_entity(ai: &mut Ai<'_, '_>, entity: BlockPos, speed: f64) -> bool {
+    if ai.config.navigation.wall_climber {
+        let made = create_path(ai, entity, 0);
+        if made.is_some() {
+            return move_to_path(ai, made, speed);
+        }
+        crate::mobs::types::spider::set_path_to(&mut ai.tick.mob, Some(entity));
+        ai.tick.mob.body.progress.speed = speed;
+        return true;
+    }
     let made = create_path(ai, entity, 1);
     move_to_path(ai, made, speed)
 }
@@ -454,8 +474,46 @@ fn same_nodes(a: &FoundPath, b: &FoundPath) -> bool {
 }
 
 /// `PathNavigation.trimPath()`: a node in a cauldron is raised out of it, and the next
-/// with it where it is no higher.
+/// with it where it is no higher; then `GroundPathNavigation`'s: a mob that avoids the
+/// sun and stands where the sky is not seen keeps its path only up to the first node
+/// that sees it.
 fn trim_path(ai: &mut Ai<'_, '_>) {
+    trim_cauldrons(ai);
+    let avoids = ai.config.navigation.avoid_sun || ai.tick.mob_type.avoids_sun(&ai.tick.mob);
+    if ai.config.navigation.kind != Kind::Ground || !avoids {
+        return;
+    }
+    let [x, y, z] = ai.position();
+    if can_see_sky(ai, physics::containing([x, y + 0.5, z])) {
+        return;
+    }
+    let Some(nodes) = ai
+        .tick
+        .mob
+        .body
+        .path
+        .followed
+        .as_ref()
+        .map(|path| path.nodes.clone())
+    else {
+        return;
+    };
+    if let Some(cut) = nodes.iter().position(|node| can_see_sky(ai, node.pos()))
+        && let Some(path) = ai.tick.mob.body.path.followed.as_mut()
+    {
+        // `Path.truncateNodes(i)`: the nodes from the first that sees the sky go.
+        path.nodes.truncate(cut);
+    }
+}
+
+/// `Level.canSeeSky(pos)`: the sky's light is full there (`BlockAndTintGetter`'s rule,
+/// as `burning.rs` reads it); a block the view does not read sees it.
+pub(crate) fn can_see_sky(ai: &Ai<'_, '_>, pos: BlockPos) -> bool {
+    ai.tick.world.light(pos).is_none_or(|light| light.sky >= 15)
+}
+
+/// `PathNavigation.trimPath()`'s own part: the cauldrons.
+fn trim_cauldrons(ai: &mut Ai<'_, '_>) {
     let world = ai.tick.world;
     let Some(path) = ai.tick.mob.body.path.followed.as_mut() else {
         return;
@@ -483,9 +541,13 @@ fn trim_path(ai: &mut Ai<'_, '_>) {
     }
 }
 
-/// `PathNavigation.tick()`.
+/// `PathNavigation.tick()`; a wall climber's own once its path is done.
 pub(crate) fn tick(ai: &mut Ai<'_, '_>) {
     ai.navigation_ticked = true;
+    if ai.config.navigation.wall_climber && is_done(ai) {
+        wall_climber_tick(ai);
+        return;
+    }
     if ai.tick.mob.body.progress.delayed_recompute {
         recompute_path(ai);
     }
@@ -526,6 +588,45 @@ pub(crate) fn tick(ai: &mut Ai<'_, '_>) {
     };
     let speed = ai.tick.mob.body.progress.speed;
     controls::set_wanted_position(ai, [next[0], y, next[2]], speed);
+}
+
+/// `WallClimberNavigation.tick()` with its path done: where it was sent is forgotten once
+/// it is near (within its width of that block's centre, or of the same column's block at
+/// its own height when it is above it); until then it is steered straight at that block's
+/// corner. **Named**: the game's navigation does not count this tick, which Clustine's
+/// count of the mob's AI steps does (`navigation_tick`).
+fn wall_climber_tick(ai: &mut Ai<'_, '_>) {
+    let Some(target) = crate::mobs::types::spider::path_to(&ai.tick.mob) else {
+        return;
+    };
+    let at = ai.position();
+    let width = f64::from(ai.width());
+    // `BlockPos.closerToCenterThan(position, distance)`.
+    let near = |pos: BlockPos| {
+        let centre = [
+            f64::from(pos.x) + 0.5,
+            f64::from(pos.y) + 0.5,
+            f64::from(pos.z) + 0.5,
+        ];
+        physics::distance_sqr(centre, at) < width * width
+    };
+    let above = at[1] > f64::from(target.y)
+        && near(physics::containing([
+            f64::from(target.x),
+            at[1],
+            f64::from(target.z),
+        ]));
+    if near(target) || above {
+        crate::mobs::types::spider::set_path_to(&mut ai.tick.mob, None);
+    } else {
+        let speed = ai.tick.mob.body.progress.speed;
+        let wanted = [
+            f64::from(target.x),
+            f64::from(target.y),
+            f64::from(target.z),
+        ];
+        controls::set_wanted_position(ai, wanted, speed);
+    }
 }
 
 /// `getGroundY(v)`: over air the point's own height, else the floor of its cell.

@@ -216,7 +216,10 @@ impl Living {
                 self.hurt(Damage::Campfire, damage);
             }
         } else if is_class(state, BlockClass::WebBlock) {
-            self.make_stuck([0.25, f64::from(0.05_f32), 0.25]);
+            // A spider's `makeStuckInBlock` passes a cobweb by.
+            if self.stuck_in_webs {
+                self.make_stuck([0.25, f64::from(0.05_f32), 0.25]);
+            }
         } else if is_class(state, BlockClass::SweetBerryBushBlock) {
             self.make_stuck([f64::from(0.8_f32), 0.75, f64::from(0.8_f32)]);
         } else if is_class(state, BlockClass::PowderSnowBlock) {

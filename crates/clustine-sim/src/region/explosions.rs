@@ -782,6 +782,47 @@ impl Region {
 const FAR_BLAST: u64 = 0x6661_7262_6c61_7374;
 
 impl Region {
+    /// A mob's own explosion (a creeper's `explodeCreeper`), after its tick:
+    /// `ExplosionInteraction.MOB` at its feet, its blocks broken (`mob_griefing` is on)
+    /// with their drops decaying (`mob_explosion_drop_decay`), its draws from the mob's
+    /// own stream as TNT's are; then the mob discarded, with no death and no loot. A block
+    /// or an entity across a line goes as TNT's does.
+    ///
+    /// **Named**: the damage names no cause (the game's names the creeper, a
+    /// `player_explosion` of it), so a hurt mob's death is no creeper's kill and TNT it
+    /// primes is primed by nobody, as `owner` is a player's here.
+    pub(crate) fn mob_explodes(
+        &mut self,
+        key: EntityId,
+        at: [f64; 3],
+        radius: f32,
+        in_water: bool,
+        output: &mut TickOutput,
+    ) {
+        if self.find_entity(key).is_none() {
+            return;
+        }
+        let explosion = Explosion {
+            source: key,
+            centre: at,
+            radius,
+            owner: None,
+            indirect: None,
+            decay: true,
+            rails_pass: false,
+            source_in_water: in_water,
+        };
+        let mut random = self.entity_stream(key).random;
+        let start = random.clone();
+        self.explode(&explosion, &mut random, output);
+        self.entity_drew(key, random.draws_since(&start));
+        if let Some((chunk, record)) = self.find_entity(key) {
+            let hops = record.hops;
+            self.unride_removed(key, true, output);
+            self.remove_entity(key, hops, chunk, output);
+        }
+    }
+
     /// An explosion's block across a line, taken by its holder (`Effected::Exploded`,
     /// `docs/groundwork/n6-plan.md`, section 6 item 9): broken if it is still `expected`,
     /// as the exploding region would have broken it, its loot collected with the other

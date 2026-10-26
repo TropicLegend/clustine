@@ -689,26 +689,7 @@ impl Goal for AvoidEntityGoal {
     }
 
     fn can_use(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) -> bool {
-        let distance = f64::from(self.max_distance);
-        let conditions = Conditions::combat().range(distance);
-        // `NO_CREATIVE_OR_SPECTATOR`, and any thing.
-        let selector = |looked: &Looked| !(looked.creative || looked.spectator);
-        let bounds = ai_bounds(ai).inflate([distance, 3.0, distance]);
-        let candidates = sensing::things_in(ai, bounds, self.class);
-        let from = ai.position();
-        let Some(threat) = sensing::nearest(ai, candidates, &conditions, &selector, from) else {
-            return false;
-        };
-        state.to_avoid = Some(threat.key);
-        let Some(away) = random_pos::default_pos_away(ai, 16, 7, threat.position) else {
-            return false;
-        };
-        if threat.distance_sqr(away) < threat.distance_sqr(ai.position()) {
-            return false;
-        }
-        let made = navigation::create_path_at(ai, away, 0);
-        state.path = hold(ai, made);
-        state.path.is_some()
+        self.can_use_of(state, ai, None)
     }
 
     fn can_continue(&self, _: &mut Avoiding, ai: &mut Ai<'_, '_>) -> bool {
@@ -725,6 +706,45 @@ impl Goal for AvoidEntityGoal {
     }
 
     fn tick(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) {
+        self.tick_of(state, ai);
+    }
+}
+
+impl AvoidEntityGoal {
+    /// `canUse`, of only the things `avoids` takes where it is given (the predicate on
+    /// what it avoids, which the selector tests before anything else).
+    fn can_use_of(
+        &self,
+        state: &mut Avoiding,
+        ai: &mut Ai<'_, '_>,
+        avoids: Option<fn(&Ai<'_, '_>, &Looked) -> bool>,
+    ) -> bool {
+        let distance = f64::from(self.max_distance);
+        let conditions = Conditions::combat().range(distance);
+        // `NO_CREATIVE_OR_SPECTATOR`, and any thing.
+        let selector = |looked: &Looked| !(looked.creative || looked.spectator);
+        let bounds = ai_bounds(ai).inflate([distance, 3.0, distance]);
+        let mut candidates = sensing::things_in(ai, bounds, self.class);
+        if let Some(avoids) = avoids {
+            candidates.retain(|looked| avoids(ai, looked));
+        }
+        let from = ai.position();
+        let Some(threat) = sensing::nearest(ai, candidates, &conditions, &selector, from) else {
+            return false;
+        };
+        state.to_avoid = Some(threat.key);
+        let Some(away) = random_pos::default_pos_away(ai, 16, 7, threat.position) else {
+            return false;
+        };
+        if threat.distance_sqr(away) < threat.distance_sqr(ai.position()) {
+            return false;
+        }
+        let made = navigation::create_path_at(ai, away, 0);
+        state.path = hold(ai, made);
+        state.path.is_some()
+    }
+
+    fn tick_of(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) {
         let Some(threat) = state.to_avoid.and_then(|key| sensing::find(ai, key)) else {
             return;
         };
@@ -734,6 +754,42 @@ impl Goal for AvoidEntityGoal {
             self.walk_speed
         };
         navigation::set_speed_modifier(ai, speed);
+    }
+}
+
+/// `AvoidEntityGoal(mob, class, maxDist, walkSpeed, sprintSpeed, predicate)`: the same,
+/// of only the things `avoids` takes (a spider's armadillo that is not rolled up).
+#[derive(Clone, Copy)]
+pub(crate) struct AvoidEntityGoalIf {
+    pub(crate) goal: AvoidEntityGoal,
+    pub(crate) avoids: fn(&Ai<'_, '_>, &Looked) -> bool,
+}
+
+impl Goal for AvoidEntityGoalIf {
+    type State = Avoiding;
+
+    fn flags(&self) -> u8 {
+        self.goal.flags()
+    }
+
+    fn can_use(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) -> bool {
+        self.goal.can_use_of(state, ai, Some(self.avoids))
+    }
+
+    fn can_continue(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) -> bool {
+        self.goal.can_continue(state, ai)
+    }
+
+    fn start(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) {
+        self.goal.start(state, ai);
+    }
+
+    fn stop(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) {
+        self.goal.stop(state, ai);
+    }
+
+    fn tick(&self, state: &mut Avoiding, ai: &mut Ai<'_, '_>) {
+        self.goal.tick(state, ai);
     }
 }
 

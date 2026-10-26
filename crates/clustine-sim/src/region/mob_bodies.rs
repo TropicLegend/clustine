@@ -300,6 +300,13 @@ impl Region {
                     keep_equipment,
                     sound,
                 } => self.convert_mob_to(key, into, keep_equipment, sound, output),
+                Local::Explode {
+                    at,
+                    radius,
+                    in_water,
+                } => {
+                    self.mob_explodes(key, at, radius, in_water, output);
+                }
                 Local::SetMemories { key: other, writes } => {
                     self.write_mob_memories(other, writes, output);
                 }

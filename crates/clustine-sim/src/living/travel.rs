@@ -129,9 +129,13 @@ impl Living {
         }
     }
 
-    /// `onClimbable()`: the block it is in is climbable, or an open trapdoor over a
-    /// ladder that faces as it does.
+    /// `onClimbable()`: its type's answer where it has one; else the block it is in is
+    /// climbable, or an open trapdoor over a ladder that faces as it does.
     pub(crate) fn on_climbable<W: World + ?Sized>(&self, world: &W) -> bool {
+        // A type that answers it itself (a spider's flag).
+        if let Some(climbs) = self.climbs {
+            return climbs;
+        }
         let at = self.body.block_position();
         let state = world.state(at);
         if in_tag(state, "minecraft:climbable") {

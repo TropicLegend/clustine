@@ -42,7 +42,10 @@ pub(crate) fn construct(kind: u16, own: &mut Random, yaw: f32) -> (Uuid, Mob) {
 pub(crate) fn finalize(kind: u16, spawning: &mut Spawning<'_>) {
     let mob_type = types::of(kind);
     mob_type.finalize_spawn(spawning);
-    finalize_mob(kind, spawning.mob, spawning.level);
+    // A cave spider's `finalizeSpawn` returns before `Mob`'s.
+    if mob_type.mob_finalize_spawn() {
+        finalize_mob(kind, spawning.mob, spawning.level);
+    }
     mob_type.after_finalize_spawn(spawning);
 }
 
