@@ -350,9 +350,32 @@ the specification next. Made with each chunk (N7l, [plan](groundwork/n7l-plan.md
 reviewed): a new seeded world's chunks have the animals the game makes with them, drawn
 from the game's spawning and each creature's `finalizeSpawn` by its group (a horse herd
 of one coat, rabbits with babies after the first), given keys of their own, stored once
-with their chunk and never made again; worlds made before are refused. The structures'
-entities (D3) come after N7k ([plan](groundwork/n7k-plan.md), drafted, with its
-[brief](groundwork/n7k-brief.md)). Named: a frog's tongue
+with their chunk and never made again; worlds made before are refused; and the
+structures' entities with them (D3): a village's villagers, cats, iron golem and animals,
+the swamp hut's witch and black cat, the igloo's two, the monument's elder guardians, the
+mansion's illagers and allays, the ocean ruins' drowned, the outpost's caged golem and
+allays, the mineshafts' chest carts and the camps' cushions, each where the game puts it
+and drawing from the run's random as the game's do. Golems, villagers and monsters' bodies
+(N7k, [plan](groundwork/n7k-plan.md), reviewed, with its [brief](groundwork/n7k-brief.md)
+read from the jar): the world's difficulty, easy, sent to clients; the undead burning in
+daylight by the game's hours, light and chance, a helmet keeping the sun off; the iron
+golem (built from blocks in any orientation, fighting monsters with its own hit and fling,
+repaired by iron, offering poppies), the snow golem (its trail, melting, shears, and
+snowballs, Clustine's first projectile, which players throw too), the copper golem now
+built lying down as well; villagers that stroll, panic by a zombie or when hit, pick up
+food, walk about at night and shake their heads when clicked (no trades until N10), the
+wandering trader with its potions; zombies, husks, drowned and zombie villagers (babies,
+chicken jockeys, drowning into a drowned), skeletons, strays, bogged and parched (fleeing
+the sun and wolves, freezing into a stray, the bogged sheared), creepers (lit by flint and
+steel, they explode), spiders (climbing, jockeys), the witch (drinking its potions, with a
+few mob effects: fire resistance, water breathing, swiftness, invisibility, healing), the
+pillager, vindicator and evoker, and the guardians (their spikes). Monsters target and
+attack nothing until N9. An interaction with an entity at a line merges two regions that
+follow their players, as an entity sent across does (N7n). Each part tested from its
+specification by someone who did not write it. Named (`n7k-plan.md`, sections 10 and 11):
+a mob riding a mob is not steered by it until N9; the patrol leader's banner and the
+witch's potion are plain, item stacks having no components; Halloween's pumpkins never
+come. Named: a frog's tongue
 finds no prey until slimes come (N9); an allay does not hear note blocks or jukeboxes
 (entity listeners); a playing-dead axolotl gets no Regeneration (mob effects); a copper
 golem looks for chests by reading every block within its reach, which is slow but rare (it
@@ -426,7 +449,19 @@ rests 140 ticks between searches).
    llamas in savanna plateaus, parrots and pandas in jungles, polar bears on ice, turtles
    on beaches, frogs and armadillos where the game puts them. The same seed gives the same
    animals in the same places every time.
-0. Next in N7: golems, villagers and monsters' bodies (N7k).
+0. Golems, villagers and monsters. Place four iron blocks in a T and a carved pumpkin on
+   top (upright, or the T lying on the ground): an iron golem; two snow blocks and a
+   pumpkin: a snow golem, which leaves snow where it walks and melts in a desert. Use a
+   zombie's egg at noon in the open: it catches fire within seconds, and one with a helmet
+   does not; its baby is quick, and now and then rides a chicken. An iron golem walks to a
+   zombie and throws it up. A snow golem throws snowballs at it; throw snowballs yourself.
+   Light a creeper with flint and steel and step back. A villager from an egg wears its
+   biome's clothes, runs from a zombie, picks up bread, and shakes its head when you click
+   it. Put a zombie in deep water: after 45 seconds it turns into a drowned. A skeleton in
+   powder snow turns into a stray. A witch drinks when hurt. In a new seeded world, find a
+   village: its villagers, cats, golem and animals are there.
+0. Next in N7: comparisons with the official server and measurements (N7n), then light in
+   the simulation (N8).
 
 1. Press Q, ctrl+Q, and drag an item out of the creative screen: the item flies, falls,
    bounces, and after two seconds you pick it up again. A second player sees it too.
