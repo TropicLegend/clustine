@@ -3539,6 +3539,7 @@ mod tests {
     mod swings;
     mod tamed;
     mod thrown;
+    mod villagers;
     mod water;
     mod wild;
     mod zombies;

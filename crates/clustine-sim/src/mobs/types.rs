@@ -118,6 +118,8 @@ pub(crate) mod trader_llama;
 pub(crate) mod tropical_fish;
 pub(crate) mod turtle;
 pub(crate) mod villager;
+#[cfg(test)]
+mod villager_tests;
 pub(crate) mod vindicator;
 pub(crate) mod wandering_trader;
 pub(crate) mod water;
@@ -1374,6 +1376,8 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::HUSK => &husk::Husk,
         entity_types::DROWNED => &drowned::Drowned,
         entity_types::ZOMBIE_VILLAGER => &zombie_villager::ZombieVillager,
+        entity_types::VILLAGER => &villager::Villager,
+        entity_types::WANDERING_TRADER => &wandering_trader::WanderingTrader,
         _ => return None,
     };
     Some(found)

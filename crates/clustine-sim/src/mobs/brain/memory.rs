@@ -399,6 +399,7 @@ impl MemoryKind {
                 | Self::NearestVisibleTargetablePlayer
                 | Self::NearestVisibleTargetablePlayers
                 | Self::HurtBy
+                | Self::NearestHostile
                 | Self::NearestAttackable
                 | Self::NearestVisibleAdult
                 | Self::NearestVisibleWantedItem
@@ -600,6 +601,16 @@ pub(crate) struct Memories {
     pub(crate) lowered: Option<BTreeSet<MemoryKind>>,
     /// The kinds written since the record was read, which the record writes again.
     pub(crate) changed: BTreeSet<MemoryKind>,
+    /// Inside the brain's tick: the activities active as the behaviour now asked was
+    /// reached (`Brain.isActive`), which a behaviour that changes them reads (a
+    /// villager's panic). Kept here, beside the memories every behaviour is handed, so
+    /// that the behaviours' contract needs nothing new.
+    pub(crate) active: BTreeSet<super::Activity>,
+    /// The activities a behaviour asked to be made active in this tick
+    /// (`setActiveActivityIfPossible`), in the order asked, which the brain makes so as
+    /// soon as that behaviour returns, before it asks the next: a villager's panic and
+    /// its schedule, which change what the rest of the tick's passes visit.
+    pub(crate) requested: Vec<super::Activity>,
 }
 
 impl Memories {

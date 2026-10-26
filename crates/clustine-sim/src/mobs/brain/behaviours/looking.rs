@@ -20,6 +20,9 @@ pub(crate) enum LookAt {
     Kind(u16),
     /// Players.
     Player,
+    /// The things whose type is of a mob category (`SetEntityLookTarget.create(category,
+    /// maxDist)`); a player is of none of the mobs' (`MISC`).
+    Category(clustine_data::MobCategory),
 }
 
 impl LookAt {
@@ -28,6 +31,9 @@ impl LookAt {
             LookAt::Any => true,
             LookAt::Kind(kind) => looked.kind == Some(kind),
             LookAt::Player => looked.is_player(),
+            LookAt::Category(category) => looked.kind.is_some_and(|kind| {
+                clustine_data::EntityTypeInfo::of(i32::from(kind)).category == category
+            }),
         }
     }
 }

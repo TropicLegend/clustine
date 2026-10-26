@@ -411,6 +411,74 @@ fn behaviours_start_by_priority_then_by_their_activitys_bucket_in_active_activit
     );
 }
 
+/// A one-shot that asks for the panic (`setActiveActivityIfPossible(PANIC)`, a villager's
+/// panic trigger) each tick, logging what it saw active.
+struct AsksForPanic;
+
+impl Shot for AsksForPanic {
+    fn required(&self) -> &[MemoryKind] {
+        &[]
+    }
+
+    fn trigger(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let seen = if cx.memories.active.contains(&Activity::Panic) {
+            "saw panic"
+        } else {
+            "saw idle"
+        };
+        logged("asks", seen);
+        cx.memories.requested.push(Activity::Panic);
+        true
+    }
+}
+
+static SWITCHING: Provider = Provider {
+    memories: &[],
+    sensors: &[],
+    activities: || {
+        vec![
+            ActivityData::numbered(
+                Activity::Core,
+                0,
+                vec![Box::new(HeldShot::new(AsksForPanic))],
+            ),
+            ActivityData::numbered(Activity::Idle, 0, vec![noted("idle 0", 0, false)]),
+            ActivityData::numbered(Activity::Panic, 0, vec![noted("panic 0", 0, false)]),
+        ]
+    },
+    core: &[Activity::Core],
+    default: Activity::Idle,
+};
+
+/// An activity a behaviour asks for is made active as the behaviour returns, so that the
+/// passes visit it from there on as the game's, which asks `activeActivities` as it
+/// reaches each activity: at priority 0 the core (bucket 1) asks, so that the idle
+/// (bucket 5) is no longer visited and the panic (bucket 15) is, in the same tick.
+#[test]
+fn an_activity_a_behaviour_asks_for_is_visited_by_the_rest_of_the_same_pass() {
+    let mut run = Run::new(&SWITCHING);
+    take_log();
+    let brain = run.tick();
+    assert_eq!(brain.state.active, Some(Activity::Panic));
+    assert_eq!(
+        take_log(),
+        [
+            ("asks", "saw idle"),
+            ("panic 0", "start"),
+            ("panic 0", "stop"),
+        ]
+    );
+    run.tick();
+    assert_eq!(
+        take_log(),
+        [
+            ("asks", "saw panic"),
+            ("panic 0", "start"),
+            ("panic 0", "stop"),
+        ]
+    );
+}
+
 static TIMED: Provider = Provider {
     memories: &[],
     sensors: &[],

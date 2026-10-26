@@ -350,10 +350,6 @@ pub(crate) fn add(
 
 /// `removeAllEffects()`: every effect taken off with its modifiers
 /// (`onEffectsRemoved`), as milk does. Whether it had any.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the wandering trader drinks milk at dawn (N7k)")
-)]
 pub(crate) fn remove_all(mob: &mut Mob, kind: u16) -> bool {
     let body = &mut mob.body;
     let gone = std::mem::take(&mut body.effects.active);

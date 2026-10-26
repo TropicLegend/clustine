@@ -135,7 +135,7 @@ pub(crate) fn text<'a>(tag: &'a [u8], name: &str) -> Option<&'a str> {
 }
 
 /// The compound entry `name` of `tag`, its type byte first as `tag`'s is, for the
-/// readers above (a zombie villager's `VillagerData`).
+/// readers above (a villager's or a zombie villager's `VillagerData`).
 pub(crate) fn compound(tag: &[u8], name: &str) -> Option<Vec<u8>> {
     let (TAG_COMPOUND, payload) = entry(root(tag), name)? else {
         return None;

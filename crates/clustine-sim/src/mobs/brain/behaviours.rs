@@ -28,12 +28,15 @@
 pub(crate) mod attacking;
 pub(crate) mod cooldowns;
 pub(crate) mod doors;
+pub(crate) mod fleeing;
+pub(crate) mod items;
 pub(crate) mod jumping;
 pub(crate) mod liquids;
 pub(crate) mod looking;
 pub(crate) mod panic;
 pub(crate) mod ramming;
 pub(crate) mod social;
+pub(crate) mod villagers;
 pub(crate) mod walking;
 
 use std::collections::{BTreeMap, BTreeSet};

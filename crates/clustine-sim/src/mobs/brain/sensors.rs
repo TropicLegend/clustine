@@ -577,3 +577,102 @@ impl Sensor for MobSensor {
 
     fn resense(&self, _: &mut Cx<'_, '_, '_>) {}
 }
+
+/// `VillagerHostilesSensor.ACCEPTABLE_DISTANCE_FROM_HOSTILES`: the types a villager
+/// fears, each with how near it must be.
+const VILLAGER_HOSTILES_DISTANCES: [(i32, f32); 11] = [
+    (entity_types::DROWNED, 8.0),
+    (entity_types::EVOKER, 12.0),
+    (entity_types::HUSK, 8.0),
+    (entity_types::ILLUSIONER, 12.0),
+    (entity_types::PILLAGER, 15.0),
+    (entity_types::RAVAGER, 12.0),
+    (entity_types::VEX, 8.0),
+    (entity_types::VINDICATOR, 10.0),
+    (entity_types::ZOGLIN, 10.0),
+    (entity_types::ZOMBIE, 8.0),
+    (entity_types::ZOMBIE_VILLAGER, 8.0),
+];
+
+/// `VillagerHostilesSensor` (`VILLAGER_HOSTILES`, a `NearestVisibleLivingEntitySensor`):
+/// of `visible_mobs`, the closest seen of a type the villager fears within that type's
+/// distance (`distanceToSqr <= d * d`, the square a float's), as `nearest_hostile`, or
+/// none. What it writes the region keeps beside the record and senses again after a
+/// take-in.
+pub(crate) struct VillagerHostilesSensor;
+
+pub(crate) static VILLAGER_HOSTILES: VillagerHostilesSensor = VillagerHostilesSensor;
+
+impl Sensor for VillagerHostilesSensor {
+    fn requires(&self) -> &'static [MemoryKind] {
+        &[MemoryKind::NearestHostile, MemoryKind::VisibleMobs]
+    }
+
+    fn scan(&self, cx: &mut Cx<'_, '_, '_>) {
+        if visible_mobs(cx.memories).is_none() {
+            // `getVisibleEntities` empty: `setMemory(…, Optional.empty())`.
+            cx.memories.erase(MemoryKind::NearestHostile);
+            return;
+        }
+        let from = cx.ai.position();
+        let hostile = find_closest_visible(cx, &mut |_, looked| {
+            let Some(kind) = looked.kind else {
+                return false;
+            };
+            VILLAGER_HOSTILES_DISTANCES
+                .iter()
+                .find(|(hostile, _)| *hostile == i32::from(kind))
+                .is_some_and(|(_, near)| looked.distance_sqr(from) <= f64::from(near * near))
+        });
+        match hostile {
+            Some(looked) => cx
+                .memories
+                .set(MemoryKind::NearestHostile, Value::Entity(looked.key)),
+            None => cx.memories.erase(MemoryKind::NearestHostile),
+        }
+    }
+}
+
+/// `NearestBedSensor` (`NEAREST_BED`, a scan every 20 ticks) without points of
+/// interest: a baby's scan draws `nextInt(20)` of the level's random for its next
+/// search (`lastUpdate`), finds no bed and so writes nothing; an adult's does nothing.
+/// The one sensor whose scan draws; its sensing again after a take-in draws nothing.
+pub(crate) struct NearestBedSensor;
+
+pub(crate) static NEAREST_BED: NearestBedSensor = NearestBedSensor;
+
+impl Sensor for NearestBedSensor {
+    fn requires(&self) -> &'static [MemoryKind] {
+        &[MemoryKind::NearestBed]
+    }
+
+    fn scan(&self, cx: &mut Cx<'_, '_, '_>) {
+        let tick = &*cx.ai.tick;
+        if tick.mob_type.is_baby(&tick.mob) {
+            cx.ai.tick.draws.next_int(20);
+        }
+    }
+
+    fn resense(&self, _: &mut Cx<'_, '_, '_>) {}
+}
+
+/// A sensor whose scan finds nothing while there are no points of interest, nor
+/// anything that reads what it would write (`VILLAGER_BABIES`, `SECONDARY_POIS`,
+/// `GOLEM_DETECTED`): its memories registered and its start delay drawn at its rate, as
+/// the game's.
+pub(crate) struct InertSensor {
+    pub(crate) rate: u32,
+    pub(crate) requires: &'static [MemoryKind],
+}
+
+impl Sensor for InertSensor {
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    fn requires(&self) -> &'static [MemoryKind] {
+        self.requires
+    }
+
+    fn scan(&self, _: &mut Cx<'_, '_, '_>) {}
+}

@@ -669,6 +669,50 @@ pub(crate) fn run(
     tick.sensed = Some(sensed);
 }
 
+/// `refreshBrain` of a mob in its tick (a villager grown up, `ageBoundaryReached`): every
+/// running behaviour stopped (`stopAll`), then a new brain of the same memories
+/// (`pack`, `makeBrain`): every behaviour at rest, the default activity, and its sensors'
+/// delays drawn again from the mob's own stream, for a first tick at its next `lived`.
+/// Nothing for a type without a brain.
+pub(crate) fn remake(tick: &mut super::tick::MobTick<'_>) {
+    let Some(provider) = tick.mob_type.brain() else {
+        return;
+    };
+    let now = tick.lived;
+    let time = tick.world.game_time();
+    let mut brain = Brain::read(provider, &tick.mob.mind.brain, tick.sensed.as_ref(), now);
+    let mut setup = super::ai::Setup::default();
+    tick.mob_type.register_goals(&mut setup);
+    let config = setup.config;
+    let (entries, sensed) = {
+        let mut ai = Ai {
+            tick,
+            config: &config,
+            sensing: super::ai::sensing::Sensing::default(),
+            navigation_ticked: true,
+        };
+        brain.stop_all(&mut ai, time);
+        brain.write()
+    };
+    // Of the old brain only its memories go on.
+    let mut kept: Vec<Entry> = entries
+        .into_iter()
+        .filter(|entry| (ids::FIRST_MEMORY..ids::FIRST_BEHAVIOUR).contains(&entry.id))
+        .collect();
+    let state = made(provider, now.saturating_add(1), tick.draws);
+    part::put(&mut kept, &state);
+    tick.mob.mind.brain = kept;
+    tick.sensed = Some(sensed);
+}
+
+/// The activity beside the core ones of a mob's brain as its record has it, set to
+/// `activity` (a villager's schedule as its brain is made, `registerBrainGoals`).
+pub(crate) fn set_recorded_activity(mob: &mut super::Mob, activity: Activity) {
+    let mut state: BrainState = part::decode(&mob.mind.brain).unwrap_or_default();
+    state.active = Some(activity);
+    part::put(&mut mob.mind.brain, &state);
+}
+
 /// A write of one memory of another mob, which a mob's tick makes and its region applies
 /// after it ([`super::tick::Local::SetMemories`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -811,6 +855,8 @@ impl Brain {
                 now: lived,
                 lowered: None,
                 changed: BTreeSet::new(),
+                active: BTreeSet::new(),
+                requested: Vec::new(),
             },
             state,
             activities,
@@ -823,7 +869,10 @@ impl Brain {
 
     /// `Brain.tick` at the mob's `lived` `now` and the game time `time` (the brief's
     /// 7.1.5): the forget pass, the sensors (after a take-in every sensor senses again
-    /// first), the start pass and the running pass.
+    /// first), the start pass and the running pass. An activity a behaviour asks for
+    /// ([`Memories::requested`], a villager's panic or schedule) is made active as soon
+    /// as that behaviour returns, so that the behaviours after it in the passes see it
+    /// as the game's do, which ask `activeActivities` afresh as they visit each activity.
     pub(crate) fn tick(&mut self, ai: &mut Ai<'_, '_>, now: u32, time: i64) {
         // A brain read before its first tick makes the default active, as its
         // construction's `useDefaultActivity` does.
@@ -832,39 +881,47 @@ impl Brain {
         }
         self.memories.forget(now);
         self.time = time;
+        self.memories.active = self.active();
+        self.memories.requested.clear();
         let resense = std::mem::take(&mut self.resense);
-        // Behaviours cannot change the activities while the passes run, so the set read
-        // once is the set the game reads for each behaviour.
-        let active = self.active();
-        let mut cx = Cx {
-            ai,
-            memories: &mut self.memories,
-            time,
-        };
-        if resense {
-            for sensor in self.provider.sensors {
-                sensor.resense(&mut cx);
+        {
+            let mut cx = Cx {
+                ai: &mut *ai,
+                memories: &mut self.memories,
+                time,
+            };
+            if resense {
+                for sensor in self.provider.sensors {
+                    sensor.resense(&mut cx);
+                }
+            }
+            if self.state.next_scans.len() != self.provider.sensors.len() {
+                // A provider whose sensors changed: those it has now scan at once.
+                self.state.next_scans = vec![now; self.provider.sensors.len()];
+            }
+            for (index, sensor) in self.provider.sensors.iter().enumerate() {
+                let next = &mut self.state.next_scans[index];
+                if now >= *next {
+                    *next = now + sensor.rate().max(1);
+                    sensor.scan(&mut cx);
+                }
             }
         }
-        if self.state.next_scans.len() != self.provider.sensors.len() {
-            // A provider whose sensors changed: those it has now scan at once.
-            self.state.next_scans = vec![now; self.provider.sensors.len()];
-        }
-        for (index, sensor) in self.provider.sensors.iter().enumerate() {
-            let next = &mut self.state.next_scans[index];
-            if now >= *next {
-                *next = now + sensor.rate().max(1);
-                sensor.scan(&mut cx);
-            }
-        }
-        for &(activity, behaviour) in &self.order {
+        for at in 0..self.order.len() {
+            let (activity, behaviour) = self.order[at];
             let data = &mut self.activities[activity];
-            if !active.contains(&data.activity) {
+            if !self.memories.active.contains(&data.activity) {
                 continue;
             }
             let behaviour = &mut data.behaviours[behaviour].1;
             if !behaviour.running() {
+                let mut cx = Cx {
+                    ai: &mut *ai,
+                    memories: &mut self.memories,
+                    time,
+                };
                 behaviour.try_start(&mut cx);
+                self.take_requests();
             }
         }
         // Every running behaviour of every activity, listed before any ticks.
@@ -879,11 +936,29 @@ impl Brain {
             })
             .collect();
         for (activity, behaviour) in running {
+            let mut cx = Cx {
+                ai: &mut *ai,
+                memories: &mut self.memories,
+                time,
+            };
             self.activities[activity].behaviours[behaviour]
                 .1
                 .tick_or_stop(&mut cx);
+            self.take_requests();
         }
         self.memories.end_tick();
+    }
+
+    /// The activities the behaviour that just returned asked for, each made active
+    /// where it may be (`setActiveActivityIfPossible`), in the order asked.
+    fn take_requests(&mut self) {
+        if self.memories.requested.is_empty() {
+            return;
+        }
+        for activity in std::mem::take(&mut self.memories.requested) {
+            self.set_active_if_possible(activity);
+        }
+        self.memories.active = self.active();
     }
 
     /// The active activities: the core ones and the one beside them.
