@@ -1045,6 +1045,13 @@ pub(crate) trait Companions {
     fn next(&mut self) -> Option<(EntityId, Random)>;
     /// The companion made, which the maker adds with the mob as `seat` says.
     fn add(&mut self, companion: Companion);
+    /// The region's own entities whose boxes meet `bounds`, in the game's order of a
+    /// box's lookup: each key, its type and whether it carries anyone (a baby zombie's
+    /// search for a chicken to ride, `Zombie.finalizeSpawn`).
+    fn nearby(&self, bounds: &crate::physics::aabb::Aabb) -> Vec<(EntityId, u16, bool)>;
+    /// The mob being made is to ride `vehicle`, one of [`Companions::nearby`]'s, once it
+    /// is added (`startRiding`).
+    fn ride(&mut self, vehicle: EntityId);
 }
 
 /// `EntitySpawnReason`, as far as a mob's making reads it.

@@ -205,6 +205,7 @@ impl Region {
             region: self,
             chunk,
             made: Vec::new(),
+            rides: None,
         };
         if !poured || mob_type.finalizes_when_poured() {
             let mut group = None;
@@ -230,6 +231,7 @@ impl Region {
                 },
             );
         }
+        let rides = companions.rides;
         let companions = companions.made;
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
@@ -270,7 +272,8 @@ impl Region {
             let (vehicles, riders): (Vec<_>, Vec<_>) = companions
                 .into_iter()
                 .partition(|made| made.seat == types::CompanionSeat::Vehicle);
-            let vehicle = vehicles.first().map(|made| made.entity.key);
+            // A vehicle made with it, or one already there it was to ride.
+            let vehicle = vehicles.first().map(|made| made.entity.key).or(rides);
             for made in vehicles {
                 self.add_companion(made, output);
             }
@@ -440,6 +443,7 @@ struct EggCompanions<'r> {
     region: &'r mut Region,
     chunk: ChunkPos,
     made: Vec<types::Companion>,
+    rides: Option<EntityId>,
 }
 
 impl types::Companions for EggCompanions<'_> {
@@ -450,6 +454,21 @@ impl types::Companions for EggCompanions<'_> {
 
     fn add(&mut self, companion: types::Companion) {
         self.made.push(companion);
+    }
+
+    fn nearby(&self, bounds: &Aabb) -> Vec<(EntityId, u16, bool)> {
+        self.region
+            .entities_in(bounds)
+            .into_iter()
+            .filter_map(|(key, _)| {
+                let (_, entity) = self.region.find_entity(key)?;
+                Some((key, entity.kind, !entity.riding.passengers.is_empty()))
+            })
+            .collect()
+    }
+
+    fn ride(&mut self, vehicle: EntityId) {
+        self.rides = Some(vehicle);
     }
 }
 

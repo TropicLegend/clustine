@@ -313,6 +313,12 @@ mod equipment_tests {
         fn add(&mut self, companion: types::Companion) {
             self.made.push(companion);
         }
+
+        fn nearby(&self, _: &crate::physics::aabb::Aabb) -> Vec<(EntityId, u16, bool)> {
+            Vec::new()
+        }
+
+        fn ride(&mut self, _: EntityId) {}
     }
 
     fn spawning_with<'a>(
