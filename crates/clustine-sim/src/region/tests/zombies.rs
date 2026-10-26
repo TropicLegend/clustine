@@ -1,9 +1,9 @@
 //! The zombie family in a region, from the brief's sections 3.4, 11.1, 11.5 and 11.8
 //! (`docs/groundwork/n7k-brief.md`): a zombie whose eyes are under water turns into a
 //! drowned 901 ticks later, its count kept by its record and lost when it leaves the
-//! water; a husk turns into a zombie; a zombie walks to a turtle egg and tramples it; a
-//! drowned walks to water by day and swims up at night; an egg makes them, and one used
-//! on one makes a baby.
+//! water; a husk turns into a zombie; a zombie and a drowned walk to a turtle egg and
+//! trample it; a drowned walks to water by day and swims up at night; an egg makes
+//! them, and one used on one makes a baby.
 
 use clustine_data::{BlockState, blocks, entity_types, items, sounds};
 use clustine_world::{Entity, EntityChange, EntityId};
@@ -302,6 +302,65 @@ fn a_zombie_walks_to_a_turtle_egg_and_tramples_it() {
         "{:?}",
         zombie.position
     );
+}
+
+/// K 11.1 and 11.8: the drowned inherits `Zombie.registerGoals`, the turtle egg goal
+/// among them, and on land at night walks to an egg and tramples it as a zombie does.
+#[test]
+fn a_drowned_walks_to_a_turtle_egg_and_tramples_it() {
+    let egg = BlockPos::new(8, -60, 4);
+    let mut region = on_ticking_floor_with(&[(egg, blocks::TURTLE_EGG)]);
+    region.clock.day = NIGHT;
+    lay(
+        &mut region,
+        &mob_at(ONE, entity_types::DROWNED, [8.5, -60.0, 11.5]),
+    );
+    let mut heard_digging = false;
+    let mut broken_at = None;
+    for tick in 1..=800 {
+        let output = checked(&mut region, &TickInputs::default());
+        let heard = sounds_of(&output);
+        heard_digging |= heard.contains(&sounds::ENTITY_ZOMBIE_DESTROY_EGG);
+        if region.block(egg) == Some(blocks::AIR) {
+            assert!(heard.contains(&sounds::ENTITY_TURTLE_EGG_BREAK));
+            broken_at = Some(tick);
+            break;
+        }
+    }
+    assert!(heard_digging, "it was heard at the egg");
+    let broken_at = broken_at.expect("the egg was trampled");
+    assert!(broken_at > 61, "{broken_at}");
+}
+
+/// Where a mob of `kind` is after `ticks` alone on the floor at night, from `start`,
+/// with a turtle egg at `egg`; and whether the egg is still there.
+fn after_walking_to_an_egg(
+    kind: i32,
+    start: [f64; 3],
+    egg: BlockPos,
+    ticks: usize,
+) -> ([f64; 3], bool) {
+    let mut region = on_ticking_floor_with(&[(egg, blocks::TURTLE_EGG)]);
+    region.clock.day = NIGHT;
+    lay(&mut region, &mob_at(ONE, kind, start));
+    for _ in 0..ticks {
+        checked(&mut region, &TickInputs::default());
+    }
+    let position = record(&region, ONE).expect("the mob is here").position;
+    (position, region.block(egg) == Some(blocks::TURTLE_EGG))
+}
+
+/// On land the drowned walks to an egg by the zombie's own move control and path. Sent
+/// along the exact diagonal of the blocks, where the path ends on the egg's block and
+/// the walk can stop a little short of `acceptedDistance` (1.14 from the middle of the
+/// block above the egg), the two stand in the same place and leave the egg alike.
+#[test]
+fn a_drowned_walks_to_an_egg_on_land_exactly_as_a_zombie_does() {
+    let egg = BlockPos::new(9, -60, 9);
+    let start = [0.5, -60.0, 0.5];
+    let drowned = after_walking_to_an_egg(entity_types::DROWNED, start, egg, 300);
+    let zombie = after_walking_to_an_egg(entity_types::ZOMBIE, start, egg, 300);
+    assert_eq!(drowned, zombie);
 }
 
 /// A pool sunk into the floor, its surface the floor's: water from x, z = 4 to 11 and
