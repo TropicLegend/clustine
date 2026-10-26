@@ -11,9 +11,6 @@
 //!
 //! What the game does here that Clustine does not:
 //!
-//! - a mangrove propagule on the ground grows into a tree (`advanceTree`), which
-//!   places a feature, and whose first stage is `SaplingBlock`'s: the propagule draws
-//!   its chance as the game does and then does nothing;
 //! - the chorus flower's sounds as it grows and dies (level events 1033 and 1034) have
 //!   no event in Clustine yet;
 //!
