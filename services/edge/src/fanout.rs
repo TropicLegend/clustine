@@ -3594,6 +3594,18 @@ impl Fanout {
                                 )
                             })
                             .collect(),
+                        attributes: match &state.kind {
+                            EntityKind::Other { kind, .. } => {
+                                clustine_sim::shown::mob_attributes(*kind, data)
+                                    .into_iter()
+                                    .map(|shown| {
+                                        let snapshot = attribute_snapshot(shown);
+                                        (snapshot.attribute, snapshot)
+                                    })
+                                    .collect()
+                            }
+                            EntityKind::Player { .. } => BTreeMap::new(),
+                        },
                         ..LivingShown::default()
                     },
                 };
@@ -4202,18 +4214,8 @@ impl Fanout {
     /// A mob's attributes that changed or that it made: remembered for those who come
     /// to see it, and sent to those who see it.
     async fn show_attributes(&mut self, entity: EntityId, attributes: Vec<AttributeShown>) {
-        let snapshots: Vec<AttributeSnapshot> = attributes
-            .into_iter()
-            .map(|shown| AttributeSnapshot {
-                attribute: i32::from(shown.attribute),
-                base: shown.base,
-                modifiers: shown
-                    .modifiers
-                    .into_iter()
-                    .map(|(id, amount, operation)| (id, amount, i32::from(operation)))
-                    .collect(),
-            })
-            .collect();
+        let snapshots: Vec<AttributeSnapshot> =
+            attributes.into_iter().map(attribute_snapshot).collect();
         if let Some(shown) = self.entities.get_mut(&entity) {
             for snapshot in &snapshots {
                 shown
@@ -6296,6 +6298,19 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
         }));
     }
     packets
+}
+
+/// An attribute as a client is sent it (`UpdateAttributes`).
+fn attribute_snapshot(shown: AttributeShown) -> AttributeSnapshot {
+    AttributeSnapshot {
+        attribute: i32::from(shown.attribute),
+        base: shown.base,
+        modifiers: shown
+            .modifiers
+            .into_iter()
+            .map(|(id, amount, operation)| (id, amount, i32::from(operation)))
+            .collect(),
+    }
 }
 
 /// The owner of a projectile `state` shows, if it has one.

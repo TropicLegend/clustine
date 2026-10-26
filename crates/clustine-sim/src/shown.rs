@@ -167,6 +167,33 @@ pub fn mob_equipment(data: &EntityData) -> Vec<(u8, clustine_world::ItemStack)> 
         .unwrap_or_default()
 }
 
+/// The attributes a client newly shown a mob of the type `kind` is sent with it, as its
+/// record has them (`getSyncableAttributes`, `sendPairingData`): a baby zombie's speed
+/// with its modifier, which no change will ever report. Empty for a record that is no
+/// mob's.
+pub fn mob_attributes(kind: u16, data: &EntityData) -> Vec<crate::api::AttributeShown> {
+    let EntityData::Mob { body, .. } = data else {
+        return Vec::new();
+    };
+    crate::mobs::part::decode::<crate::mobs::body::Attributes>(body)
+        .map(|attributes| {
+            attributes
+                .syncable(kind, false)
+                .into_iter()
+                .map(|instance| crate::api::AttributeShown {
+                    attribute: instance.attribute,
+                    base: instance.base,
+                    modifiers: instance
+                        .modifiers
+                        .into_iter()
+                        .map(|modifier| (modifier.id, modifier.amount, modifier.operation))
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A mob's record wearing and holding `stacks` by slot and nothing else, as an edge's
 /// tests make one to show (the edge has no other way to write a mob's parts).
 pub fn mob_data_wearing(stacks: &[(u8, clustine_world::ItemStack)]) -> EntityData {
