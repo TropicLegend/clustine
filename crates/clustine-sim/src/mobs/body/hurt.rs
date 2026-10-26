@@ -252,6 +252,7 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
     // `noActionTime = 0`, where it counts at all.
     if let Some(since) = &mut struck.mob.body.idle.no_action_since {
         *since = struck.moment;
+        struck.mob.body.idle_gained.gained = 0;
     }
     let kind = source.kind;
     let mut amount = if amount < 0.0 { 0.0 } else { amount };

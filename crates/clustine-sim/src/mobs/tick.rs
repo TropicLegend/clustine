@@ -282,6 +282,8 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     // `aiStep`: the type's own part before `LivingEntity`'s first (a fish's flop, a
     // horse's tail); a dying mob does not think, but falls and slides.
     tick.mob_type.before_ai_step(tick);
+    // `Monster.aiStep`'s head.
+    body::burning::monster_idles(tick);
     body::start_ai_step(tick);
     if tick.effective_ai() && !body::immobile(tick) {
         ai::server_ai_step(tick);
@@ -304,6 +306,8 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     }
     take_hurts(tick);
     body::push_entities(tick);
+    // `Mob.aiStep`'s, after `LivingEntity`'s.
+    body::burning::burn_undead(tick);
     // The type's `aiStep`, after `LivingEntity`'s.
     tick.mob_type.after_ai_step(tick);
     // After `aiStep`, in `LivingEntity.tick`.

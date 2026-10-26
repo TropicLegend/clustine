@@ -21,6 +21,9 @@
 //! effects of blocks.
 
 pub(crate) mod attributes;
+pub(crate) mod burning;
+#[cfg(test)]
+mod burning_tests;
 pub(crate) mod hurt;
 pub(crate) mod ladder;
 pub(crate) mod loot;
@@ -264,6 +267,19 @@ impl Part for Idle {
     const VERSION: u8 = 1;
 }
 
+/// What `noActionTime` has gained beyond the ticks since it was last reset: a monster's
+/// two more in the light (`Monster.updateNoActionTime`, `burning.rs`). A part of its own,
+/// so that a record written before it reads as none gained.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct IdleGained {
+    pub(crate) gained: u32,
+}
+
+impl Part for IdleGained {
+    const ID: u16 = body_ids::IDLE_GAINED;
+    const VERSION: u8 = 1;
+}
+
 /// A mob's body as its tick has it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Body {
@@ -280,6 +296,7 @@ pub(crate) struct Body {
     pub(crate) flags: Flags,
     pub(crate) home: Home,
     pub(crate) idle: Idle,
+    pub(crate) idle_gained: IdleGained,
     pub(crate) last_damage: LastDamage,
 }
 
@@ -356,6 +373,7 @@ impl Body {
             flags: part::decode(entries)?,
             home: part::decode(entries)?,
             idle: part::decode(entries)?,
+            idle_gained: part::decode(entries)?,
             last_damage: part::decode(entries)?,
         })
     }
@@ -377,15 +395,16 @@ impl Body {
         part::put(&mut entries, &self.idle);
         part::put(&mut entries, &self.timeout);
         part::put(&mut entries, &self.last_damage);
+        part::put(&mut entries, &self.idle_gained);
         entries
     }
 
     /// `noActionTime` as `serverAiStep` leaves it in the tick that began at `lived`
     /// (counted up by one at its head; what `RandomStrollGoal` reads).
     pub(crate) fn no_action_time(&self, lived: u32) -> i64 {
-        self.idle
-            .no_action_since
-            .map_or(1, |since| i64::from(lived) - i64::from(since) + 1)
+        self.idle.no_action_since.map_or(1, |since| {
+            i64::from(lived) - i64::from(since) + 1 + i64::from(self.idle_gained.gained)
+        })
     }
 }
 
@@ -488,12 +507,9 @@ pub(crate) fn check_despawn(tick: &mut MobTick<'_>) {
         idles(tick);
         return;
     };
-    let idle = tick
-        .mob
-        .body
-        .idle
-        .no_action_since
-        .map_or(0, |since| i64::from(tick.lived) - i64::from(since));
+    let idle = tick.mob.body.idle.no_action_since.map_or(0, |since| {
+        i64::from(tick.lived) - i64::from(since) + i64::from(tick.mob.body.idle_gained.gained)
+    });
     let far = ladder::despawn_distance(tick.kind);
     let far = f64::from(far * far);
     let near = 32.0 * 32.0;
@@ -508,6 +524,7 @@ pub(crate) fn check_despawn(tick: &mut MobTick<'_>) {
         tick.out.removed = Some(Removed::Discarded);
     } else if distance < near {
         tick.mob.body.idle.no_action_since = None;
+        tick.mob.body.idle_gained.gained = 0;
         return;
     }
     idles(tick);

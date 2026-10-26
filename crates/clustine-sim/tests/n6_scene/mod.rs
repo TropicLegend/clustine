@@ -222,6 +222,17 @@ impl Layout {
 /// A region of `layout` with `world` in its chunks and copies, nobody in it, whose
 /// players enter with `inventory`.
 pub fn region_of(layout: &Layout, world: &World, inventory: Inventory) -> Region {
+    region_at(layout, world, inventory, None)
+}
+
+/// As [`region_of`], with the world's clock at `clock` before any chunk is loaded, where
+/// a test wants a time of day (the undead burn by day).
+pub fn region_at(
+    layout: &Layout,
+    world: &World,
+    inventory: Inventory,
+    clock: Option<clustine_sim::api::WorldClock>,
+) -> Region {
     let mut state = RegionState::new(EntityIds::block(layout.block).expect("a block"));
     state.edges.insert(
         EDGE,
@@ -240,6 +251,7 @@ pub fn region_of(layout: &Layout, world: &World, inventory: Inventory) -> Region
             .chain(&layout.foreign)
             .map(|chunk| (*chunk, Ticket::Viewer))
             .collect(),
+        clock,
         ..TickInputs::default()
     });
     region.tick(&TickInputs {
@@ -300,6 +312,25 @@ impl Scene {
     /// One region over the land near the origin, player 1 at `feet`.
     pub fn alone(world: &World, inventory: Inventory, feet: Vec3) -> Self {
         Self::new(Layout::alone(), world, inventory, feet)
+    }
+
+    /// As [`Scene::alone`], at night: the world's clock at the day's tick 18000.
+    #[allow(dead_code, reason = "not every test of the scene wants the night")]
+    pub fn alone_at_night(world: &World, inventory: Inventory, feet: Vec3) -> Self {
+        let night = clustine_sim::api::WorldClock {
+            game_time: 18_000,
+            day: 18_000,
+        };
+        let layout = Layout::alone();
+        let region = region_at(&layout, world, inventory.clone(), Some(night));
+        let mut scene = Self {
+            region,
+            layout,
+            inventory,
+            actors: Vec::new(),
+        };
+        scene.join(1, feet);
+        scene
     }
 
     /// Player `n` joins and enters at `feet` with the scene's inventory, as the store's

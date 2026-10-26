@@ -334,11 +334,13 @@ impl Living {
         });
     }
 
-    /// `igniteForTicks`.
-    fn ignite_for_ticks(&mut self, ticks: i32) {
+    /// `igniteForTicks`: a longer fire is kept, and the frost goes either way
+    /// (`clearFreeze`, Entity.txt 1281–1292).
+    pub(crate) fn ignite_for_ticks(&mut self, ticks: i32) {
         if self.fire_ticks < ticks {
             self.fire_ticks = ticks;
         }
+        self.frozen = 0;
     }
 
     /// `clearFire`.

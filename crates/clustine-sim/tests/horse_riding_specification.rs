@@ -246,7 +246,8 @@ fn horses(kind: i32) -> Horses {
 }
 
 fn make_horses(kind: i32) -> Horses {
-    let mut scene = Scene::alone(
+    // At night, so that a zombie horse is not made burning (it burns by day, N7k).
+    let mut scene = Scene::alone_at_night(
         &World::of(&pen()),
         inventory(&[
             (0, stack(egg_of(kind), 1)),
@@ -325,7 +326,9 @@ fn with_entities(
     entities: Vec<clustine_world::Entity>,
 ) -> Scene {
     let world = World::of(more).with_entities(&entities);
-    Scene::alone(&world, hotbar(), SPAWN)
+    // At night: the zombie horse burns in daylight, as the game's (N7k), and these tests
+    // ride it.
+    Scene::alone_at_night(&world, hotbar(), SPAWN)
 }
 
 /// A scene of one region with player 1 at the spawn holding [`hotbar`], slot 0 (empty)

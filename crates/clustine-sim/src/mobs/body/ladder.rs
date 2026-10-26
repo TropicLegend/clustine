@@ -18,6 +18,9 @@ pub(crate) enum Family {
     Kept,
     /// The bat's `AmbientCreature`, which no lead holds.
     Ambient,
+    /// `Monster` (and `PatrollingMonster`, `Raider`, the guardians), an `Enemy`: hostile
+    /// sounds, no lead, despawned far from players (`n7k-plan.md`, section 2.1).
+    Monster,
     /// Any other mob (`Mob`'s defaults: monsters, raiders, the rest).
     Other,
 }
@@ -75,7 +78,51 @@ pub(crate) fn of(kind: u16) -> Family {
         | types::WANDERING_TRADER
         | types::ALLAY => Family::Kept,
         types::BAT => Family::Ambient,
+        types::ZOMBIE
+        | types::HUSK
+        | types::DROWNED
+        | types::ZOMBIE_VILLAGER
+        | types::SKELETON
+        | types::STRAY
+        | types::BOGGED
+        | types::PARCHED
+        | types::CREEPER
+        | types::SPIDER
+        | types::CAVE_SPIDER
+        | types::WITCH
+        | types::PILLAGER
+        | types::VINDICATOR
+        | types::EVOKER
+        | types::GUARDIAN
+        | types::ELDER_GUARDIAN => Family::Monster,
         _ => Family::Other,
+    }
+}
+
+/// `Monster.getSoundSource()`'s `HOSTILE` for a monster's own sounds; `NEUTRAL`, `Mob`'s,
+/// for every other mob's.
+pub(crate) fn sound_source(kind: u16) -> i32 {
+    match of(kind) {
+        Family::Monster => SOUND_SOURCE_HOSTILE,
+        _ => crate::physics::item::SOUND_SOURCE_NEUTRAL,
+    }
+}
+
+/// `SoundSource.HOSTILE` by its ordinal.
+const SOUND_SOURCE_HOSTILE: i32 = 5;
+
+/// Whether a mob of the type `kind` is an `Enemy`: the monsters, and the other types of the
+/// game's `monster` category that implement it (slimes, ghasts and the rest, when they
+/// come). The undead horses and the zombie nautilus are animals, and no enemy.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the iron golem's targets read it (N7k, K1)")
+)]
+pub(crate) fn is_enemy(kind: u16) -> bool {
+    match of(kind) {
+        Family::Monster => true,
+        Family::Other => EntityTypeInfo::of(i32::from(kind)).category == MobCategory::Monster,
+        Family::Animal | Family::WaterAnimal | Family::Kept | Family::Ambient => false,
     }
 }
 
@@ -97,7 +144,9 @@ pub(crate) fn remove_when_far_away(kind: u16, tick_count: u32) -> bool {
             _ => false,
         },
         Family::Kept => false,
-        Family::WaterAnimal | Family::Ambient | Family::Other => true,
+        // A monster from an egg despawns by the game's rule; a raider's patrolling and a
+        // zombie villager's conversion are their types' own (N7k).
+        Family::WaterAnimal | Family::Ambient | Family::Monster | Family::Other => true,
     }
 }
 
@@ -107,8 +156,10 @@ pub(crate) fn remove_when_far_away(kind: u16, tick_count: u32) -> bool {
 /// dump's classes implement one by one, read here as the category.
 pub(crate) fn can_be_leashed(kind: u16) -> bool {
     match of(kind) {
-        Family::Ambient => false,
-        Family::Animal | Family::WaterAnimal | Family::Kept => true,
+        Family::Ambient | Family::Monster => false,
+        // `AbstractVillager.canBeLeashed` is false.
+        Family::Kept => !matches!(i32::from(kind), types::VILLAGER | types::WANDERING_TRADER),
+        Family::Animal | Family::WaterAnimal => true,
         Family::Other => EntityTypeInfo::of(i32::from(kind)).category != MobCategory::Monster,
     }
 }

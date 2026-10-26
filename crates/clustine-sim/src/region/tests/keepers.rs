@@ -361,6 +361,8 @@ fn a_pufferfish_tames_a_nautilus_which_then_keeps_a_home_where_it_is() {
 #[test]
 fn a_nautilus_on_land_dries_out_and_a_zombie_nautilus_does_not() {
     let mut region = on_ticking_floor_with(&[]);
+    // At night: by day the zombie nautilus would burn, as the game's.
+    region.clock.day = 18_000;
     let mut tame = Tame::default();
     tame.set_tame_flag(true);
     let own = NautilusState {

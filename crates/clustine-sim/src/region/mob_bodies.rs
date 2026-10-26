@@ -175,7 +175,7 @@ impl Region {
         let key = before.key;
         self.apply_locals(key, out.local, output);
         for event in out.events {
-            self.show_body_event(key, chunk, at, event, output);
+            self.show_body_event(key, before.kind, chunk, at, event, output);
         }
         if let Some(death) = out.died {
             self.lay_death(death, output);
@@ -322,6 +322,7 @@ impl Region {
     fn show_body_event(
         &mut self,
         key: EntityId,
+        kind: u16,
         chunk: ChunkPos,
         at: Vec3,
         event: Event,
@@ -334,7 +335,8 @@ impl Region {
                 pitch,
             } => output.events.push(RegionEvent::Sound {
                 sound,
-                source: SOUND_SOURCE_NEUTRAL,
+                // `getSoundSource()`: a monster's are hostile.
+                source: crate::mobs::body::ladder::sound_source(kind),
                 position: clustine_world::Vec3::new(at[0], at[1], at[2]),
                 volume,
                 pitch,
