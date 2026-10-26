@@ -28,11 +28,11 @@ const LAYER: usize = WIDTH * WIDTH;
 const CENTRE: usize = SECTION_EDGE + 1;
 
 /// The low bits of a cell's kind: what the block takes from light that enters, 1 to 15.
-const TAKES: u8 = 0x0f;
+pub(crate) const TAKES: u8 = 0x0f;
 /// The block dampens by nothing, so the sky may come straight down through it.
-const CLEAR: u8 = 0x20;
+pub(crate) const CLEAR: u8 = 0x20;
 /// The block has faces that stop light by their shape.
-const SHAPED: u8 = 0x40;
+pub(crate) const SHAPED: u8 = 0x40;
 
 /// A cell nothing enters: a chunk that is not there, and the rim of the grid.
 const WALL: u8 = 15;
@@ -66,13 +66,13 @@ const STEPS: [isize; 6] = [
 
 /// What light needs of a block state.
 #[derive(Clone, Copy, PartialEq)]
-struct Cell {
-    kind: u8,
-    gives: u8,
+pub(crate) struct Cell {
+    pub(crate) kind: u8,
+    pub(crate) gives: u8,
 }
 
 impl Cell {
-    fn of(state: BlockState) -> Cell {
+    pub(crate) fn of(state: BlockState) -> Cell {
         let props = state.props();
         let dampening = props.light_dampening().min(15);
         let mut kind = dampening.max(1);

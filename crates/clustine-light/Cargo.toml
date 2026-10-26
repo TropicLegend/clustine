@@ -13,3 +13,8 @@ clustine-world.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
+
+# What the engine costs against the oracle: `cargo bench -p clustine-light --bench engine`.
+[[bench]]
+name = "engine"
+harness = false
