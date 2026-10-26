@@ -18,7 +18,14 @@ const AIR: Option<i32> = Some(blocks::AIR.0 as i32);
 const GRASS: Option<i32> = Some(blocks::GRASS_BLOCK.0 as i32);
 const DIRT: Option<i32> = Some(blocks::DIRT.0 as i32);
 const STONE: Option<i32> = Some(blocks::STONE.0 as i32);
+const COBBLESTONE: Option<i32> = Some(blocks::COBBLESTONE.0 as i32);
 const GLASS: Option<i32> = Some(blocks::GLASS.0 as i32);
+
+/// Whether a block of the flat world's dirt is dirt still, or grass that spread onto it
+/// once it was open to the sky (`SpreadingSnowyBlock`).
+fn dirt_or_grass(block: Option<i32>) -> bool {
+    block == DIRT || block == GRASS
+}
 
 /// Joins and waits for the chunks around the spawn point.
 async fn join(address: &str, name: &str) -> Bot {
@@ -65,8 +72,9 @@ async fn a_broken_block_is_gone_for_everyone() {
             .wait_until(PATIENCE, |bot| bot.acknowledged_sequence == sequence)
             .await
             .unwrap();
-        // Nothing else changed.
-        assert_eq!(digger.block_at(2, -62, 1).unwrap(), DIRT);
+        // Nothing else changed, but that grass may spread onto the dirt now under the
+        // sky, as the game's does.
+        assert!(dirt_or_grass(digger.block_at(2, -62, 1).unwrap()));
         assert_eq!(bystander.block_at(3, -61, 1).unwrap(), GRASS);
         assert_eq!(bystander.acknowledged_sequence, 0);
 
@@ -78,7 +86,7 @@ async fn a_broken_block_is_gone_for_everyone() {
         let latecomer = join(&address, "Latecomer").await;
         assert_eq!(latecomer.block_at(2, -61, 1).unwrap(), AIR);
         assert_eq!(latecomer.block_at(2, -62, 1).unwrap(), AIR);
-        assert_eq!(latecomer.block_at(2, -63, 1).unwrap(), DIRT);
+        assert!(dirt_or_grass(latecomer.block_at(2, -63, 1).unwrap()));
 
         server.stop().await;
     }
@@ -153,6 +161,7 @@ async fn a_placed_block_is_there_for_everyone() {
             .await
             .unwrap();
         assert_eq!(builder.hotbar[0].unwrap().item, items::STONE);
+        assert_eq!(builder.hotbar[1].unwrap().item, items::COBBLESTONE);
         assert_eq!(builder.hotbar[2].unwrap().item, items::DIRT);
         assert_eq!(builder.selected_slot, 0);
 
@@ -165,10 +174,11 @@ async fn a_placed_block_is_there_for_everyone() {
             .await
             .unwrap();
 
-        // Another hotbar slot, against the side of the block just placed.
-        builder.select_slot(2).await.unwrap();
+        // Another hotbar slot, against the side of the block just placed: cobblestone,
+        // which no rule changes, where dirt could take the grass beside it.
+        builder.select_slot(1).await.unwrap();
         builder.use_item_on(2, -60, 1, face::EAST).await.unwrap();
-        sees_block(&mut bystander, (3, -60, 1), DIRT).await;
+        sees_block(&mut bystander, (3, -60, 1), COBBLESTONE).await;
 
         // An item taken from the creative inventory, on top of that.
         builder
@@ -182,7 +192,7 @@ async fn a_placed_block_is_there_for_everyone() {
 
         let latecomer = join(&address, "Latecomer").await;
         assert_eq!(latecomer.block_at(2, -60, 1).unwrap(), STONE);
-        assert_eq!(latecomer.block_at(3, -60, 1).unwrap(), DIRT);
+        assert_eq!(latecomer.block_at(3, -60, 1).unwrap(), COBBLESTONE);
         assert_eq!(latecomer.block_at(3, -59, 1).unwrap(), GLASS);
         assert_eq!(latecomer.block_at(2, -59, 1).unwrap(), AIR);
 

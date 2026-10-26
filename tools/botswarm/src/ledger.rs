@@ -135,11 +135,12 @@ const DUPLICATE_LOGIN: &str = "multiplayer.disconnect.duplicate_login";
 /// how long something a lost connection had sent can still take effect.
 const AN_EDGE_IS_FORGOTTEN: Duration = Duration::from_secs(30);
 
-/// The items the bots take into their hotbars. Each is a block.
+/// The items the bots take into their hotbars. Each is a block that no rule changes by
+/// itself: dirt, which grass spreads onto by day, is none of them.
 const PALETTE: [i32; 7] = [
     items::STONE,
     items::COBBLESTONE,
-    items::DIRT,
+    items::SMOOTH_STONE,
     items::OAK_PLANKS,
     items::BRICKS,
     items::GLASS,
@@ -1795,7 +1796,10 @@ impl Player {
         };
         let (kind, expected, sequence) = if word == AIR {
             let held = self.hotbar[self.slot as usize]
+                .filter(|stack| stack.item != items::DIRT)
                 .and_then(|stack| ITEMS.get(usize::try_from(stack.item).ok()?)?.block);
+            // Dirt from the starting hotbar is not placed: grass beside it spreads onto it
+            // by day, as the game's does, which no ledger can foretell.
             let Some(block) = held else {
                 return Ok(());
             };
