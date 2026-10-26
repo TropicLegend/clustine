@@ -58,6 +58,8 @@ const USE_MOB_HIT: u8 = 6;
 /// A use with the player's edge (`USE_INTERACT` is one stored before, with none).
 const USE_INTERACT_FROM_EDGE: u8 = 7;
 const USE_SEAT_DECLINED: u8 = 8;
+/// A mob's hit with the iron golem's fling, which follows its sound.
+const USE_MOB_HIT_FLUNG: u8 = 9;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -201,9 +203,16 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     from,
                     damage,
                     knockback,
+                    fling,
                     sound,
                 } => {
-                    out.push(USE_MOB_HIT);
+                    // A flung hit is a kind of its own, so that the hits the log keeps
+                    // from before it are read as they were written.
+                    out.push(if fling.is_some() {
+                        USE_MOB_HIT_FLUNG
+                    } else {
+                        USE_MOB_HIT
+                    });
                     out.extend_from_slice(&attacker.0.to_be_bytes());
                     out.extend_from_slice(&kind.to_be_bytes());
                     put_doubles(out, from);
@@ -216,6 +225,9 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     out.push(u8::from(sound.is_some()));
                     if let Some(sound) = sound {
                         out.extend_from_slice(&sound.to_be_bytes());
+                    }
+                    if let Some(fling) = fling {
+                        out.extend_from_slice(&fling.0.to_be_bytes());
                     }
                 }
             }
@@ -436,22 +448,36 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         _ => return Err(FormatError::Corrupt("a breeding answer's flag")),
                     },
                 },
-                USE_MOB_HIT => EntityUse::MobHit {
-                    attacker: EntityId(input.u64()?),
-                    kind: input.u16()?,
-                    from: take_doubles(input)?,
-                    damage: Float(input.f32()?),
-                    knockback: match input.u8()? {
+                USE_MOB_HIT | USE_MOB_HIT_FLUNG => {
+                    let attacker = EntityId(input.u64()?);
+                    let kind = input.u16()?;
+                    let from = take_doubles(input)?;
+                    let damage = Float(input.f32()?);
+                    let knockback = match input.u8()? {
                         0 => None,
                         1 => Some(take_doubles(input)?),
                         _ => return Err(FormatError::Corrupt("a mob's hit's knockback flag")),
-                    },
-                    sound: match input.u8()? {
+                    };
+                    let sound = match input.u8()? {
                         0 => None,
                         1 => Some(input.i32()?),
                         _ => return Err(FormatError::Corrupt("a mob's hit's sound flag")),
-                    },
-                },
+                    };
+                    let fling = if use_kind == USE_MOB_HIT_FLUNG {
+                        Some(Float(input.f32()?))
+                    } else {
+                        None
+                    };
+                    EntityUse::MobHit {
+                        attacker,
+                        kind,
+                        from,
+                        damage,
+                        knockback,
+                        fling,
+                        sound,
+                    }
+                }
                 _ => return Err(FormatError::Corrupt("an entity use's kind")),
             };
             Effected::OnEntity { key, by }
@@ -855,6 +881,7 @@ mod entity_uses {
             from: [Double(0.5), Double(-58.25), Double(-1024.5)],
             damage: Float(2.5),
             knockback,
+            fling: None,
             sound,
         };
         let pushed = Some([Double(1.75), Double(-0.5), Double(0.0)]);
@@ -872,6 +899,47 @@ mod entity_uses {
                 },
             });
         }
+    }
+
+    #[test]
+    fn a_flung_hit_is_read_back_with_its_fling_and_an_old_hit_without() {
+        let at = BlockPos::new(15, -60, 2);
+        let hit = |fling| EntityUse::MobHit {
+            attacker: EntityId(3),
+            kind: 71,
+            from: [Double(0.5), Double(-60.0), Double(0.5)],
+            damage: Float(13.5),
+            knockback: None,
+            fling,
+            sound: Some(5),
+        };
+        for by in [hit(Some(Float(0.4))), hit(None)] {
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by,
+                },
+            });
+        }
+        // A hit without a fling keeps the old layout; a flung one is its fling longer.
+        let bytes = |by| {
+            let mut out = Vec::new();
+            put_effect(
+                &mut out,
+                &Effect {
+                    at,
+                    what: Effected::OnEntity {
+                        key: EntityId(9),
+                        by,
+                    },
+                },
+            );
+            out
+        };
+        let (plain, flung) = (bytes(hit(None)), bytes(hit(Some(Float(0.4)))));
+        assert_eq!(flung.len(), plain.len() + 4);
+        assert_eq!(&flung[flung.len() - 4..], &0.4_f32.to_be_bytes());
     }
 
     fn blast(owner: Option<u128>) -> Blast {

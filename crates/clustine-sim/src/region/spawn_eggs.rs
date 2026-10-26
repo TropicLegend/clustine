@@ -23,11 +23,11 @@ use clustine_data::blocks;
 use clustine_data::{BlockClass, DEFAULT_ATTRIBUTES, EntityTypeInfo, ItemComponents, entity_types};
 use clustine_world::{BlockPos, ChunkPos, Entity, EntityId, PlayerId};
 
-use super::Region;
 use super::block_entities::{nbt_put_string, nbt_string, skip_nbt};
 use super::items::View;
 use super::riding::wrap_degrees;
 use super::vibrations::{Context, Source, Vibration};
+use super::{Random, Region};
 use crate::api::{Face, RegionEvent, TickOutput};
 use crate::mobs::Mob;
 use crate::mobs::body::hurt::voice_pitch;
@@ -201,6 +201,11 @@ impl Region {
         let biome = self.biome_at(block);
         let day = self.clock.day;
         let game_time = i64::try_from(self.clock.game_time).unwrap_or(i64::MAX);
+        let mut companions = EggCompanions {
+            region: self,
+            chunk,
+            made: Vec::new(),
+        };
         if !poured || mob_type.finalizes_when_poured() {
             let mut group = None;
             crate::mobs::making::finalize(
@@ -218,9 +223,14 @@ impl Region {
                     structure: None,
                     moon_brightness: crate::mobs::making::moon_brightness(day),
                     difficulty: (0.0, 0.0),
+                    // A mob made in another region's land makes none beside it: its
+                    // companions' keys and seats would have to cross with it as one
+                    // unit (named, `n7k-plan.md`, section 10).
+                    companions: here.then_some(&mut companions as &mut dyn types::Companions),
                 },
             );
         }
+        let companions = companions.made;
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
         let entity = Entity {
@@ -255,7 +265,24 @@ impl Region {
         let spawned = mob_type.spawn_sound(&mob);
         if here {
             self.entity_drew(key, own.draws_since(&own_start));
+            // As the game adds them: a mount made in `finalizeSpawn` before the mob, a
+            // rider after it, with it (`addFreshEntityWithPassengers`).
+            let (vehicles, riders): (Vec<_>, Vec<_>) = companions
+                .into_iter()
+                .partition(|made| made.seat == types::CompanionSeat::Vehicle);
+            let vehicle = vehicles.first().map(|made| made.entity.key);
+            for made in vehicles {
+                self.add_companion(made, output);
+            }
             self.add_fresh_entity(entity, output);
+            if let Some(vehicle) = vehicle {
+                self.start_riding(key, vehicle, true, output);
+            }
+            for made in riders {
+                let rider = made.entity.key;
+                self.add_companion(made, output);
+                self.start_riding(rider, key, true, output);
+            }
         } else {
             self.send_made(entity, output);
         }
@@ -272,7 +299,7 @@ impl Region {
         if let Some((sound, pitch)) = sound {
             output.events.push(RegionEvent::Sound {
                 sound,
-                source: SOUND_SOURCE_NEUTRAL,
+                source: crate::mobs::body::ladder::sound_source(kind),
                 position: clustine_world::Vec3::new(at[0], at[1], at[2]),
                 volume: mob_type.sound_volume_of(&mob),
                 pitch,
@@ -404,6 +431,35 @@ fn set_in_compound(body: &[u8], path: &[&str], value: &str) -> Option<Vec<u8>> {
     }
     out.push(TAG_END);
     Some(out)
+}
+
+#[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]
+/// The egg's side of a mob made beside the one an egg makes (`types::Companions`): its
+/// key from the region's block for the chunk, and its stream.
+struct EggCompanions<'r> {
+    region: &'r mut Region,
+    chunk: ChunkPos,
+    made: Vec<types::Companion>,
+}
+
+impl types::Companions for EggCompanions<'_> {
+    fn next(&mut self) -> Option<(EntityId, Random)> {
+        let key = self.region.take_entity_key(self.chunk)?;
+        Some((key, self.region.entity_stream(key).random))
+    }
+
+    fn add(&mut self, companion: types::Companion) {
+        self.made.push(companion);
+    }
+}
+
+impl Region {
+    /// Adds a mob made beside another as it was made, its own draws counted.
+    fn add_companion(&mut self, made: types::Companion, output: &mut TickOutput) {
+        let start = self.entity_stream(made.entity.key).random;
+        self.entity_drew(made.entity.key, made.own.draws_since(&start));
+        self.add_fresh_entity(made.entity, output);
+    }
 }
 
 #[cfg(test)]

@@ -164,6 +164,7 @@ pub(crate) fn made_mob(
             structure,
             moon_brightness: 1.0,
             difficulty: (0.0, 0.0),
+            companions: None,
         },
     );
     Some(Entity {

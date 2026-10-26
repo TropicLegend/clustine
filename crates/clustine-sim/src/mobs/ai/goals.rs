@@ -1575,6 +1575,7 @@ pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
         amount,
         sound: None,
         knockback: None,
+        fling: None,
     });
 }
 
@@ -1648,7 +1649,10 @@ impl Goal for MeleeAttackGoal {
         // `checkAndPerformAttack`.
         if Self::can_perform_attack(state, ai, &target) {
             self.reset_attack_cooldown(state);
-            melee_hit(ai, &target);
+            {
+                let mob_type = ai.tick.mob_type;
+                mob_type.do_hurt_target(ai, &target);
+            }
         }
     }
 }

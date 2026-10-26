@@ -345,6 +345,7 @@ impl Timed for RamTarget {
                 amount,
                 sound: None,
                 knockback: Some([strength, state.direction[0], state.direction[2]]),
+                fling: None,
             });
             self.finish(cx);
             Self::sound(cx, self.rammer.impact_sound(&cx.ai.tick.mob));

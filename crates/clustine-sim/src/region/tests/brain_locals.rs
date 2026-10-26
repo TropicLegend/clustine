@@ -161,6 +161,7 @@ fn rammed(alive: bool, knockback: Option<[f64; 3]>) -> [f64; 3] {
             amount: 2.0,
             sound: None,
             knockback,
+            fling: None,
         }],
         &mut output,
     );

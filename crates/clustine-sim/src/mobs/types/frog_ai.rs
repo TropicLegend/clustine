@@ -403,6 +403,7 @@ impl ShootTongue {
             amount,
             sound: None,
             knockback: None,
+            fling: None,
         });
     }
 }

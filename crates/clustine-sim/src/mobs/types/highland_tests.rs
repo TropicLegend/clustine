@@ -291,6 +291,7 @@ fn spawned(kind: u16, mob: &mut Mob, level: &mut Random, game_time: i64) {
         structure: None,
         moon_brightness: 1.0,
         difficulty: (0.0, 0.0),
+        companions: None,
         mob,
         level,
         own: &mut draws(99),

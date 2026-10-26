@@ -111,6 +111,8 @@ pub(crate) enum Local {
         /// `LivingEntity.knockback(strength, x, z)` of the hurt mob where the hurt took
         /// (a goat's ram, `RamTarget`): its strength and the direction it is pushed from.
         knockback: Option<[f64; 3]>,
+        /// The iron golem's fling where the hurt took (`IronGolem.doHurtTarget`).
+        fling: Option<f32>,
     },
     /// An item thrown by the mob (`new ItemEntity`, its pick-up delay set and its motion
     /// set after the constructor's draws: a dolphin's play).
@@ -160,6 +162,16 @@ pub(crate) enum Local {
     /// `Tadpole.ageUp()`: the mob, a tadpole of age, made a frog of its biome where it
     /// is, and gone (`region/frogspawn.rs`).
     GrowUp,
+    #[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]
+    /// `Mob.convertTo(into, single, after)`: the mob made a mob of the type `into` where
+    /// it is, with what the game copies, and gone (`region/conversions.rs`); the level
+    /// event `sound` at the new mob unless it is silent; its equipment moved where
+    /// `keep_equipment`.
+    Convert {
+        into: u16,
+        keep_equipment: bool,
+        sound: Option<i32>,
+    },
     /// A copper golem's step of its taking from the chest at `chest` (its interaction
     /// `PICKUP_ITEM` or `PICKUP_NO_ITEM`): the chest opened, closed, or what it takes
     /// moved into its hand (`region/copper_golems.rs`). Only a chest of the region's own

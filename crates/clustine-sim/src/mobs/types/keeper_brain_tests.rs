@@ -625,6 +625,7 @@ fn hurts(out: &MobOutput) -> Vec<(EntityId, f32, Option<[f64; 3]>)> {
                 key,
                 amount,
                 knockback,
+                fling: None,
                 ..
             } => Some((*key, *amount, *knockback)),
             _ => None,

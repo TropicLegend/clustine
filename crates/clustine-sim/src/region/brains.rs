@@ -99,7 +99,7 @@ impl Region {
         from: Vec3,
         target: EntityId,
         damage: f32,
-        knockback: Option<[f64; 3]>,
+        (knockback, fling): (Option<[f64; 3]>, Option<f32>),
         sound: Option<i32>,
         output: &mut TickOutput,
     ) {
@@ -110,6 +110,7 @@ impl Region {
                 from: from.map(Double),
                 damage: Float(damage),
                 knockback: knockback.map(|push| push.map(Double)),
+                fling: fling.map(Float),
                 sound,
             };
             self.send_on_entity(target, hit);
@@ -118,6 +119,10 @@ impl Region {
         let took = self.hurt_by_mob(attacker, kind, from, target, damage, sound, output);
         if took && let Some([strength, x, z]) = knockback {
             self.knock_mob(target, strength, x, z, output);
+        }
+        // The fling comes after the hurt and its own knockback, only where it took.
+        if took && let Some(up) = fling {
+            self.fling_mob(target, up, output);
         }
     }
 }

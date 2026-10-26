@@ -901,7 +901,7 @@ fn a_nautilus_hurt_by_a_mob_in_the_water_charges_it_and_hits_it() {
             from,
             ONE,
             1.0,
-            None,
+            (None, None),
             None,
             &mut TickOutput::default(),
         );
@@ -1418,7 +1418,7 @@ fn a_panicking_nautilus_taken_into_another_region_goes_on_panicking() {
         [9.5, -60.0, 6.5],
         ONE,
         1.0,
-        None,
+        (None, None),
         None,
         &mut TickOutput::default(),
     );

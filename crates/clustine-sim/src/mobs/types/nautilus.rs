@@ -599,6 +599,7 @@ impl ChargeAttack {
             amount,
             sound: None,
             knockback,
+            fling: None,
         });
         if knockback.is_some() {
             let [x, y, z] = cx.ai.tick.living.body.motion;

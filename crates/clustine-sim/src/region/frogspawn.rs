@@ -175,6 +175,7 @@ impl Region {
                 structure: None,
                 moon_brightness: crate::mobs::making::moon_brightness(day),
                 difficulty: (0.0, 0.0),
+                companions: None,
             },
         );
         grown.body.flags.persistent = true;

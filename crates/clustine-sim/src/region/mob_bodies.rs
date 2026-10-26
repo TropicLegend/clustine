@@ -266,7 +266,17 @@ impl Region {
                     amount,
                     sound,
                     knockback,
-                } => self.hit_by_mob(key, kind, from, hurt, amount, knockback, sound, output),
+                    fling,
+                } => self.hit_by_mob(
+                    key,
+                    kind,
+                    from,
+                    hurt,
+                    amount,
+                    (knockback, fling),
+                    sound,
+                    output,
+                ),
                 Local::Throw {
                     stack,
                     at,
@@ -285,6 +295,11 @@ impl Region {
                     amount,
                 } => self.stung_by_bee(key, kind, from, stung, amount, output),
                 Local::GrowUp => self.tadpole_grown_up(key, output),
+                Local::Convert {
+                    into,
+                    keep_equipment,
+                    sound,
+                } => self.convert_mob_to(key, into, keep_equipment, sound, output),
                 Local::SetMemories { key: other, writes } => {
                     self.write_mob_memories(other, writes, output);
                 }
@@ -491,6 +506,7 @@ impl Region {
                 from,
                 damage,
                 knockback,
+                fling,
                 sound,
             } => self.hit_by_mob(
                 attacker,
@@ -498,7 +514,10 @@ impl Region {
                 from.map(|value| value.0),
                 entity.key,
                 damage.0,
-                knockback.map(|push| push.map(|value| value.0)),
+                (
+                    knockback.map(|push| push.map(|value| value.0)),
+                    fling.map(|up| up.0),
+                ),
                 sound,
                 output,
             ),
@@ -589,6 +608,16 @@ impl Region {
     ) {
         self.struck_between_ticks(key, output, |struck| {
             hurt::knockback(struck, strength, x, z);
+        });
+    }
+
+    /// `IronGolem.doHurtTarget`'s fling of the region's mob `key`, after a hurt that took:
+    /// its motion raised by `up` times what its knockback resistance leaves, in the
+    /// game's `float` and widened (`0.4000000059604645 * max(0, 1 - kr)`).
+    pub(crate) fn fling_mob(&mut self, key: EntityId, up: f32, output: &mut TickOutput) {
+        self.struck_between_ticks(key, output, |struck| {
+            let resistance = struck.attribute(clustine_data::attributes::KNOCKBACK_RESISTANCE);
+            struck.motion[1] += f64::from(up) * (1.0 - resistance).max(0.0);
         });
     }
 

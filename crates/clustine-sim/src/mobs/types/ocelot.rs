@@ -206,6 +206,7 @@ impl Goal for OcelotAttackGoal {
             amount,
             sound: None,
             knockback: None,
+            fling: None,
         });
     }
 }

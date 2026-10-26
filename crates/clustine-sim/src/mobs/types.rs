@@ -35,16 +35,22 @@ pub(crate) mod axolotl;
 pub(crate) mod axolotl_ai;
 pub(crate) mod bat;
 pub(crate) mod bee;
+pub(crate) mod bogged;
 pub(crate) mod camel;
 pub(crate) mod camel_husk;
 pub(crate) mod cat;
+pub(crate) mod cave_spider;
 pub(crate) mod chicken;
 pub(crate) mod cod;
 pub(crate) mod copper_golem;
 pub(crate) mod cow;
+pub(crate) mod creeper;
 pub(crate) mod dolphin;
 pub(crate) mod donkey;
+pub(crate) mod drowned;
+pub(crate) mod elder_guardian;
 pub(crate) mod equine;
+pub(crate) mod evoker;
 pub(crate) mod fish;
 #[cfg(test)]
 mod flier_tests;
@@ -56,10 +62,13 @@ mod generation_tests;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
 pub(crate) mod golem_transport;
+pub(crate) mod guardian;
 pub(crate) mod happy_ghast;
 #[cfg(test)]
 mod highland_tests;
 pub(crate) mod horse;
+pub(crate) mod husk;
+pub(crate) mod iron_golem;
 #[cfg(test)]
 mod keeper_brain_tests;
 #[cfg(test)]
@@ -71,16 +80,22 @@ pub(crate) mod nautilus;
 pub(crate) mod neutral;
 pub(crate) mod ocelot;
 pub(crate) mod panda;
+pub(crate) mod parched;
 pub(crate) mod parrot;
 pub(crate) mod pig;
+pub(crate) mod pillager;
 pub(crate) mod polar_bear;
 pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
+pub(crate) mod skeleton;
 pub(crate) mod skeleton_horse;
 pub(crate) mod sniffer;
+pub(crate) mod snow_golem;
+pub(crate) mod spider;
 pub(crate) mod squid;
+pub(crate) mod stray;
 pub(crate) mod tadpole;
 pub(crate) mod tadpole_ai;
 pub(crate) mod tamable;
@@ -92,14 +107,20 @@ mod tests;
 pub(crate) mod trader_llama;
 pub(crate) mod tropical_fish;
 pub(crate) mod turtle;
+pub(crate) mod villager;
+pub(crate) mod vindicator;
+pub(crate) mod wandering_trader;
 pub(crate) mod water;
 #[cfg(test)]
 mod water_tests;
 #[cfg(test)]
 mod wild_tests;
+pub(crate) mod witch;
 pub(crate) mod wolf;
+pub(crate) mod zombie;
 pub(crate) mod zombie_horse;
 pub(crate) mod zombie_nautilus;
+pub(crate) mod zombie_villager;
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
@@ -239,6 +260,27 @@ pub(crate) trait MobType: Sync {
     /// tropical fish's variant, of the level's draws after `Mob`'s).
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         let _ = spawn;
+    }
+
+    /// `Mob.doHurtTarget(level, target)` of a melee attack (`MeleeAttackGoal`): the
+    /// attack damage, with no knockback of its own, by default (`goals::melee_hit`); the
+    /// iron golem's own hit with its fling.
+    fn do_hurt_target(&self, ai: &mut Ai<'_, '_>, target: &super::ai::sensing::Looked) {
+        super::ai::goals::melee_hit(ai, target);
+    }
+
+    /// `Mob.setBaby(baby)`, which a conversion calls on the new mob where the old one was
+    /// a baby: nothing for a type that is never one.
+    fn set_baby(&self, mob: &mut Mob, baby: bool) {
+        let _ = (mob, baby);
+    }
+
+    /// The step this type hands `convertTo` for after the new mob of the type `into` is
+    /// made and before it is added (`ConversionTracker`'s `after`, K 11.5): the zombie's
+    /// `handleAttributes(CONVERSION)`, of the new mob's own stream `own`. Nothing by
+    /// default.
+    fn finalize_conversion(&self, into: u16, new: &mut Mob, own: &mut Random) {
+        let _ = (into, new, own);
     }
 
     /// What the type's `readAdditionalSaveData` takes of a structure template's tag (a
@@ -967,6 +1009,42 @@ pub(crate) struct Spawning<'a> {
         reason = "read by the creatures' `finalizeSpawn` (N7l's D1)"
     )]
     pub(crate) difficulty: (f32, f32),
+    #[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]
+    /// Where a mob made beside this one comes from (a zombie's chicken, a spider's
+    /// skeleton, a drowned's zombie nautilus), as the game makes them in the middle of
+    /// `finalizeSpawn`; none where the maker makes no others (`making::companion`).
+    pub(crate) companions: Option<&'a mut dyn Companions>,
+}
+
+/// Whether a mob made in another's `finalizeSpawn` is that one's vehicle or rides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompanionSeat {
+    /// The mob being made rides it (a zombie's chicken, a drowned's zombie nautilus),
+    /// added before it as the game's `addFreshEntity` inside `finalizeSpawn` adds it.
+    Vehicle,
+    #[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]
+    /// It rides the mob being made (a spider's skeleton), added after it, with it, as
+    /// `addFreshEntityWithPassengers` adds it.
+    Passenger,
+}
+
+/// A mob made beside another, whole: its record (its key the maker's), its seat, and its
+/// own stream as its making left it.
+pub(crate) struct Companion {
+    pub(crate) entity: Entity,
+    pub(crate) seat: CompanionSeat,
+    pub(crate) own: Random,
+}
+
+#[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]
+/// The maker's side of a mob made beside another (`n7k-plan.md`, section 10, "Mobs
+/// riding mobs"): a key and a stream for it, and taking it once made.
+pub(crate) trait Companions {
+    /// A key and own stream for a mob made beside the one being finalised, or `None`
+    /// where none can be made (an egg's mob made in another region's land).
+    fn next(&mut self) -> Option<(EntityId, Random)>;
+    /// The companion made, which the maker adds with the mob as `seat` says.
+    fn add(&mut self, companion: Companion);
 }
 
 /// `EntitySpawnReason`, as far as a mob's making reads it.
@@ -983,6 +1061,9 @@ pub(crate) enum SpawnReason {
     Natural,
     /// A mob made of another (a tadpole grown into a frog).
     Conversion,
+    /// A mob made to carry or ride another as it is made (a zombie's chicken, a spider's
+    /// skeleton).
+    Jockey,
 }
 
 /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far

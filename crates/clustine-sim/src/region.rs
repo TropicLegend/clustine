@@ -31,6 +31,7 @@ mod breeding;
 mod changes;
 mod colliders;
 mod containers;
+mod conversions;
 mod copper_golems;
 mod cushions;
 mod diodes;
@@ -3492,6 +3493,7 @@ mod tests {
     mod brain_locals;
     mod clock;
     mod containers;
+    mod conversions;
     mod diodes;
     mod effects;
     mod entities;

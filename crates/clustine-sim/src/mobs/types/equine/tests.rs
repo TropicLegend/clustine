@@ -67,6 +67,7 @@ fn spawned(kind: u16, seed: u64) -> (Mob, Random) {
         structure: None,
         moon_brightness: 1.0,
         difficulty: (0.0, 0.0),
+        companions: None,
         mob: &mut mob,
         level: &mut level,
         own: &mut own,

@@ -1,0 +1,13 @@
+//! The husk (`Husk`; `n7k-brief.md` 3.4.2), part K3.
+//! A stub until its part fills it; it is in `built` only once it is.
+
+use super::MobType;
+
+/// The husk.
+#[expect(
+    dead_code,
+    reason = "its part registers it in `built` when it is filled"
+)]
+pub(crate) struct Husk;
+
+impl MobType for Husk {}

@@ -223,6 +223,7 @@ fn hit(cx: &mut Cx<'_, '_, '_>, target: &Looked) {
         amount,
         sound: Some(sounds::ENTITY_AXOLOTL_ATTACK),
         knockback: None,
+        fling: None,
     });
 }
 

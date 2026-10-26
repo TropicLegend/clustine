@@ -178,6 +178,9 @@ pub enum EntityUse {
         from: [Double; 3],
         damage: Float,
         knockback: Option<[Double; 3]>,
+        /// The iron golem's fling (`IronGolem.doHurtTarget`): upwards by this times what
+        /// the target's knockback resistance leaves, added where the hurt took.
+        fling: Option<Float>,
         sound: Option<i32>,
     },
 }

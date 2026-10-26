@@ -171,7 +171,7 @@ impl Struck<'_> {
         self.mob.body.vitals.health <= 0.0 || self.mob.body.vitals.died_from.is_some()
     }
 
-    fn attribute(&self, attribute: i32) -> f64 {
+    pub(crate) fn attribute(&self, attribute: i32) -> f64 {
         self.mob
             .body
             .attributes

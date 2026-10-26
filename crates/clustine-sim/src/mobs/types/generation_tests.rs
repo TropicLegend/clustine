@@ -114,6 +114,7 @@ fn made_with(
             structure,
             moon_brightness: 1.0,
             difficulty: (0.0, 0.0),
+            companions: None,
         },
     );
     mob
