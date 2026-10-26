@@ -44,6 +44,7 @@ mod experience;
 mod explosions;
 mod faces;
 mod falling;
+mod feature_view;
 mod fluids;
 mod frogspawn;
 mod given;

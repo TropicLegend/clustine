@@ -212,6 +212,15 @@ impl FeatureSettings {
         self.configured[index].as_ref()
     }
 
+    /// The configured feature of this name (`minecraft:oak`), as a sapling's grower or
+    /// bone meal names it.
+    pub fn configured_named(&self, name: &str) -> Option<&dyn Feature> {
+        let index = data::configured_features()
+            .iter()
+            .position(|entry| entry.name == name)?;
+        Some(self.configured(index))
+    }
+
     /// The placed feature with this index in the data.
     pub fn placed(&self, index: usize) -> &PlacedFeature {
         &self.placed[index]

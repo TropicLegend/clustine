@@ -979,3 +979,60 @@ fn a_set_sent_across_is_made_with_the_flags_it_was_made_with() {
         assert_eq!(east.own_block(rail), Some(expected), "flags {flags}");
     }
 }
+
+/// The world's features of the seed 13579, as a server's regions are given them.
+fn features() -> crate::Features {
+    crate::Features(Some(std::sync::Arc::new(
+        clustine_features::FeatureSettings::new(13579, clustine_features::Dimension::Overworld)
+            .expect("the pinned jar's features are read whole"),
+    )))
+}
+
+/// The plan of N8, section 7.2: a tree a region grows in its own land is set through its
+/// set with the tree's flags, its logs and leaves as the feature places them.
+#[test]
+fn a_tree_placed_in_the_region_s_land_stands_there() {
+    let sapling = at(8, 8);
+    let land = land(&[(BlockPos::new(8, ON_FLOOR - 1, 8), blocks::DIRT)]);
+    let mut west = region_of(WESTERN, 1, &land, &column(1));
+    west.config.features = features();
+    let mut output = TickOutput::default();
+    assert!(west.place_feature("minecraft:oak", sapling, 19, 7, &mut output));
+    assert!(
+        west.block(sapling)
+            .is_some_and(|state| clustine_blocks::data::is_block(state, blocks::OAK_LOG))
+    );
+    assert!(output.effects.is_empty(), "nothing across the line");
+}
+
+/// The plan of N8, sections 7.2 and 7.4: a tree beside a pinned line sets what it places
+/// beyond it by `SetIf` effects, one a cell, expecting what the region's copy holds there.
+#[test]
+fn a_tree_beside_a_line_sends_what_it_places_beyond_it_as_effects() {
+    let sapling = at(15, 8);
+    let land = land(&[(BlockPos::new(15, ON_FLOOR - 1, 8), blocks::DIRT)]);
+    let mut west = region_of(WESTERN, 1, &land, &column(1));
+    west.config.features = features();
+    let mut output = TickOutput::default();
+    assert!(west.place_feature("minecraft:oak", sapling, 19, 7, &mut output));
+    let across: Vec<&Effect> = west
+        .made
+        .iter()
+        .filter(|effect| matches!(effect.what, Effected::SetIf { .. }))
+        .collect();
+    assert!(!across.is_empty(), "the leaves beyond the line");
+    let mut cells: Vec<BlockPos> = across.iter().map(|effect| effect.at).collect();
+    cells.dedup();
+    assert_eq!(cells.len(), across.len(), "one effect a cell");
+    for effect in across {
+        assert_eq!(effect.at.chunk().x, 1, "{:?} is beyond the line", effect.at);
+        let Effected::SetIf {
+            expected, flags, ..
+        } = effect.what
+        else {
+            unreachable!()
+        };
+        assert_eq!(expected, blocks::AIR);
+        assert_eq!(flags, 19);
+    }
+}

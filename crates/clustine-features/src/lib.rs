@@ -39,4 +39,5 @@ pub const GENERATION: u16 = 5;
 /// generator's identity where they are placed. 1 since servers place them (S3,
 /// 2026-10-26).
 pub const STRUCTURES_GENERATION: u16 = 1;
+pub use clustine_terrain::biome::Dimension;
 pub use settings::{FeatureSettings, STEPS};
