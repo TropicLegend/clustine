@@ -79,6 +79,11 @@ pub struct GameData {
     /// The fluids and the block entity types by the ids of `registries.json`.
     pub fluids: Vec<String>,
     pub block_entity_types: Vec<String>,
+    /// The kinds of item component, the potions and the mob effects by the ids of
+    /// `registries.json`, which the wire numbers them by.
+    pub data_component_types: Vec<String>,
+    pub potions: Vec<String>,
+    pub mob_effects: Vec<String>,
     /// The data generator's report of the biome parameter lists, which the lists of
     /// the extract program are checked against.
     pub biome_reports: Vec<BiomeReport>,
@@ -589,6 +594,9 @@ impl GameData {
             tags,
             fluids,
             block_entity_types,
+            data_component_types: static_registry(&registries, "data_component_type")?,
+            potions: static_registry(&registries, "potion")?,
+            mob_effects: static_registry(&registries, "mob_effect")?,
             biome_reports,
             extract,
             worldgen: Worldgen::load(jar, generated)?,

@@ -6,6 +6,7 @@
 
 pub mod chunk;
 pub mod codec;
+pub mod components;
 pub mod delta;
 pub mod frame;
 pub mod item;

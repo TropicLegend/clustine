@@ -197,7 +197,16 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
         crate::spawns::emit(&biomes.entries, &data.entity_types, &data.worldgen)?,
     );
 
-    add(PROTOCOL_DIR, "mod.rs", modules(&["packet_ids"]));
+    add(
+        PROTOCOL_DIR,
+        "mod.rs",
+        modules(&["component_ids", "packet_ids"]),
+    );
+    add(
+        PROTOCOL_DIR,
+        "component_ids.rs",
+        component_ids(&data.data_component_types, &data.potions, &data.mob_effects)?,
+    );
     add(PROTOCOL_DIR, "packet_ids.rs", packet_ids(data)?);
 
     outputs.push(Output {
@@ -1537,6 +1546,65 @@ fn packet_ids(data: &GameData) -> Result<String> {
     Ok(out)
 }
 
+/// The kinds of item component Clustine reads (`docs/groundwork/n9-plan.md`, section
+/// 3.1), in the order of the world's `components::Kind`, each given a constant with its
+/// id.
+const COMPONENT_KINDS: [&str; 15] = [
+    "minecraft:potion_contents",
+    "minecraft:potion_duration_scale",
+    "minecraft:charged_projectiles",
+    "minecraft:enchantments",
+    "minecraft:use_cooldown",
+    "minecraft:fireworks",
+    "minecraft:damage",
+    "minecraft:intangible_projectile",
+    "minecraft:banner_patterns",
+    "minecraft:item_name",
+    "minecraft:rarity",
+    "minecraft:tooltip_display",
+    "minecraft:suspicious_stew_effects",
+    "minecraft:ominous_bottle_amplifier",
+    "minecraft:chicken/variant",
+];
+
+/// The numbers the wire gives item components and the registry values in them: the
+/// ids of the kinds Clustine reads, and the names of every kind, potion and mob effect
+/// by id, which the edge turns the world's names into and back.
+fn component_ids(types: &[String], potions: &[String], effects: &[String]) -> Result<String> {
+    let mut out = String::from("pub mod data_component_type {\n");
+    for kind in COMPONENT_KINDS {
+        let id = types
+            .iter()
+            .position(|name| name == kind)
+            .with_context(|| format!("registries.json has no item component {kind}"))?;
+        let constant = constant_name(kind)?;
+        ensure!(
+            constant != "NAMES",
+            "the item component {kind} collides with the NAMES table"
+        );
+        writeln!(out, "    pub const {constant}: i32 = {id};")?;
+    }
+    out.push('\n');
+    names_table(&mut out, types)?;
+    out.push_str("}\n");
+    for (module, names) in [("potion", potions), ("mob_effect", effects)] {
+        writeln!(out, "\npub mod {module} {{")?;
+        names_table(&mut out, names)?;
+        out.push_str("}\n");
+    }
+    Ok(out)
+}
+
+/// `pub static NAMES`, indented for a module, with `names` by id.
+fn names_table(out: &mut String, names: &[String]) -> Result<()> {
+    writeln!(out, "    pub static NAMES: [&str; {}] = [", names.len())?;
+    for name in names {
+        writeln!(out, "        {name:?},")?;
+    }
+    out.push_str("    ];\n");
+    Ok(())
+}
+
 /// `minecraft:grass_block` becomes `GRASS_BLOCK`, `minecraft:debug/event` becomes `DEBUG_EVENT`.
 fn constant_name(identifier: &str) -> Result<String> {
     let name = identifier.strip_prefix("minecraft:").unwrap_or(identifier);
@@ -1572,4 +1640,43 @@ pub(crate) fn wrapped(numbers: &[usize], indent: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_component_ids_give_the_set_its_ids_and_every_registry_its_names() {
+        let mut types = named(&["minecraft:custom_data", "minecraft:max_stack_size"]);
+        types.extend(COMPONENT_KINDS.iter().rev().map(|kind| (*kind).to_owned()));
+        let out = component_ids(
+            &types,
+            &named(&["minecraft:water"]),
+            &named(&["minecraft:speed", "minecraft:slowness"]),
+        )
+        .unwrap();
+        assert!(out.starts_with(
+            "pub mod data_component_type {\n    pub const POTION_CONTENTS: i32 = 16;\n"
+        ));
+        assert!(out.contains("    pub const CHICKEN_VARIANT: i32 = 2;\n"));
+        assert!(out.contains(
+            "    pub static NAMES: [&str; 17] = [\n        \"minecraft:custom_data\",\n"
+        ));
+        assert!(out.contains("pub mod potion {\n    pub static NAMES: [&str; 1] = [\n"));
+        assert!(out.ends_with(
+            "pub mod mob_effect {\n    pub static NAMES: [&str; 2] = [\n        \
+             \"minecraft:speed\",\n        \"minecraft:slowness\",\n    ];\n}\n"
+        ));
+    }
+
+    #[test]
+    fn a_kind_of_the_set_missing_from_the_registry_fails() {
+        let types = named(&COMPONENT_KINDS[1..]);
+        assert!(component_ids(&types, &[], &[]).is_err());
+    }
 }
