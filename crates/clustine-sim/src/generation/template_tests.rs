@@ -616,7 +616,7 @@ fn a_run_s_side_of_a_companion_gives_the_next_making_and_finds_nothing_nearby() 
 // Types other parts are building: written now, run once each is registered.
 
 #[test]
-#[ignore = "needs the villager, part K2"]
+
 fn a_village_s_villager_leaves_the_region_random_past_the_mob_s_tail() {
     let villager = template_tag(
         "minecraft:villager",
@@ -658,7 +658,7 @@ fn a_village_s_villager_leaves_the_region_random_past_the_mob_s_tail() {
 }
 
 #[test]
-#[ignore = "needs the villager and the zombie villager, parts K2 and K3"]
+
 fn the_igloo_s_cleric_and_its_zombie_draw_nothing_and_keep_their_tags() {
     let cleric = |id: &str, health: f32| {
         template_tag(
@@ -703,7 +703,7 @@ fn the_igloo_s_cleric_and_its_zombie_draw_nothing_and_keep_their_tags() {
 }
 
 #[test]
-#[ignore = "needs the witch, part K5"]
+
 fn the_swamp_hut_s_witch_is_kept_and_draws_the_mob_s_tail() {
     let mut makings = makings();
     let mut level = Counting::default();
@@ -719,7 +719,7 @@ fn the_swamp_hut_s_witch_is_kept_and_draws_the_mob_s_tail() {
 }
 
 #[test]
-#[ignore = "needs the elder guardian, part K5"]
+
 fn the_monument_s_elder_guardians_draw_the_mob_s_tail() {
     let mut makings = makings();
     let mut level = Counting::default();
@@ -741,7 +741,7 @@ fn the_monument_s_elder_guardians_draw_the_mob_s_tail() {
 }
 
 #[test]
-#[ignore = "needs the evoker and the vindicator, part K5"]
+
 fn the_mansion_s_illagers_draw_as_the_mansion_draws() {
     for (kind, expected) in [
         (entity_types::EVOKER, MOB.to_vec()),
@@ -767,7 +767,7 @@ fn the_mansion_s_illagers_draw_as_the_mansion_draws() {
 }
 
 #[test]
-#[ignore = "needs the drowned, part K3"]
+
 fn the_ocean_ruins_drowned_draws_as_the_ruin_draws() {
     let mut makings = makings();
     let mut level = Counting::default();
@@ -787,7 +787,7 @@ fn the_ocean_ruins_drowned_draws_as_the_ruin_draws() {
 }
 
 #[test]
-#[ignore = "needs the iron golem, part K1"]
+
 fn the_outpost_s_caged_golem_draws_one_float_and_may_despawn() {
     // The cage's golem is saved with `PersistenceRequired` 0, and its bonus.
     let tag = nbt::compound(&[
@@ -809,7 +809,7 @@ fn the_outpost_s_caged_golem_draws_one_float_and_may_despawn() {
 }
 
 #[test]
-#[ignore = "needs the zombie villager, part K3"]
+
 fn a_baby_zombie_villager_and_the_chicken_made_for_it_are_one_unit_in_the_chicken_s_chunk() {
     let tag = template_tag("minecraft:zombie_villager", false, Vec::new());
     let mut makings = makings();
