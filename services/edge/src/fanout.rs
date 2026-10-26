@@ -3575,12 +3575,28 @@ impl Fanout {
                     EntityKind::Other { riding, .. } => riding.clone(),
                     EntityKind::Player { .. } => clustine_world::Riding::default(),
                 };
-                // What it was shown with goes on with it, wherever it was reported from.
-                let living = self
-                    .entities
-                    .get(&entity)
-                    .map(|known| known.living.clone())
-                    .unwrap_or_default();
+                // What it was shown with goes on with it, wherever it was reported from;
+                // one the edge meets for the first time (made now, loaded after a
+                // restart, a copy beyond a line) is shown wearing what its record says it
+                // wears, which no event of a change will tell (`sendPairingData`).
+                let living = match self.entities.get(&entity) {
+                    Some(known) => known.living.clone(),
+                    None => LivingShown {
+                        equipment: clustine_sim::shown::mob_equipment(data)
+                            .into_iter()
+                            .map(|(slot, stack)| {
+                                (
+                                    slot,
+                                    WireStack {
+                                        item: stack.item,
+                                        count: stack.count,
+                                    },
+                                )
+                            })
+                            .collect(),
+                        ..LivingShown::default()
+                    },
+                };
                 let shown = Shown {
                     state,
                     from,
@@ -9711,7 +9727,8 @@ mod scenarios {
                     self.swings.push(swing);
                 }
                 packet @ (ClientboundPlay::DamageEvent(_)
-                | ClientboundPlay::UpdateAttributes(_)) => {
+                | ClientboundPlay::UpdateAttributes(_)
+                | ClientboundPlay::SetEquipment(_)) => {
                     self.living.push(packet);
                 }
                 ClientboundPlay::RemoveEntities(removed) => {
@@ -12586,6 +12603,56 @@ mod scenarios {
             "{:?}",
             newcomer.living
         );
+        edge.end().await;
+    }
+
+    /// A mob made wearing something (a skeleton's bow), or met for the first time
+    /// wearing it (loaded after a restart), is shown wearing it with its spawn, to those
+    /// who see it then and to those who come to see it later (`sendPairingData`), though
+    /// no change of its equipment is ever reported.
+    #[tokio::test]
+    async fn a_mob_met_wearing_something_is_shown_wearing_it() {
+        let mut edge = Harness::start().await;
+        let mut watcher = edge.joined(player(1), far_key(1)).await;
+        edge.quiet().await;
+        edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
+        edge.settle(WEST).await;
+        let key = far_key(100);
+        let bow = clustine_world::ItemStack {
+            item: 1021,
+            count: 1,
+        };
+        let mut skeleton = a_cow(key, HOME);
+        if let EntityKind::Other { kind, data, .. } = &mut skeleton.kind {
+            *kind = entity_types::SKELETON as u16;
+            *data = clustine_sim::shown::mob_data_wearing(&[(0, bow)]);
+        }
+        edge.tell(WEST, ticked(vec![RegionEvent::EntitySpawned(skeleton)]));
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        let worn = |living: &[ClientboundPlay]| {
+            living
+                .iter()
+                .filter_map(|packet| match packet {
+                    ClientboundPlay::SetEquipment(worn) => Some(worn.slots.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = vec![vec![(
+            0,
+            Some(WireStack {
+                item: 1021,
+                count: 1,
+            }),
+        )]];
+        assert!(watcher.entities.contains(&key.0), "{:?}", watcher.entities);
+        assert_eq!(worn(&watcher.living), expected, "{:?}", watcher.living);
+
+        let mut newcomer = edge.joined(player(2), far_key(2)).await;
+        edge.quiet().await;
+        edge.sync(&mut newcomer).await;
+        assert_eq!(worn(&newcomer.living), expected, "{:?}", newcomer.living);
         edge.end().await;
     }
 

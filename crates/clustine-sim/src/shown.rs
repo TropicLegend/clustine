@@ -149,6 +149,36 @@ pub fn mob_shared_flags(data: &EntityData) -> u8 {
     invisible | swimming
 }
 
+/// What a mob wears and holds as its record has it, by slot (the game's
+/// `EquipmentSlot` ordinals), the empty slots left out: what a client newly shown it is
+/// sent (`SetEquipment`). Empty for a record that is no mob's, or whose equipment cannot be
+/// read.
+pub fn mob_equipment(data: &EntityData) -> Vec<(u8, clustine_world::ItemStack)> {
+    let EntityData::Mob { body, .. } = data else {
+        return Vec::new();
+    };
+    crate::mobs::part::decode::<crate::mobs::body::Equipment>(body)
+        .map(|equipment| {
+            (0u8..)
+                .zip(equipment.slots)
+                .filter_map(|(slot, stack)| stack.map(|stack| (slot, stack)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A mob's record wearing and holding `stacks` by slot and nothing else, as an edge's
+/// tests make one to show (the edge has no other way to write a mob's parts).
+pub fn mob_data_wearing(stacks: &[(u8, clustine_world::ItemStack)]) -> EntityData {
+    let mut mob = crate::mobs::Mob::fresh();
+    for (slot, stack) in stacks {
+        if let Some(worn) = mob.body.equipment.slots.get_mut(usize::from(*slot)) {
+            *worn = Some(*stack);
+        }
+    }
+    mob.encode()
+}
+
 /// The yaw of a mob's head (`getYHeadRot`) as its record has it, which a client is sent
 /// apart from its body's (`ClientboundRotateHeadPacket`, and in its spawn); none for a
 /// record that is no mob's. Read from the head's part alone, whose first value it is in
