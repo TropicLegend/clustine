@@ -92,6 +92,7 @@ mod stands;
 mod thrown;
 mod ticks;
 mod tnt;
+mod trees;
 mod turtle_eggs;
 mod updates;
 mod uses;
