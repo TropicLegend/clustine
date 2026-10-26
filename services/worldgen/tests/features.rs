@@ -49,11 +49,14 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     let preview = identity(&PreviewStages::new(Arc::new(TerrainGenerator::new(SEED))));
     // Made without the templates' blocks, which a server reads from its operator's
     // jar: a world made so says so.
+    // The structures' blocks are placed where they start (S3), and their generation
+    // named.
     assert_eq!(
         with,
         format!(
-            "terrain;features {};entities {};minecraft:overworld;seed {SEED};no templates",
+            "terrain;features {};structures {};entities {};minecraft:overworld;seed {SEED};no templates",
             clustine_features::GENERATION,
+            clustine_features::STRUCTURES_GENERATION,
             clustine_sim::generation::ENTITIES_GENERATION
         )
     );
@@ -73,8 +76,9 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     assert_eq!(
         with_templates,
         format!(
-            "terrain;features {};entities {};minecraft:overworld;seed {SEED}",
+            "terrain;features {};structures {};entities {};minecraft:overworld;seed {SEED}",
             clustine_features::GENERATION,
+            clustine_features::STRUCTURES_GENERATION,
             clustine_sim::generation::ENTITIES_GENERATION
         )
     );

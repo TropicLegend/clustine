@@ -80,6 +80,12 @@ impl FeatureStages {
         if let Some(templates) = templates {
             features = features.with_templates(templates);
         }
+        // The structures' blocks are placed wherever the terrain has their starts
+        // (phase S's switch, S3: `docs/groundwork/s-plan.md`, section 4); the identity
+        // names their generation, so that a world made before is refused.
+        if terrain.with_structures() {
+            features = features.with_structures(terrain.clone());
+        }
         let generation = generation_of(&terrain);
         Self {
             terrain,

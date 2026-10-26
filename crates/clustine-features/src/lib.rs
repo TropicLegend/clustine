@@ -35,7 +35,8 @@ pub use run::{decorate, decorate_with};
 /// identity of what the features' stages make, so that a world made with fewer is
 /// refused rather than continued with more.
 pub const GENERATION: u16 = 5;
-/// Raised whenever the blocks the structures' placers make change, while phase S is
-/// built: part of the generator's identity where they are placed.
-pub const STRUCTURES_GENERATION: u16 = 0;
+/// Raised whenever the blocks the structures' placers make change: part of the
+/// generator's identity where they are placed. 1 since servers place them (S3,
+/// 2026-10-26).
+pub const STRUCTURES_GENERATION: u16 = 1;
 pub use settings::{FeatureSettings, STEPS};
