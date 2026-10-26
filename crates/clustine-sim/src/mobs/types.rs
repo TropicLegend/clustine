@@ -128,6 +128,9 @@ mod wild_tests;
 pub(crate) mod witch;
 pub(crate) mod wolf;
 pub(crate) mod zombie;
+pub(crate) mod zombie_family;
+#[cfg(test)]
+mod zombie_family_tests;
 pub(crate) mod zombie_horse;
 pub(crate) mod zombie_nautilus;
 pub(crate) mod zombie_villager;
@@ -207,6 +210,12 @@ pub(crate) trait MobType: Sync {
         super::body::play_ambient_sound(tick);
     }
 
+    /// The pitch a baby's `getVoicePitch()` is about: `LivingEntity`'s 1.5, a baby zombie
+    /// villager's 2.
+    fn baby_voice_pitch(&self) -> f32 {
+        1.5
+    }
+
     /// What the type's `getVoicePitch()` scales `LivingEntity`'s by (a bat's 0.95).
     fn voice_pitch_factor(&self) -> f32 {
         1.0
@@ -249,6 +258,13 @@ pub(crate) trait MobType: Sync {
     /// timer, a rabbit's idle timer and its wanted position), from the new mob's own
     /// stream: every mob of the type is made so, by an egg, a breeding or a conversion.
     fn construct(&self, mob: &mut Mob, own: &mut Random) {
+        let _ = (mob, own);
+    }
+
+    /// What the type's `defineSynchedData` draws, from the new mob's own stream: in
+    /// `Entity`'s constructor, after its UUID and before `LivingEntity`'s yaw (a zombie
+    /// villager's profession, `n7k-brief.md` finding 6). Nothing by default.
+    fn define_synched_data(&self, mob: &mut Mob, own: &mut Random) {
         let _ = (mob, own);
     }
 
@@ -646,6 +662,13 @@ pub(crate) trait MobType: Sync {
     /// `isPushedByFluid()`: true in `Entity`.
     fn pushed_by_fluid(&self) -> bool {
         true
+    }
+
+    /// `isPushedByFluid()` where it depends on the mob (a drowned swimming is not):
+    /// [`MobType::pushed_by_fluid`] by default.
+    fn pushed_by_fluid_of(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        self.pushed_by_fluid()
     }
 
     /// `getMaxAirSupply()`: 300 in `Entity`, its air at construction too.
@@ -1095,12 +1118,18 @@ pub(crate) trait Companions {
     /// The companion made, which the maker adds with the mob as `seat` says.
     fn add(&mut self, companion: Companion);
     /// The region's own entities whose boxes meet `bounds`, in the game's order of a
-    /// box's lookup: each key, its type and whether it carries anyone (a baby zombie's
-    /// search for a chicken to ride, `Zombie.finalizeSpawn`).
+    /// box's lookup: each key, its type and whether it carries anyone or rides anything
+    /// (a baby zombie's search for a chicken to ride, `Zombie.finalizeSpawn`).
     fn nearby(&self, bounds: &crate::physics::aabb::Aabb) -> Vec<(EntityId, u16, bool)>;
     /// The mob being made is to ride `vehicle`, one of [`Companions::nearby`]'s, once it
     /// is added (`startRiding`).
     fn ride(&mut self, vehicle: EntityId);
+    /// Where the mob being made stands (`getX()`, `getY()`, `getZ()`), which a mob made
+    /// beside it is snapped to and its search for one to ride is about; `None` where the
+    /// maker does not say, and the bottom middle of its block is taken.
+    fn position(&self) -> Option<crate::physics::Vec3> {
+        None
+    }
 }
 
 /// `EntitySpawnReason`, as far as a mob's making reads it.
@@ -1341,6 +1370,10 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::EVOKER => &evoker::Evoker,
         entity_types::GUARDIAN => &guardian::Guardian,
         entity_types::ELDER_GUARDIAN => &elder_guardian::ElderGuardian,
+        entity_types::ZOMBIE => &zombie::Zombie,
+        entity_types::HUSK => &husk::Husk,
+        entity_types::DROWNED => &drowned::Drowned,
+        entity_types::ZOMBIE_VILLAGER => &zombie_villager::ZombieVillager,
         _ => return None,
     };
     Some(found)

@@ -126,18 +126,27 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
 /// `Entity.FLAG_INVISIBLE`, the shared flags' bit 5.
 const INVISIBLE: u8 = 0x20;
 
+/// `Entity.FLAG_SWIMMING`, the shared flags' bit 4.
+const SWIMMING: u8 = 0x10;
+
 /// The shared flags (`DATA_SHARED_FLAGS_ID`) a mob's record sets beyond its burning,
-/// which its tick's report carries: invisible while it has invisibility. Read from the
-/// effects' part alone, as an edge reads it at every change; none for a record that is
-/// no mob's or whose effects cannot be read.
+/// which its tick's report carries: invisible while it has invisibility, swimming while
+/// it swims (a drowned). Read from the effects' and the swimming's parts alone, as an
+/// edge reads them at every change; none for a record that is no mob's, and nothing of
+/// a part that cannot be read.
 pub fn mob_shared_flags(data: &EntityData) -> u8 {
     let EntityData::Mob { body, .. } = data else {
         return 0;
     };
-    match crate::mobs::part::decode::<crate::mobs::body::effects::Effects>(body) {
+    let invisible = match crate::mobs::part::decode::<crate::mobs::body::effects::Effects>(body) {
         Ok(effects) if effects.invisible() => INVISIBLE,
         _ => 0,
-    }
+    };
+    let swimming = match crate::mobs::part::decode::<crate::mobs::body::Swimming>(body) {
+        Ok(swimming) if swimming.swimming => SWIMMING,
+        _ => 0,
+    };
+    invisible | swimming
 }
 
 /// The yaw of a mob's head (`getYHeadRot`) as its record has it, which a client is sent

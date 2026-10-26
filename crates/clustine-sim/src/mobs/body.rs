@@ -302,6 +302,20 @@ pub(crate) struct Body {
     pub(crate) idle_gained: IdleGained,
     pub(crate) last_damage: LastDamage,
     pub(crate) effects: effects::Effects,
+    pub(crate) swimming: Swimming,
+}
+
+/// `Entity.isSwimming()`, its shared flag 4, which clients draw a swimmer by: of the mobs
+/// only a drowned sets it (`Drowned.updateSwimming`), so it is a part of its own, which a
+/// record written before it reads as not swimming.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Swimming {
+    pub(crate) swimming: bool,
+}
+
+impl Part for Swimming {
+    const ID: u16 = body_ids::SWIMMING;
+    const VERSION: u8 = 1;
 }
 
 /// `lastDamageSource` and `lastDamageStamp`: what last hurt it, by its damage type's
@@ -380,6 +394,7 @@ impl Body {
             idle_gained: part::decode(entries)?,
             last_damage: part::decode(entries)?,
             effects: part::decode(entries)?,
+            swimming: part::decode(entries)?,
         })
     }
 
@@ -402,6 +417,7 @@ impl Body {
         part::put(&mut entries, &self.last_damage);
         part::put(&mut entries, &self.idle_gained);
         part::put(&mut entries, &self.effects);
+        part::put(&mut entries, &self.swimming);
         entries
     }
 
@@ -630,7 +646,7 @@ fn prepare(tick: &mut MobTick<'_>) {
             .any(|stack| item_in_tag(stack.item, "minecraft:freeze_immune_wearables"));
     tick.living.walks_on_powder_snow = entity_in_tag(id, "minecraft:powder_snow_walkable_mobs")
         || worn[usize::from(slots::FEET)].is_some_and(|stack| stack.item == items::LEATHER_BOOTS);
-    tick.living.pushed_by_fluid = tick.mob_type.pushed_by_fluid();
+    tick.living.pushed_by_fluid = tick.mob_type.pushed_by_fluid_of(&tick.mob);
     tick.living.climbs = tick.mob_type.on_climbable(&tick.mob);
     tick.living.stuck_in_webs = tick.mob_type.stuck_in_webs();
     tick.living.max_air = tick.mob_type.max_air();
@@ -700,7 +716,7 @@ pub(crate) fn make_sound(tick: &mut MobTick<'_>, sound: Option<i32>, volume: f32
     let Some(sound) = sound else {
         return;
     };
-    let pitch = hurt::voice_pitch(tick.draws, tick.mob_type.is_baby(&tick.mob))
+    let pitch = hurt::mob_voice_pitch(tick.mob_type, &tick.mob, tick.draws)
         * tick.mob_type.voice_pitch_factor();
     tick.out.events.push(Event::Sound {
         sound,

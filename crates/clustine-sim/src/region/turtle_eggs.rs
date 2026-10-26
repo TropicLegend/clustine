@@ -5,8 +5,9 @@
 //! random; a hatching leaves a baby turtle for each egg of the clutch, whose home is its
 //! nest.
 //!
-//! Named difference: eggs are not trampled (the living bodies' and the players' steps
-//! on a block do not reach it, `crate::living`).
+//! Named difference: eggs are not trampled by a step (the living bodies' and the players'
+//! steps on a block do not reach it, `crate::living`); a zombie's goal tramples them
+//! (`mobs/types/zombie_family.rs`), a removal of the block as any other.
 
 use clustine_blocks::data::{number, set};
 use clustine_data::{BlockState, entity_types, sounds};

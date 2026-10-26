@@ -30,7 +30,7 @@ use super::vibrations::{Context, Source, Vibration};
 use super::{Random, Region};
 use crate::api::{Face, RegionEvent, TickOutput};
 use crate::mobs::Mob;
-use crate::mobs::body::hurt::voice_pitch;
+use crate::mobs::body::hurt::mob_voice_pitch;
 use crate::mobs::types;
 use crate::physics::aabb::Aabb;
 use crate::physics::collide;
@@ -204,6 +204,7 @@ impl Region {
         let mut companions = EggCompanions {
             region: self,
             chunk,
+            at: [x, y, z],
             made: Vec::new(),
             rides: None,
         };
@@ -259,7 +260,7 @@ impl Region {
         let sound = mob_type
             .ambient_sound_drawn(&mob, &mut own, now, 0, None)
             .map(|sound| {
-                let pitch = voice_pitch(&mut own, mob_type.is_baby(&mob));
+                let pitch = mob_voice_pitch(mob_type, &mob, &mut own);
                 (sound, pitch)
             });
         // The type's own sound of its `finalizeSpawn` (a copper golem's), played before
@@ -442,6 +443,8 @@ fn set_in_compound(body: &[u8], path: &[&str], value: &str) -> Option<Vec<u8>> {
 struct EggCompanions<'r> {
     region: &'r mut Region,
     chunk: ChunkPos,
+    /// Where the egg's mob stands.
+    at: crate::physics::Vec3,
     made: Vec<types::Companion>,
     rides: Option<EntityId>,
 }
@@ -462,13 +465,20 @@ impl types::Companions for EggCompanions<'_> {
             .into_iter()
             .filter_map(|(key, _)| {
                 let (_, entity) = self.region.find_entity(key)?;
-                Some((key, entity.kind, !entity.riding.passengers.is_empty()))
+                // `isVehicle() || isPassenger()`, which `ENTITY_NOT_BEING_RIDDEN` refuses.
+                let ridden =
+                    !entity.riding.passengers.is_empty() || entity.riding.vehicle.is_some();
+                Some((key, entity.kind, ridden))
             })
             .collect()
     }
 
     fn ride(&mut self, vehicle: EntityId) {
         self.rides = Some(vehicle);
+    }
+
+    fn position(&self) -> Option<crate::physics::Vec3> {
+        Some(self.at)
     }
 }
 

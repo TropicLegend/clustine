@@ -21,9 +21,10 @@ use crate::region::Random;
 /// own draws, of its type's full health and air, its head and body turned to `yaw`.
 pub(crate) fn construct(kind: u16, own: &mut Random, yaw: f32) -> (Uuid, Mob) {
     let uuid = crate::region::insecure_uuid(own.next_u64(), own.next_u64());
-    let _constructor_yaw = own.next_float();
     let mob_type = types::of(kind);
     let mut mob = Mob::fresh();
+    mob_type.define_synched_data(&mut mob, own);
+    let _constructor_yaw = own.next_float();
     crate::mobs::brain::construct(mob_type, &mut mob, own);
     // `setHealth(getMaxHealth())` in the constructor, of its type's attributes.
     mob.body.vitals.health = supplied(kind, attribute(ids::MAX_HEALTH)).unwrap_or(20.0) as f32;

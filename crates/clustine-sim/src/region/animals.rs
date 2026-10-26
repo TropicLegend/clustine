@@ -400,6 +400,7 @@ impl Region {
         let mut own = self.entity_stream(key).random;
         let start = own.clone();
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
+        types::of(kind).define_synched_data(&mut mob, &mut own);
         let _constructor_yaw = own.next_float();
         crate::mobs::brain::construct(types::of(kind), &mut mob, &mut own);
         if self.ticks_chunk(chunk) {
@@ -489,8 +490,11 @@ impl Region {
         let Some(mut child) = child else {
             return false;
         };
-        // `setBaby(true)`, which does nothing of a type that cannot be one (a frog).
-        if types::of(kind).can_be_a_baby() {
+        // `setBaby(true)`, which does nothing of a type that cannot be one (a frog); a
+        // monster's is its type's own (a zombie's).
+        if crate::mobs::body::ladder::of(kind) == crate::mobs::body::ladder::Family::Monster {
+            types::of(kind).set_baby(&mut child, true);
+        } else if types::of(kind).can_be_a_baby() {
             animal::made_baby(&mut child);
         }
         let Some(made) = self.new_mob(kind, child, entity.position, 0.0, 0.0) else {

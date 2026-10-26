@@ -819,7 +819,7 @@ pub(crate) struct MoveToBlockGoal {
 
 impl MoveToBlockGoal {
     /// `findNearestBlock()`: by height 0, 1, -1, 2, … and outwards in rings.
-    fn find_nearest(&self, state: &mut MovingToBlock, ai: &Ai<'_, '_>) -> bool {
+    pub(crate) fn find_nearest(&self, state: &mut MovingToBlock, ai: &Ai<'_, '_>) -> bool {
         let at = ai.block_position();
         let next = |d: i32| if d > 0 { -d } else { 1 - d };
         let mut dy = self.vertical_search_start;

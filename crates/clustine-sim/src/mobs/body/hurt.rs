@@ -204,7 +204,7 @@ impl Struck<'_> {
         let Some(sound) = sound else {
             return;
         };
-        let pitch = voice_pitch(self.draws, self.mob_type.is_baby(self.mob))
+        let pitch = mob_voice_pitch(self.mob_type, self.mob, self.draws)
             * self.mob_type.voice_pitch_factor();
         self.out.events.push(Event::Sound {
             sound,
@@ -218,6 +218,18 @@ impl Struck<'_> {
 pub(crate) fn voice_pitch(draws: &mut Random, baby: bool) -> f32 {
     let spread = (draws.next_float() - draws.next_float()) * 0.2;
     spread + if baby { 1.5 } else { 1.0 }
+}
+
+/// `getVoicePitch()` of a mob of the type `mob_type`: [`voice_pitch`]'s, about a baby's
+/// pitch of its type's own (a baby zombie villager's 2).
+pub(crate) fn mob_voice_pitch(mob_type: &dyn MobType, mob: &Mob, draws: &mut Random) -> f32 {
+    let spread = (draws.next_float() - draws.next_float()) * 0.2;
+    spread
+        + if mob_type.is_baby(mob) {
+            mob_type.baby_voice_pitch()
+        } else {
+            1.0
+        }
 }
 
 /// `isInvulnerableTo(level, source)` of a mob: fire to a type immune to it, a fall to a
@@ -532,8 +544,11 @@ fn drop_all_death_loot(struck: &mut Struck<'_>, source: &DamageSource) {
         .player_memory(struck.moment)
         .is_some();
     let baby = struck.mob_type.is_baby(struck.mob);
+    // `shouldDropLoot` and `shouldDropExperience`: not a baby's, but a monster's whether
+    // it is a baby or not (`Monster`'s own, a baby zombie's).
+    let monster = ladder::of(struck.kind) == ladder::Family::Monster;
     let mut drops = Vec::new();
-    if !baby {
+    if !baby || monster {
         let facts = struck.mob_type.loot_facts(struck.mob);
         let this = loot::Subject {
             kind: struck.kind,
@@ -554,7 +569,7 @@ fn drop_all_death_loot(struck: &mut Struck<'_>, source: &DamageSource) {
     // not.
     drops.extend(struck.mob_type.drop_equipment(struck.mob));
     let mut orbs = Vec::new();
-    if killed_by_player && !baby {
+    if killed_by_player && (!baby || monster) {
         let reward = struck
             .mob_type
             .experience_reward(struck.kind, struck.mob, struck.draws);

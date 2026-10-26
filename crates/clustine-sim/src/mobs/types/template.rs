@@ -134,6 +134,18 @@ pub(crate) fn text<'a>(tag: &'a [u8], name: &str) -> Option<&'a str> {
     std::str::from_utf8(string(payload)?.0).ok()
 }
 
+/// The compound entry `name` of `tag`, its type byte first as `tag`'s is, for the
+/// readers above (a zombie villager's `VillagerData`).
+pub(crate) fn compound(tag: &[u8], name: &str) -> Option<Vec<u8>> {
+    let (TAG_COMPOUND, payload) = entry(root(tag), name)? else {
+        return None;
+    };
+    let after = skip(TAG_COMPOUND, payload, 1)?;
+    let mut whole = vec![TAG_COMPOUND];
+    whole.extend_from_slice(&payload[..payload.len() - after.len()]);
+    Some(whole)
+}
+
 /// The compounds of the list entry `name` of the compound whose entries begin
 /// `entries`, each as its entries; none where it is no list of compounds.
 fn compounds<'a>(entries: &'a [u8], name: &str) -> Vec<&'a [u8]> {
