@@ -13,6 +13,7 @@ mod dump;
 mod emit;
 mod extract;
 mod feature;
+mod item_defaults;
 mod jar;
 mod json;
 mod loot;

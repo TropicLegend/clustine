@@ -17,6 +17,7 @@ pub mod collisions;
 pub mod faces;
 pub mod loot;
 pub mod packed;
+pub mod potions;
 pub mod spawning;
 pub mod spawns;
 pub mod villagers;
@@ -429,6 +430,172 @@ pub struct ItemComponents {
     pub minimum_attack_charge: Option<f32>,
     /// `minecraft:attack_range`: how far its attacks reach.
     pub attack_range: Option<AttackRange>,
+    /// `minecraft:potion_contents`, where the default holds a potion, a colour, effects
+    /// or a name. The potions and the tipped arrow have an empty one by default, which
+    /// reads as none: a stack's own patch gives it its potion.
+    pub potion_contents: Option<PotionContents>,
+    /// `minecraft:potion_duration_scale`: how the durations of the item's potion are
+    /// scaled where it is applied (0.25 for a lingering potion, 0.125 for a tipped
+    /// arrow). Without it the game scales by 1.
+    pub potion_duration_scale: Option<f32>,
+    /// `minecraft:damage`, the wear a new stack starts with: 0 for every item that
+    /// wears.
+    pub damage: Option<i32>,
+    /// `minecraft:use_cooldown`: how long a use of the item keeps the user from the next
+    /// (the ender pearl's second).
+    pub use_cooldown: Option<UseCooldown>,
+    /// The flight duration of the default `minecraft:fireworks` (a rocket's 1). A
+    /// default has no explosions, which the generator checks.
+    pub fireworks_flight_duration: Option<i32>,
+    /// Whether the item has `minecraft:charged_projectiles` by default: the crossbow,
+    /// whose default charge is empty, which the generator checks.
+    pub charged_projectiles: bool,
+    /// `minecraft:chicken/variant`, by name: the variant of the chicks an egg hatches.
+    pub chicken_variant: Option<&'static str>,
+    /// `minecraft:consumable`: how the item is eaten or drunk, and what that does beyond
+    /// its food.
+    pub consumable: Option<Consumable>,
+    /// `minecraft:food`: what eating it gives.
+    pub food: Option<Food>,
+    /// `minecraft:use_remainder`: what is left in the hand once it is used up (a bowl,
+    /// a bottle, a bucket).
+    pub use_remainder: Option<UseRemainder>,
+    /// `minecraft:ominous_bottle_amplifier`: the bad omen an ominous bottle gives, 0 by
+    /// default.
+    pub ominous_bottle_amplifier: Option<i32>,
+}
+
+/// An effect as the game's `MobEffectInstance` gives it: in a potion, a food's effects
+/// and a potion's own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectInstance {
+    /// The effect, by name, such as `minecraft:poison`.
+    pub effect: &'static str,
+    /// In ticks.
+    pub duration: i32,
+    /// One less than the effect's level.
+    pub amplifier: i32,
+    /// Whether it is as a beacon's: fainter particles.
+    pub ambient: bool,
+    /// Whether it shows particles (the game's `show_particles`).
+    pub visible: bool,
+    /// Whether the client shows its icon.
+    pub show_icon: bool,
+}
+
+impl EffectInstance {
+    /// An effect as `new MobEffectInstance(effect, duration, amplifier)` makes it: not
+    /// ambient, with particles and an icon.
+    pub const fn new(effect: &'static str, duration: i32, amplifier: i32) -> EffectInstance {
+        EffectInstance {
+            effect,
+            duration,
+            amplifier,
+            ambient: false,
+            visible: true,
+            show_icon: true,
+        }
+    }
+}
+
+/// An item's default `minecraft:potion_contents`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PotionContents {
+    /// The potion, by name, as in [`potions::POTIONS`].
+    pub potion: Option<&'static str>,
+    /// A colour of its own, as RGB.
+    pub custom_colour: Option<i32>,
+    pub custom_effects: &'static [EffectInstance],
+    /// The name of its own the translation keys are made of.
+    pub custom_name: Option<&'static str>,
+}
+
+/// An item's `minecraft:use_cooldown`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UseCooldown {
+    pub seconds: f32,
+    /// The group whose items share the cooldown, by name; without one, the item's own.
+    pub group: Option<&'static str>,
+}
+
+/// An item's `minecraft:consumable` (the game's `Consumable`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Consumable {
+    /// How long eating or drinking it takes: the use lasts this times 20 ticks.
+    pub consume_seconds: f32,
+    pub animation: UseAnimation,
+    /// The sound of each mouthful and of the last, by name.
+    pub sound: &'static str,
+    /// Whether eating it throws crumbs of the item (drinks do not).
+    pub has_consume_particles: bool,
+    /// What it does once eaten, in the data's order.
+    pub on_consume_effects: &'static [ConsumeEffect],
+}
+
+/// The game's `ItemUseAnimation`, as far as the data names them: the arm's pose while
+/// an item is used. The game's dumps name these constants; others of the enum that no
+/// dump names are left out, and the generator refuses an item that names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseAnimation {
+    None,
+    Eat,
+    Drink,
+    Block,
+    Bow,
+    Trident,
+    Spear,
+    Crossbow,
+    TootHorn,
+}
+
+/// One entry of a consumable's `on_consume_effects` (the game's five `ConsumeEffect`s).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConsumeEffect {
+    /// `apply_effects`: each effect given, if a draw of `nextFloat` falls below the
+    /// probability (1 where the data gives none; the draw is made all the same).
+    ApplyEffects {
+        effects: &'static [EffectInstance],
+        probability: f32,
+    },
+    /// `remove_effects`: the effects named taken away (honey's poison).
+    RemoveEffects(EffectSet),
+    /// `clear_all_effects`: every effect taken away (milk).
+    ClearAllEffects,
+    /// `teleport_randomly`: the eater moved to a random place within the diameter (the
+    /// chorus fruit's 16).
+    TeleportRandomly {
+        diameter: f32,
+        directional_particles: bool,
+    },
+    /// `play_sound`: a sound played at the eater, by name (the ominous bottle's).
+    PlaySound(&'static str),
+}
+
+/// A set of effects as the data names one (a `HolderSet` of the effects' registry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectSet {
+    /// These effects, by name; one where the data names one directly.
+    Listed(&'static [&'static str]),
+    /// The effects of a tag, by its name without the `#`.
+    Tag(&'static str),
+}
+
+/// An item's `minecraft:food` (the game's `FoodProperties`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Food {
+    /// The hunger it restores.
+    pub nutrition: i32,
+    pub saturation: f32,
+    /// Whether it can be eaten with a full stomach.
+    pub can_always_eat: bool,
+}
+
+/// An item's `minecraft:use_remainder`: a stack of an item with no components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UseRemainder {
+    /// The item, by id.
+    pub item: i32,
+    pub count: i32,
 }
 
 /// One of an item's attribute modifiers (`ItemAttributeModifiers.Entry`).
@@ -676,6 +843,245 @@ mod tests {
             ItemComponents::of(items::IRON_SPEAR).damage_type,
             Some("minecraft:spear")
         );
+    }
+
+    #[test]
+    fn potions_and_projectiles_have_the_defaults_n9_reads() {
+        let of = ItemComponents::of;
+        assert_eq!(
+            of(items::LINGERING_POTION).potion_duration_scale,
+            Some(0.25)
+        );
+        assert_eq!(of(items::TIPPED_ARROW).potion_duration_scale, Some(0.125));
+        assert_eq!(of(items::SPLASH_POTION).potion_duration_scale, None);
+        // The potions' empty contents are no default.
+        assert_eq!(of(items::POTION).potion_contents, None);
+        assert_eq!(
+            of(items::ENDER_PEARL).use_cooldown,
+            Some(UseCooldown {
+                seconds: 1.0,
+                group: None
+            })
+        );
+        assert_eq!(of(items::SNOWBALL).use_cooldown, None);
+        assert!(of(items::CROSSBOW).charged_projectiles);
+        assert!(!of(items::BOW).charged_projectiles);
+        assert_eq!(
+            of(items::FIREWORK_ROCKET).fireworks_flight_duration,
+            Some(1)
+        );
+        assert_eq!(of(items::EGG).chicken_variant, Some("minecraft:temperate"));
+        assert_eq!(of(items::BLUE_EGG).chicken_variant, Some("minecraft:cold"));
+        assert_eq!(of(items::BROWN_EGG).chicken_variant, Some("minecraft:warm"));
+        assert_eq!(of(items::CROSSBOW).damage, Some(0));
+        assert_eq!(of(items::STONE).damage, None);
+        assert_eq!(of(items::OMINOUS_BOTTLE).ominous_bottle_amplifier, Some(0));
+    }
+
+    #[test]
+    fn an_apple_is_eaten_in_a_second_and_a_half_for_four_hunger() {
+        let apple = ItemComponents::of(items::APPLE);
+        assert_eq!(
+            apple.food,
+            Some(Food {
+                nutrition: 4,
+                saturation: 2.4,
+                can_always_eat: false
+            })
+        );
+        assert_eq!(
+            apple.consumable,
+            Some(Consumable {
+                consume_seconds: 1.6,
+                animation: UseAnimation::Eat,
+                sound: "minecraft:entity.generic.eat",
+                has_consume_particles: true,
+                on_consume_effects: &[],
+            })
+        );
+        assert_eq!(apple.use_remainder, None);
+        assert_eq!(ItemComponents::of(items::STONE).consumable, None);
+        assert_eq!(ItemComponents::of(items::STONE).food, None);
+    }
+
+    #[test]
+    fn a_golden_apple_gives_regeneration_then_absorption() {
+        let apple = ItemComponents::of(items::GOLDEN_APPLE);
+        assert!(apple.food.unwrap().can_always_eat);
+        assert_eq!(
+            apple.consumable.unwrap().on_consume_effects,
+            [ConsumeEffect::ApplyEffects {
+                effects: &const {
+                    [
+                        EffectInstance::new("minecraft:regeneration", 100, 1),
+                        EffectInstance::new("minecraft:absorption", 2400, 0),
+                    ]
+                },
+                probability: 1.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn honey_is_drunk_in_two_seconds_cures_poison_and_leaves_a_bottle() {
+        let honey = ItemComponents::of(items::HONEY_BOTTLE);
+        let consumable = honey.consumable.unwrap();
+        assert_eq!(consumable.consume_seconds, 2.0);
+        assert_eq!(consumable.animation, UseAnimation::Drink);
+        assert_eq!(consumable.sound, "minecraft:item.honey_bottle.drink");
+        assert!(!consumable.has_consume_particles);
+        assert_eq!(
+            consumable.on_consume_effects,
+            [ConsumeEffect::RemoveEffects(EffectSet::Listed(&[
+                "minecraft:poison"
+            ]))]
+        );
+        assert_eq!(
+            honey.use_remainder,
+            Some(UseRemainder {
+                item: items::GLASS_BOTTLE,
+                count: 1
+            })
+        );
+    }
+
+    #[test]
+    fn milk_clears_every_effect_and_leaves_a_bucket() {
+        let milk = ItemComponents::of(items::MILK_BUCKET);
+        assert_eq!(
+            milk.consumable.unwrap().on_consume_effects,
+            [ConsumeEffect::ClearAllEffects]
+        );
+        assert_eq!(milk.use_remainder.unwrap().item, items::BUCKET);
+        assert_eq!(milk.food, None);
+    }
+
+    #[test]
+    fn a_chorus_fruit_teleports_within_sixteen_blocks_and_cools_down() {
+        let fruit = ItemComponents::of(items::CHORUS_FRUIT);
+        assert_eq!(
+            fruit.consumable.unwrap().on_consume_effects,
+            [ConsumeEffect::TeleportRandomly {
+                diameter: 16.0,
+                directional_particles: true
+            }]
+        );
+        assert_eq!(fruit.use_cooldown.unwrap().seconds, 1.0);
+        assert!(fruit.food.unwrap().can_always_eat);
+    }
+
+    #[test]
+    fn a_suspicious_stew_is_always_eaten_and_leaves_a_bowl() {
+        let stew = ItemComponents::of(items::SUSPICIOUS_STEW);
+        // Its effects are its stack's own; the item's consumable adds none.
+        assert!(stew.consumable.unwrap().on_consume_effects.is_empty());
+        assert_eq!(
+            stew.food,
+            Some(Food {
+                nutrition: 6,
+                saturation: 7.2000003,
+                can_always_eat: true
+            })
+        );
+        assert_eq!(stew.use_remainder.unwrap().item, items::BOWL);
+    }
+
+    #[test]
+    fn a_spider_eye_always_poisons_and_raw_chicken_and_rotten_flesh_by_chance() {
+        let effects = |item| {
+            ItemComponents::of(item)
+                .consumable
+                .unwrap()
+                .on_consume_effects
+        };
+        assert_eq!(
+            effects(items::SPIDER_EYE),
+            [ConsumeEffect::ApplyEffects {
+                effects: &const { [EffectInstance::new("minecraft:poison", 100, 0)] },
+                probability: 1.0,
+            }]
+        );
+        assert_eq!(
+            effects(items::CHICKEN),
+            [ConsumeEffect::ApplyEffects {
+                effects: &const { [EffectInstance::new("minecraft:hunger", 600, 0)] },
+                probability: 0.3,
+            }]
+        );
+        assert_eq!(
+            effects(items::ROTTEN_FLESH),
+            [ConsumeEffect::ApplyEffects {
+                effects: &const { [EffectInstance::new("minecraft:hunger", 600, 0)] },
+                probability: 0.8,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_potion_is_drunk_without_crumbs_and_leaves_a_bottle() {
+        let potion = ItemComponents::of(items::POTION);
+        assert_eq!(
+            potion.consumable,
+            Some(Consumable {
+                consume_seconds: 1.6,
+                animation: UseAnimation::Drink,
+                sound: "minecraft:entity.generic.drink",
+                has_consume_particles: false,
+                on_consume_effects: &[],
+            })
+        );
+        assert_eq!(potion.food, None);
+        assert_eq!(potion.use_remainder.unwrap().item, items::GLASS_BOTTLE);
+        // Thrown potions are not drunk.
+        assert_eq!(ItemComponents::of(items::SPLASH_POTION).consumable, None);
+        assert_eq!(
+            ItemComponents::of(items::OMINOUS_BOTTLE)
+                .consumable
+                .unwrap()
+                .on_consume_effects,
+            [ConsumeEffect::PlaySound(
+                "minecraft:item.ominous_bottle.dispose"
+            )]
+        );
+    }
+
+    #[test]
+    fn every_food_s_effects_and_sounds_are_known() {
+        let effects: Vec<&str> = potions::POTIONS
+            .iter()
+            .flat_map(|potion| potion.effects)
+            .map(|effect| effect.effect)
+            .chain(
+                ITEM_COMPONENTS
+                    .iter()
+                    .filter_map(|item| item.consumable)
+                    .flat_map(|consumable| {
+                        consumable
+                            .on_consume_effects
+                            .iter()
+                            .flat_map(|entry| match entry {
+                                ConsumeEffect::ApplyEffects { effects, .. } => {
+                                    effects.iter().map(|effect| effect.effect).collect()
+                                }
+                                ConsumeEffect::RemoveEffects(EffectSet::Listed(names)) => {
+                                    names.to_vec()
+                                }
+                                _ => Vec::new(),
+                            })
+                    }),
+            )
+            .collect();
+        assert!(!effects.is_empty());
+        for effect in effects {
+            assert!(effect.starts_with("minecraft:"), "{effect}");
+        }
+        for consumable in ITEM_COMPONENTS.iter().filter_map(|item| item.consumable) {
+            assert!(
+                SOUND_EVENTS.contains(&consumable.sound),
+                "{}",
+                consumable.sound
+            );
+        }
     }
 
     /// The walking evaluator's base types of a few states, from the state alone.

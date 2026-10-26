@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
 use crate::extract::Extract;
+use crate::item_defaults;
 use crate::loot;
 use crate::worldgen::Worldgen;
 
@@ -128,6 +129,29 @@ pub struct ItemComponents {
     /// creative player, the margin added to a target's box, and the factor for a mob
     /// that wields it, each as the float's bits.
     pub attack_range: Option<[u32; 6]>,
+    /// What of the defaults N9 reads: a potion's, a projectile's, a cooldown, a food's.
+    pub defaults: item_defaults::Defaults,
+}
+
+impl ItemComponents {
+    /// The components of an item that has none of its own: a stack of 64 and nothing
+    /// else, from which the generated table writes each item's differences.
+    pub fn plain() -> ItemComponents {
+        ItemComponents {
+            max_stack_size: 64,
+            max_damage: None,
+            damage_resistant: None,
+            equippable: None,
+            attack_animation: None,
+            entity: None,
+            modifiers: Vec::new(),
+            weapon: None,
+            damage_type: None,
+            minimum_attack_charge: None,
+            attack_range: None,
+            defaults: item_defaults::Defaults::default(),
+        }
+    }
 }
 
 /// One of an item's attribute modifiers.
@@ -391,6 +415,7 @@ pub fn item_components_of(report: &Value) -> Result<ItemComponents> {
         damage_type,
         minimum_attack_charge,
         attack_range,
+        defaults: item_defaults::read(components)?,
     })
 }
 

@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::density;
+use crate::item_defaults;
 use crate::jar::SERVER_JAR;
-use crate::model::{GameData, Property};
+use crate::model::{GameData, ItemComponents, Property};
 use crate::worldgen::{NoiseParameters, NoiseSettings};
 use crate::{carver, feature, material, packed, router, structure, sums, tables};
 
@@ -1233,108 +1234,210 @@ fn block_physics(data: &GameData) -> Result<String> {
 
 /// `item_components.rs`: the components of each item that Clustine reads.
 fn item_components(data: &GameData) -> Result<String> {
+    let item_names: Vec<String> = data.items.iter().map(|item| item.name.clone()).collect();
+    let attributes: Vec<String> = data
+        .extract
+        .attributes
+        .iter()
+        .map(|attribute| attribute.name.clone())
+        .collect();
+    let names = ItemTableNames {
+        items: &item_names,
+        entity_types: &data.entity_types,
+        attributes: &attributes,
+        sound_events: &data.sound_events,
+        mob_effects: &data.mob_effects,
+    };
+    item_components_table(&data.item_components, &names)
+}
+
+/// The registries the table of items' components names things by.
+struct ItemTableNames<'a> {
+    items: &'a [String],
+    entity_types: &'a [String],
+    attributes: &'a [String],
+    sound_events: &'a [String],
+    mob_effects: &'a [String],
+}
+
+/// The table of `components`, one an item in the order of `names.items`. Each item is
+/// written as what it has beyond `PLAIN`, an item with a stack of 64 and nothing else,
+/// since most items have nothing else and the generated output has a budget.
+fn item_components_table(components: &[ItemComponents], names: &ItemTableNames) -> Result<String> {
     ensure!(
-        data.item_components.len() == data.items.len(),
+        components.len() == names.items.len(),
         "the components of {} items for {} items",
-        data.item_components.len(),
-        data.items.len()
+        components.len(),
+        names.items.len()
     );
+    let plain = item_fields(&ItemComponents::plain(), names)?;
+    let mut table = String::new();
+    for (item, components) in names.items.iter().zip(components) {
+        let fields = item_fields(components, names).with_context(|| format!("the item {item}"))?;
+        let differing: Vec<String> = fields
+            .iter()
+            .zip(&plain)
+            .filter(|(field, plain)| field != plain)
+            .map(|((name, value), _)| format!("{name}: {value}"))
+            .collect();
+        let name = item.strip_prefix("minecraft:").unwrap_or(item);
+        if differing.is_empty() {
+            writeln!(table, "    PLAIN, // {name}")?;
+        } else {
+            writeln!(
+                table,
+                "    ItemComponents {{ {}, ..PLAIN }}, // {name}",
+                differing.join(", ")
+            )?;
+        }
+    }
+    let plain_fields: Vec<String> = plain
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect();
+    let plain = format!(
+        "const PLAIN: ItemComponents = ItemComponents {{ {} }};",
+        plain_fields.join(", ")
+    );
+    // Import only what the table names, so that the file has no unused import.
+    let mut used = vec!["ItemComponents"];
+    for name in [
+        "AttackRange",
+        "Equippable",
+        "ItemModifier",
+        "Swing",
+        "Weapon",
+    ]
+    .into_iter()
+    .chain(item_defaults::TYPES)
+    {
+        let named = |text: &str| {
+            text.contains(&format!("{name} {{"))
+                || text.contains(&format!("{name}::"))
+                || text.contains(&format!("{name}("))
+        };
+        if named(&table) || named(&plain) {
+            used.push(name);
+        }
+    }
+    used.sort_unstable();
     let mut out = String::new();
+    writeln!(out, "use crate::{{{}}};\n", used.join(", "))?;
     writeln!(
         out,
-        "use crate::{{AttackRange, Equippable, ItemComponents, ItemModifier, Swing, Weapon}};\n"
+        "/// An item with a stack of 64 and none of the other components.\n{plain}\n"
     )?;
     writeln!(out, "/// By item id.")?;
     writeln!(
         out,
         "pub static ITEM_COMPONENTS: [ItemComponents; {}] = [",
-        data.items.len()
+        components.len()
     )?;
-    for (item, components) in data.items.iter().zip(&data.item_components) {
-        let max_damage = match components.max_damage {
-            Some(damage) => format!("Some({damage})"),
-            None => "None".to_owned(),
-        };
-        let resistant = match &components.damage_resistant {
-            Some(tag) => format!("Some({tag:?})"),
-            None => "None".to_owned(),
-        };
-        let equippable = match &components.equippable {
-            Some((slot, sound)) => {
-                let sound = data
-                    .sound_events
-                    .iter()
-                    .position(|name| name == sound)
-                    .with_context(|| format!("the equip sound {sound} is no sound event"))?;
-                format!("Some(Equippable {{ slot: {slot}, sound: {sound} }})")
-            }
-            None => "None".to_owned(),
-        };
-        let attack_animation = match components.attack_animation {
-            Some((kind, duration)) => format!("Swing {{ kind: {kind}, duration: {duration} }}"),
-            None => "Swing::DEFAULT".to_owned(),
-        };
-        let entity = match &components.entity {
-            None => "None".to_owned(),
-            Some(name) => {
-                let id = data
-                    .entity_types
-                    .iter()
-                    .position(|known| known == name)
-                    .with_context(|| format!("the entity data names {name}, no entity type"))?;
-                format!("Some({id})")
-            }
-        };
-        let modifiers: Vec<String> = components
-            .modifiers
-            .iter()
-            .map(|modifier| {
-                let attribute = data
-                    .extract
-                    .attributes
-                    .iter()
-                    .position(|known| known.name == modifier.attribute)
-                    .with_context(|| format!("a modifier of {}, no attribute", modifier.attribute))?;
-                Ok(format!(
-                    "ItemModifier {{ attribute: {attribute}, id: {:?}, amount: f64::from_bits({:#018x}), operation: {}, slot: {} }}",
-                    modifier.id, modifier.amount, modifier.operation, modifier.slot
-                ))
-            })
-            .collect::<Result<_>>()?;
-        let modifiers = modifiers.join(", ");
-        let weapon = match components.weapon {
-            None => "None".to_owned(),
-            Some((damage, seconds)) => format!(
-                "Some(Weapon {{ item_damage_per_attack: {damage}, disable_blocking_for_seconds: f32::from_bits({seconds:#010x}) }})"
-            ),
-        };
-        let damage_type = match &components.damage_type {
-            None => "None".to_owned(),
-            Some(name) => format!("Some({name:?})"),
-        };
-        let charge = match components.minimum_attack_charge {
-            None => "None".to_owned(),
-            Some(bits) => format!("Some(f32::from_bits({bits:#010x}))"),
-        };
-        let range = match components.attack_range {
-            None => "None".to_owned(),
-            Some(values) => {
-                let [min, max, min_creative, max_creative, margin, mob] =
-                    values.map(|bits| format!("f32::from_bits({bits:#010x})"));
-                format!(
-                    "Some(AttackRange {{ min_reach: {min}, max_reach: {max}, min_creative_reach: {min_creative}, max_creative_reach: {max_creative}, hitbox_margin: {margin}, mob_factor: {mob} }})"
-                )
-            }
-        };
-        writeln!(
-            out,
-            "    ItemComponents {{ max_stack_size: {}, max_damage: {max_damage}, damage_resistant: {resistant}, equippable: {equippable}, attack_animation: {attack_animation}, entity: {entity}, modifiers: &[{modifiers}], weapon: {weapon}, damage_type: {damage_type}, minimum_attack_charge: {charge}, attack_range: {range} }}, // {}",
-            components.max_stack_size,
-            item.name.strip_prefix("minecraft:").unwrap_or(&item.name)
-        )?;
-    }
+    out.push_str(&table);
     writeln!(out, "];")?;
     Ok(out)
+}
+
+/// Every field of `clustine_data::ItemComponents` with the Rust expression of its value,
+/// in the struct's order.
+fn item_fields(
+    components: &ItemComponents,
+    names: &ItemTableNames,
+) -> Result<Vec<(&'static str, String)>> {
+    let max_damage = match components.max_damage {
+        Some(damage) => format!("Some({damage})"),
+        None => "None".to_owned(),
+    };
+    let resistant = match &components.damage_resistant {
+        Some(tag) => format!("Some({tag:?})"),
+        None => "None".to_owned(),
+    };
+    let equippable = match &components.equippable {
+        Some((slot, sound)) => {
+            let sound = names
+                .sound_events
+                .iter()
+                .position(|name| name == sound)
+                .with_context(|| format!("the equip sound {sound} is no sound event"))?;
+            format!("Some(Equippable {{ slot: {slot}, sound: {sound} }})")
+        }
+        None => "None".to_owned(),
+    };
+    let attack_animation = match components.attack_animation {
+        Some((kind, duration)) => format!("Swing {{ kind: {kind}, duration: {duration} }}"),
+        None => "Swing::DEFAULT".to_owned(),
+    };
+    let entity = match &components.entity {
+        None => "None".to_owned(),
+        Some(name) => {
+            let id = names
+                .entity_types
+                .iter()
+                .position(|known| known == name)
+                .with_context(|| format!("the entity data names {name}, no entity type"))?;
+            format!("Some({id})")
+        }
+    };
+    let modifiers: Vec<String> = components
+        .modifiers
+        .iter()
+        .map(|modifier| {
+            let attribute = names
+                .attributes
+                .iter()
+                .position(|known| *known == modifier.attribute)
+                .with_context(|| format!("a modifier of {}, no attribute", modifier.attribute))?;
+            Ok(format!(
+                "ItemModifier {{ attribute: {attribute}, id: {:?}, amount: f64::from_bits({:#018x}), operation: {}, slot: {} }}",
+                modifier.id, modifier.amount, modifier.operation, modifier.slot
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let modifiers = format!("&[{}]", modifiers.join(", "));
+    let weapon = match components.weapon {
+        None => "None".to_owned(),
+        Some((damage, seconds)) => format!(
+            "Some(Weapon {{ item_damage_per_attack: {damage}, disable_blocking_for_seconds: f32::from_bits({seconds:#010x}) }})"
+        ),
+    };
+    let damage_type = match &components.damage_type {
+        None => "None".to_owned(),
+        Some(name) => format!("Some({name:?})"),
+    };
+    let charge = match components.minimum_attack_charge {
+        None => "None".to_owned(),
+        Some(bits) => format!("Some(f32::from_bits({bits:#010x}))"),
+    };
+    let range = match components.attack_range {
+        None => "None".to_owned(),
+        Some(values) => {
+            let [min, max, min_creative, max_creative, margin, mob] =
+                values.map(|bits| format!("f32::from_bits({bits:#010x})"));
+            format!(
+                "Some(AttackRange {{ min_reach: {min}, max_reach: {max}, min_creative_reach: {min_creative}, max_creative_reach: {max_creative}, hitbox_margin: {margin}, mob_factor: {mob} }})"
+            )
+        }
+    };
+    let mut fields = vec![
+        ("max_stack_size", components.max_stack_size.to_string()),
+        ("max_damage", max_damage),
+        ("damage_resistant", resistant),
+        ("equippable", equippable),
+        ("attack_animation", attack_animation),
+        ("entity", entity),
+        ("modifiers", modifiers),
+        ("weapon", weapon),
+        ("damage_type", damage_type),
+        ("minimum_attack_charge", charge),
+        ("attack_range", range),
+    ];
+    let registries = item_defaults::Registries {
+        items: names.items,
+        mob_effects: names.mob_effects,
+        sound_events: names.sound_events,
+    };
+    fields.extend(item_defaults::render(&components.defaults, &registries)?);
+    Ok(fields)
 }
 
 /// `loot_tables.rs`: the loot tables, each block's and each entity type's.
@@ -1678,5 +1781,70 @@ mod tests {
     fn a_kind_of_the_set_missing_from_the_registry_fails() {
         let types = named(&COMPONENT_KINDS[1..]);
         assert!(component_ids(&types, &[], &[]).is_err());
+    }
+
+    /// A table of three items: a plain one, a food that is drunk and leaves a bottle,
+    /// and a stack of 16 with a cooldown.
+    #[test]
+    fn the_item_table_writes_each_item_as_what_it_has_beyond_plain() {
+        let mut honey = ItemComponents::plain();
+        honey.max_stack_size = 16;
+        honey.defaults = crate::item_defaults::read(
+            serde_json::json!({
+                "minecraft:food": {"nutrition": 6, "saturation": 1.2, "can_always_eat": true},
+                "minecraft:consumable": {
+                    "animation": "drink",
+                    "has_consume_particles": false,
+                    "sound": "minecraft:item.honey_bottle.drink",
+                    "on_consume_effects": [
+                        {"type": "minecraft:remove_effects", "effects": "minecraft:poison"}
+                    ]
+                },
+                "minecraft:use_remainder": {"id": "minecraft:glass_bottle"}
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap();
+        let mut pearl = ItemComponents::plain();
+        pearl.max_stack_size = 16;
+        pearl.defaults.use_cooldown = Some((1.0_f32.to_bits(), None));
+        let items = named(&[
+            "minecraft:air",
+            "minecraft:honey_bottle",
+            "minecraft:ender_pearl",
+            "minecraft:glass_bottle",
+        ]);
+        let sounds = named(&["minecraft:item.honey_bottle.drink"]);
+        let effects = named(&["minecraft:poison"]);
+        let names = ItemTableNames {
+            items: &items,
+            entity_types: &[],
+            attributes: &[],
+            sound_events: &sounds,
+            mob_effects: &effects,
+        };
+        let components = [
+            ItemComponents::plain(),
+            honey,
+            pearl,
+            ItemComponents::plain(),
+        ];
+        let out = item_components_table(&components, &names).unwrap();
+        let expected = "use crate::{Consumable, ConsumeEffect, EffectSet, Food, ItemComponents, Swing, UseAnimation, UseCooldown, UseRemainder};
+
+/// An item with a stack of 64 and none of the other components.
+const PLAIN: ItemComponents = ItemComponents { max_stack_size: 64, max_damage: None, damage_resistant: None, equippable: None, attack_animation: Swing::DEFAULT, entity: None, modifiers: &[], weapon: None, damage_type: None, minimum_attack_charge: None, attack_range: None, potion_contents: None, potion_duration_scale: None, damage: None, use_cooldown: None, fireworks_flight_duration: None, charged_projectiles: false, chicken_variant: None, consumable: None, food: None, use_remainder: None, ominous_bottle_amplifier: None };
+
+/// By item id.
+pub static ITEM_COMPONENTS: [ItemComponents; 4] = [
+    PLAIN, // air
+    ItemComponents { max_stack_size: 16, consumable: Some(Consumable { consume_seconds: 1.6, animation: UseAnimation::Drink, sound: \"minecraft:item.honey_bottle.drink\", has_consume_particles: false, on_consume_effects: &[ConsumeEffect::RemoveEffects(EffectSet::Listed(&[\"minecraft:poison\"]))] }), food: Some(Food { nutrition: 6, saturation: 1.2, can_always_eat: true }), use_remainder: Some(UseRemainder { item: 3, count: 1 }), ..PLAIN }, // honey_bottle
+    ItemComponents { max_stack_size: 16, use_cooldown: Some(UseCooldown { seconds: 1.0, group: None }), ..PLAIN }, // ender_pearl
+    PLAIN, // glass_bottle
+];
+";
+        assert_eq!(out, expected);
+        assert!(item_components_table(&components[1..], &names).is_err());
     }
 }
