@@ -13,6 +13,14 @@
 //! component Clustine does not know cannot be stepped over: [`Reader::components_clientbound`]
 //! refuses it, naming its id. A client puts a length before every value, so
 //! [`Reader::components_serverbound`] steps over those and says which it dropped.
+//!
+//! The patch's own framing (the two counts, then the added, then the removed) is
+//! `DataComponentPatch$3`, and the length before a client's value `$2`; neither is in
+//! the bytecode dumps, so both are as SteelMC and earlier versions of the game have
+//! them. The mechanics of a length-prefixed value are dumped (`ByteBufCodecs$30`: the
+//! value is read from a slice of its length and what is left of it is let be); the
+//! maximum the game gives that length (2 MiB in SteelMC) is not, and is not refused
+//! here.
 
 mod values;
 

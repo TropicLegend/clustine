@@ -102,7 +102,7 @@ fn every_component() -> Vec<WireComponent> {
         }),
         WireComponent::SuspiciousStewEffects(vec![(15, 160), (3, 100)]),
         WireComponent::OminousBottleAmplifier(4),
-        WireComponent::ChickenVariant(ChickenVariant::Named("minecraft:warm".to_owned())),
+        WireComponent::ChickenVariant(2),
     ]
 }
 
@@ -289,7 +289,8 @@ fn the_small_values_known_answers() {
         &WireComponent::PotionDurationScale(0.25),
     );
     decodes_and_encodes_back(&[0xAC, 0x02], &WireComponent::Damage(300));
-    decodes_and_encodes_back(&[], &WireComponent::IntangibleProjectile);
+    // An empty compound tag, nameless as packets have it.
+    decodes_and_encodes_back(&[10, 0], &WireComponent::IntangibleProjectile);
     decodes_and_encodes_back(&[3], &WireComponent::Rarity(Rarity::Epic));
     decodes_and_encodes_back(&[4], &WireComponent::OminousBottleAmplifier(4));
     decodes_and_encodes_back(
@@ -303,16 +304,9 @@ fn the_small_values_known_answers() {
             group: None,
         }),
     );
-    decodes_and_encodes_back(
-        &[1, 2],
-        &WireComponent::ChickenVariant(ChickenVariant::Registered(2)),
-    );
-    let mut named = vec![0, 4];
-    named.extend_from_slice(b"warm");
-    decodes_and_encodes_back(
-        &named,
-        &WireComponent::ChickenVariant(ChickenVariant::Named("warm".to_owned())),
-    );
+    // The variant's id alone, with no flag before it.
+    decodes_and_encodes_back(&[2], &WireComponent::ChickenVariant(2));
+    decodes_and_encodes_back(&[0x80, 0x01], &WireComponent::ChickenVariant(128));
     // A string tag, nameless as packets have it.
     let mut name = vec![8, 0, 2];
     name.extend_from_slice(b"Hi");
@@ -353,8 +347,8 @@ fn ids_out_of_range_of_the_enumerations_read_as_their_first() {
 fn a_patch_of_three_added_and_one_removed_known_answer() {
     let bytes = [
         3, 1, // three added, one removed
-        3, 5,  // damage 5
-        22, // intangible_projectile, no value
+        3, 5, // damage 5
+        22, 10, 0, // intangible_projectile, an empty compound
         18, 1, 0,  // tooltip_display: hidden, no kinds
         12, // rarity removed
     ];
@@ -554,6 +548,101 @@ fn stacks_nested_past_the_bound_are_refused() {
 }
 
 #[test]
+fn an_intangible_marker_is_any_compound_and_nothing_else() {
+    let read = |bytes: &[u8]| {
+        let mut reader = Reader::new(bytes);
+        let value = reader.component(data_component_type::INTANGIBLE_PROJECTILE, 0);
+        (value, reader.remaining())
+    };
+    // A compound holding a byte named "a": `Unit.CODEC` ignores what is there.
+    let full = [10, 1, 0, 1, b'a', 7, 0, 0x2A];
+    assert_eq!(read(&full), (Ok(WireComponent::IntangibleProjectile), 1));
+    // A byte tag is not a map, and a lone end tag is refused by the tag codec.
+    assert!(read(&[1, 1]).0.is_err());
+    assert!(read(&[0]).0.is_err());
+    // Nothing at all is cut short: the marker has bytes on the wire.
+    assert_eq!(read(&[]).0, Err(DecodeError::UnexpectedEnd));
+}
+
+#[test]
+fn a_stack_of_a_negative_count_in_a_crossbow_passes_as_the_games_template_lets_it() {
+    // One stack: item 800, count -1, an empty patch.
+    let bytes = [1, 0xA0, 0x06, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0, 0];
+    let component = WireComponent::ChargedProjectiles(vec![WireStack {
+        item: 800,
+        count: -1,
+        components: WireComponents::default(),
+    }]);
+    decodes_and_encodes_back(&bytes, &component);
+}
+
+#[test]
+fn an_enchantment_given_twice_has_the_level_given_last() {
+    let read = |bytes: &[u8]| Reader::new(bytes).component(data_component_type::ENCHANTMENTS, 0);
+    // Enchantment 10 at 3, 7 at 1, 10 again at 5: 10 keeps its place and takes 5.
+    assert_eq!(
+        read(&[3, 10, 3, 7, 1, 10, 5]),
+        Ok(WireComponent::Enchantments(vec![(10, 5), (7, 1)]))
+    );
+    // The range is checked on the levels the map keeps: 256 replaced by 1 passes,
+    // and 1 replaced by 256 does not.
+    assert_eq!(
+        read(&[2, 10, 0x80, 0x02, 10, 1]),
+        Ok(WireComponent::Enchantments(vec![(10, 1)]))
+    );
+    assert_eq!(
+        read(&[2, 10, 1, 10, 0x80, 0x02]),
+        Err(DecodeError::InvalidValue {
+            what: "enchantment level",
+            value: 256,
+        })
+    );
+    // A negative level is refused too, and nought is taken.
+    assert!(read(&[1, 10, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F]).is_err());
+    assert_eq!(
+        read(&[1, 10, 0]),
+        Ok(WireComponent::Enchantments(vec![(10, 0)]))
+    );
+}
+
+#[test]
+fn a_kind_hidden_twice_from_the_tooltip_is_kept_once_in_its_first_place() {
+    assert_eq!(
+        Reader::new(&[0, 3, 13, 53, 13]).component(data_component_type::TOOLTIP_DISPLAY, 0),
+        Ok(WireComponent::TooltipDisplay(TooltipDisplay {
+            hide_tooltip: false,
+            hidden_components: vec![13, 53],
+        }))
+    );
+}
+
+#[test]
+fn identifiers_are_parsed_as_the_games_identifier_parses_them() {
+    let cooldown = |group: &str| {
+        let mut bytes = vec![0x3F, 0x80, 0, 0, 1, group.len() as u8];
+        bytes.extend_from_slice(group.as_bytes());
+        Reader::new(&bytes).component(data_component_type::USE_COOLDOWN, 0)
+    };
+    let group = |group: &str| {
+        Ok(WireComponent::UseCooldown(UseCooldown {
+            seconds: 1.0,
+            group: Some(group.to_owned()),
+        }))
+    };
+    // No namespace, an empty one, and the path's own characters are taken as written.
+    assert_eq!(cooldown("ender_pearl"), group("ender_pearl"));
+    assert_eq!(cooldown(":ender_pearl"), group(":ender_pearl"));
+    assert_eq!(cooldown("a-b.c:d/e_f.9"), group("a-b.c:d/e_f.9"));
+    // A namespace of `..`, a slash in the namespace, a second colon, an upper-case
+    // letter or a space is refused.
+    for refused in ["..:x", "a/b:c", "a:b:c", "Minecraft:x", "a: b"] {
+        assert!(cooldown(refused).is_err(), "{refused}");
+    }
+    // `..` alone is a path in the default namespace, not a namespace.
+    assert_eq!(cooldown(".."), group(".."));
+}
+
+#[test]
 fn a_name_that_says_more_is_kept_as_it_came() {
     let value = Nbt::Compound(vec![
         ("text".to_owned(), Nbt::String("Banner".to_owned())),
@@ -578,9 +667,11 @@ proptest! {
     }
 
     #[test]
-    fn damage_and_enchantments_round_trip(damage: i32, levels in prop::collection::vec((0..2000i32, 0..=255i32), 0..8)) {
+    // Each enchantment once: the game keeps one level for each (see
+    // `an_enchantment_given_twice_has_the_level_given_last`).
+    fn damage_and_enchantments_round_trip(damage: i32, levels in prop::collection::btree_map(0..2000i32, 0..=255i32, 0..8)) {
         let components = patch(
-            vec![WireComponent::Enchantments(levels), WireComponent::Damage(damage)],
+            vec![WireComponent::Enchantments(levels.into_iter().collect()), WireComponent::Damage(damage)],
             vec![],
         );
         let mut writer = Writer::new();

@@ -7,9 +7,15 @@
 //! `item_name`, and `chicken/variant`'s holder. Lists the game bounds are bounded here
 //! by the same maxima, and the writers write what they are given: the edge keeps a
 //! value within the game's limits before it is written.
+//!
+//! Checked against the game's bytecode (`n9-javap`) in N9a-2v; what the dumps could not
+//! show is said where it is used.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{MAX_NESTING, OUTSIDE_THE_SET, WireComponents, data_component_type, read_patch};
 use crate::codec::{DecodeError, MAX_STRING_LENGTH, Reader, Writer};
+use crate::nbt::Nbt;
 use crate::text::Text;
 
 /// The most stacks a crossbow's `charged_projectiles` holds (n9 `ChargedProjectiles`,
@@ -29,12 +35,14 @@ pub enum WireComponent {
     PotionDurationScale(f32),
     ChargedProjectiles(Vec<WireStack>),
     /// Enchantments by their number in the `enchantment` registry the edge sends, each
-    /// with its level, in the order read.
+    /// with its level, in the order first read. The game reads them into a map, so an
+    /// enchantment given twice has the level given last.
     Enchantments(Vec<(i32, i32)>),
     UseCooldown(UseCooldown),
     Fireworks(Fireworks),
     Damage(i32),
-    /// A marker, with no bytes on the wire.
+    /// A marker. The game gives this kind no stream codec of its own, so it travels as
+    /// its persistent codec (`Unit.CODEC`) does in a tag: an empty compound.
     IntangibleProjectile,
     BannerPatterns(Vec<BannerLayer>),
     ItemName(Text),
@@ -44,7 +52,9 @@ pub enum WireComponent {
     /// ticks.
     SuspiciousStewEffects(Vec<(i32, i32)>),
     OminousBottleAmplifier(i32),
-    ChickenVariant(ChickenVariant),
+    /// A variant by its number in the `chicken_variant` registry the edge sends
+    /// (`ChickenVariant.STREAM_CODEC`, `ByteBufCodecs.holderRegistry`).
+    ChickenVariant(i32),
 }
 
 impl WireComponent {
@@ -122,11 +132,13 @@ pub struct EffectDetails {
     pub hidden: Option<Box<EffectDetails>>,
 }
 
-/// A stack inside a component (`ItemStackTemplate`): never empty.
+/// A stack inside a component (`ItemStackTemplate`): never air, never of count nought.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WireStack {
     /// Id in the item registry.
     pub item: i32,
+    /// Any but nought: the game's template refuses only nought, so a negative count
+    /// comes through and is the edge's to deal with.
     pub count: i32,
     pub components: WireComponents,
 }
@@ -235,16 +247,9 @@ const DYE_COLOURS: i32 = 16;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TooltipDisplay {
     pub hide_tooltip: bool,
-    /// Ids in the `data_component_type` registry, of any kind, in the order read.
+    /// Ids in the `data_component_type` registry, of any kind, in the order first
+    /// read. The game reads them into an ordered set, so one given twice is kept once.
     pub hidden_components: Vec<i32>,
-}
-
-/// `chicken/variant`'s `EitherHolder`: a variant of the `chicken_variant` registry the
-/// edge sends, or a variant by name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChickenVariant {
-    Registered(i32),
-    Named(String),
 }
 
 fn by_id_or_first<T: Copy>(all: &[T], id: i32) -> T {
@@ -275,7 +280,7 @@ impl Writer {
             }
             WireComponent::Fireworks(fireworks) => self.put_fireworks(fireworks),
             WireComponent::Damage(damage) => self.put_var_int(*damage),
-            WireComponent::IntangibleProjectile => {}
+            WireComponent::IntangibleProjectile => self.put_nbt(&Nbt::Compound(Vec::new())),
             WireComponent::BannerPatterns(layers) => {
                 self.put_array(layers, Writer::put_banner_layer);
             }
@@ -292,16 +297,7 @@ impl Writer {
                 });
             }
             WireComponent::OminousBottleAmplifier(amplifier) => self.put_var_int(*amplifier),
-            WireComponent::ChickenVariant(variant) => match variant {
-                ChickenVariant::Registered(id) => {
-                    self.put_bool(true);
-                    self.put_var_int(*id);
-                }
-                ChickenVariant::Named(name) => {
-                    self.put_bool(false);
-                    self.put_string(name);
-                }
-            },
+            WireComponent::ChickenVariant(variant) => self.put_var_int(*variant),
         }
     }
 
@@ -394,24 +390,27 @@ impl Reader<'_> {
                 }
                 WireComponent::ChargedProjectiles(stacks)
             }
-            kind::ENCHANTMENTS => WireComponent::Enchantments(self.array(|r| {
-                let enchantment = r.var_int()?;
-                let level = r.var_int()?;
-                if !(0..=MAX_ENCHANTMENT_LEVEL).contains(&level) {
-                    return Err(DecodeError::InvalidValue {
-                        what: "enchantment level",
-                        value: level.into(),
-                    });
-                }
-                Ok((enchantment, level))
-            })?),
+            kind::ENCHANTMENTS => WireComponent::Enchantments(self.enchantments()?),
             kind::USE_COOLDOWN => WireComponent::UseCooldown(UseCooldown {
                 seconds: self.f32()?,
                 group: self.option(checked_identifier)?,
             }),
             kind::FIREWORKS => WireComponent::Fireworks(self.fireworks()?),
             kind::DAMAGE => WireComponent::Damage(self.var_int()?),
-            kind::INTANGIBLE_PROJECTILE => WireComponent::IntangibleProjectile,
+            kind::INTANGIBLE_PROJECTILE => {
+                // `Unit.CODEC` takes any compound and ignores what is in it; a tag of
+                // another type is not a map to it, and a lone end tag the tag codec
+                // refuses before it.
+                match self.nbt()? {
+                    Some(Nbt::Compound(_)) => WireComponent::IntangibleProjectile,
+                    _ => {
+                        return Err(DecodeError::InvalidValue {
+                            what: "intangible projectile marker",
+                            value: 0,
+                        });
+                    }
+                }
+            }
             kind::BANNER_PATTERNS => {
                 WireComponent::BannerPatterns(self.array(Reader::banner_layer)?)
             }
@@ -427,7 +426,12 @@ impl Reader<'_> {
             kind::RARITY => WireComponent::Rarity(Rarity::of_id(self.var_int()?)),
             kind::TOOLTIP_DISPLAY => WireComponent::TooltipDisplay(TooltipDisplay {
                 hide_tooltip: self.bool()?,
-                hidden_components: self.array(super::component_id)?,
+                hidden_components: {
+                    let mut seen = BTreeSet::new();
+                    let mut ids = self.array(super::component_id)?;
+                    ids.retain(|id| seen.insert(*id));
+                    ids
+                },
             }),
             kind::SUSPICIOUS_STEW_EFFECTS => WireComponent::SuspiciousStewEffects(
                 self.array(|r| Ok((r.var_int()?, r.var_int()?)))?,
@@ -435,11 +439,7 @@ impl Reader<'_> {
             kind::OMINOUS_BOTTLE_AMPLIFIER => {
                 WireComponent::OminousBottleAmplifier(self.var_int()?)
             }
-            kind::CHICKEN_VARIANT => WireComponent::ChickenVariant(if self.bool()? {
-                ChickenVariant::Registered(self.var_int()?)
-            } else {
-                ChickenVariant::Named(checked_identifier(self)?)
-            }),
+            kind::CHICKEN_VARIANT => WireComponent::ChickenVariant(self.var_int()?),
             _ => {
                 return Err(DecodeError::InvalidValue {
                     what: OUTSIDE_THE_SET,
@@ -447,6 +447,34 @@ impl Reader<'_> {
                 });
             }
         })
+    }
+
+    /// `ItemEnchantments.STREAM_CODEC`: a map of enchantment to level, which the game
+    /// fills entry by entry (a later entry for the same enchantment replacing the
+    /// earlier) and then refuses if any level it kept is outside 0 to 255.
+    pub fn enchantments(&mut self) -> Result<Vec<(i32, i32)>, DecodeError> {
+        let read = self.array(|r| Ok((r.var_int()?, r.var_int()?)))?;
+        let mut levels: Vec<(i32, i32)> = Vec::with_capacity(read.len());
+        let mut index = BTreeMap::new();
+        for (enchantment, level) in read {
+            match index.get(&enchantment) {
+                Some(&at) => levels[at] = (enchantment, level),
+                None => {
+                    index.insert(enchantment, levels.len());
+                    levels.push((enchantment, level));
+                }
+            }
+        }
+        if let Some(&(_, level)) = levels
+            .iter()
+            .find(|(_, level)| !(0..=MAX_ENCHANTMENT_LEVEL).contains(level))
+        {
+            return Err(DecodeError::InvalidValue {
+                what: "enchantment level",
+                value: level.into(),
+            });
+        }
+        Ok(levels)
     }
 
     /// `PotionContents.STREAM_CODEC`.
@@ -531,8 +559,9 @@ fn wire_stack(r: &mut Reader<'_>, depth: usize) -> Result<WireStack, DecodeError
     }
     let item = r.var_int()?;
     let count = r.var_int()?;
-    if item == 0 || count <= 0 {
-        // A template is never empty: air, or no items, is refused.
+    if item == 0 || count == 0 {
+        // The template's constructor refuses air and a count of nought, and only those
+        // (`ItemStackTemplate.<init>`, `ifeq` on the count): a negative count passes.
         return Err(DecodeError::InvalidValue {
             what: "stack inside a component",
             value: count.into(),
@@ -583,14 +612,18 @@ fn bounded_count(r: &mut Reader<'_>, max: usize, what: &'static str) -> Result<u
     Ok(count)
 }
 
-/// `Identifier.STREAM_CODEC`: a string the game parses as an identifier, refusing one
-/// with a character outside its alphabet. It is kept as written, so that it is written
-/// back the same.
+/// `Identifier.STREAM_CODEC`: a string the game parses as an identifier
+/// (`Identifier.parse`), refusing one with a character outside its alphabet or the
+/// namespace `..`. It splits at the first colon, and a namespace left empty is the
+/// default one. It is kept as written, so that it is written back the same.
 fn checked_identifier(r: &mut Reader<'_>) -> Result<String, DecodeError> {
     let text = r.string(MAX_STRING_LENGTH)?;
     let (namespace, path) = text.split_once(':').unwrap_or(("", &text));
     let plain = |c: char| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.');
-    if !namespace.chars().all(plain) || !path.chars().all(|c| plain(c) || c == '/') {
+    if namespace == ".."
+        || !namespace.chars().all(plain)
+        || !path.chars().all(|c| plain(c) || c == '/')
+    {
         return Err(DecodeError::InvalidValue {
             what: "identifier",
             value: text.len() as i64,
