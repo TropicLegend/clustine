@@ -726,7 +726,7 @@ asked of the view, `None` judging as now (generation answers 15 and passes).
 | sweet berry bush | age below 3; `nextInt(5) == 0`; `raw(above, 0) ≥ 9` | age + 1 flags 2, game event `block_change` | — |
 | snow layer | `block(pos) > 11` | drops (none without a tool), `removeBlock`, game event `block_destroy` | — |
 | ice, frosted ice (`IceBlock.randomTick`) | `block(pos) > 11 − dampening` | `melt` (section 2, row 9) | — |
-| bamboo | stage 0; `nextInt(3) == 0`; air above; `raw(above, 0) ≥ 9`; height below + 1 < 16 | `growBamboo` (n8 454–572): its leaves; `nextFloat() < 0.25` drawn **only where the new height is 11 or more**, stage 1 where it passes or the height is 15 | — (one column) |
+| bamboo | stage 0; `nextInt(3) == 0`; air above; `raw(above, 0) ≥ 9`; height below + 1 < 16 | `growBamboo` (n8 454–572): its leaves; `nextFloat() < 0.25` drawn **only where the stalk, counting the growing block, is already 11 tall** (the new height 12 or more; n8 BambooStalkBlock 56–78, 189–206), stage 1 where it passes or the height is 15 | — (one column) |
 | bamboo shoot | `nextInt(3) == 0`; air above; `raw(above, 0) ≥ 9` | bamboo with small leaves above, `setBlockAndUpdate`; the shoot's shape update then makes it bamboo (section 2, row 19) | — |
 | mushrooms | `nextInt(25) == 0`; at most four of the kind around; the walk of section 2 row 12: at each step `isEmptyBlock` and the full `canSurvive` (the override tag below, or light below 13 *and* solid render below), the next target drawn whether or not the step was taken | the mushroom's own state at the target, flags 2 | the target may be a copy's: `SetIf` (expected air) |
 | grass block, mycelium (n8 SpreadingSnowyBlock 15–167) | `canStayAlive`: one snow layer above lives; else a full fluid above dies; else `getLightDampeningInto(state, above, UP, above's dampening) ≥ 15` dies. Dying: dirt by `setBlockAndUpdate` (flags 3), no draw. Else if `max_local(above) ≥ 9`: four times a target at x `nextInt(3)−1`, y `nextInt(5)−3`, z `nextInt(3)−1` (drawn in that order); the target must be the dirt block, pass `canStayAlive` and have no `#water` fluid above. No light is read at the target | the default state with `snowy` = the block above is in `#snow`, flags 3 | the target may be a copy's: `SetIf` (expected dirt) |
@@ -848,9 +848,12 @@ the poplars and `pale_oak_bonemeal` among them, is there).
 ### 7.3 The random
 
 The game hands the level's random to the grower and the feature. Clustine's section
-stream (`random_ticks.rs`'s `Random`) draws the sapling's own chances; the grower and
-the feature then draw from a `WorldgenRandom` of the game's kind seeded with the
-stream's next long, made at the moment the game would start drawing for the tree. Its
+stream (`random_ticks.rs`'s `Random`) draws the sapling's own chances and the
+grower's lists (the mega list always first, then the flower or the plain one), as the
+game draws them from the level's random; the feature then draws from a
+`WorldgenRandom` of the game's kind seeded with the stream's next long, made at the
+moment the game would start drawing for the tree, so that the stream's count of draws
+is the game's up to the feature and one long stands for all of the feature's. Its
 values differ from the game's, as every random tick's do (B7); its distribution is the
 game's, and the same region state gives the same tree.
 
@@ -1339,3 +1342,18 @@ and whether the owner is asked about the budget now or shown it in ADR-0029.
    measurements set them.
 4. The budget is recorded in ADR-0029 with why, as the lead's decision the owner can
    overrule, and named in the roadmap's "Where the work stands".
+
+### 14.y What the tests from the specification found in the plan (N8g, 2026-10-27)
+
+- **Leaves** (1.8, 14): "sky 14 under leaves" is the light in the leaf block itself;
+  below it the sky's light falls one a block (13, 12, 11), as `clustine-light`'s own
+  cases have it. A zombie under leaves still does not burn.
+- **Bamboo** (6.2): the float is drawn where the stalk is already 11 tall, counting the
+  growing block; corrected above.
+- **Saplings** (7.3): the grower's lists draw from the section stream, the feature from
+  the seeded random; corrected above.
+- **`Work`** (8): the region's light step does not return its `Work` in `TickOutput`; the
+  tests read the engine's `Work` where they drive a `Lighting` themselves, and the
+  measurements of N8e time the step where the worker runs it.
+- **The edge's light against the region's** (10): compared through a latecomer's packets
+  against the expected levels, since the region's light is not read end to end.
