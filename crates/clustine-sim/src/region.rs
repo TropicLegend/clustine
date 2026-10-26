@@ -3546,6 +3546,7 @@ mod tests {
     mod clock;
     mod containers;
     mod conversions;
+    mod daylight_detector;
     mod diodes;
     mod effects;
     mod entities;

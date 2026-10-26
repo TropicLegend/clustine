@@ -192,8 +192,12 @@ pub fn own_signal(state: BlockState) -> u8 {
     }
     // `TargetBlock.ownSignal`: the power an arrow last gave it, which falls back to 0.
     // `SculkSensorBlock.ownSignal`: the power of the vibration it last took, until its
-    // cooldown, the calibrated sensor's too.
-    if is_class(state, BlockClass::TargetBlock) || is_class(state, BlockClass::SculkSensorBlock) {
+    // cooldown, the calibrated sensor's too. `DaylightDetectorBlock.ownSignal`: the power
+    // its last reading of the sky set.
+    if is_class(state, BlockClass::TargetBlock)
+        || is_class(state, BlockClass::SculkSensorBlock)
+        || is_class(state, BlockClass::DaylightDetectorBlock)
+    {
         return crate::data::number(state, "power").unwrap_or(0);
     }
     0

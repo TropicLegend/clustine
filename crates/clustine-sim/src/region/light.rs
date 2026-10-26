@@ -252,4 +252,11 @@ impl Region {
                 .max(0) as u8,
         )
     }
+
+    /// `getEffectiveSkyBrightness`: the sky's light less `darken`, at least 0, as the
+    /// daylight detector reads it; `None` where the chunk is not lit.
+    pub(crate) fn effective_sky_brightness(&self, pos: BlockPos, darken: i32) -> Option<i32> {
+        let light = self.light_at(pos)?;
+        Some((i32::from(light.sky) - darken).max(0))
+    }
 }

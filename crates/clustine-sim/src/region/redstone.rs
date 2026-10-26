@@ -507,7 +507,7 @@ impl Region {
         } else if is_class(state, BlockClass::BellBlock) {
             // `BellBlock.onHit`: the bell swings away from the side it was hit on.
             self.ring_bell(pos, Some(face), output);
-        } else {
+        } else if !self.daylight_detector_used(pos, state, player, output) {
             self.diode_used(pos, state, player, output);
         }
     }

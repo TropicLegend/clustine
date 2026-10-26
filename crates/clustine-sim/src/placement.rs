@@ -279,11 +279,13 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     {
         return Clicked::ByRule { position, face };
     }
-    // A repeater's delay and a comparator's mode, which every Clustine player may
-    // change, as creative players may build (`Abilities.mayBuild`).
+    // A repeater's delay, a comparator's mode and a daylight detector's inversion,
+    // which every Clustine player may change, as creative players may build
+    // (`Abilities.mayBuild`).
     if data::is(state, BlockClass::LeverBlock)
         || data::is(state, BlockClass::ButtonBlock)
         || data::is(state, BlockClass::DiodeBlock)
+        || data::is(state, BlockClass::DaylightDetectorBlock)
     {
         return Clicked::ByRule { position, face };
     }
