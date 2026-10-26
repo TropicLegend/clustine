@@ -312,6 +312,16 @@ impl Region {
                 Local::ContainerPut { chest, step } => {
                     self.golem_puts(key, chest, step, output);
                 }
+                Local::Shoot {
+                    stack,
+                    at,
+                    direction,
+                    power,
+                    uncertainty,
+                } => {
+                    let aim = super::thrown::Aim::Direction(direction);
+                    self.make_thrown(key, stack, at, aim, power, uncertainty, output);
+                }
             }
         }
     }
@@ -521,6 +531,8 @@ impl Region {
                 sound,
                 output,
             ),
+            // Taken before the dispatch by kind (`entities.rs`).
+            EntityUse::Thrown { .. } => {}
         }
     }
 

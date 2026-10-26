@@ -183,6 +183,29 @@ pub enum EntityUse {
         fling: Option<Float>,
         sound: Option<i32>,
     },
+    /// A thrown item's hit on the entity (`onHitEntity`: a snowball's
+    /// `hurt(thrown(snowball, owner), damage)`), made where the projectile's region sees
+    /// the entity only in a copy (`docs/groundwork/n7k-plan.md`, section 10): the
+    /// projectile, its entity type, where it was and its motion at the hit (which way
+    /// it pushes), the damage, and who threw it, where its region knew.
+    Thrown {
+        projectile: EntityId,
+        kind: u16,
+        at: [Double; 3],
+        motion: [Double; 3],
+        damage: Float,
+        owner: Option<Thrower>,
+    },
+}
+
+/// Who threw a projectile, as a hurt by it names its cause: the entity, its type, where
+/// its feet were, and the player's UUID where it is a player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thrower {
+    pub key: EntityId,
+    pub kind: u16,
+    pub from: [Double; 3],
+    pub player: Option<Uuid>,
 }
 
 impl Effect {

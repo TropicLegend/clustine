@@ -574,8 +574,11 @@ impl Region {
                 }
                 flags |= Tracked::SYNC_VELOCITY;
             }
-            // `hurtServer` only marks it hurt, which sends its motion.
-            EntityData::FallingBlock { .. } => flags |= Tracked::SYNC_VELOCITY,
+            // `hurtServer` only marks it hurt, which sends its motion (a projectile's
+            // too, `Projectile.hurtServer`).
+            EntityData::FallingBlock { .. } | EntityData::Thrown { .. } => {
+                flags |= Tracked::SYNC_VELOCITY;
+            }
             // It cannot be hurt, and is pushed from its feet.
             EntityData::PrimedTnt { .. } => {}
             // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),

@@ -18,7 +18,11 @@
 //! | 10, seated | the player's key u64, the vehicle's key u64, its root's chunk x i32 and z i32 |
 //!
 //! The uses of kind 5 since: 4, a request to breed; 5, its answer; 6, a mob's hit; 7, a
-//! use as 2 followed by the player's edge u64; 8, a seat declined, the player's key u64.
+//! use as 2 followed by the player's edge u64; 8, a seat declined, the player's key u64;
+//! 9, a mob's hit as 6 followed by the iron golem's fling f32; 10, a thrown item's hit: the projectile's key u64, its type u16, where it was 3 × f64,
+//! its motion 3 × f64, the damage f32, and u8 0 where nobody threw it, or u8 1 and the
+//! thrower's key u64, type u16 and feet 3 × f64, then u8 0, or u8 1 and the player's
+//! UUID u128 where a player threw it.
 //!
 //! A blast (`clustine_world::Blast`) is the exploding entity's key u64, the tick u64, the
 //! centre 3 × f64, the radius f32, flags u8 (bit 0 its drops decay, bit 1 it has a direct
@@ -31,7 +35,7 @@
 use clustine_data::{BLOCK_STATE_COUNT, BlockState};
 use clustine_world::{
     Blast, BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect,
-    Float, ItemStack, SeamKind, Ticked,
+    Float, ItemStack, SeamKind, Thrower, Ticked,
 };
 use uuid::Uuid;
 
@@ -60,6 +64,8 @@ const USE_INTERACT_FROM_EDGE: u8 = 7;
 const USE_SEAT_DECLINED: u8 = 8;
 /// A mob's hit with the iron golem's fling, which follows its sound.
 const USE_MOB_HIT_FLUNG: u8 = 9;
+/// A thrown item's hit (a snowball's).
+const USE_THROWN: u8 = 10;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -228,6 +234,31 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     }
                     if let Some(fling) = fling {
                         out.extend_from_slice(&fling.0.to_be_bytes());
+                    }
+                }
+                EntityUse::Thrown {
+                    projectile,
+                    kind,
+                    at,
+                    motion,
+                    damage,
+                    owner,
+                } => {
+                    out.push(USE_THROWN);
+                    out.extend_from_slice(&projectile.0.to_be_bytes());
+                    out.extend_from_slice(&kind.to_be_bytes());
+                    put_doubles(out, at);
+                    put_doubles(out, motion);
+                    out.extend_from_slice(&damage.0.to_be_bytes());
+                    out.push(u8::from(owner.is_some()));
+                    if let Some(owner) = owner {
+                        out.extend_from_slice(&owner.key.0.to_be_bytes());
+                        out.extend_from_slice(&owner.kind.to_be_bytes());
+                        put_doubles(out, owner.from);
+                        out.push(u8::from(owner.player.is_some()));
+                        if let Some(player) = owner.player {
+                            out.extend_from_slice(&player.as_u128().to_be_bytes());
+                        }
                     }
                 }
             }
@@ -478,6 +509,31 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                         sound,
                     }
                 }
+                USE_THROWN => EntityUse::Thrown {
+                    projectile: EntityId(input.u64()?),
+                    kind: input.u16()?,
+                    at: take_doubles(input)?,
+                    motion: take_doubles(input)?,
+                    damage: Float(input.f32()?),
+                    owner: match input.u8()? {
+                        0 => None,
+                        1 => Some(Thrower {
+                            key: EntityId(input.u64()?),
+                            kind: input.u16()?,
+                            from: take_doubles(input)?,
+                            player: match input.u8()? {
+                                0 => None,
+                                1 => Some(Uuid::from_u128(input.u128()?)),
+                                _ => {
+                                    return Err(FormatError::Corrupt(
+                                        "a thrown item's hit's player flag",
+                                    ));
+                                }
+                            },
+                        }),
+                        _ => return Err(FormatError::Corrupt("a thrown item's hit's owner flag")),
+                    },
+                },
                 _ => return Err(FormatError::Corrupt("an entity use's kind")),
             };
             Effected::OnEntity { key, by }
@@ -940,6 +996,62 @@ mod entity_uses {
         let (plain, flung) = (bytes(hit(None)), bytes(hit(Some(Float(0.4)))));
         assert_eq!(flung.len(), plain.len() + 4);
         assert_eq!(&flung[flung.len() - 4..], &0.4_f32.to_be_bytes());
+    }
+
+    #[test]
+    fn a_thrown_items_hit_is_read_back_as_written_by_a_player_a_mob_or_nobody() {
+        let at = BlockPos::new(15, -60, 2);
+        let hit = |owner| EntityUse::Thrown {
+            projectile: EntityId(u64::MAX - 4),
+            kind: 1 << 15,
+            at: [Double(0.5), Double(-58.25), Double(-1024.5)],
+            motion: [Double(1.25), Double(-0.03), Double(-0.75)],
+            damage: Float(0.0),
+            owner,
+        };
+        let thrower = |player: Option<u128>| Thrower {
+            key: EntityId(1 << 33),
+            kind: 155,
+            from: [Double(2.0), Double(-60.0), Double(3.5)],
+            player: player.map(Uuid::from_u128),
+        };
+        for by in [
+            hit(None),
+            hit(Some(thrower(None))),
+            hit(Some(thrower(Some(u128::MAX - 9)))),
+        ] {
+            round_trip(Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by,
+                },
+            });
+        }
+        // The owner's flag is 0 or 1, and so is the player's.
+        let mut out = Vec::new();
+        put_effect(
+            &mut out,
+            &Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9),
+                    by: hit(Some(thrower(None))),
+                },
+            },
+        );
+        // The block (12), the kind (1), the key (8), the use's kind (1), the projectile
+        // (8), its type (2), where it was (24), its motion (24) and the damage (4).
+        let owner_flag = 12 + 1 + 8 + 1 + 8 + 2 + 24 + 24 + 4;
+        assert_eq!(out[owner_flag], 1);
+        let mut bad = out.clone();
+        bad[owner_flag] = 2;
+        assert!(take_effect(&mut Input(&bad)).is_err());
+        let player_flag = owner_flag + 1 + 8 + 2 + 24;
+        assert_eq!(out[player_flag], 0);
+        let mut bad = out.clone();
+        bad[player_flag] = 2;
+        assert!(take_effect(&mut Input(&bad)).is_err());
     }
 
     fn blast(owner: Option<u128>) -> Blast {

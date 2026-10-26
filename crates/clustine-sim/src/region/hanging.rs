@@ -840,7 +840,7 @@ impl Region {
     /// player, dropping nothing; a frame with an item gives the item up (a creative
     /// player's is deleted) with the remove sound; an empty one breaks
     /// (`BlockAttachedEntity.hurtServer`).
-    fn hurt_frame(&mut self, entity: &Entity, creative: bool, output: &mut TickOutput) {
+    pub(crate) fn hurt_frame(&mut self, entity: &Entity, creative: bool, output: &mut TickOutput) {
         let EntityData::ItemFrame { item, fixed, .. } = entity.data else {
             return;
         };

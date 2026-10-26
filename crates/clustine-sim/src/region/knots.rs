@@ -96,6 +96,7 @@ impl Region {
             EntityUse::Blasted { .. }
             | EntityUse::BreedAsk { .. }
             | EntityUse::MobHit { .. }
+            | EntityUse::Thrown { .. }
             | EntityUse::SeatDeclined { .. }
             | EntityUse::BreedAnswer { .. } => {}
         }

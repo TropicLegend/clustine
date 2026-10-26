@@ -901,6 +901,18 @@ impl Tracker {
                     }
                 }
             }
+            // `ThrowableItemProjectile.DATA_ITEM_STACK`: the stack it shows, which is
+            // set as it is made, never the default's object, and never changes.
+            EntityData::Thrown { stack, .. } if pairing => {
+                let stack = WireStack {
+                    item: stack.item,
+                    count: stack.count,
+                };
+                values.push((
+                    entity_data::ITEM_STACK,
+                    EntityDataValue::ItemStack(Some(stack)),
+                ));
+            }
             // `ExperienceOrb.DATA_VALUE`, 0 by default: what it is worth, by which a
             // client sizes it. It is set as the orb is made and never changes.
             EntityData::ExperienceOrb { value, .. } if pairing && *value != 0 => {

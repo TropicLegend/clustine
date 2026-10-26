@@ -84,6 +84,7 @@ mod sleep;
 mod sniffer_eggs;
 mod spawn_eggs;
 mod stands;
+mod thrown;
 mod ticks;
 mod tnt;
 mod turtle_eggs;
@@ -2287,6 +2288,7 @@ impl Region {
                 };
                 let sequence = *sequence;
                 if self.steered_boost(id, item_use.held, output)
+                    || self.throw_snowball(&item_use, id, output)
                     || self.entity_item_used(&item_use, id, output)
                 {
                     if let Some(player) = self.players.get_mut(&id) {
@@ -3534,6 +3536,7 @@ mod tests {
     mod stands;
     mod swings;
     mod tamed;
+    mod thrown;
     mod water;
     mod wild;
 

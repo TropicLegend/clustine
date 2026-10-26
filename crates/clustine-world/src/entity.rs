@@ -374,6 +374,19 @@ pub enum EntityData {
         /// 8 blocks.
         following: Option<EntityId>,
     },
+    /// A thrown item, the kind its entity type (`ThrowableItemProjectile`; the snowball,
+    /// `docs/groundwork/n7k-plan.md`, section 10): what it shows, who threw it, and what
+    /// `Projectile` keeps of its flight.
+    Thrown {
+        /// `DATA_ITEM_STACK`, one of the item thrown.
+        stack: ItemStack,
+        /// `owner`: the entity that threw it, a player's or a mob's, by key.
+        owner: Option<EntityId>,
+        /// `leftOwner`: it has been clear of its owner's unit once, and may hit it now.
+        left_owner: bool,
+        /// `hasBeenShot`: its first tick has posted `projectile_shoot`.
+        has_been_shot: bool,
+    },
 }
 
 /// A part of a mob's body or mind: an id that the code of that part gives it and keeps

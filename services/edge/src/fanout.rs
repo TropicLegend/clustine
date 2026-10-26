@@ -942,6 +942,11 @@ impl WireIds {
         self.last
     }
 
+    /// The id clients know the entity `key` by, if it has one; none is given.
+    fn known(&self, key: EntityId) -> Option<i32> {
+        self.of.get(&key).copied()
+    }
+
     fn forget(&mut self, key: EntityId) {
         if let Some(id) = self.of.remove(&key) {
             self.by_id.remove(&id);
@@ -6123,7 +6128,13 @@ impl PlayerView {
                 let mut packets = Vec::new();
                 let EntityKind::Player { player, name } = &state.kind else {
                     self.visible.insert(state.entity, None);
-                    let mut packets = spawn_packets(state, wire.of(state.entity), pairing.as_ref());
+                    let owner = owner_of(state).and_then(|owner| wire.known(owner));
+                    let mut packets = spawn_packets(
+                        state,
+                        wire.of(state.entity),
+                        pairing.as_ref(),
+                        owner.unwrap_or(0),
+                    );
                     packets.extend(living_packets(living, wire.of(state.entity)));
                     return packets;
                 };
@@ -6146,7 +6157,7 @@ impl PlayerView {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));
                 }
-                packets.extend(spawn_packets(state, wire.of(state.entity), None));
+                packets.extend(spawn_packets(state, wire.of(state.entity), None, 0));
                 packets
             }
             (true, true) if moved => move_packets(state, wire.of(state.entity)),
@@ -6271,7 +6282,26 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
     packets
 }
 
-fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec<Bytes> {
+/// The owner of a projectile `state` shows, if it has one.
+fn owner_of(state: &EntityState) -> Option<EntityId> {
+    match &state.kind {
+        EntityKind::Other {
+            data: EntityData::Thrown { owner, .. },
+            ..
+        } => *owner,
+        _ => None,
+    }
+}
+
+/// The packets that show `state` to a client, under the wire id `id`; `owner` is the
+/// wire id of a projectile's owner, which its spawn carries
+/// (`Projectile.getAddEntityPacket`), 0 for none or one the clients are not shown.
+fn spawn_packets(
+    state: &EntityState,
+    id: i32,
+    pairing: Option<&Pairing>,
+    owner: i32,
+) -> Vec<Bytes> {
     let position = state.pose.position;
     if let (
         EntityKind::Other {
@@ -6304,6 +6334,7 @@ fn spawn_packets(state: &EntityState, id: i32, pairing: Option<&Pairing>) -> Vec
                 ];
                 0
             }
+            EntityData::Thrown { .. } => owner,
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
@@ -6403,7 +6434,7 @@ fn entity_data_packet(id: i32, kind: u16, data: &EntityData) -> SetEntityData {
                 .map(|(index, value, _)| (index, value))
                 .collect(),
         },
-        EntityData::Item { stack, .. } => SetEntityData {
+        EntityData::Item { stack, .. } | EntityData::Thrown { stack, .. } => SetEntityData {
             entity_id: id,
             values: vec![(
                 entity_data::ITEM_STACK,
@@ -21503,7 +21534,7 @@ mod scenarios {
             on_ground: true,
         };
         let pairing = Tracker::new(seen, &data, 0).pairing();
-        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing))
+        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing), 0)
             .iter()
             .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
             .collect();
@@ -21538,5 +21569,77 @@ mod scenarios {
                 })
             )]
         );
+    }
+
+    /// A snowball is spawned with its motion and its owner's id as its data
+    /// (`Projectile.getAddEntityPacket`), then the stack it shows at index 8, which its
+    /// constructor set and the official server always sends.
+    #[test]
+    fn a_snowball_is_spawned_with_its_owners_id_and_then_its_stack() {
+        let data = EntityData::Thrown {
+            stack: clustine_world::ItemStack {
+                item: clustine_data::items::SNOWBALL,
+                count: 1,
+            },
+            owner: Some(EntityId(3)),
+            left_owner: false,
+            has_been_shot: false,
+        };
+        let motion = [0.25, 0.5, 1.25];
+        let state = EntityState {
+            entity: EntityId(9),
+            kind: EntityKind::Other {
+                kind: entity_types::SNOWBALL as u16,
+                uuid: Uuid::from_u128(9),
+                motion,
+                hops: 0,
+                data: data.clone(),
+                riding: Default::default(),
+            },
+            pose: Pose {
+                position: Vec3::new(3.5, -58.5, 3.5),
+                yaw: 11.0,
+                pitch: 22.0,
+                on_ground: false,
+            },
+        };
+        let seen = Seen {
+            kind: entity_types::SNOWBALL as u16,
+            position: [3.5, -58.5, 3.5],
+            motion,
+            yaw: 11.0,
+            pitch: 22.0,
+            on_ground: false,
+        };
+        let pairing = Tracker::new(seen, &data, 0).pairing();
+        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing), 7)
+            .iter()
+            .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
+            .collect();
+        let [
+            ClientboundPlay::SpawnEntity(spawn),
+            ClientboundPlay::SetEntityData(values),
+        ] = &packets[..]
+        else {
+            panic!("{packets:?}");
+        };
+        assert_eq!(spawn.kind, entity_types::SNOWBALL);
+        assert_eq!(spawn.data, 7);
+        // The motion as the wire's packed vector carries it, to its precision.
+        for (sent, made) in spawn.velocity.iter().zip(motion) {
+            assert!((sent - made).abs() < 1.0e-3, "{:?}", spawn.velocity);
+        }
+        assert_eq!(
+            values.values,
+            [(
+                8,
+                EntityDataValue::ItemStack(Some(protocol::ItemStack {
+                    item: clustine_data::items::SNOWBALL,
+                    count: 1
+                }))
+            )]
+        );
+        // The owner whose id the edge looks up is the projectile's.
+        assert_eq!(owner_of(&state), Some(EntityId(3)));
     }
 }

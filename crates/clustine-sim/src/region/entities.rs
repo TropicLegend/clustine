@@ -245,6 +245,12 @@ impl Region {
             self.take_blasted(key, damage, push, blast, output);
             return;
         }
+        // A thrown item's hit across a line is taken as one from within, by the hit
+        // entity's kind (`thrown.rs`).
+        if let Some(hit) = super::thrown::Hit::of_use(by) {
+            self.thrown_hit_here(key, hit, output);
+            return;
+        }
         // The decline of a seat granted across a line is the same for every vehicle
         // (`granted.rs`).
         if let clustine_world::EntityUse::SeatDeclined { player } = by {
@@ -284,7 +290,8 @@ impl Region {
             EntityData::Item { .. }
             | EntityData::FallingBlock { .. }
             | EntityData::PrimedTnt { .. }
-            | EntityData::ExperienceOrb { .. } => {}
+            | EntityData::ExperienceOrb { .. }
+            | EntityData::Thrown { .. } => {}
         }
         self.using_across = outer;
     }
@@ -314,6 +321,7 @@ impl Region {
             EntityData::PrimedTnt { .. } => self.tick_primed_tnt(entity, position, output),
             EntityData::Mob { .. } => self.tick_mob(entity, position, output),
             EntityData::ExperienceOrb { .. } => self.tick_orb(entity, position, output),
+            EntityData::Thrown { .. } => self.tick_thrown(entity, position, output),
         }
         self.ticking = before;
     }

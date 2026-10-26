@@ -30,7 +30,11 @@
 //! kinds (`docs/groundwork/n5-plan.md`): 3 a minecart, 4 a boat, 5 an armour stand, 6 an
 //! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, and tag 10 is N6's primed
 //! TNT (`docs/groundwork/n6-plan.md`) and tag 11 is N7's mob (`docs/groundwork/n7-plan.md`,
-//! section 11.3), each written by `put_data` in the order of its
+//! section 11.3) and tag 12 an orb of experience, and tag 13 is N7k's thrown item
+//! (`docs/groundwork/n7k-plan.md`, section 10): its stack (item i32, count i32), u8 1
+//! followed by its owner's key u64 or u8 0 where it has none, and flags u8 (bit 0 it
+//! has left its owner, bit 1 it has been shot; the others 0), each written by
+//! `put_data` in the order of its
 //! fields (a minecart's TNT fuse i32 and a hopper cart's switch u8 after its push; the
 //! TNT's fuse i16, block u16, power f32 and owner as an item's thrower); a block-attached entity's attachment is its block (3 × i32)
 //! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
@@ -99,6 +103,7 @@ const DATA_LEASH_KNOT: u8 = 9;
 const DATA_PRIMED_TNT: u8 = 10;
 const DATA_MOB: u8 = 11;
 const DATA_EXPERIENCE_ORB: u8 = 12;
+const DATA_THROWN: u8 = 13;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -114,6 +119,9 @@ const FRAME_INVISIBLE: u8 = 2;
 
 const DROP_ITEM: u8 = 1;
 const CANCEL_DROP: u8 = 2;
+
+const LEFT_OWNER: u8 = 1;
+const HAS_BEEN_SHOT: u8 = 2;
 
 const FIELD_POSITION: u8 = 1;
 const FIELD_MOTION: u8 = 2;
@@ -567,6 +575,30 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
                 }
             }
         }
+        EntityData::Thrown {
+            stack,
+            owner,
+            left_owner,
+            has_been_shot,
+        } => {
+            out.push(DATA_THROWN);
+            put_stack(out, *stack);
+            match owner {
+                None => out.push(0),
+                Some(owner) => {
+                    out.push(1);
+                    out.extend_from_slice(&owner.0.to_be_bytes());
+                }
+            }
+            let mut flags = 0;
+            if *left_owner {
+                flags |= LEFT_OWNER;
+            }
+            if *has_been_shot {
+                flags |= HAS_BEEN_SHOT;
+            }
+            out.push(flags);
+        }
     }
 }
 
@@ -792,6 +824,24 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 None
             },
         }),
+        DATA_THROWN => {
+            let stack = take_stack(input)?;
+            let owner = if take_flag(input, "a thrown item's owner flag")? {
+                Some(EntityId(input.u64()?))
+            } else {
+                None
+            };
+            let flags = input.u8()?;
+            if flags & !(LEFT_OWNER | HAS_BEEN_SHOT) != 0 {
+                return Err(FormatError::Corrupt("a thrown item's flags"));
+            }
+            Ok(EntityData::Thrown {
+                stack,
+                owner,
+                left_owner: flags & LEFT_OWNER != 0,
+                has_been_shot: flags & HAS_BEEN_SHOT != 0,
+            })
+        }
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -1271,6 +1321,60 @@ pub(crate) mod tests {
         assert_eq!(take_data(&mut Input(&out)), Ok(mob));
     }
 
+    /// A thrown item's data, byte by byte, and what is refused of one: flags beyond its
+    /// two, an owner flag that is neither 0 nor 1, and any cut.
+    #[test]
+    fn a_thrown_item_is_written_as_its_stack_owner_and_flags_and_nothing_else_is_read() {
+        let thrown = EntityData::Thrown {
+            stack: ItemStack {
+                item: 0x0102,
+                count: 1,
+            },
+            owner: Some(EntityId(0x0A0B)),
+            left_owner: true,
+            has_been_shot: true,
+        };
+        let mut out = Vec::new();
+        put_data(&mut out, &thrown);
+        assert_eq!(
+            out,
+            [
+                13, 0, 0, 1, 2, 0, 0, 0, 1, // the tag, the item and the count
+                1, 0, 0, 0, 0, 0, 0, 0x0A, 0x0B, // an owner and its key
+                3,    // left its owner and shot
+            ]
+        );
+        assert_eq!(take_data(&mut Input(&out)), Ok(thrown));
+        let unowned = EntityData::Thrown {
+            stack: ItemStack { item: 7, count: 1 },
+            owner: None,
+            left_owner: false,
+            has_been_shot: false,
+        };
+        let mut short = Vec::new();
+        put_data(&mut short, &unowned);
+        assert_eq!(short, [13, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0]);
+        assert_eq!(take_data(&mut Input(&short)), Ok(unowned));
+        let mut flags = out.clone();
+        *flags.last_mut().expect("the flags") = 4;
+        assert_eq!(
+            take_data(&mut Input(&flags)),
+            Err(FormatError::Corrupt("a thrown item's flags"))
+        );
+        let mut owner_flag = out.clone();
+        owner_flag[9] = 2;
+        assert_eq!(
+            take_data(&mut Input(&owner_flag)),
+            Err(FormatError::Corrupt("a thrown item's owner flag"))
+        );
+        for length in 0..out.len() {
+            assert!(
+                take_data(&mut Input(&out[..length])).is_err(),
+                "cut at {length}"
+            );
+        }
+    }
+
     #[test]
     fn a_whole_entity_written_under_another_chunk_is_refused() {
         let mut out = Vec::new();
@@ -1570,6 +1674,14 @@ pub(crate) mod tests {
                     health,
                     age_offset,
                     following: following.map(EntityId),
+                }
+            ),
+            any::<(i32, i32, Option<u64>, bool, bool)>().prop_map(
+                |(item, count, owner, left_owner, has_been_shot)| EntityData::Thrown {
+                    stack: ItemStack { item, count },
+                    owner: owner.map(EntityId),
+                    left_owner,
+                    has_been_shot,
                 }
             ),
         ]

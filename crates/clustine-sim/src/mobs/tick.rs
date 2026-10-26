@@ -188,6 +188,23 @@ pub(crate) enum Local {
         chest: BlockPos,
         step: crate::mobs::types::copper_golem::ChestStep,
     },
+    /// `Projectile.spawnProjectile(new Snowball(level, the mob, stack), level, stack,
+    /// s -> s.shoot(direction, power, uncertainty))`: a thrown item of `stack`, its owner
+    /// the mob, made at `at` and shot along `direction` (`region/thrown.rs`). A snow
+    /// golem's shot (`SnowGolem.performRangedAttack`) is
+    /// `crate::physics::thrown::golem_aim`'s, at `GOLEM_POWER` and `GOLEM_UNCERTAINTY`;
+    /// the shot's sound, of the golem's own random, is the golem's to make after.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "for the snow golem's shot, which step K1 brings")
+    )]
+    Shoot {
+        stack: ItemStack,
+        at: crate::physics::Vec3,
+        direction: crate::physics::Vec3,
+        power: f32,
+        uncertainty: f32,
+    },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

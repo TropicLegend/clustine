@@ -43,6 +43,7 @@ impl DamageType {
     pub(crate) const DRY_OUT: Self = Self("minecraft:dry_out");
     pub(crate) const MOB_ATTACK: Self = Self("minecraft:mob_attack");
     pub(crate) const MAGIC: Self = Self("minecraft:magic");
+    pub(crate) const THROWN: Self = Self("minecraft:thrown");
 
     /// Its id in the registry the server sends, which a damage event names it by
     /// (Clustine's sorted order: the brief's finding 18).
@@ -100,13 +101,15 @@ pub(crate) struct Causer {
 }
 
 /// A `DamageSource`: its type, what caused it and what dealt it, and the position it
-/// names, if any.
+/// names, if any; and where what dealt it is a projectile, the projectile's motion,
+/// along which its hurt pushes (`Projectile.calculateHorizontalHurtKnockbackDirection`).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DamageSource {
     pub(crate) kind: DamageType,
     pub(crate) cause: Option<Causer>,
     pub(crate) direct: Option<Causer>,
     pub(crate) position: Option<Vec3>,
+    pub(crate) projectile_motion: Option<Vec3>,
 }
 
 impl DamageSource {
@@ -117,6 +120,7 @@ impl DamageSource {
             cause: None,
             direct: None,
             position: None,
+            projectile_motion: None,
         }
     }
 
@@ -128,6 +132,19 @@ impl DamageSource {
             cause: Some(entity.clone()),
             direct: Some(entity),
             position: None,
+            projectile_motion: None,
+        }
+    }
+
+    /// `damageSources().thrown(projectile, owner)`: dealt by the projectile `direct`,
+    /// moving by `motion`, and caused by its owner, if it has one.
+    pub(crate) fn thrown(direct: Causer, motion: Vec3, owner: Option<Causer>) -> Self {
+        Self {
+            kind: DamageType::THROWN,
+            cause: owner,
+            direct: Some(direct),
+            position: None,
+            projectile_motion: Some(motion),
         }
     }
 
@@ -399,13 +416,16 @@ pub(crate) fn damage_after_absorb(damage: f32, armor: f32, toughness: f32) -> f3
     damage * (1.0 - ratio)
 }
 
-/// `dealDefaultKnockback(source, amount, blocked)`: pushed by `0.4f` away from where the
-/// source is (its position, else what dealt it's). A projectile's own direction is
-/// N9's.
+/// `dealDefaultKnockback(source, amount, blocked)`: pushed by `0.4f` along a
+/// projectile's motion where a projectile dealt it, else away from where the source is
+/// (its position, else what dealt it's).
 fn deal_default_knockback(struck: &mut Struck<'_>, source: &DamageSource) {
-    let (dx, dz) = source.source_position().map_or((0.0, 0.0), |at| {
-        (at[0] - struck.position[0], at[2] - struck.position[2])
-    });
+    let (dx, dz) = match source.projectile_motion {
+        Some(motion) => (-motion[0], -motion[2]),
+        None => source.source_position().map_or((0.0, 0.0), |at| {
+            (at[0] - struck.position[0], at[2] - struck.position[2])
+        }),
+    };
     knockback(struck, 0.400_000_005_960_464_5, dx, dz);
 }
 

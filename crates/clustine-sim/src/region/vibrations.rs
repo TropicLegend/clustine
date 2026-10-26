@@ -154,6 +154,8 @@ impl Vibration {
     pub(crate) const JUKEBOX_STOP_PLAY: Vibration = Vibration(32);
     pub(crate) const NOTE_BLOCK_PLAY: Vibration = Vibration(34);
     pub(crate) const PRIME_FUSE: Vibration = Vibration(35);
+    pub(crate) const PROJECTILE_LAND: Vibration = Vibration(36);
+    pub(crate) const PROJECTILE_SHOOT: Vibration = Vibration(37);
     pub(crate) const SCULK_SENSOR_TENDRILS_CLICKING: Vibration = Vibration(38);
     pub(crate) const SHRIEK: Vibration = Vibration(40);
     pub(crate) const STEP: Vibration = Vibration(42);
