@@ -144,7 +144,12 @@ impl Oracle {
             } else {
                 0
             },
-            block: light.block_at(*min_y, x, at.y, z),
+            // As the engine: no block light below the light section under the lowest.
+            block: if at.y < *min_y - 16 {
+                0
+            } else {
+                light.block_at(*min_y, x, at.y, z)
+            },
         })
     }
 

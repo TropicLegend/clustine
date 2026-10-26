@@ -442,8 +442,8 @@ impl Lighting {
     }
 
     /// The levels at a block as of the last run; `None` where no present chunk is, or
-    /// the chunk has not been lit since it came. Above and below the sections it keeps:
-    /// sky 15, blocks 0.
+    /// the chunk has not been lit since it came. Above the sections it keeps: sky 15,
+    /// blocks 0; below the light section under them, blocks 0.
     pub fn at(&self, at: BlockPos) -> Option<LightAt> {
         let lit = self.slot(at.chunk())?.lit.as_ref()?;
         let shape = self.shape.expect("a chunk was lit");
@@ -464,7 +464,13 @@ impl Lighting {
             } else {
                 0
             },
-            block: lit.layers[BLOCK][section].get(index),
+            // Below the light section under the lowest kept one the game keeps no block
+            // light, and reads 0 (found by the tests from the specification).
+            block: if above_bottom < -16 {
+                0
+            } else {
+                lit.layers[BLOCK][section].get(index)
+            },
         })
     }
 

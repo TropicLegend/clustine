@@ -1167,10 +1167,6 @@ fn a_read_above_the_kept_sections_is_full_sky_and_no_block_light() {
 }
 
 #[test]
-#[ignore = "finding: below the kept sections `Lighting::at` reads the lowest kept section \
-            at the same height within it, as `Light::block_at` does, so a glowstone at the \
-            world's lowest block shows 14 at y -17; the plan's 3.2 says blocks 0 there, as \
-            the game's block storage gives where a section has no data"]
 fn a_read_below_the_kept_sections_has_no_block_light() {
     // The sky below is not asked: the plan's 3.2 says 15, but the game reads the
     // lowest section with data there (n8 SkyLightSectionStorage, the plan's 2 row 4),
