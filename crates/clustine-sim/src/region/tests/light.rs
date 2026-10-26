@@ -80,3 +80,63 @@ fn light_handed_on_at_a_merge_is_adopted_at_one_unit_a_chunk() {
         assert_eq!(region.light_at(pos), whole.light_at(pos), "{pos:?}");
     }
 }
+
+/// Hides from the engine a glowstone set in the chunk at the origin, as a write that went
+/// round `Chunk::set`'s noting would: the block is there and its change is not noted.
+fn glowstone_hidden_from_the_engine(region: &mut Region) {
+    let chunk = region
+        .chunks
+        .get_mut(&ChunkPos::new(0, 0))
+        .expect("the origin's chunk is loaded");
+    chunk.set(8, -59, 8, blocks::GLOWSTONE);
+    let _ = chunk.take_light_changes();
+}
+
+/// The plan of N8, section 4.7: in the simulation's own tests every chunk a step could
+/// have changed the light of is checked, so a change the engine was not told of is
+/// found where it is lit again. Here a change noted beside it relights the chunk.
+#[test]
+#[should_panic(expected = "differs from the function's of its lit 3×3")]
+fn a_change_the_engine_was_not_told_of_is_found_by_the_check() {
+    let mut region = floor_of_25(None, Vec::new());
+    assert_eq!(region.config.light.checks, crate::LightChecks::Touched);
+    glowstone_hidden_from_the_engine(&mut region);
+    // A noted change in the same chunk: the step checks the chunk, whose light the
+    // engine relights only about the noted block.
+    region
+        .chunks
+        .get_mut(&ChunkPos::new(0, 0))
+        .expect("loaded")
+        .set(1, -59, 1, blocks::STONE);
+    idle_tick(&mut region);
+}
+
+/// The plan of N8, section 4.7: the end-to-end tests' checks of a few chunks a step come
+/// round to every lit chunk, so that a difference that lasts is found within a turn.
+#[test]
+#[should_panic(expected = "differs from the function's of its lit 3×3")]
+fn checks_in_turn_come_round_to_a_lasting_difference() {
+    let mut region = floor_of_25(None, Vec::new());
+    region.config.light.checks = crate::LightChecks::InTurn(4);
+    glowstone_hidden_from_the_engine(&mut region);
+    // 25 chunks at 4 a step: within seven steps every one is checked.
+    for _ in 0..7 {
+        idle_tick(&mut region);
+    }
+}
+
+/// The plan of N8, section 4.7: light that agrees passes the checks in turn, step after
+/// step, round and round the region's chunks.
+#[test]
+fn light_that_agrees_passes_the_checks_in_turn() {
+    let mut region = floor_of_25(None, Vec::new());
+    region.config.light.checks = crate::LightChecks::InTurn(4);
+    region
+        .chunks
+        .get_mut(&ChunkPos::new(0, 0))
+        .expect("loaded")
+        .set(8, -59, 8, blocks::GLOWSTONE);
+    for _ in 0..20 {
+        idle_tick(&mut region);
+    }
+}

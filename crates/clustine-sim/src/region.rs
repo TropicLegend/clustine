@@ -101,7 +101,7 @@ mod vibrations;
 mod water_creatures;
 
 pub use clustine_light::engine::Kept as KeptLight;
-pub use light::LightSettings;
+pub use light::{LightChecks, LightSettings};
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
 /// What a region is created with, and restored with: what it is given rather than what

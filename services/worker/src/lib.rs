@@ -1062,10 +1062,41 @@ impl RegionSettings {
             return_after: self.return_after,
             lowest_y: self.lowest_y,
             seed: world,
-            // A server's budget for lighting what it loads (ADR-0029).
-            light: clustine_sim::LightSettings::SERVER,
+            // A server's budget for lighting what it loads (ADR-0029), and the checks the
+            // end-to-end tests ask for.
+            light: clustine_sim::LightSettings {
+                checks: light_checks(),
+                ..clustine_sim::LightSettings::SERVER
+            },
             features: features_of(seed),
         }
+    }
+}
+
+/// How many chunks a step the regions of this process check their light in, unless the
+/// environment says ([`check_light_in_turn`]); 0 for none, as on a server.
+static LIGHT_CHECKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Has the regions this process opens from now on check this many lit chunks a step
+/// against the whole-chunk function (`docs/groundwork/n8-plan.md`, section 4.7), where
+/// `CLUSTINE_LIGHT_ORACLE` does not say otherwise: for the end-to-end tests that run a
+/// server inside their own process, whose environment they cannot safely change.
+pub fn check_light_in_turn(chunks: u32) {
+    LIGHT_CHECKS.store(chunks, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How much of their light the regions check after each step: as many chunks a step as
+/// `CLUSTINE_LIGHT_ORACLE` names (the end-to-end tests' harness sets it for the processes
+/// it starts), else as [`check_light_in_turn`] last said, else none. A value that is no
+/// number is taken as unset, since a server is not to stop for its tests' setting.
+fn light_checks() -> clustine_sim::LightChecks {
+    let count = std::env::var("CLUSTINE_LIGHT_ORACLE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or_else(|| LIGHT_CHECKS.load(std::sync::atomic::Ordering::Relaxed));
+    match count {
+        0 => clustine_sim::LightChecks::Off,
+        count => clustine_sim::LightChecks::InTurn(count),
     }
 }
 

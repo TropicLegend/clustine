@@ -100,6 +100,7 @@ impl Cluster {
         Command::new(env!("CARGO_BIN_EXE_clustine"))
             .args(arguments)
             .env("NO_COLOR", "1")
+            .env("CLUSTINE_LIGHT_ORACLE", super::light_oracle().to_string())
             .stdout(Stdio::null())
             .stderr(log)
             .kill_on_drop(true)

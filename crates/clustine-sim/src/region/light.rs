@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 
+use clustine_light::Around;
 use clustine_light::engine::{Chunks, Kept, LightAt, Lighting};
 use clustine_world::{BlockPos, Chunk, ChunkPos};
 
@@ -20,19 +21,58 @@ use super::Region;
 pub(crate) const WHOLE: u32 = 8;
 pub(crate) const ADOPTED: u32 = 1;
 
-/// How much light a step may take on: a budget of units, or none at all. The region's
-/// configuration says which (a server's has a budget; a test's has none, so that a chunk
-/// it loads ticks in the tick it comes, as before).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// How much light a step may take on: a budget of units, or none at all; and how much of
+/// it the region checks. The region's configuration says which (a server's has a budget;
+/// a test's has none, so that a chunk it loads ticks in the tick it comes, as before).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightSettings {
     /// The units of waiting chunks a step takes, `None` for all of them.
     pub budget: Option<u32>,
+    /// How much of the light the region checks after each step.
+    pub checks: LightChecks,
 }
 
 impl LightSettings {
     /// A server's: 256 units a step, 32 chunks lit whole (the plan's 4.5, the lead's
-    /// figure until the measurements of N8e set it).
-    pub const SERVER: LightSettings = LightSettings { budget: Some(256) };
+    /// figure until the measurements of N8e set it), and no checks.
+    pub const SERVER: LightSettings = LightSettings {
+        budget: Some(256),
+        checks: LightChecks::Off,
+    };
+}
+
+/// A test's: no budget, and in the simulation's own tests every chunk a step touched
+/// checked (the plan's 4.7).
+impl Default for LightSettings {
+    fn default() -> Self {
+        Self {
+            budget: None,
+            checks: if cfg!(test) {
+                LightChecks::Touched
+            } else {
+                LightChecks::Off
+            },
+        }
+    }
+}
+
+/// How much of its light a region compares, after each step, with the light
+/// `clustine_light::light` gives a lit chunk from its lit 3×3, panicking at a difference
+/// (the plan's 4.7). A setting of the configuration and not a cargo feature, which would
+/// unify into the workspace's whole test build; and a difference left by a missed change
+/// lasts until something lights that place again, so a check that comes round to it
+/// later still finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightChecks {
+    /// None, as on a server.
+    Off,
+    /// Every chunk the step lit whole, adopted, replaced or could have changed the light
+    /// of: the simulation's own tests, whose worlds are small.
+    Touched,
+    /// This many lit chunks a step, taken in turn through the region's in ascending
+    /// order from where the last step stopped: the end-to-end tests'
+    /// (`CLUSTINE_LIGHT_ORACLE`), so that the whole check grows by little.
+    InTurn(u32),
 }
 
 /// The region's light: the engine, and the chunks that wait for it. Equal always and
@@ -47,6 +87,11 @@ pub(crate) struct RegionLight {
     /// The light some waiting chunks came with from a merge or a split, adopted when
     /// their turn comes.
     kept: std::collections::BTreeMap<ChunkPos, Kept>,
+    /// The chunks whose light the last step could have changed, where every one is
+    /// checked ([`LightChecks::Touched`]).
+    touched: BTreeSet<ChunkPos>,
+    /// The last chunk checked in turn ([`LightChecks::InTurn`]).
+    checked: Option<ChunkPos>,
 }
 
 impl Default for RegionLight {
@@ -56,6 +101,8 @@ impl Default for RegionLight {
             known: BTreeSet::new(),
             waiting: BTreeSet::new(),
             kept: std::collections::BTreeMap::new(),
+            touched: BTreeSet::new(),
+            checked: None,
         }
     }
 }
@@ -110,6 +157,7 @@ impl Region {
         self.sync_light();
         self.take_waiting();
         self.run_light();
+        self.check_light();
     }
 
     /// The light of the region's loaded chunks to hand on with them at a merge or a
@@ -135,11 +183,15 @@ impl Region {
             .chain(self.copies.keys())
             .copied()
             .collect();
+        let touching = self.config.light.checks == LightChecks::Touched;
         let light = &mut self.light;
         let gone: Vec<ChunkPos> = light.known.difference(&present).copied().collect();
         for chunk in gone {
             light.known.remove(&chunk);
             light.engine.left(chunk);
+            if touching {
+                light.touched.extend(around(chunk));
+            }
         }
         light.waiting.retain(|chunk| present.contains(chunk));
         for at in &present {
@@ -159,7 +211,15 @@ impl Region {
                 // copy's new base, a loaded chunk become a copy or the reverse), lit in
                 // this run outside the budget so that no ticking chunk beside it stops.
                 light.engine.arrived(*at);
+                if touching {
+                    light.touched.extend(around(*at));
+                    light.touched.insert(*at);
+                }
             } else {
+                if touching && !changes.is_empty() {
+                    light.touched.extend(around(*at));
+                    light.touched.insert(*at);
+                }
                 for changed in changes {
                     light.engine.changed(BlockPos::new(
                         at.x * 16 + i32::from(changed.x),
@@ -204,6 +264,10 @@ impl Region {
             }
             light.waiting.remove(&chunk);
             light.known.insert(chunk);
+            if self.config.light.checks == LightChecks::Touched {
+                light.touched.extend(around(chunk));
+                light.touched.insert(chunk);
+            }
             match kept {
                 Some(kept) => light.engine.adopt(chunk, kept),
                 None => light.engine.arrived(chunk),
@@ -219,6 +283,69 @@ impl Region {
             chunks: &self.chunks,
             copies: &self.copies,
         });
+    }
+
+    /// The check of the plan's 4.7: each chosen chunk's light, as the engine holds it,
+    /// equal to `clustine_light::light` of the chunk with those of its neighbours the
+    /// engine has (the neighbours its light can come from), or a panic that names it.
+    fn check_light(&mut self) {
+        let chosen: Vec<ChunkPos> = match self.config.light.checks {
+            LightChecks::Off => return,
+            LightChecks::Touched => std::mem::take(&mut self.light.touched)
+                .into_iter()
+                .collect(),
+            LightChecks::InTurn(count) => {
+                let lit: Vec<ChunkPos> = self
+                    .light
+                    .known
+                    .iter()
+                    .copied()
+                    .filter(|at| self.light.engine.is_lit(*at))
+                    .collect();
+                let from = self.light.checked;
+                let start = lit
+                    .iter()
+                    .position(|at| from.is_none_or(|from| *at > from))
+                    .unwrap_or(0);
+                let chosen: Vec<ChunkPos> = lit
+                    .iter()
+                    .cycle()
+                    .skip(start)
+                    .take((count as usize).min(lit.len()))
+                    .copied()
+                    .collect();
+                self.light.checked = chosen.last().copied().or(from);
+                chosen
+            }
+        };
+        let present = Present {
+            chunks: &self.chunks,
+            copies: &self.copies,
+        };
+        let engine = &self.light.engine;
+        for at in chosen {
+            if !engine.is_lit(at) {
+                continue;
+            }
+            let Some(centre) = present.chunk(at) else {
+                continue;
+            };
+            let neighbours =
+                around(at).map(|near| engine.has(near).then(|| present.chunk(near)).flatten());
+            let expected = clustine_light::light(&Around {
+                centre,
+                neighbours,
+                sky: true,
+            });
+            let made = engine.light(at, &present);
+            assert!(
+                made.as_ref() == Some(&expected),
+                "the light of {at:?} differs from the function's of its lit 3×3 after the \
+                 light step of tick {} (the plan of N8, 4.7): the engine was not told of a \
+                 change, or lit it wrongly",
+                self.tick
+            );
+        }
     }
 
     /// Whether the chunk at `position` and its eight neighbours are lit, as a chunk must
@@ -276,4 +403,19 @@ impl Region {
     pub(crate) fn block_brightness(&self, pos: BlockPos) -> Option<u8> {
         Some(self.light_at(pos)?.block)
     }
+}
+
+/// The eight chunks around `at`, in the order of `Around::neighbours` (north-west first,
+/// row by row, without the centre).
+fn around(at: ChunkPos) -> [ChunkPos; 8] {
+    [
+        ChunkPos::new(at.x - 1, at.z - 1),
+        ChunkPos::new(at.x, at.z - 1),
+        ChunkPos::new(at.x + 1, at.z - 1),
+        ChunkPos::new(at.x - 1, at.z),
+        ChunkPos::new(at.x + 1, at.z),
+        ChunkPos::new(at.x - 1, at.z + 1),
+        ChunkPos::new(at.x, at.z + 1),
+        ChunkPos::new(at.x + 1, at.z + 1),
+    ]
 }
