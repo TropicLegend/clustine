@@ -366,36 +366,47 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
     }
 }
 
+/// A mob's synced value as the protocol writes it.
+fn data_value(value: DataShown) -> EntityDataValue {
+    match value {
+        DataShown::Byte(byte) => EntityDataValue::Byte(byte),
+        DataShown::Int(int) => EntityDataValue::Int(int),
+        DataShown::Float(float) => EntityDataValue::Float(float),
+        DataShown::Boolean(boolean) => EntityDataValue::Boolean(boolean),
+        DataShown::Long(long) => EntityDataValue::Long(long),
+        // An owner is a UUID, the same in every region: nothing to translate.
+        DataShown::OptionalUuid(uuid) => {
+            EntityDataValue::OptionalLivingEntityReference(uuid.map(uuid::Uuid::from_u128))
+        }
+        DataShown::Pose(pose) => EntityDataValue::Pose(pose),
+        DataShown::Holder(holder, id) => EntityDataValue::Registered {
+            serializer: holder_serializer(holder),
+            id,
+        },
+        DataShown::Serialised(serialiser, ordinal) => EntityDataValue::Registered {
+            serializer: enumeration_serializer(serialiser),
+            id: ordinal,
+        },
+        // The type's and profession's ids are the game's built-in
+        // registries', the same on every client: nothing to translate.
+        DataShown::VillagerData {
+            kind,
+            profession,
+            level,
+        } => EntityDataValue::VillagerData {
+            kind,
+            profession,
+            level,
+        },
+    }
+}
+
 pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
     // A mob's are read from its record by the sim, which knows its parts.
     if let EntityData::Mob { .. } = data {
         let values = clustine_sim::shown::mob_values(kind, data).into_iter();
         return values
-            .map(|(index, value, default)| {
-                let value = match value {
-                    DataShown::Byte(byte) => EntityDataValue::Byte(byte),
-                    DataShown::Int(int) => EntityDataValue::Int(int),
-                    DataShown::Float(float) => EntityDataValue::Float(float),
-                    DataShown::Boolean(boolean) => EntityDataValue::Boolean(boolean),
-                    DataShown::Long(long) => EntityDataValue::Long(long),
-                    // An owner is a UUID, the same in every region: nothing to translate.
-                    DataShown::OptionalUuid(uuid) => {
-                        EntityDataValue::OptionalLivingEntityReference(
-                            uuid.map(uuid::Uuid::from_u128),
-                        )
-                    }
-                    DataShown::Pose(pose) => EntityDataValue::Pose(pose),
-                    DataShown::Holder(holder, id) => EntityDataValue::Registered {
-                        serializer: holder_serializer(holder),
-                        id,
-                    },
-                    DataShown::Serialised(serialiser, ordinal) => EntityDataValue::Registered {
-                        serializer: enumeration_serializer(serialiser),
-                        id: ordinal,
-                    },
-                };
-                (index, value, default)
-            })
+            .map(|(index, value, default)| (index, data_value(value), default))
             .collect();
     }
     let EntityData::ArmorStand {
@@ -1260,6 +1271,23 @@ mod tests {
     use super::*;
 
     const ID: i32 = 1;
+
+    #[test]
+    fn a_villager_s_data_is_written_with_its_registry_ids_and_level_as_they_are() {
+        use clustine_data::villagers::{professions, types};
+        assert_eq!(
+            data_value(DataShown::VillagerData {
+                kind: types::SWAMP,
+                profession: professions::LIBRARIAN,
+                level: 3,
+            }),
+            EntityDataValue::VillagerData {
+                kind: 5,
+                profession: 9,
+                level: 3,
+            }
+        );
+    }
 
     fn stack(count: i32) -> EntityData {
         EntityData::Item {

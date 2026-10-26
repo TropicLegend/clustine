@@ -326,13 +326,18 @@ impl Names<'_> {
     }
 }
 
-/// The tables the farm animals' own code names (`docs/groundwork/n7-brief.md`, section
-/// 4): a chicken's laying (`Chicken.aiStep`'s gift), a sheep's and a mooshroom's
-/// shearing; each picks a nested table by the animal's variant or colour.
-pub const ANIMALS: [&str; 3] = [
+/// The tables the mobs' own code names rather than their type: a chicken's laying
+/// (`Chicken.aiStep`'s gift), a sheep's and a mooshroom's shearing
+/// (`docs/groundwork/n7-brief.md`, section 4; each picks a nested table by the animal's
+/// variant or colour), and a bogged's and a snow golem's shearing
+/// (`docs/groundwork/n7k-brief.md`, sections 1.4 and 11.2: two rolls of a brown or red
+/// mushroom, and the carved pumpkin).
+pub const ANIMALS: [&str; 5] = [
     "gameplay/chicken_lay",
+    "shearing/bogged",
     "shearing/mooshroom",
     "shearing/sheep",
+    "shearing/snow_golem",
 ];
 
 /// Reads every file of `directory` (the block loot tables) with the predicates of
@@ -398,7 +403,7 @@ fn tables_under(directory: &Path) -> Result<Vec<String>> {
 
 impl Compiled {
     /// Adds the entity tables of `loot_tables` (the directory `loot_table`), those of
-    /// `entities` and below and the ones the animals' own code names ([`ANIMALS`]),
+    /// `entities` and below and the ones the mobs' own code names ([`ANIMALS`]),
     /// then every table they name that is not there yet; and sorts the tables by name.
     pub fn add_entities(
         &mut self,
@@ -1684,6 +1689,7 @@ mod tests {
             "minecraft:egg",
             "minecraft:blue_egg",
             "minecraft:red_mushroom",
+            "minecraft:brown_mushroom",
         ]
         .map(str::to_owned)
         .to_vec()
@@ -2060,6 +2066,59 @@ mod tests {
     const RED_MUSHROOMS: &str = r#"{"type": "minecraft:shearing", "pools": [{"entries":
       [{"type": "minecraft:item", "name": "minecraft:red_mushroom"}], "rolls": 5}],
       "random_sequence": "minecraft:shearing/mooshroom/red"}"#;
+
+    /// `shearing/bogged` as 26.3's data has it.
+    const BOGGED: &str = r#"{"type": "minecraft:shearing", "pools": [{"entries": [
+      {"type": "minecraft:item", "modifier": {"type": "minecraft:set_count", "count": 1},
+       "name": "minecraft:brown_mushroom"},
+      {"type": "minecraft:item", "modifier": {"type": "minecraft:set_count", "count": 1},
+       "name": "minecraft:red_mushroom"}], "rolls": 2}],
+      "random_sequence": "minecraft:shearing/bogged"}"#;
+
+    /// A bogged's shearing: one pool of two rolls, a brown or a red mushroom, each with
+    /// one modifier, the same count of 1, numbered once.
+    #[test]
+    fn a_bogged_s_shearing_is_compiled_as_two_rolls_of_a_mushroom() {
+        let compiled = compile_entities(&[("minecraft:shearing/bogged", BOGGED)]).unwrap();
+        let [table] = compiled.tables.as_slice() else {
+            panic!("one table");
+        };
+        let [pool] = table.pools.as_slice() else {
+            panic!("one pool");
+        };
+        assert_eq!(pool.rolls, IntProvider::Constant(2));
+        let count = Modifier {
+            kind: ModifierKind::SetCount {
+                count: IntProvider::Constant(1),
+                add: false,
+            },
+            condition: None,
+        };
+        assert_eq!(compiled.modifiers, [count]);
+        let brown = items()
+            .iter()
+            .position(|name| name == "minecraft:brown_mushroom");
+        let red = items()
+            .iter()
+            .position(|name| name == "minecraft:red_mushroom");
+        assert_eq!(
+            pool.entries,
+            [
+                Entry::Item {
+                    item: brown.unwrap(),
+                    weight: 1,
+                    condition: None,
+                    modifiers: vec![0],
+                },
+                Entry::Item {
+                    item: red.unwrap(),
+                    weight: 1,
+                    condition: None,
+                    modifiers: vec![0],
+                },
+            ]
+        );
+    }
 
     /// The tables of the farm animals' own code: a gift and a shearing, which pick by a
     /// chicken's and a mooshroom's variant, and a shearing's table of its colour.

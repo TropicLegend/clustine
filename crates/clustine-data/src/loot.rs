@@ -509,12 +509,15 @@ mod tests {
             }
         }
         // The blocks' 1201, the entities' 109 and the fish of a guardian's; a chicken's
-        // laying, and the mooshroom's and the sheep's shearing with their colours' (21).
-        assert_eq!(tables().len(), 1311 + 21);
+        // laying, and the mooshroom's and the sheep's shearing with their colours' (21);
+        // the bogged's and the snow golem's shearing (2).
+        assert_eq!(tables().len(), 1311 + 21 + 2);
         for name in [
             "minecraft:gameplay/chicken_lay",
+            "minecraft:shearing/bogged",
             "minecraft:shearing/mooshroom",
             "minecraft:shearing/sheep",
+            "minecraft:shearing/snow_golem",
         ] {
             assert!(table_by_name(name).is_some(), "{name}");
         }
@@ -594,6 +597,71 @@ mod tests {
         );
         assert_eq!(smelted(items::BEEF), Some(items::COOKED_BEEF));
         assert_eq!(smelted(items::LEATHER), None);
+    }
+
+    /// A bogged's shearing (`loot_table/shearing/bogged.json`): one pool of two rolls,
+    /// each a brown or a red mushroom of weight 1, set to a count of 1.
+    #[test]
+    fn a_bogged_s_shearing_rolls_twice_for_a_brown_or_a_red_mushroom() {
+        let bogged = table_by_name("minecraft:shearing/bogged").unwrap();
+        assert!(bogged.modifiers.is_empty());
+        let [pool] = bogged.pools else {
+            panic!("one pool: {:?}", bogged.pools);
+        };
+        assert_eq!(pool.rolls, IntProvider::Constant(2));
+        assert_eq!(pool.condition, None);
+        assert!(pool.modifiers.is_empty());
+        assert_eq!(pool.entries.len(), 2);
+        for (entry, expected) in pool
+            .entries
+            .iter()
+            .zip([items::BROWN_MUSHROOM, items::RED_MUSHROOM])
+        {
+            let LootEntry::Item {
+                item,
+                weight: 1,
+                condition: None,
+                modifiers: [count],
+            } = entry
+            else {
+                panic!("a mushroom of weight 1 with its count: {entry:?}");
+            };
+            assert_eq!(i32::from(*item), expected);
+            assert_eq!(
+                modifier(*count),
+                &LootModifier::SetCount {
+                    count: IntProvider::Constant(1),
+                    add: false,
+                    condition: None
+                }
+            );
+        }
+    }
+
+    /// A snow golem's shearing (`loot_table/shearing/snow_golem.json`): one roll of the
+    /// carved pumpkin, with nothing more.
+    #[test]
+    fn a_snow_golem_s_shearing_gives_its_carved_pumpkin() {
+        let golem = table_by_name("minecraft:shearing/snow_golem").unwrap();
+        assert!(golem.modifiers.is_empty());
+        let [pool] = golem.pools else {
+            panic!("one pool: {:?}", golem.pools);
+        };
+        assert_eq!(pool.rolls, IntProvider::Constant(1));
+        assert_eq!(pool.condition, None);
+        assert!(pool.modifiers.is_empty());
+        let [
+            LootEntry::Item {
+                item,
+                weight: 1,
+                condition: None,
+                modifiers: [],
+            },
+        ] = pool.entries
+        else {
+            panic!("the pumpkin alone: {:?}", pool.entries);
+        };
+        assert_eq!(i32::from(*item), items::CARVED_PUMPKIN);
     }
 
     /// A sheep's wool of its colour where it is not sheared, by a nested table; a

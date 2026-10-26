@@ -3254,6 +3254,17 @@ pub enum EntityDataValue {
     /// enumeration (`COPPER_GOLEM_STATE`, `WEATHERING_COPPER_STATE` and the like) write
     /// a VarInt of its ordinal, and are carried so too.
     Registered { serializer: i32, id: i32 },
+    /// `EntityDataSerializers.VILLAGER_DATA`: a villager's or a zombie villager's type,
+    /// profession and level. `VillagerData.STREAM_CODEC` (VillagerData.txt 265–275) is
+    /// `StreamCodec.composite` of `ByteBufCodecs.holderRegistry` of the type's registry,
+    /// the same of the profession's, and `ByteBufCodecs.VAR_INT`: three VarInts, the
+    /// type's and the profession's ids in their built-in registries (no one added, as
+    /// for a farm animal's variant), then the level.
+    VillagerData {
+        kind: i32,
+        profession: i32,
+        level: i32,
+    },
 }
 
 /// The serializer ids of the game's `EntityDataSerializers`, in the order it registers
@@ -3272,6 +3283,8 @@ pub mod entity_data_serializer {
     pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    /// The nineteenth registered, after `PARTICLES` (EntityDataSerializers.txt 317).
+    pub const VILLAGER_DATA: i32 = 18;
     pub const POSE: i32 = 20;
     pub const CAT_VARIANT: i32 = 21;
     pub const CAT_SOUND_VARIANT: i32 = 22;
@@ -3435,6 +3448,16 @@ impl Encode for SetEntityData {
                     w.put_var_int(*serializer);
                     w.put_var_int(*id);
                 }
+                EntityDataValue::VillagerData {
+                    kind,
+                    profession,
+                    level,
+                } => {
+                    w.put_var_int(entity_data_serializer::VILLAGER_DATA);
+                    w.put_var_int(*kind);
+                    w.put_var_int(*profession);
+                    w.put_var_int(*level);
+                }
             }
         }
         w.put_u8(ENTITY_DATA_END);
@@ -3484,6 +3507,11 @@ impl Decode for SetEntityData {
                     holder => EntityDataValue::PaintingVariant(holder - 1),
                 },
                 entity_data_serializer::DYE_COLOR => EntityDataValue::DyeColor(r.var_int()?),
+                entity_data_serializer::VILLAGER_DATA => EntityDataValue::VillagerData {
+                    kind: r.var_int()?,
+                    profession: r.var_int()?,
+                    level: r.var_int()?,
+                },
                 serializer @ (entity_data_serializer::COW_VARIANT
                 | entity_data_serializer::COW_SOUND_VARIANT
                 | entity_data_serializer::CAT_VARIANT
@@ -5551,6 +5579,69 @@ mod tests {
         assert_eq!(
             crate::packets::encode(&swing),
             [SwingAnimation::ID as u8, 0xAC, 0x02, 0, 2, 19]
+        );
+    }
+
+    /// `VILLAGER_DATA` (`docs/groundwork/n7k-brief.md`, section 0.15): serializer 18,
+    /// then `VillagerData.STREAM_CODEC`'s three VarInts in its order, the type's id, the
+    /// profession's id and the level.
+    #[test]
+    fn a_villager_s_data_is_written_as_the_game_writes_it_and_read_back() {
+        assert_eq!(entity_data_serializer::VILLAGER_DATA, 18);
+        // A snow villager (type 4), a weaponsmith (profession 14), of level 1, at the
+        // villager's index 19: the packet's id, the entity, the index, the serializer,
+        // the type, the profession, the level, the end.
+        let snow_weaponsmith = SetEntityData {
+            entity_id: 1,
+            values: vec![(
+                19,
+                EntityDataValue::VillagerData {
+                    kind: 4,
+                    profession: 14,
+                    level: 1,
+                },
+            )],
+        };
+        let bytes = crate::packets::encode(&snow_weaponsmith);
+        assert_eq!(bytes, [0x65, 1, 19, 18, 4, 14, 1, 0xFF]);
+        assert_eq!(
+            ClientboundPlay::decode(&bytes),
+            Ok(ClientboundPlay::SetEntityData(snow_weaponsmith))
+        );
+        // The level is a VarInt as the ids are, so one past 127 takes two bytes; the
+        // default villager (plains 2, none 0, level 1) at a zombie villager's index 20.
+        let values = vec![
+            (
+                20,
+                EntityDataValue::VillagerData {
+                    kind: 2,
+                    profession: 0,
+                    level: 1,
+                },
+            ),
+            (
+                19,
+                EntityDataValue::VillagerData {
+                    kind: 6,
+                    profession: 11,
+                    level: 200,
+                },
+            ),
+        ];
+        let packet = SetEntityData {
+            entity_id: 300,
+            values,
+        };
+        let bytes = crate::packets::encode(&packet);
+        assert_eq!(
+            bytes,
+            [
+                0x65, 0xAC, 0x02, 20, 18, 2, 0, 1, 19, 18, 6, 11, 0xC8, 0x01, 0xFF
+            ]
+        );
+        assert_eq!(
+            ClientboundPlay::decode(&bytes),
+            Ok(ClientboundPlay::SetEntityData(packet))
         );
     }
 

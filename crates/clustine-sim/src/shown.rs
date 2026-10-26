@@ -32,6 +32,14 @@ pub enum DataShown {
     /// (`ByteBufCodecs.idMapper` of the enumeration, a VarInt): a copper golem's state
     /// and its weathering.
     Serialised(Serialiser, i32),
+    /// A villager's or a zombie villager's data (`EntityDataSerializers.VILLAGER_DATA`):
+    /// its type and profession by their registry ids
+    /// ([`clustine_data::villagers`]) and its level, 1 to 5.
+    VillagerData {
+        kind: i32,
+        profession: i32,
+        level: i32,
+    },
 }
 
 /// The serializer of a [`DataShown::Serialised`] value: the enumerations the game syncs

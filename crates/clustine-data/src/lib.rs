@@ -19,6 +19,7 @@ pub mod loot;
 pub mod packed;
 pub mod spawning;
 pub mod spawns;
+pub mod villagers;
 
 use serde::{Deserialize, Serialize};
 
