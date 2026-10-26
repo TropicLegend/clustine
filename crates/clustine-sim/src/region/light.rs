@@ -259,4 +259,21 @@ impl Region {
         let light = self.light_at(pos)?;
         Some((i32::from(light.sky) - darken).max(0))
     }
+
+    /// `getMaxLocalRawBrightness(pos)`: [`Self::raw_brightness`] darkened by the night as
+    /// the tick has it, and 15 beyond the world's border of ±30,000,000 (n7 LevelReader
+    /// 297–330). Grass reads it, so that it spreads by day or by a torch.
+    pub(crate) fn max_local_raw_brightness(&self, pos: BlockPos) -> Option<u8> {
+        const BORDER: i32 = 30_000_000;
+        if !(-BORDER..BORDER).contains(&pos.x) || !(-BORDER..BORDER).contains(&pos.z) {
+            return Some(15);
+        }
+        self.raw_brightness(pos, crate::time::sky_darken(self.clock.day))
+    }
+
+    /// `getBrightness(LightLayer.BLOCK, pos)`: the blocks' light alone, which melts snow
+    /// and ice; the sun melts nothing.
+    pub(crate) fn block_brightness(&self, pos: BlockPos) -> Option<u8> {
+        Some(self.light_at(pos)?.block)
+    }
 }

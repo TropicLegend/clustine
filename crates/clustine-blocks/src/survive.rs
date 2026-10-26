@@ -127,9 +127,10 @@ fn class_rule(class: BlockClass, rules: Rules) -> Option<Survival> {
         C::PitcherCropBlock => S::DoublePlant("minecraft:supports_crops"),
         C::SmallDripleafBlock => S::SmallDripleaf,
         C::DoublePlantBlock => S::DoublePlant("minecraft:supports_vegetation"),
-        // A stem attached to its fruit comes from no item; placing never ported its
-        // rule, and generation takes the plant's it is made from.
-        C::AttachedStemBlock if placing => S::NotPorted,
+        // A stem attached to its fruit stays on its stem's ground (`AttachedStemBlock`'s
+        // `supportBlocks`), which the simulation's shape updates ask; it comes from no
+        // item, so no player places it. Generation takes the plant's it is made from.
+        C::AttachedStemBlock if placing => S::OnTagByName,
         C::VegetationBlock => S::OnTag("minecraft:supports_vegetation"),
         C::FrogspawnBlock => S::Frogspawn,
         C::BambooSaplingBlock | C::BambooStalkBlock => S::OnTag("minecraft:supports_bamboo"),
@@ -176,6 +177,13 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
     let Some(rule) = survival_rule(state, view.rules()) else {
         return true;
     };
+    // `CropBlock.canSurvive` and the lower half of the pitcher crop's ask for light of 8
+    // or more first (`hasSufficientLight`), so that no seed is planted in the dark and a
+    // crop whose room went dark breaks at its next shape update. Where the caller has no
+    // light it is not judged.
+    if needs_light_to_stay(state) && view.raw_brightness(pos).is_some_and(|light| light < 8) {
+        return false;
+    }
     let below_pos = relative(pos, Face::Down);
     let below = view.block(below_pos);
     match rule {
@@ -368,6 +376,14 @@ pub fn can_survive<V: BlockView + ?Sized>(state: BlockState, pos: BlockPos, view
     }
 }
 
+/// Whether `state` stays only in light of 8 or more: a crop (`CropBlock` and its kin by
+/// class) or the lower half of the pitcher crop (`PitcherCropBlock.isLower`).
+fn needs_light_to_stay(state: BlockState) -> bool {
+    crate::data::is_class(state, BlockClass::CropBlock)
+        || crate::data::is_class(state, BlockClass::PitcherCropBlock)
+            && state.property("half") == Some("lower")
+}
+
 /// Whether `state` offers `support` on its side `face`.
 pub fn sturdy(state: BlockState, face: Face, support: SupportType) -> bool {
     state.props().is_face_sturdy(face, support)
@@ -440,8 +456,10 @@ fn still_water(here: BlockState) -> bool {
 fn tag_by_name(state: BlockState) -> Option<&'static str> {
     let name = state.block()?.name;
     Some(match name {
-        "minecraft:pumpkin_stem" => "minecraft:supports_pumpkin_stem",
-        "minecraft:melon_stem" => "minecraft:supports_melon_stem",
+        "minecraft:pumpkin_stem" | "minecraft:attached_pumpkin_stem" => {
+            "minecraft:supports_pumpkin_stem"
+        }
+        "minecraft:melon_stem" | "minecraft:attached_melon_stem" => "minecraft:supports_melon_stem",
         "minecraft:crimson_fungus" => "minecraft:supports_crimson_fungus",
         "minecraft:warped_fungus" => "minecraft:supports_warped_fungus",
         "minecraft:crimson_roots" => "minecraft:supports_crimson_roots",

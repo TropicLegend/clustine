@@ -56,6 +56,7 @@ mod flood;
 
 use clustine_world::{Chunk, Light, SECTION_SIZE, SectionLight};
 
+pub use faces::light_dampening_into;
 pub use flood::Scratch;
 
 /// The version of the rules in this crate. Raised whenever any chunk's light would come

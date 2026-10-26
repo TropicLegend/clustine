@@ -166,7 +166,7 @@ fn every_named_class_and_every_class_made_from_one_finds_its_rule() {
             C::PitcherCropBlock,
             Survival::DoublePlant("minecraft:supports_crops"),
         ),
-        (C::AttachedStemBlock, Survival::NotPorted),
+        (C::AttachedStemBlock, Survival::OnTagByName),
         (
             C::FlowerBlock,
             Survival::OnTag("minecraft:supports_vegetation"),

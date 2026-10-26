@@ -3555,6 +3555,7 @@ mod tests {
     mod fliers;
     mod fluids;
     mod golems;
+    mod growth;
     mod hanging;
     mod highland;
     mod hoppers;
@@ -3568,6 +3569,7 @@ mod tests {
     mod lends;
     mod lends_by_the_record;
     mod light;
+    mod melting;
     mod menus;
     mod minecarts;
     mod mob_bodies;

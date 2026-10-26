@@ -10,8 +10,9 @@
 //! stays a function of the region and its inputs; the stream then goes on to the
 //! rules of the blocks that tick, in the order they do.
 //!
-//! What needs light (crops, saplings, grass, mushrooms, bamboo, ice and snow melting)
-//! does nothing yet: the simulation has no light (section 8 of the record).
+//! What needs light (crops, grass, mushrooms, bamboo, ice and snow melting) reads the
+//! region's (`growth.rs`, `melting.rs`; `docs/adr/0029-light-in-the-simulation.md`);
+//! saplings grow with N8f.
 
 mod fire;
 mod growth;
@@ -254,8 +255,8 @@ impl Region {
     }
 
     /// `BlockState.randomTick` and `FluidState.randomTick` of what stands at `pos`.
-    /// Each rule draws what it needs from `random`. A block whose rule needs light, or
-    /// is not ported, does nothing.
+    /// Each rule draws what it needs from `random`. A block whose rule is not ported
+    /// does nothing.
     fn random_tick(
         &mut self,
         pos: BlockPos,

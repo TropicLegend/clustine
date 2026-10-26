@@ -44,6 +44,19 @@ pub(crate) fn stop_light(from: BlockState, to: BlockState, towards: Face) -> boo
     covered([0.0, 0.0, 1.0, 1.0], near, far, 0)
 }
 
+/// `LightEngine.getLightDampeningInto(from, to, towards, dampening)`: what light loses
+/// on its way out of `from` through `towards` into `to`, whose own dampening is
+/// `dampening`: more than any light has (16) where the two faces between them close the
+/// way, `dampening` otherwise. A grass block asks it of the block above
+/// (`SpreadingSnowyBlock.canStayAlive`): a bottom slab kills it, a top slab does not.
+pub fn light_dampening_into(from: BlockState, to: BlockState, towards: Face, dampening: u8) -> u8 {
+    if stop_light(from, to, towards) {
+        16
+    } else {
+        dampening
+    }
+}
+
 /// Whether `area` (`[min u, min v, max u, max v]`) lies within the union of the
 /// rectangles of the two shapes, of which the first `skip` are known not to touch it.
 ///
