@@ -1209,6 +1209,7 @@ impl Region {
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
+        self.interactions_at_line();
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
         self.entity_draws.clear();

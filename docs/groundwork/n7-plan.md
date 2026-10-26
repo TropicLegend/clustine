@@ -837,7 +837,11 @@ against the code at `f64decc` and the dumps. This section overrides what it amen
 1. **The merge for an interaction at a line** (R4.26.1) is not built today (the
    coordinator knows `Near`, `Apart` and `Redstone`); it moves to the second half with
    N7n's measurement, and until then regions that follow players breed and follow across
-   their line by effects, as pinned ones do (named).
+   their line by effects, as pinned ones do (named). **Built in N7n** (2026-10-26): an
+   interaction with an entity sent across a line (a use, a hit, a breeding ask, a granted
+   seat, a thrown item's hit, a gift) is noted as an entity sent across one is
+   (`entities_at_line`), so that two regions that follow their players merge for it as
+   for redstone at work (ADR-0027, section 7); pinned regions go on by the effects.
 2. **Light for a mob** (R4.26.2) is in the read view: the chunk's stored light where it has
    one; where a change left none, sky light 15 above the motion-blocking heightmap and 0
    below, block light 0; sky light darkened by the clock. Until N8.

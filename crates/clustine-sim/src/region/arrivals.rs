@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use clustine_world::{Arrival, ChunkPos, Entity, EntityChange, RegionId};
+use clustine_world::{Arrival, BlockPos, ChunkPos, Effected, Entity, EntityChange, RegionId};
 
 use super::Region;
 use super::entities::state_of;
@@ -84,8 +84,41 @@ impl Region {
 
     /// Notes the chunks about where `entity` was sent, by the region it went to.
     fn crossed_at(&mut self, entity: &Entity) {
-        let to = self.land.knowledge(entity.chunk()).holder();
-        let [x, _, z] = entity.position;
+        self.at_line(entity.position, entity.chunk());
+    }
+
+    /// Notes the interactions with entities the region sends across a line in this tick
+    /// (a breeding ask, a hit, a use, a granted seat, a thrown item's hit, a gift), as
+    /// crossings are noted: the two regions are merged for them as for an entity sent
+    /// across, where they follow their players (`docs/groundwork/n7-plan.md`, section 9.7
+    /// item 1, step N7n); pinned regions go on working by the effects alone.
+    pub(super) fn interactions_at_line(&mut self) {
+        let at: Vec<BlockPos> = self
+            .made
+            .iter()
+            .filter(|effect| {
+                matches!(
+                    effect.what,
+                    Effected::OnEntity { .. } | Effected::Seated { .. } | Effected::Given { .. }
+                )
+            })
+            .map(|effect| effect.at)
+            .collect();
+        for block in at {
+            let centre = [
+                f64::from(block.x) + 0.5,
+                f64::from(block.y),
+                f64::from(block.z) + 0.5,
+            ];
+            self.at_line(centre, block.chunk());
+        }
+    }
+
+    /// Notes the chunks about `position`, by the region that holds `chunk` where the
+    /// region knows it.
+    fn at_line(&mut self, position: [f64; 3], chunk: ChunkPos) {
+        let to = self.land.knowledge(chunk).holder();
+        let [x, _, z] = position;
         let low = ChunkPos::containing(x - AT_THE_LINE, z - AT_THE_LINE);
         let high = ChunkPos::containing(x + AT_THE_LINE, z + AT_THE_LINE);
         for chunk_x in low.x..=high.x {

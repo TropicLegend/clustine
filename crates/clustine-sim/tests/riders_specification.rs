@@ -1880,6 +1880,14 @@ fn a_click_on_a_boat_beyond_the_line_seats_the_player_in_its_holder() {
         })
         .copied()
         .expect("the click goes as an effect on the boat");
+    // An interaction across a line counts as an entity sent across one: the two regions
+    // are reported working at it (step N7n).
+    assert!(
+        west.entities_at_line()
+            .contains(&(BEYOND, Some(EAST_REGION))),
+        "{:?}",
+        west.entities_at_line()
+    );
 
     let mut east = east(std::slice::from_ref(&beyond));
     let output = east.tick(&TickInputs {
