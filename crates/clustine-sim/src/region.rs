@@ -47,6 +47,7 @@ mod fluids;
 mod frogspawn;
 mod given;
 pub(crate) mod golem_chests;
+mod golem_patterns;
 mod granted;
 mod hanging;
 pub(crate) mod hives;
