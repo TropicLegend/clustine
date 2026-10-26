@@ -29,7 +29,7 @@ pub use ledger::{
     Again, Ledger, LedgerReport, Progress, Random, Wait, audit_blocks, ledger, longest_wait,
 };
 pub use light::{ChunkLight, LightAt, LightUpdateSeen, Named, SectionLight};
-pub use oracle::Oracle;
+pub use oracle::{Oracle, OracleWorld};
 pub use reason::{Ending, Reason, Wire};
 pub use twice::{SameName, same_name_twice};
 

@@ -380,6 +380,11 @@ pub struct Bot {
     /// Every packet of a menu's window the server sent, in order: openings, a window's
     /// contents (not the inventory's own, window 0), slots, the cursor and closes.
     pub menu_log: Vec<ClientboundPlay>,
+    /// The world's difficulty as the server last told it (`change_difficulty`).
+    pub difficulty: Option<clustine_protocol::packets::play::ChangeDifficulty>,
+    /// Once [`Bot::record_packets`] is asked for, every packet the bot is sent but the
+    /// chunks and their light, with when it came, in order.
+    pub packets: Option<Vec<(Instant, ClientboundPlay)>>,
 }
 
 /// A menu's window as a client shows it: what `open_screen` said, then the slots and the
@@ -606,6 +611,8 @@ impl Bot {
             experience: None,
             messages: Vec::new(),
             menu_log: Vec::new(),
+            difficulty: None,
+            packets: None,
         };
         // Every server places a joining player before anything else can happen.
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1379,6 +1386,14 @@ impl Bot {
         self.heard.get_or_insert_with(Vec::new);
     }
 
+    /// From now on the bot keeps every packet it is sent but the chunks and their
+    /// light, in [`Bot::packets`], for a test that compares what a server shows of
+    /// entities as it shows them, while the bot goes on answering as a client does. It
+    /// grows for as long as it is not taken.
+    pub fn record_packets(&mut self) {
+        self.packets.get_or_insert_with(Vec::new);
+    }
+
     fn hear(&mut self, heard: Heard) {
         if let Some(record) = &mut self.heard {
             record.push((Instant::now(), heard));
@@ -1599,6 +1614,24 @@ impl Bot {
         };
         if of_a_menu {
             self.menu_log.push(packet.clone());
+        }
+        if let Some(packets) = &mut self.packets
+            && !matches!(
+                packet,
+                ClientboundPlay::LevelChunkWithLight(_) | ClientboundPlay::LightUpdate(_)
+            )
+        {
+            packets.push((Instant::now(), packet.clone()));
+        }
+        // The difficulty is no packet the codec decodes: a bot reads it here.
+        if let ClientboundPlay::Unhandled { id } = &packet
+            && *id == packet_ids::play::clientbound::CHANGE_DIFFICULTY
+        {
+            let mut reader = Reader::new(&frame);
+            reader.var_int()?;
+            let told = <clustine_protocol::packets::play::ChangeDifficulty as clustine_protocol::codec::Decode>::decode(&mut reader)
+                .context("decoding change_difficulty")?;
+            self.difficulty = Some(told);
         }
         match packet {
             ClientboundPlay::ClientboundKeepAlive(packet) => {

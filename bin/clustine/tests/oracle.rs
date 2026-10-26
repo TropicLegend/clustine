@@ -103,6 +103,31 @@ async fn join_matches_the_official_server() {
     let told = |bot: &Bot| bot.world_spawn.clone().expect("the world's spawn was told");
     assert_eq!(told(&clustine), told(&vanilla));
 
+    // Both tell the world's difficulty, easy (1) and unlocked as a new dedicated
+    // server's is (`docs/groundwork/n7k-plan.md`, section 10), before the player is
+    // placed.
+    assert_eq!(
+        vanilla.difficulty,
+        Some(clustine_protocol::packets::play::ChangeDifficulty {
+            difficulty: 1,
+            locked: false,
+        })
+    );
+    assert_eq!(clustine.difficulty, vanilla.difficulty);
+    let told_before_placed = |bot: &Bot| {
+        let at = |name: &str| {
+            bot.arrivals
+                .iter()
+                .position(|(arrived, _)| *arrived == name)
+        };
+        matches!(
+            (at("minecraft:change_difficulty"), at("minecraft:player_position")),
+            (Some(told), Some(placed)) if told < placed
+        )
+    };
+    assert!(told_before_placed(&vanilla), "{:?}", vanilla.arrivals);
+    assert!(told_before_placed(&clustine), "{:?}", clustine.arrivals);
+
     server.stop().await;
 }
 
