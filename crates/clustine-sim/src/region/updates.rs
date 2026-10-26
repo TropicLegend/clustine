@@ -1025,10 +1025,19 @@ impl Region {
     /// or copied, so that an update there changes only what the region has and reads
     /// only what it can.
     fn readable_around(&self, pos: BlockPos) -> bool {
-        self.chunks.contains_key(&pos.chunk())
-            && UPDATE_SHAPE_ORDER
-                .iter()
-                .all(|face| self.readable(relative(pos, *face).chunk()))
+        let chunk = pos.chunk();
+        if !self.chunks.contains_key(&chunk) {
+            return false;
+        }
+        // The blocks above and below are in the chunk itself, and so are those beside
+        // a block that is not at its chunk's side: only a side's chunk is looked up, as
+        // this is asked for each of the six neighbours of every block that changes.
+        let (x, z) = pos.in_chunk();
+        let beside = |dx: i32, dz: i32| self.readable(ChunkPos::new(chunk.x + dx, chunk.z + dz));
+        (x != 0 || beside(-1, 0))
+            && (x != 15 || beside(1, 0))
+            && (z != 0 || beside(0, -1))
+            && (z != 15 || beside(0, 1))
     }
 
     /// Whether a kept update may run here: a shape asked again where its block's

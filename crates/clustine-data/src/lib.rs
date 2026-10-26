@@ -85,6 +85,19 @@ pub struct BlockState(pub u16);
 /// byte a state, which `cargo datagen` takes from the game.
 static STATE_SOUND_TYPES: &[u8] = include_bytes!("generated/state_sound_types.bin");
 
+/// The id of the block of each state, by state: [`BlockState::block_id`] is asked for
+/// many times in each rule of a block, and a search of [`BLOCKS`] for every one cost a
+/// tick of a new forest's leaves much of its time.
+static STATE_BLOCKS: std::sync::LazyLock<Vec<u16>> = std::sync::LazyLock::new(|| {
+    let mut blocks = Vec::with_capacity(BLOCK_STATE_COUNT as usize);
+    for (id, block) in BLOCKS.iter().enumerate() {
+        let id = u16::try_from(id).expect("fewer blocks than a u16 counts");
+        let states = usize::from(block.last_state.0 - block.first_state.0) + 1;
+        blocks.extend(std::iter::repeat_n(id, states));
+    }
+    blocks
+});
+
 /// A byte a block state: its base path type's ordinal, then whether it may be pathed
 /// through on land, in water and in the air.
 static STATE_PATH_TYPES: &[u8] = include_bytes!("generated/state_path_types.bin");
@@ -130,8 +143,9 @@ impl BlockState {
     /// The id of the block this state belongs to, which is its index in [`BLOCKS`] and
     /// [`BLOCK_INFO`], or `None` if the id is not a block state.
     pub fn block_id(self) -> Option<usize> {
-        let index = BLOCKS.partition_point(|block| block.last_state < self);
-        (index < BLOCKS.len()).then_some(index)
+        STATE_BLOCKS
+            .get(usize::from(self.0))
+            .map(|&block| usize::from(block))
     }
 
     /// The game's `getSoundType` of the state: what it sounds like broken, stepped on,
@@ -235,9 +249,19 @@ impl BlockState {
     /// The value of the property called `name`, or `None` if the block has none of that
     /// name.
     pub fn property(self, name: &str) -> Option<&'static str> {
-        self.properties()
-            .find(|(property, _)| *property == name)
-            .map(|(_, value)| value)
+        // As `properties` works the values out, last to first, without a list
+        // of them: the rules of blocks ask this many times a tick.
+        let block_id = self.block_id()?;
+        let mut index = usize::from(self.0 - BLOCKS[block_id].first_state.0);
+        for &property in property_list(block_id).iter().rev() {
+            let property = &PROPERTIES[usize::from(property)];
+            let value = property.values[index % property.values.len()];
+            if property.name == name {
+                return Some(value);
+            }
+            index /= property.values.len();
+        }
+        None
     }
 
     /// This state with the property called `name` set to `value`, or `None` if the
@@ -687,6 +711,20 @@ mod tests {
             ENTITY_TYPES[entity_types::PLAYER as usize],
             "minecraft:player"
         );
+    }
+
+    #[test]
+    fn every_state_is_of_the_block_whose_range_holds_it_and_has_the_values_it_lists() {
+        for state in (0..BLOCK_STATE_COUNT).map(|id| BlockState(id as u16)) {
+            let found = BLOCKS.partition_point(|block| block.last_state < state);
+            assert_eq!(state.block_id(), Some(found), "{state:?}");
+            for (name, value) in state.properties() {
+                assert_eq!(state.property(name), Some(value), "{state:?} {name}");
+            }
+            assert_eq!(state.property("no_such_property"), None);
+        }
+        assert_eq!(BlockState(BLOCK_STATE_COUNT as u16).block_id(), None);
+        assert_eq!(BlockState(u16::MAX).property("distance"), None);
     }
 
     #[test]

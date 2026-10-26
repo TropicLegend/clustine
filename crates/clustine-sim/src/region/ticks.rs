@@ -44,11 +44,18 @@ struct Key {
 }
 
 /// One queue of ticks, and which position and thing each is of, so that one is not
-/// scheduled twice (`LevelChunkTicks.ticksPerPosition`).
+/// scheduled twice (`LevelChunkTicks.ticksPerPosition`), and which ticks each chunk
+/// has, the game's `LevelChunkTicks` of each chunk.
+///
+/// The ticks of a chunk are found through `by_chunk` rather than by going through the
+/// whole queue: a new forest's leaves put tens of thousands of ticks into it, and the
+/// ticks of each of the hundred chunks whose ticks changed in a tick are saved with
+/// it, which took tens of milliseconds a tick when each was a walk of the queue.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Queue {
     entries: BTreeMap<Key, (BlockPos, Ticked)>,
     pending: BTreeSet<(BlockPos, Ticked)>,
+    by_chunk: BTreeMap<ChunkPos, BTreeSet<Key>>,
 }
 
 impl Queue {
@@ -57,20 +64,16 @@ impl Queue {
             return false;
         }
         self.entries.insert(key, (pos, of));
+        self.by_chunk.entry(pos.chunk()).or_default().insert(key);
         true
     }
 
     /// The ticks of `chunk`, in queue order, taken out.
     fn take_chunk(&mut self, chunk: ChunkPos) -> Vec<(Key, BlockPos, Ticked)> {
-        let keys: Vec<Key> = self
-            .entries
-            .iter()
-            .filter(|(_, (pos, _))| pos.chunk() == chunk)
-            .map(|(key, _)| *key)
-            .collect();
+        let keys = self.by_chunk.remove(&chunk).unwrap_or_default();
         keys.into_iter()
             .map(|key| {
-                let (pos, of) = self.entries.remove(&key).expect("listed just now");
+                let (pos, of) = self.entries.remove(&key).expect("indexed with its chunk");
                 self.pending.remove(&(pos, of));
                 (key, pos, of)
             })
@@ -79,9 +82,15 @@ impl Queue {
 
     /// The ticks of `chunk`, in queue order.
     fn of_chunk(&self, chunk: ChunkPos) -> impl Iterator<Item = (&Key, &(BlockPos, Ticked))> {
-        self.entries
-            .iter()
-            .filter(move |(_, (pos, _))| pos.chunk() == chunk)
+        self.by_chunk.get(&chunk).into_iter().flatten().map(|key| {
+            let entry = self.entries.get(key).expect("indexed with its chunk");
+            (key, entry)
+        })
+    }
+
+    /// The chunks that have ticks in the queue, ascending.
+    fn chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+        self.by_chunk.keys().copied()
     }
 
     /// The ticks due by `tick`, at most [`MAX_PER_TICK`], taken out
@@ -95,8 +104,14 @@ impl Queue {
             if key.due > tick {
                 break;
             }
-            let (_, (pos, of)) = self.entries.pop_first().expect("looked at just now");
+            let (key, (pos, of)) = self.entries.pop_first().expect("looked at just now");
             self.pending.remove(&(pos, of));
+            if let Some(keys) = self.by_chunk.get_mut(&pos.chunk()) {
+                keys.remove(&key);
+                if keys.is_empty() {
+                    self.by_chunk.remove(&pos.chunk());
+                }
+            }
             due.push((pos, of));
         }
         due
@@ -156,10 +171,11 @@ impl Region {
     /// The chunks that tick with ticks pending, ascending. Only a chunk that ticks has
     /// its ticks in the queues.
     pub(crate) fn ticks_pending(&self) -> Vec<ChunkPos> {
-        let queued = self.ticks.blocks.pending.iter();
-        let chunks: BTreeSet<ChunkPos> = queued
-            .chain(self.ticks.fluids.pending.iter())
-            .map(|(pos, _)| pos.chunk())
+        let chunks: BTreeSet<ChunkPos> = self
+            .ticks
+            .blocks
+            .chunks()
+            .chain(self.ticks.fluids.chunks())
             .collect();
         chunks.into_iter().collect()
     }

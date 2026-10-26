@@ -701,6 +701,38 @@ fn the_chunks_that_tick_with_ticks_pending_are_named_in_every_tick() {
     assert_eq!(idle_tick(&mut ticking_floor_with(&[])).ticks_pending, []);
 }
 
+/// A chunk whose last pending tick has run is no longer named, nor saved with a tick,
+/// while a chunk beside it whose tick is still due later is.
+#[test]
+fn a_chunk_whose_ticks_have_all_run_is_no_longer_named_as_pending() {
+    let (west, east) = (ChunkPos::new(0, 0), ChunkPos::new(1, 0));
+    let (here, there) = (at(5, -55, 5), at(21, -55, 5));
+    let sand = |chunk, position, delay| {
+        (
+            chunk,
+            floor_of(
+                chunk,
+                &[(position, blocks::SAND)],
+                &[kept(position, blocks::SAND, delay, 0)],
+            ),
+        )
+    };
+    let given = vec![sand(west, here, 1), sand(east, there, 3)];
+    let (mut region, loaded) = loaded_with(&chunks((-1, 2), (-1, 1)), given);
+    assert_eq!(loaded.ticks_pending, [west, east]);
+    // West's tick runs, and the sand on the floor stays and schedules nothing.
+    let output = idle_tick(&mut region);
+    assert_eq!(output.ticks_changed, [west]);
+    assert_eq!(output.ticks_pending, [east]);
+    assert_eq!(saved_ticks(&region, west), []);
+    assert_eq!(saved_ticks(&region, east), [(in_chunk(there), 1)]);
+    idle_tick(&mut region);
+    let output = idle_tick(&mut region);
+    assert_eq!(output.ticks_changed, [east]);
+    assert_eq!(output.ticks_pending, []);
+    assert_eq!(saved_ticks(&region, east), []);
+}
+
 /// The region `region` would be restored as from its state, its tickets and its
 /// loaded chunks' saved forms as of its last tick.
 pub(super) fn restored(region: &Region) -> Region {
