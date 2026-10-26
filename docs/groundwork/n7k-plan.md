@@ -442,3 +442,28 @@ chicken and the nautilus are added inside `finalizeSpawn` before the mob.
 goals; 7 the conversion now, the lead's; 8 the witch's potions with the few effects; 9 the
 types dumped now; 10 `BlockPattern` ported, `~` air; 11 burning now, with the body slot; 12
 the creeper's ignition now.
+
+## 11. What building it changed (2026-10-26)
+
+1. **A mob rider does not steer its mob vehicle until N9.** The game's rider steers by using
+   its vehicle's navigation and move control as its own (`Mob.getNavigation` and
+   `getMoveControl` return the controlled vehicle's) while the vehicle's move, jump and look
+   goals stop (`updateControlFlags`). In Clustine each mob's tick has its own record only,
+   and the rider's tick would have to write its vehicle's path and controls. Until N9 gives
+   monsters targets, a zombie's goals are only strolling and looking, so a chicken jockey
+   that walks by the chicken's goals looks much the same; with N9's targets it would not.
+   Named; section 10's "Mobs riding mobs" holds for the seating, the companions and the
+   units.
+2. **Companions** (the lead's contract): `Spawning.companions`, through which a type's
+   `finalizeSpawn` makes a mob beside it (`making::companion`) or rides one already there
+   (`Companions::nearby`, `ride`); the egg adds a vehicle before the mob and a rider after
+   it. An egg's mob made in another region's land makes none (named).
+3. **Part B** found the copper golem stands at the pumpkin's cell (`getBlock(0, 0, 0)`),
+   not at the bottom of the middle column; the `~` cells are cleared too, with air's id;
+   and every key but the space fails on a cell the region cannot read.
+4. **Part C** found a drunk potion's healing is an effect of one tick, healed at the next
+   `tickEffects`, not at once; water breathing refills air under water, as the game's does
+   for anything that keeps its air there.
+5. **The difficulty** is a constant, `Difficulty::WORLD`, rather than a stored setting:
+   with only easy accepted every worker reads the same; it becomes a setting of the world's
+   meta when a second difficulty is allowed.
