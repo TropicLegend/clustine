@@ -44,7 +44,9 @@ const AIR: i32 = blocks::AIR.0 as i32;
 /// and as random ticks leave it (`docs/adr/0024-block-behaviour-in-a-region.md`):
 /// the same block in another state (leaves that another tree's log came beside set to
 /// their distance, as the game sets them; sugar cane that has aged); and water and lava
-/// flowing where generation left them able to, as in a cave with a spring.
+/// flowing where generation left them able to, as in a cave with a spring; and what
+/// light lets grow or die since N8: grass and mycelium dying to dirt under a block,
+/// spreading onto dirt, and mushrooms and bamboo growing into air.
 fn as_ticked(made: BlockState, sent: i32) -> bool {
     let Ok(sent) = u16::try_from(sent).map(BlockState) else {
         return false;
@@ -52,7 +54,20 @@ fn as_ticked(made: BlockState, sent: i32) -> bool {
     if sent == made {
         return true;
     }
-    made.block_id() == sent.block_id() || (is_fluid_or_air(made) && is_fluid_or_air(sent))
+    let ground = |state: BlockState| {
+        [blocks::DIRT, blocks::GRASS_BLOCK, blocks::MYCELIUM]
+            .iter()
+            .any(|block| block.block_id() == state.block_id())
+    };
+    let grown = |state: BlockState| {
+        [blocks::BROWN_MUSHROOM, blocks::RED_MUSHROOM, blocks::BAMBOO]
+            .iter()
+            .any(|block| block.block_id() == state.block_id())
+    };
+    made.block_id() == sent.block_id()
+        || (is_fluid_or_air(made) && is_fluid_or_air(sent))
+        || (ground(made) && ground(sent))
+        || (made.props().is_air() && grown(sent))
 }
 
 /// Air, or a block that holds a fluid.

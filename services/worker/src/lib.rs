@@ -6376,9 +6376,12 @@ mod tests {
         };
         edge.send(join).await.unwrap();
         step_until(&mut runner, |runner| runner.links.is_empty());
-        step(&mut runner);
+        // The subscribed chunk's load comes from a thread of its own and may land a step
+        // after the link closed; with no ticket left it is let go when it does.
+        step_until(&mut runner, |runner| {
+            runner.region().loaded_chunk_count() == 0
+        });
         assert_eq!(runner.region().player_count(), 0);
-        assert_eq!(runner.region().loaded_chunk_count(), 0);
     }
 
     /// An outbox entry stays in the outbox until the edge confirms it, however often
