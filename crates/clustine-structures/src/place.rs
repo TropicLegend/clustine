@@ -5,11 +5,13 @@
 //! place, turned and mirrored, put through the processors (`processBlockInfos`), clipped
 //! to the box, placed with its block entity's data, waterlogged from the fluid it
 //! replaces, and, unless the shape is known, the shapes at the edges brought up to date.
+//! Then, unless the settings ignore them, its entities are placed (`placeEntities`):
+//! each whose block lands in the box is moved, turned and mirrored, and handed back to
+//! the caller ([`PlacedEntity`]), which makes it (`docs/groundwork/n7-brief.md`, section
+//! 8.10). This crate knows no entity; the maker does.
 //!
 //! What it does not do yet, and why:
 //!
-//! - Entities are not made (`addEntitiesToWorld`): Clustine has no entities. They are
-//!   kept in [`TemplateBlocks::entities`] for when it has.
 //! - A block entity's data is the template's, with its `id`, `x`, `y` and `z` taken out,
 //!   the modifier of a rule applied, a loot seed drawn for a container, and an empty
 //!   `components` where it had none. The game loads that data into the block entity and
@@ -58,11 +60,15 @@ pub struct StructurePlaceSettings<'a> {
     /// caller adds, such as [`Processor::structure_block_ignore`].
     pub processors: Vec<&'a Processor>,
     pub liquid_settings: LiquidSettings,
-    /// Entities are not made in any case (see the module's head); kept for the caller.
+    /// Whether the template's entities are left out (`setIgnoreEntities`): the
+    /// mansion's pieces leave them out.
     pub ignore_entities: bool,
     /// Whether the shapes at the edges are left as they are; pieces of jigsaw
     /// structures say so, fossils and the template feature do not.
     pub known_shape: bool,
+    /// Whether the mobs among the entities are finalised (`finalizeSpawn` for the
+    /// reason `STRUCTURE`): the pool elements of jigsaw structures say so, and no
+    /// other piece.
     pub finalize_entities: bool,
     /// Where `getRandom` draws from.
     pub random: PlaceRandom,
@@ -98,7 +104,8 @@ impl<'a> StructurePlaceSettings<'a> {
         }
     }
 
-    fn contains(&self, pos: BlockPos) -> bool {
+    /// Whether the box holds `pos`: every position where there is none.
+    pub fn contains(&self, pos: BlockPos) -> bool {
         self.bounding_box
             .is_none_or(|bounds| bounds.contains_xyz(pos.x, pos.y, pos.z))
     }
@@ -281,7 +288,10 @@ pub fn process_block_infos(
 /// The game's `StructureTemplate.placeInWorld`: places `template` with its corner at
 /// `at`, position tests measured from `reference`. `random` is the source the game's
 /// caller passes, which seeds containers' loot and, where `settings.random` says so,
-/// the palette and the processors. False where the template has nothing to place.
+/// the palette and the processors. `None` where the template has nothing to place
+/// (the game's false); else its entities to make, in the template's order, which the
+/// caller makes at once, before anything else it does: their `finalizeSpawn` draws
+/// from the run's region random where the game draws, at the end of `placeInWorld`.
 pub fn place_in_world(
     template: &TemplateBlocks,
     world: &mut dyn Neighbourhood,
@@ -289,9 +299,9 @@ pub fn place_in_world(
     reference: BlockPos,
     settings: &StructurePlaceSettings<'_>,
     random: &mut dyn Random,
-) -> bool {
+) -> Option<Vec<PlacedEntity>> {
     if template.palettes.is_empty() {
-        return false;
+        return None;
     }
     // `getRandomPalette`: a draw even where there is one palette.
     let count = i32::try_from(template.palettes.len()).expect("fewer than 2^31 palettes");
@@ -302,7 +312,7 @@ pub fn place_in_world(
     let blocks = &template.palettes[index as usize];
     let nothing = blocks.is_empty() && (settings.ignore_entities || template.entities.is_empty());
     if nothing || template.size.iter().any(|&side| side < 1) {
-        return false;
+        return None;
     }
 
     let apply_waterlogging = settings.liquid_settings == LiquidSettings::ApplyWaterlogging;
@@ -377,7 +387,170 @@ pub fn place_in_world(
             }
         }
     }
-    true
+    if settings.ignore_entities {
+        return Some(Vec::new());
+    }
+    Some(place_entities(template, at, settings))
+}
+
+/// An entity of a template as `placeEntities` hands it to be made
+/// (`docs/groundwork/n7-brief.md`, section 8.10): its tag, moved, and where it stands
+/// and faces once `snapTo` has put it there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedEntity {
+    /// The template's tag, copied, with `Pos` set to [`Self::position`], its `UUID`
+    /// taken out and a `block_pos` it has replaced by [`Self::block`].
+    pub tag: Nbt,
+    /// Its template block, moved, turned and mirrored as blocks are: the one the box
+    /// was asked about.
+    pub block: BlockPos,
+    /// Its position, moved, turned and mirrored as a vector is.
+    pub position: [f64; 3],
+    /// `rotate(rotation) + (mirror(mirror) − yRot)`, unwrapped, as `snapTo` keeps it.
+    pub yaw: f32,
+    /// Its template's pitch, as `setXRot` holds it (`StructureTemplate` keeps it).
+    pub pitch: f32,
+    /// Whether it is to be finalised where it is a mob.
+    pub finalise: bool,
+}
+
+impl PlacedEntity {
+    /// Its tag in the binary form of NBT without a name, its type byte first, as a
+    /// maker reads it.
+    pub fn tag_bytes(&self) -> Vec<u8> {
+        nbt_bytes(&self.tag)
+    }
+}
+
+/// `StructureTemplate.placeEntities`: each entity of `template` in its order whose
+/// template block, moved to `at`, turned and mirrored, the settings' box holds.
+fn place_entities(
+    template: &TemplateBlocks,
+    at: BlockPos,
+    settings: &StructurePlaceSettings<'_>,
+) -> Vec<PlacedEntity> {
+    let mut placed = Vec::new();
+    for entity in &template.entities {
+        let moved = transform_pos(
+            entity.block_pos,
+            settings.mirror,
+            settings.rotation,
+            settings.rotation_pivot,
+        );
+        let block = BlockPos::new(moved.x + at.x, moved.y + at.y, moved.z + at.z);
+        if !settings.contains(block) {
+            continue;
+        }
+        let turned = transform_vec(
+            entity.pos,
+            settings.mirror,
+            settings.rotation,
+            settings.rotation_pivot,
+        );
+        let position = [
+            turned[0] + f64::from(at.x),
+            turned[1] + f64::from(at.y),
+            turned[2] + f64::from(at.z),
+        ];
+        let (y_rot, x_rot) = rotation_of(&entity.nbt);
+        let mut tag = entity.nbt.clone();
+        if let Nbt::Compound(members) = &mut tag {
+            put(
+                members,
+                "Pos",
+                Nbt::List(position.iter().map(|&value| Nbt::Double(value)).collect()),
+            );
+            remove(members, "UUID");
+            if members.iter().any(|(name, _)| name == "block_pos") {
+                put(
+                    members,
+                    "block_pos",
+                    Nbt::IntArray(vec![block.x, block.y, block.z]),
+                );
+            }
+        }
+        placed.push(PlacedEntity {
+            tag,
+            block,
+            position,
+            yaw: entity_yaw(y_rot, settings.mirror, settings.rotation),
+            pitch: x_rot,
+            finalise: settings.finalize_entities,
+        });
+    }
+    placed
+}
+
+/// The yaw and pitch an entity loaded from `tag` has (`Entity.load`: its `Rotation`, the
+/// pitch held as `setXRot` holds it), 0 for what the tag lacks.
+fn rotation_of(tag: &Nbt) -> (f32, f32) {
+    let angle = |value: Option<&Nbt>| match value {
+        Some(Nbt::Float(value)) => *value,
+        Some(Nbt::Double(value)) => *value as f32,
+        _ => 0.0,
+    };
+    let (yaw, pitch) = match tag.get("Rotation") {
+        Some(Nbt::List(angles)) => (angle(angles.first()), angle(angles.get(1))),
+        _ => (0.0, 0.0),
+    };
+    // `setXRot`, which `load` calls: Java's `%` of floats, as Rust's, then a clamp.
+    (yaw, (pitch % 360.0).clamp(-90.0, 90.0))
+}
+
+/// The game's `StructureTemplate.transform(Vec3, …)`: a position in the template
+/// mirrored (about the block's far side: `1 − z`, `1 − x`), then turned about the
+/// pivot, the pivot's sums taken in `int`.
+pub fn transform_vec(
+    pos: [f64; 3],
+    mirror: StructureMirror,
+    rotation: Rotation,
+    pivot: BlockPos,
+) -> [f64; 3] {
+    let [mut x, y, mut z] = pos;
+    match mirror {
+        StructureMirror::LeftRight => z = 1.0 - z,
+        StructureMirror::FrontBack => x = 1.0 - x,
+        StructureMirror::None => {}
+    }
+    let (px, pz) = (pivot.x, pivot.z);
+    match rotation {
+        Rotation::CounterClockwise90 => [f64::from(px - pz) + z, y, f64::from(px + pz + 1) - x],
+        Rotation::Clockwise90 => [f64::from(px + pz + 1) - z, y, f64::from(pz - px) + x],
+        Rotation::Clockwise180 => [f64::from(px + px + 1) - x, y, f64::from(pz + pz + 1) - z],
+        Rotation::None => [x, y, z],
+    }
+}
+
+/// `Mth.wrapDegrees(float)`: an angle brought within −180 (included) and 180.
+pub fn wrap_degrees(degrees: f32) -> f32 {
+    let mut wrapped = degrees % 360.0;
+    if wrapped >= 180.0 {
+        wrapped -= 360.0;
+    }
+    if wrapped < -180.0 {
+        wrapped += 360.0;
+    }
+    wrapped
+}
+
+/// The yaw of an entity whose own is `y_rot` once its template is turned and mirrored
+/// (`placeEntities`): `entity.rotate(rotation) + (entity.mirror(mirror) − yRot)` in
+/// floats, `Entity.rotate` and `Entity.mirror` each of the wrapped yaw. No entity of a
+/// template has its own (a hanging entity's), so these are `Entity`'s.
+pub fn entity_yaw(y_rot: f32, mirror: StructureMirror, rotation: Rotation) -> f32 {
+    let wrapped = wrap_degrees(y_rot);
+    let rotated = match rotation {
+        Rotation::Clockwise180 => wrapped + 180.0,
+        Rotation::CounterClockwise90 => wrapped + 270.0,
+        Rotation::Clockwise90 => wrapped + 90.0,
+        Rotation::None => wrapped,
+    };
+    let mirrored = match mirror {
+        StructureMirror::FrontBack => -wrapped,
+        StructureMirror::LeftRight => 180.0 - wrapped,
+        StructureMirror::None => wrapped,
+    };
+    rotated + (mirrored - y_rot)
 }
 
 /// `Block.UPDATE_SHAPE_ORDER`.
@@ -689,7 +862,7 @@ mod tests {
         seed: u64,
     ) -> bool {
         let mut random = WorldgenRandom::from_seed(seed);
-        place_in_world(template, world, at, at, settings, &mut random)
+        place_in_world(template, world, at, at, settings, &mut random).is_some()
     }
 
     #[test]
@@ -872,14 +1045,7 @@ mod tests {
         settings.known_shape = true;
         let mut random = WorldgenRandom::from_seed(9);
         let mut copy = random.clone();
-        assert!(place_in_world(
-            &template,
-            &mut world,
-            at,
-            at,
-            &settings,
-            &mut random
-        ));
+        assert!(place_in_world(&template, &mut world, at, at, &settings, &mut random).is_some());
         // The palette is drawn from the position's own source; the seed is the first
         // draw of the placement's.
         let seed = copy.next_i64();
@@ -919,14 +1085,7 @@ mod tests {
         settings.known_shape = true;
         let mut random = WorldgenRandom::from_seed(9);
         let mut copy = random.clone();
-        assert!(place_in_world(
-            &template,
-            &mut world,
-            at,
-            at,
-            &settings,
-            &mut random
-        ));
+        assert!(place_in_world(&template, &mut world, at, at, &settings, &mut random).is_some());
         copy.next_i64();
         assert_eq!(random.next_i64(), copy.next_i64());
         let data = NbtReader::new(&world.entities[&at].data)
@@ -953,14 +1112,7 @@ mod tests {
         let mut random = WorldgenRandom::from_seed(4);
         let mut copy = random.clone();
         let at = BlockPos::new(1, 3, 1);
-        assert!(place_in_world(
-            &row(),
-            &mut world,
-            at,
-            at,
-            &settings,
-            &mut random
-        ));
+        assert!(place_in_world(&row(), &mut world, at, at, &settings, &mut random).is_some());
         assert_eq!(copy.next_i32_bounded(1), 0);
         assert_eq!(random.next_i64(), copy.next_i64());
     }
@@ -1092,3 +1244,7 @@ mod tests {
         assert!(world.writes.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "place_entity_tests.rs"]
+mod entity_tests;

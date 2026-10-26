@@ -158,14 +158,17 @@ impl Feature for Fossil {
             placing.processors = processors.processors.iter().collect();
             placing.random = PlaceRandom::Given;
             placing.shapes = &shapes;
-            place_in_world(
+            // No fossil holds an entity; one that did would be made as saved.
+            if let Some(entities) = place_in_world(
                 template,
                 context.level.view(),
                 target,
                 target,
                 &placing,
                 &mut *context.random,
-            );
+            ) {
+                context.level.make_template_entities(settings, entities);
+            }
         }
         true
     }

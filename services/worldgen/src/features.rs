@@ -33,7 +33,10 @@ use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, World
 ///
 /// 3 (2026-10-21): a chunk is made with its animals (N7l), and the identity names the
 /// generation of what is made with chunks, `clustine_sim::generation::ENTITIES_GENERATION`.
-pub const FEATURES_VERSION: u16 = 3;
+///
+/// 4 (2026-10-26): the structures make their entities, and the mansion handles only
+/// the markers in the centre chunk, as the game's `filterBlocks` does.
+pub const FEATURES_VERSION: u16 = 4;
 
 /// A seed's overworld with its features, as stages.
 #[derive(Debug, Clone)]
@@ -208,8 +211,16 @@ impl Stages for FeatureStages {
         }
     }
 
+    /// The runs make the structures' entities by the simulation's own code
+    /// (`docs/groundwork/n7l-plan.md`, section 5.4).
     fn decorate(&self, view: &mut dyn Neighbourhood, centre: ChunkPos) {
-        clustine_features::decorate(&self.features, view, centre);
+        clustine_features::decorate_with(
+            &self.features,
+            view,
+            centre,
+            &self.generation,
+            dimension_number(self.dimension().name),
+        );
     }
 
     /// The game's `spawnOriginalMobs` (`docs/groundwork/n7l-plan.md`, section 3.2): W

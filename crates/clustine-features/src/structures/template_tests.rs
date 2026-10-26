@@ -16,7 +16,9 @@ use clustine_structures::piece::{
     StructurePiece, StructurePiecePayload, TemplateMarkerHandling, TemplatePieceData,
     TemplatePlacementAdjustment, TemplatePlacementClip, TemplatePostProcess, TemplateProcessorList,
 };
-use clustine_structures::template_blocks::{TemplateBlock, TemplateBlocks, TemplateLibrary};
+use clustine_structures::template_blocks::{
+    TemplateBlock, TemplateBlocks, TemplateEntity, TemplateLibrary,
+};
 use clustine_terrain::biome::Dimension;
 use clustine_world::generation::PieceState;
 use clustine_world::{BlockPos, ChunkPos};
@@ -83,6 +85,36 @@ fn hull(size: [i32; 3], metadata: &str) -> TemplateBlocks {
     }
 }
 
+/// The igloo's bottom with its cleric and its zombie as the census has them
+/// (`n7-brief.md`, section 8.11).
+fn clerics() -> TemplateBlocks {
+    let tag = |id: &str, yaw: f32| {
+        compound(vec![
+            ("id", Nbt::String(id.into())),
+            (
+                "Rotation",
+                Nbt::List(vec![Nbt::Float(yaw), Nbt::Float(0.0)]),
+            ),
+            ("UUID", Nbt::IntArray(vec![5, 6, 7, 8])),
+            ("PersistenceRequired", Nbt::Byte(1)),
+        ])
+    };
+    let mut template = hull([7, 3, 9], "chest");
+    template.entities = vec![
+        TemplateEntity {
+            pos: [2.5, 1.0, 1.5],
+            block_pos: BlockPos::new(2, 1, 1),
+            nbt: tag("minecraft:villager", -4.327_697_8),
+        },
+        TemplateEntity {
+            pos: [4.5, 1.0, 1.300_000_011_920_929],
+            block_pos: BlockPos::new(4, 1, 1),
+            nbt: tag("minecraft:zombie_villager", -95.788_88),
+        },
+    ];
+    template
+}
+
 /// The overworld's features with the templates the tests place.
 fn settings() -> &'static FeatureSettings {
     static SETTINGS: OnceLock<FeatureSettings> = OnceLock::new();
@@ -94,6 +126,7 @@ fn settings() -> &'static FeatureSettings {
             ),
             ("igloo/top".to_string(), hull([7, 3, 8], "nothing")),
             ("igloo/bottom".to_string(), hull([7, 3, 9], "chest")),
+            ("igloo/clerics".to_string(), clerics()),
             ("underwater_ruin/test".to_string(), hull([6, 3, 7], "chest")),
             (
                 "underwater_ruin/drowned".to_string(),
@@ -119,8 +152,19 @@ fn with_placing<R>(
     random: &mut WorldgenRandom,
     f: impl FnOnce(&mut Placing<'_, '_, '_>) -> R,
 ) -> R {
+    with_placing_making(world, random, &clustine_world::generation::KeyOnly, f)
+}
+
+/// [`with_placing`], the structures' entities made by `maker`.
+fn with_placing_making<R>(
+    world: &mut WithEntities,
+    random: &mut WorldgenRandom,
+    maker: &dyn clustine_world::generation::Maker,
+    f: impl FnOnce(&mut Placing<'_, '_, '_>) -> R,
+) -> R {
     let settings = settings();
-    let mut level = Level::new(world, settings.zoom(), -64, 384);
+    let makings = clustine_world::generation::Makings::new(0, ChunkPos { x: 0, z: 0 });
+    let mut level = Level::new(world, settings.zoom(), -64, 384).with_maker(maker, makings);
     let mut placing = Placing {
         level: &mut level,
         random,
@@ -379,6 +423,72 @@ fn an_igloo_s_laboratory_marker_becomes_air_over_a_chest_with_the_igloo_s_loot()
         loot_table(&mut world, BlockPos::new(1, y + 1, 1)).as_deref(),
         Some("minecraft:chests/igloo_chest")
     );
+}
+
+#[test]
+fn the_igloo_s_cleric_and_its_zombie_are_made_as_saved_unfinalised_and_drawing_nothing() {
+    let mut world = WithEntities::new(World::flat(blocks::STONE, 64));
+    let mut data = data("igloo/clerics", IVec3::new(0, 90 - 3 - 12, 0));
+    data.rotation = Rotation::Clockwise90;
+    data.rotation_pivot = IVec3::new(3, 6, 7);
+    data.liquid_settings = LiquidSettingsData::IgnoreWaterlogging;
+    data.marker_handling = TemplateMarkerHandling::Igloo;
+    data.placement_adjustment = TemplatePlacementAdjustment::Igloo {
+        template_offset: (0, -3, -2),
+    };
+    let piece = template_piece(data, [7, 3, 9]);
+    // A maker that would draw for a mob it finalised.
+    let maker = crate::testing::ToyMaker {
+        mobs: &[],
+        draws: true,
+    };
+    let mut random = WorldgenRandom::from_seed(3);
+    let region = with_placing_making(&mut world, &mut random, &maker, |placing| {
+        place(placing, &piece, PieceState::default());
+        let settings = placing.settings;
+        placing
+            .level
+            .region_random(settings.seed(), settings.legacy_random_source())
+            .next_i64()
+    });
+    let made = &world.world.made;
+    assert_eq!(made.len(), 2);
+    let read = |entity| {
+        let (tag, finalised) = crate::testing::ToyMaker::handed(entity);
+        assert!(!finalised, "the igloo's settings do not finalise");
+        NbtReader::new(tag).nbt().unwrap().unwrap()
+    };
+    let (villager, zombie) = (read(&made[0]), read(&made[1]));
+    assert_eq!(
+        villager.get("id"),
+        Some(&Nbt::String("minecraft:villager".into()))
+    );
+    assert_eq!(
+        zombie.get("id"),
+        Some(&Nbt::String("minecraft:zombie_villager".into()))
+    );
+    for (tag, entity) in [(&villager, &made[0]), (&zombie, &made[1])] {
+        // Kept as saved, but for its UUID, which is drawn afresh, and its position.
+        assert_eq!(tag.get("UUID"), None);
+        assert_eq!(tag.get("PersistenceRequired"), Some(&Nbt::Byte(1)));
+        let Some(Nbt::List(at)) = tag.get("Pos") else {
+            panic!("a position is set");
+        };
+        assert_eq!(*at, entity.position.map(Nbt::Double).to_vec());
+    }
+    // Two blocks apart along the template's x, which a quarter turn clockwise lays
+    // along the world's z.
+    assert_eq!(made[1].position[2] - made[0].position[2], 2.0);
+    // −4.33 wraps to itself: turned clockwise, (−4.33 + 90) + (−4.33 + 4.33).
+    assert_eq!(made[0].yaw, -4.327_697_8_f32 + 90.0);
+    // Nothing was drawn of the region's source.
+    let settings = settings();
+    let mut fresh = WithEntities::new(World::flat(blocks::STONE, 0));
+    let mut level = Level::new(&mut fresh, settings.zoom(), -64, 384);
+    let expected = level
+        .region_random(settings.seed(), settings.legacy_random_source())
+        .next_i64();
+    assert_eq!(region, expected);
 }
 
 #[test]

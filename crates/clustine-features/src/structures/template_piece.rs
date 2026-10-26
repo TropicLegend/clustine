@@ -76,17 +76,21 @@ pub(super) fn post_process(
         settings.rotation_pivot,
     );
     let pivot = BlockPos::new(placing.pivot.x, placing.pivot.y, placing.pivot.z);
-    let placed = place_in_world(
+    let Some(entities) = place_in_world(
         template,
         placing.level.view(),
         position,
         pivot,
         settings,
         &mut *placing.random,
-    );
-    if !placed {
+    ) else {
         return bounds;
-    }
+    };
+    // The igloo's cleric and its zombie, which its settings do not finalise: made as
+    // their template saved them, drawing nothing.
+    placing
+        .level
+        .make_template_entities(placing.settings, entities);
     for (at, nbt) in filter_blocks(template, position, settings, "minecraft:structure_block") {
         let Some(nbt) = nbt else { continue };
         // `StructureMode.LEGACY_CODEC` reads the mode by its name.

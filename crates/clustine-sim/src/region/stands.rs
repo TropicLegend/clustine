@@ -70,7 +70,7 @@ pub(crate) const DEFAULT_POSE: [[f32; 3]; 6] = [
 
 /// The health of a new stand: the `max_health` attribute's default. **Inferred**:
 /// `Attributes` is not in the dump; 20 is the game's.
-pub(super) const MAX_HEALTH: f32 = 20.0;
+pub(crate) const MAX_HEALTH: f32 = 20.0;
 
 /// The ticks within which a second hit breaks a stand (`now - lastHit > 5` is a first
 /// hit).

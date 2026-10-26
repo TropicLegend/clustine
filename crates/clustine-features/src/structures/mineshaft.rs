@@ -16,9 +16,9 @@
 //! draw where to put one.
 //!
 //! The chests are chests in minecarts, which are entities: the rail under one is
-//! placed and the game's draws for it made (its shape, then the minecart's loot
-//! seed), and the minecart itself, with its loot, is dropped, as Clustine has no
-//! entities.
+//! placed, the game's draws for it made (its shape, then the minecart's loot seed),
+//! and the minecart made on it. Its loot is not kept: a structure's loot is a named
+//! difference, and the minecart is empty.
 
 use clustine_data::{BlockClass, BlockState, Face, SupportType, blocks};
 use clustine_noise::Random;
@@ -286,8 +286,10 @@ fn corridor(
 }
 
 /// `MineShaftCorridor.createChest`: a rail with a chest in a minecart on it, where
-/// there is air with something under it. The minecart is dropped (see the module's
-/// head), but its loot seed is drawn as the game draws it.
+/// there is air with something under it. The minecart is made at the rail's block
+/// centre (`setInitialPos(x + 0.5, y + 0.5, z + 0.5)`, **Inferred**: the corridor is
+/// not in the dumps), empty (see the module's head), its loot seed drawn as the game
+/// draws it.
 fn create_minecart_chest(at: &mut CodePiece<'_, '_, '_, '_>, x: i32, y: i32, z: i32) {
     let pos = at.world_pos(x, y, z);
     if !at.inside(pos)
@@ -307,6 +309,17 @@ fn create_minecart_chest(at: &mut CodePiece<'_, '_, '_, '_>, x: i32, y: i32, z: 
     at.place_block(rail, x, y, z);
     // `chest.setLootTable(ABANDONED_MINESHAFT, random.nextLong())`.
     let _seed = at.random().next_i64();
+    let settings = at.settings();
+    let position = [
+        f64::from(pos.x) + 0.5,
+        f64::from(pos.y) + 0.5,
+        f64::from(pos.z) + 0.5,
+    ];
+    at.level().make_entity(
+        settings,
+        clustine_data::entity_types::CHEST_MINECART,
+        position,
+    );
 }
 
 /// `MineShaftCorridor.placeSupport`: two fence posts under a beam of planks, where the
@@ -817,6 +830,58 @@ mod tests {
                 expected.next_i64();
             }
         }
+        assert_eq!(random.next_i64(), expected.next_i64());
+    }
+
+    #[test]
+    fn a_chest_in_a_minecart_is_made_on_its_rail_at_the_block_s_centre_after_its_seed() {
+        use clustine_noise::WorldgenRandom;
+        use clustine_world::ChunkPos;
+        use clustine_world::generation::Makings;
+
+        use crate::context::Level;
+
+        let mut world = World::flat(blocks::STONE, 40);
+        let maker = crate::testing::ToyMaker {
+            mobs: &[],
+            draws: true,
+        };
+        let settings = crate::testing::settings();
+        let mut random = WorldgenRandom::from_seed(5);
+        {
+            let mut level = Level::new(&mut world, settings.zoom(), -64, 384)
+                .with_maker(&maker, Makings::new(0, ChunkPos::new(0, 0)));
+            let mut placing = Placing {
+                level: &mut level,
+                random: &mut random,
+                settings,
+                chunk_box: BoundingBox::new(IVec3::new(0, -63, 0), IVec3::new(15, 319, 15)),
+                centre: ChunkPos::new(0, 0),
+                pivot: IVec3::new(0, 0, 0),
+            };
+            let bounds = BoundingBox::new(IVec3::new(2, 41, 2), IVec3::new(4, 43, 11));
+            let mut at = CodePiece::new(&mut placing, bounds, Some(Direction::South));
+            // (1, 0, 1) of the piece: (3, 41, 3), air on the rock.
+            create_minecart_chest(&mut at, 1, 0, 1);
+            // Where there is no air, nothing.
+            create_minecart_chest(&mut at, 1, -1, 1);
+        }
+        assert_eq!(world.made.len(), 1);
+        let cart = &world.made[0];
+        assert_eq!(
+            cart.kind,
+            clustine_data::entity_types::CHEST_MINECART as u16
+        );
+        assert_eq!(cart.position, [3.5, 41.5, 3.5]);
+        assert_eq!(
+            world.get(BlockPos::new(3, 41, 3)).block_id(),
+            blocks::RAIL.block_id()
+        );
+        // The rail's shape, then the loot's seed, of the piece's source; the cart drew
+        // nothing of it.
+        let mut expected = WorldgenRandom::from_seed(5);
+        expected.next_bool();
+        expected.next_i64();
         assert_eq!(random.next_i64(), expected.next_i64());
     }
 }

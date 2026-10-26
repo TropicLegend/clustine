@@ -1331,3 +1331,81 @@ fn a_spawn_s_animal_outside_its_chunk_is_left_out_and_the_chunk_marked() {
     assert!(lit.with_failure());
     assert_eq!(scheduler.figures().failed_placements, 1);
 }
+
+/// A unit made in a run (a baby zombie villager on the chicken made for it,
+/// `docs/groundwork/n7l-plan.md`, section 3.5) names its members by their makings' keys;
+/// keyed in the chunk it lands in, each names the other by its own key there, and a
+/// link to what the chunk did not get is dropped.
+#[test]
+fn a_unit_s_members_name_each_other_by_their_keys_in_the_chunk_they_land_in() {
+    let centre = ChunkPos::new(3, 3);
+    let making = |index| {
+        Generated {
+            dimension: 0,
+            chunk: centre,
+            structure: true,
+            index,
+        }
+        .key()
+        .unwrap()
+    };
+    let lands = ChunkPos::new(4, 3);
+    let at = [4.0 * 16.0 + 2.5, 70.0, 3.0 * 16.0 + 2.5];
+    let seat = |key| clustine_world::Seat {
+        key,
+        player: false,
+        pending: None,
+    };
+    // A loner made first, then the chicken (made second, so its making is 2) carrying
+    // the zombie (its making 1), then one riding something the chunk does not get.
+    let mut loner = toy_entity(at, centre, 0);
+    loner.key = making(0);
+    let mut chicken = toy_entity(at, centre, 1);
+    chicken.key = making(2);
+    chicken.riding.passengers.push(seat(making(1)));
+    let mut zombie = toy_entity(at, centre, 2);
+    zombie.key = making(1);
+    zombie.riding.vehicle = Some(making(2));
+    let mut stray = toy_entity(at, centre, 3);
+    stray.key = making(9);
+    stray.riding.vehicle = Some(making(8));
+    let mut chunk = Chunk::empty(overworld(), Biome(0));
+    let context = super::view::Context {
+        identity: "toy".into(),
+        version: 1,
+        dimension: "minecraft:overworld",
+        dimension_number: 0,
+    };
+    let failures = super::output::add_keyed(
+        &mut chunk,
+        lands,
+        true,
+        vec![loner, chicken, zombie, stray],
+        &ToyMaker,
+        &context,
+    );
+    assert_eq!(failures, 0);
+    let key = |index| {
+        Generated {
+            dimension: 0,
+            chunk: lands,
+            structure: true,
+            index,
+        }
+        .key()
+        .unwrap()
+    };
+    assert_eq!(chunk.entities().len(), 4);
+    // The chunk keeps them by key.
+    let of = |index| {
+        chunk
+            .entities()
+            .iter()
+            .find(|entity| entity.key == key(index))
+            .unwrap()
+    };
+    assert!(of(0).riding.is_free());
+    assert_eq!(of(1).riding.passengers, [seat(key(2))]);
+    assert_eq!(of(2).riding.vehicle, Some(key(1)));
+    assert!(of(3).riding.is_free(), "its vehicle is not here");
+}

@@ -28,7 +28,7 @@ pub mod survive;
 mod testing;
 pub mod values;
 
-pub use run::decorate;
+pub use run::{decorate, decorate_with};
 
 /// How many of the plan's steps that build kinds of features are in (section 3: F1b,
 /// F2, F3, F4, F5 and the overworld's last in F6), raised by each. It is part of the

@@ -4,15 +4,16 @@
 //! The swamp hut (`SwampHutPiece`): a hut of spruce on four oak stilts that reach down
 //! to the ground, with a potted red mushroom, a crafting table and a cauldron.
 //!
-//! The game makes a witch and a black cat in the hut, in the chunk of the block where
-//! they stand. Clustine makes neither, but draws what making them draws from the
-//! region's random source ([`finalize_mob_spawn`]), and keeps, as the game does,
-//! that they were made.
+//! The game makes a witch and a black cat in the hut, by the run of the chunk of the
+//! block where they stand, and keeps that they were made. Clustine makes them there
+//! too, finalised from the region's random source; a type its maker does not make yet
+//! is drawn for as the game's mob would be ([`finalize_mob_spawn`]), since what is
+//! placed after it draws from the same source.
 //!
 //! The piece settles on the mean height of the ground under its columns in the first
 //! chunk that places it.
 
-use clustine_data::{BlockState, blocks};
+use clustine_data::{BlockState, blocks, entity_types};
 use clustine_noise::Random;
 use clustine_structures::piece::StructurePiece;
 use clustine_world::generation::PieceState;
@@ -92,23 +93,47 @@ pub(super) fn place(
         }
     }
 
-    // `spawnWitch`, then `spawnCat`, both where the witch stands.
+    // `spawnWitch`, then `spawnCat`, both where the witch stands, each kept from
+    // despawning and put at the block's bottom centre, facing nowhere.
     let home = at.world_pos(2, 2, 5);
+    let position = [
+        f64::from(home.x) + 0.5,
+        f64::from(home.y),
+        f64::from(home.z) + 0.5,
+    ];
+    let settings = p.settings;
     if state.flags & WITCH == 0 && inside(p.chunk_box, home) {
         state.flags |= WITCH;
-        finalize_mob_spawn(p);
+        if !p.level.make_mob(
+            settings,
+            entity_types::WITCH,
+            true,
+            position,
+            Some(STRUCTURE),
+        ) {
+            finalize_mob_spawn(p);
+        }
     }
     if state.flags & CAT == 0 && inside(p.chunk_box, home) {
         state.flags |= CAT;
-        finalize_mob_spawn(p);
-        // `Cat.finalizeSpawn` then picks its variant by the variants' spawn
-        // conditions (in a swamp hut the black cat's structure condition outranks
-        // the rest, leaving one to choose from) and its sound variant, one draw each.
-        region_random(p).next_i32_bounded(1);
-        region_random(p).next_i32_bounded(CAT_SOUND_VARIANTS);
+        if !p
+            .level
+            .make_mob(settings, entity_types::CAT, true, position, Some(STRUCTURE))
+        {
+            finalize_mob_spawn(p);
+            // `Cat.finalizeSpawn` then picks its variant by the variants' spawn
+            // conditions (in a swamp hut the black cat's structure condition outranks
+            // the rest, leaving one to choose from) and its sound variant, one draw
+            // each.
+            region_random(p).next_i32_bounded(1);
+            region_random(p).next_i32_bounded(CAT_SOUND_VARIANTS);
+        }
     }
     state
 }
+
+/// The structure the hut's mobs are made in: its cat is black.
+const STRUCTURE: &str = "minecraft:swamp_hut";
 
 #[cfg(test)]
 mod tests {
@@ -187,5 +212,71 @@ mod tests {
             (again, region_random(p).next_i64())
         });
         assert_eq!(again, (state, fresh_region_random().next_i64()));
+    }
+
+    #[test]
+    fn the_witch_and_the_black_cat_are_made_once_kept_in_the_chunk_of_their_home() {
+        // A maker that makes cats and no witch yet: the witch is drawn for instead.
+        let maker = crate::testing::ToyMaker {
+            mobs: &[entity_types::CAT],
+            draws: false,
+        };
+        let mut run = Run::new(World::flat(blocks::DIRT, 55), 2);
+        let piece = hut(Direction::West);
+        let (state, after) = run.place_making(&maker, area(), |p| {
+            let state = place(p, &piece, SETTLED);
+            (state, region_random(p).next_i64())
+        });
+        assert_eq!(state.flags, WITCH | CAT);
+        let at = Piece::new(settled_box(piece.bounding_box, state), piece.orientation);
+        let home = at.world_pos(2, 2, 5);
+        let made = &run.world.world.made;
+        assert_eq!(made.len(), 1);
+        let cat = &made[0];
+        assert_eq!(cat.kind, entity_types::CAT as u16);
+        assert_eq!(
+            cat.position,
+            [
+                f64::from(home.x) + 0.5,
+                f64::from(home.y),
+                f64::from(home.z) + 0.5
+            ]
+        );
+        assert_eq!((cat.yaw, cat.pitch), (0.0, 0.0));
+        // Kept from despawning, and made in the swamp hut, which makes it black.
+        let (structure, persistent) = crate::testing::ToyMaker::handed(cat);
+        assert_eq!(structure, STRUCTURE.as_bytes());
+        assert!(persistent);
+        // The witch's draws alone: the toy cat draws nothing.
+        let mut expected = fresh_region_random();
+        expected.next_f64();
+        expected.next_f64();
+        expected.next_f32();
+        assert_eq!(after, expected.next_i64());
+
+        // Placed again, or in a chunk away from their home, nothing more is made.
+        run.place_making(&maker, area(), |p| place(p, &piece, state));
+        run.place_making(&maker, chunk(-1, 0), |p| place(p, &piece, SETTLED));
+        assert_eq!(run.world.world.made.len(), 1);
+    }
+
+    #[test]
+    fn the_same_hut_made_twice_makes_the_same_mobs() {
+        let maker = crate::testing::ToyMaker {
+            mobs: &[entity_types::CAT, entity_types::WITCH],
+            draws: true,
+        };
+        let made = || {
+            let mut run = Run::new(World::flat(blocks::DIRT, 55), 2);
+            let piece = hut(Direction::North);
+            run.place_making(&maker, area(), |p| place(p, &piece, SETTLED));
+            run.world.world.made
+        };
+        let first = made();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].kind, entity_types::WITCH as u16);
+        assert_eq!(first[1].kind, entity_types::CAT as u16);
+        assert_ne!(first[0].key, first[1].key, "each its own making");
+        assert_eq!(made(), first);
     }
 }

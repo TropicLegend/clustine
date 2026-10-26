@@ -4,7 +4,7 @@
 //! (`data/minecraft/structure/**.nbt`), as the game's `StructureTemplate.load` reads
 //! them: the size, one palette or several, every block with its place in the
 //! template, its state and its block entity's data, and the entities, which are kept
-//! as data and not made.
+//! as data and made by whoever places the template (`place::PlacedEntity`).
 //!
 //! The files are Mojang's and are not committed (the terrain plan's question 3): the
 //! binary reads them from the operator's own jar when the server starts and hands the
@@ -40,8 +40,8 @@ pub struct TemplateBlock {
     pub nbt: Option<Nbt>,
 }
 
-/// An entity of a template (`StructureEntityInfo`), kept as data: nothing places
-/// entities yet.
+/// An entity of a template (`StructureEntityInfo`), kept as data: the placing hands it
+/// back moved, and the run makes it (`place::PlacedEntity`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TemplateEntity {
     /// Where it stands in the template, to a fraction of a block.

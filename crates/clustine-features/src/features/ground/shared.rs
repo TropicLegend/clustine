@@ -355,6 +355,10 @@ pub mod testing {
             self.world.mark(at);
         }
 
+        fn add_entity(&mut self, entity: clustine_world::Entity) -> bool {
+            self.world.add_entity(entity)
+        }
+
         fn starts(&self) -> &[StartRef] {
             &[]
         }

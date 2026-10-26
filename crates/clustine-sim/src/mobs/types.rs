@@ -1118,6 +1118,11 @@ pub(crate) struct Companion {
     pub(crate) entity: Entity,
     pub(crate) seat: CompanionSeat,
     pub(crate) own: Random,
+    /// The mob being made, as it was when this one was added: what generation keeps of a
+    /// passenger whose vehicle was added in its `finalizeSpawn`, as the game's proto
+    /// chunk saves the pair when the vehicle is added and never the passenger again
+    /// (`docs/groundwork/n7l-plan.md`, section 9 item 9).
+    pub(crate) beside: Mob,
 }
 
 #[allow(dead_code, reason = "N7k's types (parts K1 to K5) call it")]

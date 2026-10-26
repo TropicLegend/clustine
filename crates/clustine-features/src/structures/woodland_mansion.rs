@@ -13,17 +13,20 @@
 //! processors drawn from each position's own source, and the flags 2, which lack
 //! `UPDATE_KNOWN_SHAPE`: the shapes at the template's edges are brought up to date and
 //! placed blocks mark themselves where their state asks. Then every data marker of the
-//! template, wherever it lies (the game does not clip them to the chunk), goes to
-//! `handleDataMarker`, and every jigsaw becomes its final state.
+//! template inside the centre chunk goes to `handleDataMarker`, and every jigsaw there
+//! becomes its final state: `filterBlocks` leaves out what the settings' box, the
+//! centre chunk's, does not hold, so that a marker is handled once, by the run of the
+//! chunk it lies in.
 //!
 //! The markers: a chest of the mansion's loot faces as its name says, turned with the
-//! piece, inside the centre chunk only, and draws its seed from the run's random
-//! source; an evoker (`Mage`), a vindicator (`Warrior`) or one to three allays (`Group
-//! of Allays`) are not made, as Clustine has no mobs yet, but the game's draws for them
-//! from the region's random source (`WorldGenRegion.getRandom`) are made, since the
-//! features after them draw from the same source, and the marker's block becomes air.
+//! piece, and draws its seed from the run's random source; an evoker (`Mage`), a
+//! vindicator (`Warrior`) or one to three allays (`Group of Allays`) are made, kept from
+//! despawning, and finalised from the region's random source
+//! (`WorldGenRegion.getRandom`), each followed by the marker's block made air. A type
+//! the maker does not make yet is drawn for as the game's would be, since the features
+//! after it draw from the same source.
 
-use clustine_data::{BlockState, blocks};
+use clustine_data::{BlockState, blocks, entity_types};
 use clustine_noise::Random;
 use clustine_protocol::nbt::Nbt;
 use clustine_structures::Start;
@@ -82,14 +85,17 @@ pub(crate) fn place(placing: &mut Placing<'_, '_, '_>, data: &TemplatePieceData)
         data.template_position.z,
     );
     let reference = BlockPos::new(placing.pivot.x, placing.pivot.y, placing.pivot.z);
-    if !place_in_world(
+    // Its settings ignore the template's entities: there are none to make.
+    if place_in_world(
         template,
         placing.level.view(),
         at,
         reference,
         &settings,
         &mut *placing.random,
-    ) {
+    )
+    .is_none()
+    {
         return false;
     }
 
@@ -106,8 +112,9 @@ pub(crate) fn place(placing: &mut Placing<'_, '_, '_>, data: &TemplatePieceData)
         );
         BlockPos::new(pos.x + at.x, pos.y + at.y, pos.z + at.z)
     };
+    let inside = |at: BlockPos| settings.contains(at);
     for block in palette {
-        if !same_block(block.state, blocks::STRUCTURE_BLOCK) {
+        if !same_block(block.state, blocks::STRUCTURE_BLOCK) || !inside(moved(block)) {
             continue;
         }
         let Some(nbt) = &block.nbt else { continue };
@@ -118,7 +125,7 @@ pub(crate) fn place(placing: &mut Placing<'_, '_, '_>, data: &TemplatePieceData)
         data_marker(placing, data.rotation, marker, moved(block));
     }
     for block in palette {
-        if !same_block(block.state, blocks::JIGSAW) {
+        if !same_block(block.state, blocks::JIGSAW) || !inside(moved(block)) {
             continue;
         }
         let Some(nbt) = &block.nbt else { continue };
@@ -166,12 +173,27 @@ fn data_marker(placing: &mut Placing<'_, '_, '_>, rotation: Rotation, marker: &s
         }
         _ => return,
     };
+    // `snapTo(Vec3.atBottomCenterOf(pos), 0, 0)`.
+    let position = [
+        f64::from(at.x) + 0.5,
+        f64::from(at.y),
+        f64::from(at.z) + 0.5,
+    ];
     for mob in mobs {
-        mob.finalize_spawn(region_random(placing));
+        let settings = placing.settings;
+        if !placing
+            .level
+            .make_mob(settings, mob.kind(), true, position, Some(STRUCTURE))
+        {
+            mob.finalize_spawn(region_random(placing));
+        }
         // The game sets the air once for every mob, with the flags 2.
         placing.level.set_block(at, blocks::AIR);
     }
 }
+
+/// The structure the mansion's mobs are made in.
+const STRUCTURE: &str = "minecraft:woodland_mansion";
 
 fn region_random<'r>(placing: &'r mut Placing<'_, '_, '_>) -> &'r mut clustine_noise::RandomSource {
     let seed = placing.settings.seed();
@@ -209,7 +231,7 @@ fn chest_data(seed: i64) -> BlockEntity {
     block_entity("minecraft:chest", members)
 }
 
-/// The mobs the markers name, which are not made.
+/// The mobs the markers name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mob {
     Evoker,
@@ -218,7 +240,18 @@ enum Mob {
 }
 
 impl Mob {
-    /// The draws of the mob's `finalizeSpawn` with the reason `STRUCTURE`, in order.
+    /// Its entity type.
+    fn kind(self) -> i32 {
+        match self {
+            Self::Evoker => entity_types::EVOKER,
+            Self::Vindicator => entity_types::VINDICATOR,
+            Self::Allay => entity_types::ALLAY,
+        }
+    }
+
+    /// The draws of the mob's `finalizeSpawn` with the reason `STRUCTURE`, in order,
+    /// for a type the maker does not make yet, so that what is placed after it draws
+    /// as the game's would.
     ///
     /// - `Mob.finalizeSpawn` (every one of them): the follow range's random bonus,
     ///   `triangle(0, 0.11485)` (two doubles), then whether it is left-handed (a
@@ -349,6 +382,9 @@ mod tests {
         fn mark(&mut self, at: BlockPos) {
             self.world.mark(at);
         }
+        fn add_entity(&mut self, entity: clustine_world::Entity) -> bool {
+            self.world.add_entity(entity)
+        }
         fn starts(&self) -> &[StartRef] {
             &[]
         }
@@ -471,8 +507,20 @@ mod tests {
         settings: &FeatureSettings,
         start: &Start,
     ) -> (WorldgenRandom, RandomSource) {
+        run_making(world, settings, start, &clustine_world::generation::KeyOnly)
+    }
+
+    /// [`run`], the mobs made by `maker`.
+    fn run_making(
+        world: &mut Kept,
+        settings: &FeatureSettings,
+        start: &Start,
+        maker: &dyn clustine_world::generation::Maker,
+    ) -> (WorldgenRandom, RandomSource) {
         let mut random = WorldgenRandom::from_seed(42);
-        let mut level = Level::new(world, settings.zoom(), MIN_Y, HEIGHT);
+        let makings = clustine_world::generation::Makings::new(0, ChunkPos { x: 0, z: 0 });
+        let mut level =
+            Level::new(world, settings.zoom(), MIN_Y, HEIGHT).with_maker(maker, makings);
         let mut placing = super::Placing {
             level: &mut level,
             random: &mut random,
@@ -591,8 +639,9 @@ mod tests {
 
     #[test]
     fn mob_markers_draw_from_the_region_as_the_mobs_finalize_spawn_and_leave_air() {
-        // Markers of mobs are handled wherever they lie, in the next chunk as well, in
-        // the template's order (by y, x, z).
+        // Markers of mobs are handled in the template's order (by y, x, z), only where
+        // they lie in the centre chunk: the warrior's, in the next chunk, is left to
+        // that chunk's run.
         let settings = settings(vec![
             marker([1, 1, 1], "Group of Allays"),
             marker([2, 1, 1], "Mage"),
@@ -613,9 +662,10 @@ mod tests {
             world.world.set(at, blocks::DIRT);
         }
         let (_, mut region) = run(&mut world, &settings, &start);
-        for at in places {
-            assert_eq!(world.world.get(at), blocks::AIR, "{at:?}");
+        for at in &places[..2] {
+            assert_eq!(world.world.get(*at), blocks::AIR, "{at:?}");
         }
+        assert_eq!(world.world.get(places[2]), blocks::DIRT);
 
         let mut expected = fresh_region(&settings);
         let allays = expected.next_i32_bounded(3) + 1;
@@ -627,11 +677,6 @@ mod tests {
         // The evoker.
         expected.next_f64();
         expected.next_f64();
-        expected.next_f32();
-        // The vindicator, with the float for its axe's enchantment.
-        expected.next_f64();
-        expected.next_f64();
-        expected.next_f32();
         expected.next_f32();
         assert_eq!(region.next_i64(), expected.next_i64());
     }
@@ -710,5 +755,36 @@ mod tests {
     #[test]
     fn the_mansion_counts_as_built() {
         assert!(crate::structures::built(mansion()));
+    }
+
+    #[test]
+    fn a_group_of_allays_draws_its_size_first_and_each_allay_is_made_kept_at_the_marker() {
+        let settings = settings(vec![marker([1, 1, 1], "Group of Allays")]);
+        let start = start(vec![piece(
+            IVec3::new(12, 70, 12),
+            Rotation::None,
+            StructureMirror::None,
+        )]);
+        let maker = crate::testing::ToyMaker {
+            mobs: &[entity_types::ALLAY],
+            draws: false,
+        };
+        let mut world = kept(blocks::AIR, MIN_Y);
+        let (_, mut region) = run_making(&mut world, &settings, &start, &maker);
+        // `level.getRandom().nextInt(3) + 1` of them, drawn before any is made.
+        let mut expected = fresh_region(&settings);
+        let count = expected.next_i32_bounded(3) + 1;
+        let made = &world.world.made;
+        assert_eq!(made.len(), count as usize);
+        for allay in made {
+            assert_eq!(allay.kind, entity_types::ALLAY as u16);
+            // `snapTo(Vec3.atBottomCenterOf(pos), 0, 0)` at the marker's block.
+            assert_eq!(allay.position, [13.5, 71.0, 13.5]);
+            let (structure, persistent) = crate::testing::ToyMaker::handed(allay);
+            assert_eq!(structure, STRUCTURE.as_bytes());
+            assert!(persistent);
+        }
+        // The toy allays draw nothing: the region's source moved by the count alone.
+        assert_eq!(region.next_i64(), expected.next_i64());
     }
 }

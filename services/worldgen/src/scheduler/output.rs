@@ -8,7 +8,8 @@ use std::sync::Arc;
 use clustine_data::BlockState;
 use clustine_world::generation::{MAX_GENERATED_OF_A_CLASS, Maker, PieceKey, PieceState};
 use clustine_world::{
-    BlockEntity, Chunk, ChunkPos, Entity, Generated, InChunk, ScheduledTick, SectionLight, Ticked,
+    BlockEntity, Chunk, ChunkPos, Entity, EntityId, Generated, InChunk, ScheduledTick,
+    SectionLight, Ticked,
 };
 
 use super::Recorded;
@@ -323,6 +324,10 @@ pub(crate) fn finish(
 /// their records with their keys, and adds them to the chunk. Returns what failed: one
 /// for each entity whose record could not be made, which is left out, and one if there
 /// were more than a class has keys, the rest of which are left out.
+///
+/// The members of a unit (a baby zombie villager on its chicken) are made naming each
+/// other by the keys of their makings, which each carries as its `key`; those names
+/// become their keys here. A link to an entity not among `made` is dropped.
 pub(crate) fn add_keyed(
     chunk: &mut Chunk,
     position: ChunkPos,
@@ -339,10 +344,44 @@ pub(crate) fn add_keyed(
     } else {
         "the spawn's"
     };
+    let key_of = |index: usize| {
+        Generated {
+            dimension: context.dimension_number,
+            chunk: position,
+            structure,
+            index: u16::try_from(index).ok()?,
+        }
+        .key()
+    };
+    let renamed: Vec<(EntityId, EntityId)> = made
+        .iter()
+        .enumerate()
+        .filter(|(_, entity)| entity.key != EntityId(0))
+        .filter_map(|(index, entity)| Some((entity.key, key_of(index)?)))
+        .collect();
+    let rename = |made: EntityId| {
+        renamed
+            .iter()
+            .find(|(named, _)| *named == made)
+            .map(|(_, key)| *key)
+    };
     let mut failures = 0;
     let mut entities = chunk.entities().to_vec();
     let count = made.len();
-    for (index, entity) in made.into_iter().enumerate() {
+    for (index, mut entity) in made.into_iter().enumerate() {
+        if !entity.riding.is_free() {
+            entity.riding.vehicle = entity.riding.vehicle.and_then(rename);
+            entity
+                .riding
+                .passengers
+                .retain_mut(|seat| match rename(seat.key) {
+                    Some(key) => {
+                        seat.key = key;
+                        true
+                    }
+                    None => false,
+                });
+        }
         let Ok(index) = u16::try_from(index) else {
             failures += 1;
             tracing::error!(

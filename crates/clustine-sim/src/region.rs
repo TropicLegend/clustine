@@ -74,6 +74,7 @@ mod random_ticks;
 pub(crate) use drops::DEFAULT_PICK_UP_DELAY;
 pub(crate) use entities::insecure_uuid;
 pub(crate) use random_ticks::Random;
+pub(crate) use stands::{DEFAULT_POSE as STAND_POSE, MAX_HEALTH as STAND_HEALTH};
 mod orbs;
 mod redstone;
 mod reshape;

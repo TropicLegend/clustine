@@ -268,7 +268,12 @@ pub(crate) fn companion(
     prepare(&mut mob);
     let entity = fresh_record(key, kind, uuid, position, yaw, &mob);
     if let Some(companions) = spawning.companions.as_deref_mut() {
-        companions.add(types::Companion { entity, seat, own });
+        companions.add(types::Companion {
+            entity,
+            seat,
+            own,
+            beside: spawning.mob.clone(),
+        });
     }
     true
 }

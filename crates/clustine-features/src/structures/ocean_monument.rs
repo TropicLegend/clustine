@@ -9,8 +9,9 @@
 //!
 //! Water is placed as the game's `generateWaterBox` places it: below the sea where no
 //! ice or water stands, and air above the sea where no ice or water stands; every block
-//! of water placed schedules its tick. The three elder guardians are not made, but what
-//! making them draws from the region's random source is drawn.
+//! of water placed schedules its tick. The three elder guardians are made, each by the
+//! run of the chunk it stands in, and finalised from the region's random source; while
+//! the maker does not make the type, what making them draws of that source is drawn.
 
 mod rooms;
 
@@ -152,10 +153,28 @@ fn default_floor(p: &mut Placing<'_, '_, '_>, at: &Piece, x: i32, z: i32, down: 
     }
 }
 
-/// `spawnElder`: an elder guardian where the position is in the centre chunk, of
-/// which only the draws of `finalizeSpawn` are kept.
+/// `spawnElder`: an elder guardian where the position is in the centre chunk, healed
+/// (it is made whole already), at the block's bottom centre facing nowhere, and
+/// finalised. Its constructor keeps it from despawning. Where the maker does not make
+/// it yet, what its `finalizeSpawn` draws is drawn.
 fn spawn_elder(p: &mut Placing<'_, '_, '_>, at: &Piece, x: i32, y: i32, z: i32) {
-    if inside(p.chunk_box, at.world_pos(x, y, z)) {
+    let home = at.world_pos(x, y, z);
+    if !inside(p.chunk_box, home) {
+        return;
+    }
+    let position = [
+        f64::from(home.x) + 0.5,
+        f64::from(home.y),
+        f64::from(home.z) + 0.5,
+    ];
+    let settings = p.settings;
+    if !p.level.make_mob(
+        settings,
+        clustine_data::entity_types::ELDER_GUARDIAN,
+        false,
+        position,
+        Some("minecraft:ocean_monument"),
+    ) {
         finalize_mob_spawn(p);
     }
 }

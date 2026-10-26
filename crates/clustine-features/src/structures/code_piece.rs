@@ -99,6 +99,11 @@ impl<'a, 'p, 'l, 'v> CodePiece<'a, 'p, 'l, 'v> {
         self.placing.level
     }
 
+    /// The features' settings of the run.
+    pub fn settings(&self) -> &'l crate::settings::FeatureSettings {
+        self.placing.settings
+    }
+
     /// Whether the chunk's writable box holds `pos` (`chunkBB.isInside`).
     pub fn inside(&self, pos: BlockPos) -> bool {
         self.placing.chunk_box.contains_xyz(pos.x, pos.y, pos.z)

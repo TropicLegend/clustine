@@ -146,14 +146,22 @@ fn single(
     }
     let at = BlockPos::new(position.x, position.y, position.z);
     let pivot = BlockPos::new(placing.pivot.x, placing.pivot.y, placing.pivot.z);
-    place_in_world(
+    let Some(entities) = place_in_world(
         blocks,
         placing.level.view(),
         at,
         pivot,
         &settings,
         &mut *placing.random,
-    )
+    ) else {
+        return false;
+    };
+    // The villages' and outposts' mobs, finalised from the region's random source at
+    // the end of the game's `placeInWorld` (`docs/groundwork/n7-brief.md`, section 8.17).
+    placing
+        .level
+        .make_template_entities(placing.settings, entities);
+    true
 }
 
 /// The processor list of the data called `name`, read once.

@@ -8,13 +8,11 @@
 //! stream implements as well, so that the same hook draws from a player's stream for an
 //! egg and from the game's random sources for generation.
 //!
-//! The spawning of a chunk is in `spawning`. The bodies of the creatures'
-//! `finalizeSpawn` by reason and group and of a template's entities are the plan's
-//! other parts (sections 5.2 and 5.4): until then they make nothing and draw nothing,
-//! and say so where they stand.
+//! The spawning of a chunk is in `spawning`; the structures' entities, from their
+//! templates' tags and their pieces' code, in `template`.
 
 use clustine_data::BlockState;
-use clustine_world::generation::{Draws, FinalHeightmap, Maker};
+use clustine_world::generation::{Draws, FinalHeightmap, Maker, Placed};
 use clustine_world::{Biome, BlockPos, ChunkPos, Entity, EntityId, Generated};
 
 use crate::mobs::types::{SpawnGroup, SpawnReason, Spawning};
@@ -22,14 +20,18 @@ use crate::mobs::types::{SpawnGroup, SpawnReason, Spawning};
 use crate::region::Random;
 
 mod spawning;
+mod template;
+#[cfg(test)]
+mod template_tests;
 
 pub use spawning::SpawnRandom;
 
 /// Raised whenever the set of types made with chunks or by structures changes, or what
 /// any of them is made with (section 4): a world made while fewer were made is refused
 /// rather than continued with a seam. 0 while none was made; 1 since a chunk is made
-/// with the overworld's creatures (N7l).
-pub const ENTITIES_GENERATION: u16 = 1;
+/// with the overworld's creatures (N7l); 2 since the structures make theirs, by every
+/// type built (N7l's D3).
+pub const ENTITIES_GENERATION: u16 = 2;
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
 /// motion height maps and its light, and the biomes of the nine around it, which the
@@ -87,38 +89,20 @@ pub(crate) fn making_stream(world: u64, making: Generated) -> Option<Random> {
     Some(Random::of_generated(world, making.key()?))
 }
 
-/// A mob of the type `kind` a structure's code makes at `position` facing `yaw` (the
-/// swamp hut's witch, the monument's elders), made as an egg's is
-/// ([`crate::mobs::making`]) and finalised for the reason `STRUCTURE`, with the biome
-/// `biome` at its block and the level's `level` (the run's region random). Without its
-/// key. `None` for a type that is no mob, or a making beyond the border.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "what a structure's code knows of its mob"
-)]
-pub fn mob(
-    world: u64,
-    making: Generated,
-    kind: u16,
-    structure: Option<&'static str>,
-    biome: Option<&'static str>,
-    position: [f64; 3],
-    yaw: f32,
-    level: &mut dyn Draws,
-) -> Option<Entity> {
-    let mut group = None;
-    made_mob(
-        world,
-        making,
-        kind,
-        SpawnReason::Structure,
-        &mut group,
-        structure,
-        biome,
-        position,
-        yaw,
-        level,
-    )
+/// A mob of the type `kind` a structure's code makes (the swamp hut's witch, the
+/// monument's elders), made as an egg's is ([`crate::mobs::making`]), kept from
+/// despawning where `persistent`, and finalised for the reason `STRUCTURE` with the
+/// level's draws `placed` hands (the run's region random), in the world `world`. Its
+/// unit, the vehicle first, each keyed by its making; nothing, having drawn nothing,
+/// for a type not built.
+pub fn mob(world: u64, kind: u16, persistent: bool, placed: Placed<'_>) -> Vec<Entity> {
+    template::structure_mob(world, kind, persistent, placed)
+}
+
+/// An entity that is no mob a structure's code makes (a mineshaft's chest minecart),
+/// keyed by its making; `None` for a type not made so.
+pub fn entity(world: u64, kind: u16, placed: Placed<'_>) -> Option<Entity> {
+    template::structure_entity(world, kind, placed)
 }
 
 /// A mob made for `reason` with the group `group` of its spawn (none for the first of a
@@ -187,20 +171,12 @@ pub(crate) fn made_mob(
 }
 
 /// An entity of a template from its tag (a compound with its `id`, in the binary form
-/// of NBT without a name), at `position` facing `yaw`, finalised for the reason
-/// `STRUCTURE` with `draws` where `finalise` and it is a mob. Without its key. `None`
-/// for what is not made so, having drawn nothing.
-///
-/// Section 5.4's: until then it makes none.
-pub fn template_entity(
-    tag: &[u8],
-    position: [f64; 3],
-    yaw: f32,
-    finalise: bool,
-    draws: &mut dyn Draws,
-) -> Option<Entity> {
-    let _ = (tag, position, yaw, finalise, draws);
-    None
+/// of NBT without a name), as `placeEntities` makes it, finalised for the reason
+/// `STRUCTURE` with the level's draws where `finalise` and it is a mob, in the world
+/// `world`. Its unit, the vehicle first, each keyed by its making; nothing, having
+/// drawn nothing, for what is not made so.
+pub fn template_entity(world: u64, tag: &[u8], finalise: bool, placed: Placed<'_>) -> Vec<Entity> {
+    template::template_entity(world, tag, finalise, placed)
 }
 
 /// The record of an entity a run or a spawn made, now that its key is `key`, the chunk's
@@ -223,27 +199,16 @@ impl Maker for Generation {
         record(key, entity)
     }
 
-    fn mob(
-        &self,
-        kind: u16,
-        making: Generated,
-        biome: Option<&'static str>,
-        position: [f64; 3],
-        yaw: f32,
-        draws: &mut dyn Draws,
-    ) -> Option<Entity> {
-        mob(self.world, making, kind, None, biome, position, yaw, draws)
+    fn mob(&self, kind: u16, persistent: bool, placed: Placed<'_>) -> Vec<Entity> {
+        mob(self.world, kind, persistent, placed)
     }
 
-    fn template_entity(
-        &self,
-        tag: &[u8],
-        position: [f64; 3],
-        yaw: f32,
-        finalise: bool,
-        draws: &mut dyn Draws,
-    ) -> Option<Entity> {
-        template_entity(tag, position, yaw, finalise, draws)
+    fn entity(&self, kind: u16, placed: Placed<'_>) -> Option<Entity> {
+        entity(self.world, kind, placed)
+    }
+
+    fn template_entity(&self, tag: &[u8], finalise: bool, placed: Placed<'_>) -> Vec<Entity> {
+        template_entity(self.world, tag, finalise, placed)
     }
 }
 
@@ -315,17 +280,31 @@ mod tests {
         };
         let make = |world, index| {
             let mut level = Random::of_entity(3, EntityId(5), 0);
-            mob(
+            let mut makings = clustine_world::generation::Makings::new(0, ChunkPos::new(4, -2));
+            for _ in 0..index {
+                makings.next();
+            }
+            let mut made = mob(
                 world,
-                making(index),
                 clustine_data::entity_types::COW as u16,
-                None,
-                Some("minecraft:plains"),
-                [64.5, 70.0, -30.5],
-                90.0,
-                &mut level,
-            )
-            .expect("a cow is made")
+                false,
+                Placed {
+                    position: [64.5, 70.0, -30.5],
+                    yaw: 90.0,
+                    pitch: 0.0,
+                    structure: None,
+                    biome: clustine_world::Biome(0),
+                    makings: &mut makings,
+                    level: &mut level,
+                },
+            );
+            assert_eq!(made.len(), 1, "a cow is made alone");
+            assert_eq!(
+                made[0].key,
+                making(index).key().unwrap(),
+                "named by its making"
+            );
+            made.remove(0)
         };
         let made = make(11, 0);
         assert_eq!(make(11, 0), made);

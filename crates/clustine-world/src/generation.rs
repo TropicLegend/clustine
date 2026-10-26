@@ -205,40 +205,101 @@ pub trait Maker: Send + Sync {
     fn record(&self, key: EntityId, entity: Entity) -> Entity;
 
     /// A mob of the type `kind` (an index into `clustine_data::ENTITY_TYPES`) that a
-    /// structure's code makes at `position` facing `yaw` (the swamp hut's witch, the
-    /// monument's elders), finalised for the reason `STRUCTURE` with the level's
-    /// `draws`, without its key; `None` for a type this maker does not make, having
-    /// drawn nothing.
-    /// `making` is its making, by the run's centre, its class and its place among what
-    /// the run made, which keys its own random; `biome` the biome at its block.
-    fn mob(
-        &self,
-        kind: u16,
-        making: crate::Generated,
-        biome: Option<&'static str>,
-        position: [f64; 3],
-        yaw: f32,
-        draws: &mut dyn Draws,
-    ) -> Option<Entity> {
-        let _ = (kind, making, biome, position, yaw, draws);
+    /// structure's code makes (the swamp hut's witch and cat, the monument's elders,
+    /// the mansion's illagers): made for the reason `STRUCTURE`, kept from despawning
+    /// where `persistent` (`setPersistenceRequired`), put where `placed` says and
+    /// finalised with its level's draws. Without its key: each one's `key` is its
+    /// making's ([`Makings`]), which the scheduler replaces, and by which a unit's
+    /// members name each other. A mob made beside it, such as a jockey's mount, comes
+    /// with it, the vehicle first. Nothing, having drawn nothing, for a type this maker
+    /// does not make.
+    fn mob(&self, kind: u16, persistent: bool, placed: Placed<'_>) -> Vec<Entity> {
+        let _ = (kind, persistent, placed);
+        Vec::new()
+    }
+
+    /// An entity that is no mob, of the type `kind`, that a structure's code makes (a
+    /// mineshaft's chest minecart), as its type's constructor makes it, where `placed`
+    /// says; its level's draws are not read. Without its key, as [`mob`](Self::mob);
+    /// `None` for a type this maker does not make.
+    fn entity(&self, kind: u16, placed: Placed<'_>) -> Option<Entity> {
+        let _ = (kind, placed);
         None
     }
 
-    /// An entity of a template, from its tag as the template file has it (a compound
-    /// with its `id`, in the binary form of NBT without a name), at `position` facing
-    /// `yaw` as the template's transform left it; finalised for the reason `STRUCTURE`
-    /// with the level's `draws` where `finalise` and it is a mob. Without its key;
-    /// `None` for what this maker does not make, having drawn nothing.
-    fn template_entity(
-        &self,
-        tag: &[u8],
-        position: [f64; 3],
-        yaw: f32,
-        finalise: bool,
-        draws: &mut dyn Draws,
-    ) -> Option<Entity> {
-        let _ = (tag, position, yaw, finalise, draws);
-        None
+    /// The entity of a template's `tag` as the template's placing hands it (a compound
+    /// with its `id`, in the binary form of NBT without a name: its `Pos` set, its
+    /// `UUID` taken out), loaded, put where `placed` says and, where `finalise` and it
+    /// is a mob, finalised for the reason `STRUCTURE` with its level's draws. Without
+    /// its key, and a unit the vehicle first, as [`mob`](Self::mob). Nothing, having
+    /// drawn nothing, for what this maker does not make.
+    fn template_entity(&self, tag: &[u8], finalise: bool, placed: Placed<'_>) -> Vec<Entity> {
+        let _ = (tag, finalise, placed);
+        Vec::new()
+    }
+}
+
+/// Where and with what a structure's run makes an entity: its position, yaw and pitch
+/// as `snapTo` leaves them, the structure whose piece makes it (a swamp hut's cat is
+/// black), the biome at its block, the run's makings, and the level's draws (the run's
+/// region random).
+pub struct Placed<'a> {
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    /// The structure's name (`minecraft:swamp_hut`), where a structure's code makes it.
+    pub structure: Option<&'static str>,
+    /// The biome at its block, as the game's `getBiome` finds it.
+    pub biome: Biome,
+    pub makings: &'a mut Makings,
+    pub level: &'a mut dyn Draws,
+}
+
+/// The makings of one feature run's entities (`docs/groundwork/n7l-plan.md`, section
+/// 2.3): each entity it makes takes the next, by the run's centre, the class of a
+/// structure's and its place among what the run made, counting from 0. A making keys
+/// the entity's own stream, and names it to the other members of its unit until the
+/// scheduler keys it by the chunk it lands in (section 9 item 1). A run carries one
+/// from placement to placement, and an attempt that is undone gives back what it took,
+/// as it gives back its blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Makings {
+    dimension: u8,
+    centre: ChunkPos,
+    made: u32,
+}
+
+impl Makings {
+    /// The makings of a run of `centre` in the dimension numbered `dimension`
+    /// ([`dimension_number`]), none taken yet.
+    pub fn new(dimension: u8, centre: ChunkPos) -> Self {
+        Self {
+            dimension,
+            centre,
+            made: 0,
+        }
+    }
+
+    /// The next making, taken; `None` once the run has made as many as a class has
+    /// indices ([`MAX_GENERATED_OF_A_CLASS`]): it makes no more.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "a making is taken, not iterated over"
+    )]
+    pub fn next(&mut self) -> Option<crate::Generated> {
+        let index = u16::try_from(self.made).ok()?;
+        self.made += 1;
+        Some(crate::Generated {
+            dimension: self.dimension,
+            chunk: self.centre,
+            structure: true,
+            index,
+        })
+    }
+
+    /// How many were taken.
+    pub fn taken(&self) -> u32 {
+        self.made
     }
 }
 
@@ -353,6 +414,34 @@ mod tests {
         assert_eq!(draws.next_int(0), 0);
         assert_eq!(direct.next_i32_bounded(1), 0);
         assert_eq!(draws.next_int(1000) as i32, direct.next_i32_bounded(1000));
+    }
+
+    #[test]
+    fn a_run_s_makings_count_from_nought_by_its_centre_and_end_with_a_class_s_indices() {
+        let centre = ChunkPos::new(-7, 12);
+        let mut makings = Makings::new(2, centre);
+        let first = makings.next().unwrap();
+        assert_eq!(
+            first,
+            crate::Generated {
+                dimension: 2,
+                chunk: centre,
+                structure: true,
+                index: 0,
+            }
+        );
+        assert_eq!(makings.next().unwrap().index, 1);
+        assert_eq!(makings.taken(), 2);
+        // A copy taken before goes on from where it was: an undone attempt gives back.
+        let before = makings;
+        makings.next();
+        assert_eq!(before.taken(), 2);
+        let mut makings = Makings::new(0, centre);
+        for _ in 0..MAX_GENERATED_OF_A_CLASS {
+            assert!(makings.next().is_some());
+        }
+        assert_eq!(makings.next(), None);
+        assert_eq!(makings.next(), None);
     }
 
     #[test]

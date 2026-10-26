@@ -131,14 +131,20 @@ impl Feature for Template {
         placing.processors = self.processors.processors.iter().collect();
         placing.random = PlaceRandom::Given;
         placing.shapes = &shapes;
-        place_in_world(
+        let Some(entities) = place_in_world(
             template,
             context.level.view(),
             position,
             position,
             &placing,
             &mut *context.random,
-        )
+        ) else {
+            return false;
+        };
+        // None of the game's templates of this feature holds an entity; one that did
+        // would be made as saved, as the feature does not finalise.
+        context.level.make_template_entities(settings, entities);
+        true
     }
 }
 

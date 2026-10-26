@@ -11,13 +11,104 @@ use clustine_terrain::biome::Dimension;
 use clustine_world::generation::{
     FinalHeightmap, Neighbourhood, PieceKey, PieceState, Placing, StartRef, WorldgenHeightmap,
 };
-use clustine_world::{Biome, BlockEntity, BlockPos, ChunkPos, ScheduledTick};
+use clustine_world::generation::{Maker, Placed};
+use clustine_world::{
+    Biome, BlockEntity, BlockPos, ChunkPos, Entity, EntityData, EntityId, Entry, ScheduledTick,
+};
 
 use crate::context::{Context, Level};
 use crate::settings::FeatureSettings;
 
 const MIN_Y: i32 = -64;
 const HEIGHT: i32 = 384;
+
+/// A maker of toys for the tests (`clustine_world::generation::Maker`): it makes the
+/// mobs of the types in `mobs` and every template entity and cart, each named by its
+/// making, drawing a float of the level's for each mob it finalises when `draws`. What
+/// it was handed it keeps in the toy's data: its tag, its structure, and whether it was
+/// to be finalised or kept.
+pub struct ToyMaker {
+    pub mobs: &'static [i32],
+    pub draws: bool,
+}
+
+impl ToyMaker {
+    fn toy(
+        kind: u16,
+        placed: Placed<'_>,
+        bytes: Vec<u8>,
+        flag: bool,
+        finalise: bool,
+    ) -> Option<Entity> {
+        let making = placed.makings.next()?;
+        if finalise && placed.level.next_float() < 0.0 {
+            unreachable!("a float is not below 0");
+        }
+        Some(Entity {
+            key: making.key()?,
+            kind,
+            uuid: Default::default(),
+            position: placed.position,
+            motion: [0.0; 3],
+            yaw: placed.yaw,
+            pitch: placed.pitch,
+            on_ground: false,
+            hops: 0,
+            lived: 0,
+            fresh_at: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: EntityData::Mob {
+                body: vec![Entry {
+                    id: 0,
+                    version: u8::from(flag),
+                    bytes,
+                }],
+                mind: Vec::new(),
+                state: Default::default(),
+            },
+        })
+    }
+
+    /// What a toy was handed: its bytes (a template's tag, a mob's structure) and its
+    /// flag (finalised, kept).
+    pub fn handed(entity: &Entity) -> (&[u8], bool) {
+        match &entity.data {
+            EntityData::Mob { body, .. } => (&body[0].bytes, body[0].version == 1),
+            _ => panic!("not a toy: {entity:?}"),
+        }
+    }
+}
+
+impl Maker for ToyMaker {
+    fn record(&self, key: EntityId, mut entity: Entity) -> Entity {
+        entity.key = key;
+        entity
+    }
+
+    fn mob(&self, kind: u16, persistent: bool, placed: Placed<'_>) -> Vec<Entity> {
+        if !self.mobs.contains(&i32::from(kind)) {
+            return Vec::new();
+        }
+        let structure = placed.structure.unwrap_or("").as_bytes().to_vec();
+        let draws = self.draws;
+        Self::toy(kind, placed, structure, persistent, draws)
+            .into_iter()
+            .collect()
+    }
+
+    fn entity(&self, kind: u16, placed: Placed<'_>) -> Option<Entity> {
+        Self::toy(kind, placed, Vec::new(), false, false)
+    }
+
+    fn template_entity(&self, tag: &[u8], finalise: bool, placed: Placed<'_>) -> Vec<Entity> {
+        let draws = self.draws && finalise;
+        Self::toy(0, placed, tag.to_vec(), finalise, draws)
+            .into_iter()
+            .collect()
+    }
+}
 
 /// The overworld's features, read once for every test.
 pub fn settings() -> &'static FeatureSettings {
@@ -38,6 +129,8 @@ pub struct World {
     pub marks: Vec<BlockPos>,
     /// Every block a write changed, in order.
     pub writes: Vec<(BlockPos, BlockState)>,
+    /// The entities the runs made and kept, in order.
+    pub made: Vec<Entity>,
 }
 
 impl World {
@@ -52,6 +145,7 @@ impl World {
             ticks: Vec::new(),
             marks: Vec::new(),
             writes: Vec::new(),
+            made: Vec::new(),
         }
     }
 
@@ -188,6 +282,19 @@ impl Neighbourhood for World {
 
     fn mark(&mut self, at: BlockPos) {
         self.marks.push(at);
+    }
+
+    /// As a run's view: kept where it stands in the three by three.
+    fn add_entity(&mut self, entity: Entity) -> bool {
+        if !entity.position.iter().all(|value| value.is_finite()) {
+            return false;
+        }
+        let chunk = entity.chunk();
+        if chunk.x.abs() > 1 || chunk.z.abs() > 1 {
+            return false;
+        }
+        self.made.push(entity);
+        true
     }
 
     fn starts(&self) -> &[StartRef] {

@@ -13,9 +13,10 @@
 //!   (warm) or gravel (cold) become suspicious, with the archaeology loot.
 //! - The marker `chest` becomes a chest, waterlogged where water was, with the big or
 //!   the small ruin's loot.
-//! - The marker `drowned` makes a drowned in the game, which Clustine drops; the
-//!   numbers its `finalizeSpawn` draws from the region's random source are drawn
-//!   ([`drowned_draws`]). The marker becomes water, or air above the sea.
+//! - The marker `drowned` makes a drowned, finalised from the region's random source;
+//!   while the maker does not make the type, the numbers its `finalizeSpawn` draws of
+//!   that source are drawn ([`drowned_draws`]). The marker becomes water, or air above
+//!   the sea.
 
 use clustine_data::blocks;
 use clustine_noise::{Random, RandomSource};
@@ -176,13 +177,31 @@ fn height(level: &mut Level<'_>, base: BlockPos, corner: BlockPos) -> i32 {
     new_y
 }
 
-/// The marker `drowned`: the game makes a drowned there, which Clustine drops, and
-/// draws what it draws; then the marker becomes water, or air above the sea.
+/// The marker `drowned`: the game makes a drowned there, kept from despawning, at the
+/// block's bottom centre facing nowhere (`snapTo(pos, 0, 0)`, **Inferred**: the piece
+/// is not in the dumps), and finalised; then the marker becomes water, or air above
+/// the sea. Where the maker does not make a drowned yet, what it draws is drawn.
 fn drowned(placing: &mut Placing<'_, '_, '_>, at: BlockPos) {
-    let river = biome_is_river(placing.level.biome(at).0);
-    let seed = placing.settings.seed();
-    let legacy = placing.settings.legacy_random_source();
-    drowned_draws(placing.level.region_random(seed, legacy), river);
+    let position = [
+        f64::from(at.x) + 0.5,
+        f64::from(at.y),
+        f64::from(at.z) + 0.5,
+    ];
+    let settings = placing.settings;
+    // Which of the two ruins this is no drowned's draws read.
+    let made = placing.level.make_mob(
+        settings,
+        clustine_data::entity_types::DROWNED,
+        true,
+        position,
+        None,
+    );
+    if !made {
+        let river = biome_is_river(placing.level.biome(at).0);
+        let seed = placing.settings.seed();
+        let legacy = placing.settings.legacy_random_source();
+        drowned_draws(placing.level.region_random(seed, legacy), river);
+    }
     let sea_level = placing.settings.generation().sea_level;
     let replacement = if at.y > sea_level {
         blocks::AIR

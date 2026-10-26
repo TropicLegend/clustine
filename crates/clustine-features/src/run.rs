@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 use clustine_noise::{RandomSource, WorldgenRandom};
 use clustine_structures::geometry::{BoundingBox, IVec3};
 use clustine_structures::{Start, long_set_order};
-use clustine_world::generation::{Neighbourhood, PieceKey, Placing, StartRef};
+use clustine_world::generation::{
+    KeyOnly, Maker, Makings, Neighbourhood, PieceKey, Placing, StartRef,
+};
 use clustine_world::{BlockPos, ChunkPos};
 use clustine_worldgen_data::feature as data;
 use clustine_worldgen_data::structures::STRUCTURES;
@@ -23,7 +25,23 @@ use crate::structures::{self, StartsOf};
 /// chunks list; for each step, in the order of their places in the step's list, each
 /// is seeded by its place and the step and placed from the corner, each in an attempt
 /// of its own (ADR-0021), which the game's `try` around each feature stands for.
+///
+/// No entity is made: a structure's mobs are drawn for as the game draws for them.
 pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre: ChunkPos) {
+    decorate_with(settings, view, centre, &KeyOnly, 0);
+}
+
+/// [`decorate`], the structures' entities made by `maker` in the dimension numbered
+/// `dimension` (`clustine_world::generation::dimension_number`), each with the next of
+/// the run's makings.
+pub fn decorate_with(
+    settings: &FeatureSettings,
+    view: &mut dyn Neighbourhood,
+    centre: ChunkPos,
+    maker: &dyn Maker,
+    dimension: u8,
+) {
+    let mut makings = Makings::new(dimension, centre);
     let origin = BlockPos::new(centre.x * 16, settings.min_y(), centre.z * 16);
     // The game seeds its generator from the clock before it sets the decoration seed,
     // which replaces that seed; nothing of it remains.
@@ -55,6 +73,8 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
                 centre,
                 random: &mut random,
                 region_random: &mut region_random,
+                maker,
+                makings: &mut makings,
             };
             run.place_structures(starts_of, decoration, step);
         }
@@ -68,7 +88,8 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
             let name = data::placed_features()[placed].name;
             view.attempt(Placing::Feature(name), &mut |view| {
                 let mut level =
-                    Level::new(view, settings.zoom(), settings.min_y(), settings.height());
+                    Level::new(view, settings.zoom(), settings.min_y(), settings.height())
+                        .with_maker(maker, makings);
                 level.carry_region_random(region_random.take());
                 let mut context = Context {
                     level: &mut level,
@@ -78,6 +99,9 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
                 };
                 settings.placed(placed).place(&mut context, origin);
                 region_random = level.carry_region_random(None);
+                // Only a placement that returns keeps what it took: one that panics
+                // is undone with its entities, and gives their makings back.
+                makings = level.makings();
             });
         }
     }
@@ -86,6 +110,8 @@ pub fn decorate(settings: &FeatureSettings, view: &mut dyn Neighbourhood, centre
 /// What a feature run carries from one placement to the next.
 struct Run<'r> {
     settings: &'r FeatureSettings,
+    maker: &'r dyn Maker,
+    makings: &'r mut Makings,
     view: &'r mut dyn Neighbourhood,
     centre: ChunkPos,
     random: &'r mut WorldgenRandom,
@@ -208,9 +234,12 @@ impl Run<'_> {
             centre,
             random,
             region_random,
+            maker,
+            makings,
         } = self;
         view.attempt(what, &mut |view| {
-            let mut level = Level::new(view, settings.zoom(), settings.min_y(), settings.height());
+            let mut level = Level::new(view, settings.zoom(), settings.min_y(), settings.height())
+                .with_maker(*maker, **makings);
             level.carry_region_random(region_random.take());
             let mut placing = structures::Placing {
                 level: &mut level,
@@ -222,6 +251,8 @@ impl Run<'_> {
             };
             place(&mut placing);
             **region_random = level.carry_region_random(None);
+            // An attempt undone gives its makings back, as its blocks.
+            **makings = level.makings();
         });
     }
 }

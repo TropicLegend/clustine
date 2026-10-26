@@ -446,8 +446,8 @@ pub(super) fn region_random<'a>(placing: &'a mut Placing<'_, '_, '_>) -> &'a mut
 
 /// What `Mob.finalizeSpawn` draws from the region's random source for a mob a piece
 /// makes: the follow range's random bonus (`triangle`, two doubles) and whether it is
-/// left-handed. Clustine makes no mob, but the draws are the region's, which other
-/// pieces and features draw from after.
+/// left-handed: drawn for a mob of a type the maker does not make yet, as the draws
+/// are the region's, which other pieces and features draw from after.
 pub(super) fn finalize_mob_spawn(placing: &mut Placing<'_, '_, '_>) {
     let random = region_random(placing);
     random.triangle(0.0, 0.114_850_000_000_000_01);
@@ -478,6 +478,7 @@ pub(super) mod testing {
     use clustine_noise::{RandomSource, WorldgenRandom};
     use clustine_structures::geometry::{BoundingBox, Direction, IVec3, Identifier};
     use clustine_structures::piece::{StructurePiece, StructurePiecePayload};
+    use clustine_world::generation::{KeyOnly, Maker, Makings};
     use clustine_world::{BlockPos, ChunkPos};
 
     use crate::context::Level;
@@ -518,6 +519,8 @@ pub(super) mod testing {
     pub struct Run {
         pub world: WithEntities,
         pub random: WorldgenRandom,
+        /// The makings of the run's entities, carried from placement to placement.
+        pub makings: Makings,
     }
 
     impl Run {
@@ -525,6 +528,7 @@ pub(super) mod testing {
             Self {
                 world: WithEntities::new(world),
                 random: WorldgenRandom::from_seed(seed),
+                makings: Makings::new(0, ChunkPos::new(0, 0)),
             }
         }
 
@@ -534,8 +538,20 @@ pub(super) mod testing {
             chunk_box: BoundingBox,
             f: impl FnOnce(&mut Placing<'_, '_, '_>) -> R,
         ) -> R {
+            self.place_making(&KeyOnly, chunk_box, f)
+        }
+
+        /// [`Self::place`], the structures' entities made by `maker`, each with the
+        /// next making of the run of chunk (0, 0).
+        pub fn place_making<R>(
+            &mut self,
+            maker: &dyn Maker,
+            chunk_box: BoundingBox,
+            f: impl FnOnce(&mut Placing<'_, '_, '_>) -> R,
+        ) -> R {
             let settings = settings();
-            let mut level = Level::new(&mut self.world, settings.zoom(), -64, 384);
+            let mut level = Level::new(&mut self.world, settings.zoom(), -64, 384)
+                .with_maker(maker, self.makings);
             let mut placing = Placing {
                 level: &mut level,
                 random: &mut self.random,
@@ -544,7 +560,9 @@ pub(super) mod testing {
                 centre: ChunkPos::new(0, 0),
                 pivot: IVec3::ZERO,
             };
-            f(&mut placing)
+            let result = f(&mut placing);
+            self.makings = level.makings();
+            result
         }
 
         pub fn get(&self, at: BlockPos) -> BlockState {
