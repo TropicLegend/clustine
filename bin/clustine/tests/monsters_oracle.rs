@@ -694,3 +694,184 @@ async fn a_snowball_thrown_at_a_villager_is_shown_like_on_the_official_server() 
         "the knockback: official {theirs_knocked:?}, Clustine {ours_knocked:?}"
     );
 }
+
+// N8's fourth comparison (`docs/groundwork/n8-plan.md`, section 9): a zombie at noon
+// under glass, which lets the sky's light down whole, burns; one under leaves, which
+// take one from it, does not (burning needs the sky seen, light 15 at the eyes).
+//
+// Each zombie is in a pit three blocks deep, dug beside the builder, roofed at the
+// grass's height with glass or oak leaves placed against the side of the grass beside
+// it, and made by its egg on the bedrock: it cannot climb out, and only the roof lets
+// light in. The official server's clock is set to noon and paused; Clustine, which has
+// no commands, is started on a world whose clock was written into the world store's
+// table file at noon, which the region takes as the later of it and its own (see
+// `detector_oracle.rs`). The zombie under glass is to be on fire within fifteen seconds
+// (it draws `(1.0 - 0.4) * 2 / 30` a tick), and the one under leaves never, while the
+// builder watches until five seconds after the first burnt. If it fails on Clustine
+// alone, look at the light under the roof first (`region/light.rs`, leaves'
+// dampening), then at the burning (`burning.rs`).
+
+use clustine::Config;
+use clustine_format::TableFile;
+use common::{config, start_with};
+
+/// The day time of noon, and the game time Clustine's noon world is given.
+const NOON: u64 = 6_000;
+const NOON_GAME_TIME: u64 = 100_000;
+
+/// Starts Clustine on a new world in `directory` whose clock is at noon.
+async fn start_clustine_at_noon(directory: &std::path::Path) -> Result<clustine::Server> {
+    let on_disk = || Config {
+        world: Some(directory.to_owned()),
+        ..config()
+    };
+    let (server, _) = start_with(on_disk()).await;
+    server.stop().await;
+    let path = directory.join("regions").join("table");
+    let mut table = TableFile::decode(&std::fs::read(&path)?).context("the table file")?;
+    anyhow::ensure!(
+        table.clock[0] < NOON_GAME_TIME && table.clock[1] < 24_000 + NOON,
+        "the new world's clock {:?} is already past noon of its second day",
+        table.clock
+    );
+    table.clock = [NOON_GAME_TIME, 24_000 + NOON];
+    std::fs::write(&path, table.encode())?;
+    Ok(start_with(on_disk()).await.0)
+}
+
+/// A pit three deep at `(x, z)` roofed with `roof`, placed against the side of the grass
+/// a step towards the builder, and a zombie made by its egg at its bottom, whose id is
+/// returned.
+async fn zombie_in_a_pit(bot: &mut Bot, (x, z): (i32, i32), roof: i32, east: bool) -> Result<i32> {
+    for depth in 0..3 {
+        let sequence = bot.dig(x, GROUND - depth, z).await?;
+        bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
+            .await?;
+    }
+    bot.put_in_hotbar(
+        2,
+        ItemStack {
+            item: roof,
+            count: 1,
+        },
+    )
+    .await?;
+    bot.select_slot(2).await?;
+    // The grass a step towards the builder, and its face towards the pit.
+    let (beside, side, cursor) = if east {
+        (x - 1, face::EAST, [1.0, 0.5, 0.5])
+    } else {
+        (x + 1, face::WEST, [0.0, 0.5, 0.5])
+    };
+    let sequence = bot.click(beside, GROUND, z, side, cursor).await?;
+    bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
+        .await?;
+    bot.wait_until(PATIENCE, |bot| {
+        bot.block_at(x, GROUND, z)
+            .ok()
+            .flatten()
+            .and_then(|id| u16::try_from(id).ok())
+            .map(clustine_data::BlockState)
+            .and_then(|state| state.block())
+            .is_some_and(|block| block.name != "minecraft:air")
+    })
+    .await
+    .context("the pit's roof")?;
+    let before = of_kind(bot, entity_types::ZOMBIE);
+    bot.put_in_hotbar(
+        0,
+        ItemStack {
+            item: items::ZOMBIE_SPAWN_EGG,
+            count: 1,
+        },
+    )
+    .await?;
+    bot.select_slot(0).await?;
+    bot.use_item_on(x, GROUND - 3, z, face::TOP).await?;
+    bot.wait_until(PATIENCE, |bot| {
+        of_kind(bot, entity_types::ZOMBIE)
+            .iter()
+            .any(|id| !before.contains(id))
+    })
+    .await
+    .context("a new zombie in the pit")?;
+    of_kind(bot, entity_types::ZOMBIE)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .context("a new zombie")
+}
+
+/// When each zombie was first shown on fire, if it was: the one under glass and the one
+/// under leaves, from its spawn.
+#[derive(Debug)]
+struct Burnt {
+    under_glass: Option<Duration>,
+    under_leaves: Option<Duration>,
+}
+
+async fn zombies_under_roofs(address: &str) -> Result<Burnt> {
+    let mut bot = builder(address).await?;
+    let (x, z) = feet(&bot);
+    let glass = zombie_in_a_pit(&mut bot, (x + 2, z), items::GLASS, true).await?;
+    let leaves = zombie_in_a_pit(&mut bot, (x - 2, z), items::OAK_LEAVES, false).await?;
+    let burnt = |bot: &Bot, zombie: i32| {
+        recorded(bot).iter().find_map(|(at, packet)| match packet {
+            ClientboundPlay::SetEntityData(data)
+                if data.entity_id == zombie && on_fire(&data.values) =>
+            {
+                Some(*at)
+            }
+            _ => None,
+        })
+    };
+    // Not catching fire in time is what is compared, so the wait's end is no error.
+    let _ = bot
+        .wait_until(Duration::from_secs(15), |bot| burnt(bot, glass).is_some())
+        .await;
+    bot.idle(Duration::from_secs(5)).await?;
+    let since = |zombie: i32| -> Result<Option<Duration>> {
+        let made = first(&bot, zombie)?.came;
+        Ok(burnt(&bot, zombie).map(|at| at.duration_since(made)))
+    };
+    Ok(Burnt {
+        under_glass: since(glass)?,
+        under_leaves: since(leaves)?,
+    })
+}
+
+#[tokio::test]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
+async fn a_zombie_at_noon_burns_under_glass_and_not_under_leaves_like_on_the_official_server() {
+    let oracle = Oracle::start(false).await.unwrap();
+    oracle
+        .command(
+            &format!("time set {NOON}"),
+            &["tick(s)", "Set the time", "already set"],
+        )
+        .await
+        .unwrap();
+    oracle
+        .command("time pause", &["Paused clock", "already paused"])
+        .await
+        .unwrap();
+    let theirs = zombies_under_roofs(oracle.address()).await;
+    drop(oracle);
+    let world = tempfile::tempdir().unwrap();
+    let server = start_clustine_at_noon(world.path()).await.unwrap();
+    let address = server.address().to_string();
+    let ours = zombies_under_roofs(&address).await;
+    server.stop().await;
+    println!("official {theirs:?}\nClustine {ours:?}");
+    for (name, burnt) in [("the official server", theirs), ("Clustine", ours)] {
+        let burnt = burnt.unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        assert!(
+            burnt.under_glass.is_some(),
+            "{name}: the zombie under glass did not catch fire within fifteen seconds at noon"
+        );
+        assert!(
+            burnt.under_leaves.is_none(),
+            "{name}: the zombie under leaves caught fire {:?} after its spawn",
+            burnt.under_leaves
+        );
+    }
+}

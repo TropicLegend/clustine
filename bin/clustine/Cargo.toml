@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 clustine-botswarm.workspace = true
+clustine-format.workspace = true
 clustine-light.workspace = true
 clustine-protocol.workspace = true
 serde_json.workspace = true
