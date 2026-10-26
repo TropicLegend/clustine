@@ -1107,8 +1107,9 @@ impl BlockView for RegionView<'_> {
         self.0.block(at).unwrap_or(blocks::AIR)
     }
 
-    fn raw_brightness(&mut self, _at: BlockPos) -> Option<u8> {
-        None
+    fn raw_brightness(&mut self, at: BlockPos) -> Option<u8> {
+        // `getRawBrightness(pos, 0)`, of the region's light (ADR-0029).
+        self.0.raw_brightness(at, 0)
     }
 
     fn schedule_block_tick(&mut self, at: BlockPos, block: u16, delay: i32) {

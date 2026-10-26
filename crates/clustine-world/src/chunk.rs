@@ -261,6 +261,12 @@ pub struct Chunk {
     /// The entities other than players in the chunk, ascending by key
     /// (`docs/adr/0028-entities.md`, section 2).
     entities: Vec<Entity>,
+    /// Where light is kept up to date beside the chunk (a region's, ADR-0029): the
+    /// positions whose change light could see since they were last taken; `None` where
+    /// nobody asked. Not serialised, and no part of the
+    /// chunk's equality: every write to the blocks passes [`Chunk::set`], so none can go
+    /// round it (`docs/groundwork/n8-plan.md`, section 4.2).
+    light_noted: Option<Vec<InChunk>>,
 }
 
 impl PartialEq for Chunk {
@@ -304,6 +310,7 @@ impl Chunk {
             seams: Vec::new(),
             events: Vec::new(),
             entities: Vec::new(),
+            light_noted: None,
         };
         chunk.heights = chunk.scanned_heights();
         chunk.block_entities = chunk.owed_block_entities(BTreeMap::new());
@@ -361,10 +368,37 @@ impl Chunk {
         }
         self.generated = 0;
         self.with_failure = false;
-        if self.light.is_some() && light_tells_apart(old, state) {
+        if light_tells_apart(old, state) {
             self.light = None;
+            if let Some(noted) = &mut self.light_noted {
+                noted.push(at);
+            }
         }
         Some(old)
+    }
+
+    /// Whether the positions whose change light could see are being noted.
+    pub fn notes_light_changes(&self) -> bool {
+        self.light_noted.is_some()
+    }
+
+    /// Starts or stops noting the positions whose change light could see, for whoever
+    /// keeps light up to date beside the chunk; stopping forgets what was noted.
+    pub fn note_light_changes(&mut self, on: bool) {
+        self.light_noted = on.then(|| self.light_noted.take().unwrap_or_default());
+    }
+
+    /// The positions noted since they were last taken, ascending, each once: light is a
+    /// function of the blocks, so the order they changed in tells it nothing.
+    pub fn take_light_changes(&mut self) -> Vec<InChunk> {
+        let mut noted = self
+            .light_noted
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        noted.sort_unstable();
+        noted.dedup();
+        noted
     }
 
     /// Brings the four heights of a column up to date with a change at `y`.

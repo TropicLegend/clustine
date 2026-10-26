@@ -280,6 +280,18 @@ pub fn update_shape<V: BlockView + ?Sized>(
         view.schedule_block_tick(pos, tick_id(state), 1);
         return state;
     }
+    // A stem whose fruit went turns back, and a shoot under bamboo becomes bamboo
+    // (`plants.rs`).
+    if is_class(state, BlockClass::AttachedStemBlock)
+        && let Some(updated) = crate::plants::attached_stem(view, state, pos, direction, neighbour)
+    {
+        return updated;
+    }
+    if is_class(state, BlockClass::BambooSaplingBlock)
+        && let Some(updated) = crate::plants::bamboo_shoot(view, state, pos, direction, neighbour)
+    {
+        return updated;
+    }
     // A bamboo stalk that cannot stay falls by a tick, and one under an older stalk
     // takes the next age (`BambooStalkBlock.updateShape`).
     if is_class(state, BlockClass::BambooStalkBlock) {

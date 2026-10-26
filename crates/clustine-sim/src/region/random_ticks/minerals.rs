@@ -788,6 +788,7 @@ mod tests {
             return_after: 0,
             lowest_y: -64,
             seed: 0,
+            light: Default::default(),
         };
         let ids = EntityIds::block(0).expect("the first block of ids");
         let mut region = Region::new(config, ids, Holdings::default());

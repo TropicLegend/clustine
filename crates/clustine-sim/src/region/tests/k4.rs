@@ -8,9 +8,7 @@
 //! skeleton; a cave spider's egg draws nothing but its yaw.
 
 use clustine_data::{blocks, entity_types, items, sounds};
-use clustine_world::{
-    Chunk, Entity, EntityChange, EntityData, EntityId, LIGHT_ARRAY_LENGTH, Light, SectionLight,
-};
+use clustine_world::{Entity, EntityChange, EntityData, EntityId};
 
 use super::*;
 use crate::living::MAX_AIR;
@@ -154,70 +152,23 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     crate::physics::distance_sqr(a, b).sqrt()
 }
 
-/// The sky's light of the chunk at the origin: `sky(x, y, z)` in the section of the floor
-/// and the one above it (y −64 to −33), full elsewhere; no light of blocks.
-fn sky_light(chunk: &Chunk, sky: impl Fn(usize, i32, usize) -> u8) -> Light {
-    let entries = chunk.sections().len() + 2;
-    let mut sky_sections = vec![SectionLight::Full; entries];
-    for (section, entry) in sky_sections.iter_mut().enumerate().skip(1).take(2) {
-        let base = chunk.min_y() + 16 * (section as i32 - 1);
-        let mut levels = Box::new([0_u8; LIGHT_ARRAY_LENGTH]);
-        for dy in 0..16 {
-            for z in 0..16 {
-                for x in 0..16 {
-                    let at = (dy << 8) | (z << 4) | x;
-                    let level = sky(x, base + dy as i32, z) & 0x0F;
-                    levels[at >> 1] |= level << ((at & 1) * 4);
-                }
-            }
-        }
-        *entry = SectionLight::Levels(levels);
-    }
-    Light {
-        made_by: 0,
-        beside: 0,
-        sky: sky_sections,
-        block: vec![SectionLight::Dark; entries],
-    }
+/// [`on_ticking_floor_with`], the chunk at the origin roofed with persistent leaves two
+/// blocks above the floor wherever `roofed(x, z)`: shade whose sky is 14, as under a
+/// tree, and the open sky elsewhere (the region's light, ADR-0029).
+fn on_roofed_floor_with(roofed: impl Fn(usize, usize) -> bool) -> Region {
+    let leaves = BlockState::parse("minecraft:oak_leaves[persistent=true]").expect("leaves");
+    let roof: Vec<(BlockPos, BlockState)> = (0..16)
+        .flat_map(|x| (0..16).map(move |z| (x, z)))
+        .filter(|(x, z)| roofed(*x, *z))
+        .map(|(x, z)| (BlockPos::new(x as i32, -58, z as i32), leaves))
+        .collect();
+    on_ticking_floor_with(&roof)
 }
 
-/// [`on_ticking_floor_with`], the chunk at the origin carrying the light `sky` gives.
-fn on_lit_floor_with(
-    placed: &[(BlockPos, BlockState)],
-    sky: impl Fn(usize, i32, usize) -> u8,
-) -> Region {
-    let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
-    let around: Vec<ChunkPos> = (-1..=1)
-        .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
-        .collect();
-    region.tick(&tickets(around.clone(), vec![]));
-    let chunks = around
-        .into_iter()
-        .map(|position| {
-            let mut chunk = floor();
-            if position == ChunkPos::new(0, 0) {
-                for (at, state) in placed {
-                    chunk.set(at.x as usize, at.y, at.z as usize, *state);
-                }
-                let light = sky_light(&chunk, &sky);
-                chunk.set_light(light);
-            }
-            (position, chunk)
-        })
-        .collect();
-    region.tick(&TickInputs {
-        chunks_loaded: chunks,
-        ..TickInputs::default()
-    });
-    region
-}
-
-/// The sky's light the test's chunk gives at `position`.
+/// The sky's light at `position`, as the region has it.
 fn sky_at(region: &Region, position: [f64; 3]) -> u8 {
     let pos = crate::physics::containing(position);
-    let chunk = &region.chunks[&ChunkPos::new(0, 0)];
-    let light = chunk.light().expect("the chunk keeps its light");
-    light.sky_at(chunk.min_y(), pos.x as usize, pos.y, pos.z as usize)
+    region.light_at(pos).expect("the chunk is lit").sky
 }
 
 /// The slot of `FleeSunGoal` among a skeleton's goals.
@@ -225,10 +176,10 @@ const FLEE_SUN: u16 = 1;
 
 #[test]
 fn a_skeleton_burning_in_the_sun_walks_into_the_shade_about_it() {
-    // A sunlit square about the skeleton, under the open sky; lit shade (14) all round.
+    // A sunlit square about the skeleton, under the open sky; shade under leaves all
+    // round.
     let sunlit = |x: usize, z: usize| (6..=10).contains(&x) && (6..=10).contains(&z);
-    let mut region =
-        on_lit_floor_with(&[], |x, y, z| if y < -61 || sunlit(x, z) { 15 } else { 14 });
+    let mut region = on_roofed_floor_with(|x, z| !sunlit(x, z));
     region.clock.day = NOON;
     let mut skeleton = skeleton_at(ONE, [8.5, -60.0, 8.5], |_| {});
     skeleton.fire_ticks = 160;
@@ -252,9 +203,9 @@ fn a_skeleton_burning_in_the_sun_walks_into_the_shade_about_it() {
 
 #[test]
 fn a_skeleton_in_shade_by_day_keeps_its_strolls_out_of_the_sun() {
-    // Shade (14) but for a sunlit band along x 12 to 15, open at night and by day alike.
+    // Shade under leaves but for a sunlit band along x 12 to 15.
     let sunlit = |x: usize| x >= 12;
-    let mut region = on_lit_floor_with(&[], |x, y, _| if y < -61 || sunlit(x) { 15 } else { 14 });
+    let mut region = on_roofed_floor_with(|x, _| !sunlit(x));
     region.clock.day = NOON;
     lay(&mut region, &skeleton_at(ONE, [9.5, -60.0, 8.5], |_| {}));
     let mut restricted = false;

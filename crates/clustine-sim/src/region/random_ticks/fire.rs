@@ -819,6 +819,7 @@ mod tests {
             return_after: u64::MAX,
             lowest_y: -64,
             seed,
+            light: Default::default(),
         };
         let holdings = Holdings {
             held: around.clone(),

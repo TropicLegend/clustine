@@ -42,6 +42,12 @@ pub trait Blocks {
         0
     }
 
+    /// `getRawBrightness(at, 0)` where the caller keeps light (a region's, ADR-0029), so
+    /// that a seed is not planted in the dark; `None`, not judged, where it keeps none.
+    fn raw_brightness(&self, _at: BlockPos) -> Option<u8> {
+        None
+    }
+
     /// Whether the caller holds the chunk of `at`, as a chest asks before it pairs with
     /// a chest there: two chests across a line stay single
     /// (`docs/groundwork/n6-plan.md`, section 10 item 2). A caller of one world holds

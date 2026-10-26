@@ -44,6 +44,14 @@ pub fn sky_darken(day: u64) -> i32 {
     (15.0_f32 - sky_light_level(day)) as i32
 }
 
+/// The sun's angle in degrees at the day time `day`, as the `day` timeline's
+/// `visual/sun_angle` gives it (`docs/groundwork/n8-plan.md`, section 6.4), which the
+/// daylight detector reads. Part D3 of N8 gives it its body.
+pub fn sun_angle(day: u64) -> f32 {
+    let _ = day;
+    0.0
+}
+
 /// `Level.isDarkOutside`: what a bed's rule `when_dark` asks.
 pub fn is_dark(day: u64) -> bool {
     sky_darken(day) >= 4

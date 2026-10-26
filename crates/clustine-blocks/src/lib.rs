@@ -16,6 +16,7 @@ pub mod growth;
 pub mod loot;
 pub mod note;
 pub mod piston;
+pub mod plants;
 pub mod shape;
 pub mod signal;
 pub mod support;

@@ -3,7 +3,7 @@
 Why Clustine is the way it is, one decision a record. A record keeps its text as it
 was agreed; its status line says whether it is built and what has replaced it since.
 Where a later record changes an earlier one, the later one says so, and the earlier
-one names it. As of 2026-10-15:
+one names it. As of 2026-10-26:
 
 | Record | Title | Status |
 |---|---|---|
@@ -34,5 +34,7 @@ one names it. As of 2026-10-15:
 | [0025](0025-effects-between-regions.md) | Effects between regions | Built and measured (phase E, E1 to E7) |
 | [0026](0026-redstone.md) | Redstone | Accepted; R2 to R7 built, R8 to come (phase R) |
 | [0027](0027-lending-at-a-line.md) | Lending land at a pinned line, and merging at once at a busy one | Accepted; L2 to L5 built, L6 to come |
+| [0028](0028-entities.md) | Entities other than players: keys, chunks, commits and crossing | Accepted; built through phase N |
+| [0029](0029-light-in-the-simulation.md) | Light in the simulation | Proposed; N8a in part built (the engine's interface with its first implementation, the noting, the step and the budget) |
 
 Drafts that are not records yet are in [`../groundwork`](../groundwork).

@@ -34,6 +34,7 @@ mod containers;
 mod conversions;
 mod copper_golems;
 mod cushions;
+mod daylight_detector;
 mod diodes;
 mod dispensers;
 mod dried_ghasts;
@@ -58,6 +59,7 @@ mod items;
 mod knots;
 mod leashes;
 mod lends;
+mod light;
 mod menu_play;
 mod minecarts;
 mod mob_attacks;
@@ -96,6 +98,7 @@ mod vehicles;
 mod vibrations;
 mod water_creatures;
 
+pub use light::LightSettings;
 pub use reshape::{NoSplit, Part, Sides, Splitting};
 
 /// What a region is created with, and restored with: what it is given rather than what
@@ -119,6 +122,10 @@ pub struct RegionConfig {
     /// the world's own, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
     pub seed: u64,
+    /// How much of what it comes to have the region lights a tick (ADR-0029): a
+    /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
+    /// it comes.
+    pub light: LightSettings,
 }
 
 /// What the world store says of a region's chunks when the region is opened.
@@ -479,6 +486,9 @@ pub struct Region {
     /// restored, merged or split within those ticks has none, and the player, not seated
     /// in time, gets off where they are (a named difference).
     forwarded: BTreeMap<EntityId, (ChunkPos, u16)>,
+    /// The light of what the region has, and what waits for it (`light.rs`): no part of
+    /// its state, and equal always.
+    light: light::RegionLight,
     /// The use across a line by another region's player that the region is doing now,
     /// so that a mount it ends in grants a seat instead (`granted.rs`). Empty but during
     /// such a use.
@@ -634,6 +644,7 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
+            light: light::RegionLight::default(),
             using_across: None,
             dismounted: Vec::new(),
             took: Vec::new(),
@@ -660,7 +671,11 @@ impl Region {
     /// in its first tick; this one has them then. Its chunks start ticking in that tick,
     /// with each tick's delay left counted from it, so that it goes on as the region
     /// whose state and chunks were taken in the tick before
-    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4).
+    /// (`docs/adr/0024-block-behaviour-in-a-region.md`, section 4), where its chunks are
+    /// lit in that tick: with no budget for light, or a budget they fit in. Beyond that,
+    /// its chunks wait for their light as arrivals do, nearest its players first, and
+    /// those at the edge of a view stand still for some ticks while the rest go on,
+    /// rather than the whole region stalling while everything is lit (ADR-0029).
     ///
     /// It starts with `copies` as its border copies, as if they had been handed in as
     /// bases in the tick before (`docs/adr/0025-effects-between-regions.md`, section
@@ -1040,6 +1055,8 @@ impl Region {
         // The scheduled ticks (`docs/adr/0024-block-behaviour-in-a-region.md`, section
         // 6a): the chunks that tick now, then the due block ticks. Fluid ticks wait
         // for B5.
+        // Light, current with the blocks as the tick begins (ADR-0029).
+        self.light_step();
         self.update_ticking();
         // What another region sent was made while it handled its tick, and is done so
         // here too.
@@ -3240,6 +3257,10 @@ impl placement::Blocks for Readable<'_> {
         self.0.comparator_output(at)
     }
 
+    fn raw_brightness(&self, at: BlockPos) -> Option<u8> {
+        self.0.raw_brightness(at, 0)
+    }
+
     fn holds(&self, at: BlockPos) -> bool {
         self.0.chunks.contains_key(&at.chunk())
     }
@@ -3589,6 +3610,7 @@ mod tests {
             return_after: 0,
             lowest_y: -64,
             seed: 0,
+            light: Default::default(),
         }
     }
 

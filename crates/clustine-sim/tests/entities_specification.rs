@@ -48,6 +48,7 @@ fn config() -> RegionConfig {
         return_after: 0,
         lowest_y: -64,
         seed: 0,
+        light: Default::default(),
     }
 }
 

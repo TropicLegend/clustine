@@ -4,9 +4,7 @@
 //! 11.3).
 
 use clustine_data::EntityTypeInfo;
-use clustine_world::{
-    BlockPos, ChunkPos, Entity, EntityChange, EntityField, EntityId, PlayerId, SectionLight,
-};
+use clustine_world::{BlockPos, ChunkPos, Entity, EntityChange, EntityField, EntityId, PlayerId};
 
 use super::Region;
 use super::items::{Memory, View, tracked};
@@ -164,30 +162,10 @@ impl MobWorld for View<'_> {
     }
 
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
-        let chunk = self.region.readable_chunk(pos.chunk())?;
-        let (x, z) = pos.in_chunk();
-        let section = (pos.y - chunk.min_y()).div_euclid(16);
-        if let Some(light) = chunk.light() {
-            // One entry below the column, then one a section, then one above.
-            let index = usize::try_from(section + 1).ok()?;
-            let level = |layer: &[SectionLight], absent: u8| match layer.get(index) {
-                None | Some(SectionLight::Absent) => absent,
-                Some(SectionLight::Dark) => 0,
-                Some(SectionLight::Full) => 15,
-                Some(SectionLight::Levels(levels)) => {
-                    let at = (pos.y.rem_euclid(16) as usize) << 8 | z << 4 | x;
-                    (levels[at >> 1] >> ((at & 1) * 4)) & 0x0F
-                }
-            };
-            return Some(LightAt {
-                sky: level(&light.sky, 15),
-                block: level(&light.block, 0),
-            });
-        }
-        let top = chunk.min_y() + i32::from(chunk.heights().motion_blocking[z << 4 | x]);
-        Some(LightAt {
-            sky: if pos.y >= top { 15 } else { 0 },
-            block: 0,
+        // The region's light as of its step (ADR-0029); `None` where the chunk is not lit.
+        self.region.light_at(pos).map(|light| LightAt {
+            sky: light.sky,
+            block: light.block,
         })
     }
 }

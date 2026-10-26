@@ -42,6 +42,11 @@ impl<'a> World<'a> {
         self.known(pos).unwrap_or(data::AIR)
     }
 
+    /// `getRawBrightness(pos, 0)` as the caller keeps it ([`Blocks::raw_brightness`]).
+    pub(crate) fn raw_brightness(&self, pos: BlockPos) -> Option<u8> {
+        self.blocks.raw_brightness(pos)
+    }
+
     /// Whether the caller holds the chunk of `pos` ([`Blocks::holds`]).
     pub(crate) fn holds(&self, pos: BlockPos) -> bool {
         self.blocks.holds(pos)
@@ -63,8 +68,8 @@ impl clustine_blocks::BlockView for View<'_, '_> {
         self.0.get(at)
     }
 
-    fn raw_brightness(&mut self, _at: BlockPos) -> Option<u8> {
-        None
+    fn raw_brightness(&mut self, at: BlockPos) -> Option<u8> {
+        self.0.raw_brightness(at)
     }
 
     // Placing takes a block's shape from its neighbours and schedules nothing: the

@@ -276,7 +276,8 @@ impl Region {
     /// A chunk with a viewer's or a guest's ticket ticks where each of its eight
     /// neighbours is loaded or copied; a ring chunk only where they are all loaded, as
     /// copies are taken beside the first and not beside the second
-    /// (`docs/adr/0025-effects-between-regions.md`, section 3).
+    /// (`docs/adr/0025-effects-between-regions.md`, section 3); and either only once it
+    /// and its neighbours are lit (ADR-0029).
     pub(crate) fn update_ticking(&mut self) {
         let should: BTreeSet<ChunkPos> = self
             .chunks
@@ -293,7 +294,7 @@ impl Region {
                         self.chunks.contains_key(&neighbour)
                             || (beside_copies && self.copies.contains_key(&neighbour))
                     })
-                })
+                }) && self.lit_around(*chunk)
             })
             .collect();
         let stopping: Vec<ChunkPos> = self.ticks.ticking.difference(&should).copied().collect();

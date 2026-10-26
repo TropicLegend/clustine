@@ -14,6 +14,8 @@
 //! does nothing yet: the simulation has no light (section 8 of the record).
 
 mod fire;
+mod growth;
+mod melting;
 mod minerals;
 mod plants;
 
@@ -263,7 +265,9 @@ impl Region {
     ) {
         let _ = self.plant_random_tick(pos, state, random, output)
             || self.mineral_random_tick(pos, state, random, output)
-            || self.fire_random_tick(pos, state, random, output);
+            || self.fire_random_tick(pos, state, random, output)
+            || self.growth_random_tick(pos, state, random, output)
+            || self.melting_random_tick(pos, state, random, output);
     }
 
     /// A stream for a rule that draws outside a random tick (a coral's time to die),

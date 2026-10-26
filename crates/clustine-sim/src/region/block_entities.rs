@@ -54,6 +54,9 @@ pub(crate) enum Typed {
     /// holds and its travel, its selector and the frequency it last took, durable as
     /// the game saves them (`sculk.rs`).
     Sensor(Sensor),
+    /// `DaylightDetectorBlockEntity`, which keeps nothing but ticks
+    /// (`daylight_detector.rs`, N8).
+    Detector,
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -98,6 +101,9 @@ impl Typed {
         if is_class(state, BlockClass::SculkSensorBlock) {
             return Some(Typed::Sensor(Sensor::loaded(data)));
         }
+        if is_class(state, BlockClass::DaylightDetectorBlock) {
+            return Some(Typed::Detector);
+        }
         None
     }
 
@@ -108,7 +114,8 @@ impl Typed {
             | Typed::MovingPiston(_)
             | Typed::ShulkerBox(_)
             | Typed::Hopper(_)
-            | Typed::Sensor(_) => true,
+            | Typed::Sensor(_)
+            | Typed::Detector => true,
             Typed::Comparator(_) => false,
         }
     }
@@ -611,6 +618,9 @@ impl Region {
                 Some(Typed::Sensor(_)) if is_class(state, BlockClass::SculkSensorBlock) => {
                     self.sensor_entity_tick(pos, output);
                 }
+                Some(Typed::Detector) if is_class(state, BlockClass::DaylightDetectorBlock) => {
+                    self.daylight_detector_tick(pos, state, output);
+                }
                 _ => {}
             }
         }
@@ -626,7 +636,8 @@ impl Region {
             | Typed::MovingPiston(_)
             | Typed::ShulkerBox(_)
             | Typed::Hopper(_)
-            | Typed::Sensor(_) => None,
+            | Typed::Sensor(_)
+            | Typed::Detector => None,
         }
     }
 
@@ -642,7 +653,8 @@ impl Region {
                 | Typed::MovingPiston(_)
                 | Typed::ShulkerBox(_)
                 | Typed::Hopper(_)
-                | Typed::Sensor(_) => 0,
+                | Typed::Sensor(_)
+                | Typed::Detector => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {

@@ -100,18 +100,12 @@ impl Region {
             }
         } else if is_class(state, BlockClass::ChorusFlowerBlock) {
             self.chorus_flower_random_tick(pos, state, random, output);
-        } else if is_class(state, BlockClass::MangrovePropaguleBlock) {
-            if flag(state, "hanging") {
-                let age = number(state, "age").unwrap_or(4);
-                if age != 4 {
-                    let older = set(state, "age", &(age + 1).to_string());
-                    self.set_block_updated(pos, older, UPDATE_CLIENTS, UPDATE_LIMIT, output);
-                }
-            } else {
-                // `advanceTree` is not ported (see the top of this file); the chance is
-                // drawn all the same, so that what follows in the stream draws as the
-                // game's would.
-                let _ = random.next_int(7);
+        } else if is_class(state, BlockClass::MangrovePropaguleBlock) && flag(state, "hanging") {
+            // A propagule on the ground is a sapling, the growth's (`growth.rs`).
+            let age = number(state, "age").unwrap_or(4);
+            if age != 4 {
+                let older = set(state, "age", &(age + 1).to_string());
+                self.set_block_updated(pos, older, UPDATE_CLIENTS, UPDATE_LIMIT, output);
             }
         } else {
             return false;
@@ -649,6 +643,7 @@ mod tests {
             return_after: 0,
             lowest_y: -64,
             seed: 0,
+            light: Default::default(),
         };
         let ids = EntityIds::block(0).expect("the first block of entity ids");
         let mut region = Region::new(config, ids, Holdings::default());

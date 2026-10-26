@@ -1057,6 +1057,8 @@ impl RegionSettings {
             return_after: self.return_after,
             lowest_y: self.lowest_y,
             seed: world,
+            // A server's budget for lighting what it loads (ADR-0029).
+            light: clustine_sim::LightSettings::SERVER,
         }
     }
 }
