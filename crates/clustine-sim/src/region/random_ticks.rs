@@ -15,7 +15,7 @@
 //! saplings grow with N8f.
 
 mod fire;
-mod growth;
+pub(super) mod growth;
 mod melting;
 mod minerals;
 mod plants;

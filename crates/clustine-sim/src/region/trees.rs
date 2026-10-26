@@ -148,7 +148,6 @@ impl TreeGrower {
     /// `getMinimumHeight`: the base height of the trunk of the grower's shortest tree,
     /// none for a grower without one (dark oak, pale oak) or whose shortest is not a
     /// tree.
-    #[cfg_attr(not(test), expect(dead_code, reason = "bone meal's (N8 D4b)"))]
     pub(crate) fn minimum_height(&self) -> Option<i32> {
         let (_, entry) = clustine_worldgen_data::feature::configured(self.shortest?)?;
         if entry.data.kind() != Some("minecraft:tree") {
@@ -291,7 +290,6 @@ impl Region {
     /// `isValidBonemealTarget`: the plain or flower list drawn first, then the mega list,
     /// both from `random`; a grower whose plain list gives nothing and whose mega list
     /// gives a tree can grow only where a square of four stands. It asks no registry.
-    #[cfg_attr(not(test), expect(dead_code, reason = "bone meal's (N8 D4b)"))]
     pub(crate) fn can_grow(
         &self,
         grower: &TreeGrower,
@@ -306,16 +304,6 @@ impl Region {
             return self.two_by_two(state, pos).is_some();
         }
         true
-    }
-
-    /// Whether the region was given the configured feature `name`: the game's registry
-    /// lookup, which in a world without features (a flat world, a test) finds nothing.
-    fn has_feature(&self, name: &str) -> bool {
-        self.config
-            .features
-            .0
-            .as_ref()
-            .is_some_and(|settings| settings.configured_named(name).is_some())
     }
 
     /// `hasFlowers`: a block of `#flowers` in the box from (−2, −1, −2) to (2, 1, 2)

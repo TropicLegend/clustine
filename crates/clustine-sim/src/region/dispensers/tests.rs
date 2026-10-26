@@ -702,10 +702,33 @@ fn glowstone_charges_a_respawn_anchor_until_it_is_full() {
     assert_eq!(slots_of(&region, AT)[0], stack(items::GLOWSTONE, 2));
 }
 
-/// Bone meal grows nothing in N6, and stays with the click of a failure, as the game's
-/// does where nothing can grow.
+/// Bone meal (`$5`, n6) grows the crop in front, with the sparks there (1505, data 15),
+/// the click of a success and one used; where nothing in front takes it, the click of a
+/// failure and the stack kept (`OptionalDispenseItemBehavior`).
 #[test]
-fn bone_meal_stays_with_a_failure_until_growth_comes() {
+fn bone_meal_grows_a_crop_in_front_and_fails_where_nothing_takes_it() {
+    let front = at(3, -60, 2);
+    let mut region = with(
+        dispenser("east"),
+        &[(at(3, -61, 2), blocks::FARMLAND), (front, blocks::WHEAT)],
+    );
+    fill(&mut region, AT, &[(0, stack(items::BONE_MEAL, 4))]);
+    let output = fire(&mut region);
+    let mut events = vec![(super::super::bone_meal::PLANT_GROWTH, front, 15)];
+    events.extend(clicked(DISPENSED, Face::East));
+    assert_eq!(level_events(&output), events);
+    assert_eq!(slots_of(&region, AT)[0], stack(items::BONE_MEAL, 3));
+    assert_ne!(region.block(front), Some(blocks::WHEAT), "the wheat grew");
+    // Grown out after at most three more: then it takes none.
+    for _ in 0..3 {
+        fire(&mut region);
+    }
+    assert_eq!(region.block(front), Some(state("minecraft:wheat[age=7]")));
+    let left = slots_of(&region, AT)[0];
+    let output = fire(&mut region);
+    assert_eq!(level_events(&output), clicked(FAILED, Face::East));
+    assert_eq!(slots_of(&region, AT)[0], left);
+    // Nothing in front at all.
     let mut region = with(dispenser("east"), &[]);
     fill(&mut region, AT, &[(0, stack(items::BONE_MEAL, 4))]);
     let output = fire(&mut region);

@@ -218,38 +218,40 @@ fn beetroot_skips_one_time_in_three_before_it_reads_the_light() {
 }
 
 #[test]
-fn a_torchflower_crop_grows_to_its_last_age_by_random_ticks_and_no_further() {
+fn a_torchflower_crop_grows_to_its_last_age_and_then_flowers_by_random_ticks() {
     let crop = at(0, -60, 0);
     let mut region = scene(&[
         (at(0, -61, 0), blocks::FARMLAND),
         (crop, blocks::TORCHFLOWER_CROP),
     ]);
-    let mut grew = false;
-    for seed in 0..200 {
-        put(&mut region, crop, blocks::TORCHFLOWER_CROP);
-        let random = grow(&mut region, crop, seed);
-        let mut expected = stream(seed);
-        if expected.next_int(3) != 0 {
-            grew |= expected.next_int(13) == 0;
+    // Its own ages are 0 and 1, and its oldest (`getMaxAge`) is 2: the age past 1 is
+    // the torchflower (n7 TorchflowerCropBlock 45–66), by random tick as by bone meal.
+    for (from, to) in [
+        (
+            blocks::TORCHFLOWER_CROP,
+            state("minecraft:torchflower_crop[age=1]"),
+        ),
+        (
+            state("minecraft:torchflower_crop[age=1]"),
+            blocks::TORCHFLOWER,
+        ),
+    ] {
+        let mut grew = false;
+        for seed in 0..200 {
+            put(&mut region, crop, from);
+            let random = grow(&mut region, crop, seed);
+            let mut expected = stream(seed);
+            if expected.next_int(3) != 0 {
+                grew |= expected.next_int(13) == 0;
+            }
+            assert_eq!(random, expected);
+            if grew {
+                assert_eq!(read(&region, crop), to);
+                break;
+            }
+            assert_eq!(read(&region, crop), from);
         }
-        assert_eq!(random, expected);
-        if grew {
-            assert_eq!(
-                read(&region, crop),
-                state("minecraft:torchflower_crop[age=1]")
-            );
-            break;
-        }
-    }
-    assert!(grew);
-    // At age 1, its oldest, it draws its one in three and nothing more, and is no
-    // torchflower: that comes only by bone meal.
-    for seed in 0..100 {
-        assert_eq!(grow(&mut region, crop, seed), drawn(seed, &[3]));
-        assert_eq!(
-            read(&region, crop),
-            state("minecraft:torchflower_crop[age=1]")
-        );
+        assert!(grew);
     }
 }
 

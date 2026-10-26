@@ -29,6 +29,10 @@ impl Region {
         if self.light_tnt(click, player, output) || self.fire_item_used_on(click, player, output) {
             return true;
         }
+        // Bone meal on what takes it (`BoneMealItem.useOn`).
+        if self.bone_meal_used_on(click, player, output) {
+            return true;
+        }
         let spawned = output.events.len();
         let placed = self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)

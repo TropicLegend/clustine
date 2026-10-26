@@ -221,6 +221,46 @@ impl FeatureSettings {
         Some(self.configured(index))
     }
 
+    /// `BiomeGenerationSettings.getBoneMealFeatures` of the biome `biome`
+    /// (`minecraft:plains`): the configured features its placed features name, in the
+    /// order of its steps and of its file, that the tag
+    /// `#minecraft:can_spawn_from_bone_meal` holds; what grass's bone meal places one in
+    /// eight times (n8 GrassBlock 117–190). No feature of the tag is nested in another in
+    /// the pinned jar's data, so only the configured feature a placed one names is read.
+    pub fn bone_meal_features(&self, biome: &str) -> Vec<&'static str> {
+        /// `data/minecraft/tags/worldgen/feature/can_spawn_from_bone_meal.json` of the
+        /// pinned jar (Mojang's data).
+        const CAN_SPAWN_FROM_BONE_MEAL: [&str; 8] = [
+            "minecraft:flower_default",
+            "minecraft:flower_flower_forest",
+            "minecraft:flower_swamp",
+            "minecraft:flower_plain",
+            "minecraft:flower_meadow",
+            "minecraft:flower_cherry",
+            "minecraft:wildflower",
+            "minecraft:flower_pale_garden",
+        ];
+        let Some(listed) = data::biome_features()
+            .iter()
+            .find(|listed| listed.biome == biome)
+        else {
+            return Vec::new();
+        };
+        let placed = data::placed_features();
+        listed
+            .steps
+            .iter()
+            .flat_map(|step| step.iter())
+            .filter_map(
+                |index| match placed.get(usize::from(*index))?.data.get("feature") {
+                    Some(data::Data::Text(name)) => Some(*name),
+                    _ => None,
+                },
+            )
+            .filter(|name| CAN_SPAWN_FROM_BONE_MEAL.contains(name))
+            .collect()
+    }
+
     /// The placed feature with this index in the data.
     pub fn placed(&self, index: usize) -> &PlacedFeature {
         &self.placed[index]

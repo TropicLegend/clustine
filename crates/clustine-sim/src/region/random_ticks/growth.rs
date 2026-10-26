@@ -120,9 +120,7 @@ impl Region {
         }
         let speed = self.growth_speed(state, pos);
         if random.next_int(growth_bound(speed)) == 0 {
-            // `getStateForAge(age + 1)`: never the torchflower's own block from here, which
-            // only a bone meal's age past the crop's oldest gives.
-            let older = set(state, "age", &(age + 1).to_string());
+            let older = crop_state_for_age(state, age + 1);
             self.set_block_updated(pos, older, UPDATE_CLIENTS, UPDATE_LIMIT, output);
         }
     }
@@ -181,35 +179,58 @@ impl Region {
         random: &mut Random,
         output: &mut TickOutput,
     ) {
-        const MAX_AGE: u8 = 4;
-        const DOUBLE_FROM: u8 = 3;
         let speed = self.growth_speed(state, pos);
         if random.next_int(growth_bound(speed)) != 0 {
             return;
         }
-        let age = number(state, "age").unwrap_or(MAX_AGE);
-        let grown_age = (age + 1).min(MAX_AGE);
-        let above = relative(pos, Face::Up);
-        let can_grow = age < MAX_AGE
-            && self.raw_light(pos) >= 8
-            && self.inside_build_height(above)
-            && (grown_age < DOUBLE_FROM || {
-                let there = self.grown_read(above);
-                there.props().is_air() || is_block(there, blocks::PITCHER_CROP)
-            });
-        if !can_grow {
+        self.pitcher_grow(pos, state, output);
+    }
+
+    /// `PitcherCropBlock.grow(level, state, pos, 1)` of the lower half `state` at `pos`:
+    /// by one where `canGrow`, the lower half with flags 2, and from age 3 the upper half
+    /// above with every update. Bone meal grows it so too.
+    pub(in crate::region) fn pitcher_grow(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
+        let age = number(state, "age").unwrap_or(PITCHER_MAX_AGE);
+        let grown_age = (age + 1).min(PITCHER_MAX_AGE);
+        if !self.pitcher_can_grow(pos, state, grown_age) {
             return;
         }
         let grown = set(state, "age", &grown_age.to_string());
         self.set_block_updated(pos, grown, UPDATE_CLIENTS, UPDATE_LIMIT, output);
-        if grown_age >= DOUBLE_FROM {
+        if grown_age >= PITCHER_DOUBLE_FROM {
+            let above = relative(pos, Face::Up);
             self.set_block(above, set(grown, "half", "upper"), output);
         }
     }
 
+    /// `PitcherCropBlock.canGrow(level, pos, state, age)` of the lower half `state` at
+    /// `pos` growing to `grown_age`: not grown out, light of 8 or more, the block above
+    /// inside the world, and from age 3 air or the crop above.
+    pub(in crate::region) fn pitcher_can_grow(
+        &self,
+        pos: BlockPos,
+        state: BlockState,
+        grown_age: u8,
+    ) -> bool {
+        let age = number(state, "age").unwrap_or(PITCHER_MAX_AGE);
+        let above = relative(pos, Face::Up);
+        age < PITCHER_MAX_AGE
+            && self.raw_light(pos) >= 8
+            && self.inside_build_height(above)
+            && (grown_age < PITCHER_DOUBLE_FROM || {
+                let there = self.grown_read(above);
+                there.props().is_air() || is_block(there, blocks::PITCHER_CROP)
+            })
+    }
+
     /// `isInsideBuildHeight`: whether `pos` lies between the world's lowest and highest
     /// blocks.
-    fn inside_build_height(&self, pos: BlockPos) -> bool {
+    pub(in crate::region) fn inside_build_height(&self, pos: BlockPos) -> bool {
         self.readable_chunk(pos.chunk()).is_some_and(|chunk| {
             let height = i32::try_from(chunk.height()).unwrap_or(0);
             pos.y >= chunk.min_y() && pos.y < chunk.min_y() + height
@@ -220,7 +241,7 @@ impl Region {
     /// its ground gives, a stem below age 7 ages with flags 2; one of age 7 draws a side,
     /// and where that side is air above ground its fruit may stand on, sets the fruit there
     /// and then turns to the stem attached to it, both with every update.
-    fn stem_random_tick(
+    pub(in crate::region) fn stem_random_tick(
         &mut self,
         pos: BlockPos,
         state: BlockState,
@@ -305,7 +326,7 @@ impl Region {
     }
 
     /// `getHeightBelowUpToMax`: how many stalks stand right below `pos`, up to 16.
-    fn bamboo_below(&self, pos: BlockPos) -> i32 {
+    pub(in crate::region) fn bamboo_below(&self, pos: BlockPos) -> i32 {
         (1..=BAMBOO_MAX_HEIGHT)
             .take_while(|down| is_block(self.grown_read(pos.offset(0, -down, 0)), blocks::BAMBOO))
             .count() as i32
@@ -318,7 +339,7 @@ impl Region {
     /// of stage 1, grown out, at height 15, or from height 11 at one chance in four,
     /// drawn only there. As the game, the leaves are read and rewritten below `pos`, not
     /// below the new stalk.
-    fn grow_bamboo(
+    pub(in crate::region) fn grow_bamboo(
         &mut self,
         pos: BlockPos,
         state: BlockState,
@@ -493,16 +514,33 @@ impl Region {
     }
 }
 
-/// The oldest a crop gets by its class (`getMaxAge`): 1 for the torchflower crop, 3 for
-/// beetroots, 7 for the rest.
-fn crop_max_age(state: BlockState) -> u8 {
+/// The oldest the pitcher crop gets (`PitcherCropBlock.MAX_AGE`).
+const PITCHER_MAX_AGE: u8 = 4;
+
+/// The age from which the pitcher crop stands two blocks tall
+/// (`DOUBLE_PLANT_AGE_INTERSECTION`).
+const PITCHER_DOUBLE_FROM: u8 = 3;
+
+/// The age at which a crop is grown out by its class (`getMaxAge`): 2 for the torchflower
+/// crop, whose own ages are 0 and 1 and whose age 2 is the torchflower (n7
+/// TorchflowerCropBlock 45–66), 3 for beetroots, 7 for the rest.
+pub(in crate::region) fn crop_max_age(state: BlockState) -> u8 {
     if is_class(state, BlockClass::TorchflowerCropBlock) {
-        1
+        2
     } else if is_class(state, BlockClass::BeetrootBlock) {
         3
     } else {
         7
     }
+}
+
+/// `getStateForAge(age)` of the crop `state`: the torchflower crop at age 2 is the
+/// torchflower (n7 TorchflowerCropBlock 55–66), any other its own block of that age.
+pub(in crate::region) fn crop_state_for_age(state: BlockState, age: u8) -> BlockState {
+    if is_class(state, BlockClass::TorchflowerCropBlock) && age >= 2 {
+        return blocks::TORCHFLOWER;
+    }
+    set(default_of(state), "age", &age.to_string())
 }
 
 /// The bound of a growth's draw, `(int) (25.0F / speed) + 1`.

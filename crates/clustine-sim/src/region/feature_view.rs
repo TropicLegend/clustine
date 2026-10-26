@@ -191,6 +191,16 @@ impl Neighbourhood for FeatureView<'_> {
 }
 
 impl Region {
+    /// Whether the region was given the configured feature `name`: the game's registry
+    /// lookup, which in a world without features (a flat world, a test) finds nothing.
+    pub(super) fn has_feature(&self, name: &str) -> bool {
+        self.config
+            .features
+            .0
+            .as_ref()
+            .is_some_and(|settings| settings.configured_named(name).is_some())
+    }
+
     /// Places the configured feature `name` at `at` through the region's view, its
     /// writes set with `flags`, drawing from a random of the game's kind seeded with
     /// `seed` (the plan's 7.3: the stream's next long, made where the game would start

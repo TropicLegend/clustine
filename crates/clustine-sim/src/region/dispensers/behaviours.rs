@@ -128,7 +128,6 @@ impl Behaviour {
                 | Behaviour::Tnt
                 | Behaviour::SpawnEgg
                 | Behaviour::Brush
-                | Behaviour::BoneMeal
         )
     }
 }
@@ -367,7 +366,23 @@ impl Region {
                     self.shear_beehive(front, output) || self.shear_leashes(front, output);
                 self.optional_click(dispense, sheared, output)
             }
-            Behaviour::Brush | Behaviour::BoneMeal => self.optional_click(dispense, false, output),
+            Behaviour::BoneMeal => {
+                // `$5`: `BoneMealItem.growCrop` on the block in front, drawing from the
+                // dispenser's stream, with its sparks where the block took it.
+                let front = dispense.front();
+                let grew = self.grow_crop(front, &mut dispense.random, output);
+                if grew {
+                    dispense.shrink(1);
+                    level_event(
+                        super::super::bone_meal::PLANT_GROWTH,
+                        front,
+                        super::super::bone_meal::PLANT_GROWTH_DATA,
+                        output,
+                    );
+                }
+                self.optional_click(dispense, grew, output)
+            }
+            Behaviour::Brush => self.optional_click(dispense, false, output),
             Behaviour::SpawnEgg => {
                 self.click_and_smoke(dispense, DISPENSED, output);
                 dispense.stack()
