@@ -3578,6 +3578,7 @@ mod tests {
     mod mob_bodies;
     mod mobs;
     mod mount_riding;
+    mod n8_specification;
     mod pigs;
     mod pistons;
     mod post_processing_and_seams;
