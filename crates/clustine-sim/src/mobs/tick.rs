@@ -213,10 +213,6 @@ pub(crate) enum Local {
     /// golem's shot (`SnowGolem.performRangedAttack`) is
     /// `crate::physics::thrown::golem_aim`'s, at `GOLEM_POWER` and `GOLEM_UNCERTAINTY`;
     /// the shot's sound, of the golem's own random, is the golem's to make after.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "for the snow golem's shot, which step K1 brings")
-    )]
     Shoot {
         stack: ItemStack,
         at: crate::physics::Vec3,
@@ -224,6 +220,16 @@ pub(crate) enum Local {
         power: f32,
         uncertainty: f32,
     },
+    /// `setBlockAndUpdate(pos, state)` and `gameEvent(BLOCK_PLACE, pos, Context.of(the
+    /// mob, state))` of a block the mob read as air and `state` can stand at (a snow
+    /// golem's trail, `region/golems.rs`): set with every update in the region's own
+    /// land, with its game event; in another region's, an effect that sets it only if
+    /// the cell is still what the region read, with no game event (named).
+    PlaceBlock { pos: BlockPos, state: BlockState },
+    /// `OfferFlowerGoal.stop`'s gift: a poppy on the antenna of the region's mob `key`
+    /// where that is empty, a sure drop (`region/golems.rs`). A mob in a copy is given
+    /// nothing (named).
+    GiveFlower { key: EntityId },
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

@@ -114,10 +114,6 @@ const SOUND_SOURCE_HOSTILE: i32 = 5;
 /// Whether a mob of the type `kind` is an `Enemy`: the monsters, and the other types of the
 /// game's `monster` category that implement it (slimes, ghasts and the rest, when they
 /// come). The undead horses and the zombie nautilus are animals, and no enemy.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the iron golem's targets read it (N7k, K1)")
-)]
 pub(crate) fn is_enemy(kind: u16) -> bool {
     match of(kind) {
         Family::Monster => true,

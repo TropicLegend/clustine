@@ -140,4 +140,12 @@ pub(crate) trait MobWorld: Holds {
     /// none, the sky's above its highest block that blocks motion and none below, and no
     /// light of blocks (the plan's 9.7.2, until N8). `None` where the chunk is not read.
     fn light(&self, pos: BlockPos) -> Option<LightAt>;
+
+    /// The name of the biome at `pos`, where the chunk is read: what the environment
+    /// attributes of a place follow (a snow golem's melting). None where a view knows
+    /// no biomes.
+    fn biome(&self, pos: BlockPos) -> Option<&'static str> {
+        let _ = pos;
+        None
+    }
 }

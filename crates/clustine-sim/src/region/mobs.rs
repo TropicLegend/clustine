@@ -114,6 +114,10 @@ impl MobWorld for View<'_> {
         self.region.clock.day
     }
 
+    fn biome(&self, pos: BlockPos) -> Option<&'static str> {
+        self.region.biome_at(pos)
+    }
+
     fn block_entity_data(&self, pos: BlockPos) -> Option<&[u8]> {
         self.region.block_entity_data(pos)
     }

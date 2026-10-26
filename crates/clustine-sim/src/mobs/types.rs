@@ -61,6 +61,8 @@ pub(crate) mod frog_ai;
 mod generation_tests;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
+#[cfg(test)]
+mod golem_tests;
 pub(crate) mod golem_transport;
 pub(crate) mod guardian;
 #[cfg(test)]
@@ -628,6 +630,14 @@ pub(crate) trait MobType: Sync {
     /// check (a pufferfish's puffing).
     fn before_tick(&self, tick: &mut MobTick<'_>) {
         let _ = tick;
+    }
+
+    /// What its `doPush(entity)` does before the push, for each thing its
+    /// `pushEntities` pushes (an iron golem taking a monster it bumps for its target):
+    /// `other` is the key and type of a mob, the region's or a copy's, and `None` for a
+    /// player or what is no mob. Nothing by default.
+    fn before_push(&self, tick: &mut MobTick<'_>, other: Option<(EntityId, u16)>) {
+        let _ = (tick, other);
     }
 
     /// What the type's `tick` does after the whole of the living one (a dolphin's
@@ -1378,6 +1388,8 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::ZOMBIE_VILLAGER => &zombie_villager::ZombieVillager,
         entity_types::VILLAGER => &villager::Villager,
         entity_types::WANDERING_TRADER => &wandering_trader::WanderingTrader,
+        entity_types::IRON_GOLEM => &iron_golem::IronGolem,
+        entity_types::SNOW_GOLEM => &snow_golem::SnowGolem,
         _ => return None,
     };
     Some(found)

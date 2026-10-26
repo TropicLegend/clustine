@@ -1,29 +1,27 @@
 //! What the copper golem does to blocks (`docs/groundwork/n7-brief.md`, sections 7.0.5
 //! and 7.13.7; `docs/groundwork/n7j-plan.md`, section 3, item 9): a carved pumpkin or a
-//! jack o'lantern placed on a block of copper builds one where the pumpkin was, with a
-//! copper chest of the block's age where the copper was; a golem with a chest open counts
+//! jack o'lantern placed beside a block of copper, in any of the pattern's orientations,
+//! builds one where the pumpkin was, with a copper chest of the block's age where the
+//! copper was (`region/golems.rs`, which builds every golem); a golem with a chest open counts
 //! as one of its openers at the chest's recheck; what its sorting does to a chest after
 //! its tick (`Local::ContainerTake` and `Local::ContainerPut`: the chest opened, closed,
 //! and the stack moved between it and the golem's hand, both in one); and its statue
 //! turns to its next pose when used.
 //!
 //! At a line: a golem is built only where the pumpkin and the copper are both the
-//! region's own, counts only at the chests of its region's land, and works only at
+//! region's own (`region/golems.rs`), counts only at the chests of its region's land, and works only at
 //! those: a chest of a copy is neither opened nor written, and the golem that comes to
 //! one takes it for unreachable as it closes it (the plan's section 3, item 9).
 //!
-//! Named differences: only the upright pattern (the pumpkin on top) builds a golem
-//! (`BlockPattern.find`, which may match the pattern turned about, is not in the dumps),
-//! and its chest stays single beside another copper chest (`getChestType` is not
-//! ported); no advancement is given for building one.
+//! Named differences: its chest stays single beside another copper chest
+//! (`getChestType` is not ported); no advancement is given for building one.
 
-use clustine_blocks::data::{in_tag, is_block, is_class, relative, same_block, set};
+use clustine_blocks::data::{is_class, relative, set};
 use clustine_blocks::growth::chest_connected_direction;
 use clustine_data::{BLOCKS, BlockClass, BlockState, EntityTypeInfo, blocks, entity_types, sounds};
 use clustine_world::{BlockPos, EntityId, ItemStack, PlayerId};
 
 use super::Region;
-use super::updates::{UPDATE_CLIENTS, UPDATE_LIMIT};
 use super::vibrations::{Context, Vibration};
 use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 use crate::living::slots;
@@ -32,11 +30,6 @@ use crate::mobs::brain;
 use crate::mobs::types::copper_golem::{self, CONTAINER_INTERACTION_RANGE, ChestStep, STAGES};
 use crate::mobs::types::golem_transport;
 use crate::physics::aabb::Aabb;
-
-/// `PUMPKINS_PREDICATE`: a carved pumpkin or a jack o'lantern.
-fn is_pumpkin(state: BlockState) -> bool {
-    is_block(state, blocks::CARVED_PUMPKIN) || is_block(state, blocks::JACK_O_LANTERN)
-}
 
 /// The weathering of a block of `#copper` and whether it is waxed: its age as
 /// `WeatheringCopper.getAge` has it, a waxed block's that of the block its wax comes off
@@ -75,72 +68,6 @@ pub(crate) fn chest_of(copper: BlockState, facing: &str) -> BlockState {
 }
 
 impl Region {
-    /// `CarvedPumpkinBlock.onPlace`'s copper golem (`trySpawnGolem`, after the snow and
-    /// iron golems' patterns, which N7k brings): a pumpkin placed, not changed from
-    /// itself, on a block of `#copper` clears both with their breaking shown, makes an
-    /// unwaxed golem of the copper's age where the pumpkin was (`TRIGGERED`: no
-    /// `finalizeSpawn`), tells the neighbours of both, puts the copper chest where the
-    /// copper was, and plays the golem's spawn sound.
-    pub(super) fn carved_pumpkin_on_place(
-        &mut self,
-        pos: BlockPos,
-        state: BlockState,
-        old: BlockState,
-        output: &mut TickOutput,
-    ) {
-        if !is_pumpkin(state) || same_block(old, state) {
-            return;
-        }
-        let below = pos.offset(0, -1, 0);
-        let Some(copper) = self.block(below) else {
-            return;
-        };
-        if !in_tag(copper, "minecraft:copper")
-            || !self.chunks.contains_key(&pos.chunk())
-            || !self.chunks.contains_key(&below.chunk())
-        {
-            return;
-        }
-        // `clearPatternBlocks`: the pattern's blocks in its order, the pumpkin first.
-        for (at, was) in [(pos, state), (below, copper)] {
-            self.set_block_updated(at, blocks::AIR, UPDATE_CLIENTS, UPDATE_LIMIT, output);
-            output.events.push(RegionEvent::LevelEvent {
-                kind: 2001,
-                position: at,
-                data: i32::from(was.0),
-            });
-        }
-        let (weather, _) = copper_age(copper);
-        let mut mob = Mob::fresh();
-        copper_golem::update(&mut mob, |golem| golem.weather = weather);
-        let at = [
-            f64::from(pos.x) + 0.5,
-            f64::from(pos.y) + 0.05,
-            f64::from(pos.z) + 0.5,
-        ];
-        let kind = entity_types::COPPER_GOLEM as u16;
-        let made = self.new_mob(kind, mob, at, 0.0, 0.0);
-        if let Some(golem) = made {
-            self.add_made_mob(golem, output);
-        }
-        // `updatePatternBlocks`.
-        self.update_neighbours_at(pos, blocks::AIR, output);
-        self.update_neighbours_at(below, blocks::AIR, output);
-        // `replaceCopperBlockWithChest`, of the states the pattern matched.
-        let facing = state.property("facing").unwrap_or("north");
-        let chest = chest_of(copper, facing);
-        self.set_block_updated(below, chest, UPDATE_CLIENTS, UPDATE_LIMIT, output);
-        // `spawn(weatherState)`'s `playSpawnSound`.
-        output.events.push(RegionEvent::Sound {
-            sound: sounds::ENTITY_COPPER_GOLEM_SPAWN,
-            source: crate::physics::item::SOUND_SOURCE_NEUTRAL,
-            position: clustine_world::Vec3::new(at[0], at[1], at[2]),
-            volume: 1.0,
-            pitch: 1.0,
-            except: None,
-        });
-    }
-
     /// The copper golems of the region's own land that have the chest at `pos` open
     /// (`hasContainerOpen`) and whose boxes meet the block's grown by their reach of 3
     /// and four more, as `ContainerOpenersCounter.getEntitiesWithContainerOpen` finds

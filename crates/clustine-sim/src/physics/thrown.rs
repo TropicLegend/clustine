@@ -43,15 +43,7 @@ pub(crate) const PLAYER_UNCERTAINTY: f32 = 1.0;
 
 /// The snow golem's shot (`SnowGolem.performRangedAttack`): its speed, and the
 /// uncertainty of `rangedAttackUncertainty`.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "for the snow golem's shot, which step K1 brings")
-)]
 pub(crate) const GOLEM_POWER: f32 = 1.6;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "for the snow golem's shot, which step K1 brings")
-)]
 pub(crate) const GOLEM_UNCERTAINTY: f32 = 12.0;
 
 /// `RandomSource.triangle(centre, spread)`: two doubles drawn, the first less the
@@ -279,10 +271,6 @@ pub(crate) fn clip_blocks<W: World + ?Sized>(
 /// at the target's feet across and a fifth of the horizontal distance above 1.1 below
 /// its eyes, from the snowball's height. `golem` and `target` are the feet, and
 /// `golem_eyes` and `target_eyes` the heights of the eyes above the world's 0.
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "for the snow golem's shot, which step K1 brings")
-)]
 pub(crate) fn golem_aim(golem: Vec3, golem_eyes: f64, target: Vec3, target_eyes: f64) -> [Vec3; 2] {
     let dx = target[0] - golem[0];
     let dy = target_eyes - 1.100_000_023_841_858;

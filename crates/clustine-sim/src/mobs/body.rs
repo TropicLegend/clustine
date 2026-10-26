@@ -978,6 +978,7 @@ pub(crate) fn push_entities(tick: &mut MobTick<'_>) {
         if !player.spectator && box_of.intersects(bounds) {
             pushable.push(Pushable {
                 key: None,
+                mob: None,
                 position: feet,
                 passenger: player.vehicle.is_some(),
             });
@@ -996,6 +997,11 @@ pub(crate) fn push_entities(tick: &mut MobTick<'_>) {
     }
     let mine_pushable = !tick.mob.body.vitals.dying() && !tick.carries && !on_climbable(tick);
     for other in pushable {
+        // `doPush(entity)`: what the type does first (an iron golem's targeting).
+        {
+            let mob_type = tick.mob_type;
+            mob_type.before_push(tick, other.mob);
+        }
         let at = tick.living.body.position;
         let mut dx = at[0] - other.position[0];
         let mut dz = at[2] - other.position[2];
@@ -1033,6 +1039,8 @@ pub(crate) fn push_entities(tick: &mut MobTick<'_>) {
 /// pushes back (a player, a copy's mob, a cart or a boat).
 struct Pushable {
     key: Option<EntityId>,
+    /// The key and type of a mob, the region's or a copy's, which `doPush` reads.
+    mob: Option<(EntityId, u16)>,
     position: Vec3,
     passenger: bool,
 }
@@ -1072,12 +1080,14 @@ fn pushable(seen: &Seen<'_>, tick: &MobTick<'_>) -> Option<Pushable> {
             let pushed = !seen.copied && entity.riding.passengers.is_empty();
             Some(Pushable {
                 key: pushed.then_some(entity.key),
+                mob: Some((entity.key, entity.kind)),
                 position: entity.position,
                 passenger,
             })
         }
         _ if crate::physics::entities::is_pushable(entity.kind) => Some(Pushable {
             key: None,
+            mob: None,
             position: entity.position,
             passenger,
         }),

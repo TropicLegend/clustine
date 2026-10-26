@@ -251,8 +251,8 @@ impl Region {
         // `BaseRailBlock.onPlace`: a rail joins the rails beside it and turns them
         // towards it (`rails.rs`).
         self.rail_on_place(pos, state, old, output);
-        // `CarvedPumpkinBlock.onPlace`: a pumpkin on copper builds a copper golem
-        // (`copper_golems.rs`).
+        // `CarvedPumpkinBlock.onPlace`: a pumpkin that completes a golem's pattern
+        // builds the golem (`golems.rs`).
         self.carved_pumpkin_on_place(pos, state, old, output);
         // `LiquidBlock.onPlace`: lava that meets water becomes stone of some kind there
         // and then; any other liquid looks again in its fluid's time.

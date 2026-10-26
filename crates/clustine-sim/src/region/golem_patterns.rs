@@ -13,14 +13,6 @@
 //! instead; failing the match is what Clustine does there, since a region cannot throw a
 //! tick away.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the pumpkin's placing and the dispenser build golems with it (N7k, K1)"
-    )
-)]
-
 use clustine_blocks::data::{in_tag, is_block};
 use clustine_data::{BlockState, Face, blocks};
 use clustine_world::BlockPos;
@@ -102,6 +94,13 @@ impl Pattern {
 }
 
 /// `getOrCreateSnowGolemBase`: what a dispenser asks before it places a pumpkin.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the dispenser's question, which no dispenser asks of a pumpkin yet"
+    )
+)]
 pub(crate) const SNOW_GOLEM_BASE: Pattern = Pattern {
     aisles: &[&[" ", "#", "#"]],
     keys: &[('#', Key::Block(blocks::SNOW_BLOCK))],
@@ -114,6 +113,13 @@ pub(crate) const SNOW_GOLEM_FULL: Pattern = Pattern {
 };
 
 /// `getOrCreateIronGolemBase`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the dispenser's question, which no dispenser asks of a pumpkin yet"
+    )
+)]
 pub(crate) const IRON_GOLEM_BASE: Pattern = Pattern {
     aisles: &[&["~ ~", "###", "~#~"]],
     keys: &[('#', Key::Block(blocks::IRON_BLOCK)), ('~', Key::Air)],
@@ -130,6 +136,13 @@ pub(crate) const IRON_GOLEM_FULL: Pattern = Pattern {
 };
 
 /// `getOrCreateCopperGolemBase`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the dispenser's question, which no dispenser asks of a pumpkin yet"
+    )
+)]
 pub(crate) const COPPER_GOLEM_BASE: Pattern = Pattern {
     aisles: &[&[" ", "#"]],
     keys: &[('#', Key::Copper)],
@@ -323,6 +336,13 @@ impl Golem {
     pub(crate) const ALL: [Golem; 3] = [Golem::Snow, Golem::Iron, Golem::Copper];
 
     /// The pattern without the pumpkin, which `canSpawnGolem` asks.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the dispenser's question, which no dispenser asks of a pumpkin yet"
+        )
+    )]
     pub(crate) fn base(self) -> &'static Pattern {
         match self {
             Golem::Snow => &SNOW_GOLEM_BASE,
@@ -375,6 +395,13 @@ pub(crate) fn first_golem(
 }
 
 /// `CarvedPumpkinBlock.canSpawnGolem`: whether any golem's base pattern is found.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the dispenser's question, which no dispenser asks of a pumpkin yet"
+    )
+)]
 pub(crate) fn can_spawn_golem(
     at: BlockPos,
     block: impl Fn(BlockPos) -> Option<BlockState>,

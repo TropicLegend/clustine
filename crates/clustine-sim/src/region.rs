@@ -48,6 +48,7 @@ mod frogspawn;
 mod given;
 pub(crate) mod golem_chests;
 mod golem_patterns;
+mod golems;
 mod granted;
 mod hanging;
 pub(crate) mod hives;
@@ -3504,6 +3505,7 @@ mod tests {
     mod farm;
     mod fliers;
     mod fluids;
+    mod golems;
     mod hanging;
     mod highland;
     mod hoppers;

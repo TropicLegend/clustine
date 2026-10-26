@@ -335,6 +335,8 @@ impl Region {
                     let aim = super::thrown::Aim::Direction(direction);
                     self.make_thrown(key, stack, at, aim, power, uncertainty, output);
                 }
+                Local::PlaceBlock { pos, state } => self.mob_places_block(key, pos, state, output),
+                Local::GiveFlower { key: given } => self.give_golem_flower(given, output),
             }
         }
     }
