@@ -196,10 +196,6 @@ impl Region {
     /// `seed` (the plan's 7.3: the stream's next long, made where the game would start
     /// drawing for it). Whether the feature placed; false where the world has no features
     /// (a flat world, a test that grows nothing) or none of that name.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "saplings and bone meal call it (N8f, part D4)")
-    )]
     pub(crate) fn place_feature(
         &mut self,
         name: &str,

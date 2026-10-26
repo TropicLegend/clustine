@@ -14,6 +14,8 @@ clustine-noise.workspace = true
 clustine-world.workspace = true
 clustine-light.workspace = true
 clustine-features.workspace = true
+# The configured trees' trunks, for the shortest a sapling grows (`TreeGrower.getMinimumHeight`).
+clustine-worldgen-data.workspace = true
 # `StrictMath`'s sine and cosine, for the one angle of a throw the game takes them for.
 libm = "0.2"
 # A mob's parts in its record, in an encoding that is the same bytes wherever it runs.

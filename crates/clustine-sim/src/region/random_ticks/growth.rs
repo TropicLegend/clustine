@@ -1,7 +1,7 @@
 //! The random ticks of what grows by light (`docs/groundwork/n8-plan.md`, section 6.2):
 //! crops and stems, the pitcher crop, sweet berries, beetroot and the torchflower, grass
-//! and mycelium, bamboo and its shoot, mushrooms, and the propagule on the ground, whose
-//! tree is N8f's with the saplings.
+//! and mycelium, bamboo and its shoot, mushrooms, and saplings and the propagule on the
+//! ground, whose trees are `trees.rs`'s.
 //!
 //! Each rule is the game's `randomTick` of its class, with the same draws in the same
 //! order, drawn before or after the light is read as the game draws them, so that a
@@ -46,9 +46,20 @@ impl Region {
             if flag(state, "hanging") {
                 return false;
             }
-            // `advanceTree` comes with N8f; the chance is drawn all the same, so that what
-            // follows in the stream draws as the game's would. It reads no light.
-            let _ = random.next_int(7);
+            // `MangrovePropaguleBlock.randomTick` (n8 216–245): one try in seven, and no
+            // light read, so a propagule on the ground grows in the dark too.
+            if random.next_int(7) == 0 {
+                self.advance_tree(pos, state, random, output);
+            }
+        } else if crate::region::trees::is_sapling(state) {
+            // `SaplingBlock.randomTick` (n8 SaplingBlock 39–89): the light above, darkened
+            // by the night, is read before the chance is drawn.
+            let light = self
+                .max_local_raw_brightness(relative(pos, Face::Up))
+                .unwrap_or(0);
+            if light >= 9 && random.next_int(7) == 0 {
+                self.advance_tree(pos, state, random, output);
+            }
         } else if is_class(state, BlockClass::BeetrootBlock)
             || is_class(state, BlockClass::TorchflowerCropBlock)
         {

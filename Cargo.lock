@@ -413,6 +413,7 @@ dependencies = [
  "clustine-light",
  "clustine-noise",
  "clustine-world",
+ "clustine-worldgen-data",
  "libm",
  "postcard",
  "serde",
