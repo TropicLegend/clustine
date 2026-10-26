@@ -844,6 +844,18 @@ pub fn world_number(identity: &str) -> u64 {
     })
 }
 
+/// The seed of the features of the world whose generator's identity is `identity`
+/// ([`clustine_rpc::messages::Restored::seed`]): that of a generator that places them,
+/// whose identity begins `terrain;features`, and none for the flat world and the preview
+/// of a seed's land, which place none.
+pub fn world_seed(identity: &str) -> Option<i64> {
+    let mut parts = identity.split(';');
+    if parts.next() != Some("terrain") || !parts.next()?.starts_with("features ") {
+        return None;
+    }
+    parts.find_map(|part| part.strip_prefix("seed ")?.parse().ok())
+}
+
 /// How far around the spawn's chunk a store has the chunks made when it starts: the
 /// view distance an edge grants by default, and two, for the chunks a client is sent one
 /// beyond its view and the ring a region loads around them, whose neighbours a chunk's
@@ -880,7 +892,9 @@ fn begin_clocked(
     clock: Option<lanes::Clock>,
 ) -> Result<Store, StoreError> {
     let division = pins.with_home(spawn.chunk());
-    let world = world_number(&generator.settings().identity);
+    let identity = generator.settings().identity;
+    let world = world_number(&identity);
+    let seed = world_seed(&identity);
     let (jobs, queued) = mpsc::channel();
     let service = ChunkService::new(
         chunks,
@@ -893,7 +907,7 @@ fn begin_clocked(
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
     let prepare = jobs.clone();
-    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?.of_world(world);
+    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?.of_world(world, seed);
     let lanes = match clock {
         Some(clock) => lanes.with_clock(clock),
         None => lanes,

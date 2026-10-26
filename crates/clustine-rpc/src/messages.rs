@@ -839,6 +839,11 @@ pub struct Restored {
     /// same at every opening, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
     pub world: u64,
+    /// The seed of a world whose generator places features, from which a region builds
+    /// them for the trees saplings grow and what bone meal places
+    /// (`docs/groundwork/n8-plan.md`, section 7.6); none in the flat world and the
+    /// preview of a seed's land, which place none.
+    pub seed: Option<i64>,
     /// The chunks the region uses, in ascending order: the runner times those it does
     /// not load again (`docs/adr/0025-effects-between-regions.md`, section 5).
     pub in_use: Vec<ChunkPos>,
@@ -915,6 +920,8 @@ pub enum StoreWelcome {
         spawn: BlockPos,
         /// [`Restored::world`].
         world: u64,
+        /// [`Restored::seed`].
+        seed: Option<i64>,
         /// [`Restored::offset`].
         offset: Option<i64>,
         /// [`Restored::couplings`].

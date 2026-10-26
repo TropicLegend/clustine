@@ -119,6 +119,8 @@ pub(crate) struct Lanes {
     spawn: BlockPos,
     /// The world's number ([`Restored::world`]).
     world: u64,
+    /// The seed of the world's features ([`Restored::seed`]).
+    seed: Option<i64>,
     /// A lane for every living region, and for no other.
     regions: BTreeMap<RegionId, Lane>,
     /// The game time of the world's clock as it was last put on the regions' streams.
@@ -361,9 +363,11 @@ impl Lanes {
     ///
     /// The thread for chunks has to be running: a world that was divided otherwise has
     /// what its regions committed put into the stored chunks.
-    /// The lanes of a world whose number is `world` ([`Restored::world`]).
-    pub(crate) fn of_world(mut self, world: u64) -> Self {
+    /// The lanes of a world whose number is `world` ([`Restored::world`]) and whose
+    /// features' seed is `seed` ([`Restored::seed`]).
+    pub(crate) fn of_world(mut self, world: u64, seed: Option<i64>) -> Self {
         self.world = world;
+        self.seed = seed;
         self
     }
 
@@ -770,6 +774,7 @@ impl Lanes {
             table: stored.unwrap_or_else(|| Table::made_from(told, 0, 0)),
             spawn,
             world: 0,
+            seed: None,
             regions,
             clock_published: 0,
             faces: Faces::default(),
@@ -3200,6 +3205,7 @@ impl Lanes {
             issued: EntityId(self.players.issued()),
             spawn: self.spawn,
             world: self.world,
+            seed: self.seed,
             in_use,
             offset: of_region.offset,
             couplings: of_region.couplings,

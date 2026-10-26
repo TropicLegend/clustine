@@ -321,6 +321,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world,
+        seed,
         in_use,
         offset,
         couplings,
@@ -338,6 +339,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         issued,
         spawn,
         world,
+        seed,
         offset,
         couplings,
         handshakes,
@@ -507,6 +509,7 @@ impl Arriving {
                 issued,
                 spawn,
                 world,
+                seed: None,
                 in_use: Vec::new(),
                 offset: None,
                 couplings: Vec::new(),
@@ -734,6 +737,7 @@ fn welcomed(
             issued,
             spawn,
             world,
+            seed,
             offset,
             couplings,
             handshakes,
@@ -745,6 +749,7 @@ fn welcomed(
         }) => {
             let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
             let restored = &mut arriving.restored;
+            restored.seed = seed;
             restored.clock = clock;
             restored.faces = faces;
             restored.offset = offset;
@@ -1031,6 +1036,7 @@ mod tests {
             }],
             issued: EntityId(0),
             world: crate::world_number(&generator().settings().identity),
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
@@ -1577,6 +1583,7 @@ mod tests {
                 pinned: Vec::new(),
                 issued: EntityId(0),
                 world: 0,
+                seed: None,
                 offset: None,
                 couplings: Vec::new(),
                 handshakes: Vec::new(),
@@ -1804,6 +1811,7 @@ mod tests {
                 .collect(),
             issued: EntityId(0),
             world: 0,
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
@@ -2026,6 +2034,7 @@ mod tests {
             }],
             issued: EntityId(0),
             world: 0,
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
@@ -2230,6 +2239,7 @@ mod tests {
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
                     world: crate::world_number(&generator().settings().identity),
+                    seed: None,
                     offset: None,
                     couplings: Vec::new(),
                     handshakes: Vec::new(),
@@ -2281,6 +2291,7 @@ mod tests {
             }],
             issued: EntityId(0),
             world: 0,
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
@@ -2371,6 +2382,7 @@ mod tests {
             deltas: Vec::new(),
             issued: EntityId(0),
             world: 77,
+            seed: Some(-13_579),
             in_use: vec![ChunkPos::new(0, 0), ChunkPos::new(0, 1)],
             offset: Some(-12_000),
             couplings: vec![

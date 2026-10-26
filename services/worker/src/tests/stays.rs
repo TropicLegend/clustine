@@ -1796,6 +1796,7 @@ fn restored_with(
         pinned: Vec::new(),
         issued: EntityId(issued),
         world: 0,
+        seed: None,
         in_use: Vec::new(),
         offset: None,
         couplings: Vec::new(),

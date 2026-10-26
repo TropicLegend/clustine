@@ -2101,3 +2101,78 @@ fn a_checkpoint_of_a_replaced_owner_is_not_put_in_place() {
     assert_eq!(restored.state, None);
     assert_eq!(deltas(&restored), [(1, delta(1)), (2, delta(2))]);
 }
+
+/// The identity of the overworld of `seed` with its features, as a server of that seed
+/// names its generator.
+pub(crate) fn seeded_identity(seed: i64) -> String {
+    use clustine_worldgen::stages::Stages as _;
+    let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(seed));
+    clustine_worldgen::FeatureStages::new(terrain)
+        .settings()
+        .identity
+}
+
+/// Makes the flat world's chunks under the identity of a world with a seed: the store
+/// reads the seed from the identity alone, and the test need not make the seed's land.
+pub(crate) struct Seeded(pub(crate) String);
+
+impl ChunkGenerator for Seeded {
+    fn generate(&self, position: ChunkPos) -> Chunk {
+        generator().generate(position)
+    }
+
+    fn settings(&self) -> GeneratorSettings {
+        GeneratorSettings {
+            identity: self.0.clone(),
+            version: 1,
+        }
+    }
+}
+
+#[test]
+fn the_seed_of_a_world_with_features_is_read_from_its_generators_identity() {
+    for seed in [13579, -13579, 0, i64::MIN, i64::MAX] {
+        let identity = seeded_identity(seed);
+        assert_eq!(world_seed(&identity), Some(seed), "{identity}");
+    }
+    // Whatever else the identity names after the seed.
+    assert_eq!(
+        world_seed(
+            "terrain;features 5;structures 1;entities 2;minecraft:overworld;seed 42;no templates"
+        ),
+        Some(42)
+    );
+}
+
+#[test]
+fn a_flat_world_and_the_preview_of_a_seeds_land_have_no_seed_of_features() {
+    let flat = generator().settings().identity;
+    assert_eq!(world_seed(&flat), None, "{flat}");
+    let preview = clustine_worldgen::TerrainGenerator::new(13579)
+        .settings()
+        .identity;
+    assert!(preview.contains("seed 13579"), "{preview}");
+    assert_eq!(world_seed(&preview), None, "{preview}");
+    assert_eq!(world_seed(""), None);
+    assert_eq!(world_seed("terrain;features 5;seed many"), None);
+}
+
+#[test]
+fn a_region_of_a_world_with_features_is_restored_with_its_seed() {
+    let identity = seeded_identity(13579);
+    let store = Store::memory_told(Arc::new(Seeded(identity.clone())), division()).unwrap();
+    for region in [0, 1] {
+        let (_, restored) = store.open_region(hello(region, 1)).unwrap();
+        assert_eq!(restored.seed, Some(13579));
+        assert_eq!(restored.world, world_number(&identity));
+    }
+}
+
+#[test]
+fn a_region_of_the_flat_world_is_restored_without_a_seed() {
+    let store = memory();
+    for region in [0, 1] {
+        let (_, restored) = store.open_region(hello(region, 1)).unwrap();
+        assert_eq!(restored.seed, None);
+    }
+}

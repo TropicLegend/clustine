@@ -51,6 +51,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use clustine_features::{Dimension, FeatureSettings};
 use clustine_rpc::link::WorkerEnd;
 use clustine_rpc::{
     Crowds, Decline, EdgeMessage, EdgeToWorker, Off, Parts, Presence, Restored, SplitPart,
@@ -58,9 +59,9 @@ use clustine_rpc::{
 };
 use clustine_sim::api::{Entered, FaceChange, FaceSeq, Inventory, PlayerInput, RegionEvent};
 use clustine_sim::{
-    Durable, EdgeEvent, Holdings, Knowledge, LendAnswer, LendAsked, Misdirected, NoSplit, Part,
-    PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, RemoteStep, Sides, Splitting,
-    StateDelta, TickInputs, Ticket,
+    Durable, EdgeEvent, Features, Holdings, Knowledge, LendAnswer, LendAsked, Misdirected, NoSplit,
+    Part, PlayerChange, PlayerEvent, Region, RegionConfig, RegionState, RemoteStep, Sides,
+    Splitting, StateDelta, TickInputs, Ticket,
 };
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
@@ -1050,10 +1051,11 @@ pub struct RegionSettings {
 }
 
 impl RegionSettings {
-    /// The configuration of a region of the world whose spawn is the block `spawn` and
-    /// whose number is `world`: players enter in the middle of the spawn, and random
-    /// ticks are drawn from the number.
-    pub fn with_spawn(self, spawn: BlockPos, world: u64) -> RegionConfig {
+    /// The configuration of a region of the world whose spawn is the block `spawn`,
+    /// whose number is `world` and whose features' seed is `seed`
+    /// ([`Restored::seed`]): players enter in the middle of the spawn, random ticks are
+    /// drawn from the number, and saplings grow the trees of the seed's features.
+    pub fn with_spawn(self, spawn: BlockPos, world: u64, seed: Option<i64>) -> RegionConfig {
         RegionConfig {
             spawn: Vec3::bottom_centre_of(spawn),
             starting_inventory: self.starting_inventory,
@@ -1062,9 +1064,40 @@ impl RegionSettings {
             seed: world,
             // A server's budget for lighting what it loads (ADR-0029).
             light: clustine_sim::LightSettings::SERVER,
-            features: Default::default(),
+            features: features_of(seed),
         }
     }
+}
+
+/// The features of the world a process serves, kept with their seed: built for the
+/// first region it opens and shared by the rest, since reading every feature of the
+/// game's data takes some milliseconds and a worker serves one world. A test that
+/// opens worlds of other seeds in one process has them built again.
+static FEATURES: Mutex<Option<(i64, Arc<FeatureSettings>)>> = Mutex::new(None);
+
+/// The overworld's features of `seed`, or none without one, as in the flat world.
+///
+/// They are without the blocks of the structure templates, which a worker does not
+/// read from the game's jar: the trees saplings grow and what bone meal places need
+/// none, and a region places no other feature.
+fn features_of(seed: Option<i64>) -> Features {
+    let Some(seed) = seed else {
+        return Features::default();
+    };
+    // Built while the lock is held, so that regions opened at once wait for the one
+    // build rather than each making their own.
+    let mut kept = FEATURES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((of, features)) = &*kept
+        && *of == seed
+    {
+        return Features(Some(Arc::clone(features)));
+    }
+    let features = Arc::new(
+        FeatureSettings::new(seed, Dimension::Overworld)
+            .expect("the features' data is built into the server and read whole by its tests"),
+    );
+    *kept = Some((seed, Arc::clone(&features)));
+    Features(Some(features))
 }
 
 impl RegionRunner {
@@ -1083,7 +1116,7 @@ impl RegionRunner {
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn, restored.world);
+        let config = settings.with_spawn(restored.spawn, restored.world, restored.seed);
         let faces = mem::take(&mut restored.faces);
         let borders = Restored {
             deltas: Vec::new(),
@@ -5150,7 +5183,7 @@ mod tests {
     /// What [`settings`] makes of a region of the flat world, whose spawn [`SPAWN`]
     /// is the middle of.
     fn config(return_after: u64) -> RegionConfig {
-        settings(return_after).with_spawn(BlockPos::new(0, -60, 0), flat_world())
+        settings(return_after).with_spawn(BlockPos::new(0, -60, 0), flat_world(), None)
     }
 
     /// The number the store gives the classic flat world.
@@ -5162,6 +5195,62 @@ mod tests {
     /// A store of a flat world that is one region and only lasts as long as the store.
     fn memory() -> Store {
         Store::memory(Arc::new(FlatGenerator::classic()))
+    }
+
+    /// The flat world's chunks under the identity of the overworld of [`Seeded::SEED`]
+    /// with its features: a worker learns of the world's features from the seed the
+    /// store reads in the identity alone, so the test need not make the seed's land.
+    struct Seeded(clustine_world::generation::GeneratorSettings);
+
+    impl Seeded {
+        const SEED: i64 = 13579;
+
+        fn new() -> Self {
+            use clustine_worldgen::stages::Stages as _;
+            let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(Self::SEED));
+            Self(clustine_worldgen::FeatureStages::new(terrain).settings())
+        }
+    }
+
+    impl clustine_world::ChunkGenerator for Seeded {
+        fn generate(&self, position: ChunkPos) -> Chunk {
+            FlatGenerator::classic().generate(position)
+        }
+
+        fn settings(&self) -> clustine_world::generation::GeneratorSettings {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn the_regions_of_a_world_with_a_seed_share_the_features_of_its_seed() {
+        let store = Store::memory(Arc::new(Seeded::new()));
+        let (handle, restored) = store.open_region(owner()).unwrap();
+        assert_eq!(restored.seed, Some(Seeded::SEED));
+        let configured = || {
+            settings(0)
+                .with_spawn(restored.spawn, restored.world, restored.seed)
+                .features
+                .0
+                .expect("a world with a seed has features")
+        };
+        let (first, second) = (configured(), configured());
+        assert_eq!(first.seed(), Seeded::SEED);
+        // Built once and shared, not read again for every region.
+        assert!(Arc::ptr_eq(&first, &second));
+        // And a runner is restored with them.
+        let runner = RegionRunner::restore(settings(0), handle, restored).unwrap();
+        drop(runner);
+    }
+
+    #[test]
+    fn the_regions_of_the_flat_world_have_no_features() {
+        let store = memory();
+        let (_, restored) = store.open_region(owner()).unwrap();
+        assert_eq!(restored.seed, None);
+        let flat = settings(0).with_spawn(restored.spawn, restored.world, restored.seed);
+        assert!(flat.features.0.is_none());
+        assert!(config(0).features.0.is_none());
     }
 
     /// Has `store` hand `chunks` to the owner of its one region, opened as [`owner`].
@@ -5219,7 +5308,7 @@ mod tests {
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn, restored.world);
+        let config = settings.with_spawn(restored.spawn, restored.world, restored.seed);
         let control = Arc::new(GateControl::default());
 
         let gate = Gate {
@@ -7837,6 +7926,7 @@ mod tests {
             deltas,
             issued: EntityId(0),
             world: 0,
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),
@@ -8240,6 +8330,7 @@ mod tests {
             deltas,
             issued: EntityId(0),
             world: 0,
+            seed: None,
             in_use: Vec::new(),
             offset: None,
             couplings: Vec::new(),

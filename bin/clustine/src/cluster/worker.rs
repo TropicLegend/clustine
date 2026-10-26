@@ -264,6 +264,10 @@ enum Outcome {
 }
 
 /// What a worker waited for and got; see [`settled`].
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one is made for each opening, release or fetch, and handled at once"
+)]
 enum Settled {
     Opened(Result<(StoreHandle, Restored), StoreError>),
     Released(Ended),

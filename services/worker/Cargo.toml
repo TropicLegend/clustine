@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clustine-data.workspace = true
+clustine-features.workspace = true
 clustine-region.workspace = true
 clustine-rpc.workspace = true
 clustine-sim.workspace = true
