@@ -471,9 +471,10 @@ fn compare_section(
         (None, _) if *made == SectionLight::Dark => Outcome::Dark,
         (None, _) => Outcome::OnlyMade(format!("{place}: nothing stored, made {}", case(made))),
         (Some(_), None) => Outcome::OnlyStored(format!("{place}: an array stored, made absent")),
-        (Some(_), Some(_)) if *made == SectionLight::Dark => {
-            Outcome::OnlyStored(format!("{place}: an array stored, made dark"))
-        }
+        // A section made dark against an array stored is compared by its levels: the
+        // game keeps an array of zeros where light has gone from a section, and a client
+        // shows the same as for one sent dark; an array holding any light differs, cell
+        // by cell, below.
         (Some(stored), Some(array)) if stored[..] == array[..] => Outcome::Equal {
             full: *made == SectionLight::Full,
         },
