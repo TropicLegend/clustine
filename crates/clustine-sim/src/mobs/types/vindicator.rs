@@ -1,5 +1,8 @@
 //! The vindicator (`Vindicator`; `n7k-brief.md` 3.7), part K5: an illager with an iron
-//! axe that floats, strolls, keeps away from a creaking and looks.
+//! axe that floats, strolls, keeps away from a creaking and looks. With a target it
+//! chases and hits it (`MeleeAttackGoal(1.0, false)`), and a patrolling one first holds
+//! its ground and calls the raiders about (`HoldGroundAttackGoal(10)`;
+//! `docs/groundwork/n9-plan.md` section 8.4).
 //!
 //! Named differences: its axe is never enchanted, as item stacks carry no enchantments
 //! (the draw is made); a vindicator named Johnny is kept as one (`Johnny`), which only
@@ -16,8 +19,10 @@ use super::pillager::AVOID_CREAKING;
 use super::{MobType, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::ai::goals::{FloatGoal, LookAtPlayerGoal, RandomStrollGoal};
-use crate::mobs::ai::selector::flags;
+use crate::mobs::ai::goals::{
+    FloatGoal, HoldGroundAttackGoal, LookAtPlayerGoal, MeleeAttackGoal, RandomStrollGoal,
+};
+use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::Class;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::DamageSource;
@@ -36,21 +41,45 @@ pub(crate) struct VindicatorState {
     pub(crate) johnny: bool,
 }
 
+/// `Vindicator$VindicatorBreakDoorGoal` (n7): `BreakDoorGoal` of a vindicator in an
+/// active raid, its `canUse` asking `hasActiveRaid()` before its draw of
+/// `nextInt(reducedTickDelay(10))`. No raid exists before N10, so it never starts and
+/// draws nothing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BreakDoorGoal;
+
+impl Goal for BreakDoorGoal {
+    type State = ();
+
+    fn flags(&self) -> u8 {
+        flags::MOVE
+    }
+
+    fn can_use(&self, _: &mut (), _: &mut Ai<'_, '_>) -> bool {
+        false
+    }
+}
+
 impl MobType for Vindicator {
     /// `Vindicator.registerGoals`, after `Raider`'s.
     fn register_goals(&self, setup: &mut Setup) {
         illagers::register_raider_goals(setup);
         setup.add_goal(0, FloatGoal);
         setup.add_goal(1, AVOID_CREAKING);
-        // `VindicatorBreakDoorGoal` and `RaiderOpenDoorGoal`, a raid's;
-        // `HoldGroundAttackGoal(10)` and `MeleeAttackGoal(1.0, false)`, a target's.
-        setup.add_goal(2, Idle { flags: flags::MOVE });
+        setup.add_goal(2, BreakDoorGoal);
+        // `RaiderOpenDoorGoal`, a raid's.
         setup.add_goal(3, Idle { flags: 0 });
-        setup.add_goal(4, Idle { flags: flags::MOVE });
+        setup.add_goal(
+            4,
+            HoldGroundAttackGoal {
+                hostile_radius: 10.0,
+            },
+        );
         setup.add_goal(
             5,
-            Idle {
-                flags: flags::MOVE | flags::LOOK,
+            MeleeAttackGoal {
+                speed: 1.0,
+                following_even_if_not_seen: false,
             },
         );
         setup.add_goal(8, RandomStrollGoal::new(0.6));

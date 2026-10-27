@@ -7,30 +7,41 @@
 //! fishing rod and carry a nautilus shell, whatever the difficulty; one made by ocean
 //! ruins or a natural spawn with a trident may ride a zombie nautilus made with it.
 //!
-//! Named differences: its trident's throw and its attack, and its wish to swim after a
-//! target in water, are N9's (it never has a target); its body is not turned with a
-//! zombie nautilus it rides (`rideTick`); `drowned.swim` is not heard (the living body
-//! plays no swim sound of a type's own).
+//! With a target it may take (`okTarget`: by night anything, by day only what is in
+//! water) it attacks (`docs/groundwork/n9-plan.md`, section 8.4): holding a trident it
+//! raises it (`startUsingItem`, never released) and throws one at the target every 40
+//! ticks from within 10 blocks (`DrownedTridentAttackGoal`), else it chases and hits as
+//! a zombie does (`DrownedAttackGoal`); a target in water makes it want to swim.
+//!
+//! Named differences: its body is not turned with a zombie nautilus it rides
+//! (`rideTick`); `drowned.swim` is not heard (the living body plays no swim sound of a
+//! type's own); `setRangedAttackUncertainty`, which nothing dumped calls, is not kept, so
+//! its throw's uncertainty is always the difficulty's (10 at easy); whether its target is
+//! in water is water in the block of the target's feet, as its `okTarget` reads it
+//! (`crate::mobs::ai::targets`).
 
 use clustine_blocks::data::is_block;
 use clustine_data::{PathType, attributes, blocks, entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
 use serde::{Deserialize, Serialize};
 
-use super::tamable::Idle;
-use super::zombie_family as family;
+use super::zombie_family::{self as family, ZombieAttackGoal, ZombieAttacking};
 use super::{Breeding, CompanionSeat, Dimensions, MobType, SpawnReason, Spawning, animal, water};
 use crate::living::{Sinks, Travel, slots};
 use crate::mobs::Mob;
-use crate::mobs::ai::goals::{MoveToBlockGoal, MovingToBlock, RandomStrollGoal};
+use crate::mobs::ai::goals::{
+    MoveToBlockGoal, MovingToBlock, RandomStrollGoal, RangedAttackGoal, Ranging,
+};
 use crate::mobs::ai::maths::{move_rotlerp, yaw_towards};
 use crate::mobs::ai::navigation::{self, Kind, Settings};
 use crate::mobs::ai::selector::{Goal, flags};
+use crate::mobs::ai::sensing::{self, Looked};
 use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Operation, Setup, controls, random_pos};
 use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::body::{Event, using};
 use crate::mobs::making;
-use crate::mobs::tick::MobTick;
+use crate::mobs::tick::{Local, MobTick, Shot};
 use crate::physics::Vec3;
 use crate::region::Random;
 use crate::shown::DataShown;
@@ -51,9 +62,30 @@ fn bright_outside(ai: &Ai<'_, '_>) -> bool {
     ai.tick.world.sky_darken() < 4
 }
 
-/// `wantsToSwim()`: searching for land (a target in water is N9's).
-fn wants_to_swim(mob: &Mob) -> bool {
-    family::read(mob).searching_for_land
+/// `wantsToSwim()`: searching for land, or a target in water.
+fn wants_to_swim(tick: &MobTick<'_>) -> bool {
+    family::read(&tick.mob).searching_for_land || target_in_water(tick)
+}
+
+/// `getTarget()` and `isInWater()` of it: the target, an entity or a player wherever the
+/// view has it, with water in the block of its feet.
+fn target_in_water(tick: &MobTick<'_>) -> bool {
+    let Some(key) = tick.mob.body.combat.target else {
+        return false;
+    };
+    let feet = match tick.world.entity(key) {
+        Some(seen) => seen.entity.position,
+        None => match tick
+            .world
+            .players()
+            .into_iter()
+            .find(|seen| seen.key == key)
+        {
+            Some(player) => player.position,
+            None => return false,
+        },
+    };
+    clustine_blocks::data::has_water(tick.world.state(crate::physics::containing(feet)))
 }
 
 /// `setSearchingForLand(searching)`.
@@ -270,7 +302,7 @@ fn set_speed(ai: &mut Ai<'_, '_>, speed: f32) {
 /// the ground and walks as `MoveControl` walks.
 fn tick_move_control(ai: &mut Ai<'_, '_>) {
     let own = family::read(&ai.tick.mob);
-    if !(wants_to_swim(&ai.tick.mob) && ai.in_water()) {
+    if !(wants_to_swim(ai.tick) && ai.in_water()) {
         if !ai.on_ground() {
             ai.tick.living.body.motion[1] += -0.008;
         }
@@ -369,6 +401,163 @@ fn finalize_spawn(spawn: &mut Spawning<'_>) {
     );
 }
 
+/// `Drowned.okTarget(getTarget())`: a target held that it may take.
+fn ok_target(ai: &Ai<'_, '_>) -> bool {
+    sensing::target(ai).is_some_and(|target| targets::drowned_ok_target(ai, &target))
+}
+
+/// `Drowned$DrownedAttackGoal(drowned, 1.0, false)` (n7k Drowned$DrownedAttackGoal): a
+/// zombie's attack, used and kept only while it may take its target (`okTarget`), asked
+/// after the zombie's own tests.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DrownedAttackGoal(pub(crate) ZombieAttackGoal);
+
+impl Goal for DrownedAttackGoal {
+    type State = ZombieAttacking;
+
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+
+    fn can_use(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) -> bool {
+        self.0.can_use(state, ai) && ok_target(ai)
+    }
+
+    fn can_continue(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) -> bool {
+        self.0.can_continue(state, ai) && ok_target(ai)
+    }
+
+    fn start(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.0.start(state, ai);
+    }
+
+    fn stop(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.0.stop(state, ai);
+    }
+
+    fn tick(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.0.tick(state, ai);
+    }
+}
+
+/// `Drowned$DrownedTridentAttackGoal(drowned, 1.0, 40, 10.0)` (n7k): `RangedAttackGoal`
+/// of an interval of 40 either way and a radius of 10, used only with a trident in the
+/// main hand. Started, it is aggressive and raises the trident (`startUsingItem` of the
+/// main hand, a use it never releases); stopped, it lowers it and is not.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TridentAttackGoal;
+
+impl TridentAttackGoal {
+    const RANGED: RangedAttackGoal = RangedAttackGoal {
+        speed: 1.0,
+        interval_min: 40,
+        interval_max: 40,
+        radius: 10.0,
+        perform: perform_ranged_attack,
+    };
+}
+
+/// Whether its main hand holds a trident.
+fn holds_trident(ai: &Ai<'_, '_>) -> bool {
+    animal::is_item(
+        ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)].as_ref(),
+        items::TRIDENT,
+    )
+}
+
+impl Goal for TridentAttackGoal {
+    type State = Ranging;
+
+    fn flags(&self) -> u8 {
+        Self::RANGED.flags()
+    }
+
+    fn every_tick(&self) -> bool {
+        Self::RANGED.every_tick()
+    }
+
+    /// `RangedAttackGoal.canUse()` (which holds the target it finds), then the trident.
+    fn can_use(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
+        Self::RANGED.can_use(state, ai) && holds_trident(ai)
+    }
+
+    /// `RangedAttackGoal.canContinueToUse()`, whose `canUse()` is this goal's: the
+    /// trident asked again, or the target held still alive and its path not done.
+    fn can_continue(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
+        if self.can_use(state, ai) {
+            return true;
+        }
+        let alive = state
+            .target
+            .and_then(|key| sensing::find(ai, key))
+            .is_some_and(|target| target.alive);
+        alive && !navigation::is_done(ai)
+    }
+
+    fn start(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) {
+        Self::RANGED.start(state, ai);
+        ai.tick.mob.body.combat.aggressive = true;
+        using::start_using(ai.tick, crate::api::Hand::Main);
+    }
+
+    fn stop(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) {
+        Self::RANGED.stop(state, ai);
+        using::stop_using(ai.tick);
+        ai.tick.mob.body.combat.aggressive = false;
+    }
+
+    fn tick(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) {
+        Self::RANGED.tick(state, ai);
+    }
+}
+
+/// `RangedAttackMob.rangedAttackUncertainty(level)`: `14 - difficulty · 4`, the drowned's
+/// own being never set.
+fn uncertainty() -> f32 {
+    (14 - 4 * clustine_world::Difficulty::WORLD.id()) as f32
+}
+
+/// `Drowned.performRangedAttack(target, power)`: a trident made of the one in its hand
+/// (`ThrownTrident(level, drowned, stack)`, from its eyes less 0.1 and of no weapon),
+/// shot at a third of the target's height and lifted by a fifth of the way across, at
+/// 1.6 and the difficulty's uncertainty (`spawnProjectileUsingShoot`, its draws the
+/// trident's own); then `drowned.shoot` at a pitch of its own draw. The trident in its
+/// hand stays there.
+pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, _power: f32) {
+    let stack = ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+        .clone()
+        .filter(|stack| stack.item == items::TRIDENT)
+        .unwrap_or_else(|| ItemStack::new(items::TRIDENT, 1));
+    let [x, _, z] = ai.position();
+    let at = [x, ai.eye_y() - 0.1, z];
+    let height = target.bounds.max[1] - target.bounds.min[1];
+    let dx = target.position[0] - x;
+    // `getY(0.3333333333333333)`: the height times the double nearest a third.
+    let dy = target.position[1] + height * 0.333_333_333_333_333_3 - at[1];
+    let dz = target.position[2] - z;
+    let across = (dx * dx + dz * dz).sqrt();
+    ai.tick.out.local.push(Local::Shoot(Shot {
+        kind: u16::try_from(entity_types::TRIDENT).expect("entity type ids fit 16 bits"),
+        stack,
+        weapon: None,
+        at,
+        direction: [dx, dy + across * 0.200_000_002_980_232_24, dz],
+        power: 1.6,
+        uncertainty: uncertainty(),
+        from_mob: None,
+    }));
+    let pitch = 1.0 / (ai.tick.draws.next_float() * 0.4 + 0.8);
+    ai.tick.out.events.push(Event::Sound {
+        sound: sounds::ENTITY_DROWNED_SHOOT,
+        volume: 1.0,
+        pitch,
+    });
+}
+
 impl MobType for Drowned {
     /// `Zombie.doHurtTarget`'s fire.
     fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
@@ -382,9 +571,8 @@ impl MobType for Drowned {
         setup.set_malus(PathType::Water, 0.0);
         family::register_base_goals(setup);
         setup.add_goal(1, GoToWaterGoal);
-        // `DrownedTridentAttackGoal` and `DrownedAttackGoal`, which need a target.
-        setup.add_goal(2, Idle { flags: 0 });
-        setup.add_goal(2, Idle { flags: 0 });
+        setup.add_goal(2, TridentAttackGoal);
+        setup.add_goal(2, DrownedAttackGoal(ZombieAttackGoal::new(1.0, false)));
         setup.add_goal(5, GoToBeachGoal);
         setup.add_goal(6, SwimUpGoal);
         setup.add_goal(7, RandomStrollGoal::new(1.0));
@@ -402,7 +590,7 @@ impl MobType for Drowned {
     /// `Drowned.travelInWater`: with its eyes under water and wanting to swim, a
     /// hundredth along its input and its motion kept at nine tenths; else the zombie's.
     fn travel(&self, tick: &MobTick<'_>) -> Travel {
-        if water::eye_in_water(tick) && wants_to_swim(&tick.mob) {
+        if water::eye_in_water(tick) && wants_to_swim(tick) {
             Travel::Swims {
                 speed: 0.01,
                 sinks: Sinks::Never,
@@ -415,7 +603,7 @@ impl MobType for Drowned {
     /// `Drowned.updateSwimming()`, in its `baseTick`: it swims while its AI runs, its
     /// eyes are under water and it wants to swim.
     fn after_base_tick(&self, tick: &mut MobTick<'_>, _: i32) {
-        let swimming = tick.effective_ai() && water::eye_in_water(tick) && wants_to_swim(&tick.mob);
+        let swimming = tick.effective_ai() && water::eye_in_water(tick) && wants_to_swim(tick);
         tick.mob.body.swimming.swimming = swimming;
     }
 

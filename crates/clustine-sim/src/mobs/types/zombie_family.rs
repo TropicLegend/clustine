@@ -5,10 +5,16 @@
 //! every draw the game makes at easy, `handleAttributes`, the drowning conversion
 //! (`ConversionTracker`) and the turtle egg goal (`ZombieAttackTurtleEggGoal`).
 //!
-//! Named differences: the targets are real (`crate::mobs::ai::targets`, N9f) and the
-//! attacks are N9's (each holds its slot with a goal that never starts);
+//! Their attack is `ZombieAttackGoal` (`docs/groundwork/n9-plan.md`, section 8.4): the
+//! melee goal of `crate::mobs::ai::goals` with the arms raised (the aggressive flag the
+//! client draws them by) from the fifth tick of a chase while the next hit is under ten
+//! ticks away. The targets are `crate::mobs::ai::targets`' (N9f).
+//!
+//! Named differences: `SpearUseGoal` is decided out of N9 for mobs (the plan's 8.6 and
+//! 18.5): its slot holds a goal that never starts, and a zombie holding a spear (one in
+//! 600 at easy) chases and hits with `ZombieAttackGoal` as one with a sword would;
 //! `MoveThroughVillageGoal` finds no village, which needs the
-//! points of interest of N10, and holds its slot so; `BreakDoorGoal` is never added, as
+//! points of interest of N10, and so never starts; `BreakDoorGoal` is never added, as
 //! no door is broken below hard and no zombie can break doors at easy; Halloween's
 //! pumpkin is never drawn (the plan's section 10); a group of zombies made together
 //! (N9's natural spawns) shares no `ZombieGroupData`, as an egg's has none; a chicken
@@ -28,7 +34,8 @@ use crate::api::SOUND_SOURCE_BLOCKS;
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    LookAtPlayerGoal, MoveToBlockGoal, MovingToBlock, RandomLookAroundGoal, RandomStrollGoal,
+    Attacking, LookAtPlayerGoal, MeleeAttackGoal, MoveToBlockGoal, MovingToBlock,
+    RandomLookAroundGoal, RandomStrollGoal,
 };
 use crate::mobs::ai::maths::reduced_tick_delay;
 use crate::mobs::ai::navigation;
@@ -254,15 +261,111 @@ pub(crate) fn register_base_goals(setup: &mut Setup) {
 }
 
 /// `Zombie.registerGoals` with its `addBehaviourGoals` (the zombie's, the husk's and the
-/// zombie villager's): the spear (2) and the attack (3), which need a target; through a
-/// village (6), which finds none; the stroll avoiding water (7); and the targets.
+/// zombie villager's, Zombie.txt 124–169): the spear (2), decided out of N9 and never
+/// started; `ZombieAttackGoal(1.0, false)` (3); through a village at night (6), which
+/// finds none; the stroll avoiding water (7); and the targets.
 pub(crate) fn register_goals(setup: &mut Setup) {
     register_base_goals(setup);
-    setup.add_goal(2, Idle { flags: 0 });
-    setup.add_goal(3, Idle { flags: 0 });
-    setup.add_goal(6, Idle { flags: 0 });
+    setup.add_goal(
+        2,
+        Idle {
+            flags: flags::MOVE | flags::LOOK,
+        },
+    );
+    setup.add_goal(3, ZombieAttackGoal::new(1.0, false));
+    setup.add_goal(6, MoveThroughVillageGoal);
     setup.add_goal(7, RandomStrollGoal::avoiding_water(1.0));
     targets::register(setup, targets::ZOMBIE);
+}
+
+/// `ZombieAttackGoal`'s state: `MeleeAttackGoal`'s and `raiseArmTicks`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ZombieAttacking {
+    pub(crate) attacking: Attacking,
+    pub(crate) raise_arm_ticks: i32,
+}
+
+/// `ZombieAttackGoal(zombie, speed, followingTargetEvenIfNotSeen)` (n7
+/// ZombieAttackGoal): `MeleeAttackGoal`, with the zombie's arms raised (`setAggressive`)
+/// only from the fifth tick of its run, and then only while its next hit is less than
+/// half its interval of 20 away; down otherwise. It draws nothing of its own.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ZombieAttackGoal {
+    pub(crate) melee: MeleeAttackGoal,
+}
+
+impl ZombieAttackGoal {
+    pub(crate) const fn new(speed: f64, following_even_if_not_seen: bool) -> Self {
+        Self {
+            melee: MeleeAttackGoal {
+                speed,
+                following_even_if_not_seen,
+            },
+        }
+    }
+}
+
+impl Goal for ZombieAttackGoal {
+    type State = ZombieAttacking;
+
+    fn flags(&self) -> u8 {
+        self.melee.flags()
+    }
+
+    fn every_tick(&self) -> bool {
+        self.melee.every_tick()
+    }
+
+    fn can_use(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) -> bool {
+        self.melee.can_use(&mut state.attacking, ai)
+    }
+
+    fn can_continue(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) -> bool {
+        self.melee.can_continue(&mut state.attacking, ai)
+    }
+
+    /// `MeleeAttackGoal.start()` (which raises the arms), then `raiseArmTicks` from
+    /// nothing.
+    fn start(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.melee.start(&mut state.attacking, ai);
+        state.raise_arm_ticks = 0;
+    }
+
+    fn stop(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.melee.stop(&mut state.attacking, ai);
+        ai.tick.mob.body.combat.aggressive = false;
+    }
+
+    /// `MeleeAttackGoal.tick()` (its chase and its hit), then a tick more of the arms:
+    /// raised from the fifth while `getTicksUntilNextAttack() < getAttackInterval() / 2`.
+    fn tick(&self, state: &mut ZombieAttacking, ai: &mut Ai<'_, '_>) {
+        self.melee.tick(&mut state.attacking, ai);
+        state.raise_arm_ticks += 1;
+        let interval = self.melee.adjusted_tick_delay(20);
+        ai.tick.mob.body.combat.aggressive =
+            state.raise_arm_ticks >= 5 && state.attacking.attack_cooldown < interval / 2;
+    }
+}
+
+/// `MoveThroughVillageGoal(zombie, 1.0, true, 4, canBreakDoors)` (n7
+/// MoveThroughVillageGoal): by night, to a point of interest of a village within six
+/// sections. `canUse` asks whether its navigation is a ground one (a zombie's is), then
+/// whether it is day (`onlyAtNight`), then `isCloseToVillage(pos, 6)`, which finds no
+/// village until N10 brings points of interest: it never starts, and draws nothing
+/// before it gives up (its first draw, `LandRandomPos.getPos`, comes after).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MoveThroughVillageGoal;
+
+impl Goal for MoveThroughVillageGoal {
+    type State = ();
+
+    fn flags(&self) -> u8 {
+        flags::MOVE
+    }
+
+    fn can_use(&self, _: &mut (), _: &mut Ai<'_, '_>) -> bool {
+        false
+    }
 }
 
 /// The weapon of `Zombie.populateDefaultEquipmentSlots` after `Mob`'s armour: one time in
@@ -704,3 +807,7 @@ impl Goal for ZombieAttackTurtleEggGoal {
         state.since_reached += 1;
     }
 }
+
+#[cfg(test)]
+#[path = "melee_n9_tests.rs"]
+mod melee_n9_tests;

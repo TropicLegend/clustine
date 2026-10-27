@@ -10,8 +10,12 @@
 //! Its swell and the swell before it are kept in its record with the rest (the game keeps
 //! them in fields it does not save), so that a restore or a crossing mid-swell goes on.
 //!
-//! Named differences: with no target it never swells but ignited (`SwellGoal` takes no
-//! target, N9's), and its melee goal is N9's (its targets are real); a fall's swelling
+//! With a target it chases it (`MeleeAttackGoal(1.0, false)`, `docs/groundwork/n9-plan.md`
+//! section 8.4), a player it sees or what hurt it, until within three blocks its
+//! `SwellGoal` stops it to swell; its "hit", should it come within reach, does nothing
+//! (`Creeper.doHurtTarget` returns at once), though its arm swings for it.
+//!
+//! Named differences: a fall's swelling
 //! (`causeFallDamage`, which only shortens a later fuse) is not kept; lightning, which
 //! would power it, never strikes; the item's wear is not kept, every player being
 //! creative; whether it is in water, which a frame's or a painting's ignoring of its
@@ -22,15 +26,16 @@ use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, TypeState};
 use serde::{Deserialize, Serialize};
 
-use super::monster_ai::{self, AttackOfN9};
+use super::monster_ai;
 use super::{Did, Interaction, MobType, Used, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, RandomLookAroundGoal, RandomStrollGoal,
+    AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, MeleeAttackGoal, RandomLookAroundGoal,
+    RandomStrollGoal,
 };
 use crate::mobs::ai::navigation;
 use crate::mobs::ai::selector::{Goal, flags};
-use crate::mobs::ai::sensing::{self, Class};
+use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::Event;
@@ -115,8 +120,8 @@ pub(crate) struct Creeper;
 
 /// `SwellGoal(creeper)`: while it swells or a living target is within 3, it stops and
 /// keeps its target; each tick its direction is +1 only for a target within 7 that it
-/// sees, else −1. Without a target (N9) it runs only while ignited, and sets −1 each
-/// tick, which the next tick's ignition sets back before it counts.
+/// sees, else −1. Without a target it runs only while ignited, and sets −1 each tick,
+/// which the next tick's ignition sets back before it counts.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SwellGoal;
 
@@ -174,11 +179,11 @@ impl MobType for Creeper {
                 sprint_speed: 1.2,
             },
         );
-        // `MeleeAttackGoal(1.0, false)`: N9's.
         setup.add_goal(
             4,
-            AttackOfN9 {
-                flags: flags::MOVE | flags::LOOK,
+            MeleeAttackGoal {
+                speed: 1.0,
+                following_even_if_not_seen: false,
             },
         );
         setup.add_goal(5, RandomStrollGoal::avoiding_water(0.8));
@@ -190,6 +195,9 @@ impl MobType for Creeper {
     fn walk_target_value(&self, ai: &Ai<'_, '_>, pos: BlockPos) -> f32 {
         monster_ai::walk_target_value(ai, pos)
     }
+
+    /// `Creeper.doHurtTarget`: `true`, and nothing done (Creeper.txt 397–400).
+    fn do_hurt_target(&self, _: &mut Ai<'_, '_>, _: &Looked) {}
 
     /// `Creeper.tick` before `Monster`'s, while it lives: the swell before kept; ignited,
     /// it swells; at its first swell its sound and `prime_fuse`; the swell counted (never

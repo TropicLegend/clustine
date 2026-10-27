@@ -8,8 +8,12 @@
 //! climber's (`WallClimberNavigation`): once a path is done short of where it was sent, it
 //! walks straight at it, up a wall if one is in the way. Cobwebs do not hold it.
 //!
-//! It floats, runs from an armadillo that is not rolled up, strolls and looks about; its
-//! leap and its attack want a target, which is N9's (`monster_ai.rs`). An egg's spider is
+//! It floats, runs from an armadillo that is not rolled up, strolls and looks about; with
+//! a target it leaps at it from two to four blocks (`LeapAtTargetGoal(0.4)`) and chases
+//! and bites it (`SpiderAttackGoal`, `docs/groundwork/n9-plan.md` section 8.4), seen or
+//! not, unless something rides it; in light worth a half or more it lets its target go
+//! one tick in a hundred. The cave spider's bite poisons only on normal and hard, never
+//! at Clustine's easy, and draws nothing for it. An egg's spider is
 //! ridden by a skeleton one time in a hundred (`finalizeSpawn`'s jockey, a skeleton of its
 //! own draws, added after it as its passenger); its effect is drawn only on hard, never in
 //! Clustine's world, which is easy.
@@ -25,15 +29,15 @@ use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, TypeState};
 use serde::{Deserialize, Serialize};
 
-use super::monster_ai::{self, AttackOfN9};
+use super::monster_ai;
 use super::{CompanionSeat, MobType, SpawnReason, Spawning};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    AvoidEntityGoal, AvoidEntityGoalIf, FloatGoal, LeapAtTargetGoal, LookAtPlayerGoal,
-    RandomLookAroundGoal, RandomStrollGoal,
+    Attacking, AvoidEntityGoal, AvoidEntityGoalIf, FloatGoal, LeapAtTargetGoal, LookAtPlayerGoal,
+    MeleeAttackGoal, RandomLookAroundGoal, RandomStrollGoal,
 };
-use crate::mobs::ai::selector::flags;
-use crate::mobs::ai::sensing::{Class, Looked};
+use crate::mobs::ai::selector::Goal;
+use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::DamageSource;
@@ -128,17 +132,64 @@ pub(crate) fn register_goals(setup: &mut Setup) {
         },
     );
     setup.add_goal(3, LeapAtTargetGoal { yd: 0.4 });
-    // `SpiderAttackGoal`, a melee attack: N9's.
-    setup.add_goal(
-        4,
-        AttackOfN9 {
-            flags: flags::MOVE | flags::LOOK,
-        },
-    );
+    setup.add_goal(4, SpiderAttackGoal);
     setup.add_goal(5, RandomStrollGoal::avoiding_water(0.8));
     setup.add_goal(6, LookAtPlayerGoal::new(Class::Player, 8.0));
     setup.add_goal(6, RandomLookAroundGoal);
     targets::register(setup, targets::SPIDER);
+}
+
+/// `Spider$SpiderAttackGoal(spider)` (n7k): `MeleeAttackGoal(spider, 1.0, true)`, used
+/// only while nothing rides the spider; while it runs, in light worth a half or more at
+/// the spider's eyes it draws `nextInt(100)` each tick, and at 0 drops its target and
+/// stops; in the dark it draws nothing of its own.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpiderAttackGoal;
+
+impl SpiderAttackGoal {
+    const MELEE: MeleeAttackGoal = MeleeAttackGoal {
+        speed: 1.0,
+        following_even_if_not_seen: true,
+    };
+}
+
+impl Goal for SpiderAttackGoal {
+    type State = Attacking;
+
+    fn flags(&self) -> u8 {
+        Self::MELEE.flags()
+    }
+
+    fn every_tick(&self) -> bool {
+        Self::MELEE.every_tick()
+    }
+
+    /// `MeleeAttackGoal.canUse()`, then `!isVehicle()`.
+    fn can_use(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) -> bool {
+        Self::MELEE.can_use(state, ai) && !ai.tick.carries
+    }
+
+    /// The light first: worth a half or more, one draw of a hundred, and at 0 the
+    /// target let go; then `MeleeAttackGoal.canContinueToUse()`.
+    fn can_continue(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) -> bool {
+        if monster_ai::magic_value_at_eyes(ai) >= 0.5 && ai.tick.draws.next_int(100) == 0 {
+            sensing::set_target(ai, None);
+            return false;
+        }
+        Self::MELEE.can_continue(state, ai)
+    }
+
+    fn start(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) {
+        Self::MELEE.start(state, ai);
+    }
+
+    fn stop(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) {
+        Self::MELEE.stop(state, ai);
+    }
+
+    fn tick(&self, state: &mut Attacking, ai: &mut Ai<'_, '_>) {
+        Self::MELEE.tick(state, ai);
+    }
 }
 
 /// `Spider.tick` after `Monster`'s: climbing is whether its move ran into something

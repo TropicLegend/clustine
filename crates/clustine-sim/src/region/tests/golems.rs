@@ -558,7 +558,13 @@ fn an_iron_golem_s_damage_sound_plays_only_when_a_hurt_takes_it_below_a_crack_le
 #[test]
 fn an_iron_golem_fights_a_zombie_hitting_it_by_its_draw_and_flinging_it() {
     let mut region = on_ticking_floor_with(&[]);
-    lay(&mut region, &zombie_at(FOE, [8.5, -60.0, 4.5]));
+    // The zombie fights back (N9 S6), which moves the golem's stream: given more health
+    // than its own, it outlives a hit that would kill one of 20, and the hit is read
+    // whole.
+    lay(
+        &mut region,
+        &with_health(zombie_at(FOE, [8.5, -60.0, 4.5]), 40.0),
+    );
     lay(
         &mut region,
         &mob_at(
@@ -572,7 +578,7 @@ fn an_iron_golem_fights_a_zombie_hitting_it_by_its_draw_and_flinging_it() {
     for _ in 0..400 {
         let output = checked(&mut region, &TickInputs::default());
         let foe = mob(&region, FOE);
-        if foe.body.vitals.health < 20.0 {
+        if foe.body.vitals.health < 40.0 {
             hit = Some((output, foe, record(&region, FOE).unwrap()));
             break;
         }
@@ -587,7 +593,7 @@ fn an_iron_golem_fights_a_zombie_hitting_it_by_its_draw_and_flinging_it() {
     // Half its attack of 15 and a draw of the whole: 7.5 and a whole number up to 14,
     // less what the zombie's armour of 2 takes off a hit that hard (`CombatRules`: a
     // fifth of the armour, of 25).
-    let lost = 20.0 - foe.body.vitals.health;
+    let lost = 40.0 - foe.body.vitals.health;
     let hit = lost / (1.0 - 0.4 / 25.0);
     let drawn = hit - 7.5;
     assert!(

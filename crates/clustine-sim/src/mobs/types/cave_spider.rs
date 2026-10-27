@@ -1,7 +1,9 @@
 //! The cave spider (`CaveSpider`; `n7k-brief.md` 11.4): a spider ([`super::spider`]) of
 //! 12 health and its own size, whose `finalizeSpawn` returns the group it is handed and
 //! does nothing else: no follow range's bonus, never left-handed, no jockey, no effect,
-//! not one draw. Named: its poisoning bite is N9's.
+//! not one draw. Its bite (`CaveSpider.doHurtTarget`) poisons for 7 seconds on normal
+//! and 15 on hard, and on easy, Clustine's world, gives nothing and draws nothing: its
+//! hit is the spider's.
 
 use clustine_data::sounds;
 use clustine_world::BlockPos;
