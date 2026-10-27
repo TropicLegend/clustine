@@ -432,7 +432,6 @@ fn claims_are_part_of_a_chunk_s_equality_and_travel_but_not_of_what_viewers_see(
 /// generated, so that remaking a chunk whose generation failed keeps them"; the plan,
 /// section 3.2: "A change of claims clears `with_failure` as a block change does".
 #[test]
-#[ignore = "finding: the ADR says a chunk with claims is no longer as generated; Chunk::acquire_ticket leaves generated() and with_failure() as they were (only the store's replay clears them)"]
 fn a_ticket_taken_makes_a_chunk_no_longer_as_generated() {
     let mut chunk = chunk();
     let smoker = InChunk::new(4, 64, 4);

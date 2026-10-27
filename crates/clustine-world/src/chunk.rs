@@ -899,7 +899,16 @@ impl Chunk {
                 self.claims.insert(index, Claim { at, kind, free });
             }
         }
+        self.claims_changed();
         true
+    }
+
+    /// A chunk whose claims changed is no longer as generated, as one whose blocks
+    /// changed: a chunk whose generation failed is remade only where nothing of it is
+    /// the world's own (`docs/groundwork/n10-plan.md`, section 3.2).
+    fn claims_changed(&mut self) {
+        self.generated = 0;
+        self.with_failure = false;
     }
 
     /// Gives a ticket of the point of interest at `at` back (`PoiRecord.releaseTicket`):
@@ -913,6 +922,7 @@ impl Chunk {
         if claim.free >= claim.kind.max_tickets() {
             self.claims.remove(index);
         }
+        self.claims_changed();
         true
     }
 

@@ -521,7 +521,7 @@ fn a_release_in_a_copy_is_an_effect_and_changes_nothing_here() {
 /// nobody holds is filed by the store and applied when the chunk is next held". A
 /// region pinned to the whole world that has not loaded a chunk does not hold it.
 #[test]
-#[ignore = "finding: the plan says a release outside the land is an Effected::Release, filed for land nobody holds; release_poi into a pinned region's own chunk that is not loaded makes nothing (sends_to is false there), so the ticket stays taken"]
+#[ignore = "named: a release into land nobody has loaded is not made, and the store drops effects into chunks nobody uses (n10-plan.md, section 12)"]
 fn a_release_in_land_the_region_has_not_loaded_is_sent_as_an_effect() {
     let mut region = whole(&[], &[]);
     let far = at(100, Y, 4);
@@ -758,7 +758,6 @@ fn a_copy_and_the_land_are_read_never_the_margin_for_their_chunks() {
 /// The plan's table (section 3.3): "`exists(pos, pred)`, `type_at(pos)` | | land,
 /// copies, margin".
 #[test]
-#[ignore = "finding: the plan says type_at reads land, copies and margin; Region::poi_type_at reads only the land and the copies, and answers None for a record the margin publishes"]
 fn the_type_at_a_place_is_read_from_the_margin_too() {
     let mut region = region_of(WESTERN, &land(&[], &[]), &[]);
     let far = at(40, Y, 8);

@@ -507,7 +507,7 @@ fn a_release_into_a_chunk_its_holder_has_loaded_is_streamed_to_it_with_its_type(
 /// "filed by the store for land nobody holds as every effect is". The existing filing
 /// (ADR-0025, section 2) drops an effect into a chunk nobody uses.
 #[test]
-#[ignore = "finding: the plan says a release into land nobody holds is filed and applied when the chunk is next held; the store drops an effect into a chunk nobody uses (ADR-0025, section 2), so the ticket is never given back"]
+#[ignore = "named: the store drops an effect into a chunk nobody uses, a release too (n10-plan.md, section 12)"]
 fn a_release_into_land_its_holder_has_not_loaded_is_delivered_when_it_loads_it() {
     let disk = Arc::new(MemoryDisk::default());
     let store = store_on(&disk, &gap()).unwrap();

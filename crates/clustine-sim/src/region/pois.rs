@@ -333,10 +333,22 @@ impl Region {
         found.into_iter().find(|record| test(record))
     }
 
-    /// The type of the record at `pos`, where the region can read it.
+    /// The type of the record at `pos`, where the region can read it: its land, its
+    /// copies and the margin.
     pub(crate) fn poi_type_at(&self, pos: BlockPos) -> Option<PoiType> {
-        let (chunk, _) = self.poi_chunk(pos.chunk())?;
-        chunk.poi_type_at(in_chunk(pos))
+        if let Some((chunk, _)) = self.poi_chunk(pos.chunk()) {
+            return chunk.poi_type_at(in_chunk(pos));
+        }
+        self.margin
+            .get(&pos.chunk())?
+            .iter()
+            .find(|seen| seen.at == pos)
+            .map(|seen| seen.kind)
+    }
+
+    /// `PoiManager.exists(pos, test)`: a record at `pos` whose type passes `wanted`.
+    pub(crate) fn poi_exists(&self, pos: BlockPos, wanted: impl Fn(PoiType) -> bool) -> bool {
+        self.poi_type_at(pos).is_some_and(wanted)
     }
 
     /// Takes a ticket of the record at `pos` in the land (`PoiRecord.acquireTicket`).

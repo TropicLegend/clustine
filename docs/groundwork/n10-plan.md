@@ -655,6 +655,11 @@ the horn. Everything else is built (entity events, data, sounds, level events, b
 17. A villager lying down in a bed whose head is across a line: the bed's `occupied` is set a
     tick later by effect (V 11).
 18. A trader firing doubled at a pinned line (decision 12).
+19. A ticket given back into a chunk nobody has loaded is lost, and the point stays claimed:
+    the store drops an effect into a chunk nobody uses, as the game drops an update into a
+    chunk not loaded, where the game's `PoiManager` would read the chunk from disk. A site
+    within 48 blocks of a ticking villager is nearly always in loaded land (found by the
+    tests from the specification, X1 part A1).
 
 ---------------------------------------------------------------------------------------
 
@@ -666,7 +671,7 @@ Each step one verified commit to `main`, pushed. The lead's first, in order:
 |---|---|
 | N10a | The data: `PoiType` and its block table; the trades' compiler (`villager_trade`, `trade_set`, tags, `TradeCost`'s default count 1); the gift tables and `cat_morning_gift`; the enchantment, potion and structure tags trades need |
 | N10b | Points of interest (section 3): claims (store format 17, log kind 19, `CopyUpdate`'s claims; `Effected::Release` in the log's effects), the index, queries, take and release, `Effected::Release`, the margin's request and reply, the village (the stand-ins kept until V2) |
-| N10c | The contracts and every cross-part hook (section 4), store format 18 (the log's effects gain `EntityUse::Villager` and `Raider`), `STATE_FORMAT` 22, and the villager streams' tests changed by `SetRaidStatus`'s level draw (which N10c adds to the villager's core as an inert one-shot) |
+| N10c | The contracts and every cross-part hook (section 4), `STATE_FORMAT` 22 (the log's effects gain `EntityUse::Villager` and `Raider` as new tags, which need no raise of the store's format: no world made before holds them), and the villager streams' tests changed by `SetRaidStatus`'s level draw (which N10c adds to the villager's core as an inert one-shot) |
 | N10d | Raids as world state (9.1–9.4): the record, its stream, log kind 20 and store format 19, the table, `Effected::Raid`, `EntityUse::Raider`, the bar's players |
 | N10e | The omens' ticks and `raid_omen_position` (9.5), the trader's chance (9.6), store format 20 |
 
