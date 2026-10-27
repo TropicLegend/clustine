@@ -19,9 +19,9 @@ pub mod spawn;
 
 pub use change::Change;
 pub use chunk::{
-    BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, KeptEvent,
-    MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, ScheduledTick, Seam, SeamKind, Ticked,
-    light_tells_apart,
+    BlockEntity, Chunk, ChunkGenerator, DataRefused, Heights, InChunk, KeptBox, KeptEvent,
+    KeptKind, KeptStructure, MAX_BLOCK_ENTITY_DATA, MAX_CHUNK_ENTITY_DATA, OverrideBox,
+    ScheduledTick, Seam, SeamKind, Ticked, light_tells_apart,
 };
 pub use components::{Component, Components};
 pub use difficulty::Difficulty;

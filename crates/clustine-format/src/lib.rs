@@ -2,8 +2,8 @@
 //! the table of the regions and the chunks they hold, and what is kept of each player.
 //!
 //! A chunk is stored as one [`ChunkFile`]: its blocks and biomes, its block entities,
-//! its light, the ticks and marks generation left, and which generator it is exactly
-//! as made by, with a checksum over all of it. Nothing is shared between chunks, so a
+//! its light, the ticks and marks generation left, the structure starts it keeps, and
+//! which generator it is exactly as made by, with a checksum over all of it. Nothing is shared between chunks, so a
 //! file is whole by itself and a chunk that is saved again leaves nothing behind
 //! (`docs/adr/0022-what-a-chunk-carries.md`, section 3).
 //!
@@ -53,8 +53,9 @@ pub use region::{
 /// every stack carries its components after its count, kinds by name, so that a later
 /// kind needs no raise (`docs/groundwork/n9-plan.md`, section 3.2); 15 since a player's
 /// place holds their effects and their time since rest after their respawn point
-/// (section 5.4 of the same plan).
-pub const FORMAT_VERSION: u8 = 15;
+/// (section 5.4 of the same plan); 16 since a chunk keeps the structure starts that reach
+/// it which natural spawning and the patrol spawner ask (section 9.6).
+pub const FORMAT_VERSION: u8 = 16;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

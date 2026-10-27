@@ -16,6 +16,7 @@ use super::output::{LitChunk, MadeTerrain, Output, add_keyed, finish};
 use super::view::{self, Context, Fetch};
 use super::{Figures, Options};
 use crate::stages::{Stages, Starts, StartsNear};
+use crate::structures_kept;
 
 /// Makes chunks from `S` on a pool of its own. Dropping it ends its threads and waits
 /// for them.
@@ -315,18 +316,25 @@ impl<S: Stages> Shared<S> {
             }
             Key::Finished(e) => {
                 let (_, terrain) = &inputs[0];
+                let made = terrain.terrain();
                 let mut runs: Vec<(ChunkPos, Arc<Output>)> = inputs[1..]
                     .iter()
                     .map(|(need, output)| (need.position(), Arc::clone(output)))
                     .collect();
                 runs.sort_by_key(|(d, _)| rank(*d));
-                Output::Finished(finish(
+                let mut finished =
+                    finish(e, &made.terrain, &runs, self.stages.maker(), &self.context);
+                // The structures it keeps (`docs/groundwork/n9-plan.md`, section 9.6),
+                // with their pieces where the nine runs left them: a piece that reaches
+                // the chunk is placed by the chunk's own run, if not by one before it.
+                let left = structures_kept::left_by(runs.iter().map(|(_, run)| &run.run().pieces));
+                finished.chunk.set_structures(self.stages.kept_structures(
                     e,
-                    &terrain.terrain().terrain,
-                    &runs,
-                    self.stages.maker(),
-                    &self.context,
-                ))
+                    &made.terrain.references,
+                    &Near(&made.starts),
+                    &|piece| left.get(&piece).copied(),
+                ));
+                Output::Finished(finished)
             }
             Key::Lit(position) => {
                 // In the order of `around`, which is `Around`'s with the centre fifth.

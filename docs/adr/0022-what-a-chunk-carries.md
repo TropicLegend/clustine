@@ -190,7 +190,10 @@ brought back (`services/worldstore/src/chunks.rs:587-588`) and in the edge's rep
 **Not carried, and named**: the official chunk's `structures` (which starts and
 references a chunk has: the game asks it whether a position is inside a fortress or
 a monument, for which mobs spawn, and to find structures), `InhabitedTime` (local
-difficulty) and `LastUpdate`. Nothing in this milestone needs them.
+difficulty) and `LastUpdate`. Nothing in this milestone needs them. *Amended in N9*
+(section "Changed in N9" at the end): since format 16 a chunk carries the structure
+starts natural spawning and the patrol spawner ask, though not the game's whole
+`structures`.
 
 ### 2. In memory: `clustine-world`
 
@@ -1159,3 +1162,42 @@ other way round, and its third does not.
 
 **ADR-0022, section 2**, "(the plan's B6, under ADR-0023)" (line 295) becomes
 "(the plan's B6, under ADR-0024)".
+
+## Changed in N9
+
+[The N9 plan](../groundwork/n9-plan.md) (section 9.6, decision 15) has a chunk carry
+part of what section 1 left out, for natural spawning (`ChunkGenerator.getMobsAt`
+asks a chunk's references for structures with spawn overrides) and for the patrol
+spawner (which stands a village's pieces in for the points of interest Clustine
+does not have yet). Built in step N9h; the store's format is 16 for it, and a world
+of an earlier format is refused, as every earlier format is.
+
+**Section 1**: a chunk carries, in generation's order, **the structure starts that
+reach it** (those its references name: the starts within eight whose box meets its
+columns) **of a structure with spawn overrides or of a village**: the swamp hut,
+the monument, the pillager outpost, the ancient city, the trial chambers, the
+Nether's fortress, and the five villages (`clustine_world::KeptKind`). For each:
+its kind, the chunk it starts in, the start's box as the game reads it for a `full`
+override (around its pieces as made, grown by twelve where the structure adapts the
+terrain), and, for a structure whose overrides ask a piece's box and for a village,
+the boxes of its pieces that meet the chunk, where the runs left them (the swamp
+hut's settles on the ground). Generation writes them when a chunk is finished
+(`services/worldgen/src/structures_kept.rs`); nothing changes them after. Other
+starts, the references themselves, and what finding a structure needs are still
+not carried. A flat world's chunks carry none.
+
+**Section 2**: `Chunk` gains `structures: Vec<KeptStructure>`, with
+`structures()` and `set_structures`. It is part of the chunk's equality and of
+every copy, and not of what an edge is handed (`for_viewers`) nor of
+`shows_the_same`.
+
+**Section 3**: the flags gain bit 3, "with structures", and the body gains, after
+the block events and only with that bit, the structures: a count (not 0), then for
+each its name (a u8 length and the bytes), the chunk it starts in (x, z as i32),
+its box and its pieces' boxes (a u32 count, then each), a box being its lowest and
+highest corners as six i32s. A chunk without structures is written as before them,
+but for the version byte. The reader refuses a name a chunk does not keep, a box
+whose corners are crossed, and the bit with none after it.
+
+**Section 4**: a chunk travels with its structures between services (its serde
+form gains the field); an edge's snapshot has none.

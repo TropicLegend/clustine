@@ -11,6 +11,7 @@ pub mod scheduler;
 #[path = "spawn.rs"]
 pub mod spawning;
 pub mod stages;
+pub mod structures_kept;
 pub mod templates;
 pub mod terrain;
 

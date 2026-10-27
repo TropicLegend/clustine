@@ -135,6 +135,141 @@ impl Seam {
     }
 }
 
+/// The structures whose starts a chunk keeps (`docs/groundwork/n9-plan.md`, section
+/// 9.6): those with spawn overrides, which natural spawning asks for its lists
+/// (`ChunkGenerator.getMobsAt`), and the villages, which the patrol spawner asks in
+/// place of the points of interest Clustine does not have yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum KeptKind {
+    SwampHut,
+    Monument,
+    PillagerOutpost,
+    AncientCity,
+    TrialChambers,
+    /// The Nether's, which no overworld chunk has.
+    Fortress,
+    VillagePlains,
+    VillageDesert,
+    VillageSavanna,
+    VillageSnowy,
+    VillageTaiga,
+}
+
+/// Which box of a start a structure's spawn overrides ask whether a position is in
+/// (`StructureSpawnOverride$BoundingBoxType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverrideBox {
+    /// The start's box.
+    Full,
+    /// The box of any one of its pieces.
+    Piece,
+}
+
+impl KeptKind {
+    /// Every kind, in the order of the enum.
+    pub const ALL: [Self; 11] = [
+        Self::SwampHut,
+        Self::Monument,
+        Self::PillagerOutpost,
+        Self::AncientCity,
+        Self::TrialChambers,
+        Self::Fortress,
+        Self::VillagePlains,
+        Self::VillageDesert,
+        Self::VillageSavanna,
+        Self::VillageSnowy,
+        Self::VillageTaiga,
+    ];
+
+    /// The structure's name in the game's registry.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::SwampHut => "minecraft:swamp_hut",
+            Self::Monument => "minecraft:monument",
+            Self::PillagerOutpost => "minecraft:pillager_outpost",
+            Self::AncientCity => "minecraft:ancient_city",
+            Self::TrialChambers => "minecraft:trial_chambers",
+            Self::Fortress => "minecraft:fortress",
+            Self::VillagePlains => "minecraft:village_plains",
+            Self::VillageDesert => "minecraft:village_desert",
+            Self::VillageSavanna => "minecraft:village_savanna",
+            Self::VillageSnowy => "minecraft:village_snowy",
+            Self::VillageTaiga => "minecraft:village_taiga",
+        }
+    }
+
+    /// The kind of the structure named `name`, if a chunk keeps its starts.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
+    /// Which box the structure's spawn overrides ask, as its data says (every override
+    /// of one structure asks the same); `None` for a village, which has none.
+    pub fn overrides(self) -> Option<OverrideBox> {
+        match self {
+            Self::Monument | Self::PillagerOutpost | Self::AncientCity => Some(OverrideBox::Full),
+            Self::SwampHut | Self::TrialChambers | Self::Fortress => Some(OverrideBox::Piece),
+            Self::VillagePlains
+            | Self::VillageDesert
+            | Self::VillageSavanna
+            | Self::VillageSnowy
+            | Self::VillageTaiga => None,
+        }
+    }
+
+    pub fn is_village(self) -> bool {
+        self.overrides().is_none()
+    }
+}
+
+/// A box of blocks, both corners included, as the game's `BoundingBox`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KeptBox {
+    pub min: BlockPos,
+    pub max: BlockPos,
+}
+
+impl KeptBox {
+    /// `BoundingBox.isInside`.
+    pub fn holds(&self, at: BlockPos) -> bool {
+        (self.min.x..=self.max.x).contains(&at.x)
+            && (self.min.y..=self.max.y).contains(&at.y)
+            && (self.min.z..=self.max.z).contains(&at.z)
+    }
+
+    /// The box grown by `by` on every side (`BoundingBox.inflatedBy`).
+    pub fn widened(&self, by: i32) -> Self {
+        Self {
+            min: BlockPos::new(self.min.x - by, self.min.y - by, self.min.z - by),
+            max: BlockPos::new(self.max.x + by, self.max.y + by, self.max.z + by),
+        }
+    }
+
+    /// Whether the box has a block in the chunk column `chunk`.
+    pub fn meets(&self, chunk: ChunkPos) -> bool {
+        let (min, max) = (self.min.chunk(), self.max.chunk());
+        (min.x..=max.x).contains(&chunk.x) && (min.z..=max.z).contains(&chunk.z)
+    }
+}
+
+/// A structure start a chunk keeps: one whose box reaches the chunk, of a structure
+/// [`KeptKind`] names (`docs/groundwork/n9-plan.md`, section 9.6). Generation writes
+/// it and nothing changes it after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptStructure {
+    pub kind: KeptKind,
+    /// The chunk the start is in, which tells two starts of one structure apart.
+    pub source: ChunkPos,
+    /// The start's box, as the game reads it for a `full` override
+    /// (`StructureStart.getBoundingBox`: around its pieces as made, grown by twelve for a
+    /// structure that adapts the terrain).
+    pub bounds: KeptBox,
+    /// The boxes of its pieces that reach the chunk, as they stand once placed, in the
+    /// start's order: for a `piece` override and for a village; none for a structure
+    /// whose overrides ask the start's box, which nothing reads them for.
+    pub pieces: Vec<KeptBox>,
+}
+
 /// The four heightmaps a client is sent and generation asks: for each column, indexed
 /// by `z << 4 | x`, the height above the highest block that counts for the map,
 /// counted from the bottom of the dimension; 0 for a column without one.
@@ -232,7 +367,7 @@ pub fn light_tells_apart(old: BlockState, new: BlockState) -> bool {
 ///
 /// Two chunks are equal if everything they carry is: the blocks and biomes by content,
 /// the block entities, the generator's version and the failure bit, the light, the
-/// ticks and the marks. [`Chunk::shows_the_same`] asks only what a client is shown.
+/// ticks, the marks, the seams, the block events, the structures and the entities. [`Chunk::shows_the_same`] asks only what a client is shown.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "ChunkRepr", into = "ChunkRepr")]
 pub struct Chunk {
@@ -258,6 +393,9 @@ pub struct Chunk {
     /// The block events of this chunk's blocks that outlived their tick, in the order
     /// of the queue they wait in.
     events: Vec<KeptEvent>,
+    /// The structure starts that reach the chunk which natural spawning and the patrol
+    /// spawner ask, in generation's order (`docs/groundwork/n9-plan.md`, section 9.6).
+    structures: Vec<KeptStructure>,
     /// The entities other than players in the chunk, ascending by key
     /// (`docs/adr/0028-entities.md`, section 2).
     entities: Vec<Entity>,
@@ -279,6 +417,7 @@ impl PartialEq for Chunk {
             && self.marks == other.marks
             && self.seams == other.seams
             && self.events == other.events
+            && self.structures == other.structures
             && self.entities == other.entities
     }
 }
@@ -309,6 +448,7 @@ impl Chunk {
             marks: Vec::new(),
             seams: Vec::new(),
             events: Vec::new(),
+            structures: Vec::new(),
             entities: Vec::new(),
             light_noted: None,
         };
@@ -638,6 +778,16 @@ impl Chunk {
         self.events = events;
     }
 
+    /// The structure starts the chunk keeps, in generation's order.
+    pub fn structures(&self) -> &[KeptStructure] {
+        &self.structures
+    }
+
+    /// Takes `structures` as the chunk's, in their order.
+    pub fn set_structures(&mut self, structures: Vec<KeptStructure>) {
+        self.structures = structures;
+    }
+
     /// Keeps `seam`, in place of an entry with its key.
     pub fn add_seam(&mut self, seam: Seam) {
         match self.seams.binary_search_by_key(&seam.key(), Seam::key) {
@@ -656,15 +806,16 @@ impl Chunk {
             && self.block_entities == other.block_entities
     }
 
-    /// The chunk as an edge is handed it: without the ticks, the marks, the seams and
-    /// the block events, which are the simulation's and the store's, and without the
-    /// entities, which an edge is told of as entities.
+    /// The chunk as an edge is handed it: without the ticks, the marks, the seams, the
+    /// block events and the structures, which are the simulation's and the store's, and
+    /// without the entities, which an edge is told of as entities.
     pub fn for_viewers(&self) -> Self {
         Self {
             ticks: Vec::new(),
             marks: Vec::new(),
             seams: Vec::new(),
             events: Vec::new(),
+            structures: Vec::new(),
             entities: Vec::new(),
             ..self.clone()
         }
@@ -731,6 +882,7 @@ struct ChunkRepr {
     marks: Vec<InChunk>,
     seams: Vec<Seam>,
     events: Vec<KeptEvent>,
+    structures: Vec<KeptStructure>,
     entities: Vec<Entity>,
 }
 
@@ -747,6 +899,7 @@ impl From<Chunk> for ChunkRepr {
             marks: chunk.marks,
             seams: chunk.seams,
             events: chunk.events,
+            structures: chunk.structures,
             entities: chunk.entities,
         }
     }
@@ -797,6 +950,7 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.marks = repr.marks;
         chunk.set_seams(repr.seams);
         chunk.events = repr.events;
+        chunk.structures = repr.structures;
         if !repr
             .entities
             .windows(2)
@@ -1040,5 +1194,65 @@ mod tests {
         assert_eq!(heights[2 << 4 | 5], 165);
         assert_eq!(heights[255], 384);
         assert_eq!(heights.iter().filter(|height| **height == 0).count(), 253);
+    }
+
+    fn hut() -> KeptStructure {
+        let piece = KeptBox {
+            min: BlockPos::new(3, 61, 5),
+            max: BlockPos::new(9, 67, 13),
+        };
+        KeptStructure {
+            kind: KeptKind::SwampHut,
+            source: ChunkPos::new(0, 0),
+            bounds: KeptBox {
+                min: BlockPos::new(3, 64, 5),
+                max: BlockPos::new(9, 70, 13),
+            },
+            pieces: vec![piece],
+        }
+    }
+
+    #[test]
+    fn a_chunk_s_structures_are_part_of_its_equality_and_its_copies_but_not_of_what_viewers_get() {
+        let mut chunk = empty();
+        chunk.set_structures(vec![hut()]);
+        assert_ne!(chunk, empty());
+        assert_eq!(chunk.clone(), chunk);
+        assert_eq!(chunk.structures(), [hut()]);
+        assert!(chunk.shows_the_same(&empty()));
+        assert!(chunk.for_viewers().structures().is_empty());
+
+        let travelled: Chunk = postcard::from_bytes(&postcard::to_stdvec(&chunk).unwrap()).unwrap();
+        assert_eq!(travelled, chunk);
+        assert_eq!(travelled.structures(), [hut()]);
+    }
+
+    #[test]
+    fn a_box_holds_its_corners_and_widens_on_every_side() {
+        let piece = hut().pieces[0];
+        assert!(piece.holds(BlockPos::new(3, 61, 5)));
+        assert!(piece.holds(BlockPos::new(9, 67, 13)));
+        assert!(!piece.holds(BlockPos::new(9, 68, 13)));
+        assert!(!piece.holds(BlockPos::new(2, 61, 5)));
+        let wide = piece.widened(32);
+        assert!(wide.holds(BlockPos::new(-29, 29, 45)));
+        assert!(!wide.holds(BlockPos::new(-30, 29, 45)));
+        assert!(wide.meets(ChunkPos::new(-2, 2)));
+        assert!(!wide.meets(ChunkPos::new(-3, 0)));
+        assert!(piece.meets(ChunkPos::new(0, 0)) && !piece.meets(ChunkPos::new(1, 0)));
+    }
+
+    #[test]
+    fn every_kind_is_found_by_its_name_and_only_villages_have_no_overrides() {
+        for kind in KeptKind::ALL {
+            assert_eq!(KeptKind::from_name(kind.name()), Some(kind));
+            assert_eq!(
+                kind.is_village(),
+                kind.name().starts_with("minecraft:village_")
+            );
+        }
+        assert_eq!(KeptKind::from_name("minecraft:igloo"), None);
+        assert_eq!(KeptKind::SwampHut.overrides(), Some(OverrideBox::Piece));
+        assert_eq!(KeptKind::Monument.overrides(), Some(OverrideBox::Full));
     }
 }

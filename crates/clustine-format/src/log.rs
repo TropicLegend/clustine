@@ -3140,12 +3140,13 @@ mod tests {
         input.finish().unwrap();
     }
 
-    /// Records of format 13, written before stacks had components, and of 14, before
-    /// places kept effects, are refused as any record of another format is.
+    /// Records of format 13, written before stacks had components, of 14, before
+    /// places kept effects, and of 15, before chunks kept structures, are refused as any
+    /// record of another format is.
     #[test]
-    fn records_of_formats_13_and_14_are_refused() {
-        assert_eq!(FORMAT_VERSION, 15);
-        for earlier in [13, 14] {
+    fn records_of_formats_13_to_15_are_refused() {
+        assert_eq!(FORMAT_VERSION, 16);
+        for earlier in [13, 14, 15] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;

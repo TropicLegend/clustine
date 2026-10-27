@@ -4,9 +4,9 @@
 
 use clustine_data::DimensionType;
 use clustine_world::generation::{
-    BlockBox, GeneratorSettings, KeyOnly, Maker, Neighbourhood, PieceState, StartRef,
+    BlockBox, GeneratorSettings, KeyOnly, Maker, Neighbourhood, PieceKey, PieceState, StartRef,
 };
-use clustine_world::{COLUMNS_PER_CHUNK, Chunk, ChunkPos, Entity};
+use clustine_world::{COLUMNS_PER_CHUNK, Chunk, ChunkPos, Entity, KeptStructure};
 
 /// A generator's five stages. Every one is a function of the settings and of what it
 /// is handed: no clock, no thread, no earlier call.
@@ -33,6 +33,22 @@ pub trait Stages: Send + Sync + 'static {
     fn spawn(&self, position: ChunkPos, lit: &Chunk, nine: [&Chunk; 9]) -> Vec<Entity> {
         let _ = (position, lit, nine);
         Vec::new()
+    }
+    /// The structure starts the finished chunk at `position` keeps for natural spawning
+    /// and the patrol spawner (`docs/groundwork/n9-plan.md`, section 9.6), from its
+    /// terrain's `references`, the `starts` of the sources they name, and the state the
+    /// runs left each piece in where any set it: by default those of the structures with
+    /// spawn overrides and of the villages ([`crate::structures_kept::kept`]). A stage
+    /// whose structures are not the game's keeps none of them, as their names are not
+    /// the game's.
+    fn kept_structures(
+        &self,
+        position: ChunkPos,
+        references: &[StartRef],
+        starts: &dyn StartsNear,
+        pieces: &dyn Fn(PieceKey) -> Option<PieceState>,
+    ) -> Vec<KeptStructure> {
+        crate::structures_kept::kept(position, references, starts, pieces)
     }
     /// What makes the records of the entities the runs and the spawn make, once they
     /// are keyed, and what the runs make them with: by default a maker that only keys

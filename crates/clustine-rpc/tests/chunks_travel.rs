@@ -15,7 +15,7 @@
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, blocks};
 use clustine_world::{
     BIOME_CELLS, BLOCKS_PER_SECTION, Biome, BlockEntity, Chunk, Entity, InChunk, KeptEvent,
-    LIGHT_ARRAY_LENGTH, Light, ScheduledTick, Seam, Section, SectionLight, Ticked,
+    KeptStructure, LIGHT_ARRAY_LENGTH, Light, ScheduledTick, Seam, Section, SectionLight, Ticked,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,7 @@ struct ChunkOnWire {
     marks: Vec<InChunk>,
     seams: Vec<Seam>,
     events: Vec<KeptEvent>,
+    structures: Vec<KeptStructure>,
     entities: Vec<Entity>,
 }
 
@@ -593,6 +594,7 @@ fn a_section_with_a_state_that_is_none_of_the_games_is_not_a_panic() {
                 marks: Vec::new(),
                 seams: Vec::new(),
                 events: Vec::new(),
+                structures: Vec::new(),
                 entities: Vec::new(),
             };
             if let Ok(chunk) = chunk_from(&chunk) {

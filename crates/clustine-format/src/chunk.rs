@@ -5,14 +5,14 @@
 //!
 //! | Field | Type |
 //! |---|---|
-//! | Format version | u8, 2 |
+//! | Format version | u8, 16 |
 //! | Kind | u8, 5 |
 //! | Chunk x, z | i32, i32 |
 //! | Y of the lowest block | i32 |
 //! | Tick at which the chunk was saved | u64 |
 //! | Epoch of the region that saved it | u64 |
 //! | Generated: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events"; the others 0 |
+//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures"; the others 0 |
 //! | Section count | u16 |
 //! | Codec of the body | u8: 0 as it is, 1 zstd |
 //! | Length of the body, as it is | u32, at most 8 MiB |
@@ -32,6 +32,11 @@
 //! | Marks | count u32; then, ascending: `x << 4 \| z` u8, y i16 |
 //! | Seams, with bit 1 of the flags only | as `seams.rs` says, which is not empty |
 //! | Block events, with bit 2 of the flags only | as `kept_events.rs` says, which is not empty |
+//! | Structures, with bit 3 of the flags only | count u32, not 0; then, in generation's order: the structure's name, its length u8 and its bytes; the chunk it starts in, x i32 and z i32; its box; the count of its pieces' boxes u32 and the boxes |
+//!
+//! A box is its lowest corner and its highest, each x, y, z as i32: six i32s, the lowest
+//! no higher than the highest on any axis. A structure's name is one of those a chunk
+//! keeps ([`clustine_world::KeptKind`]); a file with another is refused.
 //!
 //! A chunk's entities other than players are not in this file but in one of their own
 //! beside it (`entities.rs`), so that an entity's step does not rewrite the blocks.
@@ -45,8 +50,9 @@
 
 use clustine_data::{BLOCK_ENTITY_TYPES, BLOCK_STATE_COUNT, BlockState, synced_registry};
 use clustine_world::{
-    BIOME_CELLS, BLOCKS_PER_SECTION, Biome, Chunk, ChunkPos, InChunk, LIGHT_ARRAY_LENGTH, Light,
-    MAX_BLOCK_ENTITY_DATA, ScheduledTick, Section, SectionLight, Ticked,
+    BIOME_CELLS, BLOCKS_PER_SECTION, Biome, BlockPos, Chunk, ChunkPos, InChunk, KeptBox, KeptKind,
+    KeptStructure, LIGHT_ARRAY_LENGTH, Light, MAX_BLOCK_ENTITY_DATA, ScheduledTick, Section,
+    SectionLight, Ticked,
 };
 
 use crate::bytes::Input;
@@ -69,6 +75,12 @@ const WITH_SEAMS: u8 = 2;
 /// A chunk with block events kept says so, so that one without, and every chunk from
 /// before there were any, is written as it was (`docs/adr/0026-redstone.md`, section 4).
 const WITH_EVENTS: u8 = 4;
+/// A chunk with structure starts kept says so, so that one without, as every chunk of a
+/// flat world, is written as before them but for the version
+/// (`docs/groundwork/n9-plan.md`, section 9.6).
+const WITH_STRUCTURES: u8 = 8;
+/// What one box takes: two corners of three i32s.
+const BOX_LENGTH: usize = 6 * 4;
 /// The byte that says how a chunk's light is there: not at all, or with the version
 /// of the generator whose chunks it was made beside. The value between them, 1, is
 /// light without that version, which only a file from before it was kept has.
@@ -196,6 +208,71 @@ fn in_chunk(input: &mut Input) -> Result<InChunk, FormatError> {
     })
 }
 
+fn put_box(out: &mut Vec<u8>, kept: &KeptBox) {
+    for corner in [kept.min, kept.max] {
+        out.extend_from_slice(&corner.x.to_be_bytes());
+        out.extend_from_slice(&corner.y.to_be_bytes());
+        out.extend_from_slice(&corner.z.to_be_bytes());
+    }
+}
+
+fn kept_box(input: &mut Input) -> Result<KeptBox, FormatError> {
+    let min = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
+    let max = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
+    if min.x > max.x || min.y > max.y || min.z > max.z {
+        return Err(FormatError::Corrupt("a box whose corners are crossed"));
+    }
+    Ok(KeptBox { min, max })
+}
+
+fn put_structures(out: &mut Vec<u8>, structures: &[KeptStructure]) {
+    out.extend_from_slice(&(structures.len() as u32).to_be_bytes());
+    for structure in structures {
+        let name = structure.kind.name().as_bytes();
+        out.push(u8::try_from(name.len()).expect("a structure's name is short"));
+        out.extend_from_slice(name);
+        out.extend_from_slice(&structure.source.x.to_be_bytes());
+        out.extend_from_slice(&structure.source.z.to_be_bytes());
+        put_box(out, &structure.bounds);
+        out.extend_from_slice(&(structure.pieces.len() as u32).to_be_bytes());
+        for piece in &structure.pieces {
+            put_box(out, piece);
+        }
+    }
+}
+
+fn structures(input: &mut Input) -> Result<Vec<KeptStructure>, FormatError> {
+    let count = input.u32()? as usize;
+    if count == 0 {
+        return Err(FormatError::Corrupt(
+            "a chunk with structures that has none",
+        ));
+    }
+    // A forged count must not reserve more than the input can hold.
+    let mut structures = Vec::with_capacity(count.min(input.0.len() / BOX_LENGTH));
+    for _ in 0..count {
+        let length = usize::from(input.u8()?);
+        let name = std::str::from_utf8(input.take(length)?)
+            .map_err(|_| FormatError::Corrupt("a structure's name"))?;
+        let kind = KeptKind::from_name(name)
+            .ok_or(FormatError::Corrupt("a structure a chunk does not keep"))?;
+        let source = ChunkPos::new(input.i32()?, input.i32()?);
+        let bounds = kept_box(input)?;
+        let pieces = input.u32()? as usize;
+        let mut boxes = Vec::with_capacity(pieces.min(input.0.len() / BOX_LENGTH));
+        for _ in 0..pieces {
+            boxes.push(kept_box(input)?);
+        }
+        structures.push(KeptStructure {
+            kind,
+            source,
+            bounds,
+            pieces: boxes,
+        });
+    }
+    Ok(structures)
+}
+
 fn put_light(out: &mut Vec<u8>, light: &[SectionLight]) {
     for section in light {
         match section {
@@ -289,6 +366,9 @@ impl ChunkFile {
         if !chunk.events().is_empty() {
             crate::kept_events::put_events(&mut body, chunk.events());
         }
+        if !chunk.structures().is_empty() {
+            put_structures(&mut body, chunk.structures());
+        }
         assert!(body.len() <= MAX_BODY, "a chunk of {} bytes", body.len());
 
         let compressed = zstd::bulk::compress(&body, ZSTD_LEVEL).ok();
@@ -318,7 +398,12 @@ impl ChunkFile {
         } else {
             WITH_EVENTS
         };
-        out.push(failure | seams | events);
+        let structures = if chunk.structures().is_empty() {
+            0
+        } else {
+            WITH_STRUCTURES
+        };
+        out.push(failure | seams | events | structures);
         out.extend_from_slice(&(chunk.sections().len() as u16).to_be_bytes());
         out.push(codec);
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -354,7 +439,7 @@ impl ChunkFile {
         let epoch = input.u64()?;
         let generated = input.u16()?;
         let flags = input.u8()?;
-        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS) != 0 {
+        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS | WITH_STRUCTURES) != 0 {
             return Err(FormatError::Corrupt("flags that mean nothing"));
         }
         let section_count = usize::from(input.u16()?);
@@ -499,6 +584,9 @@ impl ChunkFile {
                 ));
             }
             chunk.set_events(events);
+        }
+        if flags & WITH_STRUCTURES != 0 {
+            chunk.set_structures(structures(&mut input)?);
         }
         input.finish()?;
         chunk.mark_generated(generated, flags & WITH_FAILURE != 0);
@@ -666,6 +754,153 @@ mod tests {
 
     fn file_of_full_without_seams() -> Vec<u8> {
         file(full()).encode()
+    }
+
+    fn kept(min: (i32, i32, i32), max: (i32, i32, i32)) -> KeptBox {
+        KeptBox {
+            min: BlockPos::new(min.0, min.1, min.2),
+            max: BlockPos::new(max.0, max.1, max.2),
+        }
+    }
+
+    /// A swamp hut with its piece, a monument without pieces from a start far below and
+    /// to the west, and a village with two, in that order.
+    fn structures() -> Vec<KeptStructure> {
+        vec![
+            KeptStructure {
+                kind: KeptKind::SwampHut,
+                source: ChunkPos::new(3, -4),
+                bounds: kept((50, 64, -60), (56, 70, -52)),
+                pieces: vec![kept((50, 61, -60), (56, 67, -52))],
+            },
+            KeptStructure {
+                kind: KeptKind::Monument,
+                source: ChunkPos::new(-1, -9),
+                bounds: kept((-29, 39, -144), (28, 61, -87)),
+                pieces: Vec::new(),
+            },
+            KeptStructure {
+                kind: KeptKind::VillageSnowy,
+                source: ChunkPos::new(i32::MIN / 16, 2),
+                bounds: kept((i32::MIN, -64, 0), (i32::MAX, 319, 1)),
+                pieces: vec![
+                    kept((48, 60, -64), (63, 75, -49)),
+                    kept((0, 0, 0), (0, 0, 0)),
+                ],
+            },
+        ]
+    }
+
+    /// A chunk with structures kept is read back with them, in their order, and says
+    /// so in its flags; one without has the flag clear, and its file is as before them
+    /// but for the version (`docs/groundwork/n9-plan.md`, section 9.6).
+    #[test]
+    fn a_chunk_with_structures_comes_back_with_them_in_order_and_one_without_is_as_before() {
+        for base in [empty(), full()] {
+            let mut chunk = base.clone();
+            chunk.set_structures(structures());
+            let with = file(chunk);
+            let bytes = with.encode();
+            assert_eq!(bytes[32] & WITH_STRUCTURES, WITH_STRUCTURES);
+            let (read, unfit) = ChunkFile::decode(&bytes).unwrap();
+            assert_eq!(unfit, 0);
+            assert_eq!(read, with);
+            assert_eq!(read.chunk.structures(), structures());
+            assert_eq!(read.encode(), bytes);
+            assert_eq!(file(base).encode()[32] & WITH_STRUCTURES, 0);
+        }
+    }
+
+    /// The structures' part of the body is laid out as the table says.
+    #[test]
+    fn a_kept_structure_is_written_by_its_name_its_source_its_box_and_its_pieces() {
+        let mut out = Vec::new();
+        put_structures(&mut out, &structures()[..1]);
+        let mut expected = vec![0, 0, 0, 1, 19];
+        expected.extend_from_slice(b"minecraft:swamp_hut");
+        for number in [3, -4, 50, 64, -60, 56, 70, -52] {
+            expected.extend_from_slice(&i32::to_be_bytes(number));
+        }
+        expected.extend_from_slice(&[0, 0, 0, 1]);
+        for number in [50, 61, -60, 56, 67, -52] {
+            expected.extend_from_slice(&i32::to_be_bytes(number));
+        }
+        assert_eq!(out, expected);
+    }
+
+    /// The bytes of a file whose structures' part is `part` in place of the right one.
+    fn with_structures_part(part: &[u8]) -> Vec<u8> {
+        let mut chunk = empty();
+        chunk.set_structures(structures()[..1].to_vec());
+        let bytes = file(chunk).encode();
+        let mut good = Vec::new();
+        put_structures(&mut good, &structures()[..1]);
+        // Taken apart as `assembled` puts a file together: the body raw, its
+        // structures last.
+        let (codec, length) = (
+            bytes[35],
+            u32::from_be_bytes(bytes[36..40].try_into().unwrap()),
+        );
+        let body = match codec {
+            CODEC_RAW => bytes[44..bytes.len() - 4].to_vec(),
+            _ => zstd::bulk::decompress(&bytes[44..bytes.len() - 4], length as usize).unwrap(),
+        };
+        assert!(body.ends_with(&good));
+        let mut body = body[..body.len() - good.len()].to_vec();
+        body.extend_from_slice(part);
+        let mut out = bytes[..35].to_vec();
+        out.push(CODEC_RAW);
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&body);
+        let checksum = crc32fast::hash(&out);
+        out.extend_from_slice(&checksum.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn structures_that_cannot_be_made_sense_of_are_refused() {
+        let mut good = Vec::new();
+        put_structures(&mut good, &structures()[..1]);
+        assert!(ChunkFile::decode(&with_structures_part(&good)).is_ok());
+        // None after the flag.
+        assert!(ChunkFile::decode(&with_structures_part(&[0, 0, 0, 0])).is_err());
+        // A structure no chunk keeps, its name as long as the hut's.
+        let mut igloo = good.clone();
+        igloo[5..24].copy_from_slice(b"minecraft:igloo_hut");
+        assert_eq!(
+            ChunkFile::decode(&with_structures_part(&igloo)),
+            Err(FormatError::Corrupt("a structure a chunk does not keep"))
+        );
+        // The start's box with its lowest y above its highest.
+        let mut crossed = good.clone();
+        crossed[36..40].copy_from_slice(&i32::to_be_bytes(71));
+        assert_eq!(
+            ChunkFile::decode(&with_structures_part(&crossed)),
+            Err(FormatError::Corrupt("a box whose corners are crossed"))
+        );
+        // Cut short, and with something after.
+        assert!(ChunkFile::decode(&with_structures_part(&good[..good.len() - 1])).is_err());
+        let mut longer = good.clone();
+        longer.push(0);
+        assert!(ChunkFile::decode(&with_structures_part(&longer)).is_err());
+    }
+
+    /// A chunk of format 15, from before chunks kept structures, is refused as every
+    /// earlier format is: worlds made before are not carried over.
+    #[test]
+    fn a_chunk_file_of_format_15_is_refused() {
+        assert_eq!(FORMAT_VERSION, 16);
+        let mut bytes = file(full()).encode();
+        bytes[0] = 15;
+        let (front, _) = bytes.split_at(bytes.len() - 4);
+        let checksum = crc32fast::hash(front);
+        let at = bytes.len() - 4;
+        bytes[at..].copy_from_slice(&checksum.to_be_bytes());
+        assert_eq!(
+            ChunkFile::decode(&bytes),
+            Err(FormatError::UnsupportedVersion(15))
+        );
     }
 
     /// The record's two sizes: a section of one state and one biome is seven bytes of

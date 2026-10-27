@@ -1267,8 +1267,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     found
 }
 
-/// A world of format 1, 2 or 3, of 13, whose stacks have no components, or of 14, whose
-/// places keep no effects, is not opened,
+/// A world of format 1, 2 or 3, of 13, whose stacks have no components, of 14, whose
+/// places keep no effects, or of 15, whose chunks keep no structures, is not opened,
 /// not made over and not touched: worlds are
 /// thrown away until the first release, and whoever kept one is told what to do with
 /// the directory. The store says that before it looks at anything else, so the sentence
@@ -1278,8 +1278,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 fn a_world_of_an_earlier_format_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched()
 {
     let settings = generator().settings().identity;
-    assert_eq!(FORMAT_VERSION, 15, "14 is the format just before");
-    let metas = [1u8, 2, 3, 13, 14].into_iter().flat_map(|format| {
+    assert_eq!(FORMAT_VERSION, 16, "15 is the format just before");
+    let metas = [1u8, 2, 3, 13, 14, 15].into_iter().flat_map(|format| {
         [
             format!("format={format}\ndata-version={DATA_VERSION}\ngenerator={settings}\n"),
             // One whose other settings are not this server's either.

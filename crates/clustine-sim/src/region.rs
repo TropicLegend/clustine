@@ -108,6 +108,7 @@ mod spit;
 mod splits;
 mod stack_nbt;
 mod stands;
+mod structures;
 pub(crate) mod teleports;
 mod thrown;
 mod throws;
