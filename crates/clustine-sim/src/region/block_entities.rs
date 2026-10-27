@@ -131,15 +131,64 @@ pub(super) const TAG_STRING: u8 = 8;
 pub(super) const TAG_LIST: u8 = 9;
 pub(super) const TAG_COMPOUND: u8 = 10;
 
-/// The bucket of a `HashMap` of 16 that Java puts the string `name` in: its
-/// `hashCode` over UTF-16, spread as `HashMap.hash` spreads it. A game's compound is
-/// such a map, and its entries are written in the order of their buckets, then of
-/// their putting in.
-pub(super) fn string_bucket(name: &str) -> u32 {
+/// Java's `HashMap.hash` of the string `name`: its `hashCode` over UTF-16, its high
+/// half folded into its low as the map spreads it.
+fn spread_hash(name: &str) -> u32 {
     let hash = name.encode_utf16().fold(0i32, |hash, unit| {
         hash.wrapping_mul(31).wrapping_add(i32::from(unit))
     }) as u32;
-    (hash ^ (hash >> 16)) & 15
+    hash ^ (hash >> 16)
+}
+
+/// The bucket of a `HashMap` of 16 that Java puts the string `name` in. A game's
+/// compound is such a map, and its entries are written in the order of their buckets,
+/// then of their putting in; [`hash_map_order`] is the general rule, which this is for
+/// fewer than thirteen entries.
+pub(super) fn string_bucket(name: &str) -> u32 {
+    spread_hash(name) & 15
+}
+
+/// The order in which a `java.util.HashMap` of distinct strings, put in the order of
+/// `names`, iterates over them: the indices of `names` in that order. A game's
+/// `CompoundTag` is such a map, and it writes its entries so.
+///
+/// The map starts with 16 buckets and doubles them when it holds more than three
+/// quarters of their number, and also when a put makes one bucket's chain nine long
+/// while it has fewer than 64 (`treeifyBin` grows the table rather than make a tree
+/// of a small one). A doubling splits each bucket in two and keeps the order within
+/// each half, so the iteration is by bucket in the final table, then by putting in. A
+/// table of 64 or more with a chain of nine would make a tree, whose order differs;
+/// that needs nine names whose hashes agree in their low six bits, which no compound
+/// Clustine writes has.
+pub(super) fn hash_map_order<S: AsRef<str>>(names: &[S]) -> Vec<usize> {
+    let hashes: Vec<u32> = names
+        .iter()
+        .map(|name| spread_hash(name.as_ref()))
+        .collect();
+    let mut capacity: usize = 16;
+    let mut chains = vec![0usize; capacity];
+    let regrow = |capacity: usize, put: &[u32]| {
+        let mut chains = vec![0usize; capacity];
+        for hash in put {
+            chains[*hash as usize & (capacity - 1)] += 1;
+        }
+        chains
+    };
+    for (put, hash) in hashes.iter().enumerate() {
+        let bucket = *hash as usize & (capacity - 1);
+        chains[bucket] += 1;
+        if chains[bucket] >= 9 && capacity < 64 {
+            capacity *= 2;
+            chains = regrow(capacity, &hashes[..=put]);
+        }
+        if put + 1 > capacity / 4 * 3 {
+            capacity *= 2;
+            chains = regrow(capacity, &hashes[..=put]);
+        }
+    }
+    let mut order: Vec<usize> = (0..names.len()).collect();
+    order.sort_by_key(|&index| hashes[index] as usize & (capacity - 1));
+    order
 }
 
 /// One entry of a compound being written: its name, its tag and its payload.
@@ -150,11 +199,12 @@ pub(super) struct Entry {
 }
 
 /// `entries`, put in that order, as the game writes the compound of them: in the order
-/// of their buckets, which holds for fewer than thirteen.
-pub(super) fn compound(mut entries: Vec<Entry>) -> Vec<u8> {
-    entries.sort_by_key(|entry| string_bucket(entry.name));
+/// of its `HashMap` ([`hash_map_order`]).
+pub(super) fn compound(entries: Vec<Entry>) -> Vec<u8> {
+    let order = hash_map_order(&entries.iter().map(|entry| entry.name).collect::<Vec<_>>());
+    let mut entries: Vec<Option<Entry>> = entries.into_iter().map(Some).collect();
     let mut data = Vec::new();
-    for entry in entries {
+    for entry in order.into_iter().filter_map(|index| entries[index].take()) {
         data.push(entry.tag);
         nbt_put_string(&mut data, entry.name);
         data.extend_from_slice(&entry.payload);

@@ -89,6 +89,7 @@ mod shulker_boxes;
 mod sleep;
 mod sniffer_eggs;
 mod spawn_eggs;
+mod stack_nbt;
 mod stands;
 mod thrown;
 mod ticks;

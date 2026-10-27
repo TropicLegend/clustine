@@ -7,8 +7,8 @@
 //! lid is `shulker_boxes.rs`'s.
 //!
 //! The data is the one durable form, as the comparator's output is: its slots as the
-//! game saves them (`Items`, a list of `{Slot, id, count}` with the empty slots left
-//! out), whether a loot table is still to be unpacked, and the count of its openers,
+//! game saves them (`Items`, a list of `{Slot, id, count, components}` with the empty
+//! slots left out, each stack's components in the game's NBT form, `stack_nbt.rs`), whether a loot table is still to be unpacked, and the count of its openers,
 //! which the game does not save and Clustine does, so that a region restored, split or
 //! lent to knows what it last reported (section 7 item 5). The region reads a container
 //! from it when it needs one and writes it back whole on every change. Every entry this
@@ -34,17 +34,18 @@
 
 use clustine_blocks::data::{facing, is_class, relative, same_block, set_flag, tick_id};
 use clustine_blocks::growth::chest_connected_direction;
-use clustine_data::{BlockClass, BlockState, Face, ITEMS, item_id_by_name, sounds};
+use clustine_data::{BlockClass, BlockState, Face, sounds};
+use clustine_world::components::Value;
 use clustine_world::{BlockPos, InChunk, Ticked, Vec3};
 
 use super::Region;
-use super::block_entities::{TAG_BYTE, TAG_COMPOUND, TAG_END, TAG_INT, string_bucket};
-use super::block_entities::{nbt_put_string, nbt_string, skip_nbt};
+use super::block_entities::{TAG_COMPOUND, TAG_END, TAG_INT, hash_map_order};
+use super::block_entities::{nbt_string, skip_nbt};
+use super::stack_nbt::{put_value, read_value, slot_of, slot_stack_value, stack_from_fields};
 use crate::api::{ItemStack, MenuKind, RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 use crate::physics::aabb::Aabb;
 use crate::state::{Menu, MenuOf};
 
-const TAG_SHORT: u8 = 2;
 const TAG_STRING: u8 = 8;
 const TAG_LIST: u8 = 9;
 
@@ -127,47 +128,23 @@ pub(crate) fn read_container(size: usize, data: &[u8]) -> Container {
     container
 }
 
-/// Sets the slots `slots` from the payload of an `Items` list.
+/// Sets the slots `slots` from the payload of an `Items` list, each entry as
+/// `ItemStackWithSlot.CODEC` reads it (`stack_nbt.rs`): an entry that is not a
+/// compound, whose slot is beyond `slots`, or whose stack does not read, is passed over,
+/// as the game passes over an entry its codec refuses. What of a stack's components
+/// Clustine does not keep is dropped, the stack kept ([`stack_from_fields`]).
 fn read_items(list: &[u8], slots: &mut [Option<ItemStack>]) {
-    let Some((&element, after)) = list.split_first() else {
+    let Some((Value::List(entries), _)) = read_value(TAG_LIST, list) else {
         return;
     };
-    let Some(count) = after
-        .get(..4)
-        .map(|bytes| i32::from_be_bytes(bytes.try_into().expect("four bytes")))
-    else {
-        return;
-    };
-    if element != TAG_COMPOUND {
-        return;
-    }
-    let mut rest = &after[4..];
-    for _ in 0..count.max(0) {
-        let mut slot = None;
-        let mut id = None;
-        // `ItemStack.CODEC` leaves a count of one out.
-        let mut items = 1;
-        let Some(next) = each_raw(rest, |tag, name, payload| match (tag, name) {
-            (TAG_BYTE, b"Slot") => slot = payload.first().map(|byte| usize::from(*byte)),
-            (TAG_STRING, b"id") => {
-                id = nbt_string(payload)
-                    .and_then(|(text, _)| std::str::from_utf8(text).ok())
-                    .and_then(item_id_by_name);
-            }
-            (TAG_BYTE | TAG_SHORT | TAG_INT, b"count") => {
-                items = number(tag, payload).unwrap_or(0);
-            }
-            _ => {}
-        }) else {
-            return;
+    for entry in &entries {
+        let Value::Map(fields) = entry else {
+            continue;
         };
-        rest = next;
-        if let (Some(slot), Some(item)) = (slot, id)
-            && item != clustine_data::items::AIR
-            && items > 0
+        if let (Some(slot), Some(stack)) = (slot_of(fields), stack_from_fields(fields))
             && let Some(place) = slots.get_mut(slot)
         {
-            *place = Some(ItemStack::new(item, items));
+            *place = Some(stack);
         }
     }
 }
@@ -208,7 +185,8 @@ type Entries = Vec<(u8, Vec<u8>, Vec<u8>)>;
 
 /// The compound of `entries`, with the openers' count `openers` where it is not 0 and
 /// the empty compound of components where they have none, as the game writes a
-/// compound: in the order of the names' buckets, those before in the order they came.
+/// compound: in the order of its `HashMap` ([`hash_map_order`]), those before put in
+/// the order they came.
 fn write_compound(mut entries: Entries, openers: u32) -> Vec<u8> {
     if openers > 0 {
         let count = i32::try_from(openers).unwrap_or(i32::MAX);
@@ -221,9 +199,16 @@ fn write_compound(mut entries: Entries, openers: u32) -> Vec<u8> {
     if !entries.iter().any(|(_, name, _)| name == b"components") {
         entries.push((TAG_COMPOUND, b"components".to_vec(), vec![TAG_END]));
     }
-    entries.sort_by_key(|(_, name, _)| string_bucket(&String::from_utf8_lossy(name)));
+    let names: Vec<String> = entries
+        .iter()
+        .map(|(_, name, _)| String::from_utf8_lossy(name).into_owned())
+        .collect();
+    let mut entries: Vec<Option<_>> = entries.into_iter().map(Some).collect();
     let mut written = vec![TAG_COMPOUND];
-    for (tag, name, payload) in entries {
+    for (tag, name, payload) in hash_map_order(&names)
+        .into_iter()
+        .filter_map(|index| entries[index].take())
+    {
         written.push(tag);
         let length = u16::try_from(name.len()).expect("a name read from a short string");
         written.extend_from_slice(&length.to_be_bytes());
@@ -297,44 +282,21 @@ pub(crate) fn with_int(data: &[u8], name: &str, value: i32) -> Vec<u8> {
     write_compound(entries, 0)
 }
 
-/// The payload of an `Items` list of `filled`: compounds of `Slot`, `id` and `count`, the
-/// count left out where it is one, as `ItemStackWithSlot.CODEC` writes them.
+/// The payload of an `Items` list of `filled`: compounds of `Slot`, `id`, `count` and,
+/// where a stack has any, `components`, as `ItemStackWithSlot.CODEC` writes them with
+/// `NbtOps` (`stack_nbt.rs`), so that a stack keeps its components at a save
+/// (`docs/groundwork/n9-plan.md`, section 3.2).
 ///
-/// A stack's components are not written, and a stack read back from here has none
-/// (`docs/groundwork/n9-plan.md`, section 3.2): until each component of the set is
-/// written and read in the game's NBT, which is N9a's next step, a potion put into a
-/// chest loses its contents at a save, as it did before stacks had components.
+/// The list's element type is a compound even where it is empty, as Clustine has
+/// always written it; the game's `ListTag` writes an empty list's as `TAG_END`. Either
+/// reads as an empty list.
 fn items_payload(filled: &[(usize, ItemStack)]) -> Vec<u8> {
     let mut payload = vec![TAG_COMPOUND];
     let count = i32::try_from(filled.len()).expect("fewer slots than an int counts");
     payload.extend_from_slice(&count.to_be_bytes());
     for (slot, stack) in filled {
-        let name = usize::try_from(stack.item)
-            .ok()
-            .and_then(|item| ITEMS.get(item))
-            .map_or("minecraft:air", |item| item.name);
-        let mut entries: Vec<(&str, u8, Vec<u8>)> = vec![
-            (
-                "Slot",
-                TAG_BYTE,
-                vec![u8::try_from(*slot).expect("a slot below 256")],
-            ),
-            ("id", TAG_STRING, {
-                let mut text = Vec::new();
-                nbt_put_string(&mut text, name);
-                text
-            }),
-        ];
-        if stack.count != 1 {
-            entries.push(("count", TAG_INT, stack.count.to_be_bytes().to_vec()));
-        }
-        entries.sort_by_key(|(name, _, _)| string_bucket(name));
-        for (name, tag, value) in entries {
-            payload.push(tag);
-            nbt_put_string(&mut payload, name);
-            payload.extend_from_slice(&value);
-        }
-        payload.push(TAG_END);
+        let slot = u8::try_from(*slot).expect("a slot below 256");
+        put_value(&mut payload, &slot_stack_value(slot, stack));
     }
     payload
 }
@@ -358,18 +320,6 @@ fn each_raw<'a>(data: &'a [u8], mut each: impl FnMut(u8, &[u8], &'a [u8])) -> Op
 
 fn int(payload: &[u8]) -> Option<i32> {
     Some(i32::from_be_bytes(payload.get(..4)?.try_into().ok()?))
-}
-
-/// A whole number of the tag `tag`, as the game reads a count of any width.
-fn number(tag: u8, payload: &[u8]) -> Option<i32> {
-    match tag {
-        TAG_BYTE => payload.first().map(|byte| i32::from(*byte as i8)),
-        TAG_SHORT => Some(i32::from(i16::from_be_bytes(
-            payload.get(..2)?.try_into().ok()?,
-        ))),
-        TAG_INT => int(payload),
-        _ => None,
-    }
 }
 
 /// `ChestBlock.EVENT_SET_OPEN_COUNT`: the block event of a chest's, an ender chest's or
@@ -1022,6 +972,7 @@ fn chest_sounds(state: BlockState) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::region::block_entities::{TAG_BYTE, nbt_put_string};
     use clustine_data::{blocks, items};
 
     fn stack(item: i32, count: i32) -> Option<ItemStack> {
@@ -1104,12 +1055,29 @@ mod tests {
     }
 
     #[test]
-    fn a_count_of_one_is_left_out_and_read_as_one() {
+    fn a_count_of_one_is_written_and_one_left_out_reads_as_one() {
+        // `ItemStack.CODEC`'s count is `optionalAlwaysPresentFieldOf`: written always,
+        // read as one where it is missing.
         let mut container = read_container(9, &[]);
         container.slots[8] = stack(items::BONE_MEAL, 1);
         let data = container_data(blocks::DISPENSER, &container, &[]);
-        assert!(!data.windows(5).any(|window| window == b"count"));
+        assert!(data.windows(5).any(|window| window == b"count"));
         assert_eq!(read_container(9, &data), container);
+
+        let mut entry = vec![TAG_BYTE];
+        nbt_put_string(&mut entry, "Slot");
+        entry.push(8);
+        entry.push(TAG_STRING);
+        nbt_put_string(&mut entry, "id");
+        nbt_put_string(&mut entry, "minecraft:bone_meal");
+        entry.push(TAG_END);
+        let mut without = vec![TAG_COMPOUND, TAG_LIST];
+        nbt_put_string(&mut without, "Items");
+        without.push(TAG_COMPOUND);
+        without.extend_from_slice(&1i32.to_be_bytes());
+        without.extend_from_slice(&entry);
+        without.push(TAG_END);
+        assert_eq!(read_container(9, &without), container);
     }
 
     #[test]
