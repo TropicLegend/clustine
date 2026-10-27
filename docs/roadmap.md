@@ -44,7 +44,7 @@ across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, arrows, plates pressed by mobs; villagers' trades (N10); the Nether
+sensors, crafters, plates pressed by mobs; villagers' work and trades, raids (N10); the Nether
 and the End; survival mode and crafting.
 
 **Built since M3:**
@@ -401,7 +401,7 @@ bone meal under water and on kelp, vines, dripleaf and nylium; a bee nest set ac
 line is empty.
 
 **Monsters, projectiles and effects (N9, [plan](groundwork/n9-plan.md), reviewed;
-under way on 2026-10-27).** Built: item stacks with their components (enchantments,
+built on 2026-10-27).** Built: item stacks with their components (enchantments,
 potions, fireworks, charged crossbows, banners' patterns) everywhere a stack goes, hashed
 as the client hashes them; the player's use of an item over time (bow, crossbow, trident,
 shield, food and drink) with cooldowns (the ender pearl's); mob effects on mobs and
@@ -426,9 +426,18 @@ slime chunks, water creatures by depth, the swamp hut's witches), under the caps
 across every region, which the world store publishes once a second; phantoms come to
 players who have not slept for three days, patrols of pillagers by day once the world
 is five days old, their leader with the ominous banner. A mob steers the mob it rides
-(a chicken jockey's chicken goes where its zombie wants). Being built: tests from the
-specification (S13); the comparisons with the official server are written (S14) and
-wait to be run.
+(a chicken jockey's chicken goes where its zombie wants). Tests from the specification
+by someone who did not write the code (S13) found defects, mended: a harming splash
+on an enderman, effects and cooldowns after a merge, the order of enchantments, a split
+region's counts, the end of a use of an item, a cloud's age. The
+comparisons with the official server are written (S14) and wait for a quiet machine.
+Named, each a seam a player meets rarely: the place a player left from is kept as it
+was up to a second before the leave; effects a mob gives a player across a line (the
+cloud's, the arrow's) find them by the block they stand in, not their box; another
+player's armour and held items are sent when they come into view and when they change,
+not again; a flat world's game seed is 0 (its slime chunks are seed 0's). Next: N10,
+villagers' brain, trading, points of interest and raids
+([brief](groundwork/n10-brief.md)), being planned.
 
 **What to try with a real client, phase N9 so far** (`cargo run --release -p clustine --
 --seed 3`; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64):
