@@ -29,6 +29,7 @@ mod spawns;
 mod structure;
 mod sums;
 mod tables;
+mod trades;
 mod worldgen;
 
 use std::collections::BTreeSet;

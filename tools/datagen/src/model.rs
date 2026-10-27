@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::extract::Extract;
 use crate::item_defaults;
 use crate::loot;
+use crate::trades;
 use crate::worldgen::Worldgen;
 
 /// Registries the server sends to the client during configuration, in the order the
@@ -96,6 +97,8 @@ pub struct GameData {
     pub item_components: Vec<ItemComponents>,
     /// The loot tables of blocks and entities, compiled, with what smelting makes.
     pub loot: loot::Compiled,
+    /// The villagers' and the wandering trader's trades and trade sets, compiled.
+    pub trades: trades::Compiled,
 }
 
 /// What the default components of an item say that Clustine reads
@@ -537,7 +540,8 @@ impl GameData {
         loot.add_entities(&data.join("loot_table"), &predicates, &names)?;
         loot.add_smelting(&data.join("recipe"), &names)?;
         let items = item_names
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|name| Item {
                 block: default_states.get(name.as_str()).copied(),
                 name,
@@ -583,6 +587,33 @@ impl GameData {
             }
         }
 
+        let potions = static_registry(&registries, "potion")?;
+        let mob_effects = static_registry(&registries, "mob_effect")?;
+        let tag_names = |registry: &str| -> Vec<String> {
+            tags.iter()
+                .filter(|tags| tags.registry == registry)
+                .flat_map(|tags| tags.tags.iter().map(|tag| format!("#{}", tag.name)))
+                .collect()
+        };
+        let enchantments = &synced_registries
+            .iter()
+            .find(|registry| registry.name == "enchantment")
+            .context("enchantment is not a synchronised registry")?
+            .entries;
+        let trades = trades::load(
+            &data,
+            &trades::Names {
+                items: &item_names,
+                potions: &potions,
+                mob_effects: &mob_effects,
+                enchantments,
+                villager_types: &static_registry(&registries, "villager_type")?,
+                map_decorations: &static_registry(&registries, "map_decoration_type")?,
+                enchantment_tags: &tag_names("enchantment"),
+                potion_tags: &tag_names("potion"),
+            },
+        )?;
+
         let fluids = static_registry(&registries, "fluid")?;
         let block_entity_types = static_registry(&registries, "block_entity_type")?;
         let extract = Extract::load(extract)?;
@@ -620,13 +651,14 @@ impl GameData {
             fluids,
             block_entity_types,
             data_component_types: static_registry(&registries, "data_component_type")?,
-            potions: static_registry(&registries, "potion")?,
-            mob_effects: static_registry(&registries, "mob_effect")?,
+            potions,
+            mob_effects,
             biome_reports,
             extract,
             worldgen: Worldgen::load(jar, generated)?,
             item_components,
             loot,
+            trades,
         })
     }
 

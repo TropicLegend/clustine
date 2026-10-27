@@ -20,6 +20,7 @@ pub mod packed;
 pub mod potions;
 pub mod spawning;
 pub mod spawns;
+pub mod trading;
 pub mod villagers;
 
 use serde::{Deserialize, Serialize};

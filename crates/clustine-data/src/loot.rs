@@ -320,10 +320,115 @@ pub fn table_by_name(name: &str) -> Option<&'static LootTable> {
     Some(&TABLES[index])
 }
 
+/// The professions with a gift table of their own for the Hero of the Village
+/// (`GiveGiftToHero`, `docs/groundwork/n10-dumps.md`, part B, section 3).
+const GIFT_PROFESSIONS: [&str; 13] = [
+    "armorer",
+    "butcher",
+    "cartographer",
+    "cleric",
+    "farmer",
+    "fisherman",
+    "fletcher",
+    "leatherworker",
+    "librarian",
+    "mason",
+    "shepherd",
+    "toolsmith",
+    "weaponsmith",
+];
+
+/// The table a villager throws its gift to a Hero of the Village from
+/// (`GiveGiftToHero.getLootTableToThrow`): a baby's, else its profession's (by registry
+/// name, such as `minecraft:armorer`), else, for `minecraft:none`, `minecraft:nitwit` or
+/// any other, the unemployed's.
+pub fn hero_gift_table(profession: &str, baby: bool) -> &'static LootTable {
+    let local = profession.strip_prefix("minecraft:").unwrap_or(profession);
+    let name = if baby {
+        "minecraft:gameplay/hero_of_the_village/baby_gift".to_owned()
+    } else if GIFT_PROFESSIONS.contains(&local) {
+        format!("minecraft:gameplay/hero_of_the_village/{local}_gift")
+    } else {
+        "minecraft:gameplay/hero_of_the_village/unemployed_gift".to_owned()
+    };
+    table_by_name(&name).expect("cargo datagen compiles every gift table")
+}
+
+/// The table of what a cat brings its owner in the morning
+/// (`gameplay/cat_morning_gift`).
+pub fn cat_morning_gift_table() -> &'static LootTable {
+    table_by_name("minecraft:gameplay/cat_morning_gift")
+        .expect("cargo datagen compiles the cat's morning gift")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{BlockState, block_id_by_name, items};
+
+    /// The gift tables (D10 B.3): the thirteen professions', the baby's and the
+    /// unemployed's, all of type `gift`, and the cat's morning gift.
+    #[test]
+    fn the_hero_s_gifts_are_by_profession_and_the_cat_s_by_weight() {
+        for profession in GIFT_PROFESSIONS {
+            assert_eq!(
+                hero_gift_table(&format!("minecraft:{profession}"), false).name,
+                format!("minecraft:gameplay/hero_of_the_village/{profession}_gift")
+            );
+        }
+        assert_eq!(
+            hero_gift_table("minecraft:armorer", true).name,
+            "minecraft:gameplay/hero_of_the_village/baby_gift"
+        );
+        for profession in ["minecraft:none", "minecraft:nitwit"] {
+            assert_eq!(
+                hero_gift_table(profession, false).name,
+                "minecraft:gameplay/hero_of_the_village/unemployed_gift"
+            );
+        }
+        // The armorer's: one roll of a chainmail piece, each of weight 1.
+        let armorer = hero_gift_table("minecraft:armorer", false);
+        let [pool] = armorer.pools else {
+            panic!("one pool: {:?}", armorer.pools);
+        };
+        assert_eq!(pool.rolls, IntProvider::Constant(1));
+        let gifts: Vec<i32> = pool
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                LootEntry::Item {
+                    item, weight: 1, ..
+                } => i32::from(*item),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            gifts,
+            [
+                items::CHAINMAIL_HELMET,
+                items::CHAINMAIL_CHESTPLATE,
+                items::CHAINMAIL_LEGGINGS,
+                items::CHAINMAIL_BOOTS
+            ]
+        );
+        // The cat's: seven items, the phantom membrane of weight 2 and the rest 10.
+        let cat = cat_morning_gift_table();
+        let [pool] = cat.pools else {
+            panic!("one pool: {:?}", cat.pools);
+        };
+        let weights: Vec<i32> = pool
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                LootEntry::Item { weight, .. } => *weight,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(weights, [10, 10, 10, 10, 10, 10, 2]);
+        // The thirteen, the baby's, the unemployed's and the cat's are tables beside
+        // the others (`every_number_a_table_names_is_there` counts them too).
+        assert_eq!(tables().len(), 1311 + 21 + 2 + 16);
+    }
 
     fn table(block: &str) -> Option<&'static LootTable> {
         block_table(block_id_by_name(block).unwrap())
@@ -511,7 +616,7 @@ mod tests {
         // The blocks' 1201, the entities' 109 and the fish of a guardian's; a chicken's
         // laying, and the mooshroom's and the sheep's shearing with their colours' (21);
         // the bogged's and the snow golem's shearing (2).
-        assert_eq!(tables().len(), 1311 + 21 + 2);
+        assert_eq!(tables().len(), 1311 + 21 + 2 + 16);
         for name in [
             "minecraft:gameplay/chicken_lay",
             "minecraft:shearing/bogged",

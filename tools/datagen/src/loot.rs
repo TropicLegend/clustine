@@ -340,6 +340,23 @@ pub const ANIMALS: [&str; 5] = [
     "shearing/snow_golem",
 ];
 
+/// The gifts the villagers' and the cats' code names: a villager's to a Hero of the
+/// Village, every table of this directory (`docs/groundwork/n10-dumps.md`, part B,
+/// section 3: each profession's, the baby's and the unemployed's), and a cat's morning
+/// gift.
+pub const HERO_GIFTS: &str = "gameplay/hero_of_the_village";
+pub const CAT_MORNING_GIFT: &str = "gameplay/cat_morning_gift";
+
+/// Whether the table called `name` is a gift's, of the type `gift`.
+fn is_gift(name: &str) -> bool {
+    name == "minecraft:gameplay/chicken_lay"
+        || name == format!("minecraft:{CAT_MORNING_GIFT}")
+        || name
+            .strip_prefix("minecraft:")
+            .and_then(|path| path.strip_prefix(HERO_GIFTS))
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Reads every file of `directory` (the block loot tables) with the predicates of
 /// `predicates`.
 pub fn load(directory: &Path, predicates: &dyn Predicates, names: &Names) -> Result<Compiled> {
@@ -379,7 +396,7 @@ pub fn load(directory: &Path, predicates: &dyn Predicates, names: &Names) -> Res
 
 /// The JSON files below `directory`, sub-directories included, as their paths from it
 /// without `.json`, sorted.
-fn tables_under(directory: &Path) -> Result<Vec<String>> {
+pub(crate) fn tables_under(directory: &Path) -> Result<Vec<String>> {
     let mut found = Vec::new();
     let mut pending = vec![(directory.to_path_buf(), String::new())];
     while let Some((at, prefix)) = pending.pop() {
@@ -403,8 +420,9 @@ fn tables_under(directory: &Path) -> Result<Vec<String>> {
 
 impl Compiled {
     /// Adds the entity tables of `loot_tables` (the directory `loot_table`), those of
-    /// `entities` and below and the ones the mobs' own code names ([`ANIMALS`]),
-    /// then every table they name that is not there yet; and sorts the tables by name.
+    /// `entities` and below, the ones the mobs' own code names ([`ANIMALS`]) and the
+    /// gifts ([`HERO_GIFTS`], [`CAT_MORNING_GIFT`]), then every table they name that is
+    /// not there yet; and sorts the tables by name.
     pub fn add_entities(
         &mut self,
         loot_tables: &Path,
@@ -417,6 +435,15 @@ impl Compiled {
         for path in ANIMALS {
             self.add_file(loot_tables, path, predicates, names)?;
         }
+        for stem in tables_under(&loot_tables.join(HERO_GIFTS))? {
+            self.add_file(
+                loot_tables,
+                &format!("{HERO_GIFTS}/{stem}"),
+                predicates,
+                names,
+            )?;
+        }
+        self.add_file(loot_tables, CAT_MORNING_GIFT, predicates, names)?;
         loop {
             let missing: Vec<String> = self
                 .named_tables()
@@ -511,7 +538,7 @@ impl Compiled {
 }
 
 /// Fails unless the object `value` has no keys but `allowed`.
-fn only(value: &Json, allowed: &[&str]) -> Result<()> {
+pub(crate) fn only(value: &Json, allowed: &[&str]) -> Result<()> {
     for (key, _) in value.members()? {
         ensure!(
             allowed.contains(&key.as_str()),
@@ -522,7 +549,7 @@ fn only(value: &Json, allowed: &[&str]) -> Result<()> {
 }
 
 /// The `type` of an object, without `minecraft:`.
-fn kind(value: &Json) -> Result<&str> {
+pub(crate) fn kind(value: &Json) -> Result<&str> {
     let kind = value.member("type")?.string()?;
     kind.strip_prefix("minecraft:")
         .with_context(|| format!("the type {kind} is not the game's"))
@@ -536,7 +563,7 @@ fn one_or_many(value: &Json) -> Vec<&Json> {
     }
 }
 
-fn float_bits(value: &Json) -> Result<u32> {
+pub(crate) fn float_bits(value: &Json) -> Result<u32> {
     Ok(value.float()?.to_bits())
 }
 
@@ -552,7 +579,8 @@ impl Compiled {
         let json = Json::parse(text)?;
         only(&json, &["type", "pools", "modifier", "random_sequence"])?;
         // A table's type says which parameters it is given: a block's, an entity's, the
-        // fishing a guardian's table names, a shearing's, or a chicken's gift of an egg.
+        // fishing a guardian's table names, a shearing's, or a gift (a chicken's egg, a
+        // villager's to a hero, a cat's in the morning).
         let expected = if name.starts_with("minecraft:blocks/") {
             "block"
         } else if name.starts_with("minecraft:entities/") {
@@ -561,7 +589,7 @@ impl Compiled {
             "fishing"
         } else if name.starts_with("minecraft:shearing/") {
             "shearing"
-        } else if name == "minecraft:gameplay/chicken_lay" {
+        } else if is_gift(name) {
             "gift"
         } else {
             bail!("the table {name} is of no kind read here")
@@ -2205,6 +2233,91 @@ mod tests {
         }
     }
 
+    /// A villager's gift to a hero (`hero_of_the_village/cleric_gift`'s form: a count and
+    /// a potion) and a cat's morning gift are of the type `gift`; that type is refused
+    /// elsewhere, and another type for a gift.
+    #[test]
+    fn the_gifts_of_villagers_and_cats_are_compiled_as_gifts() {
+        const HERO: &str = r#"{
+          "type": "minecraft:gift",
+          "pools": [{"rolls": 1, "entries": [
+            {"type": "minecraft:item", "name": "minecraft:rabbit_foot", "modifier": [
+              {"type": "minecraft:set_count", "count":
+                {"type": "minecraft:uniform", "min": 1, "max": 3}},
+              {"type": "minecraft:set_potion", "id": "minecraft:healing"}]}
+          ]}],
+          "random_sequence": "minecraft:gameplay/hero_of_the_village/cleric_gift"
+        }"#;
+        const CAT: &str = r#"{
+          "type": "minecraft:gift",
+          "pools": [{"rolls": 1, "entries": [
+            {"type": "minecraft:item", "name": "minecraft:leather", "weight": 10},
+            {"type": "minecraft:item", "name": "minecraft:rabbit_foot", "weight": 2}
+          ]}],
+          "random_sequence": "minecraft:gameplay/cat_morning_gift"
+        }"#;
+        let compiled = compile_entities(&[
+            ("minecraft:gameplay/hero_of_the_village/cleric_gift", HERO),
+            ("minecraft:gameplay/cat_morning_gift", CAT),
+        ])
+        .unwrap();
+        assert_eq!(
+            compiled
+                .tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "minecraft:gameplay/cat_morning_gift",
+                "minecraft:gameplay/hero_of_the_village/cleric_gift"
+            ]
+        );
+        let Entry::Item { modifiers, .. } = &compiled.tables[1].pools[0].entries[0] else {
+            panic!("the hero's gift is an item");
+        };
+        assert_eq!(
+            compiled.modifiers[modifiers[0]].kind,
+            ModifierKind::SetCount {
+                count: IntProvider::Uniform { min: 1, max: 3 },
+                add: false
+            }
+        );
+        assert_eq!(
+            compiled.modifiers[modifiers[1]].kind,
+            ModifierKind::SetPotion {
+                potion: "minecraft:healing".to_owned()
+            }
+        );
+        let weights: Vec<i32> = compiled.tables[0].pools[0]
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Item { weight, .. } => *weight,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(weights, [10, 2]);
+
+        for (name, text) in [
+            // A gift where no gift is read, a gift's directory without the slash.
+            (
+                "minecraft:gameplay/piglin_bartering",
+                CAT.replace("cat_morning_gift", "piglin_bartering"),
+            ),
+            (
+                "minecraft:gameplay/hero_of_the_village_gift",
+                CAT.replace("cat_morning_gift", "hero_of_the_village_gift"),
+            ),
+            // A gift of another type.
+            (
+                "minecraft:gameplay/cat_morning_gift",
+                CAT.replace("minecraft:gift", "minecraft:entity"),
+            ),
+        ] {
+            assert!(compile_entities(&[(name, &text)]).is_err(), "{name}");
+        }
+    }
+
     #[test]
     fn what_an_entity_s_table_does_not_understand_is_refused() {
         let refused = [
@@ -2266,7 +2379,12 @@ mod tests {
             .add_entities(&data.join("loot_table"), &predicates, &names)
             .unwrap();
         compiled.add_smelting(&data.join("recipe"), &names).unwrap();
-        assert_eq!(compiled.tables.len(), 1201 + 93 + 16 + 1 + 1 + 3 + 17);
+        // The bogged's and the snow golem's shearing, which this count had missed; the
+        // gifts: thirteen professions', the baby's, the unemployed's and the cat's.
+        assert_eq!(
+            compiled.tables.len(),
+            1201 + 93 + 16 + 1 + 1 + 3 + 17 + 2 + 16
+        );
         let by_name: Vec<String> = block_names
             .iter()
             .map(|name| name.replace("minecraft:", "minecraft:blocks/"))

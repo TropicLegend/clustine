@@ -27,4 +27,5 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   state_path_types.bin
   state_sound_types.bin
   tags.rs
+  trades.rs
   version.rs

@@ -17,4 +17,5 @@ pub mod sound_types;
 pub mod spawning;
 pub mod spawns;
 pub mod tags;
+pub mod trades;
 pub mod version;

@@ -162,6 +162,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "spawning",
             "spawns",
             "tags",
+            "trades",
             "version",
         ]),
     );
@@ -182,6 +183,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "registries.rs", registries(data));
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
     add(DATA_DIR, "tags.rs", tags(data));
+    add(DATA_DIR, "trades.rs", crate::trades::emit(&data.trades)?);
     let biomes = data
         .synced_registries
         .iter()
