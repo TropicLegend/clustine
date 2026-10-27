@@ -811,6 +811,11 @@ pub(crate) struct Fanout {
     /// as its own. Entities are numbered by the world store in the order stays begin,
     /// so the greater entity is the later stay.
     highest: BTreeMap<PlayerId, EntityId>,
+    /// The latest stay of each player that this edge ended itself, by a leave or a
+    /// second login, until a later stay of theirs is noted. Its region may still
+    /// report it, as come (an arrival it takes in only now) or as moved, after the
+    /// edge has hidden it, and none of that may show it again.
+    ended: BTreeMap<PlayerId, EntityId>,
     replica: BTreeMap<ChunkPos, ReplicaChunk>,
     /// A counter for the whole edge, raised by one every time it is read: what came
     /// later has the greater moment, whatever was removed from the replica and made
@@ -1033,6 +1038,7 @@ impl Fanout {
             players: BTreeMap::new(),
             entity_owners: BTreeMap::new(),
             highest: BTreeMap::new(),
+            ended: BTreeMap::new(),
             replica: BTreeMap::new(),
             moment: 0,
             marked: BTreeSet::new(),
@@ -3628,6 +3634,10 @@ impl Fanout {
             .highest
             .get(&player)
             .is_some_and(|highest| entity < *highest)
+            || self
+                .ended
+                .get(&player)
+                .is_some_and(|ended| entity <= *ended)
         {
             return;
         }
@@ -3972,6 +3982,10 @@ impl Fanout {
             return Vec::new();
         }
         *highest = entity;
+        // A later stay is passed over by `highest` alone from now on.
+        if self.ended.get(&player).is_some_and(|ended| *ended < entity) {
+            self.ended.remove(&player);
+        }
         let of_player = |shown: &Shown| matches!(&shown.state.kind, EntityKind::Player { player: of, .. } if *of == player);
         let earlier = self.entities.iter();
         let earlier = earlier.filter(|(known, shown)| **known < entity && of_player(shown));
@@ -6009,6 +6023,8 @@ impl Fanout {
                 }
             }
             self.release_wire(entity);
+            let ended = self.ended.entry(player).or_insert(entity);
+            *ended = (*ended).max(entity);
         }
         // The entry in the player list is this edge's to remove. A client that shows
         // another entity of the player keeps it: that is a later stay, through another
@@ -20455,6 +20471,60 @@ mod scenarios {
         assert!(lists(&friend, 1), "{:?}", friend.told);
         assert!(friend.entities.contains(&8), "{:?}", friend.entities);
         assert!(!friend.entities.contains(&5), "{:?}", friend.entities);
+        never_both_and_never_the_older_again(&friend, 5, 8);
+        is_in_the_world(&mut second);
+        edge.end().await;
+    }
+
+    /// Found by the ledger's bots under load. A player logs in again just after being
+    /// handed over: the edge hides the old entity at once, and the region it was
+    /// handed to takes the arrival in only afterwards and reports the old entity come,
+    /// then removed, before the edge has heard of the new stay. A friend who watched
+    /// is never shown the old entity again, neither as come nor as gone.
+    #[tokio::test]
+    async fn a_stay_the_edge_ended_is_not_shown_again_by_a_late_report_of_its_arrival() {
+        let mut edge = Harness::witnessed().await;
+        let mut first = edge.settler(1, 5, WEST, HOME).await;
+        let mut friend = edge.settler(2, 6, WEST, HOME).await;
+        let there = vec![own(1, 5, HOME)];
+        let home = snapshot_of(HOME, edge.ask(WEST, HOME), empty_chunk(), there);
+        edge.says(WEST, home).await;
+        edge.sync(&mut friend).await;
+        assert!(friend.entities.contains(&5), "{:?}", friend.entities);
+
+        let mut second = edge.join(player(1)).await;
+        first.disconnected().await;
+        edge.drained().await;
+        edge.sync(&mut friend).await;
+        assert!(!friend.entities.contains(&5), "{:?}", friend.entities);
+        let told = friend.told.len();
+
+        edge.says(WEST, introduced(1, 5, HOME)).await;
+        edge.says(WEST, walked(EntityId(5), HOME, HOME)).await;
+        let removed = RegionEvent::EntityRemoved {
+            entity: EntityId(5),
+            chunk: HOME,
+        };
+        let delta = WorkerToEdge::TickDelta {
+            tick: 3,
+            events: vec![removed],
+        };
+        edge.says(WEST, delta).await;
+        edge.sync(&mut friend).await;
+        let since: Vec<_> = friend.told[told..]
+            .iter()
+            .filter(|told| matches!(told, Told::Shown(_) | Told::Hidden(_)))
+            .collect();
+        assert!(
+            since.is_empty(),
+            "the old entity was told of again: {since:?}"
+        );
+
+        let placed = spawned(second.session.0, player(1), EntityId(8));
+        edge.says(WEST, placed).await;
+        edge.says(WEST, introduced(1, 8, HOME)).await;
+        edge.sync(&mut friend).await;
+        assert!(friend.entities.contains(&8), "{:?}", friend.entities);
         never_both_and_never_the_older_again(&friend, 5, 8);
         is_in_the_world(&mut second);
         edge.end().await;
