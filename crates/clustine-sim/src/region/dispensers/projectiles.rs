@@ -139,9 +139,9 @@ impl Region {
         if kind == entity_types::FIREWORK_ROCKET {
             // `asProjectile`: one of the stack, shot at an angle, with no owner.
             let one = stack.with_count(1);
-            let aim = Some(Aim::Direction(direction));
+            let shot = Some((Aim::Direction(direction), config.power, config.uncertainty));
             if self
-                .make_firework(&one, at, aim, true, None, output)
+                .make_firework(&one, at, shot, true, None, output)
                 .is_none()
             {
                 self.click_and_smoke(dispense, FAILED, output);

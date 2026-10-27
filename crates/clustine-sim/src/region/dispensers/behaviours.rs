@@ -10,9 +10,8 @@
 //! with nowhere to go, a potion other than water) clicks and smokes twice, as the game's.
 //!
 //! Named differences, each where the step that brings what it acts on will port it:
-//! - projectiles (arrows, eggs, snowballs, bottles of experience, splash and lingering
-//!   potions, fireworks, fire and wind charges) are dropped as items until N9
-//!   (decision 7);
+//! - fire and wind charges are dropped as items until blazes and breezes; the other
+//!   projectiles are shot (`projectiles.rs`);
 //! - what acts on mobs waits for N7: shears shear no sheep, a brush brushes no
 //!   armadillo, a chest goes on no horse (it is dropped), a spawn egg spawns nothing (it
 //!   stays, with the click and smoke of a spawn that made nothing), a mob bucket

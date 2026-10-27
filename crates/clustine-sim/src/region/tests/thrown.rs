@@ -605,3 +605,30 @@ fn a_projectile_is_not_made_where_the_region_can_read_nothing() {
         "{output:?}"
     );
 }
+
+/// `AbstractArrow.<init>`: an arrow made of intangible ammunition may be picked up by a
+/// creative player only; any other made by a shot by nobody.
+#[test]
+fn an_arrow_of_intangible_ammunition_is_for_creative_players_only() {
+    use clustine_world::components::Component;
+    let mut stack = ItemStack::new(items::ARROW, 1);
+    let shot = |stack: ItemStack| crate::mobs::tick::Shot {
+        kind: u16::try_from(entity_types::ARROW).unwrap(),
+        stack,
+        weapon: None,
+        at: [0.0; 3],
+        direction: [1.0, 0.0, 0.0],
+        power: 1.0,
+        uncertainty: 0.0,
+        from_mob: None,
+    };
+    let pickup = |data: Option<EntityData>| match data {
+        Some(EntityData::Arrow(arrow)) => arrow.pickup,
+        other => panic!("{other:?} is no arrow"),
+    };
+    let record = crate::region::projectiles::shot_record(&shot(stack.clone()), None);
+    assert_eq!(pickup(record), clustine_world::Pickup::Disallowed);
+    stack.components.set(Component::IntangibleProjectile);
+    let record = crate::region::projectiles::shot_record(&shot(stack), None);
+    assert_eq!(pickup(record), clustine_world::Pickup::CreativeOnly);
+}

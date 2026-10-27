@@ -143,8 +143,20 @@ pub(crate) fn shot_record(shot: &Shot, owner: Option<EntityId>) -> Option<Entity
         } else {
             clustine_world::ArrowKind::Arrow
         };
+        // `AbstractArrow.<init>`: an arrow of intangible ammunition (a creative player's
+        // bow) may be picked up only by a creative player.
+        let pickup = if shot
+            .stack
+            .components
+            .get(clustine_world::components::Kind::IntangibleProjectile)
+            .is_some()
+        {
+            clustine_world::Pickup::CreativeOnly
+        } else {
+            clustine_world::Pickup::Disallowed
+        };
         return Some(EntityData::Arrow(Box::new(clustine_world::Arrow {
-            pickup: clustine_world::Pickup::Disallowed,
+            pickup,
             pickup_stack: shot.stack.with_count(1),
             weapon: shot.weapon.clone(),
             owner,
@@ -367,8 +379,9 @@ impl Region {
     /// `new FireworkRocketEntity(level, stack, …)` and `addFreshEntity` (section 4.7),
     /// made by a rocket used on a block (`items/rockets.rs`), a crossbow and a
     /// dispenser. `fireworks.rs`' to build: its construction draws two triangles and
-    /// the lifetime's two ints, which the rocket's own tick reads. Nothing is made
-    /// until it is.
+    /// the lifetime's two ints, which the rocket's own tick reads. `shot` is the aim,
+    /// power and uncertainty of a rocket that is shot (a crossbow's, a dispenser's),
+    /// none for one used on a block, which flies up. Nothing is made until it is.
     #[expect(
         clippy::unused_self,
         reason = "fireworks.rs builds it on the region's making"
@@ -377,7 +390,7 @@ impl Region {
         &mut self,
         _stack: &ItemStack,
         _at: Vec3,
-        _aim: Option<Aim>,
+        _shot: Option<(Aim, f32, f32)>,
         _shot_at_angle: bool,
         _owner: Option<EntityId>,
         _output: &mut TickOutput,
