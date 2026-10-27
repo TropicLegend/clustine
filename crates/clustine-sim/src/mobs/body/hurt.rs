@@ -392,8 +392,9 @@ fn living_hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount: f3
 }
 
 /// `actuallyHurt(level, source, amount)`: the armour's share taken off (a mob's armour
-/// takes no wear), and what is left off its health, which sculk hears. Neither effects
-/// nor enchantments nor absorption reduce it: no mob of Clustine has any.
+/// takes no wear), then resistance's and the absorption's (`effects.rs`), and what is
+/// left off its health, which sculk hears. No mob of Clustine wears an enchantment that
+/// protects it.
 fn actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: f32) {
     // The type's own first (a camel stands up, an animal's love ends), the living
     // body's, then what the type does after its superclass's (an armadillo rolls up).
@@ -414,13 +415,19 @@ fn living_actually_hurt(struck: &mut Struck<'_>, source: &DamageSource, amount: 
         let toughness = struck.attribute(ids::ARMOR_TOUGHNESS) as f32;
         amount = damage_after_absorb(amount, armor, toughness);
     }
+    // Resistance's share, then the type's own (`getDamageAfterMagicAbsorb`), then the
+    // absorption's (`docs/groundwork/n9-plan.md`, section 5.2).
+    amount = super::effects::magic_absorbed(&struck.mob.body.effects, source, amount);
     amount = struck.mob_type.magic_absorbed(struck.mob, source, amount);
+    let most_absorbed = super::effects::max_absorption(struck.mob, struck.kind);
+    amount = super::effects::absorbed(&mut struck.mob.body.effects, amount, most_absorbed);
     if amount <= 0.0 {
         return;
     }
     let max = struck.attribute(ids::MAX_HEALTH) as f32;
     let health = struck.mob.body.vitals.health - amount;
     struck.mob.body.vitals.health = clamp(health, 0.0, max);
+    super::effects::absorbed_after(&mut struck.mob.body.effects, amount, most_absorbed);
     struck
         .out
         .events

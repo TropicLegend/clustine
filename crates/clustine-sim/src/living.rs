@@ -263,6 +263,11 @@ pub(crate) struct Living {
     pub(crate) climbs: Option<bool>,
     /// Whether a cobweb holds it (`makeStuckInBlock`): not a spider.
     pub(crate) stuck_in_webs: bool,
+    /// Whether it falls slowly (slow falling's effect, `getEffectiveGravity`), and the
+    /// amplifier of the levitation that lifts it (`travelInAir`), as its effects say
+    /// (`docs/groundwork/n9-plan.md`, section 5.2).
+    pub(crate) slow_falling: bool,
+    pub(crate) levitation: Option<u8>,
 }
 
 impl Living {
@@ -310,6 +315,8 @@ impl Living {
             water_slow_down: 0.8,
             climbs: None,
             stuck_in_webs: true,
+            slow_falling: false,
+            levitation: None,
         }
     }
 

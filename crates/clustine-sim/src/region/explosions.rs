@@ -114,18 +114,18 @@ impl LootDraws for Loot<'_> {
 
 /// An entity the explosion's query found: in a chunk the region has loaded, or in a
 /// copy (`copied`), as it was when found.
-struct Found {
-    record: Entity,
-    chunk: ChunkPos,
-    copied: bool,
+pub(super) struct Found {
+    pub(super) record: Entity,
+    pub(super) chunk: ChunkPos,
+    pub(super) copied: bool,
 }
 
 /// What the explosion does to one entity it reaches (`hurtEntities`): the damage and
 /// the push, by its distance and how much of it the explosion sees.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Hit {
-    damage: f32,
-    push: [f64; 3],
+pub(super) struct Hit {
+    pub(super) damage: f32,
+    pub(super) push: [f64; 3],
 }
 
 /// Whether the owner `owner` is a creative player, as a vehicle and a hanging thing ask
@@ -330,7 +330,7 @@ impl Region {
 
     /// The entities whose boxes meet `bounds`, of the region's loaded chunks and its
     /// copies, but `except`: by chunk, then section, then key.
-    fn blast_targets(&self, bounds: &Aabb, except: EntityId) -> Vec<Found> {
+    pub(super) fn blast_targets(&self, bounds: &Aabb, except: EntityId) -> Vec<Found> {
         let low = ChunkPos::containing(bounds.min[0] - 2.0, bounds.min[2] - 2.0);
         let high = ChunkPos::containing(bounds.max[0] + 2.0, bounds.max[2] + 2.0);
         let mut found = Vec::new();
@@ -465,7 +465,7 @@ impl Region {
 
     /// `ignoreExplosion(explosion)` of the entity `record`: an invisible armour stand,
     /// and a frame, a painting, a cushion or a knot where the source is in water.
-    fn ignores(&self, explosion: &Explosion, record: &Entity) -> bool {
+    pub(super) fn ignores(&self, explosion: &Explosion, record: &Entity) -> bool {
         match record.data {
             EntityData::ArmorStand { flags, .. } => flags & INVISIBLE != 0,
             EntityData::ItemFrame { .. }
@@ -478,7 +478,7 @@ impl Region {
 
     /// The explosion's damage and push of the entity `record`, if it is within reach
     /// of its feet: the push from the centre to its eyes, or to its feet for primed TNT.
-    fn hit_of(&self, explosion: &Explosion, record: &Entity) -> Option<Hit> {
+    pub(super) fn hit_of(&self, explosion: &Explosion, record: &Entity) -> Option<Hit> {
         let reach = f64::from(explosion.radius * 2.0);
         let distance = physics::distance_sqr(record.position, explosion.centre).sqrt();
         let d = distance / reach;
@@ -686,7 +686,7 @@ impl Region {
     /// and sends it (`needsSync`), committed, of the entity `key` where it is still
     /// there; a frame, painting, cushion or knot breaks at any push, but the explosion
     /// broke it already. The edges are told with `flags`.
-    fn push_from_explosion(
+    pub(super) fn push_from_explosion(
         &mut self,
         key: EntityId,
         push: [f64; 3],

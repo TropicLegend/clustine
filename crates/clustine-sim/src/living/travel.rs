@@ -67,8 +67,15 @@ impl Living {
             1.0
         };
         let moved = self.handle_relative_friction_and_calculate_movement(world, friction);
-        // The server always has the chunk it ticks in, and nothing levitates.
-        let y = moved[1] - self.attributes.gravity;
+        // Levitation lifts it towards its speed instead of gravity; the server always has
+        // the chunk it ticks in.
+        let y = match self.levitation {
+            Some(amplifier) => {
+                let towards = 0.05 * (f64::from(amplifier) + 1.0);
+                moved[1] + (towards - moved[1]) * 0.2
+            }
+            None => moved[1] - self.effective_gravity(),
+        };
         let modifier = self.attributes.air_drag_modifier as f32;
         let horizontal = modified_friction(0.91, modifier);
         let sideways = friction * horizontal;
@@ -83,6 +90,16 @@ impl Living {
             y * f64::from(vertical),
             moved[2] * f64::from(sideways),
         ];
+    }
+
+    /// `getEffectiveGravity()`: no more than 0.01 while it falls slowly and is not
+    /// rising, else its gravity.
+    fn effective_gravity(&self) -> f64 {
+        if self.slow_falling && self.body.motion[1] <= 0.0 {
+            self.attributes.gravity.min(0.01)
+        } else {
+            self.attributes.gravity
+        }
     }
 
     /// `handleRelativeFrictionAndCalculateMovement(Vec3.ZERO, friction)`: a ladder's
@@ -168,7 +185,7 @@ impl Living {
     fn travel_in_fluid<R: Holds + ?Sized>(&mut self, world: &R) {
         let falling = self.body.motion[1] <= 0.0;
         let start_y = self.body.position[1];
-        let gravity = self.attributes.gravity;
+        let gravity = self.effective_gravity();
         if self.body.in_water {
             if let Travel::Swims { speed, sinks } = self.travel_kind {
                 self.swim(world, speed, sinks);

@@ -660,6 +660,8 @@ fn prepare(tick: &mut MobTick<'_>) {
     tick.living.breathes_under_water = entity_in_tag(id, "minecraft:can_breathe_under_water")
         || tick.mob_type.breathes_under_water(&tick.mob);
     tick.living.water_breathing = tick.mob.body.effects.water_breathing();
+    tick.living.slow_falling = effects::slow_falling(&tick.mob.body.effects);
+    tick.living.levitation = effects::levitation(&tick.mob.body.effects);
     tick.living.effects_refill_air = tick.mob.body.effects.refill_air();
     // `canFreeze`: not of the types that do not freeze, and wearing nothing that keeps
     // the cold off.
@@ -844,10 +846,11 @@ fn jump_from_ground(tick: &mut MobTick<'_>) {
         .attributes
         .value(tick.kind, attribute(ids::JUMP_STRENGTH)) as f32;
     let factor = block_jump_factor(tick);
+    // `getJumpPower(1)`: its strength by the block's factor, and jump boost's power.
     let power = tick
         .mob_type
         .jump_power(tick, factor)
-        .unwrap_or(strength * 1.0 * factor);
+        .unwrap_or(strength * 1.0 * factor + effects::jump_boost_power(&tick.mob.body.effects));
     if power > 1.0e-5 {
         let motion = &mut tick.living.body.motion;
         motion[1] = f64::from(power).max(motion[1]);
@@ -878,6 +881,13 @@ fn block_jump_factor(tick: &MobTick<'_>) -> f32 {
 /// effects of the blocks walked through, powder snow's freezing and its slowing
 /// (`removeFrost`, `tryAddFrost`), and every 40th tick the hurt of being frozen through.
 pub(crate) fn travel(tick: &mut MobTick<'_>) {
+    // `aiStep`: slow falling and levitation forget the fall, before the travel (their
+    // effects as they are now, an effect added in this tick's AI among them).
+    tick.living.slow_falling = effects::slow_falling(&tick.mob.body.effects);
+    tick.living.levitation = effects::levitation(&tick.mob.body.effects);
+    if tick.living.slow_falling || tick.living.levitation.is_some() {
+        tick.living.body.fall_distance = 0.0;
+    }
     let inputs = &tick.mob.body.inputs;
     tick.living.input = [
         f64::from(inputs.xxa),

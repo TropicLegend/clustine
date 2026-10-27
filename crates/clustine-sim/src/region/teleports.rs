@@ -24,7 +24,6 @@ impl Region {
     /// aside), the first that lands moving them with the teleport's sound and the
     /// player's fall reset. Whether they were moved. Part S9's; S1's eating calls it.
     #[expect(
-        dead_code,
         clippy::unused_self,
         reason = "part S9 fills it and S1 calls it (docs/groundwork/n9-plan.md, sections 5.5 and 8.4)"
     )]

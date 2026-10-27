@@ -208,13 +208,6 @@ impl Region {
     }
 
     /// `removeEffect` of `effect` from the player `id`: whether they had it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "honey's and milk's consumption removes effects (S1)"
-        )
-    )]
     pub(crate) fn remove_player_effect(
         &mut self,
         id: PlayerId,

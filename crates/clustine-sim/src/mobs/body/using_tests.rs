@@ -510,12 +510,14 @@ fn a_witch_shows_no_living_flags_and_its_values_are_as_before() {
     let mut witch = holding(WITCH, Some(ItemStack::new(items::POTION, 1)), None);
     let before = mob_values(WITCH, &witch.encode());
     assert!(before.iter().all(|(at, _, _)| *at != index::LIVING_FLAGS));
-    // The body's four and the witch's own: the raider's two and its drinking.
+    // The body's six and the witch's own: the raider's two and its drinking.
     let indices: Vec<u8> = before.iter().map(|(at, _, _)| *at).collect();
     let mut expected = vec![
         index::AIR_SUPPLY,
         index::TICKS_FROZEN,
         index::HEALTH,
+        index::EFFECT_PARTICLES,
+        index::EFFECT_AMBIENCE,
         index::MOB_FLAGS,
     ];
     expected.extend(of(WITCH).shown(&witch).iter().map(|(at, _, _)| *at));

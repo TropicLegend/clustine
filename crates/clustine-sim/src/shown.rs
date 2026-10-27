@@ -97,6 +97,9 @@ pub mod index {
     /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS`: an item in use (1), with the off hand (2).
     pub const LIVING_FLAGS: u8 = 8;
     pub const HEALTH: u8 = 9;
+    /// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID`.
+    pub const EFFECT_PARTICLES: u8 = 10;
+    pub const EFFECT_AMBIENCE: u8 = 11;
     pub const MOB_FLAGS: u8 = 15;
     /// `AgeableMob.DATA_BABY_ID`, an ageable type's.
     pub const BABY: u8 = 16;
@@ -150,6 +153,19 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
         let living = mob.body.using.flags;
         values.push((index::LIVING_FLAGS, DataShown::Byte(living), living == 0));
     }
+    // The effects' particles and whether all are ambient (`effects.rs`).
+    let (particles, ambient) = crate::mobs::body::effects::particles(&mob.body.effects);
+    let none = particles.is_empty();
+    values.push((
+        index::EFFECT_PARTICLES,
+        DataShown::Particles(particles),
+        none,
+    ));
+    values.push((
+        index::EFFECT_AMBIENCE,
+        DataShown::Boolean(ambient),
+        !ambient,
+    ));
     values.extend(types::of(kind).shown(&mob));
     values.sort_by_key(|(index, _, _)| *index);
     values
@@ -162,24 +178,32 @@ const INVISIBLE: u8 = 0x20;
 const SWIMMING: u8 = 0x10;
 
 /// The shared flags (`DATA_SHARED_FLAGS_ID`) a mob's record sets beyond its burning,
-/// which its tick's report carries: invisible while it has invisibility, swimming while
-/// it swims (a drowned). Read from the effects' and the swimming's parts alone, as an
-/// edge reads them at every change; none for a record that is no mob's, and nothing of
-/// a part that cannot be read.
+/// which its tick's report carries: invisible while it has invisibility, glowing while it
+/// glows, swimming while it swims (a drowned). Read from the effects' and the swimming's
+/// parts alone, as an edge reads them at every change; none for a record that is no
+/// mob's, and nothing of a part that cannot be read.
 pub fn mob_shared_flags(data: &EntityData) -> u8 {
     let EntityData::Mob { body, .. } = data else {
         return 0;
     };
-    let invisible = match crate::mobs::part::decode::<crate::mobs::body::effects::Effects>(body) {
-        Ok(effects) if effects.invisible() => INVISIBLE,
+    let effects = crate::mobs::body::effects::decode(body).ok();
+    let invisible = match &effects {
+        Some(effects) if effects.invisible() => INVISIBLE,
+        _ => 0,
+    };
+    let glowing = match &effects {
+        Some(effects) if effects.glowing() => GLOWING,
         _ => 0,
     };
     let swimming = match crate::mobs::part::decode::<crate::mobs::body::Swimming>(body) {
         Ok(swimming) if swimming.swimming => SWIMMING,
         _ => 0,
     };
-    invisible | swimming
+    invisible | swimming | glowing
 }
+
+/// `Entity.FLAG_GLOWING`, the shared flags' bit 6.
+const GLOWING: u8 = 0x40;
 
 /// What a mob wears and holds as its record has it, by slot (the game's
 /// `EquipmentSlot` ordinals), the empty slots left out: what a client newly shown it is
@@ -278,6 +302,12 @@ mod tests {
                 (index::TICKS_FROZEN, DataShown::Int(0), true),
                 (index::LIVING_FLAGS, DataShown::Byte(0), true),
                 (index::HEALTH, DataShown::Float(10.0), false),
+                (
+                    index::EFFECT_PARTICLES,
+                    DataShown::Particles(Vec::new()),
+                    true
+                ),
+                (index::EFFECT_AMBIENCE, DataShown::Boolean(false), true),
                 (
                     index::MOB_FLAGS,
                     DataShown::Byte(LEFT_HANDED | AGGRESSIVE),

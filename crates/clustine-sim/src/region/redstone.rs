@@ -387,7 +387,12 @@ impl Region {
 
     /// `LeverBlock.updateNeighbours` and `ButtonBlock.updateNeighbours`: the neighbours
     /// of the lever or button `state` at `pos`, and then those of the block it hangs on.
-    fn update_attached(&mut self, pos: BlockPos, state: BlockState, output: &mut TickOutput) {
+    pub(super) fn update_attached(
+        &mut self,
+        pos: BlockPos,
+        state: BlockState,
+        output: &mut TickOutput,
+    ) {
         let Some(towards) = signal::attached_towards(state) else {
             return;
         };
@@ -591,7 +596,7 @@ fn is_lever_or_button(state: BlockState) -> bool {
 
 /// How long a button stays pressed, by its block set as the game's `Blocks` makes
 /// them: 20 ticks for stone and polished blackstone, 30 for wood.
-fn button_delay(state: BlockState) -> i32 {
+pub(super) fn button_delay(state: BlockState) -> i32 {
     if is_stone_button(state) { 20 } else { 30 }
 }
 
@@ -603,7 +608,7 @@ fn is_stone_button(state: BlockState) -> bool {
 
 /// A button's click as it is pressed or let go, by its block set (`BlockSetType`'s
 /// `buttonClickOn` and `buttonClickOff`).
-fn button_sound(state: BlockState, on: bool) -> i32 {
+pub(super) fn button_sound(state: BlockState, on: bool) -> i32 {
     use sounds as s;
     let name = state.block().map_or("", |block| block.name);
     let (on_sound, off_sound) = if is_stone_button(state) {
