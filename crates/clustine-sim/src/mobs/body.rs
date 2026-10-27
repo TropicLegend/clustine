@@ -472,6 +472,17 @@ pub(crate) enum Removed {
     Killed,
 }
 
+/// The effects a mob holds, each with the amplifier of its level in force, as the
+/// region's hooks of a removal and a hurt read them (`getActiveEffects()`, here in the
+/// order of the effects' ids).
+pub(crate) fn held_effects(effects: &effects::Effects) -> Vec<(effects::Effect, u8)> {
+    effects
+        .active
+        .iter()
+        .map(|active| (active.effect, active.top().amplifier))
+        .collect()
+}
+
 /// The moment of what the tick does now ([`self`]'s documentation).
 pub(crate) fn moment(tick: &MobTick<'_>) -> u32 {
     tick.lived.saturating_add(u32::from(tick.counted))

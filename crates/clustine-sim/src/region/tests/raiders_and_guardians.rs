@@ -12,7 +12,7 @@ use crate::mobs::Mob;
 use crate::mobs::body::attribute;
 use crate::mobs::body::attributes::supplied;
 use crate::mobs::body::hurt::DamageType;
-use crate::mobs::types::{guardians, illagers};
+use crate::mobs::types::{guardians, illagers, witch};
 
 const GUARDIAN_KEY: EntityId = EntityId(40);
 const COW_KEY: EntityId = EntityId(42);
@@ -240,6 +240,12 @@ fn a_witch_from_its_egg_is_on_no_lead_and_its_raider_state_is_fresh() {
             &mut output,
         )
         .expect("made");
-    let own = illagers::state_of(&mob(&region, key));
-    assert!(own.can_join_raid && !own.patrol_leader && own.drinking.is_none());
+    let witch = mob(&region, key);
+    let own = illagers::state_of(&witch);
+    assert!(own.can_join_raid && !own.patrol_leader);
+    assert!(
+        illagers::own_of::<witch::WitchState>(&witch)
+            .drinking
+            .is_none()
+    );
 }

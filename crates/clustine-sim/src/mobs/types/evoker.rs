@@ -9,6 +9,7 @@
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::BlockPos;
+use serde::{Deserialize, Serialize};
 
 use super::illagers;
 use super::pillager::AVOID_CREAKING;
@@ -29,6 +30,13 @@ pub(crate) const SPELL_INDEX: u8 = 17;
 
 /// The evoker.
 pub(crate) struct Evoker;
+
+/// The evoker's own part of its raider state (`crate::mobs::types::illagers`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct EvokerState {
+    /// `spellCastingTickCount` (`SpellTicks`).
+    pub(crate) spell_ticks: i32,
+}
 
 impl MobType for Evoker {
     /// `Evoker.registerGoals`, after `Raider`'s.
@@ -82,7 +90,7 @@ impl MobType for Evoker {
 
     /// `SpellcasterIllager.customServerAiStep`: a spell's ticks counted down.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
-        illagers::update(&mut tick.mob, |own| {
+        illagers::update_own(&mut tick.mob, |own: &mut EvokerState| {
             if own.spell_ticks > 0 {
                 own.spell_ticks -= 1;
             }
@@ -103,7 +111,8 @@ impl MobType for Evoker {
 
     /// `readAdditionalSaveData`: the raider's, and `SpellTicks`.
     fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
-        illagers::from_template(mob, tag, |own| {
+        illagers::from_template(mob, tag);
+        illagers::update_own(mob, |own: &mut EvokerState| {
             own.spell_ticks = super::template::int(tag, "SpellTicks").unwrap_or(0);
         });
     }

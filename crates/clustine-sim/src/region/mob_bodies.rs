@@ -25,7 +25,7 @@ use super::vibrations::{Context, Source, Vibration};
 use crate::api::{AttributeShown, RegionEvent, TickOutput, Tracked};
 use crate::mobs::Mob;
 use crate::mobs::body::hurt::{self, Causer, DamageSource, DamageType, Struck};
-use crate::mobs::body::{Attributes, Death, Equipment, Event, Home};
+use crate::mobs::body::{Attributes, Death, Equipment, Event, Home, Removed, held_effects};
 use crate::mobs::part;
 use crate::mobs::tick::{Local, MobOutput};
 use crate::mobs::types::{self, Interaction};
@@ -184,6 +184,15 @@ impl Region {
             && let Some((chunk, record)) = self.find_entity(key)
         {
             let hops = record.hops;
+            if out.removed == Some(Removed::Killed) {
+                // `triggerOnDeathMobEffects`, before it leaves the world. Its effects at
+                // the tick's start are those it holds at its removal: `tickDeath`
+                // removes it before `tickEffects`, and a dying mob is hurt by nothing.
+                let held = Mob::decode(&before.data)
+                    .map(|mob| held_effects(&mob.body.effects))
+                    .unwrap_or_default();
+                self.effects_at_removal(key, at, &held, output);
+            }
             self.unride_removed(key, true, output);
             self.remove_entity(key, hops, chunk, output);
         }
@@ -650,10 +659,17 @@ impl Region {
         amount: f32,
         output: &mut TickOutput,
     ) -> bool {
-        self.struck_between_ticks(key, output, |struck| {
-            hurt::hurt_server(struck, source, amount)
-        })
-        .unwrap_or(false)
+        let hurt = self.struck_between_ticks(key, output, |struck| {
+            let took = hurt::hurt_server(struck, source, amount);
+            // What it holds for `onMobHurt`, which the end of `hurtServer` runs after a
+            // hurt that took.
+            took.then(|| (struck.position, held_effects(&struck.mob.body.effects)))
+        });
+        let Some(Some((at, held))) = hurt else {
+            return false;
+        };
+        self.effects_at_hurt(key, at, &held, output);
+        true
     }
 
     /// `LivingEntity.knockback(strength, x, z)` of the region's mob `key` between its

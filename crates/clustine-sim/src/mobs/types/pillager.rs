@@ -8,6 +8,7 @@
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
+use serde::{Deserialize, Serialize};
 
 use super::illagers;
 use super::{MobType, Spawning};
@@ -39,6 +40,13 @@ pub(crate) const AVOID_CREAKING: AvoidEntityGoal = AvoidEntityGoal {
 
 /// The pillager.
 pub(crate) struct Pillager;
+
+/// The pillager's own part of its raider state (`crate::mobs::types::illagers`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct PillagerState {
+    /// `IS_CHARGING_CROSSBOW`, synced at 17: set only by its attack (N9).
+    pub(crate) charging: bool,
+}
 
 impl MobType for Pillager {
     /// `Pillager.registerGoals`, after `Raider`'s.
@@ -101,7 +109,7 @@ impl MobType for Pillager {
     }
 
     fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
-        illagers::from_template(mob, tag, |_| {});
+        illagers::from_template(mob, tag);
     }
 
     fn ambient_sound(&self, _: &Mob) -> Option<i32> {
@@ -117,7 +125,7 @@ impl MobType for Pillager {
     }
 
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
-        let charging = illagers::state_of(mob).charging;
+        let charging = illagers::own_of::<PillagerState>(mob).charging;
         let mut values = illagers::shown(mob);
         values.push((CHARGING_INDEX, DataShown::Boolean(charging), !charging));
         values

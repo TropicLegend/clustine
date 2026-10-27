@@ -13,7 +13,9 @@
 use clustine_data::{attributes as ids, items, sounds};
 use clustine_world::ItemStack;
 
-use super::illagers::{self, Potion};
+use serde::{Deserialize, Serialize};
+
+use super::illagers;
 use super::{MobType, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
@@ -45,6 +47,26 @@ pub(crate) const PARTICLES_EVENT: u8 = 15;
 
 /// The witch.
 pub(crate) struct Witch;
+
+/// The potions a witch drinks (`Potions`), by what each gives: water breathing,
+/// fire resistance and swiftness for 3600 ticks, healing for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Potion {
+    WaterBreathing,
+    FireResistance,
+    Healing,
+    Swiftness,
+}
+
+/// The witch's own part of its raider state (`crate::mobs::types::illagers`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WitchState {
+    /// The witch's potion while it drinks (`DATA_USING_ITEM`, synced at 17): what the
+    /// potion in its hand would carry, which the stack cannot.
+    pub(crate) drinking: Option<Potion>,
+    /// The witch's `usingTime`: the drinking's ticks left.
+    pub(crate) using_time: i32,
+}
 
 impl Potion {
     /// `Potions.*`'s effects: each effect with its amplifier and duration.
@@ -129,7 +151,7 @@ fn burnt(tick: &MobTick<'_>) -> bool {
 
 /// The start of a drink: the potion in its main hand, its use's ticks, the synced flag,
 /// `witch_drink` at a pitch of its own draw, and the drinking's slowness on.
-fn start_drinking(tick: &mut MobTick<'_>, own: &mut illagers::RaiderState, potion: Potion) {
+fn start_drinking(tick: &mut MobTick<'_>, own: &mut WitchState, potion: Potion) {
     tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
         Some(ItemStack::new(items::POTION, 1));
     own.using_time = POTION_USE_TICKS;
@@ -187,7 +209,7 @@ impl MobType for Witch {
         if tick.mob.body.vitals.dying() {
             return;
         }
-        let mut own = illagers::state_of(&tick.mob);
+        let mut own = illagers::own_of::<WitchState>(&tick.mob);
         if let Some(potion) = own.drinking {
             let left = own.using_time;
             own.using_time -= 1;
@@ -203,7 +225,7 @@ impl MobType for Witch {
         if tick.draws.next_float() < 7.5e-4 {
             tick.out.events.push(Event::Entity(PARTICLES_EVENT));
         }
-        illagers::update(&mut tick.mob, |state| *state = own);
+        illagers::update_own(&mut tick.mob, |state: &mut WitchState| *state = own);
     }
 
     /// `Witch.getDamageAfterMagicAbsorb`: what `#witch_resistant_to` hurts it is cut to
@@ -229,7 +251,7 @@ impl MobType for Witch {
     }
 
     fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
-        illagers::from_template(mob, tag, |_| {});
+        illagers::from_template(mob, tag);
     }
 
     fn ambient_sound(&self, _: &Mob) -> Option<i32> {
@@ -245,7 +267,7 @@ impl MobType for Witch {
     }
 
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
-        let drinking = illagers::state_of(mob).drinking.is_some();
+        let drinking = illagers::own_of::<WitchState>(mob).drinking.is_some();
         let mut values = illagers::shown(mob);
         values.push((USING_ITEM_INDEX, DataShown::Boolean(drinking), !drinking));
         values

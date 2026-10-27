@@ -45,10 +45,13 @@ pub(crate) mod cod;
 pub(crate) mod copper_golem;
 pub(crate) mod cow;
 pub(crate) mod creeper;
+pub(crate) mod cube_mob;
 pub(crate) mod dolphin;
 pub(crate) mod donkey;
 pub(crate) mod drowned;
 pub(crate) mod elder_guardian;
+pub(crate) mod enderman;
+pub(crate) mod endermite;
 pub(crate) mod equine;
 pub(crate) mod evoker;
 pub(crate) mod fish;
@@ -93,6 +96,7 @@ pub(crate) mod ocelot;
 pub(crate) mod panda;
 pub(crate) mod parched;
 pub(crate) mod parrot;
+pub(crate) mod phantom;
 pub(crate) mod pig;
 pub(crate) mod pillager;
 pub(crate) mod polar_bear;
@@ -100,9 +104,11 @@ pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
+pub(crate) mod silverfish;
 pub(crate) mod skeleton;
 pub(crate) mod skeleton_horse;
 pub(crate) mod skeletons;
+pub(crate) mod slime;
 pub(crate) mod sniffer;
 pub(crate) mod snow_golem;
 pub(crate) mod spider;
@@ -119,6 +125,7 @@ mod tests;
 pub(crate) mod trader_llama;
 pub(crate) mod tropical_fish;
 pub(crate) mod turtle;
+pub(crate) mod vex;
 pub(crate) mod villager;
 #[cfg(test)]
 mod villager_tests;
@@ -1411,6 +1418,12 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::WANDERING_TRADER => &wandering_trader::WanderingTrader,
         entity_types::IRON_GOLEM => &iron_golem::IronGolem,
         entity_types::SNOW_GOLEM => &snow_golem::SnowGolem,
+        entity_types::VEX if vex::BUILT => &vex::Vex,
+        entity_types::SLIME if slime::BUILT => &slime::Slime,
+        entity_types::ENDERMAN if enderman::BUILT => &enderman::Enderman,
+        entity_types::PHANTOM if phantom::BUILT => &phantom::Phantom,
+        entity_types::ENDERMITE if endermite::BUILT => &endermite::Endermite,
+        entity_types::SILVERFISH if silverfish::BUILT => &silverfish::Silverfish,
         _ => return None,
     };
     Some(found)

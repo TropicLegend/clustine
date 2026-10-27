@@ -9,6 +9,7 @@
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
+use serde::{Deserialize, Serialize};
 
 use super::illagers;
 use super::pillager::AVOID_CREAKING;
@@ -27,6 +28,13 @@ use crate::shown::DataShown;
 
 /// The vindicator.
 pub(crate) struct Vindicator;
+
+/// The vindicator's own part of its raider state (`crate::mobs::types::illagers`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct VindicatorState {
+    /// `isJohnny` (`Johnny`).
+    pub(crate) johnny: bool,
+}
 
 impl MobType for Vindicator {
     /// `Vindicator.registerGoals`, after `Raider`'s.
@@ -84,7 +92,8 @@ impl MobType for Vindicator {
 
     /// `readAdditionalSaveData`: the raider's, and `Johnny`.
     fn from_template(&self, mob: &mut Mob, tag: &[u8]) {
-        illagers::from_template(mob, tag, |own| {
+        illagers::from_template(mob, tag);
+        illagers::update_own(mob, |own: &mut VindicatorState| {
             own.johnny = super::template::boolean(tag, "Johnny").unwrap_or(false);
         });
     }

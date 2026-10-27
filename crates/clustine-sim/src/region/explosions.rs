@@ -21,8 +21,8 @@
 //! explosion's packet to every player within 64 blocks, of whatever region.
 //!
 //! Named differences: the game event `explode` waits for step N6f; ores give no
-//! experience and infested blocks no silverfish (`spawnAfterBreak`), as when a rule
-//! breaks them (`drops.rs`); the block entity a loot table copies from is not read
+//! experience, as when a rule breaks them (`drops.rs`), and an infested block's
+//! silverfish (`spawnAfterBreak`) is `infested.rs`'; the block entity a loot table copies from is not read
 //! (`clustine_blocks::loot`); a shulker box spills what it holds as a chest does
 //! (`docs/groundwork/n6-plan.md`, section 6 item 5); fire (`createFire`) is never asked
 //! for, since nothing that explodes in N6 sets it; the entities are hurt in the order of
@@ -760,6 +760,8 @@ impl Region {
             let tnt = is_class(state, BlockClass::TntBlock);
             // `dropFromExplosion`: every block but TNT, which is primed instead.
             if !tnt {
+                // `spawnAfterBreak(level, pos, EMPTY, false)`, before the loot.
+                self.infested_broken(pos, state, output);
                 let stacks = block_drops_as(state, pos, broken, &mut Loot(random), &mut |at| {
                     self.block(at).unwrap_or(blocks::AIR)
                 });
@@ -852,6 +854,8 @@ impl Region {
         let mut random = Random::of_block(self.config.seed, at, self.tick, FAR_BLAST);
         let tnt = is_class(state, BlockClass::TntBlock);
         if !tnt {
+            // `spawnAfterBreak(level, pos, EMPTY, false)`, before the loot.
+            self.infested_broken(at, state, output);
             let broken = Broken {
                 this_entity: blast.direct,
                 explosion_radius: blast.decay.then_some(blast.radius.0),

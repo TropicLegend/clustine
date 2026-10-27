@@ -8,10 +8,13 @@ use std::collections::VecDeque;
 
 use clustine_data::sounds;
 use clustine_data::{BlockState, EntityTypeInfo, attributes as ids, blocks, entity_types, items};
-use clustine_world::{BlockPos, ChunkPos, EntityId, ItemStack};
+use clustine_world::{BlockPos, ChunkPos, EntityId, ItemStack, TypeState};
 
-use super::illagers::{self, ArmPose, Potion, RaiderState};
+use super::evoker::EvokerState;
+use super::illagers::{self, ArmPose, RaiderState};
 use super::template::build::{self as nbt};
+use super::vindicator::VindicatorState;
+use super::witch::{Potion, WitchState};
 use super::{SpawnReason, Spawning, of};
 use crate::living::{Kind, Living, MAX_AIR, slots};
 use crate::mobs::Mob;
@@ -229,14 +232,10 @@ fn each_raider_shows_its_celebration_at_16_and_its_own_at_17() {
         [celebrating.clone(), (17, DataShown::Byte(0), true)]
     );
     let mut drinking = Mob::fresh();
-    illagers::put_state(
-        &mut drinking,
-        &RaiderState {
-            drinking: Some(Potion::Healing),
-            using_time: 12,
-            ..RaiderState::default()
-        },
-    );
+    illagers::update_own(&mut drinking, |own: &mut WitchState| {
+        own.drinking = Some(Potion::Healing);
+        own.using_time = 12;
+    });
     assert_eq!(
         of(WITCH).shown(&drinking)[1],
         (17, DataShown::Boolean(true), false)
@@ -292,15 +291,13 @@ fn a_template_s_raider_keeps_its_patrol_its_wave_and_a_vindicator_s_johnny() {
     let mut vindicator = Mob::fresh();
     of(VINDICATOR).from_template(&mut vindicator, &tag);
     let own = illagers::state_of(&vindicator);
-    assert!(own.patrol_leader && own.patrolling && own.can_join_raid && own.johnny);
+    assert!(own.patrol_leader && own.patrolling && own.can_join_raid);
+    assert!(illagers::own_of::<VindicatorState>(&vindicator).johnny);
     assert_eq!(own.wave, 3);
     let mut evoker = Mob::fresh();
     of(EVOKER).from_template(&mut evoker, &tag);
-    assert_eq!(illagers::state_of(&evoker).spell_ticks, 7);
-    assert!(
-        !illagers::state_of(&evoker).johnny,
-        "only a vindicator is Johnny"
-    );
+    assert_eq!(illagers::own_of::<EvokerState>(&evoker).spell_ticks, 7);
+    assert!(illagers::state_of(&evoker).patrol_leader);
 }
 
 #[test]
@@ -502,7 +499,7 @@ fn a_hurt_witch_draws_for_each_need_in_turn_and_takes_up_healing_with_its_drink_
     let pitch = 0.8 + replay.next_float() * 0.4;
     let particles = replay.next_float() < 7.5e-4;
     assert_eq!(stream, replay, "five draws in all");
-    let own = illagers::state_of(&mob);
+    let own = illagers::own_of::<WitchState>(&mob);
     assert_eq!(own.drinking, Some(Potion::Healing));
     assert_eq!(own.using_time, 32);
     assert_eq!(held(&mob, slots::MAIN_HAND), Some(items::POTION));
@@ -534,6 +531,11 @@ fn a_witch_in_no_need_draws_four_floats_and_the_particles_and_shows_them_under_7
     }
     assert_eq!(stream, replay);
     assert_eq!(illagers::state_of(&mob), RaiderState::default());
+    assert_eq!(illagers::own_of::<WitchState>(&mob), WitchState::default());
+    assert!(
+        mob.state.bytes.is_empty(),
+        "both parts at their defaults keep nothing"
+    );
     assert_eq!(out.events, [Event::Entity(15)]);
 }
 
@@ -542,7 +544,7 @@ fn a_witch_under_water_takes_up_water_breathing_and_a_burning_one_fire_resistanc
     let mut stream = stream_where(|r| r.next_float() < 0.15);
     let (mob, _) = ai_step(witch(max_health()), blocks::WATER, 0, &mut stream);
     assert_eq!(
-        illagers::state_of(&mob).drinking,
+        illagers::own_of::<WitchState>(&mob).drinking,
         Some(Potion::WaterBreathing)
     );
 
@@ -553,7 +555,7 @@ fn a_witch_under_water_takes_up_water_breathing_and_a_burning_one_fire_resistanc
     });
     let (mob, _) = ai_step(witch(max_health()), blocks::AIR, 100, &mut stream);
     assert_eq!(
-        illagers::state_of(&mob).drinking,
+        illagers::own_of::<WitchState>(&mob).drinking,
         Some(Potion::FireResistance)
     );
 }
@@ -561,20 +563,16 @@ fn a_witch_under_water_takes_up_water_breathing_and_a_burning_one_fire_resistanc
 #[test]
 fn a_drinking_witch_counts_down_and_draws_only_for_its_particles() {
     let mut mob = witch(10.0);
-    illagers::put_state(
-        &mut mob,
-        &RaiderState {
-            drinking: Some(Potion::Healing),
-            using_time: 5,
-            ..RaiderState::default()
-        },
-    );
+    illagers::update_own(&mut mob, |own: &mut WitchState| {
+        own.drinking = Some(Potion::Healing);
+        own.using_time = 5;
+    });
     let mut stream = Random::of_entity(9, KEY, 0);
     let mut replay = stream.clone();
     let (mob, _) = ai_step(mob, blocks::AIR, 0, &mut stream);
     replay.next_float();
     assert_eq!(stream, replay, "the particles' draw only");
-    assert_eq!(illagers::state_of(&mob).using_time, 4);
+    assert_eq!(illagers::own_of::<WitchState>(&mob).using_time, 4);
 }
 
 /// A witch ticking whole in a world, its body carried from one tick to the next.
@@ -639,14 +637,10 @@ fn drinking(health: f32, potion: Potion, left: i32) -> Mob {
     let mut mob = witch(health);
     mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
         Some(ItemStack::new(items::POTION, 1));
-    illagers::put_state(
-        &mut mob,
-        &RaiderState {
-            drinking: Some(potion),
-            using_time: left,
-            ..RaiderState::default()
-        },
-    );
+    illagers::update_own(&mut mob, |own: &mut WitchState| {
+        own.drinking = Some(potion);
+        own.using_time = left;
+    });
     mob
 }
 
@@ -656,10 +650,10 @@ fn a_hurt_witch_is_healed_the_tick_after_its_drink_of_healing_ends() {
     // `usingTime--` is compared before it is lowered: 2, 1, then 0 ends it.
     run.tick();
     run.tick();
-    assert!(illagers::state_of(&run.mob).drinking.is_some());
+    assert!(illagers::own_of::<WitchState>(&run.mob).drinking.is_some());
     run.tick();
     assert_eq!(
-        illagers::state_of(&run.mob).drinking,
+        illagers::own_of::<WitchState>(&run.mob).drinking,
         None,
         "the drink ended"
     );
@@ -735,4 +729,101 @@ fn magic_hurts_a_witch_less_and_other_hurts_as_much() {
     let fall = DamageSource::of(DamageType::FALL);
     assert_eq!(witch.magic_absorbed(&mob, &fall, 4.0), 4.0);
     assert_eq!(of(PILLAGER).magic_absorbed(&mob, &magic, 10.0), 10.0);
+}
+
+#[test]
+fn a_witch_s_drinking_and_a_raider_s_patrol_leader_survive_a_round_trip_together() {
+    let mut mob = Mob::fresh();
+    illagers::update(&mut mob, |own| own.patrol_leader = true);
+    illagers::update_own(&mut mob, |own: &mut WitchState| {
+        own.drinking = Some(Potion::FireResistance);
+        own.using_time = 9;
+    });
+    // A change of one part keeps the other.
+    illagers::update(&mut mob, |own| own.wave = 2);
+    let mut kept = Mob::fresh();
+    kept.state = postcard::from_bytes(&postcard::to_allocvec(&mob.state).expect("encoded"))
+        .expect("decoded");
+    assert_eq!(kept.state.version, 2);
+    let shared = illagers::state_of(&kept);
+    assert!(shared.patrol_leader);
+    assert_eq!(shared.wave, 2);
+    assert_eq!(
+        illagers::own_of::<WitchState>(&kept),
+        WitchState {
+            drinking: Some(Potion::FireResistance),
+            using_time: 9,
+        }
+    );
+
+    // The own part back at its default, then the shared part: nothing is kept.
+    illagers::update_own(&mut kept, |own: &mut WitchState| {
+        *own = WitchState::default()
+    });
+    assert!(
+        illagers::state_of(&kept).patrol_leader,
+        "the shared part kept"
+    );
+    assert_ne!(kept.state, TypeState::default());
+    illagers::update(&mut kept, |own| *own = RaiderState::default());
+    assert_eq!(kept.state, TypeState::default());
+}
+
+#[test]
+fn a_version_1_record_reads_its_shared_fields_and_loses_the_type_s_own() {
+    /// The raider's state as version 1 kept it: every type's fields in one struct.
+    #[derive(serde::Serialize)]
+    struct Before {
+        patrol_target: Option<BlockPos>,
+        patrol_leader: bool,
+        patrolling: bool,
+        wave: i32,
+        can_join_raid: bool,
+        celebrating: bool,
+        drinking: Option<Potion>,
+        using_time: i32,
+        charging: bool,
+        johnny: bool,
+        spell_ticks: i32,
+    }
+    let before = Before {
+        patrol_target: Some(BlockPos::new(3, 64, -7)),
+        patrol_leader: true,
+        patrolling: true,
+        wave: 4,
+        can_join_raid: true,
+        celebrating: false,
+        drinking: Some(Potion::Healing),
+        using_time: 20,
+        charging: true,
+        johnny: true,
+        spell_ticks: 11,
+    };
+    let mut mob = Mob::fresh();
+    mob.state = TypeState {
+        version: 1,
+        bytes: postcard::to_allocvec(&before).expect("encoded"),
+    };
+    assert_eq!(
+        illagers::state_of(&mob),
+        RaiderState {
+            patrol_target: Some(BlockPos::new(3, 64, -7)),
+            patrol_leader: true,
+            patrolling: true,
+            wave: 4,
+            can_join_raid: true,
+            celebrating: false,
+        }
+    );
+    assert_eq!(illagers::own_of::<WitchState>(&mob), WitchState::default());
+    assert!(!illagers::own_of::<VindicatorState>(&mob).johnny);
+    // Written again, it is a version 2 record of the shared part alone.
+    illagers::update(&mut mob, |own| own.wave = 5);
+    assert_eq!(mob.state.version, 2);
+    let shared = illagers::state_of(&mob);
+    assert!(shared.patrolling && shared.wave == 5);
+    assert_eq!(
+        illagers::own_of::<EvokerState>(&mob),
+        EvokerState::default()
+    );
 }

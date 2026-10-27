@@ -13,8 +13,8 @@
 //! A drop needs its chunk loaded, not ticking: an item laid in a chunk that does not
 //! tick lies there until it does. Into a full chunk ([`MAX_CHUNK_ENTITIES`]), or where
 //! the region has no key left, a drop is lost, as a throw would not happen. What the
-//! game does beside the loot is left out and named: the experience of ores and the
-//! silverfish of infested blocks (`spawnAfterBreak`), the block entity a table would
+//! game does beside the loot is left out and named: the experience of ores (an infested
+//! block's silverfish, `spawnAfterBreak`, is `infested.rs`'), the block entity a table would
 //! copy from (`clustine_blocks::loot` names what it gives instead), and what a
 //! container broken by a rule held, which the game spills beside its loot
 //! (`Containers.dropContents`).
@@ -87,6 +87,8 @@ impl Region {
             self.pop_resource(pos, stack, &mut random, output);
         }
         self.block_streams.insert(pos, random);
+        // `state.spawnAfterBreak(level, pos, EMPTY, true)`, after the drops.
+        self.infested_broken(pos, state, output);
     }
 
     /// `Block.popResource(level, pos, stack)` by an entity's rule (an armour stand's

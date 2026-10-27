@@ -42,9 +42,12 @@ pub(crate) mod navigation;
 pub(crate) mod pathfinder;
 #[allow(dead_code, reason = "the positions the goals the types of N7e on draw")]
 pub(crate) mod random_pos;
+pub(crate) mod ranged_weapons;
 pub(crate) mod selector;
 #[allow(dead_code, reason = "what the goals the types of N7e on sense")]
 pub(crate) mod sensing;
+pub(crate) mod spear;
+pub(crate) mod spells;
 pub(crate) mod targets;
 
 use clustine_data::{ATTRIBUTES, DEFAULT_ATTRIBUTES, PathType};

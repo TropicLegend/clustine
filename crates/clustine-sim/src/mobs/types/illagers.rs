@@ -15,8 +15,11 @@
 
 use clustine_data::{entity_types, items};
 use clustine_world::{BlockPos, ItemStack, TypeState};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use super::evoker::EvokerState;
+use super::pillager::PillagerState;
 use super::template;
 use super::{SpawnReason, Spawning};
 use crate::living::slots;
@@ -27,25 +30,23 @@ use crate::mobs::types::tamable::Idle;
 use crate::region::Random;
 use crate::shown::DataShown;
 
-/// The version of a raider's type state.
-const VERSION: u8 = 1;
+/// The version of a raider's type state: 2 since the shared part and the type's own
+/// were split (N9f-3). A version 1 record, which held every type's fields in one
+/// struct, the shared ones first, is read into the shared part; its type's own fields
+/// (a witch's drinking, a pillager's charging, a vindicator's `Johnny`, an evoker's
+/// spell's ticks) are lost, each back at its default.
+const VERSION: u8 = 2;
+
+/// The version before the split.
+const VERSION_SHARED_ONLY: u8 = 1;
 
 /// The synced data's index of `Raider.IS_CELEBRATING`.
 pub(crate) const CELEBRATING_INDEX: u8 = 16;
 
-/// The potions a witch drinks (`Potions`), by what each gives: water breathing,
-/// fire resistance and swiftness for 3600 ticks, healing for one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Potion {
-    WaterBreathing,
-    FireResistance,
-    Healing,
-    Swiftness,
-}
-
-/// What a raider keeps: `PatrollingMonster`'s and `Raider`'s saved fields and its
-/// celebration, then each type's own (the witch's drinking, the pillager's charging,
-/// the vindicator's name, the evoker's spell), left at their defaults by the others.
+/// What every raider keeps: `PatrollingMonster`'s and `Raider`'s saved fields and its
+/// celebration. Each type's own is a struct in its own module (`WitchState`,
+/// `PillagerState`, `VindicatorState`, `EvokerState`), kept after this in the same type
+/// state, so that the parts that fill each type never touch this file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RaiderState {
     /// `patrolTarget` (`patrol_target`).
@@ -60,46 +61,99 @@ pub(crate) struct RaiderState {
     pub(crate) can_join_raid: bool,
     /// `IS_CELEBRATING`, synced: set only by a raid's celebration (N10).
     pub(crate) celebrating: bool,
-    /// The witch's potion while it drinks (`DATA_USING_ITEM`, synced at 17): what the
-    /// potion in its hand would carry, which the stack cannot.
-    pub(crate) drinking: Option<Potion>,
-    /// The witch's `usingTime`: the drinking's ticks left.
-    pub(crate) using_time: i32,
-    /// The pillager's `IS_CHARGING_CROSSBOW`, synced at 17: set only by its attack (N9).
-    pub(crate) charging: bool,
-    /// The vindicator's `isJohnny` (`Johnny`).
-    pub(crate) johnny: bool,
-    /// The evoker's `spellCastingTickCount` (`SpellTicks`).
-    pub(crate) spell_ticks: i32,
 }
 
-/// A raider's state from its type state; a record of nothing, or one this build cannot
-/// read, as a fresh raider's.
-pub(crate) fn state_of(mob: &Mob) -> RaiderState {
-    if mob.state.bytes.is_empty() || mob.state.version != VERSION {
-        return RaiderState::default();
+/// What a type's own part of a raider's state must be: kept beside the shared part,
+/// compared to know whether it changed, and left out of the record at its default.
+pub(crate) trait OwnState:
+    Default + Clone + PartialEq + Serialize + DeserializeOwned
+{
+}
+
+impl<T: Default + Clone + PartialEq + Serialize + DeserializeOwned> OwnState for T {}
+
+/// The two parts of a raider's type state as they are kept: the shared part decoded,
+/// the type's own still in its bytes (none at its default), so that a change of one
+/// part need not know the other's type.
+fn parts(mob: &Mob) -> (RaiderState, &[u8]) {
+    if mob.state.bytes.is_empty() {
+        return (RaiderState::default(), &[]);
     }
-    postcard::from_bytes(&mob.state.bytes).unwrap_or_default()
+    match mob.state.version {
+        VERSION => postcard::take_from_bytes::<RaiderState>(&mob.state.bytes).unwrap_or_default(),
+        // The shared fields lead a version 1 record; what follows them is in a shape
+        // no longer read.
+        VERSION_SHARED_ONLY => (
+            postcard::take_from_bytes::<RaiderState>(&mob.state.bytes)
+                .map(|(shared, _)| shared)
+                .unwrap_or_default(),
+            &[],
+        ),
+        _ => (RaiderState::default(), &[]),
+    }
 }
 
-pub(crate) fn put_state(mob: &mut Mob, own: &RaiderState) {
-    mob.state = if *own == RaiderState::default() {
+/// Writes the two parts back: postcard's encoding of the shared part followed by the
+/// own part's bytes, the record empty where both are at their defaults.
+fn put_parts(mob: &mut Mob, shared: &RaiderState, own: &[u8]) {
+    mob.state = if *shared == RaiderState::default() && own.is_empty() {
         TypeState::default()
     } else {
+        let mut bytes = postcard::to_allocvec(shared).expect("a type state is encoded into memory");
+        bytes.extend_from_slice(own);
         TypeState {
             version: VERSION,
-            bytes: postcard::to_allocvec(own).expect("a type state is encoded into memory"),
+            bytes,
         }
     };
 }
 
-/// Changes a raider's state by `change`, writing it back only where it changed.
+/// The bytes of a type's own part: none at its default.
+fn own_bytes<T: OwnState>(own: &T) -> Vec<u8> {
+    if *own == T::default() {
+        Vec::new()
+    } else {
+        postcard::to_allocvec(own).expect("a type state is encoded into memory")
+    }
+}
+
+/// A raider's shared state from its type state; a record of nothing, or one this build
+/// cannot read, as a fresh raider's.
+pub(crate) fn state_of(mob: &Mob) -> RaiderState {
+    parts(mob).0
+}
+
+/// A raider's own part, of the type `T` its type keeps; nothing, or what this build
+/// cannot read, as a fresh one's.
+pub(crate) fn own_of<T: OwnState>(mob: &Mob) -> T {
+    let (_, own) = parts(mob);
+    if own.is_empty() {
+        return T::default();
+    }
+    postcard::from_bytes(own).unwrap_or_default()
+}
+
+/// Changes a raider's shared state by `change`, keeping its own part as it is and
+/// writing back only where it changed.
 pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut RaiderState)) {
-    let before = state_of(mob);
+    let (before, own) = parts(mob);
+    let mut shared = before.clone();
+    change(&mut shared);
+    if shared != before {
+        let own = own.to_vec();
+        put_parts(mob, &shared, &own);
+    }
+}
+
+/// Changes a raider's own part, of the type `T`, by `change`, keeping its shared part
+/// as it is and writing back only where it changed.
+pub(crate) fn update_own<T: OwnState>(mob: &mut Mob, change: impl FnOnce(&mut T)) {
+    let before = own_of::<T>(mob);
     let mut own = before.clone();
     change(&mut own);
     if own != before {
-        put_state(mob, &own);
+        let shared = state_of(mob);
+        put_parts(mob, &shared, &own_bytes(&own));
     }
 }
 
@@ -111,12 +165,18 @@ pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut RaiderState)) {
 /// patrols (no patrol is made before N9).
 pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader: bool) {
     let witch = i32::from(kind) == entity_types::WITCH;
-    let mut own = state_of(spawn.mob);
-    own.can_join_raid = !(witch && spawn.reason == SpawnReason::Natural);
-    if spawn.reason != SpawnReason::Structure && spawn.level.next_float() < 0.06 && can_be_leader {
-        own.patrol_leader = true;
-    }
-    if own.patrol_leader {
+    let mut leads = false;
+    update(spawn.mob, |own| {
+        own.can_join_raid = !(witch && spawn.reason == SpawnReason::Natural);
+        if spawn.reason != SpawnReason::Structure
+            && spawn.level.next_float() < 0.06
+            && can_be_leader
+        {
+            own.patrol_leader = true;
+        }
+        leads = own.patrol_leader;
+    });
+    if leads {
         let body = &mut spawn.mob.body;
         body.equipment.slots[usize::from(slots::HEAD)] =
             Some(ItemStack::new(items::WHITE_BANNER, 1));
@@ -124,7 +184,6 @@ pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader:
         chances[usize::from(slots::HEAD)] = 2.0;
         body.equipment.drop_chances = Some(chances);
     }
-    put_state(spawn.mob, &own);
 }
 
 /// The goals `PatrollingMonster.registerGoals` and `Raider.registerGoals` add before
@@ -148,14 +207,13 @@ pub(crate) fn remove_when_far_away(mob: &Mob, distance: f64) -> bool {
 
 /// What the raider layers read of a structure template's tag
 /// (`PatrollingMonster.readAdditionalSaveData`, `Raider.readAdditionalSaveData`) and,
-/// through `read`, what the type's own reads.
-pub(crate) fn from_template(mob: &mut Mob, tag: &[u8], read: impl FnOnce(&mut RaiderState)) {
+/// what the type's own reads it reads itself, after, with `update_own`.
+pub(crate) fn from_template(mob: &mut Mob, tag: &[u8]) {
     update(mob, |own| {
         own.patrol_leader = template::boolean(tag, "PatrolLeader").unwrap_or(false);
         own.patrolling = template::boolean(tag, "Patrolling").unwrap_or(false);
         own.wave = template::int(tag, "Wave").unwrap_or(0);
         own.can_join_raid = template::boolean(tag, "CanJoinRaid").unwrap_or(false);
-        read(own);
     });
 }
 
@@ -216,7 +274,7 @@ pub(crate) enum ArmPose {
     )
 )]
 pub(crate) fn arm_pose(kind: u16, mob: &Mob, aggressive: bool) -> ArmPose {
-    let own = state_of(mob);
+    let shared = state_of(mob);
     let holds_crossbow = [slots::MAIN_HAND, slots::OFF_HAND].iter().any(|&slot| {
         mob.body.equipment.slots[usize::from(slot)]
             .as_ref()
@@ -224,7 +282,7 @@ pub(crate) fn arm_pose(kind: u16, mob: &Mob, aggressive: bool) -> ArmPose {
     });
     match i32::from(kind) {
         entity_types::PILLAGER => {
-            if own.charging {
+            if own_of::<PillagerState>(mob).charging {
                 ArmPose::CrossbowCharge
             } else if holds_crossbow {
                 ArmPose::CrossbowHold
@@ -235,8 +293,10 @@ pub(crate) fn arm_pose(kind: u16, mob: &Mob, aggressive: bool) -> ArmPose {
             }
         }
         entity_types::VINDICATOR if aggressive => ArmPose::Attacking,
-        entity_types::EVOKER if own.spell_ticks > 0 => ArmPose::Spellcasting,
-        entity_types::VINDICATOR | entity_types::EVOKER if own.celebrating => ArmPose::Celebrating,
+        entity_types::EVOKER if own_of::<EvokerState>(mob).spell_ticks > 0 => ArmPose::Spellcasting,
+        entity_types::VINDICATOR | entity_types::EVOKER if shared.celebrating => {
+            ArmPose::Celebrating
+        }
         _ => ArmPose::Crossed,
     }
 }

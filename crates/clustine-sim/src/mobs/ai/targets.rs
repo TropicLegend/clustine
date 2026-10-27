@@ -192,7 +192,11 @@ impl Goal for NearestTarget {
                 }
             }
             Gate::Johnny => {
-                if !crate::mobs::types::illagers::state_of(&ai.tick.mob).johnny {
+                if !crate::mobs::types::illagers::own_of::<
+                    crate::mobs::types::vindicator::VindicatorState,
+                >(&ai.tick.mob)
+                .johnny
+                {
                     return false;
                 }
             }
