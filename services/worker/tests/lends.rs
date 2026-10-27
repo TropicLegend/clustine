@@ -33,6 +33,8 @@ const EAST: RegionId = RegionId(1);
 const STEPS: usize = 20_000;
 
 fn settings() -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     RegionSettings {
         starting_inventory: Inventory::default(),
         return_after: 1_000,

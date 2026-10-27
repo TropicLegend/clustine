@@ -43,6 +43,8 @@ const CAPACITY: usize = 8192;
 const LIFETIME: u32 = 6000;
 
 fn settings() -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     let mut hotbar = std::array::from_fn(|_| None);
     hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionSettings {

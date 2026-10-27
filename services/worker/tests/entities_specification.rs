@@ -51,6 +51,8 @@ const EYES: f32 = 1.62;
 const BELOW_THE_EYES: f64 = 0.300_000_011_920_928_96;
 
 fn settings() -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     let mut hotbar = std::array::from_fn(|_| None);
     hotbar[0] = Some(HELD);
     RegionSettings {

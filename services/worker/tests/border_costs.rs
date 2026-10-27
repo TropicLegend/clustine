@@ -64,6 +64,8 @@ static MEASURED_WINDOWS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|
 const UNCACHED_SYNC: Duration = Duration::from_millis(22);
 
 fn settings() -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     RegionSettings {
         starting_inventory: Inventory::default(),
         return_after: 1_000,

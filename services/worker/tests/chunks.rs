@@ -112,6 +112,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 /// Of every chunk the region asks the store whether it is its own.
 fn settings(return_after: u64) -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     RegionSettings {
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
