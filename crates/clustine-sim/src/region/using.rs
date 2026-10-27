@@ -290,13 +290,6 @@ impl Region {
 
     /// `ItemCooldowns.addCooldown` of the group of `stack` for `ticks`, which the
     /// player's client is told (`ServerItemCooldowns.onCooldownStarted`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the ender pearl (S4) and the chorus fruit (S1) put theirs on cooldown"
-        )
-    )]
     pub(crate) fn add_cooldown(
         &mut self,
         id: PlayerId,

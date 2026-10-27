@@ -8,6 +8,8 @@ pub(crate) mod bow;
 pub(crate) mod consumables;
 pub(crate) mod crossbow;
 pub(crate) mod enchantments;
+#[cfg(test)]
+mod items_n9_tests;
 pub(crate) mod rockets;
 pub(crate) mod throwables;
 pub(crate) mod trident;
