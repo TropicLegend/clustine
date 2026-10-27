@@ -377,6 +377,7 @@ impl Scene {
                     ender: EnderChest::default(),
                     effects: Vec::new(),
                     time_since_rest: 0,
+                    raid_omen_position: None,
                 }),
                 holder: None,
             }],

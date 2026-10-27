@@ -5355,6 +5355,7 @@ fn store_by_hand(
             arrivals_taken: Vec::new(),
             clock: Default::default(),
             claims: Vec::new(),
+            raids: Vec::new(),
         });
     }
     handle.flush();
@@ -5414,6 +5415,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        raid_omen_position: None,
     }
 }
 

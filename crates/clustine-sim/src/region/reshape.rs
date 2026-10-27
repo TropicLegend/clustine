@@ -552,6 +552,7 @@ mod tests {
             keys: Default::default(),
             kept: Vec::new(),
             menu: None,
+            raid_omen_position: None,
         }
     }
 
@@ -585,6 +586,7 @@ mod tests {
             riding: stay.riding,
             keys: stay.keys,
             kept: stay.kept,
+            raid_omen_position: None,
         }
     }
 

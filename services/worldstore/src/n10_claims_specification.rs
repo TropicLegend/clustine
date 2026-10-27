@@ -65,6 +65,7 @@ fn commit(handle: &StoreHandle, tick: u64, what: Commit) {
             game_time: what.game_time,
             day: what.game_time,
         },
+        raids: Vec::new(),
     });
 }
 
@@ -563,6 +564,7 @@ fn report(full: bool, chunks: &[(i32, i32, Option<bool>)], let_go: &[(i32, i32)]
             })
             .collect(),
         let_go: let_go.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect(),
+        raids: None,
     }
 }
 
@@ -582,12 +584,20 @@ fn chunks_of(published: &PublishedVillage) -> Vec<ChunkPos> {
 fn nothing_is_published_to_a_region_before_its_full_report() {
     let mut village = Village::default();
     village.report(E, 1, report(true, &[(1, 0, Some(true))], &[]));
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
     // A partial report before any full one is no land.
     village.report(W, 1, report(false, &[(0, 0, None)], &[]));
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
-    let first = village.publication(W, 1, nothing_copied).unwrap();
+    let first = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert!(first.whole);
     assert_eq!(chunks_of(&first), [ChunkPos::new(1, 0)]);
 }
@@ -610,7 +620,9 @@ fn a_region_is_published_the_chunks_within_five_of_its_land_and_no_farther() {
         others.push((x, z, Some(true)));
     }
     village.report(E, 1, report(true, &others, &[]));
-    let published = village.publication(W, 1, nothing_copied).unwrap();
+    let published = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     let mut expected: Vec<ChunkPos> = [(5, 0), (-5, 5), (0, -5), (5, 5), (3, -4)]
         .into_iter()
         .map(|(x, z)| ChunkPos::new(x, z))
@@ -631,7 +643,9 @@ fn a_region_is_never_published_its_own_land_nor_the_chunks_it_copies() {
         report(true, &[(2, 0, Some(true)), (3, 0, Some(false))], &[]),
     );
     let copied = |position: ChunkPos| position == ChunkPos::new(2, 0);
-    let published = village.publication(W, 1, copied).unwrap();
+    let published = village
+        .publication(W, 1, copied, &Default::default())
+        .unwrap();
     assert_eq!(chunks_of(&published), [ChunkPos::new(3, 0)]);
     assert_eq!(
         published.pois[0].1,
@@ -639,7 +653,9 @@ fn a_region_is_never_published_its_own_land_nor_the_chunks_it_copies() {
         "a chunk's records whole, occupied or not"
     );
     // The east is published the west's bed, and not its own.
-    let east = village.publication(E, 1, nothing_copied).unwrap();
+    let east = village
+        .publication(E, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(chunks_of(&east), [ChunkPos::new(0, 0)]);
 }
 
@@ -648,8 +664,16 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
     let mut village = Village::default();
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
     village.report(E, 1, report(true, &[(2, 0, Some(true)), (3, 0, None)], &[]));
-    assert!(village.publication(W, 1, nothing_copied).unwrap().whole);
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    assert!(
+        village
+            .publication(W, 1, nothing_copied, &Default::default())
+            .unwrap()
+            .whole
+    );
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
 
     // The bed freed, a bell placed in chunk 3.
     village.report(
@@ -669,9 +693,12 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
                 ),
             ],
             let_go: Vec::new(),
+            raids: None,
         },
     );
-    let delta = village.publication(W, 1, nothing_copied).unwrap();
+    let delta = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert!(!delta.whole);
     assert_eq!(
         chunks_of(&delta),
@@ -680,7 +707,10 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
     assert!(delta.dropped.is_empty());
     // The same report again changes nothing.
     village.report(E, 1, report(false, &[(2, 0, Some(false))], &[]));
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
 }
 
 #[test]
@@ -692,27 +722,37 @@ fn the_ring_follows_the_land_and_the_copies_as_they_change() {
         1,
         report(true, &[(6, 0, Some(true)), (2, 0, Some(true))], &[]),
     );
-    let first = village.publication(W, 1, nothing_copied).unwrap();
+    let first = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(chunks_of(&first), [ChunkPos::new(2, 0)]);
 
     // The west's land grows to chunk 1: chunk 6 comes within five.
     village.report(W, 1, report(false, &[(1, 0, None)], &[]));
-    let grown = village.publication(W, 1, nothing_copied).unwrap();
+    let grown = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert!(!grown.whole);
     assert_eq!(chunks_of(&grown), [ChunkPos::new(6, 0)]);
 
     // It copies chunk 2 now: dropped from its margin.
     let copied = |position: ChunkPos| position == ChunkPos::new(2, 0);
-    let copying = village.publication(W, 1, copied).unwrap();
+    let copying = village
+        .publication(W, 1, copied, &Default::default())
+        .unwrap();
     assert_eq!(copying.dropped, [ChunkPos::new(2, 0)]);
     assert!(copying.pois.is_empty());
     // And no longer: published again.
-    let again = village.publication(W, 1, nothing_copied).unwrap();
+    let again = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(chunks_of(&again), [ChunkPos::new(2, 0)]);
 
     // It lets chunk 1 go: chunk 6 is beyond five again.
     village.report(W, 1, report(false, &[], &[(1, 0)]));
-    let shrunk = village.publication(W, 1, nothing_copied).unwrap();
+    let shrunk = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(shrunk.dropped, [ChunkPos::new(6, 0)]);
 }
 
@@ -722,21 +762,30 @@ fn a_chunk_that_changes_hands_is_published_by_its_new_holder_s_word() {
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
     village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
     village.report(RegionId(2), 1, report(true, &[(-9, 0, None)], &[]));
-    village.publication(W, 1, nothing_copied).unwrap();
+    village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
 
     // The east lets chunk 2 go: its records are kept meanwhile.
     village.report(E, 1, report(false, &[], &[(2, 0)]));
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
     // A third region takes it and says the bed is free.
     village.report(RegionId(2), 1, report(false, &[(2, 0, Some(false))], &[]));
-    let delta = village.publication(W, 1, nothing_copied).unwrap();
+    let delta = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(
         delta.pois,
         [(ChunkPos::new(2, 0), vec![occupied_bed(2, 0, false)])]
     );
     // The west takes it in turn: its own land, dropped from its margin.
     village.report(W, 1, report(false, &[(2, 0, Some(false))], &[]));
-    let own = village.publication(W, 1, nothing_copied).unwrap();
+    let own = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(own.dropped, [ChunkPos::new(2, 0)]);
 }
 
@@ -745,22 +794,37 @@ fn an_opening_makes_the_next_publication_whole_and_an_old_owner_s_word_is_let_go
     let mut village = Village::default();
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
     village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
-    village.publication(W, 1, nothing_copied).unwrap();
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
+    village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
 
     // A take-over: the east's new owner, session 2, reports whole; the old owner's
     // late partial report says the bed was freed, and is not taken.
     village.report(E, 2, report(true, &[(2, 0, Some(true))], &[]));
     village.report(E, 1, report(false, &[(2, 0, Some(false))], &[]));
-    assert_eq!(village.publication(W, 1, nothing_copied), None);
-    let east = village.publication(E, 2, nothing_copied).unwrap();
+    assert_eq!(
+        village.publication(W, 1, nothing_copied, &Default::default()),
+        None
+    );
+    let east = village
+        .publication(E, 2, nothing_copied, &Default::default())
+        .unwrap();
     assert!(east.whole, "whole to a new owner");
     // Nothing for the east's old session.
-    assert_eq!(village.publication(E, 1, nothing_copied), None);
+    assert_eq!(
+        village.publication(E, 1, nothing_copied, &Default::default()),
+        None
+    );
 
     // A merge or split within the west's session: its full report, then whole again.
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
-    let whole = village.publication(W, 1, nothing_copied).unwrap();
+    let whole = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert!(whole.whole);
     assert_eq!(
         whole.pois,
@@ -773,11 +837,15 @@ fn a_store_started_again_knows_only_what_regions_reported_since() {
     let mut village = Village::default();
     village.report(W, 1, report(true, &[(0, 0, None)], &[]));
     // The east has not reported to this store: nothing of its land is known.
-    let first = village.publication(W, 1, nothing_copied).unwrap();
+    let first = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert!(first.whole);
     assert!(first.pois.is_empty());
     village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
-    let next = village.publication(W, 1, nothing_copied).unwrap();
+    let next = village
+        .publication(W, 1, nothing_copied, &Default::default())
+        .unwrap();
     assert_eq!(chunks_of(&next), [ChunkPos::new(2, 0)]);
 }
 

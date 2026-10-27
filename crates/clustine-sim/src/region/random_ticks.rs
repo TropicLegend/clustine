@@ -138,6 +138,19 @@ impl Random {
         random
     }
 
+    /// The stream of the raid `id` (the game's `Raid.random`) at its `ticks_active`
+    /// (`docs/groundwork/n10-plan.md`, section 9.1): streams keep no state, so it is
+    /// keyed by the tick it draws in, and the region counts the draws of a tick.
+    pub(crate) fn of_raid(world: u64, id: EntityId, ticks_active: u64) -> Self {
+        /// Mixed in first, so that this is no other stream.
+        const RAIDS: u64 = 0x0072_6169_6473;
+        let mut random = Self(world);
+        random.mix(RAIDS);
+        random.mix(id.0);
+        random.mix(ticks_active);
+        random
+    }
+
     /// The stream of the chunk at `position` in a tick of a world for the rule
     /// `purpose` (`docs/groundwork/n9-plan.md`, section 9.3: spawning draws from its
     /// chunk's stream). Apart from the streams of sections, entities and blocks by a mark

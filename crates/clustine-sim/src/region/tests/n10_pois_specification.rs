@@ -332,6 +332,7 @@ fn a_record_known_only_from_the_margin_is_never_taken() {
             vec![seen(at(20, Y, 8), PoiType::Librarian, false)],
         )],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     let mut output = TickOutput::default();
     assert_eq!(
@@ -656,6 +657,7 @@ fn only_an_occupied_record_of_village_makes_a_village() {
             ],
         )],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     assert_eq!(region.sections_to_village(here), NO_VILLAGE);
 
@@ -684,6 +686,7 @@ fn the_village_is_read_from_the_land_the_copies_and_the_margin() {
             vec![seen(at(85, Y + 16, 20), PoiType::Meeting, true)],
         )],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     assert_eq!(region.sections_to_village([0, -4, 0]), 5);
     assert_eq!(region.sections_to_village([-1, -4, 0]), NO_VILLAGE);
@@ -740,6 +743,7 @@ fn a_copy_and_the_land_are_read_never_the_margin_for_their_chunks() {
             ),
         ],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     let centre = at(12, Y, 4);
     assert!(
@@ -765,6 +769,7 @@ fn the_type_at_a_place_is_read_from_the_margin_too() {
         whole: true,
         pois: vec![(chunk_at(2, 0), vec![seen(far, PoiType::Home, true)])],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     assert_eq!(region.poi_type_at(far), Some(PoiType::Home));
 }
@@ -789,6 +794,7 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
                 (chunk_at(3, 0), vec![bed_at(56)]),
             ],
             dropped: Vec::new(),
+            raids: Vec::new(),
         }),
     );
     let read = |region: &Region| places(&region.pois_in_range(near, 64, any, Occupancy::Any));
@@ -811,6 +817,7 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
                 (chunk_at(4, 0), vec![bed_at(70)]),
             ],
             dropped: vec![chunk_at(2, 0)],
+            raids: Vec::new(),
         }),
     );
     assert_eq!(read(&region), [at(57, Y, 8), at(70, Y, 8)]);
@@ -823,6 +830,7 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
             whole: true,
             pois: Vec::new(),
             dropped: Vec::new(),
+            raids: Vec::new(),
         }),
     );
     assert_eq!(read(&region), []);
@@ -849,6 +857,7 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
         whole: false,
         pois,
         dropped,
+        raids: Vec::new(),
     };
 
     // Applied to a margin, the fold is what the publications one after the other are.
@@ -856,6 +865,7 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
         whole: true,
         pois: vec![one(1, true), one(2, true), one(3, true)],
         dropped: Vec::new(),
+        raids: Vec::new(),
     };
     let sequence = vec![
         delta(vec![one(4, true), one(1, false)], vec![chunk_at(2, 0)]),
@@ -890,6 +900,7 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
             whole: true,
             pois: vec![one(2, true)],
             dropped: Vec::new(),
+            raids: Vec::new(),
         },
         delta(vec![one(3, true)], vec![chunk_at(2, 0)]),
     ]);

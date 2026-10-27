@@ -39,8 +39,8 @@ pub mod time;
 mod trading;
 
 pub use api::{
-    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, SPAWN_CATEGORIES, SpawnCounts,
-    VillageReport,
+    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, RaidSeen, SPAWN_CATEGORIES,
+    SpawnCounts, VillageReport,
 };
 pub use api::{
     Durable, EdgeEvent, Entered, FaceChange, FaceSeq, Keys, LendAnswer, LendAsked, Misdirected,

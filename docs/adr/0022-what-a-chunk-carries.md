@@ -1234,3 +1234,12 @@ longer as generated, so that remaking a chunk whose generation failed keeps them
 
 **Section 4**: a chunk travels with its claims between services; an edge's snapshot has
 none.
+
+**Raids** (step N10d, store format 18; `docs/groundwork/n10-plan.md`, section 9.1): a chunk
+keeps the raids whose record is there (`raids()`, `set_raids`), each with what the game
+saves of it and what it would make again at a load and a region that takes the raid over
+must not lose: its bar's UUID and state, its members by wave with their health, its
+leaders, its spawn position. The flags gain bit 5, "with raids", the body the raids after
+the claims, and a commit carries the raids of each chunk whose raids changed, whole (log
+kind 20), replayed after its blocks. A copy has a chunk's raids as its base had them and is
+never told of a change: other regions read raids from the world's table.

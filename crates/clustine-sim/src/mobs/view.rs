@@ -162,6 +162,14 @@ pub(crate) trait MobWorld: Holds {
         self.is_close_to_village(pos, 1)
     }
 
+    /// `ServerLevel.getRaidAt(pos)`: the nearest active raid within 96 blocks, as other
+    /// regions read raids, with the chunk its record is kept in, where every news of it
+    /// goes (`docs/groundwork/n10-plan.md`, section 9.2). None where a view knows none.
+    fn raid_at(&self, pos: BlockPos) -> Option<crate::api::RaidSeen> {
+        let _ = pos;
+        None
+    }
+
     /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
     /// a wolf's anger ends at (none where a view knows no clock).
     fn game_time(&self) -> i64 {

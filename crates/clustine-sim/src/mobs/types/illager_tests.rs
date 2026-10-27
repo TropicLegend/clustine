@@ -752,7 +752,7 @@ fn a_witch_s_drinking_and_a_raider_s_patrol_leader_survive_a_round_trip_together
     let mut kept = Mob::fresh();
     kept.state = postcard::from_bytes(&postcard::to_allocvec(&mob.state).expect("encoded"))
         .expect("decoded");
-    assert_eq!(kept.state.version, 2);
+    assert_eq!(kept.state.version, 3);
     let shared = illagers::state_of(&kept);
     assert!(shared.patrol_leader);
     assert_eq!(shared.wave, 2);
@@ -821,13 +821,15 @@ fn a_version_1_record_reads_its_shared_fields_and_loses_the_type_s_own() {
             wave: 4,
             can_join_raid: true,
             celebrating: false,
+            raid: None,
+            ticks_outside_raid: 0,
         }
     );
     assert_eq!(illagers::own_of::<WitchState>(&mob), WitchState::default());
     assert!(!illagers::own_of::<VindicatorState>(&mob).johnny);
-    // Written again, it is a version 2 record of the shared part alone.
+    // Written again, it is a version 3 record of the shared part alone.
     illagers::update(&mut mob, |own| own.wave = 5);
-    assert_eq!(mob.state.version, 2);
+    assert_eq!(mob.state.version, 3);
     let shared = illagers::state_of(&mob);
     assert!(shared.patrolling && shared.wave == 5);
     assert_eq!(

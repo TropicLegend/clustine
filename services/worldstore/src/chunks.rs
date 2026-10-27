@@ -1608,6 +1608,8 @@ pub(crate) enum Replayed {
     /// The claims on the chunk's points of interest, whole, after its blocks
     /// (`docs/groundwork/n10-plan.md`, section 3.2).
     Claims(ChunkPos, Vec<Claim>),
+    /// The raids the chunk keeps, whole (`docs/groundwork/n10-plan.md`, section 9.1).
+    Raids(ChunkPos, Vec<clustine_world::raid::Raid>),
     /// What the commit's tick did to an entity of the chunk, after its blocks
     /// (`docs/adr/0028-entities.md`, section 3).
     Entity(ChunkPos, EntityChange),
@@ -1622,6 +1624,7 @@ impl Replayed {
             | Self::Seams(chunk, _)
             | Self::Events(chunk, _)
             | Self::Claims(chunk, _)
+            | Self::Raids(chunk, _)
             | Self::Entity(chunk, _) => *chunk,
         }
     }
@@ -1749,6 +1752,10 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
             if dropped > 0 {
                 warn!(dropped, "claims on blocks of another type were dropped");
             }
+            chunk.clear_generated();
+        }
+        Replayed::Raids(_, raids) => {
+            chunk.set_raids(raids.clone());
             chunk.clear_generated();
         }
         // After the commit's blocks. The generated mark is a statement about the blocks

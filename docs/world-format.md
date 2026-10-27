@@ -40,6 +40,7 @@ needs no raise, as an older record never has it. The raises since 2:
 | 15 | A place holds the effects and the time since rest after the respawn point |
 | 16 | A chunk keeps the structure starts that reach it which natural spawning and the patrol spawner ask |
 | 17 | A chunk keeps the claims on its points of interest, and a commit may carry them |
+| 18 | A chunk keeps raids, and a commit may carry them; a place holds where the raid omen began after the time since rest |
 
 ## Principles
 
@@ -151,7 +152,7 @@ A chunk's blocks file, of kind 5 (`crates/clustine-format/src/chunk.rs`):
 | Tick at which the chunk was saved | u64 |
 | Epoch of the region that saved it | u64 |
 | **Generated**: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-| Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims"; the others 0 |
+| Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims", bit 5 "with raids"; the others 0 |
 | Section count | u16 |
 | Codec of the body | u8: 0 as it is, 1 zstd |
 | Length of the body, as it is | u32, at most 8 MiB |
@@ -173,6 +174,7 @@ The body, before compression, is these parts in this order:
 | Block events, with bit 2 of the flags only | as below; not empty |
 | Structures, with bit 3 of the flags only | as below; not empty |
 | Claims, with bit 4 of the flags only | as below; not empty |
+| Raids, with bit 5 of the flags only | as below; not empty |
 
 A chunk has one light section more below its sections and one more above. The data of
 a block entity is one NBT compound as the game writes it on the network, without the
@@ -237,6 +239,19 @@ A type that does not exist is refused. A claim whose block is not of its type, o
 as many free tickets as its type has, is dropped and counted with the block entities
 that were not as the blocks ask, and the chunk is read: such a mismatch can come of a
 change made without corruption, and the game drops such a record quietly too.
+
+**Raids** are those the chunk keeps (`docs/groundwork/n10-plan.md`, section 9.1): a raid
+is kept in a chunk of its region's land, at its making its centre's, and moves with that
+chunk. A count u32, then per raid, ascending by id (`crates/clustine-format/src/raids.rs`
+has the table): its id u64; its centre 3 × i32; flags u8 (bit 0 started, bit 1 active,
+bit 2 with a spawn position); ticks active u64; the omen level, the groups spawned, the
+group count, the cooldown, the post-raid ticks and the celebration ticks, six i32; the
+total health f32; the status u8 (0 ongoing, 1 victory, 2 loss, 3 stopped); the spawn
+position 3 × i32 with bit 2; the bar's UUID u128, whether it is shown u8, its progress
+f32 and its name u8 (0 the raid's, 1 raiders remaining followed by the count i32, 2
+victory, 3 defeat); the heroes, a count u32 and each u128 ascending; the members, a count
+u32 and each wave i32, key u64, health f32; the leaders, a count u32 and each wave i32,
+key u64.
 
 - **The writer writes one form**: palettes ascending with nothing unused, lists in
   order, light that is all 0 or all 15 as `dark` and `full`. The body is compressed
@@ -468,6 +483,7 @@ begins with the format version (u8) and the kind of record (u8):
 | 15 | Commit with entity changes | the fields of kind 14, entity changes |
 | 16 | Commit with arrivals | the fields of kind 14, a flag u8 whether entity changes follow, the entity changes if they do, arrivals, arrivals taken (numbers) |
 | 19 | Commit with claims | the fields of kind 16, whose arrivals may be none, claims |
+| 20 | Commit with raids | the fields of kind 19, whose claims may be none, raids |
 | 17 | Arrivals dropped | numbers |
 | 18 | Arrivals carried forward | filed arrivals |
 
@@ -522,6 +538,8 @@ what it carries. In order of the fields:
   list may be empty, when its last ticket was given back). A replay puts them into the
   chunk after the commit's blocks, so that a claim on a block placed in the same tick
   holds, and a chunk with claims is no longer as generated.
+- **Raids** (kind 20): a count of chunks (u32), not 0, and per chunk whose raids changed
+  i32 x, i32 z and the chunk's raids whole, as in a chunk file (a count that may be 0).
 
 Each kind is written only when it has something of its own: the reader refuses a kind 8
 without notes, a kind 9 without ticks, marks taken or seams, a kind 10 without effects
@@ -595,6 +613,7 @@ A place is where a player is and what they hold:
 | Respawn point set by a bed | u8 0, or u8 1, the bed's head i32 x, y, z, then yaw f32 and pitch f32 |
 | Effects: count, then each as an effect instance of a stack's `potion_contents` | u32 |
 | Ticks since the player last slept | u32 |
+| Where their raid omen began | u8 0, or u8 1 and i32 x, y, z |
 
 The store takes the notes of a commit when it takes the commit, and keeps of each
 player what they make of the player's record ("The players").
@@ -627,6 +646,7 @@ that kind carries:
 | 10, seated | the player's key u64; the vehicle's key u64; its root's chunk x i32 and z i32 |
 | 11, on a player | the player's UUID u128; their entity's key u64; then a use |
 | 12, a release | the point of interest's type u8, by its registry id |
+| 13, a raid's news | a kind u8: 1 joined (the raid's id u64, the member's key u64, its wave i32, its health f32, its chunk x i32 and z i32), 2 hurt (the raid u64, the member u64, the health f32), 3 died (the raid u64, the member u64, an option of the killer's UUID u128), 4 left (the raid u64, the member u64), 5 a start (the centre 3 × i32, the omen i32), 6 an omen absorbed (the raid u64, the omen i32) |
 
 The blocks of kinds 1, 3, 4, 6 and 7 are state ids, and one that does not exist is
 refused; so is a direction above 5, a kind of update above 1, a tick of another kind
@@ -655,6 +675,8 @@ and a flag whether it is living.
 | 14, effects | the instances, a list; the instant factor f32; the source and the owner, each an option of a causer; a flag whether water |
 | 15, a pearl landed | where 3 × f64; a flag whether an endermite comes |
 | 16, a patrol's target | x i32, y i32, z i32 |
+| 17, a villager's write | a kind u8: 1 gossiped (game time u64), 2 gaze (the other's key u64, speed f32, close i32), 3 yield (the site 3 × i32, its type u8, speed f32), 4 a job site lost (the site 3 × i32), 5 born, 6 a golem seen, 7 a witness (the murderer's UUID u128), 8 a bell heard (game time u64) |
+| 18, a raider's | a kind u8: 1 glow, 2 refused by a raid (its id u64) |
 
 A blast is the exploding entity's key u64, the tick u64, the centre 3 × f64, the radius
 f32, flags u8 (bit 0 its drops decay, bit 1 it has a direct source, bit 2 it has an

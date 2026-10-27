@@ -386,6 +386,7 @@ impl Region {
                 }
                 Local::ReleasePoi { pos, kind } => self.release_poi(pos, kind, output),
                 Local::Villager { key: other, used } => self.villager_write(other, used, output),
+                Local::Raid { chunk, news } => self.send_raid_news(chunk, news, output),
             }
         }
     }

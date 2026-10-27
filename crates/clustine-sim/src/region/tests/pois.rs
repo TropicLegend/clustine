@@ -272,6 +272,7 @@ fn the_margin_is_read_occupied_but_never_with_space_and_counts_for_the_village()
             ],
         )],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     let near = BlockPos::new(8, Y, 8);
     assert_eq!(region.pois_in_range(near, 48, any, Occupancy::Any).len(), 2);
@@ -291,6 +292,7 @@ fn the_margin_is_read_occupied_but_never_with_space_and_counts_for_the_village()
         whole: false,
         pois: Vec::new(),
         dropped: vec![ChunkPos::new(2, 0)],
+        raids: Vec::new(),
     });
     assert!(
         region
@@ -314,11 +316,13 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
         whole: false,
         pois: vec![one(1)],
         dropped: vec![chunk(2)],
+        raids: Vec::new(),
     };
     folded.then(PublishedVillage {
         whole: false,
         pois: vec![one(2)],
         dropped: vec![chunk(1), chunk(3)],
+        raids: Vec::new(),
     });
     assert_eq!(
         folded,
@@ -326,6 +330,7 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
             whole: false,
             pois: vec![one(2)],
             dropped: vec![chunk(1), chunk(3)],
+            raids: Vec::new(),
         }
     );
     // A whole one replaces what came before, and changes after it stay whole.
@@ -333,11 +338,13 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
         whole: true,
         pois: vec![one(4)],
         dropped: Vec::new(),
+        raids: Vec::new(),
     });
     folded.then(PublishedVillage {
         whole: false,
         pois: vec![one(5)],
         dropped: vec![chunk(4)],
+        raids: Vec::new(),
     });
     assert_eq!(
         folded,
@@ -345,6 +352,7 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
             whole: true,
             pois: vec![one(5)],
             dropped: Vec::new(),
+            raids: Vec::new(),
         }
     );
 }

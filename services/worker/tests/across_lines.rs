@@ -586,6 +586,7 @@ impl Played {
             arrivals_taken: Vec::new(),
             clock: Default::default(),
             claims: Vec::new(),
+            raids: Vec::new(),
         });
         tick
     }

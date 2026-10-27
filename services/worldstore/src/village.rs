@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_region::RegionId;
-use clustine_rpc::{PoiSeen, PublishedVillage, VillageReport};
+use clustine_rpc::{PoiSeen, PublishedVillage, RaidSeen, VillageReport};
 use clustine_world::ChunkPos;
 
 /// How far beyond a region's land, in chunks, it is published points of interest.
@@ -40,6 +40,17 @@ struct Land {
 struct Published {
     session: u64,
     chunks: BTreeMap<ChunkPos, Vec<PoiSeen>>,
+    raids: Vec<RaidSeen>,
+}
+
+/// A region's raids as it last reported them, and the order of that report among all,
+/// so that of two regions naming one raid (a split's parent until the part reports) the
+/// later word holds.
+#[derive(Debug)]
+struct Raids {
+    session: u64,
+    order: u64,
+    raids: Vec<RaidSeen>,
 }
 
 #[derive(Debug, Default)]
@@ -48,6 +59,9 @@ pub(crate) struct Village {
     chunks: BTreeMap<ChunkPos, Vec<PoiSeen>>,
     lands: BTreeMap<RegionId, Land>,
     published: BTreeMap<RegionId, Published>,
+    /// Each region's raids (`docs/groundwork/n10-plan.md`, section 9.2).
+    raids: BTreeMap<RegionId, Raids>,
+    reports: u64,
 }
 
 impl Village {
@@ -65,6 +79,17 @@ impl Village {
             .is_none_or(|land| land.session != session)
         {
             return;
+        }
+        if let Some(raids) = report.raids {
+            self.reports += 1;
+            self.raids.insert(
+                region,
+                Raids {
+                    session,
+                    order: self.reports,
+                    raids,
+                },
+            );
         }
         let land = self.lands.get_mut(&region).expect("kept above");
         for position in report.let_go {
@@ -86,6 +111,7 @@ impl Village {
         region: RegionId,
         session: u64,
         copies: impl Fn(ChunkPos) -> bool,
+        owners: &BTreeMap<RegionId, u64>,
     ) -> Option<PublishedVillage> {
         let land = self
             .lands
@@ -110,6 +136,23 @@ impl Village {
             })
             .map(|(position, pois)| (*position, pois.clone()))
             .collect();
+        // The other regions' raids, of each region only as its owner now said them (a
+        // region absorbed or taken over says nothing), and of one id the later word.
+        let mut by_id: BTreeMap<clustine_world::EntityId, (u64, &RaidSeen)> = BTreeMap::new();
+        for (holder, kept) in &self.raids {
+            if *holder == region || owners.get(holder) != Some(&kept.session) {
+                continue;
+            }
+            for raid in &kept.raids {
+                let later = by_id
+                    .get(&raid.id)
+                    .is_none_or(|(order, _)| *order < kept.order);
+                if later {
+                    by_id.insert(raid.id, (kept.order, raid));
+                }
+            }
+        }
+        let raids: Vec<RaidSeen> = by_id.into_values().map(|(_, raid)| raid.clone()).collect();
         let earlier = self
             .published
             .get(&region)
@@ -119,6 +162,7 @@ impl Village {
                 whole: true,
                 pois: wanted.iter().map(|(p, seen)| (*p, seen.clone())).collect(),
                 dropped: Vec::new(),
+                raids: raids.clone(),
             },
             Some(earlier) => {
                 let pois: Vec<(ChunkPos, Vec<PoiSeen>)> = wanted
@@ -132,13 +176,14 @@ impl Village {
                     .filter(|position| !wanted.contains_key(position))
                     .copied()
                     .collect();
-                if pois.is_empty() && dropped.is_empty() {
+                if pois.is_empty() && dropped.is_empty() && earlier.raids == raids {
                     return None;
                 }
                 PublishedVillage {
                     whole: false,
                     pois,
                     dropped,
+                    raids: raids.clone(),
                 }
             }
         };
@@ -147,6 +192,7 @@ impl Village {
             Published {
                 session,
                 chunks: wanted,
+                raids,
             },
         );
         Some(publication)
@@ -179,6 +225,7 @@ mod tests {
                 .map(|(x, seen)| (ChunkPos::new(*x, 0), seen.clone()))
                 .collect(),
             let_go: Vec::new(),
+            raids: None,
         }
     }
 
@@ -205,10 +252,15 @@ mod tests {
     #[test]
     fn a_region_is_published_whole_first_then_only_what_changed() {
         let mut village = two_regions();
-        let first = village.publication(WEST, 1, nothing_copied).unwrap();
+        let first = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert!(first.whole);
         assert_eq!(first.pois, [(ChunkPos::new(1, 0), vec![bed(20, true)])]);
-        assert_eq!(village.publication(WEST, 1, nothing_copied), None);
+        assert_eq!(
+            village.publication(WEST, 1, nothing_copied, &Default::default()),
+            None
+        );
 
         village.report(
             EAST,
@@ -217,9 +269,12 @@ mod tests {
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), vec![bed(20, false)])],
                 let_go: Vec::new(),
+                raids: None,
             },
         );
-        let second = village.publication(WEST, 1, nothing_copied).unwrap();
+        let second = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert!(!second.whole);
         assert_eq!(second.pois, [(ChunkPos::new(1, 0), vec![bed(20, false)])]);
 
@@ -230,13 +285,19 @@ mod tests {
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), Vec::new())],
                 let_go: Vec::new(),
+                raids: None,
             },
         );
-        let third = village.publication(WEST, 1, nothing_copied).unwrap();
+        let third = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert_eq!(third.dropped, [ChunkPos::new(1, 0)]);
         // A region is never published its own land.
         assert_eq!(
-            village.publication(EAST, 1, nothing_copied).unwrap().pois,
+            village
+                .publication(EAST, 1, nothing_copied, &Default::default())
+                .unwrap()
+                .pois,
             []
         );
     }
@@ -245,21 +306,42 @@ mod tests {
     fn a_copied_chunk_and_one_beyond_five_chunks_are_not_published() {
         let mut village = two_regions();
         let copied = |position: ChunkPos| position == ChunkPos::new(1, 0);
-        assert_eq!(village.publication(WEST, 1, copied).unwrap().pois, []);
+        assert_eq!(
+            village
+                .publication(WEST, 1, copied, &Default::default())
+                .unwrap()
+                .pois,
+            []
+        );
         let mut far = Village::default();
         far.report(WEST, 1, full(&[(-5, Vec::new())]));
         far.report(EAST, 1, full(&[(1, vec![bed(20, true)])]));
-        assert_eq!(far.publication(WEST, 1, nothing_copied).unwrap().pois, []);
+        assert_eq!(
+            far.publication(WEST, 1, nothing_copied, &Default::default())
+                .unwrap()
+                .pois,
+            []
+        );
     }
 
     #[test]
     fn a_new_owner_s_full_report_makes_the_next_publication_whole_and_an_old_one_is_let_go() {
         let mut village = two_regions();
-        village.publication(WEST, 1, nothing_copied).unwrap();
+        village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         // The region opened again by another owner: until its full report, nothing.
-        assert_eq!(village.publication(WEST, 2, nothing_copied), None);
+        assert_eq!(
+            village.publication(WEST, 2, nothing_copied, &Default::default()),
+            None
+        );
         village.report(WEST, 2, full(&[(-1, Vec::new())]));
-        assert!(village.publication(WEST, 2, nothing_copied).unwrap().whole);
+        assert!(
+            village
+                .publication(WEST, 2, nothing_copied, &Default::default())
+                .unwrap()
+                .whole
+        );
         // A partial report of the owner before is let go.
         village.report(
             WEST,
@@ -268,10 +350,14 @@ mod tests {
                 full: false,
                 pois: vec![(ChunkPos::new(-4, 0), vec![bed(-60, true)])],
                 let_go: Vec::new(),
+                raids: None,
             },
         );
         assert_eq!(
-            village.publication(EAST, 1, nothing_copied).unwrap().pois,
+            village
+                .publication(EAST, 1, nothing_copied, &Default::default())
+                .unwrap()
+                .pois,
             []
         );
     }
@@ -282,14 +368,21 @@ mod tests {
     #[test]
     fn a_full_report_of_the_same_owner_makes_the_next_publication_whole() {
         let mut village = two_regions();
-        village.publication(WEST, 1, nothing_copied).unwrap();
-        assert_eq!(village.publication(WEST, 1, nothing_copied), None);
+        village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
+        assert_eq!(
+            village.publication(WEST, 1, nothing_copied, &Default::default()),
+            None
+        );
         village.report(
             WEST,
             1,
             full(&[(-3, Vec::new()), (-2, Vec::new()), (-1, Vec::new())]),
         );
-        let again = village.publication(WEST, 1, nothing_copied).unwrap();
+        let again = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert!(again.whole);
         assert_eq!(again.pois, [(ChunkPos::new(1, 0), vec![bed(20, true)])]);
     }
@@ -304,9 +397,12 @@ mod tests {
                 full: false,
                 pois: Vec::new(),
                 let_go: vec![ChunkPos::new(1, 0)],
+                raids: None,
             },
         );
-        let published = village.publication(WEST, 1, nothing_copied).unwrap();
+        let published = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert_eq!(published.pois, [(ChunkPos::new(1, 0), vec![bed(20, true)])]);
         // West takes it: it is its land now, and not published to it.
         village.report(
@@ -316,9 +412,72 @@ mod tests {
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), vec![bed(20, true)])],
                 let_go: Vec::new(),
+                raids: None,
             },
         );
-        let after = village.publication(WEST, 1, nothing_copied).unwrap();
+        let after = village
+            .publication(WEST, 1, nothing_copied, &Default::default())
+            .unwrap();
         assert_eq!(after.dropped, [ChunkPos::new(1, 0)]);
+    }
+
+    fn raid(id: u64) -> RaidSeen {
+        RaidSeen {
+            id: clustine_world::EntityId(id),
+            chunk: ChunkPos::new(0, 0),
+            centre: BlockPos::new(0, 64, 0),
+            active: true,
+            status: clustine_world::raid::RaidStatus::Ongoing,
+            first_wave_spawned: false,
+            between_waves: false,
+            omen: 1,
+            bar: uuid::Uuid::from_u128(u128::from(id)),
+            shown: true,
+            progress: 0.0,
+            name: clustine_world::raid::RaidBarName::Raid,
+        }
+    }
+
+    fn raids_of(region: RegionId, session: u64, raids: Vec<RaidSeen>) -> VillageReport {
+        let _ = region;
+        let _ = session;
+        VillageReport {
+            full: false,
+            pois: Vec::new(),
+            let_go: Vec::new(),
+            raids: Some(raids),
+        }
+    }
+
+    /// A region is published the raids of every other region its owner of now
+    /// reported, of one id the later word, and not its own
+    /// (`docs/groundwork/n10-plan.md`, section 9.2).
+    #[test]
+    fn a_region_is_published_the_others_raids_of_their_owners_now_the_later_word_holding() {
+        let mut village = two_regions();
+        let owners: BTreeMap<RegionId, u64> = [(WEST, 1), (EAST, 1)].into_iter().collect();
+        village.report(EAST, 1, raids_of(EAST, 1, vec![raid(7)]));
+        let first = village
+            .publication(WEST, 1, nothing_copied, &owners)
+            .unwrap();
+        assert_eq!(first.raids, [raid(7)]);
+        let own = village
+            .publication(EAST, 1, nothing_copied, &owners)
+            .unwrap();
+        assert!(own.raids.is_empty(), "never its own");
+        // West takes the raid over (a split's part): its later word holds.
+        let mut moved = raid(7);
+        moved.chunk = ChunkPos::new(-1, 0);
+        village.report(WEST, 1, raids_of(WEST, 1, vec![moved.clone()]));
+        let by_east = village
+            .publication(EAST, 1, nothing_copied, &owners)
+            .unwrap();
+        assert_eq!(by_east.raids, [moved]);
+        // A region no longer owned by the owner that reported says nothing.
+        let taken_over: BTreeMap<RegionId, u64> = [(WEST, 2), (EAST, 1)].into_iter().collect();
+        let after = village
+            .publication(EAST, 1, nothing_copied, &taken_over)
+            .unwrap();
+        assert!(after.raids.is_empty());
     }
 }

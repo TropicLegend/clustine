@@ -1004,6 +1004,7 @@ impl Region {
                 chunk,
             } => self.take_seated(player, vehicle, chunk, output),
             Effected::Release { kind } => self.release_held(at, kind, output),
+            Effected::Raid(news) => self.raid_news(news, output),
             Effected::Exploded { expected, blast } => {
                 self.take_exploded(at, expected, blast, output);
             }

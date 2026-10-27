@@ -73,6 +73,7 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
         ender,
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -113,6 +114,7 @@ pub(crate) fn commit(handle: &StoreHandle, tick: u64, stays: Vec<StayNote>) {
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 
@@ -178,6 +180,7 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         ender,
         effects: place.effects.clone(),
         time_since_rest: place.time_since_rest,
+        raid_omen_position: place.raid_omen_position.map(|pos| [pos.x, pos.y, pos.z]),
     }
 }
 
@@ -987,6 +990,7 @@ fn a_commit_that_an_opening_passes_over_leaves_no_note() {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         claims: Vec::new(),
+        raids: Vec::new(),
     };
     let world = |restored: u64| {
         let disk = Arc::new(MemoryDisk::default());

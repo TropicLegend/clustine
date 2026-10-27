@@ -5,14 +5,14 @@
 //!
 //! | Field | Type |
 //! |---|---|
-//! | Format version | u8, 17 |
+//! | Format version | u8, 18 |
 //! | Kind | u8, 5 |
 //! | Chunk x, z | i32, i32 |
 //! | Y of the lowest block | i32 |
 //! | Tick at which the chunk was saved | u64 |
 //! | Epoch of the region that saved it | u64 |
 //! | Generated: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims"; the others 0 |
+//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims", bit 5 "with raids"; the others 0 |
 //! | Section count | u16 |
 //! | Codec of the body | u8: 0 as it is, 1 zstd |
 //! | Length of the body, as it is | u32, at most 8 MiB |
@@ -34,6 +34,7 @@
 //! | Block events, with bit 2 of the flags only | as `kept_events.rs` says, which is not empty |
 //! | Structures, with bit 3 of the flags only | count u32, not 0; then, in generation's order: the structure's name, its length u8 and its bytes; the chunk it starts in, x i32 and z i32; its box; the count of its pieces' boxes u32 and the boxes |
 //! | Claims, with bit 4 of the flags only | count u16, not 0; then, ascending by position: `x << 4 \| z` u8, y i16, the point of interest's type u8 (its registry id), its free tickets u8 |
+//! | Raids, with bit 5 of the flags only | as `raids.rs` says: a count u32, not 0, and the raids ascending by id |
 //!
 //! A box is its lowest corner and its highest, each x, y, z as i32: six i32s, the lowest
 //! no higher than the highest on any axis. A structure's name is one of those a chunk
@@ -85,6 +86,8 @@ const WITH_STRUCTURES: u8 = 8;
 /// nearly every chunk, is written as before them but for the version
 /// (`docs/groundwork/n10-plan.md`, section 3.2).
 const WITH_CLAIMS: u8 = 16;
+/// A chunk that keeps raids says so (section 9.1 of the same plan).
+const WITH_RAIDS: u8 = 32;
 /// What one box takes: two corners of three i32s.
 const BOX_LENGTH: usize = 6 * 4;
 /// The byte that says how a chunk's light is there: not at all, or with the version
@@ -415,6 +418,9 @@ impl ChunkFile {
         if !chunk.claims().is_empty() {
             put_claims(&mut body, chunk.claims());
         }
+        if !chunk.raids().is_empty() {
+            crate::raids::put_raids(&mut body, chunk.raids());
+        }
         assert!(body.len() <= MAX_BODY, "a chunk of {} bytes", body.len());
 
         let compressed = zstd::bulk::compress(&body, ZSTD_LEVEL).ok();
@@ -454,7 +460,12 @@ impl ChunkFile {
         } else {
             WITH_CLAIMS
         };
-        out.push(failure | seams | events | structures | claims);
+        let raids = if chunk.raids().is_empty() {
+            0
+        } else {
+            WITH_RAIDS
+        };
+        out.push(failure | seams | events | structures | claims | raids);
         out.extend_from_slice(&(chunk.sections().len() as u16).to_be_bytes());
         out.push(codec);
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -490,7 +501,15 @@ impl ChunkFile {
         let epoch = input.u64()?;
         let generated = input.u16()?;
         let flags = input.u8()?;
-        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS | WITH_STRUCTURES | WITH_CLAIMS) != 0 {
+        if flags
+            & !(WITH_FAILURE
+                | WITH_SEAMS
+                | WITH_EVENTS
+                | WITH_STRUCTURES
+                | WITH_CLAIMS
+                | WITH_RAIDS)
+            != 0
+        {
             return Err(FormatError::Corrupt("flags that mean nothing"));
         }
         let section_count = usize::from(input.u16()?);
@@ -646,6 +665,13 @@ impl ChunkFile {
                 return Err(FormatError::Corrupt("a chunk with claims that has none"));
             }
             claims_dropped = chunk.set_claims(claims);
+        }
+        if flags & WITH_RAIDS != 0 {
+            let raids = crate::raids::take_raids(&mut input)?;
+            if raids.is_empty() {
+                return Err(FormatError::Corrupt("a chunk with raids that has none"));
+            }
+            chunk.set_raids(raids);
         }
         input.finish()?;
         chunk.mark_generated(generated, flags & WITH_FAILURE != 0);
@@ -943,6 +969,19 @@ mod tests {
         assert_eq!(read.chunk.free_tickets(InChunk::new(9, 0, 9)), Some(31));
     }
 
+    #[test]
+    fn a_chunk_with_raids_comes_back_with_them_and_one_without_is_as_before() {
+        let mut chunk = full();
+        chunk.set_raids(vec![crate::raids::tests::raid(4)]);
+        let with = file(chunk);
+        let bytes = with.encode();
+        assert_eq!(bytes[32] & WITH_RAIDS, WITH_RAIDS);
+        let (read, unfit) = ChunkFile::decode(&bytes).unwrap();
+        assert_eq!(unfit, 0);
+        assert_eq!(read, with);
+        assert_eq!(file(full()).encode()[32] & WITH_RAIDS, 0);
+    }
+
     /// The structures' part of the body is laid out as the table says.
     #[test]
     fn a_kept_structure_is_written_by_its_name_its_source_its_box_and_its_pieces() {
@@ -1021,17 +1060,17 @@ mod tests {
     /// A chunk of format 15, from before chunks kept structures, is refused as every
     /// earlier format is: worlds made before are not carried over.
     #[test]
-    fn a_chunk_file_of_format_16_is_refused() {
-        assert_eq!(FORMAT_VERSION, 17);
+    fn a_chunk_file_of_format_17_is_refused() {
+        assert_eq!(FORMAT_VERSION, 18);
         let mut bytes = file(full()).encode();
-        bytes[0] = 16;
+        bytes[0] = 17;
         let (front, _) = bytes.split_at(bytes.len() - 4);
         let checksum = crc32fast::hash(front);
         let at = bytes.len() - 4;
         bytes[at..].copy_from_slice(&checksum.to_be_bytes());
         assert_eq!(
             ChunkFile::decode(&bytes),
-            Err(FormatError::UnsupportedVersion(16))
+            Err(FormatError::UnsupportedVersion(17))
         );
     }
 

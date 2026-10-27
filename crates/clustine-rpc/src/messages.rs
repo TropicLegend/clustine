@@ -375,6 +375,9 @@ pub enum StoreRequest {
         /// the tick, whole, ascending by chunk (`docs/groundwork/n10-plan.md`, section
         /// 3.2).
         claims: Vec<(ChunkPos, Vec<Claim>)>,
+        /// The raids kept in each chunk whose raids changed in the tick, whole, ascending
+        /// by chunk (section 9.1 of the same plan).
+        raids: Vec<(ChunkPos, Vec<clustine_world::raid::Raid>)>,
         /// What the tick did in chunks the region does not have loaded, made in `tick`,
         /// in the order the tick made them, each kept once as
         /// [`Effect::key`] says (`docs/adr/0025-effects-between-regions.md`, section 4).

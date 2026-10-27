@@ -94,6 +94,10 @@ pub enum Effected {
     /// `releaseTicket` does, only where a point of that type is there and not all its
     /// tickets are free (`docs/groundwork/n10-plan.md`, decision 2).
     Release { kind: crate::poi::PoiType },
+    /// News for a raid whose record this block's chunk keeps, or for the chunk at the
+    /// centre where a raid is to start (`docs/groundwork/n10-plan.md`, sections 9.3 and
+    /// 9.5): the holder finds the raid by its id among its own.
+    Raid(RaidNews),
     /// A hurt, effects or a pearl's landing addressed to the player `player`, whose stay
     /// is the entity `entity`: the store delivers it to the region that holds that stay,
     /// whatever land they stand in (`docs/groundwork/n9-plan.md`, section 8.3); a stay
@@ -279,6 +283,42 @@ pub enum VillagerUse {
     Heard { at: u64 },
 }
 
+/// What reaches a raid from another region (section 9.3): its raid's region is the judge
+/// of who is a member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaidNews {
+    /// A raider of another region joins the raid's wave `wave` with its health; the raid
+    /// accepts it while it is active, not over and on that wave, and refuses it otherwise
+    /// with [`RaiderUse::Rejected`] to the member's chunk `from`.
+    Joined {
+        raid: EntityId,
+        member: EntityId,
+        wave: i32,
+        health: Float,
+        from: crate::ChunkPos,
+    },
+    /// A member's health now, for the bar.
+    Hurt {
+        raid: EntityId,
+        member: EntityId,
+        health: Float,
+    },
+    /// A member died; a player who killed it is a hero.
+    Died {
+        raid: EntityId,
+        member: EntityId,
+        killer: Option<Uuid>,
+    },
+    /// A member left the raid (another dimension, too far, gone, idle outside a village,
+    /// or its chunk returned to nobody).
+    Left { raid: EntityId, member: EntityId },
+    /// A raid omen ended: a raid starts or grows at `centre` with the omen `omen`
+    /// (`createOrExtendRaid`, section 9.5).
+    Start { centre: BlockPos, omen: i32 },
+    /// A raid omen ended near the raid: it absorbs the omen `omen`.
+    Absorb { raid: EntityId, omen: i32 },
+}
+
 /// A raid's or a bell's write into a raider held by another region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RaiderUse {
@@ -392,6 +432,7 @@ impl Effect {
             | Effected::Given { .. }
             | Effected::Seated { .. }
             | Effected::Release { .. }
+            | Effected::Raid(_)
             | Effected::OnPlayer { .. } => None,
         }
     }

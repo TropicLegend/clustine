@@ -61,6 +61,7 @@ fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 
@@ -378,6 +379,7 @@ fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 
@@ -487,6 +489,7 @@ fn a_change_of_claims_alone_is_an_update_of_the_copy_with_the_claims() {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        raids: Vec::new(),
     });
     streamed_before_flush(&holder);
     match &streamed_before_flush(&copier)[..] {

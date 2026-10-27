@@ -65,6 +65,7 @@ fn commit_at(handle: &StoreHandle, tick: u64, game_time: u64) {
             day: game_time,
         },
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     committed(handle, tick);
 }

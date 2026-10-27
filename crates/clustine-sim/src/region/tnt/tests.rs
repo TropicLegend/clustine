@@ -178,6 +178,7 @@ pub(in crate::region) fn add_player(
         menu: None,
         steps: Default::default(),
         swinging: None,
+        raid_omen_position: None,
     };
     region.players.insert(id, player);
     (id, entity_id)

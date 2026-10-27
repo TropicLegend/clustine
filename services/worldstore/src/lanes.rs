@@ -1256,6 +1256,7 @@ impl Lanes {
                 taken,
                 events,
                 claims,
+                raids,
                 entity_changes,
                 arrivals,
                 mut arrivals_taken,
@@ -1470,6 +1471,7 @@ impl Lanes {
                     taken: taken.clone(),
                     events,
                     claims,
+                    raids,
                     entity_changes,
                     arrivals: arrivals
                         .iter()
@@ -2231,12 +2233,12 @@ impl Lanes {
                     owner.peer.answer(StoreReply::Counts(counts));
                 }
                 let copies = &self.copies;
-                if let Some(margin) =
-                    self.village
-                        .publication(*region, owner.peer.session.number, |chunk| {
-                            copies.copiers(chunk).contains(region)
-                        })
-                {
+                if let Some(margin) = self.village.publication(
+                    *region,
+                    owner.peer.session.number,
+                    |chunk| copies.copiers(chunk).contains(region),
+                    &owners,
+                ) {
                     owner.peer.answer(StoreReply::Village(margin));
                 }
             }
@@ -4191,6 +4193,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         seams,
         events,
         claims,
+        raids,
         entity_changes,
         ..
     } = record
@@ -4214,6 +4217,9 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
     let claims = claims
         .into_iter()
         .map(|(chunk, claims)| Replayed::Claims(chunk, claims));
+    let raids = raids
+        .into_iter()
+        .map(|(chunk, raids)| Replayed::Raids(chunk, raids));
     let entities = entity_changes
         .into_iter()
         .map(|(chunk, change)| Replayed::Entity(chunk, change));
@@ -4222,6 +4228,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         .chain(seams)
         .chain(events)
         .chain(claims)
+        .chain(raids)
         .chain(entities);
     Some((tick, blocks.chain(records).collect(), state))
 }

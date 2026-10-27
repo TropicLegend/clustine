@@ -102,6 +102,9 @@ pub struct Place {
     pub effects: Vec<clustine_world::components::EffectInstance>,
     /// The ticks since they last slept (`TIME_SINCE_REST`), which the phantoms read.
     pub time_since_rest: u32,
+    /// Where their raid omen began, where it has (`docs/groundwork/n10-plan.md`, section
+    /// 9.5).
+    pub raid_omen_position: Option<BlockPos>,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -439,6 +442,7 @@ pub struct PlayerTransfer {
     /// slept, as the place has them.
     pub effects: Vec<clustine_world::components::EffectInstance>,
     pub time_since_rest: u32,
+    pub raid_omen_position: Option<BlockPos>,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
@@ -481,21 +485,47 @@ pub struct PoiSeen {
 /// (none where it has none); the chunks the region stopped holding; and whether this is
 /// every chunk of its land (its first tick after it is made or restored), which replaces
 /// what the store kept of the region and makes the store publish to it whole.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VillageReport {
     pub full: bool,
     pub pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
     pub let_go: Vec<ChunkPos>,
+    /// The region's raids, every one, where they changed since its last report; none
+    /// where they did not (`docs/groundwork/n10-plan.md`, section 9.2). An empty list
+    /// says it has none now.
+    pub raids: Option<Vec<RaidSeen>>,
+}
+
+/// A raid as other regions read it from the world's table (section 9.2): where its
+/// record is, its centre, whether it is active, how it stands, its omen, and its bar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RaidSeen {
+    pub id: EntityId,
+    /// The chunk that keeps its record, which every effect to it is addressed to.
+    pub chunk: ChunkPos,
+    pub centre: BlockPos,
+    pub active: bool,
+    pub status: clustine_world::raid::RaidStatus,
+    pub first_wave_spawned: bool,
+    pub between_waves: bool,
+    pub omen: i32,
+    /// The bar: its UUID, whether it is shown, its progress and its name.
+    pub bar: Uuid,
+    pub shown: bool,
+    pub progress: f32,
+    pub name: RaidBarName,
 }
 
 /// What the store published to a region of the points of interest of the chunks within
 /// five of its land that it neither holds nor copies (section 3.5): whole, or the changes
 /// since the last publication to the region's owner, with the chunks no longer published.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PublishedVillage {
     pub whole: bool,
     pub pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
     pub dropped: Vec<ChunkPos>,
+    /// Every region's raids but the receiver's own, whole each time, by id.
+    pub raids: Vec<RaidSeen>,
 }
 
 impl PublishedVillage {
@@ -506,6 +536,7 @@ impl PublishedVillage {
             *self = later;
             return;
         }
+        self.raids = later.raids;
         let mut pois: std::collections::BTreeMap<ChunkPos, Vec<PoiSeen>> =
             std::mem::take(&mut self.pois).into_iter().collect();
         let mut dropped: std::collections::BTreeSet<ChunkPos> =
@@ -535,19 +566,7 @@ pub enum RaidBarChange {
     Name(RaidBarName),
 }
 
-/// What a raid's bar says (D10, part C, section 3.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RaidBarName {
-    /// `event.minecraft.raid`.
-    Raid,
-    /// `event.minecraft.raid`, `" - "` and `event.minecraft.raid.raiders_remaining` of
-    /// this many: shown for one or two left.
-    RaidersRemaining(i32),
-    /// `event.minecraft.raid.victory.full`.
-    Victory,
-    /// `event.minecraft.raid.defeat.full`.
-    Defeat,
-}
+pub use clustine_world::raid::RaidBarName;
 
 /// A hand (`InteractionHand`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2016,6 +2035,10 @@ pub struct TickOutput {
     /// ascending order (`docs/groundwork/n10-plan.md`, section 3.2). They are to be
     /// committed and saved as chunks whose blocks changed are.
     pub claims_changed: Vec<ChunkPos>,
+    /// Chunks whose raids changed in this tick, in ascending order
+    /// (`docs/groundwork/n10-plan.md`, section 9.1): committed and saved as chunks whose
+    /// blocks changed are.
+    pub raids_changed: Vec<ChunkPos>,
     /// What the tick did in chunks the region does not have loaded and does not hold
     /// or ask for, in the order it did them
     /// (`docs/adr/0025-effects-between-regions.md`, section 4). They are to be

@@ -118,6 +118,9 @@ pub struct PlayerState {
     pub effects: Vec<KeptEffect>,
     /// The tick their time since rest counts from.
     pub rested: u64,
+    /// Where their raid omen began (`raidOmenPosition`), where it has; the raid starts
+    /// there at its end (`docs/groundwork/n10-plan.md`, section 9.5).
+    pub raid_omen_position: Option<BlockPos>,
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,

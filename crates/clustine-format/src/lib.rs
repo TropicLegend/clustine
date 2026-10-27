@@ -19,6 +19,7 @@ mod effects;
 mod entities;
 mod kept_events;
 mod log;
+mod raids;
 mod region;
 mod seams;
 mod stacks;
@@ -56,8 +57,10 @@ pub use region::{
 /// (section 5.4 of the same plan); 16 since a chunk keeps the structure starts that reach
 /// it which natural spawning and the patrol spawner ask (section 9.6); 17 since a chunk
 /// keeps the claims on its points of interest and a commit may carry them
-/// (`docs/groundwork/n10-plan.md`, section 3.2).
-pub const FORMAT_VERSION: u8 = 17;
+/// (`docs/groundwork/n10-plan.md`, section 3.2); 18 since a chunk keeps raids and a
+/// commit may carry them, and a player's place holds where their raid omen began after
+/// their time since rest (sections 9.1 and 9.5 of the same plan).
+pub const FORMAT_VERSION: u8 = 18;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -105,6 +105,7 @@ fn commit(
         arrivals_taken,
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 
@@ -714,6 +715,7 @@ fn a_refused_commit_with_an_arrival_into_land_nobody_holds_grants_nothing() {
         }],
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     let (committed, told) = settle(&home);
     assert_eq!(committed, []);
@@ -832,6 +834,7 @@ fn commit_effect(handle: &StoreHandle, tick: u64, effect: Effect) {
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 

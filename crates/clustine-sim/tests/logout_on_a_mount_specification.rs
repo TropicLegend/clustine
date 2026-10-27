@@ -224,6 +224,7 @@ fn place_at(at: [f64; 3]) -> Place {
         ender: EnderChest::default(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -716,6 +717,7 @@ fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        raid_omen_position: None,
     }
 }
 

@@ -172,9 +172,17 @@ impl Region {
                 };
                 self.give_mob_effect(key, &glowing, output);
             }
-            // The raider's raid is N10d's (section 9.3): until it keeps one, a refusal
-            // finds nothing to clear.
-            RaiderUse::Rejected { .. } => {}
+            // Refused by its raid (section 9.3): of no raid now, unless it joined another
+            // since.
+            RaiderUse::Rejected { raid } => {
+                self.struck_between_ticks(key, output, |struck| {
+                    crate::mobs::types::illagers::update(&mut *struck.mob, |raider| {
+                        if raider.raid == Some(raid) {
+                            raider.raid = None;
+                        }
+                    });
+                });
+            }
         }
     }
 

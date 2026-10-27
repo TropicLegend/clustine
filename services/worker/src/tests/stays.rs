@@ -352,6 +352,7 @@ fn place_at(x: f64) -> Place {
         ender: Default::default(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -404,6 +405,7 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                     ender: Default::default(),
                     effects: Vec::new(),
                     time_since_rest: 0,
+                    raid_omen_position: None,
                 };
                 Some((entity_id, place))
             }
@@ -621,6 +623,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         ender: Default::default(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     };
 
     let (second, entered) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 72);
@@ -756,6 +759,7 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        raid_omen_position: None,
     };
     let let_go = Durable::Departed {
         player: player(),
@@ -866,6 +870,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
         ender: Default::default(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     };
     assert_eq!((second, entered), (EntityId(2), place));
     assert_eq!(e.entries().len(), 1, "only the first stay was let go");

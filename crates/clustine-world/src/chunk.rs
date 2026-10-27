@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::generation::{Done, Failed, GeneratorSettings, Wanted};
 use crate::light::{Light, SectionLight};
 use crate::poi::{Claim, PoiType, poi_type_of};
+use crate::raid::Raid;
 use crate::{
     Biome, BlockPos, COLUMNS_PER_CHUNK, ChunkPos, Entity, EntityChange, EntityId, SECTION_SIZE,
     Section,
@@ -402,6 +403,10 @@ pub struct Chunk {
     /// ascending by position, each of its block's type (`docs/groundwork/n10-plan.md`,
     /// section 3.2).
     claims: Vec<Claim>,
+    /// The raids kept in this chunk, ascending by id (`docs/groundwork/n10-plan.md`,
+    /// section 9.1). A copy has them as its base had them and is never told of a change:
+    /// a region reads other regions' raids from the published table, not from copies.
+    raids: Vec<Raid>,
     /// The entities other than players in the chunk, ascending by key
     /// (`docs/adr/0028-entities.md`, section 2).
     entities: Vec<Entity>,
@@ -430,6 +435,7 @@ impl PartialEq for Chunk {
             && self.events == other.events
             && self.structures == other.structures
             && self.claims == other.claims
+            && self.raids == other.raids
             && self.entities == other.entities
     }
 }
@@ -462,6 +468,7 @@ impl Chunk {
             events: Vec::new(),
             structures: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
             entities: Vec::new(),
             light_noted: None,
             pois: OnceLock::new(),
@@ -812,6 +819,26 @@ impl Chunk {
         self.structures = structures;
     }
 
+    /// The raids kept in the chunk, ascending by id.
+    pub fn raids(&self) -> &[Raid] {
+        &self.raids
+    }
+
+    /// Takes `raids` as the chunk's, ascending by id, of two with one id the later. A
+    /// chunk whose raids changed is no longer as generated, as one whose claims changed.
+    pub fn set_raids(&mut self, raids: Vec<Raid>) {
+        let mut kept: BTreeMap<EntityId, Raid> = BTreeMap::new();
+        for raid in raids {
+            kept.insert(raid.id, raid);
+        }
+        let raids: Vec<Raid> = kept.into_values().collect();
+        if raids != self.raids {
+            self.raids = raids;
+            self.generated = 0;
+            self.with_failure = false;
+        }
+    }
+
     /// The claims on the chunk's points of interest, ascending by position.
     pub fn claims(&self) -> &[Claim] {
         &self.claims
@@ -956,6 +983,7 @@ impl Chunk {
             events: Vec::new(),
             structures: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
             entities: Vec::new(),
             ..self.clone()
         }
@@ -1024,6 +1052,7 @@ struct ChunkRepr {
     events: Vec<KeptEvent>,
     structures: Vec<KeptStructure>,
     claims: Vec<Claim>,
+    raids: Vec<Raid>,
     entities: Vec<Entity>,
 }
 
@@ -1042,6 +1071,7 @@ impl From<Chunk> for ChunkRepr {
             events: chunk.events,
             structures: chunk.structures,
             claims: chunk.claims,
+            raids: chunk.raids,
             entities: chunk.entities,
         }
     }
@@ -1094,6 +1124,10 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.events = repr.events;
         chunk.structures = repr.structures;
         chunk.set_claims(repr.claims);
+        let mut raids = repr.raids;
+        raids.sort_by_key(|raid| raid.id);
+        raids.dedup_by_key(|raid| raid.id);
+        chunk.raids = raids;
         if !repr
             .entities
             .windows(2)

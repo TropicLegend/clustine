@@ -154,6 +154,7 @@ pub(super) fn entering_place(
         respawn: None,
         effects,
         time_since_rest,
+        raid_omen_position: None,
     }
 }
 

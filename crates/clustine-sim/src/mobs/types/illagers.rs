@@ -33,10 +33,43 @@ use crate::shown::DataShown;
 /// struct, the shared ones first, is read into the shared part; its type's own fields
 /// (a witch's drinking, a pillager's charging, a vindicator's `Johnny`, an evoker's
 /// spell's ticks) are lost, each back at its default.
-const VERSION: u8 = 2;
+///
+/// Version 3 adds the raid a raider is of and its ticks outside it to the shared part
+/// (`docs/groundwork/n10-plan.md`, section 9.3); a version 2 record's shared part is read
+/// in its shape, without them.
+const VERSION: u8 = 3;
+
+/// The version before the raid was kept.
+const VERSION_BEFORE_RAIDS: u8 = 2;
 
 /// The version before the split.
 const VERSION_SHARED_ONLY: u8 = 1;
+
+/// The shared part as versions 1 and 2 kept it.
+#[derive(Deserialize)]
+struct SharedBeforeRaids {
+    patrol_target: Option<BlockPos>,
+    patrol_leader: bool,
+    patrolling: bool,
+    wave: i32,
+    can_join_raid: bool,
+    celebrating: bool,
+}
+
+impl From<SharedBeforeRaids> for RaiderState {
+    fn from(old: SharedBeforeRaids) -> Self {
+        Self {
+            patrol_target: old.patrol_target,
+            patrol_leader: old.patrol_leader,
+            patrolling: old.patrolling,
+            wave: old.wave,
+            can_join_raid: old.can_join_raid,
+            celebrating: old.celebrating,
+            raid: None,
+            ticks_outside_raid: 0,
+        }
+    }
+}
 
 /// The synced data's index of `Raider.IS_CELEBRATING`.
 pub(crate) const CELEBRATING_INDEX: u8 = 16;
@@ -59,6 +92,11 @@ pub(crate) struct RaiderState {
     pub(crate) can_join_raid: bool,
     /// `IS_CELEBRATING`, synced: set only by a raid's celebration (N10).
     pub(crate) celebrating: bool,
+    /// The raid it is of (`currentRaid`, saved by the game as `RaidId`), by the raid's id
+    /// (`docs/groundwork/n10-plan.md`, section 9.3).
+    pub(crate) raid: Option<clustine_world::EntityId>,
+    /// `ticksOutsideRaid`: counted while it has a raid and is outside a village.
+    pub(crate) ticks_outside_raid: i32,
 }
 
 /// What a type's own part of a raider's state must be: kept beside the shared part,
@@ -79,11 +117,14 @@ fn parts(mob: &Mob) -> (RaiderState, &[u8]) {
     }
     match mob.state.version {
         VERSION => postcard::take_from_bytes::<RaiderState>(&mob.state.bytes).unwrap_or_default(),
+        VERSION_BEFORE_RAIDS => postcard::take_from_bytes::<SharedBeforeRaids>(&mob.state.bytes)
+            .map(|(shared, own)| (RaiderState::from(shared), own))
+            .unwrap_or_default(),
         // The shared fields lead a version 1 record; what follows them is in a shape
         // no longer read.
         VERSION_SHARED_ONLY => (
-            postcard::take_from_bytes::<RaiderState>(&mob.state.bytes)
-                .map(|(shared, _)| shared)
+            postcard::take_from_bytes::<SharedBeforeRaids>(&mob.state.bytes)
+                .map(|(shared, _)| RaiderState::from(shared))
                 .unwrap_or_default(),
             &[],
         ),

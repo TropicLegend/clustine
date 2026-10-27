@@ -33,6 +33,7 @@
 //! | 15 | [`LogRecord::Commit`] with entity changes | the fields of kind 14, whose counts may all be 0, entity changes |
 //! | 16 | [`LogRecord::Commit`] with arrivals | the fields of kind 14, a flag whether entity changes follow, they if so, arrivals, arrivals taken |
 //! | 19 | [`LogRecord::Commit`] with claims | the fields of kind 16, whose arrivals may be none, claims |
+//! | 20 | [`LogRecord::Commit`] with raids | the fields of kind 19, whose claims may be none, raids |
 //!
 //! where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a
 //! u16 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z;
@@ -65,7 +66,10 @@
 //! carries the claims on the points of interest of chunks whose claims changed
 //! (`docs/groundwork/n10-plan.md`, section 3.2): `claims` is a count of chunks (u32), not
 //! 0, followed per chunk by i32 x, i32 z and the chunk's claims whole, as `chunk.rs`
-//! writes them (a count that may be 0, when the last was given back). Kind 11 says that effects untaken were dropped,
+//! writes them (a count that may be 0, when the last was given back). A commit is written
+//! as kind 20 if it carries the raids of chunks whose raids changed (section 9.1 of the same
+//! plan): a count of chunks (u32), not 0, then per chunk i32 x, i32 z and the chunk's raids
+//! whole, as `raids.rs` writes them (a count that may be 0). Kind 11 says that effects untaken were dropped,
 //! and kind 12 carries untaken effects forward out of a segment that is let go, with
 //! their numbers. `effects`, `numbers` and `filed effects` are as `effects.rs` writes
 //! them.
@@ -137,6 +141,7 @@ const KIND_COMMIT_WITH_ARRIVALS: u8 = 16;
 const KIND_ARRIVALS_DROPPED: u8 = 17;
 const KIND_ARRIVALS_FORWARD: u8 = 18;
 const KIND_COMMIT_WITH_CLAIMS: u8 = 19;
+const KIND_COMMIT_WITH_RAIDS: u8 = 20;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -277,6 +282,9 @@ pub struct LoggedPlace {
     /// section 5.4), and the ticks since they last slept.
     pub effects: Vec<clustine_world::components::EffectInstance>,
     pub time_since_rest: u32,
+    /// Where their raid omen began, where it has (`docs/groundwork/n10-plan.md`,
+    /// section 9.5).
+    pub raid_omen_position: Option<[i32; 3]>,
 }
 
 impl PartialEq for LoggedPlace {
@@ -300,6 +308,7 @@ impl PartialEq for LoggedPlace {
                     .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
             && self.effects == other.effects
             && self.time_since_rest == other.time_since_rest
+            && self.raid_omen_position == other.raid_omen_position
     }
 }
 
@@ -357,6 +366,9 @@ pub enum LogRecord {
         /// the tick, whole, in ascending order of the chunks
         /// (`docs/groundwork/n10-plan.md`, section 3.2).
         claims: Vec<(ChunkPos, Vec<Claim>)>,
+        /// The raids kept in each chunk whose raids changed in the tick, whole, in
+        /// ascending order of the chunks (section 9.1 of the same plan).
+        raids: Vec<(ChunkPos, Vec<clustine_world::raid::Raid>)>,
         /// What the tick did to entities other than players, by chunk, in the order it
         /// did it (`docs/adr/0028-entities.md`, section 3). A commit without any is
         /// written as it was before there were entities.
@@ -455,12 +467,14 @@ impl LogRecord {
                 taken,
                 events,
                 claims,
+                raids,
                 entity_changes,
                 arrivals,
                 arrivals_taken,
             } => {
                 let (blocks, entities) = split_changes(changes);
-                let with_claims = !claims.is_empty();
+                let with_raids = !raids.is_empty();
+                let with_claims = with_raids || !claims.is_empty();
                 let with_arrivals =
                     with_claims || !arrivals.is_empty() || !arrivals_taken.is_empty();
                 let with_entity_changes = with_arrivals || !entity_changes.is_empty();
@@ -469,7 +483,9 @@ impl LogRecord {
                 let effected = with_entities || !effects.is_empty() || !taken.is_empty();
                 let records =
                     effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if with_claims {
+                payload.push(if with_raids {
+                    KIND_COMMIT_WITH_RAIDS
+                } else if with_claims {
                     KIND_COMMIT_WITH_CLAIMS
                 } else if with_arrivals {
                     KIND_COMMIT_WITH_ARRIVALS
@@ -532,6 +548,14 @@ impl LogRecord {
                                 payload.extend_from_slice(&chunk.x.to_be_bytes());
                                 payload.extend_from_slice(&chunk.z.to_be_bytes());
                                 put_chunk_claims(&mut payload, of_chunk);
+                            }
+                        }
+                        if with_raids {
+                            payload.extend_from_slice(&(raids.len() as u32).to_be_bytes());
+                            for (chunk, of_chunk) in raids {
+                                payload.extend_from_slice(&chunk.x.to_be_bytes());
+                                payload.extend_from_slice(&chunk.z.to_be_bytes());
+                                crate::raids::put_raids(&mut payload, of_chunk);
                             }
                         }
                     } else if with_entity_changes {
@@ -650,6 +674,7 @@ impl LogRecord {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
@@ -668,6 +693,7 @@ impl LogRecord {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
@@ -678,7 +704,8 @@ impl LogRecord {
             | KIND_COMMIT_WITH_EVENTS
             | KIND_COMMIT_WITH_ENTITY_CHANGES
             | KIND_COMMIT_WITH_ARRIVALS
-            | KIND_COMMIT_WITH_CLAIMS) => {
+            | KIND_COMMIT_WITH_CLAIMS
+            | KIND_COMMIT_WITH_RAIDS) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
                 let blocks = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
@@ -752,7 +779,7 @@ impl LogRecord {
                     Vec::new()
                 };
                 let mut claims = Vec::new();
-                if kind == KIND_COMMIT_WITH_CLAIMS {
+                if kind >= KIND_COMMIT_WITH_CLAIMS {
                     let chunks = input.u32()? as usize;
                     // Each is eight bytes and a count at least.
                     claims.reserve(chunks.min(input.0.len() / 10));
@@ -760,8 +787,21 @@ impl LogRecord {
                         let chunk = ChunkPos::new(input.i32()?, input.i32()?);
                         claims.push((chunk, take_chunk_claims(&mut input)?));
                     }
-                    if claims.is_empty() {
+                    if kind == KIND_COMMIT_WITH_CLAIMS && claims.is_empty() {
                         return Err(FormatError::Corrupt("a commit with claims that has none"));
+                    }
+                }
+                let mut raids = Vec::new();
+                if kind == KIND_COMMIT_WITH_RAIDS {
+                    let chunks = input.u32()? as usize;
+                    // Each is eight bytes and a count at least.
+                    raids.reserve(chunks.min(input.0.len() / 12));
+                    for _ in 0..chunks {
+                        let chunk = ChunkPos::new(input.i32()?, input.i32()?);
+                        raids.push((chunk, crate::raids::take_raids(&mut input)?));
+                    }
+                    if raids.is_empty() {
+                        return Err(FormatError::Corrupt("a commit with raids that has none"));
                     }
                 }
                 // A commit is written in one form only: without effects as kind 9, and
@@ -792,6 +832,7 @@ impl LogRecord {
                     taken,
                     events,
                     claims,
+                    raids,
                     entity_changes,
                     arrivals,
                     arrivals_taken,
@@ -1157,6 +1198,15 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
         crate::stacks::put_effect(out, effect);
     }
     out.extend_from_slice(&place.time_since_rest.to_be_bytes());
+    match place.raid_omen_position {
+        None => out.push(0),
+        Some(position) => {
+            out.push(1);
+            for coordinate in position {
+                out.extend_from_slice(&coordinate.to_be_bytes());
+            }
+        }
+    }
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1193,6 +1243,11 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         effects.push(crate::stacks::take_effect(input)?);
     }
     let time_since_rest = input.u32()?;
+    let raid_omen_position = match input.u8()? {
+        0 => None,
+        1 => Some([input.i32()?, input.i32()?, input.i32()?]),
+        _ => return Err(FormatError::Corrupt("a place's raid omen flag")),
+    };
     Ok(LoggedPlace {
         position,
         yaw,
@@ -1206,6 +1261,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         respawn,
         effects,
         time_since_rest,
+        raid_omen_position,
     })
 }
 
@@ -1334,6 +1390,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         }
     }
 
@@ -1356,6 +1413,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = record.encode();
         let payload = [
@@ -1822,6 +1880,7 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: Vec::new(),
                 arrivals,
                 arrivals_taken: taken,
@@ -1863,8 +1922,8 @@ mod tests {
         // notes, one with the ticks of chunks, one with effects, the store's records
         // of effects, a commit with block entities, one with block events, one with
         // entity changes, one with arrivals, the store's records of arrivals and one with
-        // claims became kinds of their own; 20 stands in for them.
-        for kind in [0, 20, 255] {
+        // claims and one with raids became kinds of their own; 21 stands in for them.
+        for kind in [0, 21, 255] {
             assert_eq!(
                 read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -1944,6 +2003,7 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
@@ -2010,6 +2070,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         }
     }
 
@@ -2075,6 +2136,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let with = with.encode()[FRAME_HEADER_LENGTH..].to_vec();
         let without = without.encode()[FRAME_HEADER_LENGTH..].to_vec();
@@ -2122,6 +2184,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -2149,6 +2212,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let payload = [
             FORMAT_VERSION,
@@ -2350,6 +2414,7 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
@@ -2417,6 +2482,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         }
     }
 
@@ -2579,6 +2645,29 @@ mod tests {
         }
     }
 
+    /// The raids of chunks whose raids changed are read back with the commit, written as
+    /// kind 20 (`docs/groundwork/n10-plan.md`, section 9.1).
+    #[test]
+    fn a_commit_with_raids_is_read_back_as_it_was() {
+        let mut record = commit_with_entities(Vec::new());
+        if let LogRecord::Commit { raids, .. } = &mut record {
+            *raids = vec![
+                (ChunkPos::new(-3, 0), vec![crate::raids::tests::raid(4)]),
+                (ChunkPos::new(2, 2), Vec::new()),
+            ];
+        }
+        let bytes = record.encode();
+        assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_RAIDS);
+        assert_eq!(read_log(&bytes), Ok((vec![record.clone()], bytes.len())));
+        for length in 0..bytes.len() {
+            assert_eq!(
+                read_log(&bytes[..length]),
+                Ok((Vec::new(), 0)),
+                "cut at {length}"
+            );
+        }
+    }
+
     /// A commit with nothing but one entity change, as section 4 of
     /// `docs/groundwork/n2-plan.md` lays it out: the fields of kind 14 with every count
     /// 0, then the changes by chunk.
@@ -2614,6 +2703,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = record.encode();
         let mut payload = vec![FORMAT_VERSION, 15];
@@ -2814,6 +2904,7 @@ mod tests {
             ender,
             effects: Vec::new(),
             time_since_rest: 0,
+            raid_omen_position: None,
         }
     }
 
@@ -2848,6 +2939,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         }
     }
 
@@ -2911,6 +3003,7 @@ mod tests {
             arrivals,
             arrivals_taken,
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -3100,10 +3193,11 @@ mod tests {
         payload.extend_from_slice(&[0; 26]);
         // The experience: level 5, a quarter of the way to the next, 87 points.
         payload.extend_from_slice(&[0, 0, 0, 5, 0x3E, 0x80, 0, 0, 0, 0, 0, 87]);
-        // No respawn point, no effects, and no time since rest.
+        // No respawn point, no effects, no time since rest and no raid omen's place.
         payload.push(0);
         payload.extend_from_slice(&[0; 4]);
         payload.extend_from_slice(&[0; 4]);
+        payload.push(0);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3142,6 +3236,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = without.encode();
         assert_eq!(bytes[8..10], [FORMAT_VERSION, KIND_COMMIT]);
@@ -3248,12 +3343,13 @@ mod tests {
     }
 
     /// Records of format 13, written before stacks had components, of 14, before
-    /// places kept effects, of 15, before chunks kept structures, and of 16, before
-    /// chunks kept claims, are refused as any record of another format is.
+    /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
+    /// kept claims, and of 17, before they kept raids, are refused as any record of
+    /// another format is.
     #[test]
-    fn records_of_formats_13_to_16_are_refused() {
-        assert_eq!(FORMAT_VERSION, 17);
-        for earlier in [13, 14, 15, 16] {
+    fn records_of_formats_13_to_17_are_refused() {
+        assert_eq!(FORMAT_VERSION, 18);
+        for earlier in [13, 14, 15, 16, 17] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3329,6 +3425,7 @@ mod tests {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         let bytes = record.encode();
         assert_eq!(read_log(&bytes), Ok((vec![record], bytes.len())));
@@ -3384,6 +3481,7 @@ mod tests {
                         experience,
                         effects: Vec::new(),
                         time_since_rest: 0,
+                        raid_omen_position: None,
                     }
                 },
             )
@@ -3501,6 +3599,7 @@ mod tests {
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
             };
             let opened = LogRecord::Opened { region, epoch, restored };
             let mut bytes = commit.encode();
@@ -3538,6 +3637,7 @@ mod tests {
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
             };
             let bytes = commit.encode();
             prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], 9);
@@ -3575,6 +3675,7 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes,
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
@@ -3621,6 +3722,7 @@ mod tests {
                 taken: Vec::new(),
                 events: Vec::new(),
                 claims: Vec::new(),
+                raids: Vec::new(),
                 entity_changes: entity_changes.unwrap_or_default(),
                 arrivals: arrivals.clone(),
                 arrivals_taken: arrivals_taken.clone(),

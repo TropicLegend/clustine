@@ -1177,6 +1177,7 @@ impl Script {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            raid_omen_position: None,
         };
         person.region = to;
         person.chunk = chunk;

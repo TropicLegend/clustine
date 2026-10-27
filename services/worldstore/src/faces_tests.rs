@@ -201,6 +201,7 @@ fn the_clock_is_published_with_the_world_s_players() {
             day: 40,
         },
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     answers(&home);
     let published = answers(&west).into_iter().find_map(|reply| match reply {
@@ -266,6 +267,7 @@ fn in_the_world(store_west: &StoreHandle, home: &StoreHandle, tick: u64) -> bool
             day: tick * 100,
         },
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     answers(home);
     let published = answers(store_west)
@@ -364,6 +366,7 @@ fn a_region_s_first_commit_after_a_hello_marks_offline_whom_it_wrote_and_does_no
             day: 200,
         },
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     answers(&home);
     let players = answers(&west)

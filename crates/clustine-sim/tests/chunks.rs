@@ -319,6 +319,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        raid_omen_position: None,
     }
 }
 
@@ -347,6 +348,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        raid_omen_position: None,
     }
 }
 

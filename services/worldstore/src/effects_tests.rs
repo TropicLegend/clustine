@@ -53,6 +53,7 @@ fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect], taken: &[EffectId
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 

@@ -232,6 +232,7 @@ fn logged_bytes(request: &StoreRequest) -> usize {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         claims: Vec::new(),
+        raids: Vec::new(),
     }
     .encode()
     .len()

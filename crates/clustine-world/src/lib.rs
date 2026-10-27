@@ -15,6 +15,7 @@ mod light;
 pub mod poi;
 mod position;
 pub mod projectiles;
+pub mod raid;
 mod section;
 pub mod spawn;
 pub mod trading;
@@ -29,7 +30,7 @@ pub use components::{Component, Components};
 pub use difficulty::Difficulty;
 pub use effects::{
     Arrival, Blast, Causer, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
-    GivenEffects, HitExtra, HurtBy, RaiderUse, Thrower, VillagerUse,
+    GivenEffects, HitExtra, HurtBy, RaidNews, RaiderUse, Thrower, VillagerUse,
 };
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,

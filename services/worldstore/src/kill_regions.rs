@@ -248,6 +248,7 @@ impl Actor {
             arrivals_taken: Vec::new(),
             clock: Default::default(),
             claims: Vec::new(),
+            raids: Vec::new(),
         });
         self.ledger.push(commit);
     }

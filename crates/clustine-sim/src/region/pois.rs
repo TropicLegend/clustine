@@ -191,6 +191,8 @@ impl Region {
         for (position, seen) in &published.pois {
             self.margin.insert(*position, seen.clone());
         }
+        // The world's raids come whole with it (`raids.rs`).
+        self.take_raid_table(&published.raids);
     }
 
     /// What the tick says of the land's points of interest (section 3.5): each chunk whose
@@ -222,7 +224,8 @@ impl Region {
                 reported.insert(*position, seen);
             }
         }
-        if full || !report.pois.is_empty() || !report.let_go.is_empty() {
+        report.raids = self.report_raids(full);
+        if full || !report.pois.is_empty() || !report.let_go.is_empty() || report.raids.is_some() {
             output.village = Some(report);
         }
     }

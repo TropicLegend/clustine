@@ -55,6 +55,7 @@ fn commit(
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        raids: Vec::new(),
     });
 }
 

@@ -7218,6 +7218,7 @@ mod tests {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            raid_omen_position: None,
         }
     }
 
@@ -10175,6 +10176,7 @@ mod scenarios {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            raid_omen_position: None,
         }
     }
 

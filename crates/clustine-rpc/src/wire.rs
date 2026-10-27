@@ -605,6 +605,7 @@ mod tests {
                 day: 7,
             },
             claims: Vec::new(),
+            raids: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -736,6 +737,7 @@ mod tests {
             ender: Default::default(),
             effects: Vec::new(),
             time_since_rest: 0,
+            raid_omen_position: None,
         };
         let standing = Place {
             respawn: None,
@@ -747,6 +749,7 @@ mod tests {
             ender: Default::default(),
             effects: Vec::new(),
             time_since_rest: 0,
+            raid_omen_position: None,
         };
 
         round_trip(StoreRequest::Commit {
@@ -796,6 +799,7 @@ mod tests {
                 day: 7,
             },
             claims: Vec::new(),
+            raids: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {
@@ -994,6 +998,7 @@ mod tests {
                 day: 7,
             },
             claims: Vec::new(),
+            raids: Vec::new(),
         });
         let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
         for request in [

@@ -136,6 +136,16 @@ impl MobWorld for View<'_> {
         self.region.village_level(section)
     }
 
+    fn raid_at(&self, pos: BlockPos) -> Option<crate::api::RaidSeen> {
+        match self.region.get_raid_at(pos)? {
+            super::raids::RaidAt::Own { chunk, id } => {
+                let (_, raid) = self.region.find_raid(id)?;
+                Some(super::raids::seen(chunk, raid))
+            }
+            super::raids::RaidAt::Seen(raid) => Some(raid),
+        }
+    }
+
     fn game_time(&self) -> i64 {
         i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
     }

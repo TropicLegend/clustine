@@ -233,6 +233,7 @@ impl Region {
     /// their ticks (nothing a creative player feels) and count down, each that gives way
     /// to the level it hid or ends told as an addition does it.
     pub(crate) fn tick_player_effects(&mut self, output: &mut TickOutput) {
+        self.tick_omens(output);
         let now = self.tick;
         let ids: Vec<PlayerId> = self
             .players
@@ -254,6 +255,110 @@ impl Region {
                 self.effect_changed(id, effect, false, output);
             }
         }
+    }
+
+    /// The omens' ticks before the effects count down (`BadOmenMobEffect`,
+    /// `RaidOmenMobEffect`; `docs/groundwork/n10-dumps.md`, part C, section 2 and
+    /// correction 1; `docs/groundwork/n10-plan.md`, section 9.5), in the order of the
+    /// effects' ids, bad omen before raid omen:
+    ///
+    /// - bad omen, where the player stands in a village with no raid at its most omen
+    ///   there: raid omen for 600 ticks at its level, and the place kept; and bad omen
+    ///   taken off only where raid omen was there already, since the game's removal of it
+    ///   in the tick raid omen comes fails (its map changed under its loop), so that it
+    ///   goes a tick later, the place kept again then;
+    /// - raid omen, in its last tick, with a place kept: the raid starts or grows there,
+    ///   the place is forgotten, and it ends. One added in this tick is not ticked in it.
+    fn tick_omens(&mut self, output: &mut TickOutput) {
+        let now = self.tick;
+        let ids: Vec<PlayerId> = self
+            .players
+            .iter()
+            .filter(|(_, player)| {
+                player.effects.has(Effect::BAD_OMEN) || player.effects.has(Effect::RAID_OMEN)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            let Some(player) = self.players.get(&id) else {
+                continue;
+            };
+            let at = player.pose.position;
+            let pos = crate::physics::containing([at.x, at.y, at.z]);
+            let bad = player.effects.amplifier(Effect::BAD_OMEN);
+            let had_raid_omen = player.effects.has(Effect::RAID_OMEN);
+            let mut raid_omen_new = false;
+            if let Some(amplifier) = bad {
+                let peaceful =
+                    clustine_world::Difficulty::WORLD == clustine_world::Difficulty::Peaceful;
+                let at_most = matches!(
+                    self.get_raid_at(pos),
+                    Some(super::raids::RaidAt::Own { id: raid, .. })
+                        if self.find_raid(raid).is_some_and(|(_, raid)| raid.omen_level >= 5)
+                ) || matches!(
+                    self.get_raid_at(pos),
+                    Some(super::raids::RaidAt::Seen(raid)) if raid.omen >= 5
+                );
+                if !peaceful && self.close_to_village(pos, 1) && !at_most {
+                    let layer = crate::mobs::body::effects::Layer::new(amplifier, 600, now);
+                    self.add_player_effect(id, Effect::RAID_OMEN, layer, output);
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.raid_omen_position = Some(pos);
+                    }
+                    if had_raid_omen {
+                        self.remove_player_effect(id, Effect::BAD_OMEN, output);
+                    } else {
+                        raid_omen_new = true;
+                    }
+                }
+            }
+            if raid_omen_new {
+                continue;
+            }
+            let Some(player) = self.players.get(&id) else {
+                continue;
+            };
+            let last = instance(&player.effects, Effect::RAID_OMEN, now)
+                .is_some_and(|raid_omen| raid_omen.duration == 0);
+            if let (true, Some(place), Some(amplifier)) = (
+                last,
+                player.raid_omen_position,
+                player.effects.amplifier(Effect::RAID_OMEN),
+            ) {
+                self.omen_ended(place, i32::from(amplifier) + 1, output);
+                if let Some(player) = self.players.get_mut(&id) {
+                    player.raid_omen_position = None;
+                }
+                self.remove_player_effect(id, Effect::RAID_OMEN, output);
+            }
+        }
+    }
+
+    /// `Raids.createOrExtendRaid(player, place)` of a raid omen of `omen` that ended
+    /// (section 9.5): the centre is the mean of the occupied points of `#village` within
+    /// 64 of the place, or the place, and the work is the centre's chunk's holder's.
+    fn omen_ended(&mut self, place: clustine_world::BlockPos, omen: i32, output: &mut TickOutput) {
+        let points = self.pois_in_range(
+            place,
+            64,
+            |kind| kind.is_village(),
+            super::pois::Occupancy::IsOccupied,
+        );
+        let centre = if points.is_empty() {
+            place
+        } else {
+            let count = points.len() as f64;
+            let sum = points.iter().fold([0.0f64; 3], |sum, record| {
+                [
+                    sum[0] + f64::from(record.pos.x),
+                    sum[1] + f64::from(record.pos.y),
+                    sum[2] + f64::from(record.pos.z),
+                ]
+            });
+            let scale = 1.0 / count;
+            crate::physics::containing([sum[0] * scale, sum[1] * scale, sum[2] * scale])
+        };
+        self.create_or_extend_raid(centre, omen, output);
     }
 
     /// What a change of the player `id`'s `effect` tells: the effect as it is now (blended

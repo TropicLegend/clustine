@@ -14,8 +14,8 @@ pub mod wire;
 // the messages from here and needs nothing else of the simulation.
 pub use clustine_sim::api::{Experience, ItemStack, Pose, Respawn, Sleep, WorldClock};
 pub use clustine_sim::{
-    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, SPAWN_CATEGORIES, SpawnCounts,
-    VillageReport,
+    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, RaidSeen, SPAWN_CATEGORIES,
+    SpawnCounts, VillageReport,
 };
 pub use clustine_sim::{FaceChange, FaceSeq, Place, PlayerFace, StayNote, Unit, WorldPlayer};
 pub use messages::{

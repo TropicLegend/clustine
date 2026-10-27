@@ -1547,6 +1547,7 @@ fn commit_ticks(
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
 }
 
@@ -1658,6 +1659,7 @@ fn a_chunk_given_an_entity_by_a_restore_keeps_it_when_a_newer_generator_makes_it
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     committed(&x, 1);
     let y = open(&store, hello(EAST, 3));
@@ -1750,6 +1752,7 @@ fn commit_entities(
         arrivals_taken: Vec::new(),
         clock: Default::default(),
         claims: Vec::new(),
+        raids: Vec::new(),
     });
     committed(handle, tick);
 }

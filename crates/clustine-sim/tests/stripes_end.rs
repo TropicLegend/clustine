@@ -429,6 +429,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         menu: None,
         effects: Vec::new(),
         rested: 0,
+        raid_omen_position: None,
     }
 }
 

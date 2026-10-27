@@ -272,6 +272,7 @@ fn scenario(store: &Store) -> Vec<u64> {
             arrivals_taken: Vec::new(),
             clock: Default::default(),
             claims: Vec::new(),
+            raids: Vec::new(),
         });
         if tick == ORIGIN_SAVED_AS_OF {
             handle.request(StoreRequest::Save {

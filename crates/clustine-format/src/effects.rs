@@ -57,8 +57,8 @@ use clustine_data::{BLOCK_STATE_COUNT, BlockState};
 use clustine_world::components::EffectInstance;
 use clustine_world::{
     Blast, BlockPos, Causer, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse,
-    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, RaiderUse, SeamKind, Thrower,
-    Ticked, VillagerUse,
+    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, RaidNews, RaiderUse, SeamKind,
+    Thrower, Ticked, VillagerUse,
 };
 use uuid::Uuid;
 
@@ -84,6 +84,15 @@ const SEATED: u8 = 10;
 const ON_PLAYER: u8 = 11;
 /// A ticket of a point of interest given back (`docs/groundwork/n10-plan.md`, decision 2).
 const RELEASE: u8 = 12;
+/// News for a raid (`docs/groundwork/n10-plan.md`, section 9.3), then its kind.
+const RAID: u8 = 13;
+
+const RAID_JOINED: u8 = 1;
+const RAID_HURT: u8 = 2;
+const RAID_DIED: u8 = 3;
+const RAID_LEFT: u8 = 4;
+const RAID_START: u8 = 5;
+const RAID_ABSORB: u8 = 6;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
@@ -249,6 +258,69 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
         Effected::Release { kind } => {
             out.push(RELEASE);
             out.push(kind.id());
+        }
+        Effected::Raid(news) => {
+            out.push(RAID);
+            match news {
+                RaidNews::Joined {
+                    raid,
+                    member,
+                    wave,
+                    health,
+                    from,
+                } => {
+                    out.push(RAID_JOINED);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                    out.extend_from_slice(&member.0.to_be_bytes());
+                    out.extend_from_slice(&wave.to_be_bytes());
+                    out.extend_from_slice(&health.0.to_be_bytes());
+                    out.extend_from_slice(&from.x.to_be_bytes());
+                    out.extend_from_slice(&from.z.to_be_bytes());
+                }
+                RaidNews::Hurt {
+                    raid,
+                    member,
+                    health,
+                } => {
+                    out.push(RAID_HURT);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                    out.extend_from_slice(&member.0.to_be_bytes());
+                    out.extend_from_slice(&health.0.to_be_bytes());
+                }
+                RaidNews::Died {
+                    raid,
+                    member,
+                    killer,
+                } => {
+                    out.push(RAID_DIED);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                    out.extend_from_slice(&member.0.to_be_bytes());
+                    match killer {
+                        Some(killer) => {
+                            out.push(1);
+                            out.extend_from_slice(&killer.as_u128().to_be_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                }
+                RaidNews::Left { raid, member } => {
+                    out.push(RAID_LEFT);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                    out.extend_from_slice(&member.0.to_be_bytes());
+                }
+                RaidNews::Start { centre, omen } => {
+                    out.push(RAID_START);
+                    out.extend_from_slice(&centre.x.to_be_bytes());
+                    out.extend_from_slice(&centre.y.to_be_bytes());
+                    out.extend_from_slice(&centre.z.to_be_bytes());
+                    out.extend_from_slice(&omen.to_be_bytes());
+                }
+                RaidNews::Absorb { raid, omen } => {
+                    out.push(RAID_ABSORB);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                    out.extend_from_slice(&omen.to_be_bytes());
+                }
+            }
         }
     }
 }
@@ -957,6 +1029,42 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
             vehicle: EntityId(input.u64()?),
             chunk: clustine_world::ChunkPos::new(input.i32()?, input.i32()?),
         },
+        RAID => Effected::Raid(match input.u8()? {
+            RAID_JOINED => RaidNews::Joined {
+                raid: EntityId(input.u64()?),
+                member: EntityId(input.u64()?),
+                wave: input.i32()?,
+                health: Float(input.f32()?),
+                from: clustine_world::ChunkPos::new(input.i32()?, input.i32()?),
+            },
+            RAID_HURT => RaidNews::Hurt {
+                raid: EntityId(input.u64()?),
+                member: EntityId(input.u64()?),
+                health: Float(input.f32()?),
+            },
+            RAID_DIED => RaidNews::Died {
+                raid: EntityId(input.u64()?),
+                member: EntityId(input.u64()?),
+                killer: match input.u8()? {
+                    0 => None,
+                    1 => Some(Uuid::from_u128(input.u128()?)),
+                    _ => return Err(FormatError::Corrupt("a raid's killer")),
+                },
+            },
+            RAID_LEFT => RaidNews::Left {
+                raid: EntityId(input.u64()?),
+                member: EntityId(input.u64()?),
+            },
+            RAID_START => RaidNews::Start {
+                centre: BlockPos::new(input.i32()?, input.i32()?, input.i32()?),
+                omen: input.i32()?,
+            },
+            RAID_ABSORB => RaidNews::Absorb {
+                raid: EntityId(input.u64()?),
+                omen: input.i32()?,
+            },
+            _ => return Err(FormatError::Corrupt("a raid's news")),
+        }),
         RELEASE => Effected::Release {
             kind: clustine_world::poi::PoiType::from_id(input.u8()?)
                 .ok_or(FormatError::Corrupt("a point of interest of no type"))?,
@@ -1132,7 +1240,7 @@ mod tests {
         assert_eq!(take_effect(&mut Input(&good)), Ok(effect()));
         // The kind is after the block, three i32; the direction after the kind.
         let mut kind = good.clone();
-        kind[12] = RELEASE + 1;
+        kind[12] = RAID + 1;
         assert_eq!(
             take_effect(&mut Input(&kind)),
             Err(FormatError::Corrupt("an effect's kind"))

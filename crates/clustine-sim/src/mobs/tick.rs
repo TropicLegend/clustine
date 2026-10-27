@@ -298,6 +298,14 @@ pub(crate) enum Local {
     },
     /// A villager's write into the villager `key` (decision 4): the region's own at once,
     /// one in a copy through its holder (`EntityUse::Villager`).
+    /// News for the raid whose record the chunk `chunk` keeps (a raider joining, hurt,
+    /// dead or gone; `docs/groundwork/n10-plan.md`, section 9.3): applied here where the
+    /// region keeps it, else sent to the chunk's holder.
+    #[allow(dead_code, reason = "part R1's raiders send their raid news")]
+    Raid {
+        chunk: clustine_world::ChunkPos,
+        news: clustine_world::RaidNews,
+    },
     #[allow(dead_code, reason = "parts V2 and V3 write into other villagers")]
     Villager {
         key: EntityId,

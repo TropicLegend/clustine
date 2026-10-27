@@ -88,6 +88,8 @@ mod pressed;
 mod projectile_hits;
 mod projectiles;
 mod pushed;
+mod raid_tick;
+pub(crate) mod raids;
 mod rails;
 mod random_ticks;
 pub(crate) use drops::{DEFAULT_PICK_UP_DELAY, item_of_block};
@@ -409,6 +411,8 @@ struct Player {
     /// The tick their time since rest counts from, which a sleep starts again: the
     /// count is the ticks since, and none while they sleep.
     rested: u64,
+    /// See [`PlayerState::raid_omen_position`].
+    raid_omen_position: Option<BlockPos>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -481,6 +485,9 @@ pub struct Region {
     /// The bells that rang, what each listed of the living near it (`bells.rs`); in
     /// memory only.
     bell_rings: bells::Rings,
+    /// The world's table of raids, what the region last reported of its own, its raids'
+    /// draws in this tick and each player's bar (`raids.rs`); in memory only.
+    raid_memory: raids::RaidMemory,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -723,6 +730,7 @@ impl Region {
             published: None,
             margin: BTreeMap::new(),
             bell_rings: bells::Rings::new(),
+            raid_memory: raids::RaidMemory::default(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
@@ -1180,6 +1188,8 @@ impl Region {
         self.take_arrivals(&inputs.arrivals, &mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
+        // The raids, between the fluid ticks and the chunk source (`raids.rs`).
+        self.tick_raids(&mut output);
         self.post_process(&mut output);
         // Spawning, then the random ticks, as the game's chunk source ticks them
         // (`spawn_caps.rs`).
@@ -1299,6 +1309,7 @@ impl Region {
                     experience: transfer.experience,
                     effects: transfer.effects.clone(),
                     time_since_rest: transfer.time_since_rest,
+                    raid_omen_position: transfer.raid_omen_position,
                 },
                 face: PlayerFace {
                     sprinting: transfer.keys.sprint,
@@ -1350,6 +1361,8 @@ impl Region {
         output.seams_changed = self.seams_changed();
         output.claims_changed.sort_unstable();
         output.claims_changed.dedup();
+        output.raids_changed.sort_unstable();
+        output.raids_changed.dedup();
         self.interactions_at_line();
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
@@ -1827,6 +1840,7 @@ impl Region {
             rested: self
                 .tick
                 .saturating_sub(u64::from(transfer.time_since_rest)),
+            raid_omen_position: transfer.raid_omen_position,
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -1906,10 +1920,16 @@ impl Region {
             .map(|place| place.experience)
             .unwrap_or_default();
         // Their effects and their time since rest too, counted on from now.
-        let (effects, time_since_rest) = answer
+        let (effects, time_since_rest, raid_omen_position) = answer
             .place
             .as_ref()
-            .map(|place| (place.effects.clone(), place.time_since_rest))
+            .map(|place| {
+                (
+                    place.effects.clone(),
+                    place.time_since_rest,
+                    place.raid_omen_position,
+                )
+            })
             .unwrap_or_default();
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
@@ -1960,6 +1980,7 @@ impl Region {
                         cooldowns: Vec::new(),
                         effects: place.effects.clone(),
                         time_since_rest: place.time_since_rest,
+                        raid_omen_position: place.raid_omen_position,
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -2007,6 +2028,7 @@ impl Region {
             cooldowns: Vec::new(),
             effects: crate::mobs::body::effects::from_instances(&effects, self.tick),
             rested: self.tick.saturating_sub(u64::from(time_since_rest)),
+            raid_omen_position,
         };
         self.enter(id, player, attempt, output);
     }
@@ -3578,6 +3600,7 @@ impl Player {
             cooldowns: self.cooldowns.clone(),
             effects: crate::mobs::body::effects::kept(&self.effects),
             rested: self.rested,
+            raid_omen_position: self.raid_omen_position,
         }
     }
 
@@ -3610,6 +3633,7 @@ impl Player {
             cooldowns: state.cooldowns,
             effects: crate::mobs::body::effects::from_kept(&state.effects),
             rested: state.rested,
+            raid_omen_position: state.raid_omen_position,
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
@@ -3663,6 +3687,7 @@ impl Player {
             respawn: self.respawn,
             effects: crate::mobs::body::effects::instances(&self.effects, tick + 1),
             time_since_rest: self.time_since_rest(tick + 1),
+            raid_omen_position: self.raid_omen_position,
         }
     }
 
@@ -3697,6 +3722,7 @@ impl Player {
             using: self.using,
             effects,
             time_since_rest,
+            raid_omen_position: self.raid_omen_position,
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -3912,6 +3938,7 @@ mod tests {
     mod pushed;
     mod r7;
     mod raiders_and_guardians;
+    mod raids_frame;
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;
@@ -6003,6 +6030,7 @@ mod tests {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            raid_omen_position: None,
         }
     }
 
@@ -6584,6 +6612,7 @@ mod tests {
                         riding: None,
                         keys: Default::default(),
                         kept: Vec::new(),
+                        raid_omen_position: None,
                     }
                 ),
             ]
@@ -6905,6 +6934,7 @@ mod tests {
             riding: None,
             keys: Default::default(),
             kept: Vec::new(),
+            raid_omen_position: None,
         };
         assert_eq!(told(&output), [(player(1), spawned), departed(1, transfer)]);
         assert_eq!(let_go(&output), [(player(1), WEST_REGION)]);

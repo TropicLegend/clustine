@@ -387,6 +387,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         kept: Vec::new(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -415,6 +416,7 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         kept: Vec::new(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -445,6 +447,7 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         menu: None,
         effects: Vec::new(),
         rested: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -2421,6 +2424,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         menu: None,
         effects: Vec::new(),
         rested: 0,
+        raid_omen_position: None,
     }
 }
 
@@ -4983,6 +4987,7 @@ fn place_of(state: &PlayerState) -> Place {
         ender: Default::default(),
         effects: Vec::new(),
         time_since_rest: 0,
+        raid_omen_position: None,
     }
 }
 

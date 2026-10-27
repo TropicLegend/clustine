@@ -1317,6 +1317,7 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        raid_omen_position: None,
     }
 }
 

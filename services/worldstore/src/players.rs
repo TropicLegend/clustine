@@ -469,6 +469,7 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         ender: (*place.ender.0).clone(),
         effects: place.effects.clone(),
         time_since_rest: place.time_since_rest,
+        raid_omen_position: place.raid_omen_position.map(|pos| [pos.x, pos.y, pos.z]),
     }
 }
 
@@ -501,6 +502,9 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
         ender: EnderChest(Box::new(logged.ender.clone())),
         effects: logged.effects.clone(),
         time_since_rest: logged.time_since_rest,
+        raid_omen_position: logged
+            .raid_omen_position
+            .map(|[x, y, z]| clustine_world::BlockPos::new(x, y, z)),
     }
 }
 
