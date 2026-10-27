@@ -3779,6 +3779,13 @@ mod tests {
     mod mobs;
     mod mount_riding;
     mod n8_specification;
+    mod n9_counts;
+    mod n9_entity_effects;
+    mod n9_player_effects;
+    mod n9_stacks;
+    mod n9_targets;
+    mod n9_using;
+    mod n9_world;
     mod pigs;
     mod pistons;
     mod player_effects;
