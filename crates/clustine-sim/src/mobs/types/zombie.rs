@@ -22,6 +22,11 @@ const KIND: u16 = entity_types::ZOMBIE as u16;
 pub(crate) const CONVERTED: i32 = 1040;
 
 impl MobType for Zombie {
+    /// `Zombie.doHurtTarget`'s fire.
+    fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+        family::hit_extras(ai)
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         family::register_goals(setup);
     }

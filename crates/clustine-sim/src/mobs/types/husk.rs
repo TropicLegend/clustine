@@ -37,6 +37,17 @@ fn finalize_spawn(spawn: &mut Spawning<'_>) {
 }
 
 impl MobType for Husk {
+    /// `Zombie.doHurtTarget`'s fire, then an empty-handed husk's hunger for
+    /// `140 · (int) eff` ticks, given even for none (finding 47).
+    fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+        let mut extras = family::hit_extras(ai);
+        if ai.tick.mob.body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)].is_none()
+        {
+            extras.push(clustine_world::HitExtra::HuskHunger);
+        }
+        extras
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         family::register_goals(setup);
     }

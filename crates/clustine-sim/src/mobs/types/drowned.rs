@@ -370,6 +370,11 @@ fn finalize_spawn(spawn: &mut Spawning<'_>) {
 }
 
 impl MobType for Drowned {
+    /// `Zombie.doHurtTarget`'s fire.
+    fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+        family::hit_extras(ai)
+    }
+
     /// `Zombie.registerGoals` with the drowned's `addBehaviourGoals`, its amphibious
     /// navigation, and water no malus.
     fn register_goals(&self, setup: &mut Setup) {

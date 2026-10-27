@@ -299,6 +299,14 @@ pub(crate) trait MobType: Sync {
         super::ai::goals::melee_hit(ai, target);
     }
 
+    /// What the type's `doHurtTarget` adds after `Mob`'s where the hurt took
+    /// (`docs/groundwork/n9-plan.md`, section 8.2), run where the hit lands: nothing by
+    /// default; the zombie's fire, the husk's hunger.
+    fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+        let _ = ai;
+        Vec::new()
+    }
+
     /// `Mob.setBaby(baby)`, which a conversion calls on the new mob where the old one was
     /// a baby: nothing for a type that is never one.
     fn set_baby(&self, mob: &mut Mob, baby: bool) {

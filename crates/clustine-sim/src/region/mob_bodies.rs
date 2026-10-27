@@ -277,6 +277,8 @@ impl Region {
                     sound,
                     output,
                 ),
+                Local::Strike { key: struck, hurt } => self.strike(struck, hurt, output),
+                Local::Swing => self.swing_mob(key, output),
                 Local::Alert {
                     key: alerted,
                     attacker,

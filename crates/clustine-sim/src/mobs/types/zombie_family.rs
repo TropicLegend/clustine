@@ -129,6 +129,18 @@ pub(crate) struct ZombieState {
 
 /// The family's state of `mob`; a record of nothing, or one this build cannot read, as a
 /// fresh zombie's.
+/// `Zombie.doHurtTarget`'s fire where the hurt took (`docs/groundwork/n9-plan.md`,
+/// section 8.2): only an empty-handed zombie on fire draws for it, as the game's `&&`
+/// asks the draw last.
+pub(crate) fn hit_extras(ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+    let empty = ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)].is_none();
+    if empty && ai.tick.living.is_on_fire() {
+        vec![clustine_world::HitExtra::ZombieFire]
+    } else {
+        Vec::new()
+    }
+}
+
 pub(crate) fn read(mob: &Mob) -> ZombieState {
     read_state(&mob.state)
 }

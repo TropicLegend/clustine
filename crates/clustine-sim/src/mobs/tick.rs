@@ -114,6 +114,17 @@ pub(crate) enum Local {
         /// The iron golem's fling where the hurt took (`IronGolem.doHurtTarget`).
         fling: Option<f32>,
     },
+    /// `Mob.doHurtTarget`'s hurt of the entity `key` (`docs/groundwork/n9-plan.md`,
+    /// section 8.2): landed by the region where it holds the entity, the extras run by
+    /// its outcome from the hit's stream; sent to the holder of one in a copy
+    /// (`EntityUse::Hurt`). A player is creative and refuses it.
+    Strike {
+        key: EntityId,
+        hurt: Box<clustine_world::HurtBy>,
+    },
+    /// `MeleeAttackGoal`'s `swingForAttack(MAIN_HAND)`: the mob's main arm swings with
+    /// its main hand's attack animation, where its last swing lets it.
+    Swing,
     /// `HurtByTargetGoal.alertOthers`' word to the mob `key`, of the class `class` the
     /// alerting mob is of: it takes `attacker` (of the type `kind`) as its target if it
     /// is of the class, has no target and is of no class the alert ignores

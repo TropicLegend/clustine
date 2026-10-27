@@ -118,6 +118,21 @@ impl Region {
         }
     }
 
+    /// A mob's melee hit on the entity `key` (`Local::Strike`, `docs/groundwork/
+    /// n9-plan.md`, section 8.2): taken here where the region holds the entity, refused
+    /// by a player (creative), and sent to the holder of one in a copy.
+    pub(crate) fn strike(&mut self, key: EntityId, hurt: Box<HurtBy>, output: &mut TickOutput) {
+        if let Some((_, entity)) = self.find_entity(key) {
+            let entity = entity.clone();
+            self.take_hurt(&entity, &hurt, output);
+            return;
+        }
+        if self.player_with_entity(key).is_some() {
+            return;
+        }
+        self.send_on_entity(key, EntityUse::Hurt(hurt));
+    }
+
     /// `ThrownEnderpearl.onHit` for its owner, the player `id`: an endermite where the
     /// maker drew one (`teleports.rs`), off what they ride, at `at`, and the teleport's
     /// sound; the pearl's hurt of 5 refused (creative).

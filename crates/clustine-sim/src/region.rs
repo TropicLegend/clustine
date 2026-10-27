@@ -449,6 +449,9 @@ pub struct Region {
     unnamed: bool,
     /// Its counts of mobs by chunk as last reported (`spawn_caps.rs`), in memory only.
     counts: spawn_caps::Counts,
+    /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
+    /// began in and its length; in memory only, and forgotten once over.
+    mob_swings: BTreeMap<EntityId, (u64, u8)>,
     journal: Journal,
     /// What one change of a block makes in turn while it runs; empty between changes,
     /// and no part of the state.
@@ -682,6 +685,7 @@ impl Region {
             entering: state.entering,
             unnamed: true,
             counts: Default::default(),
+            mob_swings: BTreeMap::new(),
             journal: Journal::default(),
             lends_asked,
             clock: state.clock,
@@ -2676,6 +2680,39 @@ impl Region {
             off_hand,
             swing,
             own,
+        });
+    }
+
+    /// `MeleeAttackGoal`'s swing of the region's mob `key` (`swingForAttack(MAIN_HAND)`,
+    /// `docs/groundwork/n9-plan.md`, section 8.2): the main arm, with its main hand's
+    /// attack animation, where its last swing lets it begin, as a player's.
+    pub(super) fn swing_mob(&mut self, key: EntityId, output: &mut TickOutput) {
+        let tick = self.tick;
+        let Some((chunk, entity)) = self.find_entity(key) else {
+            return;
+        };
+        let held = crate::mobs::Mob::decode(&entity.data).ok().and_then(|mob| {
+            mob.body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)].clone()
+        });
+        let swing = held.map_or(Swing::DEFAULT, |stack| {
+            ItemComponents::of(stack.item).attack_animation
+        });
+        // What is over is forgotten.
+        self.mob_swings
+            .retain(|_, (began, duration)| tick - *began <= u64::from(*duration));
+        if let Some((began, duration)) = self.mob_swings.get(&key) {
+            let ticks = tick - began;
+            if ticks > 0 && ticks <= u64::from(duration / 2) {
+                return;
+            }
+        }
+        self.mob_swings.insert(key, (tick, swing.duration));
+        output.events.push(RegionEvent::ArmSwung {
+            entity: key,
+            chunk,
+            off_hand: false,
+            swing,
+            own: false,
         });
     }
 

@@ -65,6 +65,11 @@ fn id_of(names: &[&str], name: &str) -> Option<i32> {
 }
 
 impl MobType for ZombieVillager {
+    /// `Zombie.doHurtTarget`'s fire.
+    fn hit_extras(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::HitExtra> {
+        family::hit_extras(ai)
+    }
+
     /// `initializeZombieVillagerData(random)`: the default data with a profession drawn
     /// from the registry's (`getRandom`, one `nextInt(15)`), the synched value's default.
     fn define_synched_data(&self, mob: &mut Mob, own: &mut Random) {

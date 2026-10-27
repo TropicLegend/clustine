@@ -191,6 +191,8 @@ impl Shot for MeleeAttack {
             MemoryKind::LookTarget,
             Value::Tracker(tracking(target.key, true)),
         );
+        // `swing(MAIN_HAND)`, then `doHurtTarget`.
+        cx.ai.tick.out.local.push(crate::mobs::tick::Local::Swing);
         (self.hit)(cx, &target);
         cx.memories.set_with_expiry(
             MemoryKind::AttackCoolingDown,

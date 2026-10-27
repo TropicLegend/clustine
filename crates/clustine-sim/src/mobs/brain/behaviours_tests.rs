@@ -1599,7 +1599,7 @@ fn a_melee_hit_cools_down_to_the_tick_of_its_expiry() {
             .out
             .local
             .iter()
-            .filter(|local| matches!(local, Local::Hurt { key, .. } if *key == target))
+            .filter(|local| matches!(local, Local::Strike { key, .. } if *key == target))
             .count()
     };
     let ticked = run.tick_around(

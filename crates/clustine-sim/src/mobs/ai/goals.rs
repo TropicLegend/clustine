@@ -1621,18 +1621,56 @@ impl MeleeAttackGoal {
     }
 }
 
-/// `Mob.doHurtTarget(level, target)` of the mob in `ai`: its attack damage as a mob's
-/// attack, which the region lands on the target after the mob's tick.
+/// `Mob.doHurtTarget(level, target)` of the mob in `ai` (`docs/groundwork/n9-plan.md`,
+/// section 8.2): its attack damage as a mob's attack, which the region lands on the
+/// target after the mob's tick, and only where it took the attack knockback
+/// (`causeExtraKnockback`) and `extras`, the type's own (`MobType::hit_extras`), drawn
+/// from the hit's stream of the mob's key and `lived`.
+///
+/// Named differences: the weapon's damage source and `modifyDamage` (Sharpness, an
+/// item's own bonus) are not read, as no mob holds an enchanted weapon at easy; nor is
+/// the weapon worn (`hurtEnemy`), `doPostAttackEffects` run, `setLastHurtMob` kept or
+/// the attacker slowed by its knockback, which it would only know after the hurt landed.
 pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
+    let extras = ai.tick.mob_type.hit_extras(ai);
     let amount = ai.attribute(attributes::ATTACK_DAMAGE) as f32;
-    ai.tick.out.local.push(crate::mobs::tick::Local::Hurt {
-        key: target.key,
+    let knockback = ai.attribute(attributes::ATTACK_KNOCKBACK) as f32;
+    let yaw = ai.tick.living.yaw * maths::RADIANS;
+    let knockback = (knockback > 0.0).then(|| {
+        [
+            f64::from(knockback * 0.5),
+            f64::from(maths::table_sin(yaw)),
+            f64::from(-maths::table_cos(yaw)),
+        ]
+        .map(clustine_world::Double)
+    });
+    let at = ai.position();
+    let attacker = clustine_world::Causer {
+        key: ai.tick.key,
         kind: ai.tick.kind,
-        from: ai.position(),
-        amount,
+        position: at.map(clustine_world::Double),
+        player: None,
+        living: true,
+    };
+    let hurt = clustine_world::HurtBy {
+        damage_type: "minecraft:mob_attack".to_owned(),
+        cause: Some(attacker.clone()),
+        direct: Some(attacker),
+        position: None,
+        projectile_motion: None,
+        amount: clustine_world::Float(amount),
+        knockback,
+        fire_before: 0,
+        fire_after: 0,
+        effects: Vec::new(),
+        arrow: false,
+        extras,
         sound: None,
-        knockback: None,
-        fling: None,
+        hit: Some((ai.tick.key, ai.tick.lived)),
+    };
+    ai.tick.out.local.push(crate::mobs::tick::Local::Strike {
+        key: target.key,
+        hurt: Box::new(hurt),
     });
 }
 
@@ -1706,6 +1744,7 @@ impl Goal for MeleeAttackGoal {
         // `checkAndPerformAttack`.
         if Self::can_perform_attack(state, ai, &target) {
             self.reset_attack_cooldown(state);
+            ai.tick.out.local.push(crate::mobs::tick::Local::Swing);
             {
                 let mob_type = ai.tick.mob_type;
                 mob_type.do_hurt_target(ai, &target);

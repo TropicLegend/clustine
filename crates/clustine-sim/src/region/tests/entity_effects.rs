@@ -5,8 +5,8 @@
 use clustine_data::entity_types;
 use clustine_world::components::EffectInstance;
 use clustine_world::{
-    Causer, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect, Float,
-    GivenEffects, HitExtra, HurtBy, PlayerId,
+    Causer, Double, Due, Effect, EffectId, Effected, EntityChange, EntityId, EntityUse,
+    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId,
 };
 
 use super::thrown::{cow, health, lay, mob};
@@ -282,4 +282,96 @@ fn what_a_region_sends_to_a_player_goes_out_addressed_to_them_and_counts_at_the_
         effect.what,
         Effected::OnPlayer { player: to, entity: EntityId(42), .. } if to == player
     )));
+}
+
+/// A mob's melee hit (`Local::Strike`) as its attacker's region lands it.
+fn strike_of(amount: f32, extras: Vec<HitExtra>) -> Box<HurtBy> {
+    let zombie = Causer {
+        key: EntityId(900),
+        kind: u16::try_from(entity_types::ZOMBIE).unwrap(),
+        position: [Double(4.5), Double(-60.0), Double(0.5)],
+        player: None,
+        living: true,
+    };
+    Box::new(HurtBy {
+        damage_type: "minecraft:mob_attack".to_owned(),
+        cause: Some(zombie.clone()),
+        direct: Some(zombie),
+        projectile_motion: None,
+        extras,
+        hit: Some((EntityId(900), 40)),
+        ..arrow_hurt(amount)
+    })
+}
+
+#[test]
+fn a_mob_s_melee_hit_on_the_region_s_mob_is_taken_here() {
+    let mut region = world(SEED, nothing);
+    let key = a_cow_in(&mut region);
+    let before = health(&region, key);
+    let mut output = TickOutput::default();
+    region.strike(key, strike_of(3.0, Vec::new()), &mut output);
+    assert_eq!(health(&region, key), before - 3.0);
+    assert!(output.effects.is_empty(), "{:?}", output.effects);
+}
+
+#[test]
+fn a_mob_s_melee_hit_on_a_mob_in_a_copy_is_sent_to_its_holder() {
+    let mut region = crate::region::tnt::tests::west_of_a_line(SEED, nothing);
+    let key = EntityId(77_777);
+    let across = cow(key, [17.0, -60.0, 0.5]);
+    region
+        .copies
+        .get_mut(&across.chunk())
+        .expect("the column east of the line is copied")
+        .apply_entity(&EntityChange::Whole(across));
+    let mut output = TickOutput::default();
+    region.strike(key, strike_of(3.0, Vec::new()), &mut output);
+    let output = region.tick(&TickInputs::default());
+    assert!(
+        output.effects.iter().any(|effect| matches!(
+            &effect.what,
+            Effected::OnEntity { key: to, by: EntityUse::Hurt(hurt) }
+                if *to == key && hurt.amount == Float(3.0)
+        )),
+        "{:?}",
+        output.effects
+    );
+}
+
+#[test]
+fn a_mob_s_melee_hit_on_a_creative_player_of_the_region_does_nothing() {
+    let mut region = world(SEED, nothing);
+    let (_, entity) = add_player(&mut region, 1, [2.5, -60.0, 2.5], false);
+    let mut output = TickOutput::default();
+    region.strike(entity, strike_of(3.0, Vec::new()), &mut output);
+    let output = region.tick(&TickInputs::default());
+    assert!(output.effects.is_empty(), "{:?}", output.effects);
+}
+
+#[test]
+fn a_mob_swings_at_once_and_again_only_once_half_its_swing_is_over() {
+    let mut region = world(SEED, nothing);
+    let key = a_cow_in(&mut region);
+    let swings = |output: &TickOutput| {
+        output
+            .events
+            .iter()
+            .filter(|event| matches!(event, RegionEvent::ArmSwung { entity, off_hand: false, .. } if *entity == key))
+            .count()
+    };
+    let mut output = TickOutput::default();
+    region.swing_mob(key, &mut output);
+    assert_eq!(swings(&output), 1);
+    // The default swing lasts 6 ticks: in its first 3 another does not begin.
+    for _ in 0..3 {
+        region.tick(&TickInputs::default());
+        let mut output = TickOutput::default();
+        region.swing_mob(key, &mut output);
+        assert_eq!(swings(&output), 0);
+    }
+    region.tick(&TickInputs::default());
+    let mut output = TickOutput::default();
+    region.swing_mob(key, &mut output);
+    assert_eq!(swings(&output), 1);
 }
