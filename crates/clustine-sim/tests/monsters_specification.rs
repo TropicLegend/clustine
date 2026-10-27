@@ -296,7 +296,7 @@ fn shown_in(outputs: &[TickOutput], key: EntityId, slot: u8) -> Option<Option<It
                         slots
                             .iter()
                             .find(|(at, _)| *at == slot)
-                            .and_then(|(_, stack)| *stack),
+                            .and_then(|(_, stack)| stack.clone()),
                     );
                 }
                 _ => {}
@@ -548,7 +548,7 @@ fn file(region: &mut clustine_sim::Region, sequence: u64, effects: &[Effect]) ->
                 sequence,
                 index: u32::try_from(index).expect("few"),
             },
-            effect: *effect,
+            effect: effect.clone(),
             due: Due::FromTaking,
         })
         .collect();
@@ -604,7 +604,7 @@ fn a_creeper_s_explosion_at_a_pinned_line_breaks_the_far_blocks_by_effects_whose
         .effects
         .iter()
         .filter(|effect| matches!(effect.what, Effected::Exploded { .. }))
-        .copied()
+        .cloned()
         .collect();
     file(&mut east.region, 50, &effects);
     east.idle();
@@ -657,7 +657,7 @@ fn a_creeper_lit_across_a_pinned_line_is_ignited_by_its_holder_and_explodes_thir
         .filter(|effect| {
             matches!(effect.what, Effected::OnEntity { key: used, by: EntityUse::Interact { .. } } if used == key(1))
         })
-        .copied()
+        .cloned()
         .collect();
     assert_eq!(
         uses.len(),
@@ -1628,7 +1628,7 @@ fn a_player_s_snowball_hits_a_cow_across_a_pinned_line_through_its_holder() {
         .filter(|effect| {
             matches!(effect.what, Effected::OnEntity { key: hit, by: EntityUse::Thrown { .. } } if hit == key(1))
         })
-        .copied()
+        .cloned()
         .collect();
     assert_eq!(
         hits.len(),

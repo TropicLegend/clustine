@@ -119,10 +119,8 @@ pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader:
     }
     if own.patrol_leader {
         let body = &mut spawn.mob.body;
-        body.equipment.slots[usize::from(slots::HEAD)] = Some(ItemStack {
-            item: items::WHITE_BANNER,
-            count: 1,
-        });
+        body.equipment.slots[usize::from(slots::HEAD)] =
+            Some(ItemStack::new(items::WHITE_BANNER, 1));
         let mut chances = body.equipment.drop_chances.unwrap_or([0.085; 8]);
         chances[usize::from(slots::HEAD)] = 2.0;
         body.equipment.drop_chances = Some(chances);
@@ -234,6 +232,7 @@ pub(crate) fn arm_pose(kind: u16, mob: &Mob, aggressive: bool) -> ArmPose {
     let own = state_of(mob);
     let holds_crossbow = [slots::MAIN_HAND, slots::OFF_HAND].iter().any(|&slot| {
         mob.body.equipment.slots[usize::from(slot)]
+            .as_ref()
             .is_some_and(|stack| stack.item == items::CROSSBOW)
     });
     match i32::from(kind) {

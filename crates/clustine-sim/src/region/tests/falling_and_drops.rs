@@ -111,7 +111,7 @@ fn spawned_items(events: &[RegionEvent]) -> Vec<(EntityId, Vec3, [f64; 3], ItemS
                     state.entity,
                     state.pose.position,
                     *motion,
-                    *stack,
+                    stack.clone(),
                     *pick_up_delay,
                 )),
                 _ => None,
@@ -121,10 +121,7 @@ fn spawned_items(events: &[RegionEvent]) -> Vec<(EntityId, Vec3, [f64; 3], ItemS
         .collect()
 }
 
-const SAND: ItemStack = ItemStack {
-    item: items::SAND,
-    count: 1,
-};
+const SAND: ItemStack = ItemStack::new(items::SAND, 1);
 
 /// Sand let fall from rest five blocks above the floor falls as the game's falling
 /// block does: by hand, it passes y -55.04, -55.1192, -55.2368… and meets the floor in
@@ -218,10 +215,10 @@ fn sand_that_meets_a_bottom_slab_drops_one_item_where_it_stopped() {
         region.block(BlockPos::new(8, -60, 8)),
         Some(BlockState::parse("minecraft:stone_slab[type=bottom]").unwrap())
     );
-    let [(key, position, motion, stack, delay)] = spawned_items(&output.events)[..] else {
+    let [(key, position, motion, ref stack, delay)] = spawned_items(&output.events)[..] else {
         panic!("{:?}", output.events);
     };
-    assert_eq!(stack, SAND);
+    assert_eq!(*stack, SAND);
     assert_eq!(delay, 10);
     assert_eq!([position.x, position.y, position.z], [8.5, -59.5, 8.5]);
     assert_eq!(motion[1], 0.2);
@@ -281,10 +278,10 @@ fn a_block_that_has_fallen_six_hundred_ticks_drops_as_an_item() {
     lay(&mut region, &sand);
     let output = idle(&mut region);
     assert!(record(&region, sand.key).is_none());
-    let [(_, position, _, stack, _)] = spawned_items(&output.events)[..] else {
+    let [(_, position, _, ref stack, _)] = spawned_items(&output.events)[..] else {
         panic!("{:?}", output.events);
     };
-    assert_eq!(stack, SAND);
+    assert_eq!(*stack, SAND);
     assert_eq!(
         [position.x, position.y, position.z],
         [8.5, -50.0 + -0.04, 8.5]
@@ -383,16 +380,10 @@ fn a_torch_whose_support_is_broken_drops_a_torch_within_its_draws_bounds() {
     let mut region = on_ticking_floor_with(&[(torch, blocks::TORCH)]);
     let output = region.tick(&moves(vec![dig(1, 2, -61, 3, 1)]));
     assert_eq!(region.block(torch), Some(blocks::AIR));
-    let [(key, position, motion, stack, delay)] = spawned_items(&output.events)[..] else {
+    let [(key, position, motion, ref stack, delay)] = spawned_items(&output.events)[..] else {
         panic!("one drop, of the torch: {:?}", output.events);
     };
-    assert_eq!(
-        stack,
-        ItemStack {
-            item: items::TORCH,
-            count: 1
-        }
-    );
+    assert_eq!(*stack, ItemStack::new(items::TORCH, 1));
     assert_eq!(delay, 10);
     assert!((2.25..2.75).contains(&position.x), "{position:?}");
     assert!((-59.875..-59.375).contains(&position.y), "{position:?}");
@@ -447,13 +438,7 @@ fn scaffolding_whose_support_is_broken_breaks_and_drops_itself() {
     assert_eq!(region.block(BlockPos::new(2, -59, 3)), Some(blocks::AIR));
     let drops = spawned_items(&output.events);
     assert_eq!(drops.len(), 1, "{drops:?}");
-    assert_eq!(
-        drops[0].3,
-        ItemStack {
-            item: items::SCAFFOLDING,
-            count: 1
-        }
-    );
+    assert_eq!(drops[0].3, ItemStack::new(items::SCAFFOLDING, 1));
     // Dropped where the upper one was.
     assert!((-59.0..-58.0).contains(&drops[0].1.y), "{drops:?}");
 }
@@ -512,11 +497,8 @@ fn a_stalactite_whose_ceiling_is_broken_falls_and_drops_as_dripstone() {
         .into_iter()
         .map(|(_, stack)| stack)
         .collect();
-    let dripstone = ItemStack {
-        item: items::POINTED_DRIPSTONE,
-        count: 1,
-    };
-    assert_eq!(lying, [dripstone, dripstone]);
+    let dripstone = ItemStack::new(items::POINTED_DRIPSTONE, 1);
+    assert_eq!(lying, [dripstone.clone(), dripstone]);
     assert_eq!(region.block(BlockPos::new(2, -60, 3)), Some(blocks::AIR));
 }
 

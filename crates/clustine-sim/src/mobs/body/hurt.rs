@@ -601,7 +601,7 @@ fn drop_custom_death_loot(struck: &mut Struck<'_>, killed_by_player: bool) -> Ve
             continue;
         }
         let preserved = chance > 1.0;
-        let Some(stack) = struck.mob.body.equipment.slots[slot] else {
+        let Some(ref stack) = struck.mob.body.equipment.slots[slot] else {
             continue;
         };
         if !(killed_by_player || preserved) || struck.draws.next_float() >= chance {
@@ -612,7 +612,7 @@ fn drop_custom_death_loot(struck: &mut Struck<'_>, killed_by_player: bool) -> Ve
             let inner = struck.draws.next_int((max - 3).max(1) as u32);
             let _worn_down = max - struck.draws.next_int(1 + inner) as i32;
         }
-        drops.push(stack);
+        drops.push(stack.clone());
         struck.mob.body.equipment.slots[slot] = None;
     }
     drops

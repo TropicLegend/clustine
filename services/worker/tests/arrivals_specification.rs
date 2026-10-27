@@ -37,7 +37,7 @@ use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{
     EdgeMessage, EdgeToWorker, RegionHello, Restored, StoreReply, StoreRequest, WorkerToEdge,
 };
-use clustine_sim::api::{EntityKind, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, RegionEvent};
+use clustine_sim::api::{EntityKind, Inventory, ItemStack, PlayerInput, RegionEvent};
 use clustine_sim::{Knowledge, RemoteAction, RemoteStep};
 use clustine_sim::{PlayerEvent, PlayerJoin};
 use clustine_worker::{RegionRunner, RegionSettings, Reshape, Reshaped, absorbable};
@@ -66,11 +66,8 @@ fn generator() -> Arc<FlatGenerator> {
 }
 
 fn settings() -> RegionSettings {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = std::array::from_fn(|_| None);
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionSettings {
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
@@ -795,10 +792,7 @@ fn stone(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
         fire_ticks: 0,
         riding: Default::default(),
         data: EntityData::Item {
-            stack: ItemStack {
-                item: items::STONE,
-                count: 1,
-            },
+            stack: ItemStack::new(items::STONE, 1),
             pick_up_delay: 30_000,
             thrower: None,
             health: 5,

@@ -200,7 +200,7 @@ pub fn mob_data_wearing(stacks: &[(u8, clustine_world::ItemStack)]) -> EntityDat
     let mut mob = crate::mobs::Mob::fresh();
     for (slot, stack) in stacks {
         if let Some(worn) = mob.body.equipment.slots.get_mut(usize::from(*slot)) {
-            *worn = Some(*stack);
+            *worn = Some(stack.clone());
         }
     }
     mob.encode()

@@ -359,19 +359,23 @@ fn an_effect_into_a_chunk_nobody_uses_is_dropped_and_not_kept_for_a_later_user()
     let (mut west, _) = Played::open(&store, 0, 1);
     let (mut east, _) = Played::open(&store, 1, 1);
     let early = scheduled(block_in(ORIGIN, 1), 3);
-    west.commit(&[], &[early], &[]);
+    west.commit(&[], std::slice::from_ref(&early), &[]);
     east.load(ORIGIN);
     let late = scheduled(block_in(ORIGIN, 2), 3);
-    west.commit(&[], &[late], &[]);
-    let filed = east.effect(late);
+    west.commit(&[], std::slice::from_ref(&late), &[]);
+    let filed = east.effect(late.clone());
     // A mark through the effect's sequence follows it (section 2).
     east.until(
         "a mark through the effect",
         |reply| matches!(reply, StoreReply::Mark { through } if *through >= filed.id.sequence),
     );
     east.settled(&store);
-    let effects: Vec<Effect> = east.filed().iter().map(|filed| filed.effect).collect();
-    assert_eq!(effects, [late]);
+    let effects: Vec<Effect> = east
+        .filed()
+        .iter()
+        .map(|filed| filed.effect.clone())
+        .collect();
+    assert_eq!(effects, std::slice::from_ref(&late));
     // An effect of a region not coupled to the holder counts from its taking (section 8).
     assert_eq!(filed.due, Due::FromTaking);
     // The maker's own stream has nothing: it uses nothing, copies nothing, is coupled to
@@ -384,7 +388,7 @@ fn an_effect_into_a_chunk_nobody_uses_is_dropped_and_not_kept_for_a_later_user()
     assert!(restored.in_use.contains(&ORIGIN), "{:?}", restored.in_use);
     again.load(ORIGIN);
     let sentinel = scheduled(block_in(ORIGIN, 3), 3);
-    west.commit(&[], &[sentinel], &[]);
+    west.commit(&[], std::slice::from_ref(&sentinel), &[]);
     again.effect(sentinel);
     let effects: BTreeSet<_> = again.filed().iter().map(|filed| filed.effect.at).collect();
     assert!(!effects.contains(&early.at), "{:?}", again.filed());
@@ -427,18 +431,18 @@ fn effects_come_in_the_order_of_their_numbers_each_behind_its_mark() {
         let effects: Vec<Effect> = (0..3)
             .map(|n| scheduled(block_in(ORIGIN, tick * 3 + n), n + 1))
             .collect();
-        made.extend(effects.iter().copied());
+        made.extend(effects.iter().cloned());
         last = west.send_commit(&[], &effects, &[]);
     }
     west.wait_committed(last);
-    let final_one = *made.last().unwrap();
+    let final_one = made.last().unwrap().clone();
     let filed = east.effect(final_one);
     east.until(
         "the mark behind the last effect",
         |reply| matches!(reply, StoreReply::Mark { through } if *through >= filed.id.sequence),
     );
     let filed = east.filed();
-    let effects: Vec<Effect> = filed.iter().map(|filed| filed.effect).collect();
+    let effects: Vec<Effect> = filed.iter().map(|filed| filed.effect.clone()).collect();
     assert_eq!(effects, made, "in the order they were made");
     let ids: Vec<EffectId> = filed.iter().map(|filed| filed.id).collect();
     assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "{ids:?}");
@@ -489,7 +493,7 @@ fn a_taken_effect_is_never_resent_and_numbers_go_on_increasing_after_a_restart()
         east.load(ORIGIN);
         let taken = scheduled(block_in(ORIGIN, 1), 2);
         let kept = update(block_in(ORIGIN, 2));
-        west.commit(&[], &[taken, kept], &[]);
+        west.commit(&[], &[taken.clone(), kept.clone()], &[]);
         let id = east.effect(taken).id;
         let kept_id = east.effect(kept).id;
         east.commit(&[], &[], &[id]);
@@ -507,7 +511,7 @@ fn a_taken_effect_is_never_resent_and_numbers_go_on_increasing_after_a_restart()
         );
         east.load(ORIGIN);
         let sentinel = scheduled(block_in(ORIGIN, 9), 2);
-        west.commit(&[], &[sentinel], &[]);
+        west.commit(&[], std::slice::from_ref(&sentinel), &[]);
         let after = east.effect(sentinel);
         let ids_seen: Vec<EffectId> = east.filed().iter().map(|filed| filed.id).collect();
         assert!(
@@ -539,7 +543,7 @@ fn dropped_ends_the_use_and_drops_what_was_untaken_also_after_a_restart() {
         let (mut east, _) = Played::open(&store, 1, 1);
         east.load(ORIGIN);
         let untaken = scheduled(block_in(ORIGIN, 1), 2);
-        west.commit(&[], &[untaken], &[]);
+        west.commit(&[], std::slice::from_ref(&untaken), &[]);
         east.effect(untaken);
         east.ask(StoreRequest::Dropped {
             chunks: vec![ORIGIN],
@@ -554,9 +558,13 @@ fn dropped_ends_the_use_and_drops_what_was_untaken_also_after_a_restart() {
         assert!(!restored.in_use.contains(&ORIGIN), "{:?}", restored.in_use);
         again.load(ORIGIN);
         let sentinel = scheduled(block_in(ORIGIN, 3), 2);
-        west.commit(&[], &[sentinel], &[]);
-        again.effect(sentinel);
-        let effects: Vec<Effect> = again.filed().iter().map(|filed| filed.effect).collect();
+        west.commit(&[], std::slice::from_ref(&sentinel), &[]);
+        again.effect(sentinel.clone());
+        let effects: Vec<Effect> = again
+            .filed()
+            .iter()
+            .map(|filed| filed.effect.clone())
+            .collect();
         assert_eq!(effects, [sentinel]);
     }
     // After a restart, which puts every chunk of a region in use until its `Dropped`,
@@ -568,7 +576,7 @@ fn dropped_ends_the_use_and_drops_what_was_untaken_also_after_a_restart() {
         let (mut east, _) = Played::open(&store, 1, epoch);
         east.load(ORIGIN);
         let sentinel = scheduled(block_in(ORIGIN, 4), 2);
-        west.commit(&[], &[sentinel], &[]);
+        west.commit(&[], std::slice::from_ref(&sentinel), &[]);
         east.effect(sentinel);
         let mut effects: Vec<BlockPos> = east.filed().iter().map(|f| f.effect.at).collect();
         effects.sort();
@@ -588,7 +596,7 @@ fn a_return_ends_the_use_and_a_later_claim_and_load_begin_it_again() {
     assert_eq!(home.claim(&[FREE]), [FREE]);
     home.load(FREE);
     let first = scheduled(block_in(FREE, 1), 2);
-    west.commit(&[], &[first], &[]);
+    west.commit(&[], std::slice::from_ref(&first), &[]);
     let first = home.effect(first);
     // The tick that took it says so; then the chunk goes back.
     home.commit(&[], &[], &[first.id]);
@@ -603,10 +611,14 @@ fn a_return_ends_the_use_and_a_later_claim_and_load_begin_it_again() {
     assert_eq!(home.claim(&[FREE]), [FREE]);
     home.load(FREE);
     let again = scheduled(block_in(FREE, 3), 2);
-    west.commit(&[], &[again], &[]);
-    home.effect(again);
+    west.commit(&[], std::slice::from_ref(&again), &[]);
+    home.effect(again.clone());
     home.settled(&store);
-    let effects: Vec<Effect> = home.filed().iter().map(|filed| filed.effect).collect();
+    let effects: Vec<Effect> = home
+        .filed()
+        .iter()
+        .map(|filed| filed.effect.clone())
+        .collect();
     assert_eq!(effects, [first.effect, again]);
 }
 
@@ -622,7 +634,7 @@ fn a_merge_moves_the_use_and_the_untaken_effects_to_the_survivor() {
     let (mut home, _) = Played::open(&store, 2, 1);
     west.load(WEST);
     let before = update(block_in(WEST, 1));
-    east.commit(&[], &[before], &[]);
+    east.commit(&[], std::slice::from_ref(&before), &[]);
     let before = west.effect(before);
     home.settled(&store);
     assert_eq!(home.filed(), []);
@@ -634,7 +646,7 @@ fn a_merge_moves_the_use_and_the_untaken_effects_to_the_survivor() {
     let resent = home.effect(before.effect);
     assert_eq!(resent.id, before.id, "an effect keeps its number");
     let after = update(block_in(WEST, 2));
-    east.commit(&[], &[after], &[]);
+    east.commit(&[], std::slice::from_ref(&after), &[]);
     home.effect(after);
 }
 
@@ -651,9 +663,9 @@ fn a_split_moves_the_use_of_the_parts_chunks_and_their_effects_to_the_part() {
     west.load(parted);
     let before = scheduled(block_in(parted, 1), 4);
     let staying = scheduled(block_in(WEST, 1), 4);
-    east.commit(&[], &[before, staying], &[]);
-    west.effect(before);
-    west.effect(staying);
+    east.commit(&[], &[before.clone(), staying.clone()], &[]);
+    west.effect(before.clone());
+    west.effect(staying.clone());
     match west.split(5, &[parted], 7, 3) {
         StoreReply::Split { region, .. } => assert_eq!(region, RegionId(3)),
         other => panic!("expected the split, got {other:?}"),
@@ -665,9 +677,9 @@ fn a_split_moves_the_use_of_the_parts_chunks_and_their_effects_to_the_part() {
     part.effect(before);
     let after = scheduled(block_in(parted, 2), 4);
     let after_west = scheduled(block_in(WEST, 2), 4);
-    east.commit(&[], &[after, after_west], &[]);
-    part.effect(after);
-    west.effect(after_west);
+    east.commit(&[], &[after.clone(), after_west.clone()], &[]);
+    part.effect(after.clone());
+    west.effect(after_west.clone());
     west.settled(&store);
     part.settled(&store);
     assert!(!west.filed().iter().any(|filed| filed.effect == after));
@@ -685,7 +697,7 @@ fn a_taking_in_a_group_that_failed_is_undone_and_the_effect_resent() {
     let (mut east, _) = Played::open(&store, 1, 1);
     east.load(ORIGIN);
     let effect = scheduled(block_in(ORIGIN, 1), 2);
-    west.commit(&[], &[effect], &[]);
+    west.commit(&[], std::slice::from_ref(&effect), &[]);
     let filed = east.effect(effect);
     east.handle.flush();
     disk.failing_syncs.store(true, Ordering::SeqCst);
@@ -710,7 +722,7 @@ fn a_taking_in_a_group_that_failed_is_undone_and_the_effect_resent() {
     let (mut again, _) = Played::open(&store, 1, 2);
     again.load(ORIGIN);
     let sentinel = scheduled(block_in(ORIGIN, 2), 2);
-    west.commit(&[], &[sentinel], &[]);
+    west.commit(&[], std::slice::from_ref(&sentinel), &[]);
     again.effect(sentinel);
     let resent: Vec<EffectId> = again.filed().iter().map(|filed| filed.id).collect();
     assert!(resent.contains(&filed.id), "{:?}", again.stream);
@@ -1150,7 +1162,7 @@ fn a_coupled_effect_is_due_at_the_holders_tick_by_the_offsets() {
     let mut pair = coupled_pair(&disk);
     let tick = scheduled(block_in(ORIGIN, 1), 5);
     let shape = update(block_in(ORIGIN, 2));
-    let made = pair.west.commit(&[], &[tick, shape], &[]);
+    let made = pair.west.commit(&[], &[tick.clone(), shape.clone()], &[]);
     assert_eq!(made, 4);
     let at = |delay: i64| {
         u64::try_from(made as i64 + pair.west_offset - pair.east_offset + delay).unwrap()
@@ -1229,7 +1241,7 @@ fn a_coupling_ends_a_second_after_neither_needs_it_and_later_effects_count_from_
     assert_eq!(uncoupled(&mut pair.west), expected(1));
     assert_eq!(uncoupled(&mut pair.east), expected(0));
     let late = scheduled(block_in(ORIGIN, 3), 5);
-    pair.west.commit(&[], &[late], &[]);
+    pair.west.commit(&[], std::slice::from_ref(&late), &[]);
     assert_eq!(pair.east.effect(late).due, Due::FromTaking);
 }
 
@@ -1818,7 +1830,7 @@ fn effects_scenario(store: &Store) -> Told {
     let _ = store.flush();
     settle(&mut east);
     let taken: Vec<FiledEffect> = east.filed();
-    told.taken = taken.iter().map(|filed| filed.effect).collect();
+    told.taken = taken.iter().map(|filed| filed.effect.clone()).collect();
     let ids: Vec<EffectId> = taken.iter().map(|filed| filed.id).collect();
     east.handle.request(commit_of(1, &[], &[], &ids));
     settle(&mut east);
@@ -1828,7 +1840,11 @@ fn effects_scenario(store: &Store) -> Told {
     told.made = west.committed.clone();
     let _ = store.flush();
     settle(&mut east);
-    told.delivered = east.filed().iter().map(|filed| filed.effect).collect();
+    told.delivered = east
+        .filed()
+        .iter()
+        .map(|filed| filed.effect.clone())
+        .collect();
     told
 }
 
@@ -1865,7 +1881,7 @@ fn effects_and_takings_are_as_durable_as_their_records_at_every_kill_point() {
                 assert!(!told.taking_confirmed || taking_in_log, "{case}");
                 east.load(ORIGIN);
                 let sentinel = scheduled(block_in(ORIGIN, 15), 2);
-                west.commit(&[], &[sentinel], &[]);
+                west.commit(&[], std::slice::from_ref(&sentinel), &[]);
                 east.effect(sentinel);
                 let resent: BTreeSet<BlockPos> =
                     east.filed().iter().map(|filed| filed.effect.at).collect();

@@ -183,7 +183,7 @@ fn item_age(entity: &Entity) -> u32 {
 
 fn item_parts(data: &EntityData) -> Option<(ItemStack, i16)> {
     match data {
-        EntityData::Item { stack, health, .. } => Some((*stack, *health)),
+        EntityData::Item { stack, health, .. } => Some((stack.clone(), *health)),
         _ => None,
     }
 }
@@ -239,7 +239,7 @@ impl Region {
     /// The item of `entity` as its tick starts, or as a piston finds it.
     pub(super) fn item_of(&self, entity: &Entity, position: ChunkPos) -> Option<Item> {
         let EntityData::Item {
-            stack,
+            ref stack,
             pick_up_delay,
             health,
             ..
@@ -295,7 +295,7 @@ impl Region {
         );
         Some(Item {
             body,
-            stack,
+            stack: stack.clone(),
             health,
             pick_up_delay,
             age: item_age(entity),
@@ -609,7 +609,7 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let EntityData::Item {
-            stack,
+            ref stack,
             pick_up_delay,
             thrower,
             health,
@@ -619,7 +619,7 @@ impl Region {
             return;
         };
         // The game's owners (`target`) are never set yet: both are none.
-        let same = stack.item == item.stack.item;
+        let same = stack.same_kind(&item.stack);
         if !same || stack.count + item.stack.count > item::max_stack_size(stack) {
             return;
         }
@@ -641,7 +641,7 @@ impl Region {
                 data: EntityData::Item {
                     stack: ItemStack {
                         count: stack.count + moved,
-                        ..stack
+                        ..stack.clone()
                     },
                     pick_up_delay: pick_up_delay.max(item.pick_up_delay),
                     thrower,
@@ -737,17 +737,17 @@ impl Region {
                 let changed = add_to_inventory(
                     &mut player.inventory,
                     usize::from(player.selected_slot),
-                    stack,
+                    stack.clone(),
                 );
                 self.journal.players.insert(id);
                 for slot in changed {
-                    let slot_stack = player.inventory.0[slot];
+                    let slot_stack = &player.inventory.0[slot];
                     let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
                     output.player_events.push((
                         id,
                         PlayerEvent::InventorySlot {
                             slot,
-                            stack: slot_stack,
+                            stack: slot_stack.clone(),
                         },
                     ));
                 }
@@ -768,7 +768,7 @@ impl Region {
 fn record_is_mergable(record: &Entity) -> bool {
     match record.data {
         EntityData::Item {
-            stack,
+            ref stack,
             pick_up_delay,
             ..
         } => {
@@ -797,7 +797,8 @@ pub(super) fn tracked(entity: &Entity, flags: u8, with_data: bool) -> Tracked {
 }
 
 /// `Inventory.add(stack)` for a player with infinite materials: into the selected slot,
-/// the off hand or the first of the main slots that has the same item and room, then
+/// the off hand or the first of the main slots that has the same item with the same
+/// components and room, then
 /// into the first empty main slot, as long as a pass puts any in; what does not fit is
 /// destroyed. The slots changed, in the order changed.
 pub(crate) fn add_to_inventory(
@@ -805,34 +806,32 @@ pub(crate) fn add_to_inventory(
     selected: usize,
     stack: ItemStack,
 ) -> Vec<usize> {
-    let max = item::max_stack_size(stack).min(99);
+    let max = item::max_stack_size(&stack).min(99);
     let mut left = stack.count;
     let mut changed = Vec::new();
     loop {
         let before = left;
         // `getSlotWithRemainingSpace`, then `getFreeSlot`.
-        let has_room = |slot: Option<ItemStack>| {
-            slot.is_some_and(|held| held.item == stack.item && max > 1 && held.count < max)
+        let has_room = |slot: &Option<ItemStack>| {
+            slot.as_ref()
+                .is_some_and(|held| held.same_kind(&stack) && max > 1 && held.count < max)
         };
         let order = std::iter::once(selected)
             .chain(std::iter::once(clustine_world::OFF_HAND))
             .chain(0..36);
         let target = order
             .clone()
-            .find(|slot| has_room(inventory.0[*slot]))
+            .find(|slot| has_room(&inventory.0[*slot]))
             .or_else(|| (0..36).find(|slot| inventory.0[*slot].is_none()));
         let Some(slot) = target else {
             break;
         };
-        let held = inventory.0[slot].map_or(0, |held| held.count);
+        let held = inventory.0[slot].as_ref().map_or(0, |held| held.count);
         let put = left.min(max - held);
         if put == 0 {
             break;
         }
-        inventory.0[slot] = Some(ItemStack {
-            item: stack.item,
-            count: held + put,
-        });
+        inventory.0[slot] = Some(stack.with_count(held + put));
         if !changed.contains(&slot) {
             changed.push(slot);
         }
@@ -842,4 +841,32 @@ pub(crate) fn add_to_inventory(
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use clustine_data::items;
+    use clustine_world::{Component, Inventory};
+
+    use super::*;
+
+    /// `Inventory.add` tops up only a stack of the same item with the same components
+    /// (`hasRemainingSpaceForItem`): a picked-up stack that differs takes an empty slot.
+    #[test]
+    fn an_inventory_add_fills_only_stacks_with_the_same_components() {
+        let mut worn = ItemStack::new(items::STONE, 10);
+        worn.components.set(Component::Damage(2));
+        let mut inventory = Inventory::default();
+        inventory.set(0, Some(worn.clone()));
+        let changed = add_to_inventory(&mut inventory, 0, ItemStack::new(items::STONE, 5));
+        assert_eq!(changed, [1]);
+        assert_eq!(inventory.get(0), Some(Some(worn.clone())));
+        assert_eq!(
+            inventory.get(1),
+            Some(Some(ItemStack::new(items::STONE, 5)))
+        );
+        let changed = add_to_inventory(&mut inventory, 0, worn.with_count(4));
+        assert_eq!(changed, [0]);
+        assert_eq!(inventory.get(0), Some(Some(worn.with_count(14))));
+    }
 }

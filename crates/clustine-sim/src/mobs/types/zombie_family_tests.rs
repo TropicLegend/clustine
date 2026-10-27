@@ -158,7 +158,9 @@ fn after_own_four(mut stream: Random) -> Random {
 }
 
 fn held(mob: &Mob, slot: u8) -> Option<i32> {
-    mob.body.equipment.slots[usize::from(slot)].map(|stack| stack.item)
+    mob.body.equipment.slots[usize::from(slot)]
+        .as_ref()
+        .map(|stack| stack.item)
 }
 
 #[test]
@@ -593,10 +595,7 @@ fn a_golden_apple_does_nothing_to_a_zombie_villager_that_is_not_weak() {
         player: EntityId(1),
         player_uuid: None,
         game_time: 0,
-        held: Some(ItemStack {
-            item: items::GOLDEN_APPLE,
-            count: 1,
-        }),
+        held: Some(ItemStack::new(items::GOLDEN_APPLE, 1)),
         creative: true,
         sneaking: false,
         carries: false,
@@ -610,10 +609,7 @@ fn a_golden_apple_does_nothing_to_a_zombie_villager_that_is_not_weak() {
     };
     assert_eq!(of(kind).mob_interact(&mut used), Interaction::Consume);
     assert!(used.did.is_empty());
-    used.held = Some(ItemStack {
-        item: items::APPLE,
-        count: 1,
-    });
+    used.held = Some(ItemStack::new(items::APPLE, 1));
     assert_eq!(of(kind).mob_interact(&mut used), Interaction::Pass);
 }
 
@@ -713,10 +709,7 @@ fn a_baby_zombie_is_worth_twelve_and_a_grown_one_five_and_more_for_what_it_holds
     family::set_baby(entity_types::ZOMBIE as u16, &mut baby, true);
     assert_eq!(kind.experience_reward(0, &baby, &mut draws), 12);
     let mut armed = Mob::fresh();
-    armed.body.equipment.slots[0] = Some(ItemStack {
-        item: items::IRON_SWORD,
-        count: 1,
-    });
+    armed.body.equipment.slots[0] = Some(ItemStack::new(items::IRON_SWORD, 1));
     let mut replay = draws.clone();
     let reward = kind.experience_reward(0, &armed, &mut draws);
     assert_eq!(reward, 5 + 1 + replay.next_int(3) as i32);

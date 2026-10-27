@@ -14,7 +14,7 @@ fn opened(serial: u64) -> PlayerEvent {
 
 fn opened_as_of(serial: u64, applied: u64) -> PlayerEvent {
     let mut slots = vec![None; MenuKind::Rows3.slots()];
-    slots[0] = Some(ItemStack { item: 1, count: 64 });
+    slots[0] = Some(ItemStack::new(1, 64));
     PlayerEvent::MenuOpened {
         serial,
         applied,

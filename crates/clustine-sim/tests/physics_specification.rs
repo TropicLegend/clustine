@@ -90,7 +90,7 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn stack(item: i32, count: i32) -> ItemStack {
-    ItemStack { item, count }
+    ItemStack::new(item, count)
 }
 
 fn config_holding(inventory: Inventory) -> RegionConfig {
@@ -107,7 +107,7 @@ fn config_holding(inventory: Inventory) -> RegionConfig {
 
 /// 64 stone in slot 0, which is selected.
 fn stone_in_hand() -> Inventory {
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(stack(items::STONE, 64));
     Inventory::with_hotbar(hotbar)
 }
@@ -362,7 +362,7 @@ fn block_at(region: &Region, x: i32, y: i32, z: i32) -> BlockState {
 
 fn data_of(entity: &Entity) -> (ItemStack, u16, i16) {
     let EntityData::Item {
-        stack,
+        ref stack,
         pick_up_delay,
         health,
         ..
@@ -370,7 +370,7 @@ fn data_of(entity: &Entity) -> (ItemStack, u16, i16) {
     else {
         panic!("{entity:?} is not an item");
     };
-    (stack, pick_up_delay, health)
+    (stack.clone(), pick_up_delay, health)
 }
 
 fn gone_in(output: &TickOutput, key: EntityId) -> bool {
@@ -1203,7 +1203,7 @@ fn two_items_merge_by_the_game_s_rules_into_the_larger_with_the_larger_delay_and
         );
         let told = tracked_in(&output, target.key).expect("the edge is told");
         assert!(
-            matches!(told.data, Some(EntityData::Item { stack, .. }) if stack == merged_stack),
+            matches!(told.data, Some(EntityData::Item { ref stack, .. }) if *stack == merged_stack),
             "{case}: {told:?}"
         );
     }
@@ -1291,8 +1291,8 @@ fn items_merge_only_by_the_game_s_rules() {
         ),
     ];
     for (case, one, other, apart, delay) in cases {
-        let first = item_of(30, [8.5, FLOOR, 8.5], one, delay, 10);
-        let second = item_of(31, [8.5 + apart, FLOOR, 8.5], other, 100, 10);
+        let first = item_of(30, [8.5, FLOOR, 8.5], one.clone(), delay, 10);
+        let second = item_of(31, [8.5 + apart, FLOOR, 8.5], other.clone(), 100, 10);
         let (mut region, _, _) = side_by_side(first.clone(), second.clone());
         for _ in 0..81 {
             let output = idle(&mut region);
@@ -1385,7 +1385,7 @@ fn collector(region: &Region) -> EntityId {
 }
 
 fn slot(region: &Region, slot: usize) -> Option<ItemStack> {
-    region.state().players[&player(1)].inventory.0[slot]
+    region.state().players[&player(1)].inventory.0[slot].clone()
 }
 
 fn taken_in(output: &TickOutput, item: EntityId) -> Option<(EntityId, i32)> {
@@ -1405,7 +1405,9 @@ fn slots_told(output: &TickOutput) -> Vec<(u8, Option<ItemStack>)> {
         .player_events
         .iter()
         .filter_map(|(to, event)| match event {
-            PlayerEvent::InventorySlot { slot, stack } if *to == player(1) => Some((*slot, *stack)),
+            PlayerEvent::InventorySlot { slot, stack } if *to == player(1) => {
+                Some((*slot, stack.clone()))
+            }
             _ => None,
         })
         .collect()
@@ -1492,9 +1494,9 @@ fn what_is_picked_up_goes_to_the_slot_the_game_chooses() {
     for (case, held, into) in cases {
         let mut inventory = Inventory::default();
         for (at, what) in &held {
-            inventory.set(*at, Some(*what));
+            inventory.set(*at, Some(what.clone()));
         }
-        let before = inventory.0[into].map_or(0, |stack| stack.count);
+        let before = inventory.0[into].clone().map_or(0, |stack| stack.count);
         let mut origin = floor();
         origin.set_entities(vec![item_of(
             53,
@@ -1512,7 +1514,7 @@ fn what_is_picked_up_goes_to_the_slot_the_game_chooses() {
         );
         for (at, what) in &held {
             if *at != into {
-                assert_eq!(slot(&region, *at), Some(*what), "{case}: slot {at}");
+                assert_eq!(slot(&region, *at), Some(what.clone()), "{case}: slot {at}");
             }
         }
     }

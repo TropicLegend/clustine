@@ -575,10 +575,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
     let mut e = Seat::first(&west, E, &[]);
     let (first, _) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 71);
 
-    let stack = ItemStack {
-        item: clustine_data::items::DIRT,
-        count: 7,
-    };
+    let stack = ItemStack::new(clustine_data::items::DIRT, 7);
     let turned = PlayerInput::Move {
         position: Some(Vec3::new(HOME_X, -50.0, 0.5)),
         rotation: Some((135.0, -20.0)),
@@ -589,7 +586,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         PlayerInput::SetFlying { flying: true },
         PlayerInput::SetInventorySlot {
             slot: 4,
-            stack: Some(stack),
+            stack: Some(stack.clone()),
         },
         PlayerInput::SelectSlot { slot: 4 },
     ];
@@ -603,7 +600,7 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
     let left = e.send(leave_of(player(), first));
     applied(&mut [&mut west], &mut [&mut e], 0, left);
     assert_eq!(west.region().player(player()), None);
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = std::array::from_fn(|_| None);
     hotbar[4] = Some(stack);
     let place = Place {
         respawn: None,
@@ -808,13 +805,10 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
     let (mut west, _gate) = land.runner(WEST, 1);
     let mut e = Seat::first(&west, E, &[]);
     let (first, _) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 71);
-    let stack = ItemStack {
-        item: clustine_data::items::STONE,
-        count: 3,
-    };
+    let stack = ItemStack::new(clustine_data::items::STONE, 3);
     let held = PlayerInput::SetInventorySlot {
         slot: 2,
-        stack: Some(stack),
+        stack: Some(stack.clone()),
     };
     e.send(does(player(), first, 1, held));
     e.send(does(
@@ -845,7 +839,7 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
     );
 
     let (second, entered) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 72);
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = std::array::from_fn(|_| None);
     hotbar[2] = Some(stack);
     let place = Place {
         respawn: None,

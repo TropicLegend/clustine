@@ -17,8 +17,7 @@ use crate::{Float, ItemStack};
 
 mod structure;
 pub use structure::{
-    StackTemplate, StructureError, Value, component_from, json, stack_from, stack_structure,
-    structure,
+    StructureError, Value, component_from, json, stack_from, stack_structure, structure,
 };
 
 /// The kinds of component Clustine knows, in the order a patch keeps them.

@@ -41,10 +41,7 @@ fn horse_at(kind: i32, position: [f64; 3], yaw: f32, saddled: bool) -> Entity {
         },
     );
     if saddled {
-        mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack {
-            item: items::SADDLE,
-            count: 1,
-        });
+        mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack::new(items::SADDLE, 1));
     }
     Entity {
         key: HORSE_KEY,

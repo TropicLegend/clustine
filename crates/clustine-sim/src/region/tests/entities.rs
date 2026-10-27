@@ -147,11 +147,11 @@ fn stack_of(entity: &Entity) -> ItemStack {
     let EntityData::Item { stack, .. } = &entity.data else {
         panic!("{entity:?} is not an item");
     };
-    *stack
+    stack.clone()
 }
 
 fn held(region: &Region, slot: usize) -> Option<ItemStack> {
-    region.state().players[&player(1)].inventory.0[slot]
+    region.state().players[&player(1)].inventory.0[slot].clone()
 }
 
 /// A region as these tests begin with, the player looking along `yaw` and `pitch`.
@@ -365,20 +365,24 @@ fn q_takes_one_ctrl_q_the_stack_creative_lessens_it_and_an_empty_hand_throws_not
     let before = region.state().players[&player(1)].inventory.clone();
     let output = region.tick(&moves(vec![numbered(
         1,
-        PlayerInput::Throw { stack: five },
+        PlayerInput::Throw {
+            stack: five.clone(),
+        },
     )]));
     assert_eq!(stack_of(&the_whole(&output)), five);
     assert_eq!(region.state().players[&player(1)].inventory, before);
     // Of an item that does not exist, or of none, nothing.
     for stack in [
-        ItemStack {
-            item: i32::MAX,
-            count: 1,
-        },
-        ItemStack { item: -1, count: 1 },
+        ItemStack::new(i32::MAX, 1),
+        ItemStack::new(-1, 1),
         ItemStack { count: 0, ..DIRT },
     ] {
-        let output = region.tick(&moves(vec![numbered(1, PlayerInput::Throw { stack })]));
+        let output = region.tick(&moves(vec![numbered(
+            1,
+            PlayerInput::Throw {
+                stack: stack.clone(),
+            },
+        )]));
         assert!(
             !output
                 .entity_changes

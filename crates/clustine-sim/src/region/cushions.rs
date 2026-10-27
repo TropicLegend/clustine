@@ -180,7 +180,7 @@ impl Region {
             return;
         }
         let item = clustine_data::items::WHITE_CUSHION + i32::from(colour);
-        self.spawn_item(entity.position, ItemStack { item, count: 1 }, output);
+        self.spawn_item(entity.position, ItemStack::new(item, 1), output);
     }
 
     /// A use of a cushion by another region's player: a hit breaks it

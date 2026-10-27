@@ -144,6 +144,7 @@ impl MobType for ZombieVillager {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if !used
             .held
+            .as_ref()
             .is_some_and(|stack| stack.item == items::GOLDEN_APPLE)
         {
             return Interaction::Pass;

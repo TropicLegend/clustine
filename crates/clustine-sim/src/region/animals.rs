@@ -362,10 +362,7 @@ impl Region {
         ];
         for stack in drops {
             for _ in 0..stack.count {
-                let one = ItemStack {
-                    item: stack.item,
-                    count: 1,
-                };
+                let one = stack.with_count(1);
                 self.spawn_item_as(top, one, 0, None, output);
             }
         }
@@ -522,6 +519,7 @@ impl Region {
         let body = usize::from(slots::BODY);
         let saddle = usize::from(slots::SADDLE);
         let harness = mob.body.equipment.slots[body]
+            .clone()
             .filter(|stack| clustine_blocks::data::item_in_tag(stack.item, "minecraft:harnesses"));
         let (slot, stack, sound) = if let Some(stack) = harness {
             (
@@ -529,8 +527,9 @@ impl Region {
                 stack,
                 clustine_data::sounds::ENTITY_HAPPY_GHAST_UNEQUIP,
             )
-        } else if let Some(stack) =
-            mob.body.equipment.slots[saddle].filter(|stack| stack.item == items::SADDLE)
+        } else if let Some(stack) = mob.body.equipment.slots[saddle]
+            .clone()
+            .filter(|stack| stack.item == items::SADDLE)
         {
             (saddle, stack, clustine_data::sounds::ITEM_SADDLE_UNEQUIP)
         } else {

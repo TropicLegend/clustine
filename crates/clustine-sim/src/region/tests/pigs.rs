@@ -27,10 +27,7 @@ fn pig_at(position: [f64; 3], saddled: bool) -> Entity {
     mob.body.vitals.health = 10.0;
     mob.body.vitals.air = crate::living::MAX_AIR;
     if saddled {
-        mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack {
-            item: items::SADDLE,
-            count: 1,
-        });
+        mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack::new(items::SADDLE, 1));
     }
     Entity {
         key: PIG_KEY,

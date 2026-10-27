@@ -62,7 +62,9 @@ fn items_lying(region: &Region) -> Vec<(EntityId, [f64; 3], ItemStack)> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some((entity.key, entity.position, stack)),
+            EntityData::Item { ref stack, .. } => {
+                Some((entity.key, entity.position, stack.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -140,16 +142,10 @@ fn relative(pos: BlockPos, face: Face) -> BlockPos {
     crate::region::updates::relative(pos, face)
 }
 
-const APPLE: ItemStack = ItemStack {
-    item: items::APPLE,
-    count: 5,
-};
+const APPLE: ItemStack = ItemStack::new(items::APPLE, 5);
 
 /// One apple, as a frame holds it.
-const ONE_APPLE: ItemStack = ItemStack {
-    item: items::APPLE,
-    count: 1,
-};
+const ONE_APPLE: ItemStack = ItemStack::new(items::APPLE, 1);
 
 /// Player 1's hotbar emptied, the first slot selected.
 fn empty_handed() -> TickInputs {
@@ -256,7 +252,9 @@ fn used_from_afar(target: &Entity, sequence: u64, held: Option<ItemStack>) -> Ti
 
 fn frame_item_of(entity: &Entity) -> (Option<ItemStack>, u8) {
     match entity.data {
-        EntityData::ItemFrame { item, rotation, .. } => (item, rotation),
+        EntityData::ItemFrame {
+            ref item, rotation, ..
+        } => (item.clone(), rotation),
         _ => panic!("not a frame: {entity:?}"),
     }
 }
@@ -281,7 +279,7 @@ fn a_frame_is_hung_on_each_of_the_six_faces_facing_out_of_it_and_the_item_is_kep
     for (frame, face) in frames.iter().zip(Face::ALL) {
         let EntityData::ItemFrame {
             attached,
-            item,
+            ref item,
             rotation,
             fixed,
             ..
@@ -291,7 +289,7 @@ fn a_frame_is_hung_on_each_of_the_six_faces_facing_out_of_it_and_the_item_is_kep
         };
         assert_eq!(attached.block, relative(WALL, face));
         assert_eq!(attached.direction, face as u8);
-        assert_eq!((item, rotation, fixed), (None, 0, false));
+        assert_eq!((item.clone(), rotation, fixed), (None, 0, false));
         assert_eq!(i32::from(frame.kind), entity_types::ITEM_FRAME);
         // `setDirection`: on a wall a quarter turn per 2D value, on a floor or a
         // ceiling a pitch of -90 or 90.
@@ -310,13 +308,7 @@ fn a_frame_is_hung_on_each_of_the_six_faces_facing_out_of_it_and_the_item_is_kep
     assert_eq!(north.position, [3.5, -57.5, 2.968_75]);
     // A creative player keeps the item.
     let player = &region.players[&player(1)];
-    assert_eq!(
-        player.held(),
-        Some(ItemStack {
-            item: items::ITEM_FRAME,
-            count: 1
-        })
-    );
+    assert_eq!(player.held(), Some(ItemStack::new(items::ITEM_FRAME, 1)));
     // A second frame on a face that has one is refused: it would overlap one facing the
     // same way.
     let output = checked(&mut region, &use_on(WALL, api_face(Face::North)));
@@ -540,13 +532,7 @@ fn a_click_puts_one_of_the_held_item_in_and_later_clicks_turn_it_round_eight_eig
     let after = record(&region, target.key).unwrap();
     assert_eq!(
         frame_item_of(&after),
-        (
-            Some(ItemStack {
-                item: items::APPLE,
-                count: 1
-            }),
-            0
-        )
+        (Some(ItemStack::new(items::APPLE, 1)), 0)
     );
     // Reported with its data, for the edge to send.
     assert!(output.events.iter().any(|event| matches!(
@@ -719,13 +705,7 @@ fn a_use_from_another_region_puts_an_item_in_and_turns_it() {
     checked(&mut region, &used_from_afar(&target, 1, Some(APPLE)));
     assert_eq!(
         frame_item_of(&record(&region, target.key).unwrap()),
-        (
-            Some(ItemStack {
-                item: items::APPLE,
-                count: 1
-            }),
-            0
-        )
+        (Some(ItemStack::new(items::APPLE, 1)), 0)
     );
     checked(&mut region, &used_from_afar(&target, 2, None));
     assert_eq!(frame_item_of(&record(&region, target.key).unwrap()).1, 1);
@@ -911,10 +891,7 @@ fn a_pick_of_a_frame_gives_its_item_and_of_an_empty_one_the_frame() {
         .iter()
         .map(|(_, event)| event)
         .collect();
-    let one_apple = ItemStack {
-        item: items::APPLE,
-        count: 1,
-    };
+    let one_apple = ItemStack::new(items::APPLE, 1);
     assert_eq!(
         events,
         [
@@ -948,10 +925,7 @@ fn a_pick_of_a_frame_gives_its_item_and_of_an_empty_one_the_frame() {
             &PlayerEvent::HeldSlot { slot: 1 },
             &PlayerEvent::InventorySlot {
                 slot: 1,
-                stack: Some(ItemStack {
-                    item: items::GLOW_ITEM_FRAME,
-                    count: 1
-                })
+                stack: Some(ItemStack::new(items::GLOW_ITEM_FRAME, 1))
             },
         ]
     );

@@ -59,7 +59,7 @@ pub(crate) fn item(key: u64, x: f64, z: f64) -> Entity {
         lived: 3,
         fresh_at: 0,
         data: EntityData::Item {
-            stack: ItemStack { item: 1, count: 5 },
+            stack: ItemStack::new(1, 5),
             pick_up_delay: 40,
             thrower: None,
             health: 5,
@@ -185,7 +185,7 @@ fn first_aged() -> [EntityField; 3] {
         EntityField::Lived(9),
         EntityField::OnGround(false),
         EntityField::Data(EntityData::Item {
-            stack: ItemStack { item: 1, count: 4 },
+            stack: ItemStack::new(1, 4),
             pick_up_delay: 0,
             thrower: Some(uuid::Uuid::from_u128(77)),
             health: 5,

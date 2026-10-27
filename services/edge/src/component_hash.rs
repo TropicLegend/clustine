@@ -146,7 +146,7 @@ const CRC32C_TABLE: [u32; 256] = {
 mod tests {
     use clustine_world::components::{
         BannerLayer, EffectInstance, FireworkExplosion, FireworkShape, Fireworks, Kind,
-        PotionContents, Rarity, StackTemplate, TooltipDisplay, UseCooldown, stack_structure,
+        PotionContents, Rarity, TooltipDisplay, UseCooldown, stack_structure,
     };
     use clustine_world::{Components, Float, ItemStack};
 
@@ -463,16 +463,14 @@ mod tests {
             ),
             (
                 "charged_projectiles arrow",
-                component(Component::ChargedProjectiles(vec![ItemStack {
-                    item: item("minecraft:arrow"),
-                    count: 1,
-                }])),
+                component(Component::ChargedProjectiles(vec![ItemStack::new(
+                    item("minecraft:arrow"),
+                    1,
+                )])),
                 1401819792,
                 r#"[{"id":"minecraft:arrow"}]"#,
                 r#"[{id:"minecraft:arrow"}]"#,
             ),
-            // The world's stacks keep no components yet, so this one is built from the
-            // templates the structure of a crossbow's charge is made of.
             (
                 "charged_projectiles tipped arrow poison, rocket",
                 {
@@ -482,12 +480,12 @@ mod tests {
                         ..PotionContents::default()
                     }));
                     Value::List(vec![
-                        stack_structure(&StackTemplate {
+                        stack_structure(&ItemStack {
                             item: item("minecraft:tipped_arrow"),
                             count: 1,
                             components: poison,
                         }),
-                        stack_structure(&StackTemplate {
+                        stack_structure(&ItemStack {
                             item: item("minecraft:firework_rocket"),
                             count: 1,
                             components: Components::NONE,

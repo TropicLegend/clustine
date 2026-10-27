@@ -327,7 +327,7 @@ mod tests {
     fn a_record_of_no_mob_is_given_its_key_only() {
         let mut item = cow();
         item.data = clustine_world::EntityData::Item {
-            stack: clustine_world::ItemStack { item: 1, count: 1 },
+            stack: clustine_world::ItemStack::new(1, 1),
             pick_up_delay: 0,
             thrower: None,
             health: 5,

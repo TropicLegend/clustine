@@ -33,7 +33,7 @@ fn dropper(facing: &str) -> BlockState {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 /// A world with `block` at [`AT`] and what `more` names, the floor everywhere else.
@@ -53,7 +53,7 @@ fn with(block: BlockState, more: &[(BlockPos, BlockState)]) -> Region {
 fn fill(region: &mut Region, pos: BlockPos, slots: &[(usize, Option<ItemStack>)]) {
     let mut container = region.container_at(pos).expect("a container");
     for (slot, held) in slots {
-        container.slots[*slot] = *held;
+        container.slots[*slot] = held.clone();
     }
     region.set_container(pos, container, &mut TickOutput::default());
 }
@@ -109,10 +109,10 @@ fn items_lying(region: &Region) -> Vec<(Entity, ItemStack, u16)> {
         .into_iter()
         .filter_map(|entity| match entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay,
                 ..
-            } => Some((entity.clone(), stack, pick_up_delay)),
+            } => Some((entity.clone(), stack.clone(), pick_up_delay)),
             _ => None,
         })
         .collect()
@@ -147,7 +147,7 @@ fn the_slot_drawn_is_the_last_of_the_filled_slots_to_draw_zero() {
     // An empty dispenser draws nothing.
     let mut drew = false;
     assert_eq!(
-        random_slot(&[None; 9], |_| {
+        random_slot(&[const { None }; 9], |_| {
             drew = true;
             0
         }),
@@ -193,37 +193,54 @@ fn a_remainder_goes_into_the_first_slots_it_fits() {
     let mut slots = vec![None; 9];
     slots[0] = stack(items::STONE, 3);
     slots[2] = stack(items::BUCKET, 15);
-    let left = insert_item(
-        &mut slots,
-        ItemStack {
-            item: items::BUCKET,
-            count: 3,
-        },
-    );
+    let left = insert_item(&mut slots, ItemStack::new(items::BUCKET, 3));
     assert_eq!(left, None);
     assert_eq!(slots[1], stack(items::BUCKET, 3));
     assert_eq!(slots[2], stack(items::BUCKET, 15));
     // Where the empty slots are full, the same item's slot takes up to 16.
     let mut slots = vec![stack(items::STONE, 1); 9];
     slots[5] = stack(items::BUCKET, 15);
-    let left = insert_item(
-        &mut slots,
-        ItemStack {
-            item: items::BUCKET,
-            count: 3,
-        },
-    );
+    let left = insert_item(&mut slots, ItemStack::new(items::BUCKET, 3));
     assert_eq!(left, stack(items::BUCKET, 2));
     assert_eq!(slots[5], stack(items::BUCKET, 16));
     let mut full = vec![stack(items::STONE, 64); 9];
-    let left = insert_item(
-        &mut full,
-        ItemStack {
-            item: items::BUCKET,
-            count: 1,
-        },
-    );
+    let left = insert_item(&mut full, ItemStack::new(items::BUCKET, 1));
     assert_eq!(left, stack(items::BUCKET, 1));
+}
+
+/// `insertItem` stacks only onto the same item with the same components
+/// (`isSameItemSameComponents`): a remainder that carries others takes the next slot.
+#[test]
+fn a_remainder_stacks_only_onto_the_same_components() {
+    let arrows = |potion: &str, count| {
+        let mut stack = ItemStack::new(items::TIPPED_ARROW, count);
+        stack
+            .components
+            .set(clustine_world::Component::PotionContents(
+                clustine_world::components::PotionContents {
+                    potion: Some(potion.into()),
+                    ..Default::default()
+                },
+            ));
+        Some(stack)
+    };
+    let mut slots = vec![None; 9];
+    slots[0] = arrows("minecraft:poison", 3);
+    slots[2] = arrows("minecraft:healing", 3);
+    let left = insert_item(&mut slots, arrows("minecraft:healing", 2).unwrap());
+    assert_eq!(left, None);
+    assert_eq!(slots[0], arrows("minecraft:poison", 3));
+    assert_eq!(slots[1], arrows("minecraft:healing", 2));
+    assert_eq!(slots[2], arrows("minecraft:healing", 3));
+    // With no empty slot before it, the stack of the same contents takes it.
+    let mut slots = vec![
+        arrows("minecraft:poison", 3),
+        arrows("minecraft:healing", 3),
+    ];
+    let left = insert_item(&mut slots, arrows("minecraft:healing", 2).unwrap());
+    assert_eq!(left, None);
+    assert_eq!(slots[0], arrows("minecraft:poison", 3));
+    assert_eq!(slots[1], arrows("minecraft:healing", 5));
 }
 
 /// A rising edge sets `triggered` and schedules the tick in 4 (DispenserBlock.txt
@@ -305,13 +322,7 @@ fn a_dispenser_drops_one_item_out_of_its_front_with_its_click_and_smoke() {
     let [(item, dropped, delay)] = &items_lying(&region)[..] else {
         panic!("one item: {:?}", items_lying(&region));
     };
-    assert_eq!(
-        *dropped,
-        ItemStack {
-            item: items::COBBLESTONE,
-            count: 1
-        }
-    );
+    assert_eq!(*dropped, ItemStack::new(items::COBBLESTONE, 1));
     assert_eq!(*delay, 0);
     assert_eq!(item.position, [3.2, -59.65625, 2.5]);
     let spread = 0.017_227_5 * 6.0;
@@ -489,13 +500,7 @@ fn armour_is_put_on_an_armour_stand_in_front() {
     };
     assert_eq!(
         equipment,
-        &vec![(
-            5,
-            ItemStack {
-                item: items::DIAMOND_HELMET,
-                count: 1
-            }
-        )]
+        &vec![(5, ItemStack::new(items::DIAMOND_HELMET, 1))]
     );
     assert_eq!(level_events(&output), clicked(DISPENSED, Face::East));
     assert_eq!(slots_of(&region, AT)[0], stack(items::DIAMOND_HELMET, 1));
@@ -511,8 +516,8 @@ fn armour_is_put_on_a_player_in_front() {
     let (id, _) = add_player(&mut region, 1, [3.5, -60.0, 2.5], false);
     fill(&mut region, AT, &[(0, stack(items::IRON_BOOTS, 1))]);
     fire(&mut region);
-    let boots = region.players[&id].inventory.0[clustine_world::ARMOUR_START];
-    assert_eq!(boots, stack(items::IRON_BOOTS, 1));
+    let boots = &region.players[&id].inventory.0[clustine_world::ARMOUR_START];
+    assert_eq!(*boots, stack(items::IRON_BOOTS, 1));
     assert_eq!(slots_of(&region, AT)[0], None);
 }
 
@@ -724,10 +729,10 @@ fn bone_meal_grows_a_crop_in_front_and_fails_where_nothing_takes_it() {
         fire(&mut region);
     }
     assert_eq!(region.block(front), Some(state("minecraft:wheat[age=7]")));
-    let left = slots_of(&region, AT)[0];
+    let left = &slots_of(&region, AT)[0];
     let output = fire(&mut region);
     assert_eq!(level_events(&output), clicked(FAILED, Face::East));
-    assert_eq!(slots_of(&region, AT)[0], left);
+    assert_eq!(slots_of(&region, AT)[0], left.clone());
     // Nothing in front at all.
     let mut region = with(dispenser("east"), &[]);
     fill(&mut region, AT, &[(0, stack(items::BONE_MEAL, 4))]);

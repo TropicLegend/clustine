@@ -28,7 +28,7 @@ fn chest() -> BlockState {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 fn key(n: u64) -> EntityId {
@@ -39,7 +39,7 @@ fn key(n: u64) -> EntityId {
 fn fill(region: &mut Region, at: BlockPos, slots: &[(usize, Option<ItemStack>)]) {
     let mut container = region.container_at(at).expect("a container");
     for (slot, held) in slots {
-        container.slots[*slot] = *held;
+        container.slots[*slot] = held.clone();
     }
     region.set_container(at, container, &mut TickOutput::default());
 }
@@ -90,10 +90,7 @@ fn item(n: u64, position: [f64; 3], stack: ItemStack) -> Entity {
 }
 
 fn stone(count: i32) -> ItemStack {
-    ItemStack {
-        item: clustine_data::items::STONE,
-        count,
-    }
+    ItemStack::new(clustine_data::items::STONE, count)
 }
 
 fn cart_data() -> EntityData {

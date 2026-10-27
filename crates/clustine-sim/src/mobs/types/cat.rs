@@ -247,10 +247,10 @@ fn try_to_tame(used: &mut Used<'_>) {
 /// `Cat.mobInteract` (the brief's 5.6).
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let (_, own) = state_of(used.mob);
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     if own.tame.is_tame() {
         if own.tame.is_owned_by(used.player_uuid) {
-            let collar_dye = held.is_some_and(|stack| {
+            let collar_dye = held.as_ref().is_some_and(|stack| {
                 clustine_blocks::data::item_in_tag(stack.item, "minecraft:cat_collar_dyes")
             });
             if collar_dye {
@@ -289,7 +289,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
 
 /// `Animal.mobInteract` of a cat, whose eating sound is its own and draws nothing.
 fn animal_use(used: &mut Used<'_>) -> Interaction {
-    let fed = FOOD.test(used.held);
+    let fed = FOOD.test(used.held.as_ref());
     let result = animal::mob_interact(used, FOOD, None);
     if fed && result != Interaction::Pass {
         used.did.extend(eating_sound(used));

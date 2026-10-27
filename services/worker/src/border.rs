@@ -416,7 +416,7 @@ impl Border {
             // one: so an update across a coupled line is exactly a tick late, however
             // the two are scheduled (sections 1 and 8; found by E6). A scheduled tick is
             // due when the store says.
-            .filter(|filed| match (filed.due, filed.effect.what) {
+            .filter(|filed| match (filed.due, filed.effect.what.clone()) {
                 (_, Effected::Tick { .. }) | (Due::FromTaking, _) => true,
                 (Due::At { tick }, _) => next > tick,
             })
@@ -753,7 +753,7 @@ mod tests {
             lived: 0,
             fresh_at: 0,
             data: clustine_world::EntityData::Item {
-                stack: clustine_world::ItemStack { item: 1, count: 1 },
+                stack: clustine_world::ItemStack::new(1, 1),
                 pick_up_delay: 40,
                 thrower: None,
                 health: 5,
@@ -898,7 +898,7 @@ mod tests {
         take(
             &mut border,
             StoreReply::Effects {
-                effects: vec![filed],
+                effects: vec![filed.clone()],
             },
         );
         assert!(inputs(&mut border).effects.is_empty());

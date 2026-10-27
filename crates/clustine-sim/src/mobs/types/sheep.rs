@@ -25,7 +25,7 @@ use crate::mobs::body::{Event, loot};
 use crate::mobs::tick::{Local, MobTick};
 use crate::region::Random;
 use crate::shown::DataShown;
-use clustine_world::{BlockPos, ItemStack};
+use clustine_world::BlockPos;
 
 /// `#sheep_food`.
 const FOOD: Items = Items::Tag("minecraft:sheep_food");
@@ -338,10 +338,7 @@ fn shear(used: &mut Used<'_>, own: &mut SheepState) {
                 f64::from((used.draws.next_float() - used.draws.next_float()) * 0.1),
             ];
             used.did.push(Did::Drop {
-                stack: ItemStack {
-                    item: stack.item,
-                    count: 1,
-                },
+                stack: stack.with_count(1),
                 at: [x, y + 1.0, z],
                 pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
                 push: Some(push),
@@ -380,7 +377,7 @@ impl MobType for Sheep {
     /// `Sheep.mobInteract`: shears shear a sheep ready for it and do nothing else to
     /// one that is not; anything else is an animal's use.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        if animal::is_item(used.held, items::SHEARS) {
+        if animal::is_item(used.held.as_ref(), items::SHEARS) {
             let (animal, mut own) = animal::read::<SheepState>(&used.mob.state);
             if own.sheared() || animal.is_baby() {
                 return Interaction::Consume;
@@ -398,6 +395,7 @@ impl MobType for Sheep {
     fn item_interact(&self, used: &mut Used<'_>) -> Interaction {
         let Some(dye) = used
             .held
+            .as_ref()
             .filter(|stack| stack.count > 0)
             .and_then(|stack| dye_colour(stack.item))
         else {

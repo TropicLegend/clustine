@@ -130,10 +130,8 @@ fn burnt(tick: &MobTick<'_>) -> bool {
 /// The start of a drink: the potion in its main hand, its use's ticks, the synced flag,
 /// `witch_drink` at a pitch of its own draw, and the drinking's slowness on.
 fn start_drinking(tick: &mut MobTick<'_>, own: &mut illagers::RaiderState, potion: Potion) {
-    tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-        item: items::POTION,
-        count: 1,
-    });
+    tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+        Some(ItemStack::new(items::POTION, 1));
     own.using_time = POTION_USE_TICKS;
     own.drinking = Some(potion);
     // No mob is silent.

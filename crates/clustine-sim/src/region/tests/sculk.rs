@@ -306,7 +306,7 @@ fn an_item_on_a_sensor_sets_it_off_even_of_wool() {
             lived: 1,
             fresh_at: 0,
             data: clustine_world::EntityData::Item {
-                stack: ItemStack { item, count: 1 },
+                stack: ItemStack::new(item, 1),
                 pick_up_delay: 32_767,
                 thrower: None,
                 health: 5,

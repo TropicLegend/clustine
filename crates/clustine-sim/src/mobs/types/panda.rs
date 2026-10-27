@@ -205,7 +205,9 @@ fn update(mob: &mut Mob, change: impl FnOnce(&mut PandaState)) {
 }
 
 fn holds_something(mob: &Mob) -> bool {
-    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)].is_some_and(|held| held.count > 0)
+    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+        .as_ref()
+        .is_some_and(|held| held.count > 0)
 }
 
 /// `setAttributes()`: a weak panda's health at most 10, a lazy one's speed 0.07.
@@ -249,7 +251,7 @@ fn eatable_items(ai: &Ai<'_, '_>, bounds: crate::physics::aabb::Aabb) -> Vec<(En
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
             } if EATS_FROM_GROUND.test(Some(stack)) => {
@@ -504,10 +506,13 @@ impl Goal for PandaSitGoal {
 
     fn stop(&self, state: &mut Sitting, ai: &mut Ai<'_, '_>) {
         let hand = usize::from(slots::MAIN_HAND);
-        if let Some(held) = ai.tick.mob.body.equipment.slots[hand].filter(|held| held.count > 0) {
+        if let Some(held) = ai.tick.mob.body.equipment.slots[hand]
+            .as_ref()
+            .filter(|held| held.count > 0)
+        {
             let at = ai.position();
             ai.tick.out.local.push(Local::Drop {
-                stack: held,
+                stack: held.clone(),
                 at,
                 pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
             });
@@ -779,19 +784,19 @@ fn pick_up(tick: &mut MobTick<'_>) {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
-            } if stack.count > 0 => Some((seen.entity.key, stack)),
+            } if stack.count > 0 => Some((seen.entity.key, stack.clone())),
             _ => None,
         })
         .collect();
     let hand = usize::from(slots::MAIN_HAND);
     for (item, stack) in found {
-        if holds_something(&tick.mob) || !EATS_FROM_GROUND.test(Some(stack)) {
+        if holds_something(&tick.mob) || !EATS_FROM_GROUND.test(Some(&stack)) {
             continue;
         }
-        tick.mob.body.equipment.slots[hand] = Some(stack);
+        tick.mob.body.equipment.slots[hand] = Some(stack.clone());
         let mut chances = tick.mob.body.equipment.drop_chances.unwrap_or([0.085; 8]);
         chances[hand] = 2.0;
         tick.mob.body.equipment.drop_chances = Some(chances);
@@ -856,7 +861,7 @@ fn handle_eating(tick: &mut MobTick<'_>, own: &mut PandaState) {
     eating_particles(tick, own);
     if own.eat > 80 && tick.draws.next_int(20) == 1 {
         let hand = usize::from(slots::MAIN_HAND);
-        if own.eat > 100 && EATS_FROM_GROUND.test(tick.mob.body.equipment.slots[hand]) {
+        if own.eat > 100 && EATS_FROM_GROUND.test(tick.mob.body.equipment.slots[hand].as_ref()) {
             tick.mob.body.equipment.slots[hand] = None;
             tick.out.events.push(Event::GameEvent(GameEvent::Eat));
             own.set(flag_bits::SITTING, false);
@@ -937,10 +942,7 @@ fn after_sneeze(tick: &mut MobTick<'_>) {
     }
     if tick.draws.next_int(700) == 0 {
         tick.out.local.push(Local::Drop {
-            stack: ItemStack {
-                item: items::SLIME_BALL,
-                count: 1,
-            },
+            stack: ItemStack::new(items::SLIME_BALL, 1),
             at: tick.living.body.position,
             pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
         });
@@ -1086,7 +1088,7 @@ impl MobType for Panda {
             put_state(used.mob, &own);
             return Interaction::Success;
         }
-        if FOOD.test(used.held) {
+        if FOOD.test(used.held.as_ref()) {
             if used.mob.body.combat.target.is_some() {
                 own.got_bamboo = true;
             }
@@ -1115,19 +1117,20 @@ impl MobType for Panda {
                 own.set(flag_bits::SITTING, true);
                 own.eat(true);
                 let hand = usize::from(slots::MAIN_HAND);
-                if let Some(held) =
-                    used.mob.body.equipment.slots[hand].filter(|held| held.count > 0)
+                if let Some(held) = used.mob.body.equipment.slots[hand]
+                    .as_ref()
+                    .filter(|held| held.count > 0)
                     && !used.creative
                 {
                     used.did.push(Did::Drop {
-                        stack: held,
+                        stack: held.clone(),
                         at: used.position,
                         pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
                         push: None,
                     });
                 }
-                let item = used.held.map_or(items::BAMBOO, |held| held.item);
-                used.mob.body.equipment.slots[hand] = Some(ItemStack { item, count: 1 });
+                let item = used.held.as_ref().map_or(items::BAMBOO, |held| held.item);
+                used.mob.body.equipment.slots[hand] = Some(ItemStack::new(item, 1));
                 put_state(used.mob, &own);
                 used.mob.body.path.followed = None;
                 return Interaction::SuccessServer;

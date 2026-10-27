@@ -253,7 +253,8 @@ fn has_hand_item(slots: &[Option<ItemStack>], hand: ItemStack) -> bool {
 /// taken (at most 16).
 pub(crate) fn pickup(slots: &[Option<ItemStack>]) -> Option<(usize, i32)> {
     slots.iter().enumerate().find_map(|(index, slot)| {
-        slot.filter(|stack| stack.count > 0)
+        slot.as_ref()
+            .filter(|stack| stack.count > 0)
             .map(|stack| (index, stack.count.min(MOST_CARRIED)))
     })
 }
@@ -266,8 +267,8 @@ pub(crate) fn add_items(slots: &mut [Option<ItemStack>], hand: ItemStack) -> Opt
     for slot in slots.iter_mut() {
         match slot {
             Some(stack) if stack.count > 0 => {
-                let most = physics::item::max_stack_size(*stack);
-                if stack.item != hand.item || stack.count >= most {
+                let most = physics::item::max_stack_size(stack);
+                if !stack.same_kind(&hand) || stack.count >= most {
                     continue;
                 }
                 let room = most - stack.count;
@@ -301,7 +302,9 @@ fn wanted(hand_empty: bool, state: BlockState) -> bool {
 /// The golem's main hand, if it holds anything.
 fn hand(cx: &Cx<'_, '_, '_>) -> Option<ItemStack> {
     cx.ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+        .as_ref()
         .filter(|stack| stack.count > 0)
+        .cloned()
 }
 
 /// A memory of a set of blocks, as a sorted list; none for none.
@@ -657,7 +660,9 @@ impl TransportItemsBetweenContainers {
             state.interaction = Some(match hand(cx) {
                 None if !empty(&slots) => Reached::Pickup,
                 None => Reached::PickupNothing,
-                Some(held) if empty(&slots) || has_hand_item(&slots, held) => Reached::Place,
+                Some(held) if empty(&slots) || has_hand_item(&slots, held.clone()) => {
+                    Reached::Place
+                }
                 Some(_) => Reached::PlaceNothing,
             });
             state.way = Way::Interacting;
@@ -706,7 +711,7 @@ impl TransportItemsBetweenContainers {
                 });
                 Self::clear_memories_after_found(state, cx);
             }
-            Some(held) if empty(&slots) || has_hand_item(&slots, held) => {
+            Some(held) if empty(&slots) || has_hand_item(&slots, held.clone()) => {
                 // `putDownItem`: the region moves the stack out of its hand.
                 let mut slots = slots;
                 let rest = add_items(&mut slots, held);

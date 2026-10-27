@@ -317,13 +317,13 @@ fn try_to_tame(used: &mut Used<'_>) {
 /// `Wolf.mobInteract` (the brief's 5.4), armour aside.
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let (shared, mut own) = state_of(used.mob);
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     if own.tame.is_tame() {
         if FOOD.test(held) && tamable::hurt(used.mob, used.kind) {
             tamable::feed(used, 2.0, 2.0, None);
             return Interaction::Success;
         }
-        let collar_dye = held.is_some_and(|stack| {
+        let collar_dye = held.as_ref().is_some_and(|stack| {
             clustine_blocks::data::item_in_tag(stack.item, "minecraft:wolf_collar_dyes")
         });
         if collar_dye && own.tame.is_owned_by(used.player_uuid) {
@@ -509,9 +509,9 @@ struct BegGoal;
 
 /// `playerHoldingInteresting(player)`: a bone or the wolf's food in either hand.
 fn holds_interesting(player: &Looked) -> bool {
-    [player.main_hand, player.off_hand]
+    [player.main_hand.clone(), player.off_hand.clone()]
         .into_iter()
-        .any(|stack| animal::is_item(stack, items::BONE) || FOOD.test(stack))
+        .any(|stack| animal::is_item(stack.as_ref(), items::BONE) || FOOD.test(stack.as_ref()))
 }
 
 impl Goal for BegGoal {

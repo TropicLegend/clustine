@@ -33,13 +33,10 @@ const A: EdgeId = EdgeId(0xA);
 const B: EdgeId = EdgeId(0xB);
 const C: EdgeId = EdgeId(0xC);
 
-const STONE: ItemStack = ItemStack {
-    item: items::STONE,
-    count: 1,
-};
+const STONE: ItemStack = ItemStack::new(items::STONE, 1);
 
 fn config() -> RegionConfig {
-    let mut starting_hotbar = [None; HOTBAR_SLOTS];
+    let mut starting_hotbar = [const { None }; HOTBAR_SLOTS];
     starting_hotbar[0] = Some(STONE);
     RegionConfig {
         spawn: SPAWN,

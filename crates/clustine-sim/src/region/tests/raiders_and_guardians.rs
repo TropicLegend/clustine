@@ -105,7 +105,9 @@ fn each_egg_makes_its_raider_or_guardian_holding_what_the_game_s_holds() {
             .expect("its egg makes it");
         let made = mob(&region, key);
         assert_eq!(
-            made.body.equipment.slots[usize::from(slots::MAIN_HAND)].map(|stack| stack.item),
+            made.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+                .clone()
+                .map(|stack| stack.item),
             hand,
             "{kind}"
         );

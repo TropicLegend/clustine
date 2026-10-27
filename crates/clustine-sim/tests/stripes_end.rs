@@ -65,11 +65,8 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     hotbar
 }
 
@@ -398,10 +395,7 @@ impl Random {
 fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let n = entity.0 as i32;
     let mut bar = hotbar();
-    bar[(n % 8 + 1) as usize] = Some(ItemStack {
-        item: items::STONE,
-        count: n % 60 + 1,
-    });
+    bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
         sleeping: None,
         respawn: None,
@@ -2676,11 +2670,8 @@ impl Play {
             }
             let stack = match random.below(4) {
                 0 => None,
-                1 => Some(ItemStack {
-                    item: items::STONE,
-                    count: 1 + random.below(64) as i32,
-                }),
-                _ => hotbar()[0],
+                1 => Some(ItemStack::new(items::STONE, 1 + random.below(64) as i32)),
+                _ => hotbar()[0].clone(),
             };
             return PlayerInput::SetInventorySlot { slot, stack };
         }

@@ -165,6 +165,7 @@ pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut HappyGhastState)) {
 /// Whether it wears a harness (`isWearingBodyArmor`: its body's slot holds one).
 pub(crate) fn harnessed(mob: &Mob) -> bool {
     mob.body.equipment.slots[usize::from(slots::BODY)]
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && item_in_tag(stack.item, "minecraft:harnesses"))
 }
 
@@ -519,8 +520,9 @@ impl Goal for GhastTemptGoal {
         let range = ai.attribute(clustine_data::attributes::TEMPT_RANGE);
         let conditions = Conditions::non_combat().ignore_line_of_sight().range(range);
         let items = Self::items(&ai.tick.mob);
-        let follows =
-            move |looked: &Looked| items.test(looked.main_hand) || items.test(looked.off_hand);
+        let follows = move |looked: &Looked| {
+            items.test(looked.main_hand.as_ref()) || items.test(looked.off_hand.as_ref())
+        };
         let from = ai.position();
         let found = sensing::nearest_player(ai, &conditions, &follows, from);
         state.player = found.map(|found| found.key);
@@ -839,7 +841,7 @@ pub(crate) fn wrap_degrees_90(degrees: f32) -> f32 {
 /// draw of its own) and `GameEvent.EQUIP`. The creative player keeps their harness.
 fn equip_harness(used: &mut Used<'_>) -> Interaction {
     let body = usize::from(slots::BODY);
-    let Some(stack) = used.held.filter(|stack| stack.count > 0) else {
+    let Some(stack) = used.held.as_ref().filter(|stack| stack.count > 0) else {
         return Interaction::Pass;
     };
     let fits = clustine_data::ItemComponents::of(stack.item)
@@ -854,7 +856,10 @@ fn equip_harness(used: &mut Used<'_>) -> Interaction {
     if !fits || used.mob.body.equipment.slots[body].is_some() {
         return Interaction::Pass;
     }
-    used.mob.body.equipment.slots[body] = Some(ItemStack { count: 1, ..stack });
+    used.mob.body.equipment.slots[body] = Some(ItemStack {
+        count: 1,
+        ..stack.clone()
+    });
     let mut chances = used.mob.body.equipment.drop_chances.unwrap_or([0.085; 8]);
     chances[body] = 2.0;
     used.mob.body.equipment.drop_chances = Some(chances);

@@ -115,44 +115,55 @@ fn the_damage_is_the_games_by_distance_and_exposure() {
     assert_eq!(damage_amount(4.0, 4.0, 0.5), 9.75);
 }
 
+/// `areMergable` asks for the same components too: drops of one item that differ in them
+/// keep a collector each, and those alike share one.
+#[test]
+fn drops_merge_only_where_their_components_are_the_same() {
+    let plain = ItemStack::new(items::COBBLESTONE, 1);
+    let mut named = plain.clone();
+    named
+        .components
+        .set(clustine_world::Component::ItemName("\"Rubble\"".into()));
+    let mut collectors = Vec::new();
+    add_or_append(&mut collectors, plain.clone(), at(0, 0, 0));
+    add_or_append(&mut collectors, named.clone(), at(1, 0, 0));
+    add_or_append(&mut collectors, named.clone(), at(2, 0, 0));
+    add_or_append(&mut collectors, plain.clone(), at(3, 0, 0));
+    assert_eq!(
+        collectors,
+        [
+            (at(0, 0, 0), plain.with_count(2)),
+            (at(1, 0, 0), named.with_count(2))
+        ]
+    );
+}
+
 #[test]
 fn drops_merge_into_stacks_of_at_most_sixteen_and_each_stays_at_its_first_block() {
     let mut collectors = Vec::new();
-    let cobblestone = ItemStack {
-        item: items::COBBLESTONE,
-        count: 1,
-    };
+    let cobblestone = ItemStack::new(items::COBBLESTONE, 1);
     for x in 0..20 {
-        add_or_append(&mut collectors, cobblestone, at(x, 0, 0));
+        add_or_append(&mut collectors, cobblestone.clone(), at(x, 0, 0));
     }
-    let sixteen = ItemStack {
-        count: 16,
-        ..cobblestone
-    };
-    let four = ItemStack {
-        count: 4,
-        ..cobblestone
-    };
+    let sixteen = cobblestone.with_count(16);
+    let four = cobblestone.with_count(4);
     assert_eq!(collectors, [(at(0, 0, 0), sixteen), (at(16, 0, 0), four)]);
     // Two stacks that would not fit one stack of their item do not merge at all
     // (`areMergable`): ender pearls stack to 16.
-    let pearls = ItemStack {
-        item: items::ENDER_PEARL,
-        count: 10,
-    };
+    let pearls = ItemStack::new(items::ENDER_PEARL, 10);
     let mut collectors = Vec::new();
-    add_or_append(&mut collectors, pearls, at(0, 0, 0));
-    add_or_append(&mut collectors, pearls, at(1, 0, 0));
-    assert_eq!(collectors, [(at(0, 0, 0), pearls), (at(1, 0, 0), pearls)]);
+    add_or_append(&mut collectors, pearls.clone(), at(0, 0, 0));
+    add_or_append(&mut collectors, pearls.clone(), at(1, 0, 0));
+    assert_eq!(
+        collectors,
+        [(at(0, 0, 0), pearls.clone()), (at(1, 0, 0), pearls)]
+    );
     // An empty drop after the first is lost, but a first starts a collector, whose
     // place `popResource` still draws.
     let mut collectors = Vec::new();
-    let empty = ItemStack {
-        item: items::COBBLESTONE,
-        count: 0,
-    };
-    add_or_append(&mut collectors, empty, at(0, 0, 0));
-    add_or_append(&mut collectors, empty, at(1, 0, 0));
+    let empty = ItemStack::new(items::COBBLESTONE, 0);
+    add_or_append(&mut collectors, empty.clone(), at(0, 0, 0));
+    add_or_append(&mut collectors, empty.clone(), at(1, 0, 0));
     assert_eq!(collectors, [(at(0, 0, 0), empty)]);
 }
 
@@ -301,7 +312,7 @@ fn the_drops_of_a_field_of_dirt_lie_in_stacks_of_at_most_sixteen_each_at_a_block
 
 fn item_record(region: &mut Region, item: i32, position: [f64; 3]) -> EntityId {
     let data = EntityData::Item {
-        stack: ItemStack { item, count: 1 },
+        stack: ItemStack::new(item, 1),
         pick_up_delay: 0,
         thrower: None,
         health: 5,
@@ -344,10 +355,7 @@ fn an_item_near_tnt_is_destroyed_one_far_off_is_hurt_and_pushed_and_a_nether_sta
 }
 
 fn stand_record(region: &mut Region, position: [f64; 3], flags: u8) -> EntityId {
-    let helmet = ItemStack {
-        item: items::DIAMOND_HELMET,
-        count: 1,
-    };
+    let helmet = ItemStack::new(items::DIAMOND_HELMET, 1);
     let data = EntityData::ArmorStand {
         flags,
         disabled_slots: 0,
@@ -532,10 +540,7 @@ fn record_for_copy(position: [f64; 3]) -> Entity {
         lived: 0,
         fresh_at: 0,
         data: EntityData::Item {
-            stack: ItemStack {
-                item: items::STICK,
-                count: 1,
-            },
+            stack: ItemStack::new(items::STICK, 1),
             pick_up_delay: 0,
             thrower: None,
             health: 5,
@@ -582,7 +587,7 @@ fn a_chest_that_tnt_breaks_spills_what_it_holds_and_drops_itself() {
         (26, items::OAK_LOG, 10),
     ];
     for (slot, item, count) in held {
-        container.slots[slot] = Some(ItemStack { item, count });
+        container.slots[slot] = Some(ItemStack::new(item, count));
     }
     let data = container_data(blocks::CHEST, &container, &[]);
     let (x, z) = chest_at.in_chunk();
@@ -671,13 +676,7 @@ mod across {
         let output = taken(&mut region, effects);
         assert_eq!(broken(&output), [at(2, -60, 4), at(3, -60, 4)]);
         // Stone broken by TNT drops cobblestone, the two merged into one stack.
-        assert_eq!(
-            items_of(&region),
-            [ItemStack {
-                item: items::COBBLESTONE,
-                count: 2
-            }]
-        );
+        assert_eq!(items_of(&region), [ItemStack::new(items::COBBLESTONE, 2)]);
     }
 
     #[test]

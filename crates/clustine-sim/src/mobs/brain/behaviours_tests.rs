@@ -153,7 +153,7 @@ pub(super) fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer 
         eye_height: 1.62,
         yaw: 0.0,
         pitch: 0.0,
-        main_hand: held.map(|item| ItemStack { item, count: 1 }),
+        main_hand: held.map(|item| ItemStack::new(item, 1)),
         off_hand: None,
         sneaking: false,
         creative: true,

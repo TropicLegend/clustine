@@ -12,7 +12,7 @@ use clustine_world::Attached;
 
 use super::*;
 
-const STACK: ItemStack = ItemStack { item: 1, count: 1 };
+const STACK: ItemStack = ItemStack::new(1, 1);
 
 fn own(number: u128, entity: EntityId) -> EntityState {
     EntityState {

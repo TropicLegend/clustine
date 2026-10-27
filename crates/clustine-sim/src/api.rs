@@ -245,7 +245,7 @@ impl PlayerFace {
         selected_slot: u8,
         vehicle: Option<EntityId>,
     ) -> Self {
-        let slot = |index: usize| inventory.0[index];
+        let slot = |index: usize| inventory.0[index].clone();
         Self {
             position: [pose.position.x, pose.position.y, pose.position.z],
             yaw: pose.yaw,
@@ -296,6 +296,11 @@ pub struct FaceSeq(pub u64, pub u32);
 
 /// A face or its removal, as the world store streams them, with the stay they are of.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "nearly every change is a face, whose six stacks grew with their components; \
+              boxing it would allocate once for each"
+)]
 pub enum FaceChange {
     Face {
         player: PlayerId,

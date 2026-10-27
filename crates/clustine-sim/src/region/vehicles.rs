@@ -230,7 +230,7 @@ impl Region {
         self.remove_destroyed(key, output);
         if let Some(item) = vehicle_drop_item(record.kind) {
             // The vehicle's custom name would go onto the item; Clustine keeps none.
-            self.spawn_item(record.position, ItemStack { item, count: 1 }, output);
+            self.spawn_item(record.position, ItemStack::new(item, 1), output);
         }
         let size = container_size(record.kind);
         if size > 0 {
@@ -303,7 +303,7 @@ impl Region {
             let held = contents
                 .iter()
                 .find(|(at, _)| usize::from(*at) == slot)
-                .map(|(_, stack)| *stack);
+                .map(|(_, stack)| stack.clone());
             let Some(mut stack) = held else {
                 continue;
             };
@@ -318,16 +318,7 @@ impl Region {
                 ];
                 // The motion is drawn after the item's own draws, which come from its
                 // own stream: the order between the two streams does not matter.
-                self.spawn_item_as(
-                    place,
-                    ItemStack {
-                        item: stack.item,
-                        count: taken,
-                    },
-                    0,
-                    Some(motion),
-                    output,
-                );
+                self.spawn_item_as(place, stack.with_count(taken), 0, Some(motion), output);
             }
         }
     }

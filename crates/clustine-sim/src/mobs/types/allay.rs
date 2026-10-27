@@ -149,42 +149,46 @@ pub(crate) fn reset_duplication_cooldown(own: &mut AllayState, now: u32) {
     own.cooldown_until = Some(now.saturating_add(DUPLICATION_COOLDOWN));
 }
 
-/// `allayConsidersItemEqual(a, b)`: the same item (and the same potion's contents, which
-/// no stack carries yet).
-fn considers_equal(a: ItemStack, b: ItemStack) -> bool {
+/// `allayConsidersItemEqual(a, b)`: the same item, and not two potions' contents that
+/// differ (`hasNonMatchingPotion`). Of one item the defaults are the same, so the
+/// patches' own say decides.
+fn considers_equal(a: &ItemStack, b: &ItemStack) -> bool {
+    use clustine_world::components::Kind::PotionContents;
     a.item == b.item
+        && a.components.get(PotionContents) == b.components.get(PotionContents)
+        && a.components.removes(PotionContents) == b.components.removes(PotionContents)
 }
 
 /// `wantsToPickUp(level, stack)`: it holds something of the same kind and its slot can
 /// take the stack (`mobGriefing` is always on).
 pub(crate) fn wants_to_pick_up(mob: &Mob, stack: ItemStack) -> bool {
-    let Some(hand) = mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] else {
+    let Some(ref hand) = mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] else {
         return false;
     };
-    considers_equal(hand, stack) && can_add_item(read(mob).inventory, stack)
+    considers_equal(hand, &stack) && can_add_item(read(mob).inventory.as_ref(), &stack)
 }
 
-/// `SimpleContainer.canAddItem(stack)` of its one slot: empty, or of the same item and
-/// not full.
-fn can_add_item(slot: Option<ItemStack>, stack: ItemStack) -> bool {
+/// `SimpleContainer.canAddItem(stack)` of its one slot: empty, or of the same item with
+/// the same components and not full.
+fn can_add_item(slot: Option<&ItemStack>, stack: &ItemStack) -> bool {
     match slot.filter(|held| held.count > 0) {
         None => true,
-        Some(held) => held.item == stack.item && held.count < max_stack_size(held),
+        Some(held) => held.same_kind(stack) && held.count < max_stack_size(held),
     }
 }
 
 /// `SimpleContainer.addItem(stack)` of its one slot: how many of the stack go in.
 fn add_item(slot: &mut Option<ItemStack>, stack: ItemStack) -> i32 {
-    match slot.filter(|held| held.count > 0) {
+    match slot.as_ref().filter(|held| held.count > 0) {
         None => {
-            *slot = Some(stack);
+            *slot = Some(stack.clone());
             stack.count
         }
-        Some(held) if held.item == stack.item => {
+        Some(held) if held.same_kind(&stack) => {
             let moved = (max_stack_size(held) - held.count).clamp(0, stack.count);
             *slot = Some(ItemStack {
                 count: held.count + moved,
-                ..held
+                ..held.clone()
             });
             moved
         }
@@ -282,11 +286,14 @@ pub(crate) mod brain_seams {
     pub(crate) fn take_one_to_throw(mob: &mut Mob) -> Option<ItemStack> {
         let mut taken = None;
         update(mob, |own| {
-            if let Some(stack) = own.inventory.filter(|stack| stack.count > 0) {
-                taken = Some(ItemStack { count: 1, ..stack });
+            if let Some(stack) = own.inventory.as_ref().filter(|stack| stack.count > 0) {
+                taken = Some(ItemStack {
+                    count: 1,
+                    ..stack.clone()
+                });
                 own.inventory = (stack.count > 1).then_some(ItemStack {
                     count: stack.count - 1,
-                    ..stack
+                    ..stack.clone()
                 });
             }
         });
@@ -719,15 +726,15 @@ fn pick_up(tick: &mut MobTick<'_>) {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
-            } if stack.count > 0 => Some((seen.entity.key, stack)),
+            } if stack.count > 0 => Some((seen.entity.key, stack.clone())),
             _ => None,
         })
         .collect();
     for (key, stack) in found {
-        if !wants_to_pick_up(&tick.mob, stack) {
+        if !wants_to_pick_up(&tick.mob, stack.clone()) {
             continue;
         }
         let mut moved = 0;
@@ -750,9 +757,11 @@ fn pick_up(tick: &mut MobTick<'_>) {
 /// are not sent to them, whose client plays its own.
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let hand = usize::from(slots::MAIN_HAND);
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let own = read(used.mob);
-    let holding = used.mob.body.equipment.slots[hand].filter(|stack| stack.count > 0);
+    let holding = used.mob.body.equipment.slots[hand]
+        .clone()
+        .filter(|stack| stack.count > 0);
     let sound = |sound: i32| Did::Sound {
         sound,
         source: SOUND_SOURCE_NEUTRAL,
@@ -762,7 +771,9 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         but_the_player: true,
     };
     if own.dancing
-        && held.is_some_and(|stack| item_in_tag(stack.item, "minecraft:duplicates_allays"))
+        && held
+            .as_ref()
+            .is_some_and(|stack| item_in_tag(stack.item, "minecraft:duplicates_allays"))
         && own.can_duplicate()
     {
         // `duplicateAllay()`: a copy where it is, kept, both waiting 6000 ticks.
@@ -782,7 +793,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     if holding.is_none()
         && let Some(given) = held
     {
-        used.mob.body.equipment.slots[hand] = Some(ItemStack { count: 1, ..given });
+        used.mob.body.equipment.slots[hand] = Some(given.with_count(1));
         used.did.push(sound(sounds::ENTITY_ALLAY_ITEM_GIVEN));
         // `LIKED_PLAYER = player.getUUID()`.
         if let Some(player) = used.player_uuid {

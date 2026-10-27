@@ -57,56 +57,14 @@ fn refused<T>(message: impl Into<String>) -> Read<T> {
     Err(StructureError(message.into()))
 }
 
-/// A stack as `ItemStackTemplate.CODEC` writes it (the codec of a crossbow's charged
-/// projectiles): an item, a count of 1 to 99, and the components it differs in.
-///
-/// It stands in for `clustine_world::ItemStack` until that carries its components (the
-/// part that adds them runs beside this one); at the merge the two become one, and
-/// [`StackTemplate::of`] and [`StackTemplate::into_stack`] go.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackTemplate {
-    /// Id in the item registry.
-    pub item: i32,
-    pub count: i32,
-    pub components: Components,
-}
-
-impl StackTemplate {
-    /// The template of a stack, which has no components yet.
-    pub fn of(stack: &ItemStack) -> StackTemplate {
-        StackTemplate {
-            item: stack.item,
-            count: stack.count,
-            components: Components::NONE,
-        }
-    }
-
-    /// The world's stack of the template, refused while the world's stacks cannot keep
-    /// the components it has.
-    fn into_stack(self) -> Read<ItemStack> {
-        if !self.components.is_empty() {
-            return refused(
-                "a charged projectile with components, which the world's stacks do not keep yet",
-            );
-        }
-        Ok(ItemStack {
-            item: self.item,
-            count: self.count,
-        })
-    }
-}
-
 /// The game's `Codec` encoding of `component`.
 pub fn structure(component: &Component) -> Value {
     match component {
         Component::PotionContents(contents) => potion_contents(contents),
         Component::PotionDurationScale(Float(scale)) => Value::Float(*scale),
-        Component::ChargedProjectiles(stacks) => Value::List(
-            stacks
-                .iter()
-                .map(|stack| stack_structure(&StackTemplate::of(stack)))
-                .collect(),
-        ),
+        Component::ChargedProjectiles(stacks) => {
+            Value::List(stacks.iter().map(stack_structure).collect())
+        }
         Component::Enchantments(levels) => Value::Map(
             levels
                 .iter()
@@ -212,12 +170,7 @@ pub fn component_from(kind: Kind, value: &Value) -> Read<Component> {
                     stacks.len()
                 ));
             }
-            Component::ChargedProjectiles(
-                stacks
-                    .iter()
-                    .map(|stack| stack_from(stack)?.into_stack())
-                    .collect::<Read<_>>()?,
-            )
+            Component::ChargedProjectiles(stacks.iter().map(stack_from).collect::<Read<_>>()?)
         }
         Kind::Enchantments => {
             // `unboundedMap(Enchantment.CODEC, intRange(1, 255))`.
@@ -354,7 +307,7 @@ pub fn component_from(kind: Kind, value: &Value) -> Read<Component> {
 /// The game's `ItemStackTemplate.CODEC` encoding of `stack`: its item by name, its count
 /// left out at 1, and its components left out where it has none, an added one under its
 /// kind's name and a removed kind under its name after `!`, with an empty map.
-pub fn stack_structure(stack: &StackTemplate) -> Value {
+pub fn stack_structure(stack: &ItemStack) -> Value {
     let mut map = Fields::default();
     let item = usize::try_from(stack.item)
         .ok()
@@ -383,10 +336,10 @@ pub fn stack_structure(stack: &StackTemplate) -> Value {
 
 /// The stack that `value` encodes, as `ItemStackTemplate.CODEC` reads it: a map, or an
 /// item's bare name for one of it.
-pub fn stack_from(value: &Value) -> Read<StackTemplate> {
+pub fn stack_from(value: &Value) -> Read<ItemStack> {
     const WHAT: &str = "a stack";
     if let Value::String(name) = value {
-        return Ok(StackTemplate {
+        return Ok(ItemStack {
             item: item_named(name)?,
             count: 1,
             components: Components::NONE,
@@ -418,7 +371,7 @@ pub fn stack_from(value: &Value) -> Read<StackTemplate> {
             components.set(component_from(kind, component)?);
         }
     }
-    Ok(StackTemplate {
+    Ok(ItemStack {
         item,
         count,
         components,
@@ -1223,14 +1176,8 @@ mod tests {
             Component::PotionDurationScale(Float(0.25)),
             Component::ChargedProjectiles(Vec::new()),
             Component::ChargedProjectiles(vec![
-                ItemStack {
-                    item: item("minecraft:arrow"),
-                    count: 1,
-                },
-                ItemStack {
-                    item: item("minecraft:firework_rocket"),
-                    count: 3,
-                },
+                ItemStack::new(item("minecraft:arrow"), 1),
+                ItemStack::new(item("minecraft:firework_rocket"), 3),
             ]),
             Component::Enchantments(Vec::new()),
             Component::Enchantments(vec![
@@ -1435,14 +1382,14 @@ mod tests {
     #[test]
     fn a_stack_writes_its_count_only_above_one_and_reads_a_bare_name() {
         let arrow = item("minecraft:arrow");
-        let one = StackTemplate {
+        let one = ItemStack {
             item: arrow,
             count: 1,
             components: Components::NONE,
         };
         assert_eq!(stack_structure(&one), m(&[("id", s("minecraft:arrow"))]));
         assert_eq!(stack_from(&s("arrow")), Ok(one.clone()));
-        let five = StackTemplate { count: 5, ..one };
+        let five = ItemStack { count: 5, ..one };
         assert_eq!(
             stack_structure(&five),
             m(&[("id", s("minecraft:arrow")), ("count", Value::Int(5))])
@@ -1458,7 +1405,7 @@ mod tests {
             ..PotionContents::default()
         }));
         components.remove(Kind::PotionDurationScale);
-        let stack = StackTemplate {
+        let stack = ItemStack {
             item: item("minecraft:tipped_arrow"),
             count: 1,
             components,
@@ -1498,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn a_projectile_with_components_is_refused_until_the_worlds_stacks_keep_them() {
+    fn a_projectile_keeps_its_components() {
         let value = Value::List(vec![m(&[
             ("id", s("minecraft:tipped_arrow")),
             (
@@ -1506,7 +1453,20 @@ mod tests {
                 m(&[("minecraft:potion_contents", s("minecraft:poison"))]),
             ),
         ])]);
-        assert!(component_from(Kind::ChargedProjectiles, &value).is_err());
+        let mut poison = Components::NONE;
+        poison.set(Component::PotionContents(PotionContents {
+            potion: Some("minecraft:poison".into()),
+            ..PotionContents::default()
+        }));
+        let arrow = ItemStack {
+            item: item("minecraft:tipped_arrow"),
+            count: 1,
+            components: poison,
+        };
+        assert_eq!(
+            component_from(Kind::ChargedProjectiles, &value),
+            Ok(Component::ChargedProjectiles(vec![arrow]))
+        );
     }
 
     #[test]

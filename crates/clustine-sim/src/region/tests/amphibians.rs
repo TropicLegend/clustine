@@ -89,7 +89,7 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn use_on(region: &mut Region, key: EntityId) -> TickOutput {

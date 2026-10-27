@@ -236,7 +236,7 @@ impl MobType for Creeper {
     /// the creeper, of the creeper's sound source and its own pitch, for all but the
     /// player, and ignites it.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let Some(held) = used.held.filter(|stack| stack.count > 0) else {
+        let Some(held) = used.held.as_ref().filter(|stack| stack.count > 0) else {
             return Interaction::Pass;
         };
         if !item_in_tag(held.item, "minecraft:creeper_igniters") {

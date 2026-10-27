@@ -10,11 +10,11 @@
 //! | 2, a scheduled tick | 1 and a block u16, or 2 and a fluid u16; delay i32, priority i8 |
 //! | 3, a spread | direction u8 (0 to 5), the source's block u16 |
 //! | 4, a set if still | the block expected u16, the block to set u16, flags u32 |
-//! | 5, on an entity | its key u64, then 1, an attack: the attacker's key u64, flags u8 (bit 0 creative, bit 1 sprinting), the damage f32, where they stand 3 × f64; or 2, a use: the player's key u64, flags u8 (bit 0 creative, bit 1 sneaking), u8 0 or 1 and the stack held (item i32, count i32), where the click landed 3 × f64, where they stand 3 × f64; or 3, an explosion's hit: the damage f32, the push 3 × f64, the blast |
+//! | 5, on an entity | its key u64, then 1, an attack: the attacker's key u64, flags u8 (bit 0 creative, bit 1 sprinting), the damage f32, where they stand 3 × f64; or 2, a use: the player's key u64, flags u8 (bit 0 creative, bit 1 sneaking), u8 0 or 1 and the stack held (as `stacks.rs` writes a stack), where the click landed 3 × f64, where they stand 3 × f64; or 3, an explosion's hit: the damage f32, the push 3 × f64, the blast |
 //! | 6, exploded | the block expected u16, the blast |
 //! | 7, burnt | the block expected u16 |
 //! | 8, a player inside | the box's lower corner 3 × f64 and its upper corner 3 × f64 |
-//! | 9, given | the player's key u64, the stack (item i32, count i32), u8 0 or 1 whether no duplicates |
+//! | 9, given | the player's key u64, the stack (as `stacks.rs` writes one), u8 0 or 1 whether no duplicates |
 //! | 10, seated | the player's key u64, the vehicle's key u64, its root's chunk x i32 and z i32 |
 //!
 //! The uses of kind 5 since: 4, a request to breed; 5, its answer; 6, a mob's hit; 7, a
@@ -36,12 +36,13 @@
 use clustine_data::{BLOCK_STATE_COUNT, BlockState};
 use clustine_world::{
     Blast, BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect,
-    Float, ItemStack, SeamKind, Thrower, Ticked,
+    Float, SeamKind, Thrower, Ticked,
 };
 use uuid::Uuid;
 
 use crate::FormatError;
 use crate::bytes::Input;
+use crate::stacks::{put_optional_stack, put_stack, take_optional_stack, take_stack};
 
 const UPDATE: u8 = 1;
 const TICK: u8 = 2;
@@ -130,10 +131,10 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.extend_from_slice(&state.0.to_be_bytes());
             out.extend_from_slice(&flags.to_be_bytes());
         }
-        Effected::OnEntity { key, by } => {
+        Effected::OnEntity { key, ref by } => {
             out.push(ON_ENTITY);
             out.extend_from_slice(&key.0.to_be_bytes());
-            match by {
+            match by.clone() {
                 EntityUse::Attack {
                     attacker,
                     creative,
@@ -163,14 +164,7 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
                     });
                     out.extend_from_slice(&player.0.to_be_bytes());
                     out.push(u8::from(creative) | (u8::from(sneaking) << 1));
-                    match held {
-                        None => out.push(0),
-                        Some(stack) => {
-                            out.push(1);
-                            out.extend_from_slice(&stack.item.to_be_bytes());
-                            out.extend_from_slice(&stack.count.to_be_bytes());
-                        }
-                    }
+                    put_optional_stack(out, held.as_ref());
                     put_doubles(out, location);
                     put_doubles(out, from);
                     if let Some(edge) = edge {
@@ -286,13 +280,12 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
         }
         Effected::Given {
             player,
-            stack,
+            ref stack,
             no_duplicates,
         } => {
             out.push(GIVEN);
             out.extend_from_slice(&player.0.to_be_bytes());
-            out.extend_from_slice(&stack.item.to_be_bytes());
-            out.extend_from_slice(&stack.count.to_be_bytes());
+            put_stack(out, stack);
             out.push(u8::from(no_duplicates));
         }
         Effected::Seated {
@@ -440,14 +433,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
                 USE_INTERACT | USE_INTERACT_FROM_EDGE => {
                     let player = EntityId(input.u64()?);
                     let (creative, sneaking) = take_two_flags(input)?;
-                    let held = match input.u8()? {
-                        0 => None,
-                        1 => Some(ItemStack {
-                            item: input.i32()?,
-                            count: input.i32()?,
-                        }),
-                        _ => return Err(FormatError::Corrupt("an entity use's held flag")),
-                    };
+                    let held = take_optional_stack(input, "an entity use's held flag")?;
                     let location = take_doubles(input)?;
                     let from = take_doubles(input)?;
                     let edge = if use_kind == USE_INTERACT_FROM_EDGE {
@@ -559,10 +545,7 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
         },
         GIVEN => Effected::Given {
             player: EntityId(input.u64()?),
-            stack: ItemStack {
-                item: input.i32()?,
-                count: input.i32()?,
-            },
+            stack: take_stack(input)?,
             no_duplicates: match input.u8()? {
                 0 => false,
                 1 => true,
@@ -804,6 +787,8 @@ mod tests {
 
 #[cfg(test)]
 mod entity_uses {
+    use clustine_world::ItemStack;
+
     use super::*;
 
     fn round_trip(effect: Effect) {
@@ -830,7 +815,11 @@ mod entity_uses {
                 },
             },
         });
-        for held in [None, Some(ItemStack { item: 7, count: 3 })] {
+        for held in [
+            None,
+            Some(ItemStack::new(7, 3)),
+            Some(crate::stacks::tests::with_every_component()),
+        ] {
             round_trip(Effect {
                 at,
                 what: Effected::OnEntity {
@@ -877,17 +866,19 @@ mod entity_uses {
     #[test]
     fn a_stack_given_to_a_player_is_read_back_as_written_and_a_bad_flag_refused() {
         for no_duplicates in [false, true] {
-            round_trip(Effect {
-                at: BlockPos::new(-3, 70, 11),
-                what: Effected::Given {
-                    player: EntityId(3 << 32 | 1),
-                    stack: ItemStack {
-                        item: 1134,
-                        count: 1,
+            for stack in [
+                ItemStack::new(1134, 1),
+                crate::stacks::tests::with_every_component(),
+            ] {
+                round_trip(Effect {
+                    at: BlockPos::new(-3, 70, 11),
+                    what: Effected::Given {
+                        player: EntityId(3 << 32 | 1),
+                        stack,
+                        no_duplicates,
                     },
-                    no_duplicates,
-                },
-            });
+                });
+            }
         }
         let mut out = Vec::new();
         put_effect(
@@ -896,7 +887,7 @@ mod entity_uses {
                 at: BlockPos::new(0, 0, 0),
                 what: Effected::Given {
                     player: EntityId(1),
-                    stack: ItemStack { item: 1, count: 1 },
+                    stack: ItemStack::new(1, 1),
                     no_duplicates: true,
                 },
             },

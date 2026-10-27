@@ -118,6 +118,7 @@ pub(crate) fn boost(mob: &mut Mob, draws: &mut crate::region::Random) -> bool {
 /// `Mob.isSaddled()`: a saddle in its saddle slot.
 fn saddled(mob: &Mob) -> bool {
     mob.body.equipment.slots[slots::SADDLE as usize]
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && stack.item == items::SADDLE)
 }
 
@@ -164,7 +165,7 @@ fn sound_set(mob: &Mob) -> [i32; 4] {
 /// own saddling sound (its seed one draw of its random) and `GameEvent.EQUIP`.
 fn equip_saddle(used: &mut Used<'_>) -> Interaction {
     let saddle = slots::SADDLE as usize;
-    let Some(stack) = used.held.filter(|stack| stack.count > 0) else {
+    let Some(stack) = used.held.as_ref().filter(|stack| stack.count > 0) else {
         return Interaction::Pass;
     };
     let fits = clustine_data::ItemComponents::of(stack.item)
@@ -176,10 +177,7 @@ fn equip_saddle(used: &mut Used<'_>) -> Interaction {
     if !fits || used.mob.body.equipment.slots[saddle].is_some() {
         return Interaction::Pass;
     }
-    used.mob.body.equipment.slots[saddle] = Some(clustine_world::ItemStack {
-        item: stack.item,
-        count: 1,
-    });
+    used.mob.body.equipment.slots[saddle] = Some(stack.with_count(1));
     // `setGuaranteedDrop(SADDLE)`.
     let mut chances = used.mob.body.equipment.drop_chances.unwrap_or([0.085; 8]);
     chances[saddle] = 2.0;
@@ -227,7 +225,7 @@ impl MobType for Pig {
     /// `Pig.mobInteract`: a saddled pig that carries nobody takes on a player who does
     /// not sneak and holds no food of it; else an animal's use, then a saddle put on.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let food = FOOD.test(used.held);
+        let food = FOOD.test(used.held.as_ref());
         if !food && saddled(used.mob) && !used.carries && !used.sneaking {
             used.did.push(Did::Mount);
             return Interaction::Success;
@@ -245,7 +243,8 @@ impl MobType for Pig {
     fn steered_by(&self, mob: &Mob, hands: [Option<clustine_world::ItemStack>; 2]) -> bool {
         saddled(mob)
             && hands.iter().any(|hand| {
-                hand.is_some_and(|stack| stack.count > 0 && stack.item == items::CARROT_ON_A_STICK)
+                hand.as_ref()
+                    .is_some_and(|stack| stack.count > 0 && stack.item == items::CARROT_ON_A_STICK)
             })
     }
 

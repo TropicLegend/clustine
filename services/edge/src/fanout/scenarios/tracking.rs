@@ -16,7 +16,7 @@ use clustine_sim::api::Tracked;
 
 use super::*;
 
-const STACK: ItemStack = ItemStack { item: 1, count: 3 };
+const STACK: ItemStack = ItemStack::new(1, 3);
 const SAND: BlockState = BlockState(118);
 const AIR: BlockState = BlockState(0);
 
@@ -461,7 +461,7 @@ async fn a_change_of_an_item_s_data_is_sent_in_the_next_update() {
     .await;
     let mut merged = tracked(key, at, [0.0; 3], false, Tracked::ON_FIRE);
     merged.data = Some(EntityData::Item {
-        stack: ItemStack { item: 1, count: 9 },
+        stack: ItemStack::new(1, 9),
         pick_up_delay: 40,
         thrower: None,
         health: 5,

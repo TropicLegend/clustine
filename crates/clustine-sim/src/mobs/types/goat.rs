@@ -334,10 +334,7 @@ pub(crate) mod brain {
         // `Mth.randomBetween(random, min, max)`, each widened.
         let mut between = |min: f32, max: f32| f64::from(draws.next_float() * (max - min) + min);
         let motion = [between(-0.2, 0.2), between(0.3, 0.7), between(-0.2, 0.2)];
-        let horn = clustine_world::ItemStack {
-            item: items::GOAT_HORN,
-            count: 1,
-        };
+        let horn = clustine_world::ItemStack::new(items::GOAT_HORN, 1);
         Some((horn, motion))
     }
 
@@ -714,7 +711,7 @@ impl MobType for Goat {
     /// more (the game plays it inside `Animal.mobInteract` and again after, where the
     /// stack is still food: always for a creative player, who keeps it).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        if animal::is_item(used.held, items::BUCKET) && !animal::is_baby(used.mob) {
+        if animal::is_item(used.held.as_ref(), items::BUCKET) && !animal::is_baby(used.mob) {
             used.did.push(Did::Sound {
                 sound: milking_sound(used.mob),
                 source: animal::SOUND_SOURCE_PLAYERS,
@@ -724,19 +721,17 @@ impl MobType for Goat {
                 but_the_player: true,
             });
             used.did.push(Did::Give {
-                stack: clustine_world::ItemStack {
-                    item: items::MILK_BUCKET,
-                    count: 1,
-                },
+                stack: clustine_world::ItemStack::new(items::MILK_BUCKET, 1),
                 no_duplicates: true,
             });
             return Interaction::Success;
         }
-        let fed = FOOD.test(used.held);
+        let fed = FOOD.test(used.held.as_ref());
         let result = animal::mob_interact(used, FOOD, None);
         if fed && result != Interaction::Pass {
             eating_sound(used);
-            let still_food = used.creative || used.held.is_some_and(|stack| stack.count > 1);
+            let still_food =
+                used.creative || used.held.as_ref().is_some_and(|stack| stack.count > 1);
             if still_food {
                 eating_sound(used);
             }

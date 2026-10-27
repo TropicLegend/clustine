@@ -182,7 +182,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     if let Some(taken) = water::bucket_pickup_sounding(used, sounds::ITEM_BUCKET_FILL_AXOLOTL) {
         return taken;
     }
-    let fed = FOOD.test(used.held);
+    let fed = FOOD.test(used.held.as_ref());
     let at = used.did.len();
     let result = animal::mob_interact(used, FOOD, None);
     if fed && result != Interaction::Pass {
@@ -190,10 +190,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         used.did.insert(
             at,
             Did::Give {
-                stack: ItemStack {
-                    item: items::WATER_BUCKET,
-                    count: 1,
-                },
+                stack: ItemStack::new(items::WATER_BUCKET, 1),
                 no_duplicates: true,
             },
         );

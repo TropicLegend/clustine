@@ -134,7 +134,7 @@ fn holding(region: &mut Region, stack: Option<ItemStack>) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn use_on(region: &mut Region, key: EntityId) -> TickOutput {
@@ -446,14 +446,7 @@ fn an_allay_given_an_item_gathers_its_kind_near_and_gives_all_of_it_back() {
     let at = record(&region, ONE).unwrap().position;
     lay(
         &mut region,
-        &item_at(
-            TWO,
-            ItemStack {
-                item: items::DIAMOND,
-                count: 3,
-            },
-            at,
-        ),
+        &item_at(TWO, ItemStack::new(items::DIAMOND, 3), at),
     );
     lay(&mut region, &item_at(THREE, one(items::DIRT), at));
     let output = checked(&mut region, &TickInputs::default());
@@ -465,10 +458,7 @@ fn an_allay_given_an_item_gathers_its_kind_near_and_gives_all_of_it_back() {
     assert!(record(&region, THREE).is_some());
     assert_eq!(
         allay::read(&mob(&region, ONE)).inventory,
-        Some(ItemStack {
-            item: items::DIAMOND,
-            count: 3,
-        })
+        Some(ItemStack::new(items::DIAMOND, 3))
     );
     // An empty hand takes its item back, and what it gathered falls at its eyes: all
     // three, those it has meanwhile thrown to the player beside it (within 3 of their
@@ -874,20 +864,10 @@ fn an_allay_given_a_diamond_fetches_diamonds_from_16_away_and_throws_them_to_its
     let held = diamonds_held(&region);
     lay(
         &mut region,
-        &item_at(
-            TWO,
-            ItemStack {
-                item: items::DIAMOND,
-                count: 3,
-            },
-            [12.5, -60.0, 12.5],
-        ),
+        &item_at(TWO, ItemStack::new(items::DIAMOND, 3), [12.5, -60.0, 12.5]),
     );
     // It flies to them, takes them all, and brings them back.
-    let three = Some(ItemStack {
-        item: items::DIAMOND,
-        count: 3,
-    });
+    let three = Some(ItemStack::new(items::DIAMOND, 3));
     until(&mut region, 800, |region| {
         allay::read(&mob(region, ONE)).inventory == three
     });
@@ -911,10 +891,7 @@ fn an_allay_takes_what_it_gathered_to_a_note_block_it_heard_rather_than_to_its_p
     made.body.flags.persistent = true;
     made.body.equipment.slots[0] = Some(one(items::DIAMOND));
     allay::update(&mut made, |own| {
-        own.inventory = Some(ItemStack {
-            item: items::DIAMOND,
-            count: 2,
-        });
+        own.inventory = Some(ItemStack::new(items::DIAMOND, 2));
     });
     let made = remembering(
         entity_types::ALLAY,
@@ -1043,7 +1020,7 @@ fn at_a_line(own: &[Entity], beyond: &[Entity]) -> Region {
 
 /// The face of a player of another region, standing at `x` and holding `held`.
 fn face_at(x: f64, held: i32, seq: u64) -> crate::api::FaceChange {
-    let mut hotbar = [None; clustine_world::HOTBAR_SLOTS];
+    let mut hotbar = [const { None }; clustine_world::HOTBAR_SLOTS];
     hotbar[0] = Some(one(held));
     crate::api::FaceChange::Face {
         player: player(9),

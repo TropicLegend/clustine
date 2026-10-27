@@ -283,10 +283,7 @@ impl Region {
             Behaviour::FullBucket(item) => {
                 let left = if self.empty_contents(item, dispense.front(), output) {
                     self.post(Vibration::FLUID_PLACE, dispense.front());
-                    let bucket = ItemStack {
-                        item: items::BUCKET,
-                        count: 1,
-                    };
+                    let bucket = ItemStack::new(items::BUCKET, 1);
                     self.consume_with_remainder(dispense, bucket, output)
                 } else {
                     self.default_dispense(dispense, output)
@@ -298,10 +295,7 @@ impl Region {
                 let left = match self.pickup_block(dispense.front(), output) {
                     Some(filled) => {
                         self.post(Vibration::FLUID_PICKUP, dispense.front());
-                        let filled = ItemStack {
-                            item: filled,
-                            count: 1,
-                        };
+                        let filled = ItemStack::new(filled, 1);
                         self.consume_with_remainder(dispense, filled, output)
                     }
                     None => self.default_execute(dispense, output),
@@ -855,7 +849,7 @@ impl Region {
         };
         let one = dispense.split_one();
         if let Some(player) = self.players.get_mut(&id) {
-            player.inventory.set(at, one);
+            player.inventory.set(at, one.clone());
         }
         self.journal.players.insert(id);
         let at = u8::try_from(at).expect("an inventory slot fits a byte");
@@ -863,7 +857,7 @@ impl Region {
             id,
             PlayerEvent::InventorySlot {
                 slot: at,
-                stack: one,
+                stack: one.clone(),
             },
         ));
         // `onEquipItem`: the item's sound where it goes in its own slot, heard by all.
@@ -968,17 +962,11 @@ impl Region {
             self.set_block(front, set(state, "honey_level", "0"), output);
             // `takeLiquid`: at the dispenser, not in front.
             self.post(Vibration::FLUID_PICKUP, dispense.pos);
-            let honey = ItemStack {
-                item: items::HONEY_BOTTLE,
-                count: 1,
-            };
+            let honey = ItemStack::new(items::HONEY_BOTTLE, 1);
             (self.consume_with_remainder(dispense, honey, output), true)
         } else if has_water(state) {
             self.post(Vibration::FLUID_PICKUP, dispense.pos);
-            let water = ItemStack {
-                item: items::POTION,
-                count: 1,
-            };
+            let water = ItemStack::new(items::POTION, 1);
             (self.consume_with_remainder(dispense, water, output), true)
         } else {
             (self.default_execute(dispense, output), false)
@@ -1034,10 +1022,7 @@ impl Region {
             }
             Region::block_sound(dispense.pos, sounds::ITEM_BOTTLE_EMPTY, 1.0, 1.0, output);
             self.set_block(front, blocks::MUD, output);
-            let bottle = ItemStack {
-                item: items::GLASS_BOTTLE,
-                count: 1,
-            };
+            let bottle = ItemStack::new(items::GLASS_BOTTLE, 1);
             self.consume_with_remainder(dispense, bottle, output)
         } else {
             self.default_dispense(dispense, output)
@@ -1056,10 +1041,7 @@ impl Region {
             return false;
         }
         Region::block_sound(pos, sounds::BLOCK_BEEHIVE_SHEAR, 1.0, 1.0, output);
-        let combs = ItemStack {
-            item: items::HONEYCOMB,
-            count: 3,
-        };
+        let combs = ItemStack::new(items::HONEYCOMB, 3);
         self.pop_resource_at(pos, combs, output);
         self.set_block(pos, set(state, "honey_level", "0"), output);
         true

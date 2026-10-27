@@ -291,14 +291,7 @@ fn an_egg_makes_a_villager_of_the_biome_at_its_feet_and_a_trader_each_drawing_th
         checked(
             &mut region,
             &moves(vec![
-                set_slot(
-                    1,
-                    0,
-                    Some(ItemStack {
-                        item: egg,
-                        count: 1,
-                    }),
-                ),
+                set_slot(1, 0, Some(ItemStack::new(egg, 1))),
                 select(1, 0),
             ]),
         );
@@ -316,14 +309,8 @@ fn a_click_on_a_villager_makes_it_shake_its_head_and_say_no_and_a_baby_too() {
             &mut region,
             &villager_at(ONE, [4.5, -60.0, 4.5], &shared, &VillagerState::default()),
         );
-        let (mut stream, output) = used_now(
-            &mut region,
-            ONE,
-            Some(ItemStack {
-                item: items::BREAD,
-                count: 1,
-            }),
-        );
+        let (mut stream, output) =
+            used_now(&mut region, ONE, Some(ItemStack::new(items::BREAD, 1)));
         assert_eq!(own(&region, ONE).unhappy, villager::UNHAPPY_TICKS);
         // `makeSound(VILLAGER_NO)`: its volume, and its voice of two draws.
         let pitch = (stream.next_float() - stream.next_float()) * 0.2 + baby_pitch;
@@ -527,10 +514,7 @@ fn bread_at(position: [f64; 3]) -> Entity {
         fire_ticks: 0,
         riding: Default::default(),
         data: EntityData::Item {
-            stack: ItemStack {
-                item: items::BREAD,
-                count: 3,
-            },
+            stack: ItemStack::new(items::BREAD, 3),
             pick_up_delay: 0,
             thrower: None,
             health: 5,
@@ -558,13 +542,7 @@ fn a_villager_walks_to_bread_on_the_ground_and_takes_it_into_its_slots() {
     })
     .expect("the bread is taken");
     let inventory = own(&region, ONE).inventory;
-    assert_eq!(
-        inventory[0],
-        Some(ItemStack {
-            item: items::BREAD,
-            count: 3
-        })
-    );
+    assert_eq!(inventory[0], Some(ItemStack::new(items::BREAD, 3)));
     assert!(inventory[1..].iter().all(Option::is_none));
 }
 
@@ -668,10 +646,7 @@ fn an_egg_on_a_villager_makes_a_baby_of_a_type_drawn_from_its_own_stream() {
         let mut output = TickOutput::default();
         assert!(region.offspring_from_egg(
             &entity,
-            Some(ItemStack {
-                item: items::VILLAGER_SPAWN_EGG,
-                count: 1
-            }),
+            Some(ItemStack::new(items::VILLAGER_SPAWN_EGG, 1)),
             player_key,
             &mut output,
         ));
@@ -706,6 +681,7 @@ fn an_egg_on_a_villager_makes_a_baby_of_a_type_drawn_from_its_own_stream() {
 /// The trader's main hand.
 fn trader_hand(region: &Region) -> Option<i32> {
     mob(region, ONE).body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)]
+        .clone()
         .map(|stack| stack.item)
 }
 

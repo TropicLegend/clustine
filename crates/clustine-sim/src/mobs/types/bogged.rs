@@ -77,7 +77,8 @@ impl MobType for Bogged {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         let shears = used
             .held
-            .is_some_and(|stack: ItemStack| stack.count > 0 && stack.item == items::SHEARS);
+            .as_ref()
+            .is_some_and(|stack: &ItemStack| stack.count > 0 && stack.item == items::SHEARS);
         if shears && !state_of(used.mob).sheared {
             shear(used);
             used.did.push(Did::GameEvent("minecraft:shear"));

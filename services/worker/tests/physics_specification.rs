@@ -23,7 +23,7 @@ use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{EdgeMessage, EdgeToWorker, RegionHello, Restored, WorkerToEdge};
 use clustine_sim::api::{
-    EntityKind, EntityState, Face, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, RegionEvent,
+    EntityKind, EntityState, Face, Inventory, ItemStack, PlayerInput, RegionEvent,
 };
 use clustine_sim::{PlayerEvent, PlayerJoin};
 use clustine_worker::{Ended, RegionRunner, RegionSettings};
@@ -43,11 +43,8 @@ const CAPACITY: usize = 8192;
 const LIFETIME: u32 = 6000;
 
 fn settings() -> RegionSettings {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = std::array::from_fn(|_| None);
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionSettings {
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
@@ -517,10 +514,7 @@ fn a_crash_at_any_step_of_a_fall_leaves_one_sand_which_then_lands() {
             entity,
             PlayerInput::SetInventorySlot {
                 slot: 1,
-                stack: Some(ItemStack {
-                    item: items::SAND,
-                    count: 64,
-                }),
+                stack: Some(ItemStack::new(items::SAND, 64)),
             },
         );
         send_input(&mut link, entity, PlayerInput::SelectSlot { slot: 1 });

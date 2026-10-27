@@ -91,14 +91,14 @@ fn items_lying(region: &Region) -> Vec<(Entity, ItemStack)> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some((entity.clone(), stack)),
+            EntityData::Item { ref stack, .. } => Some((entity.clone(), stack.clone())),
             _ => None,
         })
         .collect()
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn holding(region: &mut Region, stack: ItemStack) {

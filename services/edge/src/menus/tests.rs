@@ -6,7 +6,7 @@ use super::*;
 use clustine_protocol::packets::play::ClientboundPlay;
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 fn hashed(item: i32, count: i32) -> Option<HashedStack> {

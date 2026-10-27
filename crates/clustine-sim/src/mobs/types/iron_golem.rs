@@ -608,6 +608,7 @@ impl MobType for IronGolem {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if !used
             .held
+            .as_ref()
             .is_some_and(|stack| stack.count > 0 && stack.item == items::IRON_INGOT)
         {
             return Interaction::Pass;

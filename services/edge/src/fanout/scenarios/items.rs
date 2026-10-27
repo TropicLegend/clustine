@@ -23,7 +23,7 @@ fn own(number: u128, entity: EntityId) -> EntityState {
     }
 }
 
-const STACK: ItemStack = ItemStack { item: 1, count: 3 };
+const STACK: ItemStack = ItemStack::new(1, 3);
 
 /// An item of the key `key` in `chunk` with `hops` changes of holder behind it, which
 /// player 1 threw.

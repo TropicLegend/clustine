@@ -142,7 +142,7 @@ fn holding(region: &mut Region, stack: Option<ItemStack>) {
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 /// Player 1's use of the entity `key` with what they hold, in a tick.

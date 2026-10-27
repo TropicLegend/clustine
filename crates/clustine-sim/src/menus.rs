@@ -120,7 +120,10 @@ pub(crate) fn click(
 pub(crate) fn menu_slot(slots: &MenuSlots<'_>, index: usize) -> Option<Option<ItemStack>> {
     let containers = slots.kind.container_slots();
     if index < containers {
-        return slots.container.get(index).map(|stack| present(*stack));
+        return slots
+            .container
+            .get(index)
+            .map(|stack| present(stack.clone()));
     }
     let slot = inventory_slot_of(slots.kind, index)?;
     slots.inventory.get(slot).map(present)
@@ -178,12 +181,12 @@ pub(crate) fn put_back(
     let mut stack = present(menu.carried.take())?;
     while stack.count > 0 {
         let Some(slot) =
-            slot_with_room(inventory, selected, stack).or_else(|| free_slot(inventory))
+            slot_with_room(inventory, selected, &stack).or_else(|| free_slot(inventory))
         else {
             return Some(stack);
         };
         let here = present(inventory.get(slot).flatten()).map_or(0, |here| here.count);
-        let room = max_stack_size(stack) - here;
+        let room = max_stack_size(&stack) - here;
         let mut part = split(&mut stack, room);
         // The part is what the slot has room for, so `add` takes it whole; whether the
         // player is creative matters only to what does not fit.
@@ -239,7 +242,7 @@ impl Clicker<'_, '_> {
                     && let Some(here) = self.get(slot)
                 {
                     // `safeClone`: a full stack of the item.
-                    self.menu.carried = Some(with_count(here, max_stack_size(here)));
+                    self.menu.carried = Some(here.with_count(max_stack_size(&here)));
                 }
             }
             ClickKind::Throw if self.carried().is_none() => {
@@ -298,8 +301,8 @@ impl Clicker<'_, '_> {
                     .is_some_and(|drag| drag.kind == DragKind::Clone);
                 // 153–219: a slot that can take the carried stack, while there are more
                 // items than slots so far (any number for a clone).
-                if self.quick_replace(index, carried)
-                    && self.may_place(index, carried)
+                if self.quick_replace(index, &carried)
+                    && self.may_place(index, &carried)
                     && (clone || usize::try_from(carried.count).is_ok_and(|count| count > taken))
                     && let Ok(index) = u16::try_from(index)
                     && let Some(drag) = self.menu.drag.as_mut()
@@ -334,29 +337,29 @@ impl Clicker<'_, '_> {
             // no pickup's button and does nothing (3.14.1).
             [one] => self.do_click(i32::from(*one), kind, ClickKind::Pickup),
             several => {
-                let copy = carried;
+                let copy = carried.clone();
                 let mut left = carried.count;
                 let count = several.len();
-                let share = place_count(count, drag.kind, copy);
+                let share = place_count(count, drag.kind, &copy);
                 for &index in several {
                     let index = usize::from(index);
                     // The carried stack does not change in the loop: each slot's share
                     // depends only on the slot, the carried stack and how many slots
                     // there are, so the game's `HashSet` order does not matter.
-                    if self.quick_replace(index, carried)
-                        && self.may_place(index, carried)
+                    if self.quick_replace(index, &carried)
+                        && self.may_place(index, &carried)
                         && (drag.kind == DragKind::Clone
                             || usize::try_from(carried.count).is_ok_and(|n| n >= count))
                     {
                         let here = self.get(index).map_or(0, |here| here.count);
-                        let most = max_stack_size(copy).min(self.slot_max(index, copy));
+                        let most = max_stack_size(&copy).min(self.slot_max(index, &copy));
                         let now = share.saturating_add(here).min(most);
                         left -= now - here;
-                        self.set(index, Some(with_count(copy, now)));
+                        self.set(index, Some(copy.with_count(now)));
                     }
                 }
                 // A clone drag can leave `left` at or below nothing: an empty cursor.
-                self.menu.carried = present(Some(with_count(copy, left)));
+                self.menu.carried = present(Some(copy.with_count(left)));
                 Ok(())
             }
         }
@@ -400,17 +403,17 @@ impl Clicker<'_, '_> {
                 }
             }
             (Some(here), Some(mut carried)) => {
-                if self.may_place(slot, carried) {
-                    if here.item == carried.item {
+                if self.may_place(slot, &carried) {
+                    if here.same_kind(&carried) {
                         let n = if primary { carried.count } else { 1 };
                         self.menu.carried = self.safe_insert(slot, carried, n);
-                    } else if carried.count <= self.slot_max(slot, carried) {
+                    } else if carried.count <= self.slot_max(slot, &carried) {
                         self.menu.carried = Some(here);
                         self.set(slot, Some(carried));
                     }
-                } else if here.item == carried.item {
+                } else if here.same_kind(&carried) {
                     // A slot that takes nothing of the kind gives what fits the cursor.
-                    let room = max_stack_size(carried) - carried.count;
+                    let room = max_stack_size(&carried) - carried.count;
                     if let Some(taken) = self.try_remove(slot, here.count, room) {
                         carried.count += taken.count;
                         self.menu.carried = Some(carried);
@@ -443,7 +446,7 @@ impl Clicker<'_, '_> {
             return self.quick_move_mount(slot);
         }
         let mut stack = self.get(slot)?;
-        let copy = stack;
+        let copy = stack.clone();
         let containers = self.slots.kind.container_slots();
         let moved = if slot < containers {
             self.move_to(&mut stack, containers, self.slots.kind.slots(), true)
@@ -455,7 +458,7 @@ impl Clicker<'_, '_> {
         }
         // The range moved into never holds the slot moved from, so the stack is written
         // back once, as the game's `setByPlayer(EMPTY)` or `setChanged` leaves it.
-        self.set(slot, present(Some(stack)));
+        self.set(slot, present(Some(stack.clone())));
         if self.slots.kind == MenuKind::Grid3x3 && stack.count == copy.count {
             return None;
         }
@@ -469,14 +472,14 @@ impl Clicker<'_, '_> {
     /// nothing whatever moved, so that the click's loop stops after it.
     fn quick_move_mount(&mut self, slot: usize) -> Option<ItemStack> {
         let mut stack = self.get(slot)?;
-        let copy = stack;
+        let copy = stack.clone();
         let inv = self.slots.kind.container_slots();
         let all = self.slots.kind.slots();
         let moved = if slot < inv {
             self.move_to(&mut stack, inv, all, true)
-        } else if self.may_place(MOUNT_BODY, stack) && self.get(MOUNT_BODY).is_none() {
+        } else if self.may_place(MOUNT_BODY, &stack) && self.get(MOUNT_BODY).is_none() {
             self.move_to(&mut stack, MOUNT_BODY, MOUNT_BODY + 1, false)
-        } else if self.may_place(MOUNT_SADDLE, stack) && self.get(MOUNT_SADDLE).is_none() {
+        } else if self.may_place(MOUNT_SADDLE, &stack) && self.get(MOUNT_SADDLE).is_none() {
             self.move_to(&mut stack, MOUNT_SADDLE, MOUNT_SADDLE + 1, false)
         } else if inv > 2 && self.move_to(&mut stack, 2, inv, false) {
             true
@@ -512,7 +515,7 @@ impl Clicker<'_, '_> {
         };
         let mut moved = false;
         // `isStackable` is asked once, before the merge (16–20).
-        if max_stack_size(*stack) > 1 {
+        if max_stack_size(stack) > 1 {
             for &index in &order {
                 if stack.count <= 0 {
                     break;
@@ -520,11 +523,11 @@ impl Clicker<'_, '_> {
                 let Some(mut here) = self.get(index) else {
                     continue;
                 };
-                if here.item != stack.item {
+                if !here.same_kind(stack) {
                     continue;
                 }
                 let total = here.count + stack.count;
-                let most = self.slot_max(index, here);
+                let most = self.slot_max(index, &here);
                 if total <= most {
                     stack.count = 0;
                     here.count = total;
@@ -540,8 +543,8 @@ impl Clicker<'_, '_> {
         }
         if stack.count > 0 {
             for &index in &order {
-                if self.get(index).is_none() && self.may_place(index, *stack) {
-                    let most = self.slot_max(index, *stack);
+                if self.get(index).is_none() && self.may_place(index, stack) {
+                    let most = self.slot_max(index, stack);
                     let part = split(stack, stack.count.min(most));
                     self.set(index, Some(part));
                     moved = true;
@@ -565,8 +568,8 @@ impl Clicker<'_, '_> {
                 self.set(slot, None);
             }
             (Some(mut stack), None) => {
-                if self.may_place(slot, stack) {
-                    let most = self.slot_max(slot, stack);
+                if self.may_place(slot, &stack) {
+                    let most = self.slot_max(slot, &stack);
                     if stack.count > most {
                         let part = split(&mut stack, most);
                         self.slots.inventory.set(held, present(Some(stack)));
@@ -578,8 +581,8 @@ impl Clicker<'_, '_> {
                 }
             }
             (Some(mut stack), Some(here)) => {
-                if self.may_place(slot, stack) {
-                    let most = self.slot_max(slot, stack);
+                if self.may_place(slot, &stack) {
+                    let most = self.slot_max(slot, &stack);
                     if stack.count > most {
                         // The held stack is split where it lies, and the slot's stack
                         // goes back into the inventory, or out of the window if it does
@@ -587,7 +590,7 @@ impl Clicker<'_, '_> {
                         // the split left (no N6 slot holds less than a full stack, so
                         // this is the game's rule more than a case that arises).
                         let part = split(&mut stack, most);
-                        self.slots.inventory.set(held, present(Some(stack)));
+                        self.slots.inventory.set(held, present(Some(stack.clone())));
                         let mut back = if same { stack } else { here };
                         self.set(slot, Some(part));
                         let creative = self.creative;
@@ -616,16 +619,16 @@ impl Clicker<'_, '_> {
             self.get(slot).map_or(0, |here| here.count)
         };
         let mut taken = self.try_remove(slot, n, i32::MAX);
-        if let Some(stack) = taken {
-            self.thrown.push(stack);
+        if let Some(ref stack) = taken {
+            self.thrown.push(stack.clone());
         }
         if button == 1 {
             while let Some(stack) = taken
                 && self.get(slot).is_some_and(|here| here.item == stack.item)
             {
                 taken = self.try_remove(slot, n, i32::MAX);
-                if let Some(stack) = taken {
-                    self.thrown.push(stack);
+                if let Some(ref stack) = taken {
+                    self.thrown.push(stack.clone());
                 }
             }
         }
@@ -648,7 +651,7 @@ impl Clicker<'_, '_> {
         } else {
             (0..size).rev().collect()
         };
-        let most = max_stack_size(carried);
+        let most = max_stack_size(&carried);
         for pass in 0..2 {
             for &index in &order {
                 if carried.count >= most {
@@ -657,10 +660,10 @@ impl Clicker<'_, '_> {
                 let Some(here) = self.get(index) else {
                     continue;
                 };
-                if !self.quick_replace(index, carried) {
+                if !self.quick_replace(index, &carried) {
                     continue;
                 }
-                if pass == 0 && here.count == max_stack_size(here) {
+                if pass == 0 && here.count == max_stack_size(&here) {
                     continue;
                 }
                 if let Some(taken) = self.try_remove(index, here.count, most - carried.count) {
@@ -673,7 +676,7 @@ impl Clicker<'_, '_> {
 
     /// The carried stack, if there is one.
     fn carried(&self) -> Option<ItemStack> {
-        present(self.menu.carried)
+        present(self.menu.carried.clone())
     }
 
     /// The inventory slot the menu's slot `index` shows, if it shows one.
@@ -702,7 +705,7 @@ impl Clicker<'_, '_> {
     /// `Slot.mayPlace`: true but for a shulker box's slot, which refuses what may not go
     /// inside a container (`ShulkerBoxSlot`), and a horse's saddle and body, which take
     /// only what the horse may wear there (`ArmorSlot`: `isEquippableInSlot`).
-    fn may_place(&self, index: usize, stack: ItemStack) -> bool {
+    fn may_place(&self, index: usize, stack: &ItemStack) -> bool {
         if let MenuKind::Mount { .. } = self.slots.kind
             && index <= MOUNT_BODY
         {
@@ -724,7 +727,7 @@ impl Clicker<'_, '_> {
 
     /// `Slot.getMaxStackSize(stack)`: the container's most, or the item's if less; one
     /// in a horse's saddle and body (`ArmorSlot`).
-    fn slot_max(&self, index: usize, stack: ItemStack) -> i32 {
+    fn slot_max(&self, index: usize, stack: &ItemStack) -> i32 {
         if let MenuKind::Mount { .. } = self.slots.kind
             && index <= MOUNT_BODY
         {
@@ -734,10 +737,10 @@ impl Clicker<'_, '_> {
     }
 
     /// `canItemQuickReplace(slot, stack, true)` (2154–2190): the slot is empty, or holds
-    /// the item and no more than a full stack of it.
-    fn quick_replace(&self, index: usize, stack: ItemStack) -> bool {
+    /// the same item with the same components and no more than a full stack of it.
+    fn quick_replace(&self, index: usize, stack: &ItemStack) -> bool {
         self.get(index)
-            .is_none_or(|here| here.item == stack.item && here.count <= max_stack_size(stack))
+            .is_none_or(|here| here.same_kind(stack) && here.count <= max_stack_size(stack))
     }
 
     /// `Slot.tryRemove(count, limit, player)` (Slot.txt 166–208) as `safeTake` runs it:
@@ -746,7 +749,7 @@ impl Clicker<'_, '_> {
     fn try_remove(&mut self, index: usize, count: i32, limit: i32) -> Option<ItemStack> {
         let mut here = self.get(index)?;
         // `allowModification`: `mayPickup` (always) and `mayPlace` of what it holds.
-        if !self.may_place(index, here) && limit < here.count {
+        if !self.may_place(index, &here) && limit < here.count {
             return None;
         }
         let count = count.min(limit);
@@ -762,11 +765,11 @@ impl Clicker<'_, '_> {
     /// `Slot.safeInsert(stack, n)` (Slot.txt 249–302): up to `n` of `stack` into the
     /// slot, as far as it has room and takes the item; what is left of the stack.
     fn safe_insert(&mut self, index: usize, mut stack: ItemStack, n: i32) -> Option<ItemStack> {
-        if !self.may_place(index, stack) {
+        if !self.may_place(index, &stack) {
             return Some(stack);
         }
         let here = self.get(index);
-        let room = self.slot_max(index, stack) - here.map_or(0, |here| here.count);
+        let room = self.slot_max(index, &stack) - here.as_ref().map_or(0, |here| here.count);
         let m = n.min(stack.count).min(room);
         if m <= 0 {
             return Some(stack);
@@ -776,7 +779,7 @@ impl Clicker<'_, '_> {
                 let part = split(&mut stack, m);
                 self.set(index, Some(part));
             }
-            Some(mut here) if here.item == stack.item => {
+            Some(mut here) if here.same_kind(&stack) => {
                 stack.count -= m;
                 here.count += m;
                 self.set(index, Some(here));
@@ -790,7 +793,7 @@ impl Clicker<'_, '_> {
 /// `getQuickCraftPlaceCount(slots, type, stack)` (2192–2216): what a drag puts into
 /// each slot before the slot's own most. The game divides as floats and floors; for
 /// counts of a stack that is the integer division.
-fn place_count(slots: usize, kind: DragKind, stack: ItemStack) -> i32 {
+fn place_count(slots: usize, kind: DragKind, stack: &ItemStack) -> i32 {
     match kind {
         DragKind::Split => stack.count / i32::try_from(slots).unwrap_or(i32::MAX).max(1),
         DragKind::One => 1,
@@ -803,19 +806,11 @@ fn present(stack: Option<ItemStack>) -> Option<ItemStack> {
     stack.filter(|stack| stack.count > 0 && stack.item != items::AIR)
 }
 
-/// The stack with `count` of its item (`copyWithCount`).
-fn with_count(stack: ItemStack, count: i32) -> ItemStack {
-    ItemStack {
-        item: stack.item,
-        count,
-    }
-}
-
 /// `ItemStack.split(n)`: takes up to `n` from `stack` and returns them.
 fn split(stack: &mut ItemStack, n: i32) -> ItemStack {
     let taken = n.min(stack.count);
     stack.count -= taken;
-    with_count(*stack, taken)
+    stack.with_count(taken)
 }
 
 /// `Item.canFitInsideContainerItems`: false only for a block item whose block is a
@@ -830,22 +825,22 @@ fn fits_inside_containers(item: i32) -> bool {
 }
 
 /// `Inventory.getMaxStackSize(stack)`: the inventory's most, or the item's if less.
-fn inventory_max(stack: ItemStack) -> i32 {
+fn inventory_max(stack: &ItemStack) -> i32 {
     CONTAINER_MAX.min(max_stack_size(stack))
 }
 
 /// `Inventory.getSlotWithRemainingSpace(stack)` (Inventory.txt 494–538): the selected
-/// slot, then the off hand, then 0 to 35, the first that holds the item, stacks and is
-/// not full (`hasRemainingSpaceForItem`, 101–123).
-fn slot_with_room(inventory: &Inventory, selected: usize, stack: ItemStack) -> Option<usize> {
+/// slot, then the off hand, then 0 to 35, the first that holds the same item with the
+/// same components, stacks and is not full (`hasRemainingSpaceForItem`, 101–123).
+fn slot_with_room(inventory: &Inventory, selected: usize, stack: &ItemStack) -> Option<usize> {
     [selected, OFF_HAND]
         .into_iter()
         .chain(0..ITEM_SLOTS)
         .find(|&slot| {
             present(inventory.get(slot).flatten()).is_some_and(|here| {
-                here.item == stack.item
-                    && max_stack_size(here) > 1
-                    && here.count < inventory_max(here)
+                here.same_kind(stack)
+                    && max_stack_size(&here) > 1
+                    && here.count < inventory_max(&here)
             })
         })
 }
@@ -857,14 +852,14 @@ fn free_slot(inventory: &Inventory) -> Option<usize> {
 
 /// `Inventory.addResource(slot, stack)` (446–493): as much of `stack` as `slot` has
 /// room for, returning what is left.
-fn add_resource_at(inventory: &mut Inventory, slot: usize, stack: ItemStack) -> i32 {
-    let here = present(inventory.get(slot).flatten()).unwrap_or(with_count(stack, 0));
-    let room = inventory_max(here) - here.count;
+fn add_resource_at(inventory: &mut Inventory, slot: usize, stack: &ItemStack) -> i32 {
+    let here = present(inventory.get(slot).flatten()).unwrap_or_else(|| stack.with_count(0));
+    let room = inventory_max(&here) - here.count;
     let m = stack.count.min(room);
     if m <= 0 {
         return stack.count;
     }
-    inventory.set(slot, Some(with_count(here, here.count + m)));
+    inventory.set(slot, Some(here.with_count(here.count + m)));
     stack.count - m
 }
 
@@ -881,17 +876,17 @@ fn add(
     stack: &mut ItemStack,
     creative: bool,
 ) -> bool {
-    if present(Some(*stack)).is_none() {
+    if stack.count <= 0 || stack.item == items::AIR {
         return false;
     }
     let mut before;
     loop {
         before = stack.count;
         stack.count = match slot {
-            Some(slot) => add_resource_at(inventory, slot, *stack),
+            Some(slot) => add_resource_at(inventory, slot, stack),
             None => {
-                match slot_with_room(inventory, selected, *stack).or_else(|| free_slot(inventory)) {
-                    Some(slot) => add_resource_at(inventory, slot, *stack),
+                match slot_with_room(inventory, selected, stack).or_else(|| free_slot(inventory)) {
+                    Some(slot) => add_resource_at(inventory, slot, stack),
                     None => stack.count,
                 }
             }
@@ -919,7 +914,7 @@ mod tests {
     const BOX: i32 = items::SHULKER_BOX;
 
     fn stack(item: i32, count: i32) -> Option<ItemStack> {
-        Some(ItemStack { item, count })
+        Some(ItemStack::new(item, count))
     }
 
     /// A menu of `kind` over an empty container and an empty inventory.
@@ -1107,6 +1102,63 @@ mod tests {
         assert_eq!(fixture.menu.carried, stack(PEARL, 4));
     }
 
+    /// A stack of `item` named `name`, which no plain stack of it is the same as.
+    fn named(item: i32, count: i32, name: &str) -> Option<ItemStack> {
+        let mut stack = ItemStack::new(item, count);
+        stack
+            .components
+            .set(clustine_world::Component::ItemName(format!("{name:?}")));
+        Some(stack)
+    }
+
+    /// The menus merge by item and components (`isSameItemSameComponents`): a carried
+    /// stack placed onto one that differs in them swaps with it, onto one alike fills it.
+    #[test]
+    fn a_click_merges_the_carried_stack_only_into_one_with_the_same_components() {
+        let mut fixture = Fixture::new(MenuKind::Rows3);
+        fixture.put(0, named(STONE, 60, "a"));
+        fixture.menu.carried = stack(STONE, 10);
+        fixture.survival(0, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(0), stack(STONE, 10));
+        assert_eq!(fixture.menu.carried, named(STONE, 60, "a"));
+        fixture.put(1, named(STONE, 1, "a"));
+        fixture.survival(1, 0, ClickKind::Pickup);
+        assert_eq!(fixture.at(1), named(STONE, 61, "a"));
+        assert_eq!(fixture.menu.carried, None);
+    }
+
+    /// A quick move merges into stacks alike only, and a double click gathers only those.
+    #[test]
+    fn a_quick_move_and_a_pickup_all_pass_over_stacks_whose_components_differ() {
+        let mut fixture = Fixture::new(MenuKind::Rows3);
+        fixture.put(0, stack(STONE, 10));
+        fixture.put(CHEST_HOTBAR + 8, named(STONE, 5, "a"));
+        fixture.survival(0, 0, ClickKind::QuickMove);
+        // From the hotbar's right end: the named stack is passed over, and the stone
+        // goes into the first empty slot in that order.
+        assert_eq!(fixture.at(CHEST_HOTBAR + 8), named(STONE, 5, "a"));
+        assert_eq!(fixture.at(CHEST_HOTBAR + 7), stack(STONE, 10));
+        fixture.put(3, named(STONE, 7, "a"));
+        fixture.menu.carried = stack(STONE, 1);
+        fixture.survival(5, 0, ClickKind::PickupAll);
+        assert_eq!(fixture.menu.carried, stack(STONE, 11));
+        assert_eq!(fixture.at(3), named(STONE, 7, "a"));
+        assert_eq!(fixture.at(CHEST_HOTBAR + 8), named(STONE, 5, "a"));
+    }
+
+    /// `Inventory.add` fills only slots of the same item with the same components.
+    #[test]
+    fn putting_back_fills_only_stacks_with_the_same_components() {
+        let mut fixture = Fixture::new(MenuKind::Rows3);
+        fixture.inventory.set(0, named(STONE, 60, "a"));
+        fixture.inventory.set(1, stack(STONE, 60));
+        fixture.menu.carried = named(STONE, 10, "a");
+        assert_eq!(put_back(&mut fixture.inventory, 1, &mut fixture.menu), None);
+        assert_eq!(fixture.inventory.get(1), Some(stack(STONE, 60)));
+        assert_eq!(fixture.inventory.get(0), Some(named(STONE, 64, "a")));
+        assert_eq!(fixture.inventory.get(2), Some(named(STONE, 6, "a")));
+    }
+
     #[test]
     fn a_click_on_another_item_swaps_it_with_the_carried_stack() {
         let mut fixture = Fixture::new(MenuKind::Rows3);
@@ -1122,23 +1174,11 @@ mod tests {
         let mut fixture = Fixture::new(MenuKind::Rows3);
         fixture.menu.carried = stack(STONE, 5);
         let clicked = fixture.survival(-999, 1, ClickKind::Pickup);
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 1
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 1)]);
         assert_eq!(fixture.menu.carried, stack(STONE, 4));
         // A shift-click outside throws too.
         let clicked = fixture.survival(-999, 0, ClickKind::QuickMove);
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 4
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 4)]);
         assert_eq!(fixture.menu.carried, None);
         let clicked = fixture.survival(-999, 0, ClickKind::Pickup);
         assert_eq!(clicked, Clicked::default());
@@ -1406,22 +1446,10 @@ mod tests {
         let mut fixture = Fixture::new(MenuKind::Grid3x3);
         fixture.put(0, stack(STONE, 5));
         let clicked = fixture.survival(0, 0, ClickKind::Throw);
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 1
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 1)]);
         assert_eq!(fixture.at(0), stack(STONE, 4));
         let clicked = fixture.survival(0, 1, ClickKind::Throw);
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 4
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 4)]);
         assert_eq!(fixture.at(0), None);
         // Nothing of an empty slot, and nothing while a stack is carried.
         assert_eq!(fixture.survival(0, 1, ClickKind::Throw), Clicked::default());
@@ -1549,13 +1577,7 @@ mod tests {
         let mut fixture = Fixture::new(MenuKind::Hopper);
         fixture.put(0, stack(STONE, 5));
         let clicked = fixture.survival(0, 7, ClickKind::Throw);
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 5
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 5)]);
         assert_eq!(fixture.at(0), None);
     }
 
@@ -1586,13 +1608,7 @@ mod tests {
         let clicked = fixture.survival(1, 0, ClickKind::Swap);
         assert_eq!(fixture.at(1), stack(PEARL, 16));
         assert_eq!(fixture.inventory.get(0), Some(stack(PEARL, 4)));
-        assert_eq!(
-            clicked.thrown,
-            vec![ItemStack {
-                item: STONE,
-                count: 3
-            }]
-        );
+        assert_eq!(clicked.thrown, vec![ItemStack::new(STONE, 3)]);
         // A creative player's stack that does not fit back is gone.
         fixture.inventory.set(0, stack(PEARL, 20));
         fixture.put(1, stack(STONE, 3));
@@ -1721,10 +1737,7 @@ mod tests {
             inventory.set(slot, stack(DIRT, 64));
         }
         inventory.set(5, stack(STONE, 62));
-        let mut rest = ItemStack {
-            item: STONE,
-            count: 5,
-        };
+        let mut rest = ItemStack::new(STONE, 5);
         assert!(!add(&mut inventory, 0, None, &mut rest, false));
         assert_eq!(rest.count, 3);
         assert_eq!(inventory.get(5), Some(stack(STONE, 64)));

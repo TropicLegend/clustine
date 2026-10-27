@@ -64,14 +64,8 @@ fn own() -> Vec<ChunkPos> {
 /// borrower's own stay loaded throughout.
 fn builders_settings() -> RegionSettings {
     let mut settings = settings(1_000);
-    settings.starting_inventory.0[0] = Some(ItemStack {
-        item: items::LEVER,
-        count: 64,
-    });
-    settings.starting_inventory.0[1] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    settings.starting_inventory.0[0] = Some(ItemStack::new(items::LEVER, 64));
+    settings.starting_inventory.0[1] = Some(ItemStack::new(items::STONE, 64));
     settings
 }
 

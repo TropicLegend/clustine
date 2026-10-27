@@ -195,7 +195,7 @@ mod tests {
             fire_ticks: 0,
             riding: Default::default(),
             data: EntityData::Item {
-                stack: ItemStack { item: 1, count: 1 },
+                stack: ItemStack::new(1, 1),
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,

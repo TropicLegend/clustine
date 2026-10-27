@@ -409,7 +409,7 @@ fn effects_the_lender_had_not_taken_go_to_the_borrower_with_the_lend() {
         ticks: Vec::new(),
         marks_taken: Vec::new(),
         seams: Vec::new(),
-        effects: vec![effect],
+        effects: vec![effect.clone()],
         taken: Vec::new(),
         events: Vec::new(),
         entity_changes: Vec::new(),

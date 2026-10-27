@@ -496,11 +496,8 @@ mod tests {
     /// Everything else a region keeps of a player follows from the entity, so that no
     /// two stays are alike in anything.
     fn stay(entity: i32, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
-        let mut hotbar = [None; HOTBAR_SLOTS];
-        hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack {
-            item: 1,
-            count: entity,
-        });
+        let mut hotbar = [const { None }; HOTBAR_SLOTS];
+        hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack::new(1, entity));
         PlayerState {
             sleeping: None,
             respawn: None,

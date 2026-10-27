@@ -319,7 +319,7 @@ impl Line {
                     sequence,
                     index: u32::try_from(index).expect("few"),
                 },
-                effect: *effect,
+                effect: effect.clone(),
                 due: Due::FromTaking,
             })
             .collect();
@@ -419,7 +419,7 @@ fn uses_of(output: &TickOutput, vehicle: EntityId) -> Vec<Effect> {
                 Effected::OnEntity { key, by: EntityUse::Interact { .. } } if key == vehicle
             )
         })
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -429,7 +429,7 @@ fn grants(output: &TickOutput) -> Vec<Effect> {
         .effects
         .iter()
         .filter(|effect| matches!(effect.what, Effected::Seated { .. }))
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -461,7 +461,7 @@ fn decline_effects(output: &TickOutput) -> Vec<Effect> {
                 }
             )
         })
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -785,7 +785,7 @@ fn a_double_click_on_a_camel_across_the_line_grants_one_seat() {
     let uses = uses_of(&output, key(VEHICLE));
     assert!(!uses.is_empty(), "the clicks are uses on the holder");
     // Both clicks, however the west sent them.
-    let both = [uses[0], *uses.last().expect("one")];
+    let both = [uses[0].clone(), uses.last().expect("one").clone()];
     let output = line.file(Side::East, &both);
     let sent = grants(&output);
     assert_eq!(sent.len(), 1, "one grant: {:?}", output.effects);
@@ -811,7 +811,7 @@ fn a_double_click_on_a_camel_across_the_line_grants_one_seat() {
 #[test]
 fn a_grant_for_the_vehicle_a_player_waits_for_is_ignored_and_not_declined() {
     let (mut line, grant, _) = boat_granted();
-    let output = line.file(Side::West, &[grant, grant]);
+    let output = line.file(Side::West, &[grant.clone(), grant]);
     assert_eq!(declines(&output), [], "nothing declined");
     assert_eq!(departures(&output).len(), 1, "handed over once");
     let kept = seats(&line.east.region, key(VEHICLE));

@@ -89,10 +89,7 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
             .iter()
             .position(Option::is_none)
             .map(|slot| {
-                let stack = ItemStack {
-                    item: filled,
-                    count: 1,
-                };
+                let stack = ItemStack::new(filled, 1);
                 let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
                 (slot, Some(stack))
             })

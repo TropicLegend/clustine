@@ -18,25 +18,13 @@ use crate::region::stands::{DEFAULT_POSE, clicked_slot, placed_yaw};
 
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
 
-const STAND_ITEM: ItemStack = ItemStack {
-    item: items::ARMOR_STAND,
-    count: 1,
-};
+const STAND_ITEM: ItemStack = ItemStack::new(items::ARMOR_STAND, 1);
 
-const HELMET: ItemStack = ItemStack {
-    item: items::DIAMOND_HELMET,
-    count: 1,
-};
+const HELMET: ItemStack = ItemStack::new(items::DIAMOND_HELMET, 1);
 
-const CHESTPLATE: ItemStack = ItemStack {
-    item: items::DIAMOND_CHESTPLATE,
-    count: 1,
-};
+const CHESTPLATE: ItemStack = ItemStack::new(items::DIAMOND_CHESTPLATE, 1);
 
-const BOOTS: ItemStack = ItemStack {
-    item: items::IRON_BOOTS,
-    count: 1,
-};
+const BOOTS: ItemStack = ItemStack::new(items::IRON_BOOTS, 1);
 
 fn key(n: u64) -> EntityId {
     EntityId((1 << 40) + n)
@@ -104,7 +92,7 @@ fn items_lying(region: &Region) -> Vec<(ItemStack, [f64; 3])> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some((stack, entity.position)),
+            EntityData::Item { ref stack, .. } => Some((stack.clone(), entity.position)),
             _ => None,
         })
         .collect()
@@ -472,13 +460,7 @@ fn a_click_takes_off_what_is_worn_at_its_height_and_puts_on_what_is_held_in_its_
     assert!(sounds_of(&output).contains(&sounds::ITEM_ARMOR_EQUIP_DIAMOND));
     assert_eq!(in_hand(&region), Some(CHESTPLATE));
     // A stick would go in the hand, and a stand without arms takes nothing there.
-    holding(
-        &mut region,
-        ItemStack {
-            item: items::STICK,
-            count: 1,
-        },
-    );
+    holding(&mut region, ItemStack::new(items::STICK, 1));
     checked(&mut region, &click_on(&dressed, 1.0));
     assert_eq!(
         worn(&record(&region, dressed.key).unwrap()),
@@ -491,11 +473,8 @@ fn a_one_item_hand_swaps_with_what_the_slot_wears() {
     let mut region = on_ticking_floor_with(&[]);
     let dressed = stand(1, [3.5, -60.0, 3.5], vec![(slots::FEET, BOOTS)]);
     lay(&mut region, &dressed);
-    let other_boots = ItemStack {
-        item: items::DIAMOND_BOOTS,
-        count: 1,
-    };
-    holding(&mut region, other_boots);
+    let other_boots = ItemStack::new(items::DIAMOND_BOOTS, 1);
+    holding(&mut region, other_boots.clone());
     let output = checked(&mut region, &click_on(&dressed, 1.0));
     // The edges are told what it wears now, which they send as `SetEquipment`.
     let told = output.events.iter().find_map(|event| match event {
@@ -506,7 +485,7 @@ fn a_one_item_hand_swaps_with_what_the_slot_wears() {
     });
     assert!(matches!(
         told,
-        Some(EntityData::ArmorStand { ref equipment, .. }) if equipment == &[(slots::FEET, other_boots)]
+        Some(EntityData::ArmorStand { ref equipment, .. }) if equipment == &[(slots::FEET, other_boots.clone())]
     ));
     assert_eq!(
         worn(&record(&region, dressed.key).unwrap()),
@@ -737,7 +716,7 @@ fn a_stand_in_fire_burns_down_and_drops_what_it_wears_but_not_itself() {
     assert_eq!(broke, Some(6));
     let dropped: Vec<ItemStack> = items_lying(&region)
         .iter()
-        .map(|(stack, _)| *stack)
+        .map(|(stack, _)| stack.clone())
         .collect();
     assert_eq!(dropped, [HELMET]);
 }

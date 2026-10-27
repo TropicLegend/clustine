@@ -318,7 +318,7 @@ fn hanging(key: EntityId, kind: i32, uuid: uuid::Uuid, data: EntityData) -> Enti
 }
 
 /// `ItemFrame.getAnalogOutput()`: nothing for an empty frame, else its rotation and one.
-fn analog_output(item: Option<ItemStack>, rotation: u8) -> u8 {
+fn analog_output(item: Option<&ItemStack>, rotation: u8) -> u8 {
     if item.is_none() {
         0
     } else {
@@ -389,17 +389,13 @@ fn hung_by(item: i32) -> Option<Hung> {
 /// (`ItemFrame`); a plain painting (`Painting`).
 pub(crate) fn hanging_pick(entity: &Entity) -> Option<ItemStack> {
     match &entity.data {
-        EntityData::ItemFrame { item, .. } => Some(item.map_or(
-            ItemStack {
-                item: frame_item(entity.kind),
-                count: 1,
-            },
-            |item| ItemStack { count: 1, ..item },
-        )),
-        EntityData::Painting { .. } => Some(ItemStack {
-            item: items::PAINTING,
-            count: 1,
-        }),
+        EntityData::ItemFrame { item, .. } => Some(
+            item.clone()
+                .map_or(ItemStack::new(frame_item(entity.kind), 1), |item| {
+                    ItemStack { count: 1, ..item }
+                }),
+        ),
+        EntityData::Painting { .. } => Some(ItemStack::new(items::PAINTING, 1)),
         _ => None,
     }
 }
@@ -685,10 +681,7 @@ impl Region {
                 if creative {
                     return;
                 }
-                let stack = ItemStack {
-                    item: items::PAINTING,
-                    count: 1,
-                };
+                let stack = ItemStack::new(items::PAINTING, 1);
                 self.spawn_item(drop_point(entity), stack, output);
             }
             EntityData::ItemFrame { .. } => {
@@ -713,7 +706,7 @@ impl Region {
     ) {
         let EntityData::ItemFrame {
             attached,
-            item,
+            ref item,
             fixed,
             drop_chance,
             ..
@@ -731,16 +724,13 @@ impl Region {
         }
         let at = drop_point(entity);
         if drop_self {
-            let stack = ItemStack {
-                item: frame_item(entity.kind),
-                count: 1,
-            };
+            let stack = ItemStack::new(frame_item(entity.kind), 1);
             self.spawn_item(at, stack, output);
         }
         if let Some(item) = item {
             // Drawn though the chance is 1 unless set otherwise.
             if self.next_float_of(entity.key) < drop_chance.0 {
-                self.spawn_item(at, item, output);
+                self.spawn_item(at, item.clone(), output);
             }
         }
     }
@@ -841,7 +831,10 @@ impl Region {
     /// player's is deleted) with the remove sound; an empty one breaks
     /// (`BlockAttachedEntity.hurtServer`).
     pub(crate) fn hurt_frame(&mut self, entity: &Entity, creative: bool, output: &mut TickOutput) {
-        let EntityData::ItemFrame { item, fixed, .. } = entity.data else {
+        let EntityData::ItemFrame {
+            ref item, fixed, ..
+        } = entity.data
+        else {
             return;
         };
         if fixed {
@@ -870,7 +863,7 @@ impl Region {
     ) {
         let EntityData::ItemFrame {
             attached,
-            item,
+            ref item,
             rotation,
             drop_chance,
             fixed,
@@ -895,7 +888,7 @@ impl Region {
         self.hanging_sound(entity, sounds.rotate, output);
         let data = EntityData::ItemFrame {
             attached,
-            item,
+            item: item.clone(),
             rotation: (rotation + 1) % ROTATIONS,
             drop_chance,
             fixed,
@@ -952,7 +945,7 @@ impl Region {
                     if found.is_some() {
                         return None;
                     }
-                    found = Some(analog_output(*item, *rotation));
+                    found = Some(analog_output(item.as_ref(), *rotation));
                 }
             }
         }
@@ -1021,9 +1014,9 @@ mod tests {
     #[test]
     fn a_frame_gives_nothing_empty_and_its_rotation_and_one_with_an_item() {
         assert_eq!(analog_output(None, 5), 0);
-        let item = Some(ItemStack { item: 1, count: 1 });
-        assert_eq!(analog_output(item, 0), 1);
-        assert_eq!(analog_output(item, 7), 8);
+        let item = Some(ItemStack::new(1, 1));
+        assert_eq!(analog_output(item.as_ref(), 0), 1);
+        assert_eq!(analog_output(item.as_ref(), 7), 8);
     }
 
     #[test]

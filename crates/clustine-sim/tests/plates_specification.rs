@@ -365,7 +365,7 @@ fn player_inside(output: &TickOutput, at: BlockPos) -> Vec<Effect> {
         .effects
         .iter()
         .filter(|effect| effect.at == at && matches!(effect.what, Effected::PlayerInside { .. }))
-        .copied()
+        .cloned()
         .collect()
 }
 

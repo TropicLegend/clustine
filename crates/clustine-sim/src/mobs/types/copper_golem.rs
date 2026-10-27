@@ -508,11 +508,13 @@ fn turn_to_statue(tick: &mut MobTick<'_>, at: BlockPos) {
     // `dropPreservedEquipment`: each slot whose drop is guaranteed.
     let position = tick.living.body.position;
     for slot in 0..tick.mob.body.equipment.slots.len() {
-        let Some(stack) = tick.mob.body.equipment.slots[slot] else {
+        let Some(ref stack) = tick.mob.body.equipment.slots[slot] else {
             continue;
         };
         if stack.count > 0 && tick.mob.body.equipment.drop_chance(slot) > 1.0 {
-            tick.mob.body.equipment.slots[slot] = None;
+            let stack = tick.mob.body.equipment.slots[slot]
+                .take()
+                .expect("the slot holds the stack just read");
             tick.out.local.push(Local::Drop {
                 stack,
                 at: position,
@@ -564,21 +566,29 @@ fn sound(sound: i32, source: i32, at: Vec3) -> Did {
 /// `CopperGolem.mobInteract` (the brief's 7.13.3), in its order. A creative player's
 /// honeycomb is kept and their axe not worn, and every player is one.
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let hand = usize::from(slots::MAIN_HAND);
     if held.is_none()
-        && let Some(carried) = used.mob.body.equipment.slots[hand].filter(|stack| stack.count > 0)
+        && let Some(carried) = used.mob.body.equipment.slots[hand]
+            .as_ref()
+            .filter(|stack| stack.count > 0)
     {
-        let thrown = throw_towards(used, carried);
+        let thrown = throw_towards(used, carried.clone());
         used.did.push(thrown);
         used.mob.body.equipment.slots[hand] = None;
         return Interaction::Success;
     }
     let antenna = usize::from(slots::SADDLE);
-    let ready_for_shearing = used.mob.body.equipment.slots[antenna].is_some_and(|stack| {
-        stack.count > 0 && item_in_tag(stack.item, "minecraft:shearable_from_copper_golem")
-    });
-    if held.is_some_and(|stack| stack.item == items::SHEARS) && ready_for_shearing {
+    let ready_for_shearing = used.mob.body.equipment.slots[antenna]
+        .as_ref()
+        .is_some_and(|stack| {
+            stack.count > 0 && item_in_tag(stack.item, "minecraft:shearable_from_copper_golem")
+        });
+    if held
+        .as_ref()
+        .is_some_and(|stack| stack.item == items::SHEARS)
+        && ready_for_shearing
+    {
         // `shear`: its sound, the antenna emptied and dropped half a block up and more.
         used.did.push(sound(
             sounds::ENTITY_COPPER_GOLEM_SHEAR,
@@ -599,7 +609,11 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
     }
     let block = crate::physics::containing(used.position);
     let own = state_of(used.mob);
-    if held.is_some_and(|stack| stack.item == items::HONEYCOMB) && own.next_weathering != WAXED {
+    if held
+        .as_ref()
+        .is_some_and(|stack| stack.item == items::HONEYCOMB)
+        && own.next_weathering != WAXED
+    {
         used.did.push(Did::LevelEvent {
             kind: 3003,
             pos: block,

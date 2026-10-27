@@ -252,13 +252,21 @@ impl Divided {
                 .extend(changes_of(output).into_iter().map(|(p, s)| (tick, p, s)));
         }
         self.to_east = Mail {
-            effects: west.effects.iter().map(|effect| (tick, *effect)).collect(),
+            effects: west
+                .effects
+                .iter()
+                .map(|effect| (tick, effect.clone()))
+                .collect(),
             changes: changes_of(&west),
         };
         let mut changes = mem::take(&mut self.held_back);
         changes.extend(changes_of(&east));
         self.to_west = Mail {
-            effects: east.effects.iter().map(|effect| (tick, *effect)).collect(),
+            effects: east
+                .effects
+                .iter()
+                .map(|effect| (tick, effect.clone()))
+                .collect(),
             changes,
         };
         self.outputs.push((west, east));
@@ -687,7 +695,7 @@ fn sent_tick(id: u32, at: BlockPos, delay: i32, due: Due) -> FiledEffect {
 /// which `effect` is handed in.
 fn falls_in(region: &mut Region, sand: BlockPos, effect: FiledEffect) -> u64 {
     let output = region.tick(&TickInputs {
-        effects: vec![effect],
+        effects: vec![effect.clone()],
         ..TickInputs::default()
     });
     assert_eq!(output.taken, [effect.id]);

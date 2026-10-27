@@ -111,7 +111,7 @@ fn items_lying(region: &Region) -> Vec<ItemStack> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack),
+            EntityData::Item { ref stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect()
@@ -319,13 +319,7 @@ fn a_creative_player_s_hit_is_a_survival_hit_a_crit_falling_and_a_sweep_with_a_s
             },
         )]),
     );
-    holding(
-        &mut region,
-        ItemStack {
-            item: items::DIAMOND_SWORD,
-            count: 1,
-        },
-    );
+    holding(&mut region, ItemStack::new(items::DIAMOND_SWORD, 1));
     // A sword is at full strength twenty over its speed of 1.6 ticks after it is taken
     // up, 12.5.
     for _ in 0..13 {
@@ -442,13 +436,7 @@ fn a_spawn_egg_of_a_type_not_built_yet_makes_nothing() {
     // The plan's named difference of the first half (`docs/groundwork/n7-plan.md`,
     // section 11.6): a mob of a type without its AI would stand like a statue.
     let mut region = on_ticking_floor_with(&[(BlockPos::new(3, -60, 0), blocks::WATER)]);
-    holding(
-        &mut region,
-        ItemStack {
-            item: items::HOGLIN_SPAWN_EGG,
-            count: 1,
-        },
-    );
+    holding(&mut region, ItemStack::new(items::HOGLIN_SPAWN_EGG, 1));
     checked(&mut region, &moves(vec![place(1, 1, -61, 1, Face::Top)]));
     assert!(mobs_of(&region, entity_types::HOGLIN).is_empty());
 }
@@ -518,13 +506,7 @@ fn an_animal_never_despawns_and_a_fish_far_from_every_player_does() {
 #[test]
 fn a_leashed_mob_is_kept_to_its_holder_and_pulled_after_them() {
     let mut region = on_ticking_floor_with(&[]);
-    holding(
-        &mut region,
-        ItemStack {
-            item: items::LEAD,
-            count: 1,
-        },
-    );
+    holding(&mut region, ItemStack::new(items::LEAD, 1));
     let tied = cow([3.5, -60.0, 0.5], true);
     lay(&mut region, &tied);
     checked(
@@ -617,13 +599,7 @@ fn a_mob_pushes_another_in_its_box_and_both_move_apart() {
 fn a_leashed_mob_is_tied_to_a_fence_its_holder_uses_and_kept_home_there() {
     let fence = BlockPos::new(2, -60, 3);
     let mut region = on_ticking_floor_with(&[(fence, blocks::OAK_FENCE)]);
-    holding(
-        &mut region,
-        ItemStack {
-            item: items::LEAD,
-            count: 1,
-        },
-    );
+    holding(&mut region, ItemStack::new(items::LEAD, 1));
     lay(&mut region, &cow([3.5, -60.0, 0.5], true));
     checked(
         &mut region,
@@ -795,14 +771,11 @@ fn a_leash_held_by_a_player_of_another_region_pulls_by_their_face() {
 #[test]
 fn a_given_stack_goes_into_the_player_s_inventory_or_across_the_line() {
     let mut region = on_ticking_floor_with(&[]);
-    let bucket = ItemStack {
-        item: items::MILK_BUCKET,
-        count: 1,
-    };
+    let bucket = ItemStack::new(items::MILK_BUCKET, 1);
     let mut output = TickOutput::default();
     let own = player_entity(&region);
-    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
-    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
+    region.give_to_player(own, bucket.clone(), true, [0.5, -60.0, 0.5], &mut output);
+    region.give_to_player(own, bucket.clone(), true, [0.5, -60.0, 0.5], &mut output);
     let held = region.players[&player(1)]
         .inventory
         .0
@@ -835,12 +808,15 @@ fn a_stack_given_to_a_player_of_another_region_goes_to_them_as_an_effect() {
         copy_bases: vec![(beyond, crate::region::tests::floor())],
         ..TickInputs::default()
     });
-    let stew = ItemStack {
-        item: items::MUSHROOM_STEW,
-        count: 1,
-    };
+    let stew = ItemStack::new(items::MUSHROOM_STEW, 1);
     let mut output = TickOutput::default();
-    region.give_to_player(EntityId(900), stew, false, [645.5, -60.0, 2.5], &mut output);
+    region.give_to_player(
+        EntityId(900),
+        stew.clone(),
+        false,
+        [645.5, -60.0, 2.5],
+        &mut output,
+    );
     assert_eq!(
         region.made,
         [Effect {
@@ -858,10 +834,7 @@ fn a_stack_given_to_a_player_of_another_region_goes_to_them_as_an_effect() {
 fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
     let mut region = on_ticking_floor_with(&[]);
     let own = player_entity(&region);
-    let stew = ItemStack {
-        item: items::MUSHROOM_STEW,
-        count: 1,
-    };
+    let stew = ItemStack::new(items::MUSHROOM_STEW, 1);
     let output = region.tick(&TickInputs {
         effects: vec![FiledEffect {
             id: EffectId {
@@ -872,7 +845,7 @@ fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
                 at: BlockPos::new(0, -60, 0),
                 what: Effected::Given {
                     player: own,
-                    stack: stew,
+                    stack: stew.clone(),
                     no_duplicates: false,
                 },
             },
@@ -880,7 +853,12 @@ fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
         }],
         ..TickInputs::default()
     });
-    assert!(region.players[&player(1)].inventory.0.contains(&Some(stew)));
+    assert!(
+        region.players[&player(1)]
+            .inventory
+            .0
+            .contains(&Some(stew.clone()))
+    );
     assert!(output.player_events.iter().any(|(id, event)| *id == player(1)
         && matches!(event, PlayerEvent::InventorySlot { stack: Some(given), .. } if *given == stew)));
 }
@@ -891,21 +869,15 @@ fn a_stack_given_from_another_region_reaches_the_player_s_inventory() {
 fn a_full_inventory_throws_what_is_given_unless_duplicates_are_kept_out() {
     let mut region = on_ticking_floor_with(&[]);
     let own = player_entity(&region);
-    let stone = ItemStack {
-        item: items::STONE,
-        count: 1,
-    };
+    let stone = ItemStack::new(items::STONE, 1);
     for slot in &mut region.players.get_mut(&player(1)).unwrap().inventory.0[..36] {
-        *slot = Some(stone);
+        *slot = Some(stone.clone());
     }
-    let bucket = ItemStack {
-        item: items::MILK_BUCKET,
-        count: 1,
-    };
+    let bucket = ItemStack::new(items::MILK_BUCKET, 1);
     let mut output = TickOutput::default();
-    region.give_to_player(own, bucket, true, [0.5, -60.0, 0.5], &mut output);
+    region.give_to_player(own, bucket.clone(), true, [0.5, -60.0, 0.5], &mut output);
     assert!(items_lying(&region).is_empty());
-    region.give_to_player(own, bucket, false, [0.5, -60.0, 0.5], &mut output);
+    region.give_to_player(own, bucket.clone(), false, [0.5, -60.0, 0.5], &mut output);
     assert_eq!(items_lying(&region), [bucket]);
 }
 

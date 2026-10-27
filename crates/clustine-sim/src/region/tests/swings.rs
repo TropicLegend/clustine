@@ -53,10 +53,7 @@ fn a_punch_swings_the_main_hand_for_the_others_with_the_default_whack() {
 fn a_punch_with_a_spear_in_hand_stabs_for_as_long_as_the_spear_says() {
     let mut region = on_ticking_floor_with(&[]);
     let entity = entity_of(&region);
-    let spear = ItemStack {
-        item: items::IRON_SPEAR,
-        count: 1,
-    };
+    let spear = ItemStack::new(items::IRON_SPEAR, 1);
     region.tick(&moves(vec![set_slot(1, 0, Some(spear)), select(1, 0)]));
     let output = region.tick(&punch());
     let stab = Swing {

@@ -82,7 +82,7 @@ pub(crate) fn random_slot(
     let mut chosen = None;
     let mut seen = 1;
     for (slot, stack) in slots.iter().enumerate() {
-        if !holds(*stack) {
+        if !holds(stack.as_ref()) {
             continue;
         }
         if next_int(seen) == 0 {
@@ -94,7 +94,7 @@ pub(crate) fn random_slot(
 }
 
 /// Whether a slot holds anything (`!ItemStack.isEmpty()`).
-fn holds(stack: Option<ItemStack>) -> bool {
+fn holds(stack: Option<&ItemStack>) -> bool {
     stack.is_some_and(|stack| stack.count > 0 && stack.item != clustine_data::items::AIR)
 }
 
@@ -153,33 +153,27 @@ pub(crate) fn y_rot(facing: Face) -> f32 {
 }
 
 /// `DispenserBlockEntity.insertItem`: `stack` put into the first slots that are empty or
-/// hold the same item, as much as each takes (at most 99 and the item's own most), until
+/// hold the same item with the same components, as much as each takes (at most 99 and the item's own most), until
 /// none is left. What is left, if anything.
 pub(crate) fn insert_item(slots: &mut [Option<ItemStack>], stack: ItemStack) -> Option<ItemStack> {
-    let most = crate::physics::item::max_stack_size(stack).min(CONTAINER_MAX);
+    let most = crate::physics::item::max_stack_size(&stack).min(CONTAINER_MAX);
     let mut left = stack.count;
     for place in slots.iter_mut() {
         if left <= 0 {
             break;
         }
-        let held = place.filter(|held| holds(Some(*held)));
-        if held.is_some_and(|held| held.item != stack.item) {
+        let held = place.as_ref().filter(|held| holds(Some(held)));
+        if held.as_ref().is_some_and(|held| !held.same_kind(&stack)) {
             continue;
         }
         let already = held.map_or(0, |held| held.count);
         let moved = left.min(most - already);
         if moved > 0 {
-            *place = Some(ItemStack {
-                item: stack.item,
-                count: already + moved,
-            });
+            *place = Some(stack.with_count(already + moved));
             left -= moved;
         }
     }
-    (left > 0).then_some(ItemStack {
-        item: stack.item,
-        count: left,
-    })
+    (left > 0).then_some(stack.with_count(left))
 }
 
 /// A dispense under way: the block's place, the way it faces, its slots as the dispense
@@ -201,7 +195,10 @@ impl Dispense {
 
     /// The stack being dispensed, as it is now.
     pub(crate) fn stack(&self) -> Option<ItemStack> {
-        self.slots[self.slot].filter(|stack| holds(Some(*stack)))
+        self.slots[self.slot]
+            .as_ref()
+            .filter(|stack| holds(Some(stack)))
+            .cloned()
     }
 
     /// `stack.shrink(count)`.
@@ -209,7 +206,7 @@ impl Dispense {
         if let Some(stack) = self.slots[self.slot].as_mut() {
             stack.count -= count;
         }
-        if !holds(self.slots[self.slot]) {
+        if !holds(self.slots[self.slot].as_ref()) {
             self.slots[self.slot] = None;
         }
     }
@@ -357,7 +354,7 @@ impl Region {
             random,
         };
         let left = self.run_behaviour(&mut dispense, output);
-        dispense.slots[slot] = left.filter(|stack| holds(Some(*stack)));
+        dispense.slots[slot] = left.filter(|stack| holds(Some(stack)));
         self.block_streams.insert(pos, dispense.random);
         let changed = dispense.slots != container.slots;
         container.slots = dispense.slots;
@@ -538,7 +535,7 @@ impl Region {
         let mut slots = vec![None; size];
         for (slot, stack) in contents.iter() {
             if let Some(place) = slots.get_mut(usize::from(*slot)) {
-                *place = Some(*stack);
+                *place = Some(stack.clone());
             }
         }
         if !insert_one(&mut slots, item) {
@@ -547,7 +544,7 @@ impl Region {
         *contents = slots
             .iter()
             .enumerate()
-            .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
+            .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, stack.clone()?)))
             .collect();
         self.commit_entity(chunk, key, vec![EntityField::Data(data)], output);
         true
@@ -722,15 +719,15 @@ pub(crate) fn is_shulker_box_item(item: i32) -> bool {
 }
 
 /// `HopperBlockEntity.tryMoveInItem` of one `item` over `slots` in order: into the first
-/// that is empty, or that holds the same item below the item's own most. Whether it went
-/// in.
+/// that is empty, or that holds the same item with the same components (none) below the
+/// item's own most. Whether it went in.
 fn insert_one(slots: &mut [Option<ItemStack>], item: i32) -> bool {
-    let one = ItemStack { item, count: 1 };
-    let most = crate::physics::item::max_stack_size(one);
+    let one = ItemStack::new(item, 1);
+    let most = crate::physics::item::max_stack_size(&one);
     for place in slots.iter_mut() {
         match place {
-            Some(held) if holds(Some(*held)) => {
-                if held.item == item && held.count < most {
+            Some(held) if holds(Some(held)) => {
+                if held.same_kind(&one) && held.count < most {
                     held.count += 1;
                     return true;
                 }

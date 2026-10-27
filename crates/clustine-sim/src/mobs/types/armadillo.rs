@@ -179,10 +179,7 @@ fn next_scute_time(draws: &mut Random) -> u32 {
 /// extraction does not compile it yet.
 fn scute_drops(name: &str, kind: u16, draws: &mut Random) -> Vec<ItemStack> {
     if clustine_data::loot::table_by_name(name).is_none() {
-        return vec![ItemStack {
-            item: items::ARMADILLO_SCUTE,
-            count: 1,
-        }];
+        return vec![ItemStack::new(items::ARMADILLO_SCUTE, 1)];
     }
     loot::named_drops(name, kind, false, loot::Facts::default(), draws)
 }
@@ -807,7 +804,7 @@ impl MobType for Armadillo {
     /// player's is not); a scared one is not fed (`FAIL`, which passes on as nothing
     /// done); else an animal's use, with its eating sound.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        if animal::is_item(used.held, items::BRUSH) && !animal::is_baby(used.mob) {
+        if animal::is_item(used.held.as_ref(), items::BRUSH) && !animal::is_baby(used.mob) {
             for stack in scute_drops(BRUSH_TABLE, used.kind, used.draws) {
                 if stack.count > 0 {
                     used.did.push(Did::Drop {

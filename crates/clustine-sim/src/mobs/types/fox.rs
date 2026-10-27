@@ -248,7 +248,7 @@ fn set_target(ai: &mut Ai<'_, '_>, target: Option<&Looked>) {
 }
 
 /// Whether `stack` is food that is eaten (`isConsumableFood`).
-pub(crate) fn is_consumable_food(stack: Option<ItemStack>) -> bool {
+pub(crate) fn is_consumable_food(stack: Option<&ItemStack>) -> bool {
     stack.is_some_and(|stack| stack.count > 0 && CONSUMABLE_FOOD.contains(&stack.item))
 }
 
@@ -260,11 +260,11 @@ pub(crate) fn can_hold_item(
     held: Option<ItemStack>,
     stack: ItemStack,
 ) -> bool {
-    let empty = held.is_none_or(|held| held.count <= 0);
+    let empty = held.as_ref().is_none_or(|held| held.count <= 0);
     empty
         || (own.ticks_since_eaten(lived) > 0
-            && is_consumable_food(Some(stack))
-            && !is_consumable_food(held))
+            && is_consumable_food(Some(&stack))
+            && !is_consumable_food(held.as_ref()))
 }
 
 /// The UUID of the thing `key` names (a player's, a mob's), where the view has it.
@@ -1113,20 +1113,17 @@ impl FoxEatBerriesGoal {
         let age = number(block, "age").unwrap_or(0);
         let mut count = 1 + ai.tick.draws.next_int(2) as i32 + i32::from(age == 3);
         let hand = usize::from(slots::MAIN_HAND);
-        if ai.tick.mob.body.equipment.slots[hand].is_none_or(|held| held.count <= 0) {
-            ai.tick.mob.body.equipment.slots[hand] = Some(ItemStack {
-                item: items::SWEET_BERRIES,
-                count: 1,
-            });
+        if ai.tick.mob.body.equipment.slots[hand]
+            .as_ref()
+            .is_none_or(|held| held.count <= 0)
+        {
+            ai.tick.mob.body.equipment.slots[hand] = Some(ItemStack::new(items::SWEET_BERRIES, 1));
             count -= 1;
         }
         if count > 0 {
             ai.tick.out.local.push(Local::Pop {
                 pos,
-                stack: ItemStack {
-                    item: items::SWEET_BERRIES,
-                    count,
-                },
+                stack: ItemStack::new(items::SWEET_BERRIES, count),
             });
         }
         ai.tick.out.events.push(Event::Sound {
@@ -1151,10 +1148,7 @@ impl FoxEatBerriesGoal {
     fn pick_glow_berry(ai: &mut Ai<'_, '_>, pos: BlockPos, block: clustine_data::BlockState) {
         ai.tick.out.local.push(Local::Pop {
             pos,
-            stack: ItemStack {
-                item: items::GLOW_BERRIES,
-                count: 1,
-            },
+            stack: ItemStack::new(items::GLOW_BERRIES, 1),
         });
         // `Mth.randomBetween(level.getRandom(), 0.8f, 1.2f)`.
         let pitch = ai.tick.draws.next_float() * 0.4 + 0.8;
@@ -1261,7 +1255,7 @@ fn items_in(ai: &Ai<'_, '_>, bounds: crate::physics::aabb::Aabb) -> Vec<(EntityI
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
             } if stack.count > 0 => Some((seen.entity.key, seen.entity.position)),
@@ -1277,6 +1271,7 @@ pub(crate) struct FoxSearchForItemsGoal;
 
 fn mouth_empty(ai: &Ai<'_, '_>) -> bool {
     ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+        .as_ref()
         .is_none_or(|held| held.count <= 0)
 }
 
@@ -1571,37 +1566,31 @@ fn pick_up(tick: &mut MobTick<'_>) {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
-            } if stack.count > 0 => Some((seen.entity.key, stack)),
+            } if stack.count > 0 => Some((seen.entity.key, stack.clone())),
             _ => None,
         })
         .collect();
     let hand = usize::from(slots::MAIN_HAND);
     for (item, stack) in found {
         let own = state_of(&tick.mob);
-        let held = tick.mob.body.equipment.slots[hand];
-        if !can_hold_item(&own, tick.lived, held, stack) {
+        let held = &tick.mob.body.equipment.slots[hand];
+        if !can_hold_item(&own, tick.lived, held.clone(), stack.clone()) {
             continue;
         }
         let position = tick.living.body.position;
         if stack.count > 1 {
             // `dropItemStack`: a new item at its feet, of no delay.
             tick.out.local.push(Local::Drop {
-                stack: ItemStack {
-                    item: stack.item,
-                    count: stack.count - 1,
-                },
+                stack: stack.with_count(stack.count - 1),
                 at: position,
                 pick_up_delay: 0,
             });
         }
-        spit_out_item(tick, held);
-        tick.mob.body.equipment.slots[hand] = Some(ItemStack {
-            item: stack.item,
-            count: 1,
-        });
+        spit_out_item(tick, held.clone());
+        tick.mob.body.equipment.slots[hand] = Some(stack.with_count(1));
         let mut chances = tick.mob.body.equipment.drop_chances.unwrap_or([0.085; 8]);
         chances[hand] = 2.0;
         tick.mob.body.equipment.drop_chances = Some(chances);
@@ -1644,12 +1633,9 @@ fn finish_eating(held: ItemStack) -> Option<ItemStack> {
     };
     let left = held.count - 1;
     if left > 0 {
-        return Some(ItemStack {
-            item: held.item,
-            count: left,
-        });
+        return Some(held.with_count(left));
     }
-    remainder.map(|item| ItemStack { item, count: 1 })
+    remainder.map(|item| ItemStack::new(item, 1))
 }
 
 /// `getTarget()` of the mob in a tick.
@@ -1758,15 +1744,15 @@ impl MobType for Fox {
             let mut own = state_of(&tick.mob);
             let now = tick.lived;
             let since = own.ticks_since_eaten(now);
-            let held = tick.mob.body.equipment.slots[hand];
+            let held = &tick.mob.body.equipment.slots[hand];
             let target = target_in_tick(tick);
-            let can_eat = is_consumable_food(held)
+            let can_eat = is_consumable_food(held.as_ref())
                 && target.is_none()
                 && tick.living.body.on_ground
                 && !own.has(flag_bits::SLEEPING);
             if can_eat && let Some(stack) = held {
                 if since > 600 {
-                    tick.mob.body.equipment.slots[hand] = finish_eating(stack);
+                    tick.mob.body.equipment.slots[hand] = finish_eating(stack.clone());
                     tick.out.events.push(Event::GameEvent(GameEvent::Eat));
                     own.eaten_at = Some(now);
                 } else if since > 560 && tick.draws.next_float() < 0.1 {
@@ -1925,7 +1911,7 @@ impl MobType for Fox {
                 items::FEATHER
             };
             spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
-                Some(ItemStack { item, count: 1 });
+                Some(ItemStack::new(item, 1));
         }
         animal::finalize_ageable_default(spawn);
     }

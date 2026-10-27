@@ -229,10 +229,7 @@ impl Goal for RangedAttackGoal {
 fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &sensing::Looked, _power: f32) {
     let [at, direction] = golem_aim(ai.position(), ai.eye_y(), target.position, target.eye_y);
     ai.tick.out.local.push(Local::Shoot {
-        stack: ItemStack {
-            item: items::SNOWBALL,
-            count: 1,
-        },
+        stack: ItemStack::new(items::SNOWBALL, 1),
         at,
         direction,
         power: GOLEM_POWER,
@@ -282,6 +279,7 @@ fn after_ai_step(tick: &mut MobTick<'_>) {
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let shears = used
         .held
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && stack.item == items::SHEARS);
     if !shears || !has_pumpkin(used.mob) {
         return Interaction::Pass;

@@ -95,7 +95,7 @@ fn items_lying(region: &Region) -> Vec<(EntityId, ItemStack)> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some((entity.key, stack)),
+            EntityData::Item { ref stack, .. } => Some((entity.key, stack.clone())),
             _ => None,
         })
         .collect()
@@ -135,7 +135,7 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn use_on(region: &mut Region, key: EntityId) -> TickOutput {
@@ -172,7 +172,7 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 fn fox_hand(region: &Region, key: EntityId) -> Option<ItemStack> {
-    mob(region, key).body.equipment.slots[0]
+    mob(region, key).body.equipment.slots[0].clone()
 }
 
 #[test]
@@ -405,10 +405,7 @@ fn a_fox_takes_what_it_touches_into_its_mouth_and_spits_out_what_is_no_food_for_
         &mut region,
         &item_at(
             EntityId(60),
-            ItemStack {
-                item: items::STICK,
-                count: 3,
-            },
+            ItemStack::new(items::STICK, 3),
             [6.5, -60.0, 6.9],
         ),
     );
@@ -422,13 +419,7 @@ fn a_fox_takes_what_it_touches_into_its_mouth_and_spits_out_what_is_no_food_for_
     // The rest of the stack is put down at its feet.
     let lying = items_lying(&region);
     assert_eq!(lying.len(), 1, "{lying:?}");
-    assert_eq!(
-        lying[0].1,
-        ItemStack {
-            item: items::STICK,
-            count: 2
-        }
-    );
+    assert_eq!(lying[0].1, ItemStack::new(items::STICK, 2));
     assert_eq!(mob(&region, ONE).body.equipment.drop_chance(0), 2.0);
     // Food comes in place of what is no food, once it has eaten since it took it.
     for _ in 0..3 {

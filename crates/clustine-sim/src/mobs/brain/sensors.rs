@@ -390,7 +390,7 @@ impl Sensor for AdultSensor {
 /// `tempts`.
 pub(crate) struct TemptingSensor {
     /// What tempts the mob (`Animal.isFood` of its type, or a tag).
-    pub(crate) tempts: fn(&Mob, ItemStack) -> bool,
+    pub(crate) tempts: fn(&Mob, &ItemStack) -> bool,
 }
 
 /// `FROG_TEMPTATIONS`: `#frog_food`.
@@ -418,10 +418,10 @@ impl Sensor for TemptingSensor {
             if player.spectator || !conditions.test(cx.ai, &player, &|_| true) {
                 continue;
             }
-            let holds = |stack: Option<ItemStack>| {
+            let holds = |stack: Option<&ItemStack>| {
                 stack.is_some_and(|stack| stack.count > 0 && (self.tempts)(&cx.ai.tick.mob, stack))
             };
-            if !(holds(player.main_hand) || holds(player.off_hand)) {
+            if !(holds(player.main_hand.as_ref()) || holds(player.off_hand.as_ref())) {
                 continue;
             }
             if player.vehicle == Some(own) {
@@ -482,7 +482,7 @@ impl Sensor for NearestItemSensor {
             .entities_in(&bounds)
             .iter()
             .filter_map(|seen| match &seen.entity.data {
-                EntityData::Item { stack, .. } => Some((Looked::of_seen(seen), *stack)),
+                EntityData::Item { stack, .. } => Some((Looked::of_seen(seen), stack.clone())),
                 _ => None,
             })
             .collect();

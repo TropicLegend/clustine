@@ -125,7 +125,7 @@ fn items_lying(region: &Region) -> Vec<(ItemStack, [f64; 3])> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some((stack, entity.position)),
+            EntityData::Item { ref stack, .. } => Some((stack.clone(), entity.position)),
             _ => None,
         })
         .collect()
@@ -139,7 +139,7 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 /// Player 1's use of the entity `key` with what they hold.
@@ -970,7 +970,7 @@ fn asks(output: &TickOutput) -> Vec<(EntityId, EntityUse)> {
         .effects
         .iter()
         .filter_map(|effect| match effect.what {
-            Effected::OnEntity { key, by } => Some((key, by)),
+            Effected::OnEntity { key, ref by } => Some((key, by.clone())),
             _ => None,
         })
         .collect()
@@ -993,7 +993,7 @@ fn across_a_line_only_the_higher_key_asks_and_waits_out_of_love_for_others_until
     let mut asked = None;
     for _ in 0..150 {
         let output = checked(&mut region, &TickInputs::default());
-        if let Some(found) = asks(&output).first().copied() {
+        if let Some(found) = asks(&output).first().cloned() {
             asked = Some(found);
             break;
         }

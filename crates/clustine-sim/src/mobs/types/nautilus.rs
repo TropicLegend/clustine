@@ -234,7 +234,9 @@ impl Pet for Nautilus {
 
 /// `Mob.isSaddled()`.
 pub(crate) fn saddled(mob: &Mob) -> bool {
-    mob.body.equipment.slots[usize::from(slots::SADDLE)].is_some_and(|stack| stack.count > 0)
+    mob.body.equipment.slots[usize::from(slots::SADDLE)]
+        .as_ref()
+        .is_some_and(|stack| stack.count > 0)
 }
 
 /// `AbstractNautilus.isFood(stack)`: a tamed one's or a baby's food is `#nautilus_food`,
@@ -857,13 +859,11 @@ fn sound_of_use(used: &mut Used<'_>, sound: i32) -> Did {
 fn use_player_item(used: &mut Used<'_>) {
     let bucket = used
         .held
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && item_in_tag(stack.item, BUCKET_FOOD));
     if bucket {
         used.did.push(Did::Give {
-            stack: ItemStack {
-                item: items::WATER_BUCKET,
-                count: 1,
-            },
+            stack: ItemStack::new(items::WATER_BUCKET, 1),
             no_duplicates: true,
         });
     }
@@ -908,10 +908,7 @@ fn equip(used: &mut Used<'_>, stack: ItemStack) -> Interaction {
     {
         return Interaction::Pass;
     }
-    used.mob.body.equipment.slots[usize::from(slot)] = Some(ItemStack {
-        item: stack.item,
-        count: 1,
-    });
+    used.mob.body.equipment.slots[usize::from(slot)] = Some(stack.with_count(1));
     super::equine::guarantee_drop(used.mob, slot);
     let sound = if slot == slots::SADDLE {
         if state_of(used.mob).1.under_water {
@@ -943,7 +940,7 @@ fn animal_interact(used: &mut Used<'_>, family: &dyn Family) -> Interaction {
     let eat = family.voices(used.mob).eat;
     let before = used.did.len();
     let result = animal::mob_interact(used, food, Some(eat));
-    if result != Interaction::Pass && food.test(used.held) {
+    if result != Interaction::Pass && food.test(used.held.as_ref()) {
         let mut done = std::mem::take(&mut used.did);
         let added = done.split_off(before);
         used.did = done;
@@ -1002,7 +999,7 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, family: &dyn Family) -> Interact
         used.did.push(Did::OpenInventory);
         return Interaction::Success;
     }
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let is_food = food(used.mob).test(held);
     if let Some(stack) = held {
         if !tamed && is_food {
@@ -1017,7 +1014,7 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, family: &dyn Family) -> Interact
             tamable::feed(used, 2.0, 1.0, Some(sound));
             return Interaction::Success;
         }
-        let result = equip(used, stack);
+        let result = equip(used, stack.clone());
         if result != Interaction::Pass {
             return result;
         }

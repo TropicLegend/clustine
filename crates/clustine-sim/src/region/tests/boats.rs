@@ -906,7 +906,7 @@ fn a_broken_boat_drops_itself_and_a_chest_boat_broken_in_creative_spills_its_che
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack.item),
+            EntityData::Item { ref stack, .. } => Some(stack.item),
             _ => None,
         })
         .collect();
@@ -914,13 +914,7 @@ fn a_broken_boat_drops_itself_and_a_chest_boat_broken_in_creative_spills_its_che
 
     let mut region = ticking_with(&[]);
     let chest = Entity {
-        data: boat_data(vec![(
-            3,
-            ItemStack {
-                item: items::DIRT,
-                count: 5,
-            },
-        )]),
+        data: boat_data(vec![(3, ItemStack::new(items::DIRT, 5))]),
         ..boat_of(2, entity_types::OAK_CHEST_BOAT, [3.5, -60.0, 0.5])
     };
     lay(&mut region, &chest);
@@ -931,17 +925,11 @@ fn a_broken_boat_drops_itself_and_a_chest_boat_broken_in_creative_spills_its_che
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack),
+            EntityData::Item { ref stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        dropped,
-        [ItemStack {
-            item: items::DIRT,
-            count: 5
-        }]
-    );
+    assert_eq!(dropped, [ItemStack::new(items::DIRT, 5)]);
 }
 
 /// A boat that falls lands without breaking: no fall breaks a boat in 26.3.

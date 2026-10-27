@@ -744,10 +744,7 @@ fn bucket_into_a_slab() -> (Region, BlockPos) {
     let slab = at(0, -60, 1);
     let dry = state("minecraft:stone_slab[type=bottom,waterlogged=false]");
     let (mut region, _) = world_with(&[(slab, dry)], &[]);
-    let bucket = ItemStack {
-        item: items::WATER_BUCKET,
-        count: 1,
-    };
+    let bucket = ItemStack::new(items::WATER_BUCKET, 1);
     // Inputs are numbered as they are made, and applied only in that order.
     let inputs = vec![
         set_slot(1, 0, Some(bucket)),
@@ -973,10 +970,7 @@ fn flowing_water_is_not_replaced_by_lava_from_the_side() {
 // Concrete powder
 // ---------------------------------------------------------------------------------------
 
-const POWDER: ItemStack = ItemStack {
-    item: items::WHITE_CONCRETE_POWDER,
-    count: 1,
-};
+const POWDER: ItemStack = ItemStack::new(items::WHITE_CONCRETE_POWDER, 1);
 
 /// Player 1 places white concrete powder on the top of the block at (2, -61, 0), so
 /// at (2, -60, 0), in a world with `blocks`; returns what was placed there.
@@ -1112,10 +1106,7 @@ fn a_bucket_emptied_is_heard_at_its_block_by_all_but_its_user() {
     let slab = at(0, -60, 1);
     let dry = state("minecraft:stone_slab[type=bottom,waterlogged=false]");
     let (mut region, _) = world_with(&[(slab, dry)], &[]);
-    let bucket = ItemStack {
-        item: items::WATER_BUCKET,
-        count: 1,
-    };
+    let bucket = ItemStack::new(items::WATER_BUCKET, 1);
     let inputs = vec![
         set_slot(1, 0, Some(bucket)),
         select(1, 0),

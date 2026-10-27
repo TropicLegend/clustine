@@ -426,10 +426,7 @@ fn lava_burns_an_item_in_two_ticks_and_netherite_not_at_all() {
     )));
 
     // Netherite does not burn: its stack resists fire.
-    let netherite = ItemStack {
-        item: items::NETHERITE_INGOT,
-        count: 1,
-    };
+    let netherite = ItemStack::new(items::NETHERITE_INGOT, 1);
     let (mut region, lying) = in_lava(netherite);
     for _ in 0..100 {
         idle(&mut region);
@@ -524,7 +521,7 @@ fn two_items_merge_with_the_game_s_rules_and_ages() {
     assert_eq!(record(&region, a.key), None);
     let merged = record(&region, b.key).unwrap();
     let EntityData::Item {
-        stack,
+        ref stack,
         pick_up_delay,
         ..
     } = merged.data
@@ -587,6 +584,38 @@ fn two_items_merge_with_the_game_s_rules_and_ages() {
     assert_eq!(stack.count, 8);
 }
 
+/// `areMergable` asks for the same components: two dirt items that differ in them lie
+/// side by side, and two alike merge.
+#[test]
+fn two_items_merge_only_where_their_components_are_the_same() {
+    let named = |count, name: &str| {
+        let mut stack = ItemStack { count, ..DIRT };
+        stack
+            .components
+            .set(clustine_world::Component::ItemName(format!("{name:?}")));
+        stack
+    };
+    for (first, second) in [
+        (named(3, "a"), ItemStack { count: 5, ..DIRT }),
+        (named(3, "a"), named(5, "b")),
+    ] {
+        let (mut region, a, b) = side_by_side(first, second);
+        for _ in 0..80 {
+            idle(&mut region);
+        }
+        assert!(record(&region, a.key).is_some() && record(&region, b.key).is_some());
+    }
+    let (mut region, a, b) = side_by_side(named(5, "a"), named(3, "a"));
+    for _ in 0..40 {
+        idle(&mut region);
+    }
+    assert_eq!(record(&region, b.key), None);
+    let EntityData::Item { stack, .. } = record(&region, a.key).unwrap().data else {
+        panic!();
+    };
+    assert_eq!(stack, named(8, "a"));
+}
+
 #[test]
 fn an_item_despawns_at_the_age_of_6000() {
     let mut region = on_ticking_floor_with(&[]);
@@ -616,7 +645,7 @@ fn at_the_feet(stack: ItemStack, delay: u16) -> (Region, Entity) {
 }
 
 fn slot(region: &Region, slot: usize) -> Option<ItemStack> {
-    region.state().players[&player(1)].inventory.0[slot]
+    region.state().players[&player(1)].inventory.0[slot].clone()
 }
 
 #[test]
@@ -672,11 +701,8 @@ fn a_player_picks_an_item_up_after_its_delay_into_the_slot_the_game_chooses() {
     assert!(output.delta.players.iter().any(|(id, _)| *id == player(1)));
 
     // An item the player has none of goes into the first empty main slot, 3.
-    let sand = ItemStack {
-        item: items::SAND,
-        count: 2,
-    };
-    let (mut region, _) = at_the_feet(sand, 0);
+    let sand = ItemStack::new(items::SAND, 2);
+    let (mut region, _) = at_the_feet(sand.clone(), 0);
     idle(&mut region);
     assert_eq!(slot(&region, 3), Some(sand));
 }

@@ -569,7 +569,10 @@ fn a_throw_into_another_regions_chunk_is_sent_as_it_is_made() {
     assert_eq!(*to, beyond);
     assert_eq!(thrown.hops, 0);
     assert_eq!(thrown.chunk(), beyond);
-    let EntityData::Item { stack, thrower, .. } = thrown.data else {
+    let EntityData::Item {
+        ref stack, thrower, ..
+    } = thrown.data
+    else {
         panic!("{thrown:?}");
     };
     assert_eq!(stack.count, 1);

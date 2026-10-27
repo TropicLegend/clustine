@@ -529,7 +529,7 @@ fn armour_stand(world: u64, kind: u16, tag: &Tag, placed: Placed<'_>) -> Option<
                 .get("count")
                 .and_then(Tag::number)
                 .map_or(1, |count| count as i32);
-            equipment.push((slot, ItemStack { item, count }));
+            equipment.push((slot, ItemStack::new(item, count)));
         }
     }
     equipment.sort_by_key(|(slot, _)| *slot);

@@ -716,10 +716,10 @@ mod tests {
         let player = PlayerId(uuid::Uuid::from_u128(7));
         let other = PlayerId(uuid::Uuid::from_u128(u128::MAX));
         let mut inventory = Inventory::default();
-        inventory.set(0, Some(ItemStack { item: 1, count: 64 }));
-        inventory.set(8, Some(ItemStack { item: 35, count: 1 }));
-        inventory.set(39, Some(ItemStack { item: 7, count: 1 }));
-        inventory.set(OFF_HAND, Some(ItemStack { item: 9, count: 3 }));
+        inventory.set(0, Some(ItemStack::new(1, 64)));
+        inventory.set(8, Some(ItemStack::new(35, 1)));
+        inventory.set(39, Some(ItemStack::new(7, 1)));
+        inventory.set(OFF_HAND, Some(ItemStack::new(9, 3)));
         let place = Place {
             respawn: None,
             experience: Default::default(),
@@ -1012,7 +1012,7 @@ mod tests {
             .enumerate()
             .map(|(index, effect)| FiledEffect {
                 id: id(8, index as u32),
-                effect: *effect,
+                effect: effect.clone(),
                 due: if index == 1 {
                     Due::At { tick: 12_345 }
                 } else {

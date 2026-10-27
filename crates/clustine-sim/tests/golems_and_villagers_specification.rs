@@ -92,7 +92,7 @@ fn world_in(
 
 /// One region over `world` at `clock`, player 1 at `feet` holding `held` from slot 0 on.
 fn scene_at(world: &World, held: &[ItemStack], feet: Vec3, clock: WorldClock) -> Scene {
-    let slots: Vec<(usize, ItemStack)> = held.iter().copied().enumerate().collect();
+    let slots: Vec<(usize, ItemStack)> = held.iter().cloned().enumerate().collect();
     let inventory = inventory(&slots);
     let layout = Layout::alone();
     let region = region_at(&layout, world, inventory.clone(), Some(clock));
@@ -589,7 +589,7 @@ fn side(
     feet: Option<Vec3>,
     clock: WorldClock,
 ) -> Scene {
-    let slots: Vec<(usize, ItemStack)> = held.iter().copied().enumerate().collect();
+    let slots: Vec<(usize, ItemStack)> = held.iter().cloned().enumerate().collect();
     let inventory = inventory(&slots);
     let layout = Layout::side(west);
     let region = region_at(&layout, world, inventory.clone(), Some(clock));
@@ -630,7 +630,7 @@ impl Line {
                     sequence,
                     index: u32::try_from(index).expect("few"),
                 },
-                effect: *effect,
+                effect: effect.clone(),
                 due: Due::FromTaking,
             })
             .collect();
@@ -874,12 +874,16 @@ fn across_a_pinned_line_an_iron_golem_s_hit_carries_its_fling_which_lands_once_w
     let mut sent = None;
     for _ in 0..600 {
         let output = sides.west.idle();
-        sent = output.effects.iter().copied().find(|effect| {
-            matches!(
-                effect.what,
-                Effected::OnEntity { key: hit, by: EntityUse::MobHit { .. } } if hit == key(2)
-            )
-        });
+        sent = output
+            .effects
+            .iter()
+            .find(|&effect| {
+                matches!(
+                    effect.what,
+                    Effected::OnEntity { key: hit, by: EntityUse::MobHit { .. } } if hit == key(2)
+                )
+            })
+            .cloned();
         if sent.is_some() {
             assert!(
                 heard(&output, sounds::ENTITY_IRON_GOLEM_ATTACK),
@@ -928,9 +932,9 @@ fn across_a_pinned_line_an_iron_golem_s_hit_carries_its_fling_which_lands_once_w
     // The holder: one hit takes, and flings; the same hit twice in a tick takes once and
     // flings once.
     let mut once = line(&world, &[], Vec3::new(10.5, FLOOR, 3.5), MIDNIGHT);
-    once.file_east(&[sent]);
+    once.file_east(std::slice::from_ref(&sent));
     let mut twice = line(&world, &[], Vec3::new(10.5, FLOOR, 3.5), MIDNIGHT);
-    twice.file_east(&[sent, sent]);
+    twice.file_east(&[sent.clone(), sent]);
     let after_once = record(&once.east, key(2));
     let after_twice = record(&twice.east, key(2));
     match (after_once, after_twice) {
@@ -1150,9 +1154,13 @@ fn across_a_pinned_line_a_snow_golem_s_trail_is_an_effect_expecting_air_which_th
     for _ in 0..3 {
         let output = sides.west.idle();
         beyond.extend(
-            output.effects.iter().copied().filter(|effect| {
-                matches!(effect.what, Effected::SetIf { .. }) && effect.at.x >= 16
-            }),
+            output
+                .effects
+                .iter()
+                .filter(|&effect| {
+                    matches!(effect.what, Effected::SetIf { .. }) && effect.at.x >= 16
+                })
+                .cloned(),
         );
         seen.push(output);
         if !beyond.is_empty() {
@@ -1164,7 +1172,7 @@ fn across_a_pinned_line_a_snow_golem_s_trail_is_an_effect_expecting_air_which_th
         blocks::SNOW,
         "its own side's"
     );
-    let [sent] = beyond[..] else {
+    let [ref sent] = beyond[..] else {
         panic!("one cell beyond: {beyond:?}");
     };
     assert_eq!(sent.at, bp(16, -60, 8));
@@ -1175,7 +1183,7 @@ fn across_a_pinned_line_a_snow_golem_s_trail_is_an_effect_expecting_air_which_th
         unreachable!()
     };
     assert_eq!((expected, state), (blocks::AIR, blocks::SNOW));
-    sides.file_east(&[sent]);
+    sides.file_east(std::slice::from_ref(sent));
     sides.east.idle();
     assert_eq!(
         sides.east.block(bp(16, -60, 8)),
@@ -1553,7 +1561,7 @@ fn main_hand(output: &TickOutput, key: EntityId) -> Option<Option<i32>> {
         RegionEvent::EquipmentChanged { entity, slots, .. } if *entity == key => slots
             .iter()
             .find(|(slot, _)| *slot == MAIN_HAND)
-            .map(|(_, held)| held.map(|stack| stack.item)),
+            .map(|(_, held)| held.as_ref().map(|stack| stack.item)),
         _ => None,
     })
 }

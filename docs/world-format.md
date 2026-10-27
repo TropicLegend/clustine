@@ -201,7 +201,35 @@ A place is where a player is and what they hold:
 | Yaw, pitch | f32, f32 |
 | Flags | u8: bit 0 on-ground, bit 1 flying |
 | Selected slot | u8 |
-| Hotbar | nine times: u8 0 for an empty slot, or u8 1, i32 item, i32 count |
+| Inventory | 41 times, 0 to 8 the hotbar: u8 0 for an empty slot, or u8 1 and a stack (below) |
+| Ender chest | 27 times, as the inventory's slots |
+
+(Since format 4 a place holds the whole inventory and since format 8 the ender chest, then
+the experience and, since 12, the respawn point; `crates/clustine-format/src/log.rs` has
+the place as it is now.)
+
+A stack, here and wherever the store keeps one (an item on the ground, a thrown item,
+the contents of a cart or a boat, a stand's equipment, an item frame's item, a stack
+given to a player or held in a use of an entity across a line), is written since format
+14 as `crates/clustine-format/src/stacks.rs` says:
+
+| Field | Type |
+|---|---|
+| Item, an id in the item registry | i32 |
+| Count | i32 |
+| Components added or changed: count, then each | u16 |
+| … the kind's name in `data_component_type` | u16 length, UTF-8 |
+| … the length of the value in bytes | u32 |
+| … the value, in Clustine's own encoding | |
+| Kinds removed: count, then each kind's name | u16; u16 length, UTF-8 |
+
+A stack keeps only what differs from its item's defaults (`docs/groundwork/n9-plan.md`,
+section 3.1), so a plain stack is its item, its count and two counts of 0. Registry
+values in a value (a potion, an effect, an enchantment, a pattern, a variant) are kept by
+name, so that a game update that renumbers a registry needs no new format; a kind this
+server does not know is skipped by its length, so that a kind added later needs no new
+format either. The stacks in a container block's entity in a chunk file are the game's
+NBT (`ItemStackWithSlot`), and keep no components yet.
 
 The floating-point numbers are big-endian like the integers. A build from before kind 8
 cannot read such a record and does not start.

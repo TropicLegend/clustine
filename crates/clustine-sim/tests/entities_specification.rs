@@ -24,10 +24,7 @@ const EDGE: EdgeId = EdgeId(7);
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
 const FEET: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
-const HELD: ItemStack = ItemStack {
-    item: items::STONE,
-    count: 64,
-};
+const HELD: ItemStack = ItemStack::new(items::STONE, 64);
 
 /// The game's standing and crouching eye heights, floats, and how far below the eyes a
 /// thrown item leaves (`ServerPlayer.drop`).
@@ -40,7 +37,7 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn config() -> RegionConfig {
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(HELD);
     RegionConfig {
         spawn: FEET,
@@ -220,11 +217,11 @@ fn stack_of(entity: &Entity) -> ItemStack {
     let EntityData::Item { stack, .. } = &entity.data else {
         panic!("{entity:?} is not an item");
     };
-    *stack
+    stack.clone()
 }
 
 fn held(region: &Region, slot: usize) -> Option<ItemStack> {
-    region.state().players[&player(1)].inventory.0[slot]
+    region.state().players[&player(1)].inventory.0[slot].clone()
 }
 
 /// What the region told player 1 of their inventory in `output`.
@@ -233,7 +230,9 @@ fn put_back(output: &TickOutput) -> Vec<(u8, Option<ItemStack>)> {
         .player_events
         .iter()
         .filter_map(|(to, event)| match event {
-            PlayerEvent::InventorySlot { slot, stack } if *to == player(1) => Some((*slot, *stack)),
+            PlayerEvent::InventorySlot { slot, stack } if *to == player(1) => {
+                Some((*slot, stack.clone()))
+            }
             _ => None,
         })
         .collect()
@@ -293,10 +292,7 @@ fn a_thrown_item_leaves_from_below_the_eyes_along_the_look_with_the_game_s_motio
         assert_eq!(
             item.data,
             EntityData::Item {
-                stack: ItemStack {
-                    item: items::STONE,
-                    count: 1
-                },
+                stack: ItemStack::new(items::STONE, 1),
                 pick_up_delay: 40,
                 thrower: Some(player(1).0),
                 health: 5,
@@ -418,13 +414,7 @@ fn q_throws_one_ctrl_q_the_stack_and_an_empty_hand_nothing() {
     let mut region = standing();
     let output = with_inputs(&mut region, 1, vec![q()]);
     assert_eq!(made(&output).len(), 1);
-    assert_eq!(
-        held(&region, 0),
-        Some(ItemStack {
-            item: items::STONE,
-            count: 63
-        })
-    );
+    assert_eq!(held(&region, 0), Some(ItemStack::new(items::STONE, 63)));
     let output = with_inputs(
         &mut region,
         2,
@@ -436,13 +426,7 @@ fn q_throws_one_ctrl_q_the_stack_and_an_empty_hand_nothing() {
     let [rest] = &made(&output)[..] else {
         panic!("one item: {:?}", output.entity_changes);
     };
-    assert_eq!(
-        stack_of(rest),
-        ItemStack {
-            item: items::STONE,
-            count: 63
-        }
-    );
+    assert_eq!(stack_of(rest), ItemStack::new(items::STONE, 63));
     assert_eq!(held(&region, 0), None);
     for (number, all) in [(3, false), (4, true)] {
         let output = with_inputs(
@@ -481,11 +465,14 @@ fn q_throws_one_ctrl_q_the_stack_and_an_empty_hand_nothing() {
 #[test]
 fn the_creative_screen_throws_the_stack_named_and_leaves_the_inventory_as_it_was() {
     let mut region = standing();
-    let dirt = ItemStack {
-        item: items::DIRT,
-        count: 17,
-    };
-    let output = with_inputs(&mut region, 1, vec![PlayerInput::Throw { stack: dirt }]);
+    let dirt = ItemStack::new(items::DIRT, 17);
+    let output = with_inputs(
+        &mut region,
+        1,
+        vec![PlayerInput::Throw {
+            stack: dirt.clone(),
+        }],
+    );
     let [item] = &made(&output)[..] else {
         panic!("one item: {:?}", output.entity_changes);
     };
@@ -501,22 +488,16 @@ fn the_creative_screen_throws_the_stack_named_and_leaves_the_inventory_as_it_was
     assert_eq!((*pick_up_delay, *thrower), (40, Some(player(1).0)));
     assert_eq!(held(&region, 0), Some(HELD));
     for (number, stack) in [
-        (
-            2,
-            ItemStack {
-                item: i32::MAX,
-                count: 1,
-            },
-        ),
-        (
-            3,
-            ItemStack {
-                item: items::DIRT,
-                count: 0,
-            },
-        ),
+        (2, ItemStack::new(i32::MAX, 1)),
+        (3, ItemStack::new(items::DIRT, 0)),
     ] {
-        let output = with_inputs(&mut region, number, vec![PlayerInput::Throw { stack }]);
+        let output = with_inputs(
+            &mut region,
+            number,
+            vec![PlayerInput::Throw {
+                stack: stack.clone(),
+            }],
+        );
         assert!(made(&output).is_empty(), "{stack:?} was thrown");
     }
 }
@@ -603,10 +584,7 @@ fn lying(key: EntityId, hops: u32) -> Entity {
         lived: 5,
         fresh_at: 0,
         data: EntityData::Item {
-            stack: ItemStack {
-                item: items::DIRT,
-                count: 2,
-            },
+            stack: ItemStack::new(items::DIRT, 2),
             pick_up_delay: 35,
             thrower: None,
             health: 5,

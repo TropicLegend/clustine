@@ -123,7 +123,7 @@ fn items_lying(region: &Region) -> Vec<ItemStack> {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack),
+            EntityData::Item { ref stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect()
@@ -137,7 +137,7 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 /// Player 1's use of the entity `key` with what they hold.
@@ -1303,7 +1303,7 @@ fn asks(output: &TickOutput) -> Vec<(EntityId, clustine_world::EntityUse)> {
         .effects
         .iter()
         .filter_map(|effect| match effect.what {
-            clustine_world::Effected::OnEntity { key, by } => Some((key, by)),
+            clustine_world::Effected::OnEntity { key, ref by } => Some((key, by.clone())),
             _ => None,
         })
         .collect()
@@ -1322,7 +1322,7 @@ fn highland_animals_in_love_across_a_pinned_line_breed_by_the_protocol_the_highe
         let mut asked = None;
         for _ in 0..200 {
             let output = checked(&mut region, &TickInputs::default());
-            if let Some(found) = asks(&output).first().copied() {
+            if let Some(found) = asks(&output).first().cloned() {
                 asked = Some(found);
                 break;
             }

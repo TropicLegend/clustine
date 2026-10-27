@@ -105,11 +105,8 @@ const STEPS: usize = 4000;
 const CAPACITY: usize = 8192;
 
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = std::array::from_fn(|_| None);
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     hotbar
 }
 
@@ -6597,11 +6594,8 @@ fn a_falling_block_at_the_rim_of_a_view_falls_because_its_ring_ticks_in(rings: b
     // them.
     let sand = BlockPos::new(-43, FEET as i32, 8);
     let grass = BlockPos::new(-43, GROUND, 8);
-    let mut with_sand = [None; HOTBAR_SLOTS];
-    with_sand[0] = Some(ItemStack {
-        item: items::SAND,
-        count: 64,
-    });
+    let mut with_sand = std::array::from_fn(|_| None);
+    with_sand[0] = Some(ItemStack::new(items::SAND, 64));
     let mut world = World::stripes();
     let mut runner = open_with_rings(&mut world, rings, with_sand);
     let mut e = greeted(&mut runner, E, 5, Vec::new(), vec![RIM], Vec::new());

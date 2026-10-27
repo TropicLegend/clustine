@@ -22,9 +22,7 @@ use clustine_format::{ChunkFile, EntitiesFile};
 use clustine_region::RegionId;
 use clustine_rpc::link::{self, EdgeEnd};
 use clustine_rpc::{EdgeMessage, EdgeToWorker, RegionHello, Restored, WorkerToEdge};
-use clustine_sim::api::{
-    EntityKind, EntityState, HOTBAR_SLOTS, Inventory, ItemStack, PlayerInput, RegionEvent,
-};
+use clustine_sim::api::{EntityKind, EntityState, Inventory, ItemStack, PlayerInput, RegionEvent};
 use clustine_sim::{PlayerEvent, PlayerJoin};
 use clustine_worker::{RegionRunner, RegionSettings, Reshape, Reshaped, absorbable};
 use clustine_world::{BlockPos, ChunkPos, EdgeId, EntityData, EntityId, PlayerId, Vec3};
@@ -41,10 +39,7 @@ const HOME: ChunkPos = ChunkPos::new(0, 0);
 const FEET: f64 = -60.0;
 
 /// What a player holds when they first enter: 64 stone in slot 0, which is selected.
-const HELD: ItemStack = ItemStack {
-    item: items::STONE,
-    count: 64,
-};
+const HELD: ItemStack = ItemStack::new(items::STONE, 64);
 
 /// How often a wait steps the runner before it gives up, a millisecond apart.
 const STEPS: usize = 8000;
@@ -56,7 +51,7 @@ const EYES: f32 = 1.62;
 const BELOW_THE_EYES: f64 = 0.300_000_011_920_928_96;
 
 fn settings() -> RegionSettings {
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = std::array::from_fn(|_| None);
     hotbar[0] = Some(HELD);
     RegionSettings {
         starting_inventory: Inventory::with_hotbar(hotbar),
@@ -344,16 +339,19 @@ fn stack_of(data: &EntityData) -> ItemStack {
     let EntityData::Item { stack, .. } = data else {
         panic!("{data:?} is not an item");
     };
-    *stack
+    stack.clone()
 }
 
-/// What player 1 holds in slot 0, as the region has it.
+/// What payer .clone()1 holds in slot 0, as the region has it.
 fn held(runner: &RegionRunner) -> Option<ItemStack> {
     let state = runner.region().state();
-    state.players.get(&player(1)).and_then(|p| p.inventory.0[0])
+    state
+        .players
+        .get(&player(1))
+        .and_then(|p| p.inventory.0[0].clone())
 }
 
-/// After a restore: the region is shown to a new edge and loads the spawn's chunk.
+/// After a res.clone()tore: the region is shown to a new edge and loads the spawn's chunk.
 fn restored_view(runner: &mut RegionRunner, edge: EdgeId) -> Link {
     let mut link = Link::hello(runner, edge);
     run_until(runner, &mut link, "the spawn's chunk", |runner, link| {
@@ -416,23 +414,14 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
     assert_eq!(
         data,
         EntityData::Item {
-            stack: ItemStack {
-                item: items::STONE,
-                count: 1
-            },
+            stack: ItemStack::new(items::STONE, 1),
             pick_up_delay: 40,
             thrower: Some(player(1).0),
             health: 5,
             age_offset: 0,
         }
     );
-    assert_eq!(
-        held(&runner),
-        Some(ItemStack {
-            item: items::STONE,
-            count: 63
-        })
-    );
+    assert_eq!(held(&runner), Some(ItemStack::new(items::STONE, 63)));
     // It flies, lands and comes to rest, committing its moves (step N4b); then the
     // worker is lost.
     run_ticks(&mut runner, &mut link, 30);
@@ -507,13 +496,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
     };
     assert_eq!(u32::from(*pick_up_delay) + kept.lived, 40, "{kept:?}");
     // The hand and the item hold the 64 between them.
-    assert_eq!(
-        held(&runner),
-        Some(ItemStack {
-            item: items::STONE,
-            count: 63
-        })
-    );
+    assert_eq!(held(&runner), Some(ItemStack::new(items::STONE, 63)));
 
     // A throw after the restore takes a key of the fresh block.
     let (mut joined, entity) = {

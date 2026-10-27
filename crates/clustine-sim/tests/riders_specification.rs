@@ -68,11 +68,8 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn config() -> RegionConfig {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
         spawn: SPAWN,
         starting_inventory: Inventory::with_hotbar(hotbar),
@@ -1543,7 +1540,7 @@ fn a_creative_hit_on_a_boat_across_the_line_is_an_effect_that_breaks_it_in_its_h
         .find(|effect| {
             matches!(effect.what, clustine_world::Effected::OnEntity { key, .. } if key == beyond.key)
         })
-        .copied()
+        .cloned()
         .expect("the hit goes as an effect on the boat");
     assert_eq!(effect.at.chunk(), BEYOND, "addressed to the boat's chunk");
 
@@ -1880,7 +1877,7 @@ fn a_click_on_a_boat_beyond_the_line_seats_the_player_in_its_holder() {
         .find(|effect| {
             matches!(effect.what, clustine_world::Effected::OnEntity { key, .. } if key == beyond.key)
         })
-        .copied()
+        .cloned()
         .expect("the click goes as an effect on the boat");
     // An interaction across a line counts as an entity sent across one: the two regions
     // are reported working at it (step N7n).
@@ -1909,7 +1906,7 @@ fn a_click_on_a_boat_beyond_the_line_seats_the_player_in_its_holder() {
         .effects
         .iter()
         .find(|effect| matches!(effect.what, clustine_world::Effected::Seated { .. }))
-        .copied()
+        .cloned()
         .expect("the player's region is told");
     assert_eq!(
         seated.at.chunk(),

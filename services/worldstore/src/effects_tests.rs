@@ -165,7 +165,10 @@ fn an_effect_goes_on_the_stream_of_the_region_that_uses_its_chunk_and_no_other()
         .collect();
     assert_eq!(
         written,
-        [vec![(made[0], Due::FromTaking), (made[2], Due::FromTaking)]]
+        [vec![
+            (made[0].clone(), Due::FromTaking),
+            (made[2].clone(), Due::FromTaking)
+        ]]
     );
 }
 
@@ -409,7 +412,7 @@ fn a_group_cut_off_takes_its_effects_takings_and_droppings_with_it() {
     let expected: Vec<FiledEffect> = streamed
         .iter()
         .filter(|filed| restored.in_use.contains(&filed.effect.at.chunk()))
-        .copied()
+        .cloned()
         .collect();
     assert_eq!(resent, expected);
 }

@@ -94,11 +94,8 @@ const CAPACITY: usize = 8192;
 const CUT: i32 = 1;
 
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = std::array::from_fn(|_| None);
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     hotbar
 }
 
@@ -1672,10 +1669,7 @@ fn busy_region(runner: &mut RegionRunner) -> (Link, Link, EntityId) {
             5,
             PlayerInput::SetInventorySlot {
                 slot: 2,
-                stack: Some(ItemStack {
-                    item: items::DIRT,
-                    count: 5,
-                }),
+                stack: Some(ItemStack::new(items::DIRT, 5)),
             },
         ),
     );
@@ -1757,10 +1751,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
     // Player 1 is there as the edge was told before.
     let (_, answer) = presence(log, player(1)).expect("answered above");
     let mut changed_hotbar = hotbar();
-    changed_hotbar[2] = Some(ItemStack {
-        item: items::DIRT,
-        count: 5,
-    });
+    changed_hotbar[2] = Some(ItemStack::new(items::DIRT, 5));
     assert_eq!(
         *answer,
         Presence::Present {

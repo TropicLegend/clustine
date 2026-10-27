@@ -561,11 +561,11 @@ fn a_right_drag_puts_one_into_each_slot() {
     let outputs = drag(&mut scene, serial, 1, &[3, 4, 5, 6]);
     let end = the_changed(outputs.last().expect("an end"), player(1));
     assert_eq!(end.slots.len(), 4, "{end:?}");
-    assert!(end.slots.iter().all(|(_, stack)| *stack
-        == Some(ItemStack {
-            item: items::DIRT,
-            count: 1
-        })));
+    assert!(
+        end.slots
+            .iter()
+            .all(|(_, stack)| *stack == Some(ItemStack::new(items::DIRT, 1)))
+    );
     assert_eq!(end.carried, Some(Some(stack(items::DIRT, 60))));
 }
 
@@ -841,8 +841,8 @@ fn leaving_with_a_stack_carried_drops_it_where_the_player_stands() {
     assert!(scene.region.player(player(1)).is_none(), "the player left");
     let lying = items_lying(&scene.all());
     assert_eq!(lying.len(), 1, "{lying:?}");
-    let (dropped, at) = lying[0];
-    assert_eq!(dropped, stack(items::DIRT, 64));
+    let (ref dropped, at) = lying[0];
+    assert_eq!(*dropped, stack(items::DIRT, 64));
     assert!(
         (at[0] - BESIDE.x).abs() < 1.0 && (at[2] - BESIDE.z).abs() < 1.0,
         "dropped where the player stood: {at:?}"
@@ -1451,7 +1451,7 @@ fn a_carried_stack_that_does_not_fit_at_a_hand_over_goes_as_an_arrival() {
         .arrivals
         .iter()
         .filter_map(|(chunk, entity)| match &entity.data {
-            clustine_world::EntityData::Item { stack, .. } => Some((*chunk, *stack)),
+            clustine_world::EntityData::Item { stack, .. } => Some((*chunk, stack.clone())),
             _ => None,
         })
         .collect();

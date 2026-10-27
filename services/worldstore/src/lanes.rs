@@ -1440,7 +1440,7 @@ impl Lanes {
                     seams,
                     effects: effects
                         .iter()
-                        .map(|(effect, due, _)| (*effect, *due))
+                        .map(|(effect, due, _)| (effect.clone(), *due))
                         .collect(),
                     taken: taken.clone(),
                     events,

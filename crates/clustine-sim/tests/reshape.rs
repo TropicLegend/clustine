@@ -99,11 +99,8 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     hotbar
 }
 
@@ -740,17 +737,17 @@ fn doubting() -> Region {
 fn with_a_stay_under_way() -> (Region, PlayerState) {
     let mut region = at_the_line();
     let fresh = state_of(&region, player(1));
-    let stack = Some(ItemStack {
-        item: items::STONE,
-        count: 7,
-    });
+    let stack = Some(ItemStack::new(items::STONE, 7));
     let mut inputs = single_input(E, player(1), entity(1), 1, dig(OWN_BLOCK, 4));
     inputs.input(
         E,
         player(1),
         entity(1),
         2,
-        PlayerInput::SetInventorySlot { slot: 3, stack },
+        PlayerInput::SetInventorySlot {
+            slot: 3,
+            stack: stack.clone(),
+        },
     );
     inputs.input(
         E,
@@ -2346,10 +2343,7 @@ impl Random {
 fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let n = entity.0 as i32;
     let mut bar = hotbar();
-    bar[(n % 8 + 1) as usize] = Some(ItemStack {
-        item: items::STONE,
-        count: n % 60 + 1,
-    });
+    bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
         sleeping: None,
         respawn: None,
@@ -6203,11 +6197,8 @@ impl Play {
             }
             let stack = match random.below(4) {
                 0 => None,
-                1 => Some(ItemStack {
-                    item: items::STONE,
-                    count: 1 + random.below(64) as i32,
-                }),
-                _ => hotbar()[0],
+                1 => Some(ItemStack::new(items::STONE, 1 + random.below(64) as i32)),
+                _ => hotbar()[0].clone(),
             };
             return PlayerInput::SetInventorySlot { slot, stack };
         }

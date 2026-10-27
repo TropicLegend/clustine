@@ -32,7 +32,7 @@ pub fn player(n: u128) -> PlayerId {
 }
 
 pub fn stack(item: i32, count: i32) -> ItemStack {
-    ItemStack { item, count }
+    ItemStack::new(item, count)
 }
 
 pub fn state(name: &str) -> BlockState {
@@ -50,9 +50,9 @@ pub fn block_id(state: BlockState) -> u16 {
 
 /// An inventory with `slots` filled, numbered as [`Inventory`] numbers them.
 pub fn inventory(slots: &[(usize, ItemStack)]) -> Inventory {
-    let mut inventory = Inventory::with_hotbar([None; HOTBAR_SLOTS]);
+    let mut inventory = Inventory::with_hotbar([const { None }; HOTBAR_SLOTS]);
     for (slot, stack) in slots {
-        inventory.set(*slot, Some(*stack));
+        inventory.set(*slot, Some(stack.clone()));
     }
     inventory
 }
@@ -539,6 +539,7 @@ impl Scene {
             .expect("player 1 is there")
             .inventory
             .0[slot]
+            .clone()
     }
 
     pub fn block(&self, at: BlockPos) -> BlockState {
@@ -614,7 +615,7 @@ pub fn items_lying(entities: &[Entity]) -> Vec<(ItemStack, [f64; 3])> {
     entities
         .iter()
         .filter_map(|entity| match &entity.data {
-            EntityData::Item { stack, .. } => Some((*stack, entity.position)),
+            EntityData::Item { stack, .. } => Some((stack.clone(), entity.position)),
             _ => None,
         })
         .collect()

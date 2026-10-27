@@ -469,8 +469,8 @@ impl Region {
         };
         let player = &self.players[&id];
         let hands = [
-            player.inventory.0[usize::from(player.selected_slot)],
-            player.inventory.0[clustine_world::OFF_HAND],
+            player.inventory.0[usize::from(player.selected_slot)].clone(),
+            player.inventory.0[clustine_world::OFF_HAND].clone(),
         ];
         if types::of(entity.kind).steered_by(mob, hands) {
             Ridden::Driven {
@@ -500,8 +500,8 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         eye_height: f64::from(face.eye_height),
         yaw: face.yaw,
         pitch: face.pitch,
-        main_hand: face.main_hand,
-        off_hand: face.off_hand,
+        main_hand: face.main_hand.clone(),
+        off_hand: face.off_hand.clone(),
         sneaking: face.sneaking,
         creative: face.game_mode == 1,
         spectator: face.game_mode == 3,

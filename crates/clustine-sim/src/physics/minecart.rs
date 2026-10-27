@@ -359,7 +359,7 @@ pub(crate) fn container_signal(contents: &Contents, size: usize) -> u8 {
         if stack.count <= 0 || stack.item == clustine_data::items::AIR {
             continue;
         }
-        let most = super::item::max_stack_size(*stack).min(99);
+        let most = super::item::max_stack_size(stack).min(99);
         share += stack.count as f32 / most as f32;
     }
     share /= size as f32;
@@ -592,10 +592,7 @@ mod tests {
     #[test]
     fn a_container_signals_its_fill_by_the_share_of_each_stack() {
         use clustine_world::ItemStack;
-        let dirt = |count| ItemStack {
-            item: clustine_data::items::DIRT,
-            count,
-        };
+        let dirt = |count| ItemStack::new(clustine_data::items::DIRT, count);
         assert_eq!(container_signal(&Vec::new(), 27), 0);
         // One item in 27 slots: a little above nothing is 1.
         assert_eq!(container_signal(&vec![(0, dirt(1))], 27), 1);

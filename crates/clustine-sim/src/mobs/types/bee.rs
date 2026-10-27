@@ -1504,7 +1504,7 @@ impl MobType for Bee {
     /// `Bee.mobInteract`: a flower with an effect for bees is taken and gives it
     /// (named: no effect is applied); any other is an animal's food.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let effect = used.held.is_some_and(|held| {
+        let effect = used.held.as_ref().is_some_and(|held| {
             held.count > 0 && matches!(held.item, items::WITHER_ROSE | items::OPEN_EYEBLOSSOM)
         });
         if effect {

@@ -930,7 +930,7 @@ fn a_sensor_does_not_hear_across_a_pinned_line_and_goes_on_hearing_its_own_side(
     }
     let crossing: Vec<_> = outputs
         .iter()
-        .flat_map(|output| output.effects.iter().copied())
+        .flat_map(|output| output.effects.iter().cloned())
         .filter(|effect| effect.at.chunk().x <= 0)
         .collect();
     let mut seen = filed(&mut west.region, 40, crossing);

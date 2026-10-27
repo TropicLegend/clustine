@@ -30,7 +30,7 @@ fn draws(seed: u64) -> Random {
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 /// A player's use of `mob`, of the type `kind`, holding `held`, at the mob's moment
@@ -607,10 +607,7 @@ fn a_water_bucket_takes_an_axolotl_or_a_tadpole_with_its_own_filling_sound() {
                     but_the_player: false,
                 },
                 Did::Give {
-                    stack: ItemStack {
-                        item: bucket,
-                        count: 1
-                    },
+                    stack: ItemStack::new(bucket, 1),
                     no_duplicates: false,
                 },
                 Did::Discard,
@@ -644,10 +641,7 @@ fn a_bucket_of_tropical_fish_puts_an_axolotl_in_love_and_gives_back_a_water_buck
         did,
         [
             Did::Give {
-                stack: ItemStack {
-                    item: items::WATER_BUCKET,
-                    count: 1
-                },
+                stack: ItemStack::new(items::WATER_BUCKET, 1),
                 no_duplicates: true,
             },
             Did::Event(18),

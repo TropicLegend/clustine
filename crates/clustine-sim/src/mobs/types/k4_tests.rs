@@ -134,7 +134,9 @@ fn a_skeleton_s_egg_draws_the_tail_then_armour_the_bow_s_enchantment_and_the_loo
         assert_eq!(level.calls, [TAIL, SKELETON].concat(), "{kind}");
         let worn = &mob.body.equipment.slots;
         assert_eq!(
-            worn[usize::from(slots::MAIN_HAND)].map(|stack| (stack.item, stack.count)),
+            worn[usize::from(slots::MAIN_HAND)]
+                .as_ref()
+                .map(|stack| (stack.item, stack.count)),
             Some((items::BOW, 1)),
             "the bow, of no draw"
         );
@@ -184,7 +186,9 @@ fn a_spider_drawing_nought_of_a_hundred_is_ridden_by_a_skeleton_of_its_own_draws
     assert_eq!(skeleton.entity.position, [3.5, -60.0, 3.5]);
     let rider = Mob::decode(&skeleton.entity.data).unwrap();
     assert_eq!(
-        rider.body.equipment.slots[usize::from(slots::MAIN_HAND)].map(|stack| stack.item),
+        rider.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+            .clone()
+            .map(|stack| stack.item),
         Some(items::BOW)
     );
 }

@@ -301,14 +301,8 @@ fn a_cow_killed_by_a_player_drops_its_table_s_loot_by_the_game_s_draws_and_a_bab
     assert_eq!(
         death.drops,
         [
-            clustine_world::ItemStack {
-                item: items::LEATHER,
-                count: leather
-            },
-            clustine_world::ItemStack {
-                item: items::BEEF,
-                count: beef
-            }
+            clustine_world::ItemStack::new(items::LEATHER, leather),
+            clustine_world::ItemStack::new(items::BEEF, beef)
         ]
     );
     let given: i32 = death.orbs.iter().map(|(value, _)| value).sum();

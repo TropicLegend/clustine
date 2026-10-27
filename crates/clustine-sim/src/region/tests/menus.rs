@@ -21,7 +21,7 @@ fn chest() -> BlockState {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 /// Player 1's input `input` numbered `number`.

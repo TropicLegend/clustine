@@ -152,7 +152,7 @@ fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer {
         eye_height: 1.62,
         yaw: 0.0,
         pitch: 0.0,
-        main_hand: held.map(|item| ItemStack { item, count: 1 }),
+        main_hand: held.map(|item| ItemStack::new(item, 1)),
         off_hand: None,
         sneaking: false,
         creative: true,
@@ -774,7 +774,7 @@ fn panic_love_and_temptation_each_reset_a_sniff_before_they_start() {
 
 fn allay_holding(item: i32, at: Vec3) -> Brainy {
     let mut mob = Mob::fresh();
-    mob.body.equipment.slots[0] = Some(ItemStack { item, count: 1 });
+    mob.body.equipment.slots[0] = Some(ItemStack::new(item, 1));
     let mut brainy = Brainy::new(ALLAY, mob, at);
     brainy.scan_now();
     brainy
@@ -792,10 +792,7 @@ fn likes(brainy: &mut Brainy, uuid: u128) {
 fn an_allay_holding_a_kind_goes_for_the_nearest_it_sees_within_32_and_not_while_it_waits() {
     use MemoryKind as M;
     let mut pen = Pen::default();
-    let diamonds = ItemStack {
-        item: items::DIAMOND,
-        count: 2,
-    };
+    let diamonds = ItemStack::new(items::DIAMOND, 2);
     pen.put(item(70, one_of(items::DIRT), [3.5, 0.0, 0.5]));
     pen.put(item(71, diamonds, [10.5, 0.0, 0.5]));
     let mut brainy = allay_holding(items::DIAMOND, [0.5, 1.0, 0.5]);
@@ -857,7 +854,7 @@ fn an_allay_holding_a_kind_goes_for_the_nearest_it_sees_within_32_and_not_while_
 }
 
 fn one_of(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 #[test]
@@ -868,10 +865,7 @@ fn an_allay_with_items_flies_to_the_player_it_likes_and_within_3_throws_one_a_ti
     let mut brainy = allay_holding(items::DIAMOND, [0.5, 1.0, 0.5]);
     likes(&mut brainy, 77);
     allay::update(&mut brainy.mob, |own| {
-        own.inventory = Some(ItemStack {
-            item: items::DIAMOND,
-            count: 3,
-        });
+        own.inventory = Some(ItemStack::new(items::DIAMOND, 3));
     });
     // Too far to throw: it flies there at 2.25, its look on the player's eyes.
     brainy.step(&mut pen);
@@ -912,8 +906,8 @@ fn an_allay_with_items_flies_to_the_player_it_likes_and_within_3_throws_one_a_ti
     }
     assert_eq!(thrown.len(), 3);
     let eye = f64::from(EntityTypeInfo::of(entity_types::ALLAY).eye_height);
-    let (stack, at, motion) = thrown[0];
-    assert_eq!(stack, one_of(items::DIAMOND));
+    let (ref stack, at, motion) = thrown[0];
+    assert_eq!(*stack, one_of(items::DIAMOND));
     assert_eq!(at, [5.0, 1.0 + eye - f64::from(0.2_f32), 0.5]);
     let aim = crate::physics::normalize([6.5 - 5.0, 1.62 + 1.0 - 1.0, 0.0]);
     assert_eq!(
@@ -942,10 +936,7 @@ fn an_allay_s_throw_is_heard_only_on_a_seventh_tick_with_two_more_draws() {
         let mut brainy = allay_holding(items::DIAMOND, [0.5, 1.0, 0.5]);
         likes(&mut brainy, 77);
         allay::update(&mut brainy.mob, |own| {
-            own.inventory = Some(ItemStack {
-                item: items::DIAMOND,
-                count: 64,
-            });
+            own.inventory = Some(ItemStack::new(items::DIAMOND, 64));
         });
         brainy.lived = 8;
         // Its sensors out of the way: a tick that starts the giving, and throws.

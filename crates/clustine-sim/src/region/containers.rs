@@ -167,7 +167,7 @@ fn read_items(list: &[u8], slots: &mut [Option<ItemStack>]) {
             && items > 0
             && let Some(place) = slots.get_mut(slot)
         {
-            *place = Some(ItemStack { item, count: items });
+            *place = Some(ItemStack::new(item, items));
         }
     }
 }
@@ -193,7 +193,7 @@ pub(crate) fn container_data(state: BlockState, container: &Container, data: &[u
             .slots
             .iter()
             .enumerate()
-            .filter_map(|(slot, stack)| Some((slot, (*stack)?)))
+            .filter_map(|(slot, stack)| Some((slot, stack.clone()?)))
             .filter(|(_, stack)| stack.count > 0)
             .collect();
         if !filled.is_empty() || always_saves_items(state) {
@@ -299,6 +299,11 @@ pub(crate) fn with_int(data: &[u8], name: &str, value: i32) -> Vec<u8> {
 
 /// The payload of an `Items` list of `filled`: compounds of `Slot`, `id` and `count`, the
 /// count left out where it is one, as `ItemStackWithSlot.CODEC` writes them.
+///
+/// A stack's components are not written, and a stack read back from here has none
+/// (`docs/groundwork/n9-plan.md`, section 3.2): until each component of the set is
+/// written and read in the game's NBT, which is N9a's next step, a potion put into a
+/// chest loses its contents at a save, as it did before stacks had components.
 fn items_payload(filled: &[(usize, ItemStack)]) -> Vec<u8> {
     let mut payload = vec![TAG_COMPOUND];
     let count = i32::try_from(filled.len()).expect("fewer slots than an int counts");
@@ -437,7 +442,7 @@ pub(crate) fn redstone_signal_of(slots: &[Option<ItemStack>]) -> u8 {
     let mut full = 0.0_f32;
     for stack in slots.iter().flatten() {
         if stack.count > 0 && stack.item != clustine_data::items::AIR {
-            let most = crate::physics::item::max_stack_size(*stack).min(99);
+            let most = crate::physics::item::max_stack_size(stack).min(99);
             full += stack.count as f32 / most as f32;
         }
     }
@@ -950,7 +955,7 @@ impl Region {
             .slots
             .iter()
             .enumerate()
-            .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
+            .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, stack.clone()?)))
             .collect();
         let corner = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
         self.drop_contents(corner, &contents, container.slots.len(), output);
@@ -1020,7 +1025,7 @@ mod tests {
     use clustine_data::{blocks, items};
 
     fn stack(item: i32, count: i32) -> Option<ItemStack> {
-        Some(ItemStack { item, count })
+        Some(ItemStack::new(item, count))
     }
 
     #[test]

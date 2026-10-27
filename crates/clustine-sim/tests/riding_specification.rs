@@ -82,19 +82,10 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn config() -> RegionConfig {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[CART_SLOT as usize] = Some(ItemStack {
-        item: items::MINECART,
-        count: 1,
-    });
-    hotbar[BOAT_SLOT as usize] = Some(ItemStack {
-        item: items::OAK_BOAT,
-        count: 1,
-    });
-    hotbar[CUSHION_SLOT as usize] = Some(ItemStack {
-        item: items::WHITE_CUSHION,
-        count: 1,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[CART_SLOT as usize] = Some(ItemStack::new(items::MINECART, 1));
+    hotbar[BOAT_SLOT as usize] = Some(ItemStack::new(items::OAK_BOAT, 1));
+    hotbar[CUSHION_SLOT as usize] = Some(ItemStack::new(items::WHITE_CUSHION, 1));
     RegionConfig {
         spawn: FEET,
         starting_inventory: Inventory::with_hotbar(hotbar),
@@ -1128,13 +1119,10 @@ fn a_cushion_used_on_a_top_face_is_laid_at_the_click_s_height_facing_the_player_
         panic!("{cushion:?} is not a cushion");
     };
     assert_eq!(colour, 0, "white");
-    let held = scene.region.state().players[&player(1)].inventory.0[CUSHION_SLOT as usize];
+    let held = &scene.region.state().players[&player(1)].inventory.0[CUSHION_SLOT as usize];
     assert_eq!(
-        held,
-        Some(ItemStack {
-            item: items::WHITE_CUSHION,
-            count: 1
-        }),
+        *held,
+        Some(ItemStack::new(items::WHITE_CUSHION, 1)),
         "a creative player keeps the item"
     );
 }
@@ -1271,14 +1259,8 @@ fn a_minecart_used_on_a_rail_is_placed_at_its_centre_facing_yaw_nought() {
         (sloped.position[0] - 5.5).abs() < 0.2 && sloped.position[1] > FLOOR + 0.0625,
         "on the slope, higher: {sloped:?}"
     );
-    let held = scene.region.state().players[&player(1)].inventory.0[CART_SLOT as usize];
-    assert_eq!(
-        held,
-        Some(ItemStack {
-            item: items::MINECART,
-            count: 1
-        })
-    );
+    let held = &scene.region.state().players[&player(1)].inventory.0[CART_SLOT as usize];
+    assert_eq!(*held, Some(ItemStack::new(items::MINECART, 1)));
 }
 
 /// Brief 3.1: the cart is made exactly half a block higher on a sloped rail, in the
@@ -1691,14 +1673,8 @@ fn a_boat_used_looking_at_the_floor_is_placed_there_with_the_player_s_yaw() {
     );
     let (yaw, _) = look_at(FEET, target);
     assert_eq!(placed.yaw, yaw, "the player's yaw, not snapped");
-    let held = scene.region.state().players[&player(1)].inventory.0[BOAT_SLOT as usize];
-    assert_eq!(
-        held,
-        Some(ItemStack {
-            item: items::OAK_BOAT,
-            count: 1
-        })
-    );
+    let held = &scene.region.state().players[&player(1)].inventory.0[BOAT_SLOT as usize];
+    assert_eq!(*held, Some(ItemStack::new(items::OAK_BOAT, 1)));
 }
 
 /// Brief 4.1: the boat's box may not meet an entity's: one aimed at the player's own

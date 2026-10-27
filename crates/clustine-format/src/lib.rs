@@ -21,6 +21,7 @@ mod kept_events;
 mod log;
 mod region;
 mod seams;
+mod stacks;
 
 pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use entities::{EntitiesFile, KIND_ENTITIES};
@@ -48,8 +49,10 @@ pub use region::{
 /// holds where a bed set their respawn point after it (`docs/groundwork/n7d-plan.md`); 13
 /// since entities made with a chunk have keys of their own above every region's, a chunk's
 /// first blocks file follows its entities, and a seat may be granted across a line
-/// (`docs/groundwork/n7l-plan.md`, section 4; `n7j-mount-across-a-line.md`).
-pub const FORMAT_VERSION: u8 = 13;
+/// (`docs/groundwork/n7l-plan.md`, section 4; `n7j-mount-across-a-line.md`); 14 since
+/// every stack carries its components after its count, kinds by name, so that a later
+/// kind needs no raise (`docs/groundwork/n9-plan.md`, section 3.2).
+pub const FORMAT_VERSION: u8 = 14;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

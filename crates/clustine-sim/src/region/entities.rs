@@ -247,7 +247,7 @@ impl Region {
         }
         // A thrown item's hit across a line is taken as one from within, by the hit
         // entity's kind (`thrown.rs`).
-        if let Some(hit) = super::thrown::Hit::of_use(by) {
+        if let Some(hit) = super::thrown::Hit::of_use(&by) {
             self.thrown_hit_here(key, hit, output);
             return;
         }

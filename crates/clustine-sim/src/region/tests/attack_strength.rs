@@ -31,11 +31,11 @@ fn a_punch_resets_the_strength_which_comes_back_a_fifth_a_tick_with_a_bare_hand(
 #[test]
 fn a_sword_takes_longer_and_a_change_of_item_resets_the_strength_for_the_next_tick() {
     let mut region = on_ticking_floor_with(&[]);
-    let sword = ItemStack {
-        item: items::IRON_SWORD,
-        count: 1,
-    };
-    region.tick(&moves(vec![set_slot(1, 0, Some(sword)), select(1, 0)]));
+    let sword = ItemStack::new(items::IRON_SWORD, 1);
+    region.tick(&moves(vec![
+        set_slot(1, 0, Some(sword.clone())),
+        select(1, 0),
+    ]));
     // Seen after the inputs: the next tick's read none.
     region.tick(&TickInputs::default());
     let first = strength(&region);

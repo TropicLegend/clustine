@@ -178,13 +178,13 @@ impl Region {
             return;
         };
         let antenna = usize::from(slots::SADDLE);
-        if mob.body.equipment.slots[antenna].is_some_and(|stack| stack.count > 0) {
+        if mob.body.equipment.slots[antenna]
+            .clone()
+            .is_some_and(|stack| stack.count > 0)
+        {
             return;
         }
-        mob.body.equipment.slots[antenna] = Some(ItemStack {
-            item: items::POPPY,
-            count: 1,
-        });
+        mob.body.equipment.slots[antenna] = Some(ItemStack::new(items::POPPY, 1));
         crate::mobs::types::equine::guarantee_drop(&mut mob, slots::SADDLE);
         self.commit_mob(&record, chunk, &mob, output);
     }

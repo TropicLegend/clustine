@@ -2819,7 +2819,7 @@ impl Fanout {
     /// has not is sent the whole inventory when it enters, as the region has it then.
     async fn inventory_slot(&mut self, player: PlayerId, slot: u8, stack: Option<ItemStack>) {
         if let Some(view) = self.players.get_mut(&player) {
-            view.menus.inventory_slot(usize::from(slot), stack);
+            view.menus.inventory_slot(usize::from(slot), stack.clone());
         }
         let entered = self
             .players
@@ -3590,15 +3590,7 @@ impl Fanout {
                     None => LivingShown {
                         equipment: clustine_sim::shown::mob_equipment(data)
                             .into_iter()
-                            .map(|(slot, stack)| {
-                                (
-                                    slot,
-                                    WireStack {
-                                        item: stack.item,
-                                        count: stack.count,
-                                    },
-                                )
-                            })
+                            .map(|(slot, stack)| (slot, protocol_stack(&stack)))
                             .collect(),
                         attributes: match &state.kind {
                             EntityKind::Other { kind, .. } => {
@@ -4273,10 +4265,7 @@ impl Fanout {
         let slots: Vec<(u8, Option<WireStack>)> = slots
             .into_iter()
             .map(|(slot, stack)| {
-                let stack = stack.map(|stack| WireStack {
-                    item: stack.item,
-                    count: stack.count,
-                });
+                let stack = stack.as_ref().map(protocol_stack);
                 (slot, stack)
             })
             .collect();
@@ -6213,7 +6202,7 @@ fn inventory_packets(inventory: &Inventory, selected_slot: u8) -> [Bytes; 2] {
     for (slot, stack) in inventory.0.iter().enumerate() {
         let container = Inventory::to_container(slot).expect("every inventory slot is shown");
         let container = usize::try_from(container).expect("container slots are not negative");
-        slots[container] = stack.map(protocol_stack);
+        slots[container] = stack.as_ref().map(protocol_stack);
     }
     [
         encoded(&SetContainerContent {
@@ -6234,16 +6223,13 @@ fn inventory_packets(inventory: &Inventory, selected_slot: u8) -> [Bytes; 2] {
 fn inventory_slot_packet(slot: u8, stack: Option<ItemStack>) -> Bytes {
     encoded(&SetPlayerInventory {
         slot: i32::from(slot),
-        stack: stack.map(protocol_stack),
+        stack: stack.as_ref().map(protocol_stack),
     })
 }
 
-/// A stack as the protocol writes it.
-fn protocol_stack(stack: ItemStack) -> protocol::ItemStack {
-    protocol::ItemStack {
-        item: stack.item,
-        count: stack.count,
-    }
+/// A stack as the protocol writes it (without its components for now).
+fn protocol_stack(stack: &ItemStack) -> protocol::ItemStack {
+    crate::encode::wire_stack(stack)
 }
 
 /// Adds players to a client's player list.
@@ -6485,7 +6471,7 @@ fn entity_data_packet(id: i32, kind: u16, data: &EntityData) -> SetEntityData {
             entity_id: id,
             values: vec![(
                 entity_data::ITEM_STACK,
-                EntityDataValue::ItemStack(Some(protocol_stack(*stack))),
+                EntityDataValue::ItemStack(Some(protocol_stack(&stack.clone()))),
             )],
         },
         EntityData::Minecart { .. } => SetEntityData {
@@ -11720,9 +11706,12 @@ mod scenarios {
         let mut edge = Harness::start().await;
         let mut client = edge.joined(player(1), EntityId(5)).await;
         edge.quiet().await;
-        let stick = ItemStack { item: 1, count: 2 };
+        let stick = ItemStack::new(1, 2);
         for (slot, stack) in [(3, None), (40, Some(stick))] {
-            let event = PlayerEvent::InventorySlot { slot, stack };
+            let event = PlayerEvent::InventorySlot {
+                slot,
+                stack: stack.clone(),
+            };
             edge.tell(
                 WEST,
                 WorkerToEdge::ToPlayer {
@@ -11742,7 +11731,7 @@ mod scenarios {
             };
             let expected = SetPlayerInventory {
                 slot: i32::from(slot),
-                stack: stack.map(protocol_stack),
+                stack: stack.as_ref().map(protocol_stack),
             };
             assert_eq!(told, expected);
         }
@@ -11823,7 +11812,7 @@ mod scenarios {
         let mut inventory = Inventory::default();
         for slot in 0..clustine_world::INVENTORY_SLOTS {
             let n = i32::try_from(slot).unwrap() + 1;
-            inventory.set(slot, Some(ItemStack { item: n, count: n }));
+            inventory.set(slot, Some(ItemStack::new(n, n)));
         }
         let [content, held] = inventory_packets(&inventory, 4);
         let Ok(ClientboundPlay::SetContainerContent(content)) = ClientboundPlay::decode(&content)
@@ -12649,10 +12638,7 @@ mod scenarios {
         edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
         edge.settle(WEST).await;
         let key = far_key(100);
-        let bow = clustine_world::ItemStack {
-            item: 1021,
-            count: 1,
-        };
+        let bow = clustine_world::ItemStack::new(1021, 1);
         let mut skeleton = a_cow(key, HOME);
         if let EntityKind::Other { kind, data, .. } = &mut skeleton.kind {
             *kind = entity_types::SKELETON as u16;
@@ -21643,13 +21629,7 @@ mod scenarios {
             flags: 4,
             disabled_slots: 0,
             pose: Box::new(pose),
-            equipment: vec![(
-                5,
-                clustine_world::ItemStack {
-                    item: 1100,
-                    count: 1,
-                },
-            )],
+            equipment: vec![(5, clustine_world::ItemStack::new(1100, 1))],
             health: clustine_world::Float(20.0),
             last_hit: None,
             air: 300,
@@ -21729,10 +21709,7 @@ mod scenarios {
     #[test]
     fn a_snowball_is_spawned_with_its_owners_id_and_then_its_stack() {
         let data = EntityData::Thrown {
-            stack: clustine_world::ItemStack {
-                item: clustine_data::items::SNOWBALL,
-                count: 1,
-            },
+            stack: clustine_world::ItemStack::new(clustine_data::items::SNOWBALL, 1),
             owner: Some(EntityId(3)),
             left_owner: false,
             has_been_shot: false,

@@ -801,7 +801,7 @@ pub(crate) fn seed(draws: &mut Random) -> ItemStack {
     } else {
         items::PITCHER_POD
     };
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 /// `emitDiggingParticles`' part the server's world hears: every tenth tick while it
@@ -891,7 +891,7 @@ impl MobType for Sniffer {
     /// it eats once more (`playEatingSound` is called by `Animal.mobInteract` and again
     /// by the sniffer's own: two sounds, each a draw of the level's random).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let food = FOOD.test(used.held);
+        let food = FOOD.test(used.held.as_ref());
         let result = animal::mob_interact(used, FOOD, None);
         if food && result != Interaction::Pass {
             for _ in 0..2 {
@@ -919,10 +919,7 @@ impl MobType for Sniffer {
     /// `spawnChildFromBreeding`: an egg laid at its feet, and no child.
     fn laid_from_breeding(&self) -> Option<Laid> {
         Some(Laid {
-            stack: ItemStack {
-                item: items::SNIFFER_EGG,
-                count: 1,
-            },
+            stack: ItemStack::new(items::SNIFFER_EGG, 1),
             sound: sounds::BLOCK_SNIFFER_EGG_PLOP,
             pitch_base: 0.5,
         })

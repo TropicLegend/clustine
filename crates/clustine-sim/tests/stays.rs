@@ -74,12 +74,12 @@ fn name(n: u128) -> String {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 /// What a player has who enters the world for the first time.
 fn starting() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = stack(items::STONE, 64);
     hotbar
 }

@@ -235,10 +235,12 @@ impl Region {
         }
         let mut slots: Vec<Option<ItemStack>> = containers
             .iter()
-            .flat_map(|(_, container)| container.slots.iter().copied())
+            .flat_map(|(_, container)| container.slots.iter().cloned())
             .collect();
         let main_hand = usize::from(slots::MAIN_HAND);
-        let hand = mob.body.equipment.slots[main_hand].filter(|stack| stack.count > 0);
+        let hand = mob.body.equipment.slots[main_hand]
+            .clone()
+            .filter(|stack| stack.count > 0);
         let new_hand = if takes {
             if hand.is_some() {
                 return;
@@ -250,10 +252,7 @@ impl Region {
                 return;
             };
             stack.count -= count;
-            let taken = ItemStack {
-                item: stack.item,
-                count,
-            };
+            let taken = stack.with_count(count);
             if stack.count <= 0 {
                 slots[index] = None;
             }

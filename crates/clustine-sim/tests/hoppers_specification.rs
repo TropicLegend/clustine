@@ -127,7 +127,9 @@ fn a_hopper_fed_while_it_holds_something_keeps_its_own_pace() {
     );
     scene.close_by(1, serial_a);
     let (_, opening) = scene.open_by(1, c);
-    let start = the_opened(&opening, player(2)).slots[0].map_or(0, |stack| stack.count);
+    let start = the_opened(&opening, player(2)).slots[0]
+        .as_ref()
+        .map_or(0, |stack| stack.count);
     let outputs = scene.idle_for(50);
     let at_c = slot_zero(&outputs, player(2));
     assert!(at_c.len() >= 5, "{at_c:?}");

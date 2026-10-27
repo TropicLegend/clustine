@@ -314,7 +314,7 @@ fn playthings(ai: &Ai<'_, '_>, grow: Vec3) -> Vec<Vec3> {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| {
             let EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay,
                 ..
             } = seen.entity.data
@@ -622,10 +622,10 @@ fn pick_up(tick: &mut MobTick<'_>) {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
-            } if stack.count > 0 => Some((seen.entity.key, stack)),
+            } if stack.count > 0 => Some((seen.entity.key, stack.clone())),
             _ => None,
         })
         .collect();
@@ -633,7 +633,7 @@ fn pick_up(tick: &mut MobTick<'_>) {
         if tick.mob.body.equipment.slots[hand].is_some() {
             break;
         }
-        tick.mob.body.equipment.slots[hand] = Some(stack);
+        tick.mob.body.equipment.slots[hand] = Some(stack.clone());
         let mut chances = tick.mob.body.equipment.drop_chances.unwrap_or([0.085; 8]);
         chances[hand] = 2.0;
         tick.mob.body.equipment.drop_chances = Some(chances);
@@ -683,6 +683,7 @@ fn moisten(tick: &mut MobTick<'_>) {
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let fish = used
         .held
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && item_in_tag(stack.item, "minecraft:fishes"));
     if !fish {
         return super::squid::mob_interact(used);

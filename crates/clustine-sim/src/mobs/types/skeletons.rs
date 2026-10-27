@@ -128,10 +128,8 @@ pub(crate) fn finalize_spawn(spawn: &mut Spawning<'_>) {
     let special = spawn.difficulty.1;
     let hard = clustine_world::Difficulty::WORLD == clustine_world::Difficulty::Hard;
     making::populate_default_equipment_slots(spawn.mob, spawn.level, special, hard);
-    spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-        item: items::BOW,
-        count: 1,
-    });
+    spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+        Some(ItemStack::new(items::BOW, 1));
     making::populate_default_equipment_enchantments(spawn.mob, spawn.level, special);
     spawn.mob.body.flags.picks_up_loot = spawn.level.next_float() < 0.55 * special;
 }

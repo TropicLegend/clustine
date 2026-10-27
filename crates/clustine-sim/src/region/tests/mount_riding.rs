@@ -93,10 +93,7 @@ fn feet(region: &Region, n: u128) -> [f64; 3] {
 }
 
 fn saddle(mob: &mut Mob) {
-    mob.body.equipment.slots[usize::from(slots::SADDLE)] = Some(ItemStack {
-        item: items::SADDLE,
-        count: 1,
-    });
+    mob.body.equipment.slots[usize::from(slots::SADDLE)] = Some(ItemStack::new(items::SADDLE, 1));
 }
 
 /// A grown camel standing as one long stood (`finalizeSpawn`'s, its 52 ticks of standing
@@ -226,10 +223,8 @@ fn ghast_at(region: &mut Region) -> EntityId {
         entity_types::HAPPY_GHAST,
         [4.5, -60.0, 0.5],
         |mob| {
-            mob.body.equipment.slots[usize::from(slots::BODY)] = Some(ItemStack {
-                item: items::WHITE_HARNESS,
-                count: 1,
-            });
+            mob.body.equipment.slots[usize::from(slots::BODY)] =
+                Some(ItemStack::new(items::WHITE_HARNESS, 1));
         },
     )
 }
@@ -439,10 +434,7 @@ fn a_sneaking_click_opens_a_camels_menu_and_a_saddle_put_there_sounds_as_the_cam
     let output = checked(&mut region, &container_click(serial, 0));
     assert_eq!(
         mob(&region, camel).body.equipment.slots[usize::from(slots::SADDLE)],
-        Some(ItemStack {
-            item: items::SADDLE,
-            count: 1
-        })
+        Some(ItemStack::new(items::SADDLE, 1))
     );
     let saddled = heard(&output)
         .into_iter()

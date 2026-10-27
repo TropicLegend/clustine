@@ -597,13 +597,7 @@ fn a_horn_comes_off_one_at_a_time_by_a_coin_and_a_kid_or_a_hornless_goat_drops_n
         let mut stream = draws(seed);
         let mut replay = stream.clone();
         let (horn, motion) = goat_brain::drop_horn(&mut mob, &mut stream).expect("a horn");
-        assert_eq!(
-            horn,
-            ItemStack {
-                item: items::GOAT_HORN,
-                count: 1
-            }
-        );
+        assert_eq!(horn, ItemStack::new(items::GOAT_HORN, 1));
         let left = replay.next_bool();
         let own = goat::state_of(&mob);
         assert_eq!((own.left_horn, own.right_horn), (!left, left));
@@ -960,10 +954,8 @@ fn a_camel_seats_a_second_rider_behind_and_an_animal_further_forward_turned_with
 fn a_dash_pushes_a_camel_along_its_look_and_up_and_waits_55_ticks() {
     let mut mob = camel_with(CAMEL, &Animal::default(), CamelState::default());
     let mut saddled = mob.clone();
-    saddled.body.equipment.slots[usize::from(crate::living::slots::SADDLE)] = Some(ItemStack {
-        item: items::SADDLE,
-        count: 1,
-    });
+    saddled.body.equipment.slots[usize::from(crate::living::slots::SADDLE)] =
+        Some(ItemStack::new(items::SADDLE, 1));
     assert!(!camel::riding::may_dash(&mob, true, 0), "no saddle");
     assert!(camel::riding::may_dash(&saddled, true, 0));
     assert!(!camel::riding::may_dash(&saddled, false, 0), "in the air");
@@ -1531,7 +1523,7 @@ fn seen_player(key: u64, position: Vec3, held: Option<i32>, sprinting: bool) -> 
         eye_height: 1.62,
         yaw: 0.0,
         pitch: 0.0,
-        main_hand: held.map(|item| ItemStack { item, count: 1 }),
+        main_hand: held.map(|item| ItemStack::new(item, 1)),
         off_hand: None,
         sneaking: false,
         creative: true,
@@ -2051,10 +2043,7 @@ fn a_goat_s_jump_puts_it_in_its_pose_unslowed_and_its_ram_throws_a_horn_with_a_p
     assert_eq!(
         out.local,
         [Local::Throw {
-            stack: ItemStack {
-                item: items::GOAT_HORN,
-                count: 1,
-            },
+            stack: ItemStack::new(items::GOAT_HORN, 1),
             at: [0.5, 0.0, 0.5],
             pick_up_delay: 0,
             motion,

@@ -162,10 +162,7 @@ fn a_zombie_under_water_turns_drowned_on_its_901st_tick_with_its_sword_and_its_o
     let mut zombie = mob_at(ONE, entity_types::ZOMBIE, [8.5, -61.0, 8.5]);
     let mut held = Mob::decode(&zombie.data).unwrap();
     held.body.vitals.health = 7.0;
-    held.body.equipment.slots[0] = Some(ItemStack {
-        item: items::IRON_SWORD,
-        count: 1,
-    });
+    held.body.equipment.slots[0] = Some(ItemStack::new(items::IRON_SWORD, 1));
     zombie.data = held.encode();
     lay(&mut region, &zombie);
     for tick in 1..=600 {
@@ -185,7 +182,7 @@ fn a_zombie_under_water_turns_drowned_on_its_901st_tick_with_its_sword_and_its_o
     assert_eq!(drowned.len(), 1);
     let new = Mob::decode(&drowned[0].data).unwrap();
     assert_eq!(
-        new.body.equipment.slots[0].map(|stack| stack.item),
+        new.body.equipment.slots[0].clone().map(|stack| stack.item),
         Some(items::IRON_SWORD)
     );
     assert_eq!(new.body.vitals.health, 20.0, "the drowned's own health");
@@ -387,10 +384,7 @@ fn a_drowned_on_land_walks_to_water_by_day() {
     // A helmet keeps the sun off it.
     let mut drowned = mob_at(ONE, entity_types::DROWNED, [1.5, -60.0, 1.5]);
     let mut worn = Mob::decode(&drowned.data).unwrap();
-    worn.body.equipment.slots[5] = Some(ItemStack {
-        item: items::LEATHER_HELMET,
-        count: 1,
-    });
+    worn.body.equipment.slots[5] = Some(ItemStack::new(items::LEATHER_HELMET, 1));
     drowned.data = worn.encode();
     lay(&mut region, &drowned);
     let mut wet = false;
@@ -479,14 +473,7 @@ fn an_egg_makes_each_of_the_family_and_one_used_on_a_zombie_makes_a_baby_zombie(
         checked(
             &mut region,
             &moves(vec![
-                set_slot(
-                    1,
-                    0,
-                    Some(ItemStack {
-                        item: egg,
-                        count: 1,
-                    }),
-                ),
+                set_slot(1, 0, Some(ItemStack::new(egg, 1))),
                 select(1, 0),
             ]),
         );

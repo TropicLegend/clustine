@@ -268,7 +268,7 @@ impl MobType for Frog {
     /// `Animal.mobInteract` with slime balls, and its eating sound when fed
     /// (`playEatingSound`: `FROG_EAT` at 2 and 1, no draw).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let fed = FOOD.test(used.held);
+        let fed = FOOD.test(used.held.as_ref());
         let result = animal::mob_interact(used, FOOD, None);
         if fed && result != Interaction::Pass {
             used.did.push(Did::Sound {

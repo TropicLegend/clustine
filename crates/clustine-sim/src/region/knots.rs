@@ -16,10 +16,7 @@ use crate::api::TickOutput;
 
 /// `getPickResult()`: a knot gives a lead.
 pub(crate) fn knot_pick(entity: &Entity) -> Option<ItemStack> {
-    matches!(entity.data, EntityData::LeashKnot { .. }).then_some(ItemStack {
-        item: items::LEAD,
-        count: 1,
-    })
+    matches!(entity.data, EntityData::LeashKnot { .. }).then_some(ItemStack::new(items::LEAD, 1))
 }
 
 impl Region {

@@ -2072,9 +2072,9 @@ impl Region {
         };
         // In the hand the use is made with.
         let held = if off_hand {
-            player.inventory.0[OFF_HAND]
+            &player.inventory.0[OFF_HAND]
         } else {
-            player.held()
+            &player.held()
         };
         if off_hand
             && (held.is_none()
@@ -2140,12 +2140,12 @@ impl Region {
             PlayerInput::SetInventorySlot { slot, stack } => {
                 // Only stacks of items that exist are kept, and only in slots the
                 // inventory has.
-                let known = stack.is_none_or(|stack| {
+                let known = stack.as_ref().is_none_or(|stack| {
                     stack.count > 0
                         && usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
                 });
                 if known {
-                    player.inventory.set(usize::from(*slot), *stack);
+                    player.inventory.set(usize::from(*slot), stack.clone());
                 }
             }
             // A use with the off hand within a use with the off hand: passed over above.
@@ -2157,13 +2157,16 @@ impl Region {
                 // first, as the game's menu sends them in the order of its slots.
                 let hand = usize::from(player.selected_slot);
                 let held = player.held();
-                let off = player.inventory.0[OFF_HAND];
+                let off = player.inventory.0[OFF_HAND].clone();
                 if held != off {
-                    player.inventory.set(hand, off);
-                    player.inventory.set(OFF_HAND, held);
-                    for (slot, stack) in [(hand, off), (OFF_HAND, held)] {
+                    player.inventory.set(hand, off.clone());
+                    player.inventory.set(OFF_HAND, held.clone());
+                    for (slot, stack) in [(hand, &off), (OFF_HAND, &held)] {
                         let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-                        let event = PlayerEvent::InventorySlot { slot, stack };
+                        let event = PlayerEvent::InventorySlot {
+                            slot,
+                            stack: stack.clone(),
+                        };
                         output.player_events.push((id, event));
                     }
                 }
@@ -2177,13 +2180,10 @@ impl Region {
                     return;
                 };
                 let count = if *all { held.count } else { 1 };
-                let left = (held.count > count).then_some(ItemStack {
-                    count: held.count - count,
-                    ..held
-                });
+                let left = (held.count > count).then(|| held.with_count(held.count - count));
                 let thrown = entities::Thrown {
                     player: id,
-                    stack: ItemStack { count, ..held },
+                    stack: held.with_count(count),
                     crouching: *crouching,
                 };
                 if self.throw(thrown, output) {
@@ -2245,7 +2245,7 @@ impl Region {
                 let by = EntityUse::Interact {
                     player: player.entity_id,
                     creative: true,
-                    held,
+                    held: held.clone(),
                     location: location.map(Double),
                     sneaking: *sneaking,
                     from: user.from(),
@@ -2282,7 +2282,7 @@ impl Region {
             // `handlePunch`: the main hand swings with the attack animation of what it
             // holds, for everyone tracking the player.
             PlayerInput::Punch => {
-                let swing = held.map_or(Swing::DEFAULT, |stack| {
+                let swing = held.as_ref().map_or(Swing::DEFAULT, |stack| {
                     ItemComponents::of(stack.item).attack_animation
                 });
                 self.swing_arm(id, false, swing, false, output);
@@ -2308,7 +2308,7 @@ impl Region {
                 // and a throw refused leaves nothing to put back.
                 let thrown = entities::Thrown {
                     player: id,
-                    stack: *stack,
+                    stack: stack.clone(),
                     crouching: false,
                 };
                 self.throw(thrown, output);
@@ -2322,7 +2322,7 @@ impl Region {
                 // on, as vanilla takes it before it uses the item.
                 (player.pose.yaw, player.pose.pitch) = *rotation;
                 let item_use = ItemUse {
-                    held: held.map(|stack| stack.item),
+                    held: held.as_ref().map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: rotation.0,
                     pitch: rotation.1,
@@ -2398,7 +2398,7 @@ impl Region {
                     face: *face,
                     cursor: *cursor,
                     sneaking: *sneaking,
-                    held: held.map(|stack| stack.item),
+                    held: held.as_ref().map(|stack| stack.item),
                     feet: player.pose.position,
                     yaw: player.pose.yaw,
                     pitch: player.pose.pitch,
@@ -2625,7 +2625,8 @@ impl Region {
             Some(items::BUCKET) => {
                 let filled = used
                     .slot
-                    .and_then(|(_, stack)| stack)
+                    .as_ref()
+                    .and_then(|(_, stack)| stack.as_ref())
                     .map(|stack| stack.item);
                 let sound = match filled {
                     Some(items::LAVA_BUCKET) => sounds::ITEM_BUCKET_FILL_LAVA,
@@ -3447,7 +3448,7 @@ impl Player {
 
     /// What the player holds in the main hand: the stack of the selected hotbar slot.
     fn held(&self) -> Option<ItemStack> {
-        self.inventory.0[usize::from(self.selected_slot)]
+        self.inventory.0[usize::from(self.selected_slot)].clone()
     }
 
     /// Whether the player's eyes are close enough to the block at `position` to work on it.
@@ -3601,23 +3602,14 @@ mod tests {
 
     const SPAWN: Vec3 = Vec3::new(0.5, -60.0, 0.5);
 
-    const STONE: ItemStack = ItemStack {
-        item: items::STONE,
-        count: 1,
-    };
-    const DIRT: ItemStack = ItemStack {
-        item: items::DIRT,
-        count: 1,
-    };
+    const STONE: ItemStack = ItemStack::new(items::STONE, 1);
+    const DIRT: ItemStack = ItemStack::new(items::DIRT, 1);
     /// An item that is not a block.
-    const STICK: ItemStack = ItemStack {
-        item: items::STICK,
-        count: 1,
-    };
+    const STICK: ItemStack = ItemStack::new(items::STICK, 1);
 
     /// Stone, dirt and a stick in the first three slots.
     fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-        let mut hotbar = [None; HOTBAR_SLOTS];
+        let mut hotbar = [const { None }; HOTBAR_SLOTS];
         hotbar[0] = Some(STONE);
         hotbar[1] = Some(DIRT);
         hotbar[2] = Some(STICK);
@@ -4934,8 +4926,8 @@ mod tests {
                     .iter()
                     .find(|entity| entity.key == *key)?;
                 match entity.data {
-                    clustine_world::EntityData::Item { stack, .. } => {
-                        Some((entity.position, stack))
+                    clustine_world::EntityData::Item { ref stack, .. } => {
+                        Some((entity.position, stack.clone()))
                     }
                     _ => None,
                 }
@@ -5194,10 +5186,7 @@ mod tests {
         assert_eq!(region.block(sand), Some(blocks::AIR));
         assert_eq!(region.block(stone), Some(blocks::AIR));
         assert_eq!(region.block(torch), Some(blocks::TORCH));
-        let sand_item = ItemStack {
-            item: items::SAND,
-            count: 1,
-        };
+        let sand_item = ItemStack::new(items::SAND, 1);
         assert_eq!(
             items_lying(&region)
                 .into_iter()
@@ -5421,12 +5410,9 @@ mod tests {
     fn creative_players_fill_their_own_hotbar() {
         let mut region = on_floor(&[1]);
         let set = |slot, stack| numbered(1, PlayerInput::SetInventorySlot { slot, stack });
-        let glass = ItemStack {
-            item: items::GLASS,
-            count: 1,
-        };
+        let glass = ItemStack::new(items::GLASS, 1);
         let output = region.tick(&moves(vec![
-            set(4, Some(glass)),
+            set(4, Some(glass.clone())),
             select(1, 4),
             place(1, 2, -61, 0, Face::Top),
         ]));
@@ -5437,10 +5423,7 @@ mod tests {
         assert!(output.events.is_empty());
 
         // Slots that do not exist and items that do not exist are ignored.
-        let nonsense = ItemStack {
-            item: i32::MAX,
-            count: 1,
-        };
+        let nonsense = ItemStack::new(i32::MAX, 1);
         let output = region.tick(&moves(vec![
             set(41, Some(glass)),
             set(4, Some(nonsense)),
@@ -5455,7 +5438,7 @@ mod tests {
         let mut inventory = Inventory::default();
         for slot in 0..INVENTORY_SLOTS {
             let n = i32::try_from(slot).unwrap() + 1;
-            inventory.set(slot, Some(ItemStack { item: n, count: n }));
+            inventory.set(slot, Some(ItemStack::new(n, n)));
         }
         inventory
     }
@@ -5465,8 +5448,8 @@ mod tests {
         let mut region = on_floor(&[1]);
         let inputs = (0..INVENTORY_SLOTS)
             .map(|slot| {
-                let stack = full_inventory().0[slot];
-                set_slot(1, u8::try_from(slot).unwrap(), stack)
+                let stack = &full_inventory().0[slot];
+                set_slot(1, u8::try_from(slot).unwrap(), stack.clone())
             })
             .collect();
         region.tick(&moves(inputs));
@@ -5479,8 +5462,8 @@ mod tests {
         // change nothing.
         let output = region.tick(&moves(vec![
             set_slot(1, 41, Some(GLASS)),
-            set_slot(1, 40, Some(ItemStack { item: 1, count: 0 })),
-            set_slot(1, 39, Some(ItemStack { item: -1, count: 1 })),
+            set_slot(1, 40, Some(ItemStack::new(1, 0))),
+            set_slot(1, 39, Some(ItemStack::new(-1, 1))),
         ]));
         assert_eq!(
             region.state().players[&player(1)].inventory,
@@ -5500,7 +5483,10 @@ mod tests {
         // The starting inventory holds a stick in slot 2 and nothing in the off hand.
         let output = region.tick(&moves(vec![select(1, 2), swap()]));
         let inventory = region.state().players[&player(1)].inventory.clone();
-        assert_eq!((inventory.0[2], inventory.0[OFF_HAND]), (None, Some(STICK)));
+        assert_eq!(
+            (inventory.0[2].clone(), inventory.0[OFF_HAND].clone()),
+            (None, Some(STICK))
+        );
         let told = |slot, stack| (player(1), PlayerEvent::InventorySlot { slot, stack });
         assert_eq!(
             output.player_events,
@@ -5512,7 +5498,7 @@ mod tests {
         let output = region.tick(&moves(vec![select(1, 1), swap()]));
         let inventory = region.state().players[&player(1)].inventory.clone();
         assert_eq!(
-            (inventory.0[1], inventory.0[OFF_HAND]),
+            (inventory.0[1].clone(), inventory.0[OFF_HAND].clone()),
             (Some(STICK), Some(DIRT))
         );
         assert_eq!(
@@ -5591,10 +5577,7 @@ mod tests {
         max_x: None,
     };
 
-    const GLASS: ItemStack = ItemStack {
-        item: items::GLASS,
-        count: 1,
-    };
+    const GLASS: ItemStack = ItemStack::new(items::GLASS, 1);
 
     fn set_slot(number: u128, slot: u8, stack: Option<ItemStack>) -> Input {
         numbered(number, PlayerInput::SetInventorySlot { slot, stack })
@@ -7596,8 +7579,8 @@ mod tests {
     #[test]
     fn the_ender_chest_goes_with_a_player_who_arrives_is_restored_and_is_let_go() {
         let mut ender = EnderChest::default();
-        ender.set(0, Some(ItemStack { item: 7, count: 64 }));
-        ender.set(26, Some(ItemStack { item: 9, count: 1 }));
+        ender.set(0, Some(ItemStack::new(7, 64)));
+        ender.set(26, Some(ItemStack::new(9, 1)));
         let mut region = region_in(EAST);
         let arriving = PlayerTransfer {
             ender: ender.clone(),
@@ -8342,10 +8325,8 @@ mod tests {
                         1 => {
                             // Counts make it unlikely that two stacks are alike. Any slot
                             // of the inventory, and now and then one beyond it.
-                            let stack = ItemStack {
-                                count: 1 + random(64) as i32,
-                                ..[STONE, DIRT, GLASS][random(3) as usize]
-                            };
+                            let stack = [STONE, DIRT, GLASS][random(3) as usize]
+                                .with_count(1 + random(64) as i32);
                             PlayerInput::SetInventorySlot {
                                 slot: random(42) as u8,
                                 stack: (random(4) != 0).then_some(stack),
@@ -9666,8 +9647,8 @@ mod tests {
                         inputs.inputs.push(with_number(made, slot));
                     }
                     10 => {
-                        let stack = [None, Some(STONE), Some(GLASS)][random(3) as usize];
-                        let slot = set_slot(number, random(9) as u8, stack);
+                        let stack = &[None, Some(STONE), Some(GLASS)][random(3) as usize];
+                        let slot = set_slot(number, random(9) as u8, stack.clone());
                         inputs.inputs.push(with_number(made, slot));
                     }
                     _ => {

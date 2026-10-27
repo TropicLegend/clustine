@@ -245,10 +245,7 @@ fn the_tempting_sensor_finds_the_nearest_player_holding_food() {
         .players
         .push(player(77, [8.5, 0.0, 0.5], Some(items::WHEAT)));
     let mut off_hand = player(78, [5.5, 0.0, 0.5], None);
-    off_hand.off_hand = Some(clustine_world::ItemStack {
-        item: items::WHEAT,
-        count: 1,
-    });
+    off_hand.off_hand = Some(clustine_world::ItemStack::new(items::WHEAT, 1));
     field.players.push(off_hand);
     field
         .players

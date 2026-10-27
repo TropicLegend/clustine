@@ -104,7 +104,7 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn use_on(region: &mut Region, key: EntityId) -> TickOutput {
@@ -721,14 +721,14 @@ fn a_dolphin_takes_an_item_floating_by_and_throws_it_again() {
         panic!("one thrown: {thrown:?}");
     };
     let EntityData::Item {
-        stack,
+        ref stack,
         pick_up_delay,
         ..
     } = thrown.data
     else {
         unreachable!();
     };
-    assert_eq!(stack, one(items::STICK));
+    assert_eq!(*stack, one(items::STICK));
     assert!(pick_up_delay > 30, "{pick_up_delay}");
 }
 

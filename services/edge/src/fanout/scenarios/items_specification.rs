@@ -8,7 +8,7 @@
 
 use super::*;
 
-const STACK: ItemStack = ItemStack { item: 1, count: 2 };
+const STACK: ItemStack = ItemStack::new(1, 2);
 
 /// An item of the key `key` at `x` in the spawn's row of chunks, with `hops` changes
 /// of holder behind it.

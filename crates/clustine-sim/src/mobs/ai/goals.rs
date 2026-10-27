@@ -542,7 +542,7 @@ pub(crate) enum Items {
 }
 
 impl Items {
-    pub(crate) fn test(self, stack: Option<ItemStack>) -> bool {
+    pub(crate) fn test(self, stack: Option<&ItemStack>) -> bool {
         let Some(stack) = stack.filter(|stack| stack.count > 0) else {
             return false;
         };
@@ -600,8 +600,9 @@ impl Goal for TemptGoal {
         let range = ai.attribute(attributes::TEMPT_RANGE);
         let conditions = Conditions::non_combat().ignore_line_of_sight().range(range);
         let items = self.items;
-        let follows =
-            move |looked: &Looked| items.test(looked.main_hand) || items.test(looked.off_hand);
+        let follows = move |looked: &Looked| {
+            items.test(looked.main_hand.as_ref()) || items.test(looked.off_hand.as_ref())
+        };
         let from = ai.position();
         let found = sensing::nearest_player(ai, &conditions, &follows, from);
         state.player = found.map(|found| found.key);
@@ -1770,7 +1771,7 @@ pub(crate) struct UsingItem {
 /// `UseItemGoal(mob, item, finishSound, predicate)`: the wandering trader's (N10).
 /// **Named**: using an item is the body's, not built yet: the goal holds the item until
 /// its next clean-up.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct UseItemGoal {
     pub(crate) item: ItemStack,
     pub(crate) finish_sound: Option<i32>,
@@ -1794,7 +1795,7 @@ impl Goal for UseItemGoal {
     }
 
     fn start(&self, state: &mut UsingItem, ai: &mut Ai<'_, '_>) {
-        ai.tick.mob.body.equipment.slots[0] = Some(self.item);
+        ai.tick.mob.body.equipment.slots[0] = Some(self.item.clone());
         state.using = true;
     }
 

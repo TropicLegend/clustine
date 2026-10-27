@@ -155,7 +155,7 @@ pub(crate) fn populate_default_equipment_slots(
         if worn.is_none()
             && let Some(item) = equipment_for_slot(slot, tier)
         {
-            *worn = Some(ItemStack { item, count: 1 });
+            *worn = Some(ItemStack::new(item, 1));
         }
     }
 }
@@ -444,7 +444,11 @@ mod equipment_tests {
                 "float", "int 3", "float", "float", "float", "float", "float"
             ]
         );
-        let worn = |slot: u8| mob.body.equipment.slots[usize::from(slot)].map(|s| s.item);
+        let worn = |slot: u8| {
+            mob.body.equipment.slots[usize::from(slot)]
+                .as_ref()
+                .map(|s| s.item)
+        };
         assert_eq!(worn(slots::HEAD), Some(items::GOLDEN_HELMET));
         assert_eq!(worn(slots::CHEST), Some(items::GOLDEN_CHESTPLATE));
         assert_eq!(worn(slots::LEGS), None);
@@ -454,14 +458,10 @@ mod equipment_tests {
     #[test]
     fn a_draw_is_made_for_each_filled_slot_s_enchantment_hand_first_then_feet_up() {
         let mut mob = Mob::fresh();
-        mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-            item: items::IRON_SWORD,
-            count: 1,
-        });
-        mob.body.equipment.slots[usize::from(slots::HEAD)] = Some(ItemStack {
-            item: items::CARVED_PUMPKIN,
-            count: 1,
-        });
+        mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+            Some(ItemStack::new(items::IRON_SWORD, 1));
+        mob.body.equipment.slots[usize::from(slots::HEAD)] =
+            Some(ItemStack::new(items::CARVED_PUMPKIN, 1));
         let mut level = Scripted {
             floats: vec![0.0, 0.0],
             ints: vec![],

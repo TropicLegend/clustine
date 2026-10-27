@@ -332,7 +332,7 @@ impl Item {
         !self.removed
             && self.pick_up_delay != NEVER_PICKED_UP
             && self.age < LIFETIME
-            && self.stack.count < max_stack_size(self.stack)
+            && self.stack.count < max_stack_size(&self.stack)
     }
 
     /// The rest of `ItemEntity.tick`, after its merging.
@@ -838,7 +838,7 @@ fn fluid_box<W: World + ?Sized>(world: &W, state: BlockState, pos: BlockPos) -> 
 }
 
 /// The most of the item a stack holds (`minecraft:max_stack_size`).
-pub(crate) fn max_stack_size(stack: ItemStack) -> i32 {
+pub(crate) fn max_stack_size(stack: &ItemStack) -> i32 {
     usize::try_from(stack.item)
         .ok()
         .filter(|item| *item < clustine_data::ITEMS.len())
@@ -847,8 +847,18 @@ pub(crate) fn max_stack_size(stack: ItemStack) -> i32 {
         })
 }
 
+/// `ItemStack.isSameItemSameComponents` of two slots, where an empty slot is the game's
+/// empty stack: both empty, or the same item with the same components.
+pub(crate) fn same_kind_or_both_none(a: Option<&ItemStack>, b: Option<&ItemStack>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.same_kind(b),
+        _ => false,
+    }
+}
+
 /// Whether the stack's item resists fire (`canBeHurtBy(inFire)` is false).
-pub(crate) fn resists_fire(stack: ItemStack) -> bool {
+pub(crate) fn resists_fire(stack: &ItemStack) -> bool {
     usize::try_from(stack.item)
         .ok()
         .filter(|item| *item < clustine_data::ITEMS.len())

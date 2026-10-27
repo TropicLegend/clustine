@@ -59,7 +59,7 @@ const STARTING_HOTBAR: [i32; HOTBAR_SLOTS] = [
 /// What players carry when they enter the world for the first time: the blocks in the
 /// hotbar, and nothing else.
 pub(crate) fn starting_inventory() -> Inventory {
-    Inventory::with_hotbar(STARTING_HOTBAR.map(|item| Some(ItemStack { item, count: 1 })))
+    Inventory::with_hotbar(STARTING_HOTBAR.map(|item| Some(ItemStack::new(item, 1))))
 }
 
 /// What makes the chunks nobody has changed in the flat world.

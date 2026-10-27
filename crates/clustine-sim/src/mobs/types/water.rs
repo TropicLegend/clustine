@@ -102,7 +102,7 @@ pub(crate) fn bucket_pickup(used: &mut Used<'_>) -> Option<Interaction> {
 /// [`bucket_pickup`] with the type's own filling sound (`getPickupSound()`: an
 /// axolotl's, a tadpole's).
 pub(crate) fn bucket_pickup_sounding(used: &mut Used<'_>, sound: i32) -> Option<Interaction> {
-    if !animal::is_item(used.held, items::WATER_BUCKET) || used.mob.body.vitals.dying() {
+    if !animal::is_item(used.held.as_ref(), items::WATER_BUCKET) || used.mob.body.vitals.dying() {
         return None;
     }
     let bucket = bucket_of(used.kind)?;
@@ -115,10 +115,7 @@ pub(crate) fn bucket_pickup_sounding(used: &mut Used<'_>, sound: i32) -> Option<
         but_the_player: false,
     });
     used.did.push(Did::Give {
-        stack: ItemStack {
-            item: bucket,
-            count: 1,
-        },
+        stack: ItemStack::new(bucket, 1),
         no_duplicates: false,
     });
     used.did.push(Did::Discard);

@@ -22,7 +22,8 @@
 //! | Riding: its vehicle, cooldown, passengers and leash | see `put_riding` |
 //! | Data | a tag u8, then what the tag says |
 //!
-//! where the data of tag 1, an item, is the item i32, the count i32, the pick-up delay
+//! where a stack is written as `stacks.rs` says (its item, count and components), the
+//! data of tag 1, an item, is its stack, the pick-up delay
 //! left as of the record's tick u16, u8 1 followed by the thrower's UUID u128, or u8 0
 //! where nobody threw it, its health i16, and what `lived` is ahead of its age u32; the data of tag 2, a falling block, is its
 //! state u16, the ticks it has fallen i32, and flags u8 (bit 0 it drops as an item where
@@ -31,14 +32,14 @@
 //! item frame, 7 a painting, 8 a cushion, 9 a leash's knot, and tag 10 is N6's primed
 //! TNT (`docs/groundwork/n6-plan.md`) and tag 11 is N7's mob (`docs/groundwork/n7-plan.md`,
 //! section 11.3) and tag 12 an orb of experience, and tag 13 is N7k's thrown item
-//! (`docs/groundwork/n7k-plan.md`, section 10): its stack (item i32, count i32), u8 1
+//! (`docs/groundwork/n7k-plan.md`, section 10): its stack, u8 1
 //! followed by its owner's key u64 or u8 0 where it has none, and flags u8 (bit 0 it
 //! has left its owner, bit 1 it has been shot; the others 0), each written by
 //! `put_data` in the order of its
 //! fields (a minecart's TNT fuse i32 and a hopper cart's switch u8 after its push; the
 //! TNT's fuse i16, block u16, power f32 and owner as an item's thrower); a block-attached entity's attachment is its block (3 × i32)
 //! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
-//! u8, item i32 and count i32, ascending by slot. Counters are kept relative to the record they are in
+//! u8 and the stack, ascending by slot. Counters are kept relative to the record they are in
 //! (section 11 of the plan): regions count their ticks each from their own start.
 //!
 //! A field a tick set is a tag u8 and its value: 1 the position (3 × f64), 2 the motion
@@ -78,12 +79,13 @@
 
 use clustine_world::{
     Attached, BlockPos, ChunkPos, Contents, Double, EdgeId, Entity, EntityChange, EntityData,
-    EntityField, EntityId, Entry, Float, Hurt, ItemStack, Leash, LeashHolder, Pending, Riding,
-    Seat, TypeState,
+    EntityField, EntityId, Entry, Float, Hurt, Leash, LeashHolder, Pending, Riding, Seat,
+    TypeState,
 };
 use uuid::Uuid;
 
 use crate::bytes::Input;
+use crate::stacks::{put_optional_stack, put_stack, take_optional_stack, take_stack};
 use crate::{FORMAT_VERSION, FormatError};
 
 /// The kind of the file of a chunk's entities.
@@ -186,42 +188,12 @@ fn take_position(input: &mut Input<'_>) -> Result<BlockPos, FormatError> {
     Ok(BlockPos::new(input.i32()?, input.i32()?, input.i32()?))
 }
 
-fn put_stack(out: &mut Vec<u8>, stack: ItemStack) {
-    out.extend_from_slice(&stack.item.to_be_bytes());
-    out.extend_from_slice(&stack.count.to_be_bytes());
-}
-
-fn take_stack(input: &mut Input<'_>) -> Result<ItemStack, FormatError> {
-    Ok(ItemStack {
-        item: input.i32()?,
-        count: input.i32()?,
-    })
-}
-
-fn put_optional_stack(out: &mut Vec<u8>, stack: Option<ItemStack>) {
-    match stack {
-        None => out.push(0),
-        Some(stack) => {
-            out.push(1);
-            put_stack(out, stack);
-        }
-    }
-}
-
-fn take_optional_stack(input: &mut Input<'_>) -> Result<Option<ItemStack>, FormatError> {
-    Ok(if take_flag(input, "an item's presence")? {
-        Some(take_stack(input)?)
-    } else {
-        None
-    })
-}
-
 /// A count u8, then per stack its slot u8 and the stack: ascending by slot, each once.
 fn put_contents(out: &mut Vec<u8>, contents: &Contents) {
     out.push(u8::try_from(contents.len()).expect("a container has at most 255 slots"));
     for (slot, stack) in contents {
         out.push(*slot);
-        put_stack(out, *stack);
+        put_stack(out, stack);
     }
 }
 
@@ -380,8 +352,7 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             age_offset,
         } => {
             out.push(DATA_ITEM);
-            out.extend_from_slice(&stack.item.to_be_bytes());
-            out.extend_from_slice(&stack.count.to_be_bytes());
+            put_stack(out, stack);
             out.extend_from_slice(&pick_up_delay.to_be_bytes());
             match thrower {
                 None => out.push(0),
@@ -505,7 +476,7 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
         } => {
             out.push(DATA_ITEM_FRAME);
             put_attached(out, *attached);
-            put_optional_stack(out, *item);
+            put_optional_stack(out, item.as_ref());
             out.push(*rotation);
             out.extend_from_slice(&drop_chance.0.to_be_bytes());
             let mut flags = 0;
@@ -582,7 +553,7 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             has_been_shot,
         } => {
             out.push(DATA_THROWN);
-            put_stack(out, *stack);
+            put_stack(out, stack);
             match owner {
                 None => out.push(0),
                 Some(owner) => {
@@ -665,10 +636,7 @@ fn take_bytes(input: &mut Input<'_>) -> Result<Vec<u8>, FormatError> {
 fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
     match input.u8()? {
         DATA_ITEM => {
-            let stack = ItemStack {
-                item: input.i32()?,
-                count: input.i32()?,
-            };
+            let stack = take_stack(input)?;
             let pick_up_delay = input.u16()?;
             let thrower = if take_flag(input, "an item's thrower flag")? {
                 Some(Uuid::from_u128(input.u128()?))
@@ -768,7 +736,7 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
         }
         DATA_ITEM_FRAME => {
             let attached = take_attached(input)?;
-            let item = take_optional_stack(input)?;
+            let item = take_optional_stack(input, "an item's presence")?;
             let rotation = input.u8()?;
             if rotation > 7 {
                 return Err(FormatError::Corrupt("an item frame's rotation"));
@@ -1167,6 +1135,7 @@ impl EntitiesFile {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use clustine_world::ItemStack;
     use proptest::prelude::*;
 
     use super::*;
@@ -1185,7 +1154,7 @@ pub(crate) mod tests {
             lived: 12,
             fresh_at: 0,
             data: EntityData::Item {
-                stack: ItemStack { item: 1, count: 64 },
+                stack: ItemStack::new(1, 64),
                 pick_up_delay: 40,
                 thrower: thrower.map(Uuid::from_u128),
                 health: 5,
@@ -1232,6 +1201,7 @@ pub(crate) mod tests {
         expected.extend_from_slice(&[0, 0, 0, 0, 0]); // no vehicle, no cooldown, no seats, no leash
         expected.push(1); // an item
         expected.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 64]); // item, count
+        expected.extend_from_slice(&[0, 0, 0, 0]); // no components added and none removed
         expected.extend_from_slice(&[0, 40]); // pick-up delay
         expected.push(1); // a thrower
         expected.extend_from_slice(&7u128.to_be_bytes());
@@ -1326,10 +1296,7 @@ pub(crate) mod tests {
     #[test]
     fn a_thrown_item_is_written_as_its_stack_owner_and_flags_and_nothing_else_is_read() {
         let thrown = EntityData::Thrown {
-            stack: ItemStack {
-                item: 0x0102,
-                count: 1,
-            },
+            stack: ItemStack::new(0x0102, 1),
             owner: Some(EntityId(0x0A0B)),
             left_owner: true,
             has_been_shot: true,
@@ -1340,20 +1307,21 @@ pub(crate) mod tests {
             out,
             [
                 13, 0, 0, 1, 2, 0, 0, 0, 1, // the tag, the item and the count
+                0, 0, 0, 0, // no components added and none removed
                 1, 0, 0, 0, 0, 0, 0, 0x0A, 0x0B, // an owner and its key
                 3,    // left its owner and shot
             ]
         );
         assert_eq!(take_data(&mut Input(&out)), Ok(thrown));
         let unowned = EntityData::Thrown {
-            stack: ItemStack { item: 7, count: 1 },
+            stack: ItemStack::new(7, 1),
             owner: None,
             left_owner: false,
             has_been_shot: false,
         };
         let mut short = Vec::new();
         put_data(&mut short, &unowned);
-        assert_eq!(short, [13, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0]);
+        assert_eq!(short, [13, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(take_data(&mut Input(&short)), Ok(unowned));
         let mut flags = out.clone();
         *flags.last_mut().expect("the flags") = 4;
@@ -1362,7 +1330,7 @@ pub(crate) mod tests {
             Err(FormatError::Corrupt("a thrown item's flags"))
         );
         let mut owner_flag = out.clone();
-        owner_flag[9] = 2;
+        owner_flag[13] = 2;
         assert_eq!(
             take_data(&mut Input(&owner_flag)),
             Err(FormatError::Corrupt("a thrown item's owner flag"))
@@ -1481,11 +1449,34 @@ pub(crate) mod tests {
             })
     }
 
+    /// `data` with every stack it holds given a component of every kind.
+    fn with_every_component_in(mut data: EntityData) -> EntityData {
+        let rich = |stack: &mut ItemStack| {
+            *stack = ItemStack {
+                item: stack.item,
+                count: stack.count,
+                ..crate::stacks::tests::with_every_component()
+            };
+        };
+        match &mut data {
+            EntityData::Item { stack, .. } | EntityData::Thrown { stack, .. } => rich(stack),
+            EntityData::ItemFrame { item, .. } => item.iter_mut().for_each(rich),
+            EntityData::Minecart { contents, .. }
+            | EntityData::Boat { contents, .. }
+            | EntityData::ArmorStand {
+                equipment: contents,
+                ..
+            } => contents.iter_mut().for_each(|(_, stack)| rich(stack)),
+            _ => {}
+        }
+        data
+    }
+
     fn contents() -> impl Strategy<Value = Contents> {
         prop::collection::btree_map(any::<u8>(), any::<(i32, i32)>(), 0..6).prop_map(|slots| {
             slots
                 .into_iter()
-                .map(|(slot, (item, count))| (slot, ItemStack { item, count }))
+                .map(|(slot, (item, count))| (slot, ItemStack::new(item, count)))
                 .collect()
         })
     }
@@ -1547,7 +1538,7 @@ pub(crate) mod tests {
                 .prop_map(
                     |(item, count, pick_up_delay, thrower, health, age_offset)| {
                         EntityData::Item {
-                            stack: ItemStack { item, count },
+                            stack: ItemStack::new(item, count),
                             pick_up_delay,
                             thrower: thrower.map(Uuid::from_u128),
                             health,
@@ -1646,7 +1637,7 @@ pub(crate) mod tests {
                     |(attached, item, rotation, (drop_chance, fixed, invisible))| {
                         EntityData::ItemFrame {
                             attached,
-                            item: item.map(|(item, count)| ItemStack { item, count }),
+                            item: item.map(|(item, count)| ItemStack::new(item, count)),
                             rotation,
                             drop_chance: Float(drop_chance),
                             fixed,
@@ -1678,7 +1669,7 @@ pub(crate) mod tests {
             ),
             any::<(i32, i32, Option<u64>, bool, bool)>().prop_map(
                 |(item, count, owner, left_owner, has_been_shot)| EntityData::Thrown {
-                    stack: ItemStack { item, count },
+                    stack: ItemStack::new(item, count),
                     owner: owner.map(EntityId),
                     left_owner,
                     has_been_shot,
@@ -1756,6 +1747,18 @@ pub(crate) mod tests {
             let file = EntitiesFile { position, tick, epoch, entities };
             let bytes = file.encode();
             prop_assert_eq!(EntitiesFile::decode(&bytes), Ok(file));
+        }
+
+        /// Every stack an entity holds (an item's, a frame's, a thrown item's, a cart's
+        /// or a boat's contents, a stand's equipment) keeps its components.
+        #[test]
+        fn every_stack_an_entity_holds_keeps_a_component_of_every_kind(data in datas()) {
+            let data = with_every_component_in(data);
+            let mut out = Vec::new();
+            put_data(&mut out, &data);
+            let mut input = Input(&out);
+            prop_assert_eq!(take_data(&mut input), Ok(data));
+            prop_assert!(input.0.is_empty());
         }
 
         #[test]

@@ -113,7 +113,7 @@ impl Region {
         let Some((chunk, record)) = self.find_entity(item) else {
             return;
         };
-        let EntityData::Item { stack, .. } = record.data else {
+        let EntityData::Item { ref stack, .. } = record.data else {
             return;
         };
         if count >= stack.count {

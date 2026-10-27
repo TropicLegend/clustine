@@ -373,10 +373,7 @@ fn the_taiga_armourer_s_stand_wears_its_helmet_in_its_pose_and_draws_nothing() {
         equipment,
         &vec![(
             slots::HEAD,
-            clustine_world::ItemStack {
-                item: items::IRON_HELMET,
-                count: 1
-            }
+            clustine_world::ItemStack::new(items::IRON_HELMET, 1)
         )]
     );
     assert_eq!(pose[0].map(|angle| angle.0), [3.978_817, 1.545_424_5, 0.0]);

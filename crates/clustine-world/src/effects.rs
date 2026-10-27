@@ -11,7 +11,7 @@ use crate::{BlockPos, ChunkPos, Double, Entity, EntityId, Float, ItemStack, Seam
 /// What a region's tick would have done to a block in a chunk it does not have loaded,
 /// addressed to that block. The effect carries the call where the target's side decides
 /// (the record, section 4), and is done by the rules of the region that uses the chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Effect {
     /// The block the effect acts on.
     pub at: BlockPos,
@@ -19,7 +19,7 @@ pub struct Effect {
 }
 
 /// What an [`Effect`] does to its block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Effected {
     /// `neighborChanged` or `updateShape`, as a seam entry keeps it: the direction from
     /// the block to the one that changed, by `Face`'s numbers, the block that changed as
@@ -116,7 +116,7 @@ pub struct Blast {
 
 /// What a player did to an entity in another region's land, with what the game reads of
 /// the player for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntityUse {
     /// `attack`: the damage the hit deals (`base·(0.2 + 0.8·s²)`, a critical's ×1.5
     /// included), whether the attacker is a creative player and sprints, and where they
@@ -280,7 +280,7 @@ pub struct Arrival {
 }
 
 /// An effect as the store hands it to the region that uses its chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FiledEffect {
     pub id: EffectId,
     pub effect: Effect,

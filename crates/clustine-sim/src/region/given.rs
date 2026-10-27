@@ -54,7 +54,7 @@ impl Region {
             return;
         };
         let slots = &mut player.inventory.0;
-        if no_duplicates && slots.iter().flatten().any(|held| held.item == stack.item) {
+        if no_duplicates && slots.iter().flatten().any(|held| held.same_kind(&stack)) {
             return;
         }
         let Some(slot) = slots[..ARMOUR_START].iter().position(Option::is_none) else {
@@ -68,7 +68,7 @@ impl Region {
             }
             return;
         };
-        slots[slot] = Some(stack);
+        slots[slot] = Some(stack.clone());
         self.journal.players.insert(id);
         let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
         output.player_events.push((

@@ -180,7 +180,7 @@ fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer {
         eye_height: 1.62,
         yaw: 0.0,
         pitch: 0.0,
-        main_hand: held.map(|item| ItemStack { item, count: 1 }),
+        main_hand: held.map(|item| ItemStack::new(item, 1)),
         off_hand: None,
         sneaking: false,
         creative: true,
@@ -988,7 +988,7 @@ fn the_copper_golem_registers_what_its_sensors_and_behaviours_name() {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 #[test]
@@ -1010,13 +1010,7 @@ fn a_golem_tops_up_stacks_of_its_item_on_its_way_to_the_first_empty_slot() {
     slots[0] = stack(items::DIRT, 64);
     slots[1] = stack(items::COBBLESTONE, 64);
     slots[2] = stack(items::COBBLESTONE, 60);
-    let rest = golem_transport::add_items(
-        &mut slots,
-        ItemStack {
-            item: items::COBBLESTONE,
-            count: 16,
-        },
-    );
+    let rest = golem_transport::add_items(&mut slots, ItemStack::new(items::COBBLESTONE, 16));
     assert_eq!(rest, None);
     // The game takes the room (4) from the hand and leaves the rest of it whole in the
     // first empty slot.
@@ -1024,21 +1018,18 @@ fn a_golem_tops_up_stacks_of_its_item_on_its_way_to_the_first_empty_slot() {
     assert_eq!(slots[3], stack(items::COBBLESTONE, 12));
     // A hand smaller than the room is all moved, and nothing is left.
     let mut slots = vec![stack(items::COBBLESTONE, 10)];
-    let rest = golem_transport::add_items(
-        &mut slots,
-        ItemStack {
-            item: items::COBBLESTONE,
-            count: 3,
-        },
+    let rest = golem_transport::add_items(&mut slots, ItemStack::new(items::COBBLESTONE, 3));
+    assert_eq!(
+        (rest, slots[0].clone()),
+        (None, stack(items::COBBLESTONE, 13))
     );
-    assert_eq!((rest, slots[0]), (None, stack(items::COBBLESTONE, 13)));
     // A chest full of others gives it all back.
     let mut slots = vec![stack(items::DIRT, 64); 27];
-    let hand = ItemStack {
-        item: items::COBBLESTONE,
-        count: 16,
-    };
-    assert_eq!(golem_transport::add_items(&mut slots, hand), Some(hand));
+    let hand = ItemStack::new(items::COBBLESTONE, 16);
+    assert_eq!(
+        golem_transport::add_items(&mut slots, hand.clone()),
+        Some(hand)
+    );
 }
 
 /// The golem's sorting's state, read from its brain's parts (its part is the 7th, after

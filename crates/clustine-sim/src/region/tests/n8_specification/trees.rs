@@ -466,7 +466,7 @@ fn a_tree_beside_a_pinned_line_arrives_beyond_it_a_tick_later_with_a_gap_where_r
                 sequence: 1,
                 index: u32::try_from(index).expect("few"),
             },
-            effect: *effect,
+            effect: effect.clone(),
             due: Due::At { tick: made_in },
         })
         .collect();

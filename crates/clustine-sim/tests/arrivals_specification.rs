@@ -51,11 +51,8 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn config(return_after: u64) -> RegionConfig {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
         spawn: FEET,
         starting_inventory: Inventory::with_hotbar(hotbar),
@@ -322,10 +319,7 @@ fn item(n: u32, position: [f64; 3], motion: [f64; 3], hops: u32) -> Entity {
         lived: 1,
         fresh_at: 0,
         data: EntityData::Item {
-            stack: ItemStack {
-                item: items::DIRT,
-                count: 1,
-            },
+            stack: ItemStack::new(items::DIRT, 1),
             pick_up_delay: 32_767,
             thrower: None,
             health: 5,
@@ -1318,7 +1312,10 @@ fn a_q_pressed_right_after_crossing_into_land_not_ticked_throws_as_an_arrival() 
     assert_eq!(*to, EAST);
     assert_eq!(thrown.chunk(), EAST);
     assert_eq!(thrown.hops, 0);
-    let EntityData::Item { stack, thrower, .. } = thrown.data else {
+    let EntityData::Item {
+        ref stack, thrower, ..
+    } = thrown.data
+    else {
         panic!("{thrown:?}");
     };
     assert_eq!(stack.item, items::STONE);
@@ -1336,12 +1333,12 @@ fn a_q_pressed_right_after_crossing_into_land_not_ticked_throws_as_an_arrival() 
             .all(|(_, change)| !matches!(change, EntityChange::Whole(_)))
     );
     // Thrown once: the stack in hand is one less.
-    let held = region
+    let held = &region
         .player_state(player(1))
         .expect("there")
         .inventory
         .hotbar()[0];
-    assert_eq!(held.map(|stack| stack.count), Some(63));
+    assert_eq!(held.as_ref().map(|stack| stack.count), Some(63));
 }
 
 /// The plan, section 1: a thrown item that flies across a pinned line is the region's

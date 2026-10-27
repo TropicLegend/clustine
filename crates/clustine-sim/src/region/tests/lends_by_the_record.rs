@@ -104,7 +104,7 @@ fn borrower() -> Served {
 /// Player `number` takes `item` in hand and uses it on the top of the floor at `x`, `z`,
 /// which places it on the floor at y = -60.
 fn placing(number: u128, item: i32, x: i32, z: i32) -> TickInputs {
-    let stack = ItemStack { item, count: 1 };
+    let stack = ItemStack::new(item, 1);
     moves(vec![
         set_slot(number, 0, Some(stack)),
         select(number, 0),

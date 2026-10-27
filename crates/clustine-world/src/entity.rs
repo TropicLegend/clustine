@@ -5,14 +5,44 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{BlockPos, ChunkPos, EdgeId, EntityId};
+use crate::{BlockPos, ChunkPos, Components, EdgeId, EntityId};
 
-/// A number of items of one kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A number of items of one kind, with the components it carries beyond its item's
+/// defaults (`docs/groundwork/n9-plan.md`, section 3.1).
+///
+/// Not `Copy`, since its components may own lists: a stack that is read is borrowed and
+/// one that is given away is moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemStack {
     /// Id in the item registry.
     pub item: i32,
     pub count: i32,
+    pub components: Components,
+}
+
+impl ItemStack {
+    /// `count` of `item`, with no components of its own.
+    pub const fn new(item: i32, count: i32) -> Self {
+        ItemStack {
+            item,
+            count,
+            components: Components::NONE,
+        }
+    }
+
+    /// The stack with `count` in place of its count, its components kept.
+    pub fn with_count(&self, count: i32) -> ItemStack {
+        ItemStack {
+            count,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the two are the same item with equal components, so that they merge and
+    /// stack in one slot (`ItemStack.isSameItemSameComponents`): counts are not compared.
+    pub fn same_kind(&self, other: &ItemStack) -> bool {
+        self.item == other.item && self.components == other.components
+    }
 }
 
 /// An entity other than a player, as its chunk keeps it.
@@ -584,7 +614,7 @@ pub struct Inventory(pub Box<[Option<ItemStack>; INVENTORY_SLOTS]>);
 
 impl Default for Inventory {
     fn default() -> Self {
-        Self(Box::new([None; INVENTORY_SLOTS]))
+        Self(Box::new([const { None }; INVENTORY_SLOTS]))
     }
 }
 
@@ -592,20 +622,20 @@ impl Inventory {
     /// The inventory with `hotbar` in its first nine slots and nothing else.
     pub fn with_hotbar(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> Self {
         let mut inventory = Self::default();
-        inventory.0[..HOTBAR_SLOTS].copy_from_slice(&hotbar);
+        for (slot, stack) in inventory.0.iter_mut().zip(hotbar) {
+            *slot = stack;
+        }
         inventory
     }
 
     /// The hotbar's nine slots.
     pub fn hotbar(&self) -> [Option<ItemStack>; HOTBAR_SLOTS] {
-        let mut hotbar = [None; HOTBAR_SLOTS];
-        hotbar.copy_from_slice(&self.0[..HOTBAR_SLOTS]);
-        hotbar
+        std::array::from_fn(|slot| self.0[slot].clone())
     }
 
     /// The slot `slot`, if the inventory has one so numbered.
     pub fn get(&self, slot: usize) -> Option<Option<ItemStack>> {
-        self.0.get(slot).copied()
+        self.0.get(slot).cloned()
     }
 
     /// Puts `stack` into `slot`; false if there is no such slot.
@@ -674,14 +704,14 @@ pub struct EnderChest(pub Box<[Option<ItemStack>; ENDER_SLOTS]>);
 
 impl Default for EnderChest {
     fn default() -> Self {
-        Self(Box::new([None; ENDER_SLOTS]))
+        Self(Box::new([const { None }; ENDER_SLOTS]))
     }
 }
 
 impl EnderChest {
     /// The slot `slot`, if the chest has one so numbered.
     pub fn get(&self, slot: usize) -> Option<Option<ItemStack>> {
-        self.0.get(slot).copied()
+        self.0.get(slot).cloned()
     }
 
     /// Puts `stack` into `slot`; false if there is no such slot.
@@ -718,6 +748,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stacks_are_of_one_kind_where_item_and_components_are_the_same_whatever_their_counts() {
+        let plain = ItemStack::new(3, 1);
+        assert!(plain.same_kind(&ItemStack::new(3, 64)));
+        assert!(!plain.same_kind(&ItemStack::new(4, 1)));
+        let mut worn = plain.with_count(5);
+        worn.components.set(crate::Component::Damage(1));
+        assert!(!plain.same_kind(&worn));
+        assert!(worn.same_kind(&worn.with_count(1)));
+        assert_eq!(worn.with_count(1).components, worn.components);
+    }
+
+    #[test]
     fn every_container_slot_of_the_inventory_screen_shows_the_inventory_slot_the_game_puts_there() {
         // `InventoryMenu`: armour from the head down at 5 to 8, the main inventory at 9
         // to 35, the hotbar at 36 to 44 and the off hand at 45.
@@ -741,7 +783,7 @@ mod tests {
     #[test]
     fn an_inventory_travels_with_all_its_slots_and_refuses_another_count() {
         let mut inventory = Inventory::default();
-        inventory.set(40, Some(ItemStack { item: 3, count: 1 }));
+        inventory.set(40, Some(ItemStack::new(3, 1)));
         let bytes = postcard::to_allocvec(&inventory).unwrap();
         assert_eq!(
             postcard::from_bytes::<Inventory>(&bytes).unwrap(),
@@ -766,7 +808,7 @@ mod tests {
             lived: 0,
             fresh_at: 0,
             data: EntityData::Item {
-                stack: ItemStack { item: 1, count: 1 },
+                stack: ItemStack::new(1, 1),
                 pick_up_delay: 40,
                 thrower: None,
                 health: 5,
@@ -842,7 +884,7 @@ mod tests {
         // An item takes none of it.
         let mut item = Entity {
             data: EntityData::Item {
-                stack: ItemStack { item: 1, count: 1 },
+                stack: ItemStack::new(1, 1),
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,

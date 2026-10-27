@@ -51,6 +51,7 @@ use crate::mobs::body::{Event, attribute};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::aabb::Aabb;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
+use crate::physics::item::same_kind_or_both_none;
 use crate::physics::{self, Vec3};
 use crate::region::Random;
 use crate::shown::DataShown;
@@ -286,12 +287,14 @@ pub(crate) fn is_tamed(mob: &Mob) -> bool {
 
 /// `isSaddled()`: a saddle (an item that goes in the saddle's slot) worn there.
 pub(crate) fn is_saddled(mob: &Mob) -> bool {
-    mob.body.equipment.slots[usize::from(slots::SADDLE)].is_some_and(|stack| {
-        stack.count > 0
-            && ItemComponents::of(stack.item)
-                .equippable
-                .is_some_and(|equippable| equippable.slot == slots::SADDLE)
-    })
+    mob.body.equipment.slots[usize::from(slots::SADDLE)]
+        .as_ref()
+        .is_some_and(|stack| {
+            stack.count > 0
+                && ItemComponents::of(stack.item)
+                    .equippable
+                    .is_some_and(|equippable| equippable.slot == slots::SADDLE)
+        })
 }
 
 /// What the riding (the lead's part of N7h, from N5's vehicles) reads of a horse of
@@ -638,14 +641,11 @@ pub(crate) fn drop_equipment(mob: &mut Mob) -> Vec<ItemStack> {
     let mut drops: Vec<ItemStack> = horse
         .items
         .iter()
-        .map(|(_, stack)| *stack)
+        .map(|(_, stack)| stack.clone())
         .filter(|stack| stack.count > 0)
         .collect();
     if horse.chest {
-        drops.push(ItemStack {
-            item: items::CHEST,
-            count: 1,
-        });
+        drops.push(ItemStack::new(items::CHEST, 1));
         horse.chest = false;
         horse.items.clear();
     }
@@ -789,7 +789,7 @@ pub(crate) fn on_equip_item_with(
     draws: &mut Random,
     saddle: i32,
 ) -> Vec<Did> {
-    if old.map(|stack| stack.item) == new.map(|stack| stack.item) {
+    if same_kind_or_both_none(old.as_ref(), new.as_ref()) {
         return Vec::new();
     }
     let mut did = Vec::new();
@@ -832,8 +832,8 @@ pub(crate) fn guarantee_drop(mob: &mut Mob, slot: u8) {
 pub(crate) fn menu_container(kind: u16, mob: &Mob) -> Vec<Option<ItemStack>> {
     let equipment = &mob.body.equipment.slots;
     let mut slots = vec![
-        equipment[usize::from(slots::SADDLE)],
-        equipment[usize::from(slots::BODY)],
+        equipment[usize::from(slots::SADDLE)].clone(),
+        equipment[usize::from(slots::BODY)].clone(),
     ];
     let size = inventory_size(kind, mob);
     let mut inventory = vec![None; size];
@@ -859,7 +859,7 @@ pub(crate) fn write_menu_container(
         .iter()
         .skip(2)
         .enumerate()
-        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
+        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, stack.clone()?)))
         .collect();
     update(mob, |horse| horse.items = items);
     changed
@@ -873,11 +873,11 @@ pub(crate) fn write_menu_equipment(
 ) -> Vec<(u8, Option<ItemStack>, Option<ItemStack>)> {
     let mut changed = Vec::new();
     for (index, slot) in [(0, slots::SADDLE), (1, slots::BODY)] {
-        let new = container.get(index).copied().flatten();
+        let new = container.get(index).cloned().flatten();
         let place = &mut mob.body.equipment.slots[usize::from(slot)];
         if *place != new {
-            changed.push((slot, *place, new));
-            *place = new;
+            changed.push((slot, place.clone(), new.clone()));
+            *place = new.clone();
             if new.is_some() {
                 guarantee_drop(mob, slot);
                 mob.body.flags.persistent = true;
@@ -933,7 +933,7 @@ fn llama_food(item: i32) -> Option<(f32, i32, i32, bool)> {
 /// `fedFood(player, stack)`: `handleEating` by the kind's table; what ate is used up
 /// (but a creative player's), `SUCCESS_SERVER`; what did not, a pass.
 pub(crate) fn fed_food(used: &mut Used<'_>, equine: &Equine) -> Interaction {
-    let Some(stack) = used.held.filter(|stack| stack.count > 0) else {
+    let Some(stack) = used.held.as_ref().filter(|stack| stack.count > 0) else {
         return Interaction::Pass;
     };
     let llama = is_llama(used.kind);
@@ -1006,19 +1006,22 @@ pub(crate) fn mob_interact(used: &mut Used<'_>, equine: &Equine, dandelion: bool
     let tamed = is_tamed(used.mob);
     let secondary = !baby && tamed && used.sneaking;
     let ridden = carried(used);
-    let holds_dandelion = dandelion && animal::is_item(used.held, items::GOLDEN_DANDELION);
+    let holds_dandelion = dandelion && animal::is_item(used.held.as_ref(), items::GOLDEN_DANDELION);
     if ridden || secondary || (baby && holds_dandelion) {
         return abstract_mob_interact(used, equine);
     }
-    if used.held.is_some_and(|stack| stack.count > 0) {
-        if equine.food.test(used.held) {
+    if used.held.as_ref().is_some_and(|stack| stack.count > 0) {
+        if equine.food.test(used.held.as_ref()) {
             return fed_food(used, equine);
         }
         if !tamed {
             make_mad_used(used, equine);
             return Interaction::Success;
         }
-        if equine.chested && !horse_of(used.mob).chest && animal::is_item(used.held, items::CHEST) {
+        if equine.chested
+            && !horse_of(used.mob).chest
+            && animal::is_item(used.held.as_ref(), items::CHEST)
+        {
             equip_chest(used, equine);
             return Interaction::Success;
         }
@@ -1061,17 +1064,17 @@ pub(crate) fn abstract_mob_interact(used: &mut Used<'_>, equine: &Equine) -> Int
         used.did.push(Did::OpenInventory);
         return Interaction::Success;
     }
-    if let Some(stack) = used.held.filter(|stack| stack.count > 0) {
-        let result = equip_on_interact(used, stack);
+    if let Some(stack) = used.held.clone().filter(|stack| stack.count > 0) {
+        let result = equip_on_interact(used, stack.clone());
         if result != Interaction::Pass {
             return result;
         }
         let kind = used.kind;
         let body = usize::from(slots::BODY);
-        if is_equippable_in_slot(kind, used.mob, stack, slots::BODY)
+        if is_equippable_in_slot(kind, used.mob, stack.clone(), slots::BODY)
             && used.mob.body.equipment.slots[body].is_none()
         {
-            equip_body_armour(used, stack);
+            equip_body_armour(used, stack.clone());
             return Interaction::Success;
         }
     }
@@ -1089,17 +1092,14 @@ fn equip_on_interact(used: &mut Used<'_>, stack: ItemStack) -> Interaction {
     }
     let slot = slots::SADDLE;
     let kind = used.kind;
-    if !is_equippable_in_slot(kind, used.mob, stack, slot)
+    if !is_equippable_in_slot(kind, used.mob, stack.clone(), slot)
         || used.mob.body.equipment.slots[usize::from(slot)].is_some()
         || used.mob.body.vitals.dying()
     {
         return Interaction::Pass;
     }
-    let one = ItemStack {
-        item: stack.item,
-        count: 1,
-    };
-    used.mob.body.equipment.slots[usize::from(slot)] = Some(one);
+    let one = stack.with_count(1);
+    used.mob.body.equipment.slots[usize::from(slot)] = Some(one.clone());
     let did = on_equip_item(slot, None, Some(one), used.position, used.draws);
     used.did.extend(did);
     guarantee_drop(used.mob, slot);
@@ -1110,12 +1110,8 @@ fn equip_on_interact(used: &mut Used<'_>, stack: ItemStack) -> Interaction {
 /// kept), dropped whatever kills it.
 fn equip_body_armour(used: &mut Used<'_>, stack: ItemStack) {
     let slot = slots::BODY;
-    let one = ItemStack {
-        item: stack.item,
-        count: 1,
-    };
-    let old = used.mob.body.equipment.slots[usize::from(slot)];
-    used.mob.body.equipment.slots[usize::from(slot)] = Some(one);
+    let one = stack.with_count(1);
+    let old = used.mob.body.equipment.slots[usize::from(slot)].replace(one.clone());
     let did = on_equip_item(slot, old, Some(one), used.position, used.draws);
     used.did.extend(did);
     guarantee_drop(used.mob, slot);

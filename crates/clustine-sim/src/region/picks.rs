@@ -55,7 +55,7 @@ impl Region {
         let mut selected = usize::from(state.selected_slot);
         let changed = try_pick(&mut slots, &mut selected, picked, true);
         for &slot in &changed {
-            state.inventory.set(slot, slots[slot]);
+            state.inventory.set(slot, slots[slot].clone());
         }
         state.selected_slot = u8::try_from(selected).expect("a hotbar slot fits a byte");
         // `ClientboundSetHeldSlotPacket`, whether it changed or not, then the menu's
@@ -73,7 +73,7 @@ impl Region {
         for slot in changed {
             let event = PlayerEvent::InventorySlot {
                 slot: u8::try_from(slot).expect("an inventory slot fits a byte"),
-                stack: slots[slot],
+                stack: slots[slot].clone(),
             };
             output.player_events.push((player, event));
         }
@@ -88,8 +88,9 @@ impl Region {
 ///
 /// **Inferred**: `Inventory.findSlotMatchingItem`, `pickSlot`, `addAndPickItem`,
 /// `getSuitableHotbarSlot` and `getFreeSlot` are not in the dump; these are their bodies
-/// as the game has had them since picking moved to the server, with Clustine's stacks,
-/// which have no components and so match by item alone, and enchanted by nothing.
+/// as the game has had them since picking moved to the server: a slot matches where it
+/// holds the same item with the same components (`isSameItemSameComponents`), and
+/// nothing is enchanted.
 fn try_pick(
     slots: &mut [Option<ItemStack>],
     selected: &mut usize,
@@ -98,7 +99,7 @@ fn try_pick(
 ) -> Vec<usize> {
     let matching = slots
         .iter()
-        .position(|slot| slot.is_some_and(|held| held.item == stack.item));
+        .position(|slot| slot.as_ref().is_some_and(|held| held.same_kind(&stack)));
     match matching {
         Some(slot) if slot < HOTBAR_SLOTS => {
             *selected = slot;
@@ -114,10 +115,10 @@ fn try_pick(
             // `addAndPickItem`.
             *selected = suitable_hotbar_slot(slots, *selected);
             let mut changed = vec![*selected];
-            if let Some(there) = slots[*selected]
+            if let Some(there) = &slots[*selected]
                 && let Some(free) = slots.iter().position(Option::is_none)
             {
-                slots[free] = Some(there);
+                slots[free] = Some(there.clone());
                 changed.push(free);
             }
             slots[*selected] = Some(stack);
@@ -141,7 +142,7 @@ mod tests {
     use super::*;
 
     fn stack(item: i32) -> Option<ItemStack> {
-        Some(ItemStack { item, count: 1 })
+        Some(ItemStack::new(item, 1))
     }
 
     #[test]
@@ -149,15 +150,7 @@ mod tests {
         let mut slots = vec![None; ITEMS];
         slots[4] = stack(7);
         let mut selected = 0;
-        assert!(
-            try_pick(
-                &mut slots,
-                &mut selected,
-                ItemStack { item: 7, count: 1 },
-                true
-            )
-            .is_empty()
-        );
+        assert!(try_pick(&mut slots, &mut selected, ItemStack::new(7, 1), true).is_empty());
         assert_eq!(selected, 4);
     }
 
@@ -167,16 +160,32 @@ mod tests {
         slots[3] = None;
         slots[20] = stack(7);
         let mut selected = 1;
-        let changed = try_pick(
-            &mut slots,
-            &mut selected,
-            ItemStack { item: 7, count: 1 },
-            true,
-        );
+        let changed = try_pick(&mut slots, &mut selected, ItemStack::new(7, 1), true);
         assert_eq!(selected, 3);
         assert_eq!(changed, [3, 20]);
         assert_eq!(slots[3], stack(7));
         assert_eq!(slots[20], None);
+    }
+
+    /// `findSlotMatchingItem` matches components too: a stack of the item that carries
+    /// others is not the one picked.
+    #[test]
+    fn a_pick_matches_a_slot_only_where_its_components_are_the_same() {
+        let named = |item| {
+            let mut stack = ItemStack::new(item, 1);
+            stack
+                .components
+                .set(clustine_world::Component::ItemName("\"Kept\"".into()));
+            stack
+        };
+        let mut slots = vec![None; ITEMS];
+        slots[4] = Some(named(7));
+        slots[6] = stack(7);
+        let mut selected = 0;
+        assert!(try_pick(&mut slots, &mut selected, ItemStack::new(7, 1), true).is_empty());
+        assert_eq!(selected, 6);
+        assert!(try_pick(&mut slots, &mut selected, named(7), true).is_empty());
+        assert_eq!(selected, 4);
     }
 
     #[test]
@@ -184,12 +193,7 @@ mod tests {
         let mut slots = vec![stack(1); ITEMS];
         slots[30] = None;
         let mut selected = 2;
-        let changed = try_pick(
-            &mut slots,
-            &mut selected,
-            ItemStack { item: 7, count: 1 },
-            true,
-        );
+        let changed = try_pick(&mut slots, &mut selected, ItemStack::new(7, 1), true);
         // No empty hotbar slot: the selected one, its stack moved to the first empty.
         assert_eq!(selected, 2);
         assert_eq!(changed, [2, 30]);
@@ -197,12 +201,7 @@ mod tests {
         assert_eq!(slots[30], stack(1));
         // Without infinite materials nothing happens.
         let mut selected = 0;
-        let changed = try_pick(
-            &mut slots,
-            &mut selected,
-            ItemStack { item: 9, count: 1 },
-            false,
-        );
+        let changed = try_pick(&mut slots, &mut selected, ItemStack::new(9, 1), false);
         assert!(changed.is_empty());
         assert_eq!(selected, 0);
     }

@@ -48,15 +48,12 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn stack(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack {
-        item: items::STONE,
-        count: 64,
-    });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     hotbar
 }
 

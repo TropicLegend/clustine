@@ -738,13 +738,7 @@ fn a_water_bucket_empties_onto_the_block_looked_at_and_an_empty_one_takes_it_bac
     assert_eq!(used.changes, vec![(pos, blocks::AIR)]);
     assert_eq!(
         used.slot,
-        Some((
-            0,
-            Some(ItemStack {
-                item: items::WATER_BUCKET,
-                count: 1
-            })
-        ))
+        Some((0, Some(ItemStack::new(items::WATER_BUCKET, 1))))
     );
 }
 

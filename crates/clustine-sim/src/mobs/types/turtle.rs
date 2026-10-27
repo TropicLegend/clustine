@@ -661,10 +661,7 @@ fn tick_move_control(ai: &mut Ai<'_, '_>) {
 /// `ageBoundaryReached()` of a baby grown up: a scute (`gameplay/turtle_grow`, a gift
 /// table of one scute, one roll, no condition and no function: nothing drawn).
 fn scute() -> ItemStack {
-    ItemStack {
-        item: items::TURTLE_SCUTE,
-        count: 1,
-    }
+    ItemStack::new(items::TURTLE_SCUTE, 1)
 }
 
 /// `Turtle.aiStep()` after the animal's: while it digs, every fifth of its count on

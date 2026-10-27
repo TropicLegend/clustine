@@ -2132,8 +2132,8 @@ fn a_block_a_rule_only_looks_at_in_a_chunk_not_loaded_is_taken_as_air() {
 // Section 5: buckets and lily pads.
 
 fn hotbar_holding(item: i32) -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
-    hotbar[0] = Some(ItemStack { item, count: 1 });
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
+    hotbar[0] = Some(ItemStack::new(item, 1));
     hotbar
 }
 
@@ -2187,7 +2187,7 @@ fn assert_used(
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 #[test]
@@ -2249,7 +2249,7 @@ fn a_full_hotbar_sends_the_filled_bucket_into_the_main_inventory() {
     // The game's `Inventory.add` looks for a free slot among the hotbar and the main
     // inventory, in their order.
     let world = World::new().with(below(P), "stone").with(P, "water");
-    let mut hotbar = [one(items::STONE); HOTBAR_SLOTS];
+    let mut hotbar: [Option<ItemStack>; HOTBAR_SLOTS] = std::array::from_fn(|_| one(items::STONE));
     hotbar[0] = one(items::BUCKET);
     let item_use = ItemUse {
         inventory: Inventory::with_hotbar(hotbar),

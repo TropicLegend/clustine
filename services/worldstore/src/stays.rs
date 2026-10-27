@@ -47,19 +47,13 @@ pub(crate) fn player(number: u128) -> PlayerId {
 /// something in every field.
 pub(crate) fn place(x: f64, z: f64) -> Place {
     let mut inventory = Inventory::default();
-    inventory.set(0, Some(ItemStack { item: 1, count: 64 }));
-    inventory.set(
-        8,
-        Some(ItemStack {
-            item: 40,
-            count: x as i32,
-        }),
-    );
-    inventory.set(20, Some(ItemStack { item: 2, count: 5 }));
-    inventory.set(38, Some(ItemStack { item: 3, count: 1 }));
-    inventory.set(OFF_HAND, Some(ItemStack { item: 4, count: 7 }));
+    inventory.set(0, Some(ItemStack::new(1, 64)));
+    inventory.set(8, Some(ItemStack::new(40, x as i32)));
+    inventory.set(20, Some(ItemStack::new(2, 5)));
+    inventory.set(38, Some(ItemStack::new(3, 1)));
+    inventory.set(OFF_HAND, Some(ItemStack::new(4, 7)));
     let mut ender = clustine_world::EnderChest::default();
-    ender.set(26, Some(ItemStack { item: 6, count: 3 }));
+    ender.set(26, Some(ItemStack::new(6, 3)));
     Place {
         respawn: None,
         experience: clustine_rpc::Experience {
@@ -161,14 +155,8 @@ fn dead(stays: &[(PlayerId, u64, u32)]) -> StoreReply {
 
 /// The place as the file keeps it, worked out here and not by the store.
 pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
-    let mut inventory = [None; INVENTORY_SLOTS];
-    for (slot, stack) in place.inventory.0.iter().enumerate() {
-        inventory[slot] = stack.map(|stack| (stack.item, stack.count));
-    }
-    let mut ender = [None; clustine_format::ENDER_SLOTS];
-    for (slot, stack) in place.ender.0.iter().enumerate() {
-        ender[slot] = stack.map(|stack| (stack.item, stack.count));
-    }
+    let inventory: [_; INVENTORY_SLOTS] = (*place.inventory.0).clone();
+    let ender: [_; clustine_format::ENDER_SLOTS] = (*place.ender.0).clone();
     let experience = place.experience;
     LoggedPlace {
         respawn: None,
@@ -257,7 +245,10 @@ impl Model {
             LoggedStay::Entering { player, entity } => {
                 let floor = self.records.get(&player).map_or(0, |record| record.0);
                 if home && entity > floor {
-                    let place = self.records.get(&player).and_then(|record| record.2);
+                    let place = self
+                        .records
+                        .get(&player)
+                        .and_then(|record| record.2.clone());
                     self.records.insert(player, (entity, 0, place));
                     self.issued = self.issued.max(entity);
                 }
@@ -268,14 +259,14 @@ impl Model {
                 player,
                 entity,
                 hops,
-                place,
+                ref place,
                 ..
             } => {
                 if let Some(record) = self.records.get_mut(&player)
                     && record.0 == entity
                     && hops >= record.1
                 {
-                    *record = (entity, hops, Some(place));
+                    *record = (entity, hops, Some(place.clone()));
                 }
             }
         }
@@ -291,7 +282,7 @@ impl Model {
                 player: *player,
                 stay: *stay,
                 hops: *hops,
-                place: *place,
+                place: place.clone(),
             });
         (self.issued, records.collect())
     }
@@ -1677,9 +1668,9 @@ fn the_players_file_with_ten_thousand_records_is_written_in_this_time() {
     // With something in every slot of the inventory, which is the longest a record gets.
     let full = |x: f64| {
         let mut place = place(x, 3.0);
-        place.inventory = Inventory(Box::new(
-            [Some(ItemStack { item: 9, count: 64 }); INVENTORY_SLOTS],
-        ));
+        place.inventory = Inventory(Box::new(std::array::from_fn(|_| {
+            Some(ItemStack::new(9, 64))
+        })));
         place
     };
     let noted = |from: u128, to: u128| -> Vec<Vec<StayNote>> {

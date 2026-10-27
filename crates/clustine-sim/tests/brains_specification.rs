@@ -1781,7 +1781,7 @@ fn a_sniffer_sniffs_digs_up_a_seed_at_its_moment_and_rests_from_sniffing() {
         .all()
         .iter()
         .filter_map(|entity| match &entity.data {
-            EntityData::Item { stack, .. } => Some(*stack),
+            EntityData::Item { stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect();
@@ -1932,7 +1932,7 @@ fn main_hand_shown(output: &TickOutput, key: EntityId) -> Option<Option<ItemStac
         RegionEvent::EquipmentChanged { entity, slots, .. } if *entity == key => slots
             .iter()
             .find(|(slot, _)| *slot == 0)
-            .map(|(_, stack)| *stack),
+            .map(|(_, stack)| stack.clone()),
         _ => None,
     })
 }
@@ -2536,7 +2536,7 @@ impl Line {
                     sequence,
                     index: u32::try_from(index).expect("few"),
                 },
-                effect: *effect,
+                effect: effect.clone(),
                 due: Due::FromTaking,
             })
             .collect();

@@ -314,7 +314,7 @@ fn drowned_equipment(spawn: &mut Spawning<'_>, _special: f32) {
             items::FISHING_ROD
         };
         spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
-            Some(ItemStack { item, count: 1 });
+            Some(ItemStack::new(item, 1));
     }
 }
 
@@ -327,15 +327,12 @@ fn finalize_spawn(spawn: &mut Spawning<'_>) {
     let off_hand = usize::from(slots::OFF_HAND);
     if spawn.mob.body.equipment.slots[off_hand].is_none() && spawn.level.next_float() < 0.03 {
         let equipment = &mut spawn.mob.body.equipment;
-        equipment.slots[off_hand] = Some(ItemStack {
-            item: items::NAUTILUS_SHELL,
-            count: 1,
-        });
+        equipment.slots[off_hand] = Some(ItemStack::new(items::NAUTILUS_SHELL, 1));
         equipment.drop_chances.get_or_insert([0.085; 8])[off_hand] = 2.0;
     }
     let reason = spawn.reason;
     let trident = animal::is_item(
-        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)],
+        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)].as_ref(),
         items::TRIDENT,
     );
     if !matches!(reason, SpawnReason::Natural | SpawnReason::Structure) || !trident {

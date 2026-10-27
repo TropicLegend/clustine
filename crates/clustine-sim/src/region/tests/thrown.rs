@@ -22,10 +22,7 @@ use crate::region::tnt::tests::{nothing, records, west_of_a_line, world};
 const SEED: u64 = 0x05E0_BA11;
 
 /// One of the snowball, as a throw makes it.
-const SNOWBALL: ItemStack = ItemStack {
-    item: items::SNOWBALL,
-    count: 1,
-};
+const SNOWBALL: ItemStack = ItemStack::new(items::SNOWBALL, 1);
 
 /// An owner no region has: a snowball of it has none.
 const NOBODY: EntityId = EntityId(999_999);
@@ -340,11 +337,11 @@ fn a_snowball_hits_a_cow_across_a_pinned_line_through_its_holder() {
         .effects
         .iter()
         .filter_map(|effect| match effect.what {
-            Effected::OnEntity { key: hit, by } if hit == key => Some(by),
+            Effected::OnEntity { key: hit, ref by } if hit == key => Some(by.clone()),
             _ => None,
         })
         .collect();
-    let [by] = hits[..] else {
+    let [ref by] = hits[..] else {
         panic!("one hit on the cow: {:?}", output.effects);
     };
     let EntityUse::Thrown {
@@ -354,7 +351,7 @@ fn a_snowball_hits_a_cow_across_a_pinned_line_through_its_holder() {
         damage,
         owner,
         ..
-    } = by
+    } = by.clone()
     else {
         panic!("a thrown item's hit: {by:?}");
     };
@@ -370,7 +367,7 @@ fn a_snowball_hits_a_cow_across_a_pinned_line_through_its_holder() {
     let mut holder = world(SEED, nothing);
     lay(&mut holder, &across);
     let full = health(&holder, key);
-    holder.entity_used(key, by, &mut TickOutput::default());
+    holder.entity_used(key, by.clone(), &mut TickOutput::default());
     assert_eq!(health(&holder, key), full);
     assert!(mob(&holder, key).body.vitals.hurt_from.is_some());
     let after = holder.find_entity(key).expect("the cow").1.motion;
@@ -383,12 +380,9 @@ fn a_snowball_hits_a_cow_across_a_pinned_line_through_its_holder() {
 #[test]
 fn a_players_throw_draws_its_pitch_then_the_snowballs_uuid_and_shot_and_keeps_the_stack() {
     let mut region = on_ticking_floor_with(&[]);
-    let stack = clustine_world::ItemStack {
-        item: items::SNOWBALL,
-        count: 16,
-    };
+    let stack = clustine_world::ItemStack::new(items::SNOWBALL, 16);
     let thrower = region.players.get_mut(&player(1)).expect("player 1");
-    thrower.inventory.set(0, Some(stack));
+    thrower.inventory.set(0, Some(stack.clone()));
     thrower.selected_slot = 0;
     let feet = thrower.pose.position;
     let use_item = PlayerInput::UseItem {

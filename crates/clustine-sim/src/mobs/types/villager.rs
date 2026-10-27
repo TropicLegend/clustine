@@ -147,7 +147,7 @@ impl Default for VillagerState {
             data: Data::default(),
             finalized: false,
             unhappy: 0,
-            inventory: [None; SLOTS],
+            inventory: [const { None }; SLOTS],
             food_level: 0,
             xp: 0,
             last_restock: 0,
@@ -212,28 +212,29 @@ fn requested(profession: u8, item: i32) -> bool {
         )
 }
 
-/// `SimpleContainer.canAddItem(stack)`: an empty slot, or one of the same item not full
-/// (the item's own most).
+/// `SimpleContainer.canAddItem(stack)`: an empty slot, or one of the same item with the
+/// same components not full (the item's own most).
 pub(crate) fn can_add_item(inventory: &[Option<ItemStack>; SLOTS], stack: ItemStack) -> bool {
     inventory.iter().any(|slot| match slot {
         None => true,
         Some(held) => {
-            held.count <= 0 || (held.item == stack.item && held.count < max_stack_size(*held))
+            held.count <= 0 || (held.same_kind(&stack) && held.count < max_stack_size(held))
         }
     })
 }
 
-/// `SimpleContainer.addItem(stack)`: into the slots of the same item first, each up to
+/// `SimpleContainer.addItem(stack)`: into the slots of the same item with the same
+/// components first, each up to
 /// the lesser of 99 and the item's most, then the rest into the first empty slot. How
 /// many it took.
 pub(crate) fn add_item(inventory: &mut [Option<ItemStack>; SLOTS], stack: ItemStack) -> i32 {
-    let most = max_stack_size(stack).min(CONTAINER_MOST);
+    let most = max_stack_size(&stack).min(CONTAINER_MOST);
     let mut left = stack.count;
     for held in inventory.iter_mut().flatten() {
         if left <= 0 {
             break;
         }
-        if held.item != stack.item || held.count <= 0 {
+        if !held.same_kind(&stack) || held.count <= 0 {
             continue;
         }
         let moved = left.min(most - held.count);
@@ -245,7 +246,7 @@ pub(crate) fn add_item(inventory: &mut [Option<ItemStack>; SLOTS], stack: ItemSt
     if left > 0
         && let Some(slot) = inventory
             .iter_mut()
-            .find(|slot| slot.is_none_or(|held| held.count <= 0))
+            .find(|slot| slot.as_ref().is_none_or(|held| held.count <= 0))
     {
         *slot = Some(ItemStack {
             count: left,
@@ -572,15 +573,15 @@ fn pick_up(tick: &mut MobTick<'_>) {
         .filter(|seen| !seen.copied)
         .filter_map(|seen| match seen.entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay: 0,
                 ..
-            } if stack.count > 0 => Some((seen.entity.key, stack)),
+            } if stack.count > 0 => Some((seen.entity.key, stack.clone())),
             _ => None,
         })
         .collect();
     for (key, stack) in found {
-        if !wants_to_pick_up(&tick.mob, stack) {
+        if !wants_to_pick_up(&tick.mob, stack.clone()) {
             continue;
         }
         let mut moved = 0;
@@ -678,6 +679,7 @@ impl MobType for Villager {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         let egg = used
             .held
+            .as_ref()
             .is_some_and(|stack| stack.count > 0 && stack.item == items::VILLAGER_SPAWN_EGG);
         if !egg && !used.mob.body.vitals.dying() {
             set_unhappy(used);

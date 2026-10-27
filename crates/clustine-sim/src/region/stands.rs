@@ -48,7 +48,7 @@ use crate::physics;
 use crate::physics::aabb::Aabb;
 use crate::physics::body::{Body, Movement};
 use crate::physics::collide::{self, Context};
-use crate::physics::item::SOUND_SOURCE_NEUTRAL;
+use crate::physics::item::{SOUND_SOURCE_NEUTRAL, same_kind_or_both_none};
 use crate::placement::Click;
 
 /// `DATA_CLIENT_FLAGS`' bits, and the invisibility the record keeps beside them.
@@ -109,7 +109,7 @@ pub(super) fn worn(equipment: &[(u8, ItemStack)], slot: u8) -> Option<ItemStack>
     equipment
         .iter()
         .find(|(at, _)| *at == slot)
-        .map(|(_, stack)| *stack)
+        .map(|(_, stack)| stack.clone())
 }
 
 /// `equipment` with `stack` in `slot`, nothing there where `None`, slots ascending.
@@ -121,7 +121,7 @@ fn with_worn(
     let mut changed: Vec<(u8, ItemStack)> = equipment
         .iter()
         .filter(|(at, _)| *at != slot)
-        .copied()
+        .cloned()
         .collect();
     if let Some(stack) = stack.filter(|stack| stack.count > 0) {
         changed.push((slot, stack));
@@ -131,7 +131,7 @@ fn with_worn(
 }
 
 /// The `minecraft:equippable` of the stack's item, where it has one.
-fn equippable(stack: ItemStack) -> Option<clustine_data::Equippable> {
+fn equippable(stack: &ItemStack) -> Option<clustine_data::Equippable> {
     usize::try_from(stack.item)
         .ok()
         .filter(|item| *item < clustine_data::ITEMS.len())
@@ -151,7 +151,7 @@ pub(super) fn can_use_slot(disabled_slots: i32, flags: u8, slot: u8) -> bool {
 
 /// `getEquipmentSlotForItem(stack)`: the slot of its `equippable` where the stand can
 /// use it, else the main hand.
-fn slot_for_item(disabled_slots: i32, flags: u8, held: Option<ItemStack>) -> u8 {
+fn slot_for_item(disabled_slots: i32, flags: u8, held: Option<&ItemStack>) -> u8 {
     held.and_then(equippable)
         .map(|equippable| equippable.slot)
         .filter(|slot| can_use_slot(disabled_slots, flags, *slot))
@@ -834,10 +834,7 @@ impl Region {
         // `brokenByPlayer`: the stand's item where it stood, then what it wears.
         self.pop_resource_at(
             physics::containing(record.position),
-            ItemStack {
-                item: items::ARMOR_STAND,
-                count: 1,
-            },
+            ItemStack::new(items::ARMOR_STAND, 1),
             output,
         );
         self.broken_by_anything(&record, output);
@@ -923,10 +920,14 @@ impl Region {
         };
         let (flags, disabled_slots, equipment) = (*flags, *disabled_slots, equipment.clone());
         let held = used.held.filter(|stack| stack.count > 0);
-        if flags & MARKER != 0 || held.is_some_and(|stack| stack.item == items::NAME_TAG) {
+        if flags & MARKER != 0
+            || held
+                .as_ref()
+                .is_some_and(|stack| stack.item == items::NAME_TAG)
+        {
             return;
         }
-        let for_item = slot_for_item(disabled_slots, flags, held);
+        let for_item = slot_for_item(disabled_slots, flags, held.as_ref());
         let slot = if held.is_none() {
             let clicked = clicked_slot(used.location_y, flags, &equipment);
             let slot = if is_disabled(disabled_slots, flags, clicked) {
@@ -957,23 +958,18 @@ impl Region {
             return;
         }
         // What is put on, and what the hand is left with where that changes.
-        let (put, left_in_hand) = match held {
+        let (put, left_in_hand) = match &held {
             // A creative player puts one on and keeps the stack.
-            Some(stack) if used.creative && on.is_none() => {
-                (Some(ItemStack { count: 1, ..stack }), None)
-            }
+            Some(stack) if used.creative && on.is_none() => (Some(stack.with_count(1)), None),
             Some(stack) if stack.count > 1 => {
                 if on.is_some() {
                     return;
                 }
-                let left = ItemStack {
-                    count: stack.count - 1,
-                    ..stack
-                };
-                (Some(ItemStack { count: 1, ..stack }), Some(Some(left)))
+                let left = stack.with_count(stack.count - 1);
+                (Some(stack.with_count(1)), Some(Some(left)))
             }
             // A swap: the stand takes what the hand held, the hand what it wore.
-            _ => (held, Some(on)),
+            _ => (held.clone(), Some(on)),
         };
         let hand = self.hand_holding(used.player, held);
         // What gives the player anything needs an answer, of which there is none across
@@ -985,7 +981,7 @@ impl Region {
         if let (Some(hand), Some(left)) = (hand, left_in_hand)
             && let Some(record) = self.players.get_mut(&hand.player)
         {
-            record.inventory.set(hand.slot, left);
+            record.inventory.set(hand.slot, left.clone());
             self.journal.players.insert(hand.player);
             let slot = u8::try_from(hand.slot).expect("an inventory slot fits a byte");
             output.player_events.push((
@@ -1028,7 +1024,7 @@ impl Region {
         let old = worn(equipment, slot);
         let mut data = record.data.clone();
         if let EntityData::ArmorStand { equipment, .. } = &mut data {
-            *equipment = with_worn(equipment, slot, stack);
+            *equipment = with_worn(equipment, slot, stack.clone());
         }
         self.commit_entity(chunk, key, vec![EntityField::Data(data.clone())], output);
         let after = Entity {
@@ -1044,11 +1040,12 @@ impl Region {
         let mut report = tracked(&after, burning, true);
         report.chunk = chunk;
         output.events.push(RegionEvent::EntityTracked(report));
-        let same = old.map(|stack| stack.item) == stack.map(|stack| stack.item);
+        let same = same_kind_or_both_none(old.as_ref(), stack.as_ref());
         if same || record.tick_count() == 0 {
             return;
         }
         let Some(sound) = stack
+            .as_ref()
             .and_then(equippable)
             .filter(|equippable| equippable.slot == slot)
             .map(|equippable| equippable.sound)
@@ -1070,7 +1067,7 @@ impl Region {
 }
 
 /// What a player's use of a stand carries.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Used {
     /// The player's entity.
     player: EntityId,

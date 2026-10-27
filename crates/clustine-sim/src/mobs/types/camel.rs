@@ -462,7 +462,7 @@ fn handle_eating(used: &mut Used<'_>, breed: &Breed) -> bool {
 /// one of it on a living grown camel with none, dropped whatever kills it, with the
 /// breed's saddle sound (its seed drawn) and the equip game event.
 fn equip_saddle(used: &mut Used<'_>, breed: &Breed) -> Interaction {
-    let Some(stack) = used.held.filter(|stack| stack.count > 0) else {
+    let Some(stack) = used.held.as_ref().filter(|stack| stack.count > 0) else {
         return Interaction::Pass;
     };
     let slot = slots::SADDLE;
@@ -478,10 +478,7 @@ fn equip_saddle(used: &mut Used<'_>, breed: &Breed) -> Interaction {
     {
         return Interaction::Pass;
     }
-    used.mob.body.equipment.slots[usize::from(slot)] = Some(ItemStack {
-        item: stack.item,
-        count: 1,
-    });
+    used.mob.body.equipment.slots[usize::from(slot)] = Some(stack.with_count(1));
     let _seed = used.draws.next_u64();
     used.did.push(Did::Sound {
         sound: breed.sounds.saddle,
@@ -513,7 +510,7 @@ fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
     if saddled != Interaction::Pass {
         return saddled;
     }
-    if breed.food.test(used.held) {
+    if breed.food.test(used.held.as_ref()) {
         return if handle_eating(used, breed) {
             Interaction::SuccessServer
         } else {
@@ -529,7 +526,7 @@ fn mob_interact(used: &mut Used<'_>, breed: &Breed) -> Interaction {
         // is tried, and nothing comes of it on a grown camel.
         return Interaction::Pass;
     }
-    if animal::is_item(used.held, items::GOLDEN_DANDELION) {
+    if animal::is_item(used.held.as_ref(), items::GOLDEN_DANDELION) {
         return animal::mob_interact(used, breed.food, None);
     }
     Interaction::Pass

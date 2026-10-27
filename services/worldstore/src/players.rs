@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use clustine_format::{LoggedPlace, LoggedStay, LoggedUnit, PlayerRecord, PlayersFile};
 use clustine_region::RegionId;
-use clustine_rpc::{ItemStack, Place, Pose, StayNote};
+use clustine_rpc::{Place, Pose, StayNote};
 use clustine_world::{ChunkPos, Vec3};
 use clustine_world::{EnderChest, Inventory};
 use tracing::error;
@@ -144,7 +144,7 @@ impl Players {
             player: *player,
             stay: record.stay,
             hops: record.hops,
-            place: record.place,
+            place: record.place.clone(),
             unit: record.unit.clone(),
         });
         listed.collect()
@@ -215,7 +215,7 @@ impl Players {
                 let raised = Record {
                     stay: entity,
                     hops: 0,
-                    place: record.place,
+                    place: record.place.clone(),
                     unit: record.unit.clone(),
                 };
                 self.records.insert(player, raised);
@@ -257,7 +257,7 @@ impl Players {
                 let written = Record {
                     stay: entity,
                     hops,
-                    place: Some(*place),
+                    place: Some(place.clone()),
                     unit: unit.clone().or(record.unit),
                 };
                 self.records.insert(player, written);
@@ -465,14 +465,8 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         on_ground: place.pose.on_ground,
         flying: place.flying,
         selected_slot: place.selected_slot,
-        inventory: place
-            .inventory
-            .0
-            .map(|slot| slot.map(|stack| (stack.item, stack.count))),
-        ender: place
-            .ender
-            .0
-            .map(|slot| slot.map(|stack| (stack.item, stack.count))),
+        inventory: (*place.inventory.0).clone(),
+        ender: (*place.ender.0).clone(),
     }
 }
 
@@ -500,17 +494,9 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
             on_ground: logged.on_ground,
         },
         flying: logged.flying,
-        inventory: Inventory(Box::new(
-            logged
-                .inventory
-                .map(|slot| slot.map(|(item, count)| ItemStack { item, count })),
-        )),
+        inventory: Inventory(Box::new(logged.inventory.clone())),
         selected_slot: logged.selected_slot,
-        ender: EnderChest(Box::new(
-            logged
-                .ender
-                .map(|slot| slot.map(|(item, count)| ItemStack { item, count })),
-        )),
+        ender: EnderChest(Box::new(logged.ender.clone())),
     }
 }
 

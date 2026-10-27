@@ -10,8 +10,19 @@ use clustine_protocol::packets::play::{
     BlockEntity, Heightmap, LevelChunkWithLight, LightData, heightmap,
 };
 use clustine_world::{
-    Chunk, ChunkPos, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
+    Chunk, ChunkPos, ItemStack, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
 };
+
+/// The world's stack as the protocol writes it: the one place the edge turns one into
+/// the other. Its components are left out for now: the protocol's stack carries none
+/// until the wire's codecs for them are joined (`docs/groundwork/n9-plan.md`, section
+/// 3.3), and a client is shown the item with its defaults.
+pub(crate) fn wire_stack(stack: &ItemStack) -> clustine_protocol::item::ItemStack {
+    clustine_protocol::item::ItemStack {
+        item: stack.item,
+        count: stack.count,
+    }
+}
 
 /// The block entity types a client is sent data of with a chunk, and the keys of the
 /// data it is sent (ADR-0022, section 5). A spawner shows the mob that turns in its

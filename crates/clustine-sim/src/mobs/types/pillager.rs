@@ -71,10 +71,8 @@ impl MobType for Pillager {
     /// `Raider`'s.
     fn finalize_spawn(&self, spawn: &mut Spawning<'_>) {
         // `populateDefaultEquipmentSlots`: the crossbow, with no draw.
-        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-            item: items::CROSSBOW,
-            count: 1,
-        });
+        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+            Some(ItemStack::new(items::CROSSBOW, 1));
         let special = spawn.difficulty.1;
         // `populateDefaultEquipmentEnchantments`, whose weapon's part is the pillager's
         // own `enchantSpawnedWeapon`: `Mob`'s draw, then one in 300 for Piercing with
@@ -82,6 +80,7 @@ impl MobType for Pillager {
         enchant_spawned_equipment(spawn.mob, slots::MAIN_HAND, spawn.level, 0.25, special);
         let _piercing = spawn.level.next_int(300) == 0
             && spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)]
+                .as_ref()
                 .is_some_and(|stack| stack.item == items::CROSSBOW);
         for slot in [slots::FEET, slots::LEGS, slots::CHEST, slots::HEAD] {
             enchant_spawned_equipment(spawn.mob, slot, spawn.level, 0.5, special);

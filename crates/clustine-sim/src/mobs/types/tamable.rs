@@ -274,6 +274,7 @@ pub(crate) fn nutrition(item: i32) -> Option<i32> {
 pub(crate) fn feed(used: &mut Used<'_>, per_nutrition: f32, otherwise: f32, eat: Option<Did>) {
     let amount = used
         .held
+        .as_ref()
         .and_then(|stack| nutrition(stack.item))
         .map_or(otherwise, |value| per_nutrition * value as f32);
     heal(used.mob, used.kind, amount);

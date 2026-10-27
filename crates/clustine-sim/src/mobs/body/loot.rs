@@ -322,20 +322,14 @@ impl Context<'_> {
         let count = stack.count();
         let max = i32::from(ItemComponents::of(stack.item).max_stack_size);
         if count < max {
-            self.drops.push(ItemStack {
-                item: stack.item,
-                count,
-            });
+            self.drops.push(ItemStack::new(stack.item, count));
             return;
         }
         let mut left = count;
         while left > 0 {
             let part = max.min(left);
             left -= part;
-            self.drops.push(ItemStack {
-                item: stack.item,
-                count: part,
-            });
+            self.drops.push(ItemStack::new(stack.item, part));
         }
     }
 

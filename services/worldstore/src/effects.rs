@@ -100,7 +100,7 @@ impl Uses {
 }
 
 /// An effect not taken yet, and the segment its latest record is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Kept {
     pub(crate) effect: Effect,
     pub(crate) due: Due,
@@ -174,7 +174,7 @@ impl Filed {
         let kept = self.effects.get(&id)?;
         Some(FiledEffect {
             id,
-            effect: kept.effect,
+            effect: kept.effect.clone(),
             due: kept.due,
         })
     }

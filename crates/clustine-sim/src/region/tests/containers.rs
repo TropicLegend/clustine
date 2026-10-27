@@ -114,14 +114,14 @@ fn heard_at(output: &TickOutput) -> Vec<[f64; 3]> {
 }
 
 fn stack(item: i32, count: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count })
+    Some(ItemStack::new(item, count))
 }
 
 /// The container at `at` with `slots` set, written back.
 fn fill(region: &mut Region, at: BlockPos, slots: &[(usize, Option<ItemStack>)]) {
     let mut container = region.container_at(at).expect("a container");
     for (slot, held) in slots {
-        container.slots[*slot] = *held;
+        container.slots[*slot] = held.clone();
     }
     region.set_container(at, container, &mut TickOutput::default());
 }
@@ -378,10 +378,7 @@ fn a_shulker_boxs_lid_opens_in_ten_ticks_and_pushes_what_lies_on_it() {
     let mut output = TickOutput::default();
     assert!(region.spawn_item_as(
         [3.5, -59.0, 3.5],
-        ItemStack {
-            item: items::DIAMOND,
-            count: 1
-        },
+        ItemStack::new(items::DIAMOND, 1),
         0,
         Some([0.0; 3]),
         &mut output,

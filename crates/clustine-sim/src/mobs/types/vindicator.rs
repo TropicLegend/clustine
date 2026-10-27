@@ -66,10 +66,8 @@ impl MobType for Vindicator {
     /// The rest of `Vindicator.finalizeSpawn`, after `Mob`'s: an iron axe outside a
     /// raid (no raid before N10), with no draw, and its enchantment's draws.
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-            item: items::IRON_AXE,
-            count: 1,
-        });
+        spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+            Some(ItemStack::new(items::IRON_AXE, 1));
         populate_default_equipment_enchantments(spawn.mob, spawn.level, spawn.difficulty.1);
     }
 

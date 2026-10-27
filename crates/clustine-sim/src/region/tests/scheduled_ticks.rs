@@ -926,13 +926,7 @@ fn sand_that_falls_onto_a_bottom_slab_drops_as_an_item() {
         .into_iter()
         .map(|(_, stack)| stack)
         .collect();
-    assert_eq!(
-        lying,
-        [ItemStack {
-            item: clustine_data::items::SAND,
-            count: 1
-        }]
-    );
+    assert_eq!(lying, [ItemStack::new(clustine_data::items::SAND, 1)]);
 }
 
 #[test]

@@ -821,7 +821,7 @@ fn the_holder_breaks_the_far_blocks_lays_their_drops_and_kills_the_stand() {
         .effects
         .iter()
         .filter(|effect| effect.at.chunk().x >= 1)
-        .copied()
+        .cloned()
         .collect();
     filed(&mut east, 50, effects);
     for (at, _, _) in &far {

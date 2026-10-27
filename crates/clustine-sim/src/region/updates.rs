@@ -834,7 +834,7 @@ impl Region {
             received
                 .entry(filed.effect.at.chunk())
                 .or_default()
-                .push(*filed);
+                .push(filed.clone());
             output.taken.push(filed.id);
         }
         output.taken.sort();

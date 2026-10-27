@@ -42,7 +42,7 @@ fn thrown(key: u64) -> Entity {
         lived: 0,
         fresh_at: 0,
         data: EntityData::Item {
-            stack: ItemStack { item: 1, count: 1 },
+            stack: ItemStack::new(1, 1),
             pick_up_delay: 40,
             thrower: Some(uuid::Uuid::from_u128(1)),
             health: 5,

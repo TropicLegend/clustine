@@ -210,7 +210,7 @@ fn use_with<'a>(
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 fn interact(
@@ -377,10 +377,7 @@ fn a_chest_goes_on_a_tamed_donkey_and_its_menu_shows_the_saddle_the_body_and_fif
     let mut slots = super::menu_container(DONKEY, &donkey);
     assert_eq!(slots.len(), 17);
     slots[0] = one(items::SADDLE);
-    slots[4] = Some(ItemStack {
-        item: items::DIRT,
-        count: 32,
-    });
+    slots[4] = Some(ItemStack::new(items::DIRT, 32));
     let changed = super::write_menu_container(&mut donkey, &slots);
     assert_eq!(changed, [(slots::SADDLE, None, one(items::SADDLE))]);
     assert_eq!(super::menu_container(DONKEY, &donkey), slots);
@@ -392,14 +389,8 @@ fn a_chest_goes_on_a_tamed_donkey_and_its_menu_shows_the_saddle_the_body_and_fif
     assert_eq!(
         drops,
         [
-            ItemStack {
-                item: items::DIRT,
-                count: 32
-            },
-            ItemStack {
-                item: items::CHEST,
-                count: 1
-            }
+            ItemStack::new(items::DIRT, 32),
+            ItemStack::new(items::CHEST, 1)
         ]
     );
     assert!(!super::horse_of(&donkey).chest);

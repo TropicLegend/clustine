@@ -631,10 +631,7 @@ fn in_hand(hand: i32, used: PlayerInput) -> PlayerInput {
 fn creative_slot(slot: i16, stack: Option<protocol::ItemStack>) -> Option<PlayerInput> {
     let slot = Inventory::from_container(slot)?;
     let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-    let stack = stack.map(|stack| ItemStack {
-        item: stack.item,
-        count: stack.count,
-    });
+    let stack = stack.map(|stack| ItemStack::new(stack.item, stack.count));
     Some(PlayerInput::SetInventorySlot { slot, stack })
 }
 
@@ -715,10 +712,7 @@ fn creative_throw(
     }
     let stack = stack?;
     Some(PlayerInput::Throw {
-        stack: ItemStack {
-            item: stack.item,
-            count: stack.count,
-        },
+        stack: ItemStack::new(stack.item, stack.count),
     })
 }
 
@@ -777,7 +771,7 @@ mod tests {
         let stone = protocol::ItemStack { item: 1, count: 3 };
         match creative_slot(container, Some(stone)) {
             Some(PlayerInput::SetInventorySlot { slot, stack }) => {
-                assert_eq!(stack, Some(ItemStack { item: 1, count: 3 }));
+                assert_eq!(stack, Some(ItemStack::new(1, 3)));
                 Some(slot)
             }
             None => None,

@@ -20,7 +20,7 @@ use clustine_sim::api::Tracked;
 
 use super::*;
 
-const STACK: ItemStack = ItemStack { item: 1, count: 1 };
+const STACK: ItemStack = ItemStack::new(1, 1);
 
 /// `Math.round(v * 4096)`: Java rounds half up, towards positive infinity.
 fn steps(value: f64) -> i64 {

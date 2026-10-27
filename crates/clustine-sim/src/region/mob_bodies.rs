@@ -575,7 +575,7 @@ impl Region {
         let EntityUse::Interact {
             player,
             creative,
-            held,
+            ref held,
             sneaking,
             from,
             ..
@@ -589,17 +589,19 @@ impl Region {
         if mob.body.vitals.dying() {
             return;
         }
-        if self.offspring_from_egg(entity, held, player, output) {
+        if self.offspring_from_egg(entity, held.clone(), player, output) {
             self.interacted(entity, player, Interaction::SuccessServer, output);
             return;
         }
         let mob_type = types::of(entity.kind);
-        let lead = held.is_some_and(|stack| stack.item == items::LEAD);
+        let lead = held.as_ref().is_some_and(|stack| stack.item == items::LEAD);
         let leashable = mob_type.can_be_leashed(entity.kind, &mob);
-        if (!lead || leashable) && self.leash_used(entity, by, output) {
+        if (!lead || leashable) && self.leash_used(entity, by.clone(), output) {
             return;
         }
-        let shears = held.is_some_and(|stack| stack.count > 0 && stack.item == items::SHEARS);
+        let shears = held
+            .as_ref()
+            .is_some_and(|stack| stack.count > 0 && stack.item == items::SHEARS);
         if shears
             && !sneaking
             && entity.riding.passengers.is_empty()
@@ -609,7 +611,14 @@ impl Region {
         }
         let from = from.map(|value| value.0);
         self.mob_used_by(
-            entity, chunk, player, held, creative, sneaking, from, output,
+            entity,
+            chunk,
+            player,
+            held.clone(),
+            creative,
+            sneaking,
+            from,
+            output,
         );
     }
 

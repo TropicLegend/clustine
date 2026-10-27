@@ -1124,13 +1124,7 @@ fn shears_take_a_sheeps_wool_of_its_colour_and_a_sheared_sheep_is_not_dyed() {
         "one to three items: {lying:?}"
     );
     for (stack, _) in &lying {
-        assert_eq!(
-            *stack,
-            ItemStack {
-                item: items::RED_WOOL,
-                count: 1
-            }
-        );
+        assert_eq!(*stack, ItemStack::new(items::RED_WOOL, 1));
     }
     assert_eq!(carried(&scene, items::SHEARS), 1);
     use_on(&mut scene, 2, &[sheep]);
@@ -1173,13 +1167,7 @@ fn shears_turn_a_mooshroom_into_a_cow_and_five_mushrooms() {
     let lying = items_lying(&scene.all());
     assert_eq!(lying.len(), 5, "{lying:?}");
     for (stack, _) in &lying {
-        assert_eq!(
-            *stack,
-            ItemStack {
-                item: items::RED_MUSHROOM,
-                count: 1
-            }
-        );
+        assert_eq!(*stack, ItemStack::new(items::RED_MUSHROOM, 1));
     }
 }
 
@@ -1205,13 +1193,7 @@ fn a_saddle_goes_on_an_adult_pig_and_not_on_a_piglet() {
     let saddled = use_on(&mut scene, 1, &[pig]);
     let slots = equipment(&saddled, pig).expect("the pig's equipment is shown");
     assert!(
-        slots.contains(&(
-            SADDLE_SLOT,
-            Some(ItemStack {
-                item: items::SADDLE,
-                count: 1
-            })
-        )),
+        slots.contains(&(SADDLE_SLOT, Some(ItemStack::new(items::SADDLE, 1)))),
         "{slots:?}"
     );
     assert_eq!(played(&saddled, sounds::ENTITY_PIG_SADDLE).len(), 1);
@@ -1560,7 +1542,7 @@ impl Line {
                     sequence,
                     index: u32::try_from(index).expect("few"),
                 },
-                effect: *effect,
+                effect: effect.clone(),
                 due: Due::FromTaking,
             })
             .collect();

@@ -753,14 +753,7 @@ impl Region {
 
     /// `spawnAtLocation(level, Items.LEAD)` at `position`.
     fn drop_lead(&mut self, position: Vec3, output: &mut TickOutput) {
-        self.spawn_item(
-            position,
-            ItemStack {
-                item: items::LEAD,
-                count: 1,
-            },
-            output,
-        );
+        self.spawn_item(position, ItemStack::new(items::LEAD, 1), output);
     }
 
     /// `restoreLeashFromSave` of the region's entity `key`, whose leash holds by

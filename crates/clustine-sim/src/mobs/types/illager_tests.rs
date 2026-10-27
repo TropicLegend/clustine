@@ -102,7 +102,9 @@ fn made(kind: u16, reason: SpawnReason, level: &mut Counting) -> Mob {
 }
 
 fn held(mob: &Mob, slot: u8) -> Option<i32> {
-    mob.body.equipment.slots[usize::from(slot)].map(|stack| stack.item)
+    mob.body.equipment.slots[usize::from(slot)]
+        .as_ref()
+        .map(|stack| stack.item)
 }
 
 #[test]
@@ -245,10 +247,8 @@ fn the_illagers_arms_are_crossed_but_the_pillager_s_holding_its_crossbow() {
         illagers::arm_pose(PILLAGER, &pillager, false),
         ArmPose::Neutral
     );
-    pillager.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-        item: items::CROSSBOW,
-        count: 1,
-    });
+    pillager.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+        Some(ItemStack::new(items::CROSSBOW, 1));
     assert_eq!(
         illagers::arm_pose(PILLAGER, &pillager, false),
         ArmPose::CrossbowHold
@@ -305,10 +305,8 @@ fn a_raider_s_experience_is_five_and_more_for_what_it_holds_and_may_not_keep() {
     let mut mob = Mob::fresh();
     let mut draws = Random::of_entity(3, KEY, 0);
     assert_eq!(of(WITCH).experience_reward(WITCH, &mob, &mut draws), 5);
-    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-        item: items::CROSSBOW,
-        count: 1,
-    });
+    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+        Some(ItemStack::new(items::CROSSBOW, 1));
     let mut replay = draws.clone();
     let extra = 1 + replay.next_int(3) as i32;
     assert_eq!(
@@ -317,10 +315,8 @@ fn a_raider_s_experience_is_five_and_more_for_what_it_holds_and_may_not_keep() {
     );
     // A banner it always drops adds nothing.
     let mut banner = Mob::fresh();
-    banner.body.equipment.slots[usize::from(slots::HEAD)] = Some(ItemStack {
-        item: items::WHITE_BANNER,
-        count: 1,
-    });
+    banner.body.equipment.slots[usize::from(slots::HEAD)] =
+        Some(ItemStack::new(items::WHITE_BANNER, 1));
     let mut chances = [0.085; 8];
     chances[usize::from(slots::HEAD)] = 2.0;
     banner.body.equipment.drop_chances = Some(chances);
@@ -638,10 +634,8 @@ impl Run {
 /// A witch of `health` drinking `potion` with `left` ticks of it to go.
 fn drinking(health: f32, potion: Potion, left: i32) -> Mob {
     let mut mob = witch(health);
-    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(ItemStack {
-        item: items::POTION,
-        count: 1,
-    });
+    mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+        Some(ItemStack::new(items::POTION, 1));
     illagers::put_state(
         &mut mob,
         &RaiderState {

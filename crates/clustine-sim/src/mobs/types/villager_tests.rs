@@ -170,11 +170,8 @@ fn a_template_s_villager_keeps_its_type_profession_level_and_age() {
     assert!(own(&mob).finalized);
     assert!(animal::is_baby(&mob), "the template's baby");
     // A farmer wants bone meal, which an unemployed villager does not.
-    let bone_meal = ItemStack {
-        item: items::BONE_MEAL,
-        count: 1,
-    };
-    assert!(villager::wants_to_pick_up(&mob, bone_meal));
+    let bone_meal = ItemStack::new(items::BONE_MEAL, 1);
+    assert!(villager::wants_to_pick_up(&mob, bone_meal.clone()));
     assert!(!villager::wants_to_pick_up(&Mob::fresh(), bone_meal));
 
     // `VillagerDataFinalized` alone settles the default data, which the biome then
@@ -298,11 +295,8 @@ fn the_schedule_gives_each_time_of_day_its_activity_and_work_meeting_and_play_ar
 
 #[test]
 fn its_eight_slots_fill_as_a_simple_container_s_and_refuse_once_full() {
-    let mut inventory = [None; SLOTS];
-    let bread = |count| ItemStack {
-        item: items::BREAD,
-        count,
-    };
+    let mut inventory = [const { None }; SLOTS];
+    let bread = |count| ItemStack::new(items::BREAD, count);
     // Into the slot of the same item up to its most (64), the rest into the first
     // empty slot.
     assert_eq!(villager::add_item(&mut inventory, bread(60)), 60);
@@ -310,17 +304,11 @@ fn its_eight_slots_fill_as_a_simple_container_s_and_refuse_once_full() {
     assert_eq!(inventory[0], Some(bread(64)));
     assert_eq!(inventory[1], Some(bread(6)));
     // Full: eight full stacks of carrots take no bread and no more carrots.
-    let carrots = ItemStack {
-        item: items::CARROT,
-        count: 64,
-    };
-    let mut full = [Some(carrots); SLOTS];
+    let carrots = ItemStack::new(items::CARROT, 64);
+    let mut full: [Option<ItemStack>; SLOTS] = std::array::from_fn(|_| Some(carrots.clone()));
     assert!(!villager::can_add_item(&full, bread(1)));
-    assert!(!villager::can_add_item(&full, carrots));
-    full[3] = Some(ItemStack {
-        count: 63,
-        ..carrots
-    });
+    assert!(!villager::can_add_item(&full, carrots.clone()));
+    full[3] = Some(carrots.with_count(63));
     assert!(villager::can_add_item(&full, carrots));
     assert!(!villager::can_add_item(&full, bread(1)));
     // What it wants: its food and the seeds and wheat of `#villager_picks_up`, not
@@ -336,23 +324,17 @@ fn its_eight_slots_fill_as_a_simple_container_s_and_refuse_once_full() {
         items::BEETROOT_SEEDS,
     ] {
         assert!(
-            villager::wants_to_pick_up(&fresh, ItemStack { item, count: 1 }),
+            villager::wants_to_pick_up(&fresh, ItemStack::new(item, 1)),
             "{item}"
         );
     }
     assert!(!villager::wants_to_pick_up(
         &fresh,
-        ItemStack {
-            item: items::BONE_MEAL,
-            count: 1
-        }
+        ItemStack::new(items::BONE_MEAL, 1)
     ));
     assert!(!villager::wants_to_pick_up(
         &fresh,
-        ItemStack {
-            item: items::STONE,
-            count: 1
-        }
+        ItemStack::new(items::STONE, 1)
     ));
 }
 

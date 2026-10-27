@@ -405,7 +405,7 @@ mod tests {
                     other: Some(BlockPos::new(4, -60, 7)),
                 },
                 kind: MenuKind::Rows6,
-                carried: Some(ItemStack { item: 12, count: 9 }),
+                carried: Some(ItemStack::new(12, 9)),
                 drag: Some(Drag {
                     kind: DragKind::One,
                     slots: vec![53, 0, 27],

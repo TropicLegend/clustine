@@ -88,7 +88,8 @@
 //! | Selected slot | u8 |
 //! | Inventory | 41 times, in the order of the game's `Inventory` (0 to 8 the hotbar, 9 to
 //! 35 the rest, 36 to 39 armour from the feet up, 40 the off hand): u8 0 for an empty
-//! slot, or u8 1, i32 item, i32 count |
+//! slot, or u8 1 and the stack as `stacks.rs` writes one (item i32, count i32, its
+//! components) |
 //! | Ender chest | 27 times, as the inventory's slots |
 //!
 //! See `docs/adr/0020-one-stay-per-player.md`, section 8.
@@ -103,10 +104,11 @@
 use clustine_data::BlockState;
 use clustine_world::{
     Arrival, BlockPos, Change, ChunkPos, Due, Effect, EffectId, Entity, EntityChange, FiledEffect,
-    InChunk, KeptEvent, ScheduledTick, Seam, Ticked,
+    InChunk, ItemStack, KeptEvent, ScheduledTick, Seam, Ticked,
 };
 
 use crate::bytes::Input;
+use crate::stacks::{put_optional_stack, take_optional_stack};
 use crate::{FORMAT_VERSION, FormatError};
 
 const KIND_CHANGES: u8 = 1;
@@ -245,7 +247,7 @@ pub(crate) fn take_unit(input: &mut Input<'_>) -> Result<LoggedUnit, FormatError
 ///
 /// Two places are equal if their bytes on disk are: the numbers with a fraction are
 /// compared by their bits.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LoggedPlace {
     /// The position of the feet: x, y, z.
     pub position: [f64; 3],
@@ -254,10 +256,10 @@ pub struct LoggedPlace {
     pub on_ground: bool,
     pub flying: bool,
     pub selected_slot: u8,
-    /// Each slot of the inventory: the item and how many, if there is anything in it.
-    pub inventory: [Option<(i32, i32)>; INVENTORY_SLOTS],
+    /// Each slot of the inventory: its stack, if there is anything in it.
+    pub inventory: [Option<ItemStack>; INVENTORY_SLOTS],
     /// Each slot of the ender chest, as the inventory's.
-    pub ender: [Option<(i32, i32)>; ENDER_SLOTS],
+    pub ender: [Option<ItemStack>; ENDER_SLOTS],
     /// The player's experience: their level, the progress to the next (0 to 1) and
     /// the points they gathered in all.
     pub experience: (i32, f32, i32),
@@ -1081,14 +1083,7 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     out.push(on_ground | flying);
     out.push(place.selected_slot);
     for slot in place.inventory.iter().chain(&place.ender) {
-        match slot {
-            None => out.push(0),
-            Some((item, count)) => {
-                out.push(1);
-                out.extend_from_slice(&item.to_be_bytes());
-                out.extend_from_slice(&count.to_be_bytes());
-            }
-        }
+        put_optional_stack(out, slot.as_ref());
     }
     let (level, progress, total) = place.experience;
     out.extend_from_slice(&level.to_be_bytes());
@@ -1116,14 +1111,10 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         return Err(FormatError::Corrupt("place flags"));
     }
     let selected_slot = input.u8()?;
-    let mut inventory = [None; INVENTORY_SLOTS];
-    let mut ender = [None; ENDER_SLOTS];
+    let mut inventory = [const { None }; INVENTORY_SLOTS];
+    let mut ender = [const { None }; ENDER_SLOTS];
     for slot in inventory.iter_mut().chain(&mut ender) {
-        *slot = match input.u8()? {
-            0 => None,
-            1 => Some((input.i32()?, input.i32()?)),
-            _ => return Err(FormatError::Corrupt("inventory slot")),
-        };
+        *slot = take_optional_stack(input, "inventory slot")?;
     }
     let experience = (input.i32()?, input.f32()?, input.i32()?);
     let respawn = match input.u8()? {
@@ -2675,13 +2666,13 @@ mod tests {
     /// A place in which nothing is as it is by default: something in the hotbar, on the
     /// head and in the off hand.
     fn place() -> LoggedPlace {
-        let mut inventory = [None; INVENTORY_SLOTS];
-        inventory[0] = Some((1, 64));
-        inventory[8] = Some((-2, 258));
-        inventory[39] = Some((3, 1));
-        inventory[40] = Some((5, 16));
-        let mut ender = [None; ENDER_SLOTS];
-        ender[0] = Some((6, 1));
+        let mut inventory = [const { None }; INVENTORY_SLOTS];
+        inventory[0] = Some(ItemStack::new(1, 64));
+        inventory[8] = Some(ItemStack::new(-2, 258));
+        inventory[39] = Some(ItemStack::new(3, 1));
+        inventory[40] = Some(ItemStack::new(5, 16));
+        let mut ender = [const { None }; ENDER_SLOTS];
+        ender[0] = Some(ItemStack::new(6, 1));
         LoggedPlace {
             respawn: None,
             experience: (5, 0.25, 87),
@@ -2940,7 +2931,11 @@ mod tests {
             0,
             0,
             0,
-            64, // the first slot
+            64,
+            0,
+            0,
+            0,
+            0, // the first slot: no components added and none removed
             0,
             0,
             0,
@@ -2956,16 +2951,20 @@ mod tests {
             0,
             0,
             1,
-            2, // the last slot of the hotbar
+            2,
+            0,
+            0,
+            0,
+            0, // the last slot of the hotbar
         ];
         // Thirty empty slots: the rest of the hotbar's and the armour's from the feet up
         // to the chest.
         payload.extend_from_slice(&[0; 30]);
         // The head and the off hand.
-        payload.extend_from_slice(&[1, 0, 0, 0, 3, 0, 0, 0, 1]);
-        payload.extend_from_slice(&[1, 0, 0, 0, 5, 0, 0, 0, 16]);
+        payload.extend_from_slice(&[1, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 0]);
+        payload.extend_from_slice(&[1, 0, 0, 0, 5, 0, 0, 0, 16, 0, 0, 0, 0]);
         // The ender chest: one of item 6 in its first slot, and 26 empty.
-        payload.extend_from_slice(&[1, 0, 0, 0, 6, 0, 0, 0, 1]);
+        payload.extend_from_slice(&[1, 0, 0, 0, 6, 0, 0, 0, 1, 0, 0, 0, 0]);
         payload.extend_from_slice(&[0; 26]);
         // The experience: level 5, a quarter of the way to the next, 87 points.
         payload.extend_from_slice(&[0, 0, 0, 5, 0x3E, 0x80, 0, 0, 0, 0, 0, 87]);
@@ -3099,6 +3098,34 @@ mod tests {
         );
     }
 
+    /// A place whose stacks carry components, in the inventory and the ender chest alike,
+    /// is read back with them.
+    #[test]
+    fn a_place_whose_stacks_carry_a_component_of_every_kind_reads_as_it_was_written() {
+        let mut place = place();
+        place.inventory[40] = Some(crate::stacks::tests::with_every_component());
+        place.ender[26] = Some(crate::stacks::tests::with_every_component());
+        let mut out = Vec::new();
+        put_place(&mut out, &place);
+        let mut input = Input(&out);
+        assert_eq!(take_place(&mut input), Ok(place));
+        input.finish().unwrap();
+    }
+
+    /// A record of format 13, written before stacks had components, is refused as any
+    /// record of another format is.
+    #[test]
+    fn a_record_of_format_13_is_refused() {
+        assert_eq!(FORMAT_VERSION, 14);
+        let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
+        assert_eq!(payload[0], FORMAT_VERSION);
+        payload[0] = 13;
+        assert_eq!(
+            read_log(&frame(&payload)),
+            Err(FormatError::UnsupportedVersion(13))
+        );
+    }
+
     /// Places are the same if their bytes are, so that a record that was read is the
     /// record that was written whatever numbers a region put into it.
     #[test]
@@ -3111,7 +3138,7 @@ mod tests {
         assert_eq!(nan, nan);
         let zero = LoggedPlace {
             position: [f64::NAN, 0.0, 0.0],
-            ..nan
+            ..nan.clone()
         };
         assert_ne!(nan, zero);
         let record = LogRecord::Commit {
@@ -3142,9 +3169,21 @@ mod tests {
     }
 
     /// Inventories of every kind: proptest makes arrays of up to 32 by itself.
-    fn inventories() -> impl Strategy<Value = [Option<(i32, i32)>; INVENTORY_SLOTS]> {
-        proptest::collection::vec(any::<Option<(i32, i32)>>(), INVENTORY_SLOTS)
+    fn inventories() -> impl Strategy<Value = [Option<ItemStack>; INVENTORY_SLOTS]> {
+        proptest::collection::vec(stacks(), INVENTORY_SLOTS)
             .prop_map(|slots| slots.try_into().expect("as many slots as an inventory has"))
+    }
+
+    /// Plain stacks or none, and now and then one with a component of every kind.
+    fn stacks() -> impl Strategy<Value = Option<ItemStack>> {
+        prop_oneof![
+            8 => any::<Option<(i32, i32)>>()
+                .prop_map(|slot| slot.map(|(item, count)| ItemStack::new(item, count))),
+            1 => any::<i32>().prop_map(|count| Some(ItemStack {
+                count,
+                ..crate::stacks::tests::with_every_component()
+            })),
+        ]
     }
 
     fn places() -> impl Strategy<Value = LoggedPlace> {
@@ -3153,7 +3192,8 @@ mod tests {
             any::<(f32, f32)>(),
             any::<(bool, bool, u8)>(),
             inventories(),
-            any::<[Option<(i32, i32)>; ENDER_SLOTS]>(),
+            proptest::collection::vec(stacks(), ENDER_SLOTS)
+                .prop_map(|slots| <[_; ENDER_SLOTS]>::try_from(slots).expect("27 slots")),
             any::<(i32, f32, i32)>(),
         )
             .prop_map(

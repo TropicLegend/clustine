@@ -15,7 +15,7 @@ use clustine_sim::api::Tracked;
 
 use super::*;
 
-const STACK: ItemStack = ItemStack { item: 1, count: 2 };
+const STACK: ItemStack = ItemStack::new(1, 2);
 
 /// The chunk east of `HOME`, which the eastern region holds in these tests: the line
 /// between the two regions is x = 16.

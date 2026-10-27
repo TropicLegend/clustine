@@ -64,10 +64,7 @@ fn a_converted_mob_keeps_its_equipment_flags_and_seats_but_not_its_health() {
     old.body.vitals.health = 5.0;
     old.body.flags.persistent = true;
     old.body.flags.left_handed = true;
-    old.body.equipment.slots[0] = Some(ItemStack {
-        item: items::IRON_SWORD,
-        count: 1,
-    });
+    old.body.equipment.slots[0] = Some(ItemStack::new(items::IRON_SWORD, 1));
     old.body.equipment.drop_chances = Some([0.5; 8]);
     lay(
         &mut region,
@@ -111,7 +108,7 @@ fn a_converted_mob_keeps_its_equipment_flags_and_seats_but_not_its_health() {
     assert_eq!(new.yaw, 30.0);
     let mob = Mob::decode(&new.data).unwrap();
     assert_eq!(
-        mob.body.equipment.slots[0].map(|stack| stack.item),
+        mob.body.equipment.slots[0].clone().map(|stack| stack.item),
         Some(items::IRON_SWORD)
     );
     assert_eq!(mob.body.equipment.drop_chance(0), 0.5);
@@ -173,10 +170,7 @@ fn a_converted_mob_keeps_its_equipment_flags_and_seats_but_not_its_health() {
 fn without_keeping_equipment_the_new_mob_wears_nothing() {
     let mut region = on_ticking_floor_with(&[]);
     let mut old = healthy(entity_types::ZOMBIE);
-    old.body.equipment.slots[5] = Some(ItemStack {
-        item: items::IRON_HELMET,
-        count: 1,
-    });
+    old.body.equipment.slots[5] = Some(ItemStack::new(items::IRON_HELMET, 1));
     lay(
         &mut region,
         &mob_at(OLD, entity_types::ZOMBIE, [4.5, -60.0, 4.5], old),

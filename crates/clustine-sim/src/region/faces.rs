@@ -239,7 +239,7 @@ mod tests {
             eye_height: 1.62,
             main_hand: None,
             off_hand: None,
-            worn: [None; 4],
+            worn: [const { None }; 4],
             sneaking: false,
             game_mode: 1,
             sleeping: None,

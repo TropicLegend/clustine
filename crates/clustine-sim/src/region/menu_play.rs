@@ -315,8 +315,8 @@ impl Region {
             for _ in 0..times {
                 did.extend(equine::on_equip_item_with(
                     slot,
-                    old,
-                    new,
+                    old.clone(),
+                    new.clone(),
                     entity.position,
                     &mut stream,
                     saddle,
@@ -400,7 +400,7 @@ impl Region {
                         equine::menu_container(entity.kind, &mob)
                     } else {
                         // A camel's and a nautilus's: their saddle and body, no chest.
-                        let worn = |slot: u8| mob.body.equipment.slots[usize::from(slot)];
+                        let worn = |slot: u8| mob.body.equipment.slots[usize::from(slot)].clone();
                         vec![
                             worn(crate::living::slots::SADDLE),
                             worn(crate::living::slots::BODY),
@@ -417,7 +417,7 @@ impl Region {
                 let mut slots = vec![None; kind.container_slots()];
                 for (slot, stack) in contents {
                     if let Some(place) = slots.get_mut(usize::from(*slot)) {
-                        *place = Some(*stack);
+                        *place = Some(stack.clone());
                     }
                 }
                 Some(slots)
@@ -468,7 +468,7 @@ impl Region {
                     && player.ender.0.as_slice() != slots
                 {
                     for (place, stack) in player.ender.0.iter_mut().zip(slots) {
-                        *place = *stack;
+                        *place = stack.clone();
                     }
                     self.journal.players.insert(id);
                 }
@@ -485,7 +485,7 @@ impl Region {
                 let contents: clustine_world::Contents = slots
                     .iter()
                     .enumerate()
-                    .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, (*stack)?)))
+                    .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, stack.clone()?)))
                     .collect();
                 let mut data = entity.data.clone();
                 match &mut data {
@@ -520,7 +520,7 @@ impl Region {
         let all = (0..menu.kind.slots())
             .map(|index| menus::menu_slot(&slots, index).flatten())
             .collect();
-        Some((all, menu.carried))
+        Some((all, menu.carried.clone()))
     }
 
     /// Reports the player's menu whole ([`PlayerEvent::MenuOpened`]), if its container
@@ -542,7 +542,7 @@ impl Region {
             Reported {
                 serial,
                 slots: slots.clone(),
-                carried,
+                carried: carried.clone(),
             },
         );
         output.player_events.push((
@@ -587,9 +587,9 @@ impl Region {
             .iter()
             .enumerate()
             .filter(|(index, stack)| reported.slots.get(*index) != Some(*stack))
-            .filter_map(|(index, stack)| Some((u16::try_from(index).ok()?, *stack)))
+            .filter_map(|(index, stack)| Some((u16::try_from(index).ok()?, stack.clone())))
             .collect();
-        let carried_changed = (reported.carried != carried).then_some(carried);
+        let carried_changed = (reported.carried != carried).then_some(carried.clone());
         reported.slots = slots;
         reported.carried = carried;
         if changed.is_empty() && carried_changed.is_none() && !answering {
@@ -758,7 +758,7 @@ impl Region {
             .iter()
             .enumerate()
             .filter(|(slot, stack)| before.0[*slot] != **stack)
-            .map(|(slot, stack)| (slot, *stack))
+            .map(|(slot, stack)| (slot, stack.clone()))
             .collect();
         self.journal.players.insert(id);
         self.reported.remove(&id);

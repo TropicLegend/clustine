@@ -38,9 +38,9 @@ enum Remote {
 
 impl Remote {
     /// Whether the client shows `real` (`RemoteSlot.matches`).
-    fn shows(&self, real: Option<ItemStack>) -> bool {
+    fn shows(&self, real: Option<&ItemStack>) -> bool {
         match self {
-            Self::Sent(sent) => *sent == real,
+            Self::Sent(sent) => sent.as_ref() == real,
             Self::Hashed(None) => real.is_none(),
             Self::Hashed(Some(hashed)) => hashed.matches(real.map(wire)),
         }
@@ -82,13 +82,21 @@ impl Open {
     /// slots.
     fn whole(&mut self) -> Bytes {
         let state_id = self.next_state();
-        self.remote = self.real.iter().map(|stack| Remote::Sent(*stack)).collect();
-        self.remote_carried = Remote::Sent(self.real_carried);
+        self.remote = self
+            .real
+            .iter()
+            .map(|stack| Remote::Sent(stack.clone()))
+            .collect();
+        self.remote_carried = Remote::Sent(self.real_carried.clone());
         encoded(&SetContainerContent {
             window_id: self.window,
             state_id,
-            slots: self.real.iter().map(|stack| stack.map(wire)).collect(),
-            carried: self.real_carried.map(wire),
+            slots: self
+                .real
+                .iter()
+                .map(|stack| stack.as_ref().map(wire))
+                .collect(),
+            carried: self.real_carried.as_ref().map(wire),
         })
     }
 
@@ -100,26 +108,26 @@ impl Open {
         slots.sort_unstable();
         slots.dedup();
         for slot in slots {
-            let (Some(real), Some(remote)) = (self.real.get(slot).copied(), self.remote.get(slot))
+            let (Some(real), Some(remote)) = (self.real.get(slot).cloned(), self.remote.get(slot))
             else {
                 continue;
             };
-            if remote.shows(real) {
+            if remote.shows(real.as_ref()) {
                 continue;
             }
             let state_id = self.next_state();
-            self.remote[slot] = Remote::Sent(real);
+            self.remote[slot] = Remote::Sent(real.clone());
             packets.push(encoded(&ContainerSetSlot {
                 window_id: self.window,
                 state_id,
                 slot: i16::try_from(slot).expect("a menu has fewer than 32768 slots"),
-                stack: real.map(wire),
+                stack: real.as_ref().map(wire),
             }));
         }
-        if !self.remote_carried.shows(self.real_carried) {
-            self.remote_carried = Remote::Sent(self.real_carried);
+        if !self.remote_carried.shows(self.real_carried.as_ref()) {
+            self.remote_carried = Remote::Sent(self.real_carried.clone());
             packets.push(encoded(&SetCursorItem {
-                stack: self.real_carried.map(wire),
+                stack: self.real_carried.as_ref().map(wire),
             }));
         }
         packets
@@ -279,7 +287,7 @@ impl Menus {
         for (slot, stack) in slots {
             let slot = usize::from(*slot);
             if let Some(real) = open.real.get_mut(slot) {
-                *real = *stack;
+                *real = stack.clone();
                 touched.push(slot);
             }
         }
@@ -353,7 +361,7 @@ impl Menus {
             return;
         };
         if let (Some(real), Some(remote)) = (open.real.get_mut(index), open.remote.get_mut(index)) {
-            *real = stack;
+            *real = stack.clone();
             *remote = Remote::Sent(stack);
         }
     }
@@ -408,11 +416,8 @@ fn menu_id(kind: MenuKind) -> i32 {
     }
 }
 
-fn wire(stack: ItemStack) -> WireStack {
-    WireStack {
-        item: stack.item,
-        count: stack.count,
-    }
+fn wire(stack: &ItemStack) -> WireStack {
+    crate::encode::wire_stack(stack)
 }
 
 fn encoded<P: packets::Packet>(packet: &P) -> Bytes {

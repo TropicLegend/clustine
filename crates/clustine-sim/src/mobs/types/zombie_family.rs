@@ -268,7 +268,7 @@ pub(crate) fn zombie_equipment(spawn: &mut Spawning<'_>, special: f32) {
             _ => items::IRON_SHOVEL,
         };
         spawn.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
-            Some(ItemStack { item, count: 1 });
+            Some(ItemStack::new(item, 1));
     }
 }
 

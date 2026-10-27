@@ -888,7 +888,7 @@ mod tests {
             lived: 0,
             fresh_at: 0,
             data: crate::EntityData::Item {
-                stack: crate::ItemStack { item: 1, count: 1 },
+                stack: crate::ItemStack::new(1, 1),
                 pick_up_delay: 0,
                 thrower: None,
                 health: 5,

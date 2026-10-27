@@ -437,7 +437,7 @@ pub(crate) fn light_cost(ai: &Ai<'_, '_>, pos: BlockPos) -> f32 {
 pub(crate) fn mob_interact(used: &mut Used<'_>, food: Items, eat: Option<i32>) -> Interaction {
     let now = used.moment;
     let mut animal = animal_of(&used.mob.state);
-    if food.test(used.held) {
+    if food.test(used.held.as_ref()) {
         let age = animal.age(now);
         if age == 0 && animal.love(now) <= 0 {
             animal.set_in_love(now);
@@ -483,6 +483,7 @@ fn golden_dandelion(used: &mut Used<'_>) -> Interaction {
     let mut animal = animal_of(&used.mob.state);
     let usable = used
         .held
+        .as_ref()
         .is_some_and(|stack| stack.count > 0 && stack.item == items::GOLDEN_DANDELION)
         && animal.is_baby()
         && left(animal.lock_until, now) == 0
@@ -559,7 +560,7 @@ pub(crate) fn finalize_ageable_default(spawn: &mut Spawning<'_>) {
 }
 
 /// A held stack of `item`, as tests and the tables of food name it.
-pub(crate) fn is_item(stack: Option<ItemStack>, item: i32) -> bool {
+pub(crate) fn is_item(stack: Option<&ItemStack>, item: i32) -> bool {
     stack.is_some_and(|stack| stack.count > 0 && stack.item == item)
 }
 

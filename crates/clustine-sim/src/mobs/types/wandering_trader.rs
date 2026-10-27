@@ -60,7 +60,7 @@ pub(crate) const INVISIBILITY_TICKS: i32 = 3600;
 
 /// An item in use (`useItem`, `useItemRemaining`): the drink in its main hand, and the
 /// ticks left until it is drunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Using {
     pub(crate) item: ItemStack,
     pub(crate) remaining: i32,
@@ -110,7 +110,7 @@ impl Drink {
             Drink::Invisibility => items::POTION,
             Drink::Milk => items::MILK_BUCKET,
         };
-        ItemStack { item, count: 1 }
+        ItemStack::new(item, 1)
     }
 
     /// What is left in the hand once drunk (`minecraft:use_remainder`).
@@ -119,7 +119,7 @@ impl Drink {
             Drink::Invisibility => items::GLASS_BOTTLE,
             Drink::Milk => items::BUCKET,
         };
-        ItemStack { item, count: 1 }
+        ItemStack::new(item, 1)
     }
 
     fn of(item: i32) -> Option<Self> {
@@ -171,7 +171,7 @@ impl Goal for UseItemGoal {
 
     fn start(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
         let stack = self.drink.stack();
-        ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(stack);
+        ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(stack.clone());
         start_using(ai.tick, stack);
     }
 
@@ -228,8 +228,10 @@ fn updating_using_item(tick: &mut MobTick<'_>) {
     let Some(using) = state_of(&tick.mob).1.using else {
         return;
     };
-    let hand = tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)];
-    let same = hand.is_some_and(|held| held.count > 0 && held.item == using.item.item);
+    let hand = &tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)];
+    let same = hand
+        .as_ref()
+        .is_some_and(|held| held.count > 0 && held.item == using.item.item);
     let Some(drink) = Drink::of(using.item.item).filter(|_| same) else {
         update(&mut tick.mob, |own| own.using = None);
         return;
@@ -465,6 +467,7 @@ impl MobType for WanderingTrader {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         let egg = used
             .held
+            .as_ref()
             .is_some_and(|stack| stack.count > 0 && stack.item == items::VILLAGER_SPAWN_EGG);
         if !egg && !used.mob.body.vitals.dying() && !animal::is_baby(used.mob) {
             return Interaction::Consume;

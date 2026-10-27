@@ -32,6 +32,8 @@ use clustine_sim::api::Tracked;
 use clustine_sim::shown::{DataShown, Holder, Serialiser};
 use clustine_world::EntityData;
 
+use crate::encode::wire_stack;
+
 /// How far an entity has to be from where it was sent last for a move to be sent, the
 /// square of a distance (`ServerEntity.TOLERANCE_LEVEL_POSITION`).
 const POSITION_TOLERANCE: f64 = 7.629_394_531_25e-6;
@@ -473,15 +475,7 @@ pub(crate) fn equipment_of(data: &EntityData) -> Vec<(u8, WireStack)> {
     match data {
         EntityData::ArmorStand { equipment, .. } => equipment
             .iter()
-            .map(|(slot, stack)| {
-                (
-                    *slot,
-                    WireStack {
-                        item: stack.item,
-                        count: stack.count,
-                    },
-                )
-            })
+            .map(|(slot, stack)| (*slot, wire_stack(stack)))
             .collect(),
         _ => Vec::new(),
     }
@@ -805,10 +799,7 @@ impl Tracker {
         match data {
             EntityData::Item { stack, .. } => {
                 if pairing || self.dirty & DIRTY_STACK != 0 {
-                    let stack = WireStack {
-                        item: stack.item,
-                        count: stack.count,
-                    };
+                    let stack = wire_stack(stack);
                     values.push((
                         entity_data::ITEM_STACK,
                         EntityDataValue::ItemStack(Some(stack)),
@@ -835,10 +826,7 @@ impl Tracker {
             } => {
                 self.direction_value(attached.direction, pairing, &mut values);
                 if (pairing && item.is_some()) || (!pairing && self.dirty & DIRTY_STACK != 0) {
-                    let stack = item.map(|stack| WireStack {
-                        item: stack.item,
-                        count: stack.count,
-                    });
+                    let stack = item.as_ref().map(wire_stack);
                     values.push((FRAME_ITEM, EntityDataValue::ItemStack(stack)));
                 }
                 if (pairing && *rotation != 0) || (!pairing && self.dirty & DIRTY_ROTATION != 0) {
@@ -904,10 +892,7 @@ impl Tracker {
             // `ThrowableItemProjectile.DATA_ITEM_STACK`: the stack it shows, which is
             // set as it is made, never the default's object, and never changes.
             EntityData::Thrown { stack, .. } if pairing => {
-                let stack = WireStack {
-                    item: stack.item,
-                    count: stack.count,
-                };
+                let stack = wire_stack(stack);
                 values.push((
                     entity_data::ITEM_STACK,
                     EntityDataValue::ItemStack(Some(stack)),
@@ -1306,7 +1291,7 @@ mod tests {
 
     fn stack(count: i32) -> EntityData {
         EntityData::Item {
-            stack: ItemStack { item: 1, count },
+            stack: ItemStack::new(1, count),
             pick_up_delay: 40,
             thrower: None,
             health: 5,
@@ -1623,10 +1608,7 @@ mod tests {
         }
     }
 
-    const HELMET: ItemStack = ItemStack {
-        item: 1100,
-        count: 1,
-    };
+    const HELMET: ItemStack = ItemStack::new(1100, 1);
 
     #[test]
     fn a_stand_is_paired_with_its_health_alone_and_what_it_wears_is_sent_as_it_changes() {

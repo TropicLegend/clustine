@@ -82,7 +82,7 @@ pub(crate) fn animal_maluses(setup: &mut Setup) {
 /// `AbstractCow.mobInteract`: a bucket on a grown cow is a milk bucket for the player,
 /// whose own client plays the sound; else an animal's use.
 pub(crate) fn milk_or_feed(used: &mut Used<'_>) -> Interaction {
-    if animal::is_item(used.held, items::BUCKET) && !animal::is_baby(used.mob) {
+    if animal::is_item(used.held.as_ref(), items::BUCKET) && !animal::is_baby(used.mob) {
         used.did.push(Did::Sound {
             sound: sounds::ENTITY_COW_MILK,
             source: animal::SOUND_SOURCE_PLAYERS,
@@ -92,10 +92,7 @@ pub(crate) fn milk_or_feed(used: &mut Used<'_>) -> Interaction {
             but_the_player: true,
         });
         used.did.push(Did::Give {
-            stack: clustine_world::ItemStack {
-                item: items::MILK_BUCKET,
-                count: 1,
-            },
+            stack: clustine_world::ItemStack::new(items::MILK_BUCKET, 1),
             no_duplicates: true,
         });
         return Interaction::Success;

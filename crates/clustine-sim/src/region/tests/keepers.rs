@@ -140,7 +140,7 @@ fn holding(region: &mut Region, item: i32) {
     checked(
         region,
         &moves(vec![
-            set_slot(1, 0, Some(ItemStack { item, count: 1 })),
+            set_slot(1, 0, Some(ItemStack::new(item, 1))),
             select(1, 0),
         ]),
     );
@@ -324,10 +324,7 @@ fn a_pufferfish_tames_a_nautilus_which_then_keeps_a_home_where_it_is() {
     );
     let mut tamed = false;
     for _ in 0..60 {
-        let fish = Some(ItemStack {
-            item: items::PUFFERFISH,
-            count: 1,
-        });
+        let fish = Some(ItemStack::new(items::PUFFERFISH, 1));
         let (mut replay, output) = used_now(&mut region, ONE, fish);
         let tames = replay.next_int(3) == 0;
         let own = nautilus::state_of(&mob(&region, ONE)).1;
@@ -522,10 +519,7 @@ fn a_copper_golem_weathers_at_its_time_and_honeycomb_and_an_axe_change_it() {
         false
     )));
     // Waxed: level event 3003 at its block, and it weathers no more.
-    let honeycomb = Some(ItemStack {
-        item: items::HONEYCOMB,
-        count: 1,
-    });
+    let honeycomb = Some(ItemStack::new(items::HONEYCOMB, 1));
     let (_, output) = used_now(&mut region, ONE, honeycomb);
     assert_eq!(level_events(&output), [(3003, BlockPos::new(2, -60, 2), 0)]);
     assert!(sounds_of(&output).contains(&sounds::ITEM_HONEYCOMB_WAX_ON));
@@ -539,11 +533,8 @@ fn a_copper_golem_weathers_at_its_time_and_honeycomb_and_an_axe_change_it() {
         copper_golem::WAXED
     );
     // The axe takes the wax off, then scrapes it back to unaffected.
-    let axe = Some(ItemStack {
-        item: items::IRON_AXE,
-        count: 1,
-    });
-    let (_, output) = used_now(&mut region, ONE, axe);
+    let axe = Some(ItemStack::new(items::IRON_AXE, 1));
+    let (_, output) = used_now(&mut region, ONE, axe.clone());
     assert_eq!(level_events(&output)[0].0, 3004);
     let (_, output) = used_now(&mut region, ONE, axe);
     assert_eq!(level_events(&output)[0].0, 3005);
@@ -692,7 +683,7 @@ fn a_golem_with_a_chest_open_is_counted_at_its_rechecks_until_it_lets_go() {
 // Their brains, as a player meets them.
 
 fn stack_of(item: i32, count: i32) -> ItemStack {
-    ItemStack { item, count }
+    ItemStack::new(item, count)
 }
 
 /// What the container at `pos` holds, slot by slot where anything is.
@@ -704,8 +695,9 @@ fn held_in(region: &Region, pos: BlockPos) -> Vec<(usize, ItemStack)> {
         .iter()
         .enumerate()
         .filter_map(|(slot, held)| {
-            held.filter(|stack| stack.count > 0)
-                .map(|stack| (slot, stack))
+            held.as_ref()
+                .filter(|stack| stack.count > 0)
+                .map(|stack| (slot, stack.clone()))
         })
         .collect()
 }
@@ -714,7 +706,7 @@ fn held_in(region: &Region, pos: BlockPos) -> Vec<(usize, ItemStack)> {
 fn fill_with(region: &mut Region, pos: BlockPos, slots: &[(usize, ItemStack)]) {
     let mut container = region.container_at(pos).expect("a container");
     for (slot, stack) in slots {
-        container.slots[*slot] = Some(*stack);
+        container.slots[*slot] = Some(stack.clone());
     }
     region.set_container(pos, container, &mut TickOutput::default());
 }
@@ -756,7 +748,7 @@ fn golem_holding(key: EntityId, position: [f64; 3], held: Option<ItemStack>) -> 
 
 /// What the golem `key` holds.
 fn golem_hand(region: &Region, key: EntityId) -> Option<ItemStack> {
-    mob(region, key).body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)]
+    mob(region, key).body.equipment.slots[usize::from(crate::living::slots::MAIN_HAND)].clone()
 }
 
 #[test]
@@ -1240,7 +1232,7 @@ fn across_a_pinned_line_tamed_nautiluses_in_love_breed_by_the_protocol() {
     for _ in 0..200 {
         let output = checked(&mut region, &TickInputs::default());
         if let Some(found) = output.effects.iter().find_map(|effect| match effect.what {
-            Effected::OnEntity { key, by } => Some((key, by)),
+            Effected::OnEntity { key, ref by } => Some((key, by.clone())),
             _ => None,
         }) {
             asked = Some(found);

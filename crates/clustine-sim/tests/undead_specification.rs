@@ -481,7 +481,7 @@ fn equipment_shown(outputs: &[TickOutput], key: EntityId) -> Vec<(u8, ItemStack)
                 RegionEvent::EquipmentChanged { entity, slots, .. } if *entity == key => {
                     for (slot, stack) in slots {
                         worn.retain(|(at, _)| at != slot);
-                        worn.push((*slot, *stack));
+                        worn.push((*slot, stack.clone()));
                     }
                 }
                 _ => {}
@@ -968,7 +968,7 @@ fn at_easy_no_zombie_wears_armour_and_one_in_a_hundred_holds_an_iron_weapon() {
                 .equipment
                 .iter()
                 .find(|(slot, _)| *slot == MAIN_HAND)
-                .map(|(_, stack)| *stack)
+                .map(|(_, stack)| stack.clone())
         })
         .collect();
     assert!(
@@ -998,13 +998,7 @@ fn a_skeleton_from_an_egg_is_shown_holding_its_bow() {
     outputs.extend(scene.idle_for(3));
     assert_eq!(
         equipment_shown(&outputs, made[0]),
-        vec![(
-            MAIN_HAND,
-            ItemStack {
-                item: items::BOW,
-                count: 1
-            }
-        )],
+        vec![(MAIN_HAND, ItemStack::new(items::BOW, 1))],
         "the skeleton's bow is shown"
     );
 }

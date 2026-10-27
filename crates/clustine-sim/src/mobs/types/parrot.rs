@@ -361,7 +361,7 @@ impl Goal for ParrotWanderGoal {
 /// `Parrot.mobInteract` (the brief's 5.8).
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let (_, own) = state_of(used.mob);
-    let held = used.held.filter(|stack| stack.count > 0);
+    let held = used.held.as_ref().filter(|stack| stack.count > 0);
     let is = |tag: &str| held.is_some_and(|stack| item_in_tag(stack.item, tag));
     if !own.tame.is_tame() && is("minecraft:parrot_food") {
         let pitch = pitch(used.draws);

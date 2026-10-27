@@ -109,7 +109,7 @@ fn drops(text: &str, draws: &[Draw]) -> Vec<ItemStack> {
 }
 
 fn stack(item: i32, count: i32) -> ItemStack {
-    ItemStack { item, count }
+    ItemStack::new(item, count)
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn a_stack_above_its_size_is_split_into_full_ones() {
     let mut draws = Scripted::new(&[]);
     assert_eq!(
         table_drops(table, BlockState(0), AT, &mut draws, &mut air),
-        [stack(items::RED_BED, 1); 4]
+        vec![stack(items::RED_BED, 1); 4]
     );
 }
 
@@ -422,10 +422,7 @@ const BY_TNT: Broken = Broken {
 
 #[test]
 fn a_chorus_flower_drops_to_an_explosion_and_not_to_a_rule() {
-    let flower = ItemStack {
-        item: items::CHORUS_FLOWER,
-        count: 1,
-    };
+    let flower = ItemStack::new(items::CHORUS_FLOWER, 1);
     assert_eq!(drops("minecraft:chorus_flower[age=0]", &[]), []);
     assert_eq!(
         drops_as("minecraft:chorus_flower[age=0]", BY_TNT, &[]),
@@ -439,14 +436,11 @@ fn an_explosion_that_decays_keeps_a_block_one_time_in_its_radius() {
         this_entity: true,
         explosion_radius: Some(4.0),
     };
-    let cobblestone = ItemStack {
-        item: items::COBBLESTONE,
-        count: 1,
-    };
+    let cobblestone = ItemStack::new(items::COBBLESTONE, 1);
     // `survives_explosion` holds for a draw at or below a quarter.
     assert_eq!(
         drops_as("minecraft:stone", decaying, &[Draw::Float(0.25)]),
-        [cobblestone]
+        std::slice::from_ref(&cobblestone)
     );
     assert_eq!(
         drops_as("minecraft:stone", decaying, &[Draw::Float(0.26)]),

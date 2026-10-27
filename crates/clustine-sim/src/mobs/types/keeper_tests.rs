@@ -34,7 +34,7 @@ fn draws() -> Random {
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 /// A mob of the type `kind` at its full health, with the nautilus's state `own` and
@@ -408,10 +408,7 @@ fn a_pufferfish_bucket_tames_too_and_leaves_a_water_bucket_but_cod_does_not_tame
     assert_eq!(
         did[0],
         Did::Give {
-            stack: ItemStack {
-                item: items::WATER_BUCKET,
-                count: 1
-            },
+            stack: ItemStack::new(items::WATER_BUCKET, 1),
             no_duplicates: true,
         }
     );
@@ -841,10 +838,7 @@ fn honeycomb_waxes_a_copper_golem_and_an_axe_takes_the_wax_off_or_scrapes_a_stag
 fn an_empty_hand_takes_what_a_copper_golem_holds_and_shears_take_its_poppy() {
     let mut mob = Mob::fresh();
     let hand = usize::from(slots::MAIN_HAND);
-    mob.body.equipment.slots[hand] = Some(ItemStack {
-        item: items::COBBLESTONE,
-        count: 16,
-    });
+    mob.body.equipment.slots[hand] = Some(ItemStack::new(items::COBBLESTONE, 16));
     let (result, did) = used(GOLEM, &mut mob, None, false, &mut draws());
     assert_eq!(result, Interaction::Success);
     assert!(mob.body.equipment.slots[hand].is_none());
@@ -852,10 +846,7 @@ fn an_empty_hand_takes_what_a_copper_golem_holds_and_shears_take_its_poppy() {
     assert_eq!(
         did,
         [Did::Throw {
-            stack: ItemStack {
-                item: items::COBBLESTONE,
-                count: 16
-            },
+            stack: ItemStack::new(items::COBBLESTONE, 16),
             at: [0.0, 64.0 + eye - 0.300_000_011_920_928_96, 0.0],
             pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
             motion: [0.300_000_011_920_928_96, 0.0, 0.0],
@@ -877,10 +868,7 @@ fn an_empty_hand_takes_what_a_copper_golem_holds_and_shears_take_its_poppy() {
     assert!(mob.body.equipment.slots[antenna].is_none());
     assert_eq!(sounds_of(&did), [sounds::ENTITY_COPPER_GOLEM_SHEAR]);
     assert!(did.contains(&Did::Drop {
-        stack: ItemStack {
-            item: items::POPPY,
-            count: 1
-        },
+        stack: ItemStack::new(items::POPPY, 1),
         at: [0.0, 65.5, 0.0],
         pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
         push: None,

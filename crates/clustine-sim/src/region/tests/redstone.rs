@@ -82,7 +82,7 @@ pub(super) fn click(at: BlockPos) -> TickInputs {
 }
 
 pub(super) fn holding(item: i32) -> TickInputs {
-    let stack = ItemStack { item, count: 1 };
+    let stack = ItemStack::new(item, 1);
     moves(vec![set_slot(1, 0, Some(stack)), select(1, 0)])
 }
 

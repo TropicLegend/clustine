@@ -167,7 +167,7 @@ fn deliver(holder: &mut Region, made: &[clustine_world::Effect], made_in: u64) {
                 sequence: 1,
                 index: u32::try_from(index).expect("few"),
             },
-            effect: *effect,
+            effect: effect.clone(),
             due: Due::At { tick: made_in },
         })
         .collect();

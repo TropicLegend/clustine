@@ -162,14 +162,14 @@ fn damage_amount(radius: f32, distance: f64, seen: f32) -> f32 {
 }
 
 /// `ItemEntity.areMergable(into, other)` and `ItemEntity.merge(into, other, 16)` of a
-/// collector's stack `into` and a drop `other`: where they are of one item and both fit
-/// one stack, as much of `other` moves into `into` as brings it to 16.
+/// collector's stack `into` and a drop `other`: where they are of one item with the same
+/// components and both fit one stack, as much of `other` moves into `into` as brings it to 16.
 fn try_merge(into: &mut ItemStack, other: &mut ItemStack) {
-    let max = crate::physics::item::max_stack_size(*other);
-    if other.count + into.count > max || into.item != other.item {
+    let max = crate::physics::item::max_stack_size(other);
+    if other.count + into.count > max || !into.same_kind(other) {
         return;
     }
-    let most = crate::physics::item::max_stack_size(*into).min(MOST_MERGED);
+    let most = crate::physics::item::max_stack_size(into).min(MOST_MERGED);
     let moved = (most - into.count).min(other.count);
     into.count += moved;
     other.count -= moved;
@@ -568,8 +568,8 @@ impl Region {
         let creative = owner_is_creative(explosion.owner);
         let mut flags = 0;
         match record.data {
-            EntityData::Item { stack, .. } => {
-                if self.blast_item(record, stack, hit.damage, output) {
+            EntityData::Item { ref stack, .. } => {
+                if self.blast_item(record, stack.clone(), hit.damage, output) {
                     return;
                 }
                 flags |= Tracked::SYNC_VELOCITY;
@@ -651,7 +651,7 @@ impl Region {
             return true;
         };
         let EntityData::Item {
-            stack,
+            ref stack,
             pick_up_delay,
             thrower,
             health,
@@ -667,7 +667,7 @@ impl Region {
             return true;
         }
         let data = EntityData::Item {
-            stack,
+            stack: stack.clone(),
             pick_up_delay,
             thrower,
             health: i16::try_from(health).unwrap_or(i16::MAX),
@@ -873,7 +873,7 @@ impl Region {
     /// effects of one explosion that come apart in two ticks lay apart (named).
     pub(super) fn lay_blast_drops(&mut self, output: &mut TickOutput) {
         for ((source, _), collectors) in std::mem::take(&mut self.blast_drops) {
-            let Some((first, _)) = collectors.first().copied() else {
+            let Some(&(first, _)) = collectors.first() else {
                 continue;
             };
             let mut random =

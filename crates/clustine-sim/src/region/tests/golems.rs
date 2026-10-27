@@ -161,7 +161,7 @@ fn used_now(region: &mut Region, key: EntityId, held: Option<ItemStack>) -> (Ran
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 /// A pumpkin set at `head` as a placement sets it, with every update, between ticks.

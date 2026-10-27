@@ -84,7 +84,7 @@ impl MobType for Mooshroom {
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         let (animal, mut own) = animal::read::<MooshroomState>(&used.mob.state);
         let baby = animal.is_baby();
-        let held = used.held.filter(|stack| stack.count > 0);
+        let held = used.held.as_ref().filter(|stack| stack.count > 0);
         let item = held.map(|stack| stack.item);
         if item == Some(items::BOWL) && !baby {
             let suspicious = own.stew.take().is_some();
@@ -95,10 +95,7 @@ impl MobType for Mooshroom {
             };
             used.mob.state = animal::write(&animal, &own);
             used.did.push(Did::Give {
-                stack: ItemStack {
-                    item: result,
-                    count: 1,
-                },
+                stack: ItemStack::new(result, 1),
                 no_duplicates: false,
             });
             used.did.push(Did::Sound {

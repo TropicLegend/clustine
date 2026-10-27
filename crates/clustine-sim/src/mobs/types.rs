@@ -919,7 +919,7 @@ pub(crate) trait MobType: Sync {
 /// What a breeding lays instead of a child ([`MobType::laid_from_breeding`]): the item,
 /// and the sound it is laid with, at a pitch about `pitch_base` drawn of the parent's own
 /// random (`(a - b) * 0.2 + pitch_base`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Laid {
     pub(crate) stack: ItemStack,
     pub(crate) sound: i32,

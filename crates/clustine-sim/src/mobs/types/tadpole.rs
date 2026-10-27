@@ -150,7 +150,7 @@ fn particle_draws(draws: &mut Random) {
 fn mob_interact(used: &mut Used<'_>) -> Interaction {
     let now = used.moment;
     let mut tadpole = read(&used.mob.state);
-    if super::frog::FOOD.test(used.held) && !tadpole.age_locked {
+    if super::frog::FOOD.test(used.held.as_ref()) && !tadpole.age_locked {
         // `usePlayerItem`: a creative player keeps the ball.
         let gained = animal::speed_up_seconds(tadpole.ticks_left(now)) * 20;
         let grows = tadpole.set_age(tadpole.age(now).wrapping_add(gained), now);
@@ -161,7 +161,7 @@ fn mob_interact(used: &mut Used<'_>) -> Interaction {
         particle_draws(used.draws);
         return Interaction::Success;
     }
-    let dandelion = animal::is_item(used.held, items::GOLDEN_DANDELION)
+    let dandelion = animal::is_item(used.held.as_ref(), items::GOLDEN_DANDELION)
         && left(tadpole.lock_until, now) == 0
         && !entity_in_tag(i32::from(used.kind), "minecraft:cannot_be_age_locked");
     if dandelion {

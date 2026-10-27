@@ -54,7 +54,7 @@ fn player(n: u128) -> PlayerId {
 }
 
 fn stack(item: i32, count: i32) -> ItemStack {
-    ItemStack { item, count }
+    ItemStack::new(item, count)
 }
 
 fn state(name: &str) -> BlockState {
@@ -414,6 +414,7 @@ impl Scene {
             .expect("player 1 is there")
             .inventory
             .0[slot]
+            .clone()
     }
 }
 
@@ -444,7 +445,7 @@ fn items_lying(entities: &[Entity]) -> Vec<ItemStack> {
     entities
         .iter()
         .filter_map(|entity| match &entity.data {
-            EntityData::Item { stack, .. } => Some(*stack),
+            EntityData::Item { stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect()
@@ -457,7 +458,7 @@ fn frame_of(entity: &Entity) -> (Attached, Option<ItemStack>, u8) {
             item,
             rotation,
             ..
-        } => (*attached, *item, *rotation),
+        } => (*attached, item.clone(), *rotation),
         other => panic!("not an item frame: {other:?}"),
     }
 }
@@ -490,9 +491,9 @@ fn power_at(region: &Region, at: BlockPos) -> u8 {
 }
 
 fn hotbar(slots: &[(usize, ItemStack)]) -> [Option<ItemStack>; HOTBAR_SLOTS] {
-    let mut hotbar = [None; HOTBAR_SLOTS];
+    let mut hotbar = [const { None }; HOTBAR_SLOTS];
     for (slot, stack) in slots {
-        hotbar[*slot] = Some(*stack);
+        hotbar[*slot] = Some(stack.clone());
     }
     hotbar
 }
@@ -1544,7 +1545,13 @@ fn wall_across() -> Blocks {
 /// The west, with player 1 in it, and the east, holding `entities`.
 fn two_sides(entities: &[Entity], hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> (Scene, Region) {
     let blocks = wall_across();
-    let west = Scene::new(Layout::side(true), &blocks, entities, hotbar, BY_THE_LINE);
+    let west = Scene::new(
+        Layout::side(true),
+        &blocks,
+        entities,
+        hotbar.clone(),
+        BY_THE_LINE,
+    );
     let east = region_of(&Layout::side(false), &blocks, entities, hotbar);
     (west, east)
 }
@@ -1555,7 +1562,7 @@ fn on_entities(output: &TickOutput) -> Vec<Effect> {
         .effects
         .iter()
         .filter(|effect| matches!(effect.what, Effected::OnEntity { .. }))
-        .copied()
+        .cloned()
         .collect()
 }
 
@@ -1612,13 +1619,15 @@ fn an_item_put_in_a_frame_across_a_pinned_line_goes_as_an_effect_and_the_holder_
         ChunkPos::new(1, 0),
         "filed for the frame's chunk"
     );
-    match effects[0].what {
+    match effects[0].what.clone() {
         Effected::OnEntity {
             key,
-            by: EntityUse::Interact { held, sneaking, .. },
+            by: EntityUse::Interact {
+                ref held, sneaking, ..
+            },
         } => {
             assert_eq!(key, frame.key);
-            assert_eq!(held, Some(stack(items::STONE, 64)));
+            assert_eq!(*held, Some(stack(items::STONE, 64)));
             assert!(!sneaking);
         }
         other => panic!("not a use of the frame: {other:?}"),

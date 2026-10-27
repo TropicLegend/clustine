@@ -275,19 +275,15 @@ fn a_wet_undead_or_one_under_a_roof_draws_and_does_not_burn() {
 fn an_undead_horse_s_body_armour_keeps_the_sun_off_and_its_head_does_not() {
     let world = open_sky(NOON);
     let mut armoured = healthy(ZOMBIE_HORSE);
-    armoured.body.equipment.slots[usize::from(slots::BODY)] = Some(ItemStack {
-        item: items::IRON_HORSE_ARMOR,
-        count: 1,
-    });
+    armoured.body.equipment.slots[usize::from(slots::BODY)] =
+        Some(ItemStack::new(items::IRON_HORSE_ARMOR, 1));
     let mut stream = stream_whose_first_float(true);
     let (_, fire) = burnt(&world, ZOMBIE_HORSE, armoured, false, &mut stream);
     assert_eq!(fire, 0, "the body slot protects");
 
     let mut hatted = healthy(ZOMBIE_HORSE);
-    hatted.body.equipment.slots[usize::from(slots::HEAD)] = Some(ItemStack {
-        item: items::IRON_HELMET,
-        count: 1,
-    });
+    hatted.body.equipment.slots[usize::from(slots::HEAD)] =
+        Some(ItemStack::new(items::IRON_HELMET, 1));
     let mut stream = stream_whose_first_float(true);
     let (_, fire) = burnt(&world, ZOMBIE_HORSE, hatted, false, &mut stream);
     assert_eq!(fire, 160, "not the head");
@@ -298,10 +294,8 @@ fn a_wearing_protection_draws_its_wear_and_a_carved_pumpkin_none() {
     let world = open_sky(NOON);
     let mut armoured = healthy(ZOMBIE_HORSE);
     // Horse armour does not wear; a damageable item in the slot would.
-    armoured.body.equipment.slots[usize::from(slots::BODY)] = Some(ItemStack {
-        item: items::IRON_CHESTPLATE,
-        count: 1,
-    });
+    armoured.body.equipment.slots[usize::from(slots::BODY)] =
+        Some(ItemStack::new(items::IRON_CHESTPLATE, 1));
     let mut stream = stream_whose_first_float(true);
     let mut expected = stream.clone();
     burnt(&world, ZOMBIE_HORSE, armoured, false, &mut stream);
@@ -310,10 +304,8 @@ fn a_wearing_protection_draws_its_wear_and_a_carved_pumpkin_none() {
     assert_eq!(stream, expected, "the sun's draw, then the wear's");
 
     let mut pumpkin = healthy(ZOMBIE_HORSE);
-    pumpkin.body.equipment.slots[usize::from(slots::BODY)] = Some(ItemStack {
-        item: items::CARVED_PUMPKIN,
-        count: 1,
-    });
+    pumpkin.body.equipment.slots[usize::from(slots::BODY)] =
+        Some(ItemStack::new(items::CARVED_PUMPKIN, 1));
     let mut stream = stream_whose_first_float(true);
     let mut expected = stream.clone();
     burnt(&world, ZOMBIE_HORSE, pumpkin, false, &mut stream);

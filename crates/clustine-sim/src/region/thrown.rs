@@ -116,8 +116,8 @@ impl Hit {
     }
 
     /// The hit an effect brings, if it is one.
-    pub(crate) fn of_use(by: EntityUse) -> Option<Self> {
-        match by {
+    pub(crate) fn of_use(by: &EntityUse) -> Option<Self> {
+        match *by {
             EntityUse::Thrown {
                 projectile,
                 kind,
@@ -242,10 +242,7 @@ impl Region {
             known: self.player_movement(player),
             on_ground,
         };
-        let stack = ItemStack {
-            item: items::SNOWBALL,
-            count: 1,
-        };
+        let stack = ItemStack::new(items::SNOWBALL, 1);
         self.make_thrown(
             owner,
             stack,
@@ -442,7 +439,7 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let EntityData::Thrown {
-            stack,
+            ref stack,
             owner,
             left_owner,
             has_been_shot,
@@ -558,7 +555,7 @@ impl Region {
             pitch,
             lived: entity.lived.saturating_add(1),
             data: EntityData::Thrown {
-                stack,
+                stack: stack.clone(),
                 owner,
                 left_owner,
                 has_been_shot: true,

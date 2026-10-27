@@ -115,7 +115,7 @@ impl Region {
         let Some(reset) = held.attack_reset else {
             return 1.0;
         };
-        let speed = held_value(4.0, ids::ATTACK_SPEED, held.held());
+        let speed = held_value(4.0, ids::ATTACK_SPEED, held.held().as_ref());
         let delay = (1.0 / speed * 20.0) as f32;
         let ticks = self.tick.saturating_sub(reset) as f32;
         ((ticks + 0.5) / delay).clamp(0.0, 1.0)

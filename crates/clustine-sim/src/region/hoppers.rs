@@ -152,7 +152,7 @@ impl Open {
     /// slots is full.
     fn is_full(&self) -> bool {
         self.slots.iter().all(|slot| match slot {
-            Some(stack) if stack.count > 0 => stack.count >= max_stack_size(*stack),
+            Some(stack) if stack.count > 0 => stack.count >= max_stack_size(stack),
             _ => false,
         })
     }
@@ -208,20 +208,18 @@ fn add_to(
         if stack.count <= 0 {
             break;
         }
-        let was_empty = slots.iter().all(|slot| filled(*slot).is_none());
-        let moved = match filled(slots[slot]) {
+        let was_empty = slots.iter().all(|slot| filled(slot.clone()).is_none());
+        let moved = match filled(slots[slot].clone()) {
             None => {
-                let most = CONTAINER_MAX.min(max_stack_size(stack));
-                slots[slot] = Some(ItemStack {
-                    count: stack.count.min(most),
-                    ..stack
-                });
+                let most = CONTAINER_MAX.min(max_stack_size(&stack));
+                slots[slot] = Some(stack.with_count(stack.count.min(most)));
                 stack.count = 0;
                 true
             }
-            // `canMergeItems`: no more than it stacks to, of the same item.
-            Some(mut here) if here.item == stack.item && here.count <= max_stack_size(here) => {
-                let room = max_stack_size(stack) - here.count;
+            // `canMergeItems`: no more than it stacks to, of the same item with the same
+            // components.
+            Some(mut here) if here.same_kind(&stack) && here.count <= max_stack_size(&here) => {
+                let room = max_stack_size(&stack) - here.count;
                 let taken = stack.count.min(room);
                 if taken > 0 {
                     stack.count -= taken;
@@ -242,7 +240,7 @@ fn add_to(
 fn inventory_full(slots: &[Option<ItemStack>]) -> bool {
     slots
         .iter()
-        .all(|slot| filled(*slot).is_some_and(|stack| stack.count == max_stack_size(stack)))
+        .all(|slot| filled(slot.clone()).is_some_and(|stack| stack.count == max_stack_size(&stack)))
 }
 
 /// The slots of a container entity's contents, `size` of them.
@@ -250,7 +248,7 @@ fn slots_of(contents: &Contents, size: usize) -> Vec<Option<ItemStack>> {
     let mut slots = vec![None; size];
     for (slot, stack) in contents {
         if let Some(place) = slots.get_mut(usize::from(*slot)) {
-            *place = Some(*stack);
+            *place = Some(stack.clone());
         }
     }
     slots
@@ -261,7 +259,7 @@ fn contents_of(slots: &[Option<ItemStack>]) -> Contents {
     slots
         .iter()
         .enumerate()
-        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, filled(*stack)?)))
+        .filter_map(|(slot, stack)| Some((u8::try_from(slot).ok()?, filled(stack.clone())?)))
         .collect()
 }
 
@@ -382,7 +380,7 @@ impl Region {
         };
         let mut slots = container.slots;
         let mut moved = false;
-        if slots.iter().any(|slot| filled(*slot).is_some()) {
+        if slots.iter().any(|slot| filled(slot.clone()).is_some()) {
             moved = self.eject_items(pos, state, timer, &mut slots, output);
         }
         if !inventory_full(&slots) {
@@ -434,11 +432,11 @@ impl Region {
             return false;
         }
         for slot in slots.iter_mut() {
-            let Some(stack) = filled(*slot) else {
+            let Some(stack) = filled(slot.clone()) else {
                 continue;
             };
-            *slot = less_one(stack);
-            if open.add(ItemStack { count: 1, ..stack }).is_none() {
+            *slot = less_one(stack.clone());
+            if open.add(stack.with_count(1)).is_none() {
                 self.close_container(open, Some(timer), output);
                 return true;
             }
@@ -463,11 +461,11 @@ impl Region {
         let above = physics::containing(up);
         if let Some(mut source) = self.open_container(above, up, sucker.draw) {
             for slot in 0..source.slots.len() {
-                let Some(stack) = filled(source.slots[slot]) else {
+                let Some(stack) = filled(source.slots[slot].clone()) else {
                     continue;
                 };
-                source.slots[slot] = less_one(stack);
-                let (rest, _) = add_to(slots, ItemStack { count: 1, ..stack }, false);
+                source.slots[slot] = less_one(stack.clone());
+                let (rest, _) = add_to(slots, stack.with_count(1), false);
                 if rest.is_none() {
                     self.close_container(source, None, output);
                     return true;
@@ -499,7 +497,7 @@ impl Region {
             .filter(|(key, chunk)| {
                 self.ticks_chunk(*chunk)
                     && self.entity_record(*key, *chunk).is_some_and(|record| {
-                        matches!(record.data, EntityData::Item { stack, .. } if stack.count > 0)
+                        matches!(record.data, EntityData::Item { ref stack, .. } if stack.count > 0)
                     })
             })
             .collect()
@@ -519,7 +517,7 @@ impl Region {
             return false;
         };
         let EntityData::Item {
-            stack,
+            ref stack,
             pick_up_delay,
             thrower,
             health,
@@ -528,12 +526,12 @@ impl Region {
         else {
             return false;
         };
-        let (rest, _) = add_to(slots, stack, false);
+        let (rest, _) = add_to(slots, stack.clone(), false);
         let Some(rest) = rest else {
             self.remove_entity(key, record.hops, chunk, output);
             return true;
         };
-        if rest != stack {
+        if rest != *stack {
             let data = EntityData::Item {
                 stack: rest,
                 pick_up_delay,
@@ -896,7 +894,7 @@ impl Region {
 /// all of its stack that goes into `slots`; an item that went wholly is gone, one that
 /// went in part keeps what is left. Whether it went wholly.
 fn take_from_item(slots: &mut [Option<ItemStack>], item: &mut Item) -> bool {
-    let (rest, _) = add_to(slots, item.stack, false);
+    let (rest, _) = add_to(slots, item.stack.clone(), false);
     match rest {
         None => {
             item.removed = true;
@@ -915,21 +913,14 @@ mod tests {
     use clustine_data::items;
 
     fn stack(item: i32, count: i32) -> Option<ItemStack> {
-        Some(ItemStack { item, count })
+        Some(ItemStack::new(item, count))
     }
 
     #[test]
     fn an_item_goes_onto_a_stack_of_its_own_before_an_empty_slot_only_in_slot_order() {
         // `tryMoveInItem` goes slot by slot: an empty slot before the stack takes it.
         let mut slots = vec![None, stack(items::STONE, 3), None];
-        let (rest, fed) = add_to(
-            &mut slots,
-            ItemStack {
-                item: items::STONE,
-                count: 1,
-            },
-            false,
-        );
+        let (rest, fed) = add_to(&mut slots, ItemStack::new(items::STONE, 1), false);
         assert_eq!(rest, None);
         assert!(!fed, "the container held something");
         assert_eq!(
@@ -942,14 +933,7 @@ mod tests {
     fn a_stack_fills_what_room_there_is_and_the_rest_is_left() {
         // A stone stacks to 64: 60 and 10 make 64 and 6 left, which the next slot takes.
         let mut slots = vec![stack(items::STONE, 60), stack(items::DIRT, 1)];
-        let (rest, _) = add_to(
-            &mut slots,
-            ItemStack {
-                item: items::STONE,
-                count: 10,
-            },
-            false,
-        );
+        let (rest, _) = add_to(&mut slots, ItemStack::new(items::STONE, 10), false);
         assert_eq!(rest, stack(items::STONE, 6));
         assert_eq!(slots[0], stack(items::STONE, 64));
     }
@@ -957,18 +941,33 @@ mod tests {
     #[test]
     fn a_shulker_box_takes_no_shulker_box_and_anything_else() {
         let mut slots = vec![None; 27];
-        let boxed = ItemStack {
-            item: items::RED_SHULKER_BOX,
-            count: 1,
-        };
-        assert_eq!(add_to(&mut slots, boxed, true), (Some(boxed), false));
-        let stone = ItemStack {
-            item: items::STONE,
-            count: 1,
-        };
+        let boxed = ItemStack::new(items::RED_SHULKER_BOX, 1);
+        assert_eq!(
+            add_to(&mut slots, boxed.clone(), true),
+            (Some(boxed.clone()), false)
+        );
+        let stone = ItemStack::new(items::STONE, 1);
         assert_eq!(add_to(&mut slots, stone, true), (None, true));
         // Any other container takes a shulker box.
-        assert_eq!(add_to(&mut [None; 5], boxed, false).0, None);
+        assert_eq!(add_to(&mut [const { None }; 5], boxed, false).0, None);
+    }
+
+    /// `canMergeItems` asks for the same components too: a worn sword's stack and a new
+    /// one's are two stacks, two worn alike are one.
+    #[test]
+    fn a_stack_merges_into_a_slot_only_where_its_components_are_the_same() {
+        let worn = |count| {
+            let mut stack = ItemStack::new(items::STONE, count);
+            stack.components.set(clustine_world::Component::Damage(3));
+            stack
+        };
+        let mut slots = vec![Some(worn(10)), None];
+        let (rest, _) = add_to(&mut slots, ItemStack::new(items::STONE, 5), false);
+        assert_eq!(rest, None);
+        assert_eq!(slots, [Some(worn(10)), stack(items::STONE, 5)]);
+        let (rest, _) = add_to(&mut slots, worn(4), false);
+        assert_eq!(rest, None);
+        assert_eq!(slots, [Some(worn(14)), stack(items::STONE, 5)]);
     }
 
     #[test]

@@ -595,17 +595,14 @@ fn a_furnace_cart_takes_coal_and_pushes_away_from_the_player() {
         [0.0; 3],
     );
     lay(&mut region, &furnace);
-    let coal = ItemStack {
-        item: items::COAL,
-        count: 1,
-    };
+    let coal = ItemStack::new(items::COAL, 1);
     let fuel = |region: &mut Region, from: [f64; 3]| {
         let mut output = TickOutput::default();
         let entity = record(region, furnace.key).unwrap();
         let by = EntityUse::Interact {
             player: EntityId(1),
             creative: true,
-            held: Some(coal),
+            held: Some(coal.clone()),
             location: [Double(0.0); 3],
             sneaking: false,
             from: from.map(Double),
@@ -657,10 +654,7 @@ fn a_furnace_cart_takes_coal_and_pushes_away_from_the_player() {
     let by = EntityUse::Interact {
         player: EntityId(1),
         creative: true,
-        held: Some(ItemStack {
-            item: items::DIRT,
-            count: 1,
-        }),
+        held: Some(ItemStack::new(items::DIRT, 1)),
         location: [Double(0.0); 3],
         sneaking: false,
         from: [Double(0.0); 3],
@@ -690,15 +684,7 @@ fn a_full_chest_cart_rolls_less_far_than_an_empty_one() {
     let full = Entity {
         data: cart_data(
             (0..27)
-                .map(|slot| {
-                    (
-                        slot,
-                        ItemStack {
-                            item: items::DIRT,
-                            count: 64,
-                        },
-                    )
-                })
+                .map(|slot| (slot, ItemStack::new(items::DIRT, 64)))
                 .collect(),
         ),
         ..cart_of(
@@ -751,12 +737,9 @@ fn a_detector_rail_signals_a_cart_and_a_comparator_reads_its_chest() {
             state("minecraft:comparator[facing=north,mode=compare,powered=false]"),
         ),
     ]);
-    let stack = ItemStack {
-        item: items::DIRT,
-        count: 64,
-    };
+    let stack = ItemStack::new(items::DIRT, 64);
     let chest = Entity {
-        data: cart_data(vec![(0, stack), (1, stack)]),
+        data: cart_data(vec![(0, stack.clone()), (1, stack)]),
         ..cart_of(1, entity_types::CHEST_MINECART, [6.5, FLAT, 8.5], [0.0; 3])
     };
     lay(&mut region, &chest);
@@ -820,7 +803,7 @@ fn a_detector_rail_signals_a_cart_and_a_comparator_reads_its_chest() {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack),
+            EntityData::Item { ref stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect();
@@ -867,17 +850,11 @@ fn a_hard_hit_breaks_a_cart_into_its_item() {
         .values()
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
-            EntityData::Item { stack, .. } => Some(stack),
+            EntityData::Item { ref stack, .. } => Some(stack.clone()),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        dropped,
-        [ItemStack {
-            item: items::FURNACE_MINECART,
-            count: 1
-        }]
-    );
+    assert_eq!(dropped, [ItemStack::new(items::FURNACE_MINECART, 1)]);
 }
 
 /// A minecart item used on a rail places a cart of its kind at the rail's middle and a

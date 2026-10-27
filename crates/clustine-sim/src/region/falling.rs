@@ -684,7 +684,7 @@ impl Region {
     /// `spawnAtLocation(level, block)`: one item of the block, where the entity is.
     fn drop_falling_block(&mut self, block: BlockState, at: [f64; 3], output: &mut TickOutput) {
         if let Some(item) = super::drops::item_of_block(block) {
-            let stack = clustine_world::ItemStack { item, count: 1 };
+            let stack = clustine_world::ItemStack::new(item, 1);
             self.spawn_item(at, stack, output);
         }
     }

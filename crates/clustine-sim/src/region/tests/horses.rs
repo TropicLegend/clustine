@@ -88,7 +88,7 @@ fn all_of(region: &Region, kind: i32) -> Vec<Entity> {
 }
 
 fn one(item: i32) -> ItemStack {
-    ItemStack { item, count: 1 }
+    ItemStack::new(item, 1)
 }
 
 fn holding(region: &mut Region, stack: Option<ItemStack>) {
@@ -432,26 +432,14 @@ fn a_sneaking_owner_opens_a_donkey_s_menu_and_a_saddle_put_in_its_slot_goes_on()
         .collect();
     assert_eq!(saddled.len(), 2);
     // Dirt does not go in the body's slot; it does in the chest.
-    holding(
-        &mut region,
-        Some(ItemStack {
-            item: items::DIRT,
-            count: 5,
-        }),
-    );
+    holding(&mut region, Some(ItemStack::new(items::DIRT, 5)));
     checked(&mut region, &click(17 + 27));
     checked(&mut region, &click(1));
     assert_eq!(mob(&region, ONE).body.equipment.slots[6], None);
     checked(&mut region, &click(2));
     assert_eq!(
         horse_of(&region, ONE).items,
-        [(
-            0,
-            ItemStack {
-                item: items::DIRT,
-                count: 5
-            }
-        )]
+        [(0, ItemStack::new(items::DIRT, 5))]
     );
     // A wild donkey's menu does not open.
     let mut region = on_ticking_floor_with(&[]);

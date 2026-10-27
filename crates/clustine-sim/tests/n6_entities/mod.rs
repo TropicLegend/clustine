@@ -53,14 +53,7 @@ pub fn item(n: u32, stack: ItemStack, position: [f64; 3]) -> Entity {
 
 /// One dirt lying at `position`.
 pub fn dirt(n: u32, position: [f64; 3]) -> Entity {
-    item(
-        n,
-        ItemStack {
-            item: items::DIRT,
-            count: 1,
-        },
-        position,
-    )
+    item(n, ItemStack::new(items::DIRT, 1), position)
 }
 
 /// An item that despawns within `ticks` ticks: an item is gone at an age of 6000.

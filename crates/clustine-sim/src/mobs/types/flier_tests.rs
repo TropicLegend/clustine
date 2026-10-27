@@ -36,7 +36,7 @@ fn draws(seed: u64) -> Random {
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 /// Open air above a stone floor below y = 0.
@@ -697,10 +697,7 @@ fn a_sniffer_s_sounds_are_its_own_and_it_is_quiet_while_it_digs_or_searches() {
 fn an_allay_takes_one_of_what_it_is_given_likes_the_giver_and_gives_it_back_with_what_it_gathered()
 {
     let mut mob = Mob::fresh();
-    let given = ItemStack {
-        item: items::DIAMOND,
-        count: 5,
-    };
+    let given = ItemStack::new(items::DIAMOND, 5);
     let (result, did) = interact(ALLAY, &mut mob, Some(given));
     assert_eq!(result, Interaction::Success);
     assert_eq!(mob.body.equipment.slots[0], one(items::DIAMOND));
@@ -718,10 +715,7 @@ fn an_allay_takes_one_of_what_it_is_given_likes_the_giver_and_gives_it_back_with
     );
     // An empty hand takes it back; what it gathered falls at its eyes with no motion.
     allay::update(&mut mob, |own| {
-        own.inventory = Some(ItemStack {
-            item: items::DIAMOND,
-            count: 3,
-        });
+        own.inventory = Some(ItemStack::new(items::DIAMOND, 3));
     });
     let (result, did) = interact(ALLAY, &mut mob, None);
     assert_eq!(result, Interaction::Success);
@@ -741,10 +735,7 @@ fn an_allay_takes_one_of_what_it_is_given_likes_the_giver_and_gives_it_back_with
                 but_the_player: true,
             },
             Did::Throw {
-                stack: ItemStack {
-                    item: items::DIAMOND,
-                    count: 3,
-                },
+                stack: ItemStack::new(items::DIAMOND, 3),
                 at: [1.0, eyes - 0.300_000_011_920_928_96, 1.0],
                 pick_up_delay: crate::region::DEFAULT_PICK_UP_DELAY,
                 motion: [0.0; 3],
@@ -840,19 +831,13 @@ fn an_allay_counts_its_cooldown_down_in_its_ai_step_and_may_duplicate_again_at_n
 fn an_allay_wants_only_what_its_hand_holds_while_its_slot_has_room_and_its_liked_player_cannot_hurt_it()
  {
     let mut mob = Mob::fresh();
-    let diamonds = ItemStack {
-        item: items::DIAMOND,
-        count: 10,
-    };
-    assert!(!allay::wants_to_pick_up(&mob, diamonds));
+    let diamonds = ItemStack::new(items::DIAMOND, 10);
+    assert!(!allay::wants_to_pick_up(&mob, diamonds.clone()));
     mob.body.equipment.slots[0] = one(items::DIAMOND);
-    assert!(allay::wants_to_pick_up(&mob, diamonds));
+    assert!(allay::wants_to_pick_up(&mob, diamonds.clone()));
     assert!(!allay::wants_to_pick_up(&mob, one(items::DIRT).unwrap()));
     allay::update(&mut mob, |own| {
-        own.inventory = Some(ItemStack {
-            item: items::DIAMOND,
-            count: 64,
-        });
+        own.inventory = Some(ItemStack::new(items::DIAMOND, 64));
     });
     assert!(!allay::wants_to_pick_up(&mob, diamonds));
     // It dies dropping what it gathered, then what it holds.
@@ -860,10 +845,7 @@ fn an_allay_wants_only_what_its_hand_holds_while_its_slot_has_room_and_its_liked
     assert_eq!(
         drops,
         [
-            ItemStack {
-                item: items::DIAMOND,
-                count: 64,
-            },
+            ItemStack::new(items::DIAMOND, 64),
             one(items::DIAMOND).unwrap(),
         ]
     );

@@ -632,6 +632,8 @@ fn opened(bytes: &[u8], kind: u8) -> Result<Input<'_>, FormatError> {
 mod tests {
     use proptest::prelude::*;
 
+    use clustine_world::ItemStack;
+
     use super::*;
 
     /// A region file whose block reaches bit 63, which only generated keys have, is
@@ -1049,11 +1051,11 @@ mod tests {
     }
 
     fn players() -> PlayersFile {
-        let mut inventory = [None; crate::INVENTORY_SLOTS];
-        inventory[1] = Some((7, 3));
-        inventory[36] = Some((9, 1));
-        let mut ender = [None; crate::ENDER_SLOTS];
-        ender[26] = Some((11, 2));
+        let mut inventory = [const { None }; crate::INVENTORY_SLOTS];
+        inventory[1] = Some(ItemStack::new(7, 3));
+        inventory[36] = Some(ItemStack::new(9, 1));
+        let mut ender = [const { None }; crate::ENDER_SLOTS];
+        ender[26] = Some(ItemStack::new(11, 2));
         PlayersFile {
             from: 7,
             issued: 258,
@@ -1085,6 +1087,20 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// The players' file keeps the components of the stacks in a place.
+    #[test]
+    fn a_players_file_keeps_the_components_of_its_places_stacks() {
+        let mut players = players();
+        let place = players
+            .records
+            .iter_mut()
+            .find_map(|record| record.place.as_mut())
+            .expect("a record with a place");
+        place.inventory[36] = Some(crate::stacks::tests::with_every_component());
+        place.ender[0] = Some(crate::stacks::tests::with_every_component());
+        assert_eq!(PlayersFile::decode(&players.encode()), Ok(players));
     }
 
     #[test]
@@ -1214,7 +1230,11 @@ mod tests {
             0,
             0,
             0,
-            3, // the second slot
+            3,
+            0,
+            0,
+            0,
+            0, // the second slot, without components
             0,
             0,
             0,
@@ -1226,11 +1246,11 @@ mod tests {
         // The other 27 of the main inventory are empty, then the feet hold something,
         // and the rest of the armour and the off hand nothing.
         body.extend_from_slice(&[0; 27]);
-        body.extend_from_slice(&[1, 0, 0, 0, 9, 0, 0, 0, 1]);
+        body.extend_from_slice(&[1, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 0]);
         body.extend_from_slice(&[0; 4]);
         // The ender chest: 26 empty slots, then the last holds two of item 11.
         body.extend_from_slice(&[0; 26]);
-        body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2]);
+        body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2, 0, 0, 0, 0]);
         // The experience: level 2, half way to the next, 13 points.
         body.extend_from_slice(&[0, 0, 0, 2, 0x3F, 0, 0, 0, 0, 0, 0, 13]);
         // No respawn point.
@@ -1426,9 +1446,22 @@ mod tests {
     }
 
     /// Inventories of every kind: proptest makes arrays of up to 32 by itself.
-    fn inventories() -> impl Strategy<Value = [Option<(i32, i32)>; crate::INVENTORY_SLOTS]> {
-        prop::collection::vec(any::<Option<(i32, i32)>>(), crate::INVENTORY_SLOTS)
+    fn inventories() -> impl Strategy<Value = [Option<ItemStack>; crate::INVENTORY_SLOTS]> {
+        prop::collection::vec(stacks(), crate::INVENTORY_SLOTS)
             .prop_map(|slots| slots.try_into().expect("as many slots as an inventory has"))
+    }
+
+    fn enders() -> impl Strategy<Value = [Option<ItemStack>; crate::ENDER_SLOTS]> {
+        prop::collection::vec(stacks(), crate::ENDER_SLOTS).prop_map(|slots| {
+            slots
+                .try_into()
+                .expect("as many slots as an ender chest has")
+        })
+    }
+
+    fn stacks() -> impl Strategy<Value = Option<ItemStack>> {
+        any::<Option<(i32, i32)>>()
+            .prop_map(|slot| slot.map(|(item, count)| ItemStack::new(item, count)))
     }
 
     proptest! {
@@ -1517,7 +1550,7 @@ mod tests {
                         any::<[f64; 3]>(),
                         any::<(f32, f32, bool, bool, u8)>(),
                         inventories(),
-                        any::<[Option<(i32, i32)>; crate::ENDER_SLOTS]>(),
+                        enders(),
                     )),
                 ),
                 0..12,

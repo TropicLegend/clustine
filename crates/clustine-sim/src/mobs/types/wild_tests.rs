@@ -23,7 +23,7 @@ fn draws(seed: u64) -> Random {
 }
 
 fn one(item: i32) -> Option<ItemStack> {
-    Some(ItemStack { item, count: 1 })
+    Some(ItemStack::new(item, 1))
 }
 
 fn fox_with(own: &FoxState) -> Mob {
@@ -115,7 +115,7 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
             day: 0,
             game_time: 0,
         });
-        let hand = mob.body.equipment.slots[0];
+        let hand = &mob.body.equipment.slots[0];
         if replay.next_float() < 0.2 {
             held += 1;
             let f = replay.next_float();
@@ -136,9 +136,9 @@ fn a_fox_is_snowy_in_a_snowy_biome_hunts_and_holds_one_thing_in_five_by_the_leve
             } else {
                 items::FEATHER
             };
-            assert_eq!(hand, one(expected), "{seed}");
+            assert_eq!(*hand, one(expected), "{seed}");
         } else {
-            assert_eq!(hand, None);
+            assert_eq!(*hand, None);
         }
         assert_eq!(level, replay, "{seed}");
     }
@@ -238,10 +238,10 @@ fn a_fox_holds_anything_in_an_empty_mouth_and_swaps_only_what_is_no_food_for_foo
         items::GLOW_BERRIES,
         items::RABBIT_STEW,
     ] {
-        assert!(is_consumable_food(one(item)));
+        assert!(is_consumable_food(one(item).as_ref()));
     }
     for item in [items::MILK_BUCKET, items::WHEAT, items::POTION] {
-        assert!(!is_consumable_food(one(item)));
+        assert!(!is_consumable_food(one(item).as_ref()));
     }
 }
 

@@ -52,7 +52,7 @@ pub(crate) struct Attack {
 
 /// `AttributeInstance.getValue()` of a player's attribute `attribute` of the base
 /// `base`, with the modifiers of `held` in the main hand.
-pub(crate) fn held_value(base: f64, attribute_id: i32, held: Option<ItemStack>) -> f64 {
+pub(crate) fn held_value(base: f64, attribute_id: i32, held: Option<&ItemStack>) -> f64 {
     let attribute = attribute(attribute_id);
     let mut instance = Instance {
         attribute,
@@ -86,11 +86,12 @@ impl Region {
             player.pose.position.z,
         ];
         // The player's base damage 1 (`Player.createAttributes`), speed 4 and push 0.
-        let damage = held_value(1.0, ids::ATTACK_DAMAGE, held) as f32;
-        let push = held_value(0.0, ids::ATTACK_KNOCKBACK, held) as f32;
+        let damage = held_value(1.0, ids::ATTACK_DAMAGE, held.as_ref()) as f32;
+        let push = held_value(0.0, ids::ATTACK_KNOCKBACK, held.as_ref()) as f32;
         let strength = self.attack_strength(id);
         // `createAttackSource`: the stack's own damage type, else the player's attack.
         let kind = held
+            .as_ref()
             .and_then(|stack| ItemComponents::of(stack.item).damage_type)
             .map_or(DamageType::PLAYER_ATTACK, DamageType);
         let source = DamageSource::by(

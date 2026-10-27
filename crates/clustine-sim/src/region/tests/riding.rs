@@ -191,13 +191,13 @@ fn items_lying(region: &Region) -> Vec<Lying> {
         .flat_map(|chunk| chunk.entities().iter())
         .filter_map(|entity| match entity.data {
             EntityData::Item {
-                stack,
+                ref stack,
                 pick_up_delay,
                 ..
             } => Some((
                 entity.key,
                 entity.position,
-                stack,
+                stack.clone(),
                 pick_up_delay,
                 entity.motion,
             )),
@@ -777,7 +777,7 @@ fn five_full_hits_break_a_cart_which_drops_itself_and_the_fourth_does_not() {
         from: [Double(0.5), Double(-60.0), Double(0.5)],
     };
     for (n, direction) in (1..=4).zip([-1, 1, -1, 1]) {
-        region.entity_used(target.key, attack, &mut output);
+        region.entity_used(target.key, attack.clone(), &mut output);
         let EntityData::Minecart { hurt, .. } = record(&region, target.key).unwrap().data else {
             panic!();
         };
@@ -799,13 +799,7 @@ fn five_full_hits_break_a_cart_which_drops_itself_and_the_fourth_does_not() {
         panic!("{dropped:?}");
     };
     assert_eq!(bits(*at), bits(target.position));
-    assert_eq!(
-        *stack,
-        ItemStack {
-            item: clustine_data::items::MINECART,
-            count: 1
-        }
-    );
+    assert_eq!(*stack, ItemStack::new(clustine_data::items::MINECART, 1));
     assert_eq!(*delay, 10);
     assert!(output.events.iter().any(|event| matches!(
         event,
@@ -890,7 +884,7 @@ fn expected_spill(
         let Some((_, mut stack)) = contents
             .iter()
             .find(|(at, _)| usize::from(*at) == slot)
-            .copied()
+            .cloned()
         else {
             continue;
         };
@@ -904,14 +898,7 @@ fn expected_spill(
                 centre + spread * (a - b)
             };
             let motion = [triangle(0.0), triangle(0.2), triangle(0.0)];
-            items.push((
-                [x, y, z],
-                ItemStack {
-                    item: stack.item,
-                    count: piece,
-                },
-                motion,
-            ));
+            items.push(([x, y, z], ItemStack::new(stack.item, piece), motion));
         }
     }
     items
@@ -920,14 +907,8 @@ fn expected_spill(
 #[test]
 fn a_chest_carts_contents_spill_by_the_games_draws_in_creative_too() {
     let mut region = on_ticking_floor_with(&[]);
-    let stone = ItemStack {
-        item: clustine_data::items::STONE,
-        count: 3,
-    };
-    let dirt = ItemStack {
-        item: DIRT.item,
-        count: 64,
-    };
+    let stone = ItemStack::new(clustine_data::items::STONE, 3);
+    let dirt = ItemStack::new(DIRT.item, 64);
     let contents = vec![(0, dirt), (5, stone)];
     let chest = entity(
         1,
@@ -975,13 +956,7 @@ fn a_chest_carts_contents_spill_by_the_games_draws_in_creative_too() {
 #[test]
 fn a_chest_cart_broken_in_survival_spills_then_drops_itself_then_draws_its_empty_slots_again() {
     let mut region = on_ticking_floor_with(&[]);
-    let contents = vec![(
-        3,
-        ItemStack {
-            item: DIRT.item,
-            count: 5,
-        },
-    )];
+    let contents = vec![(3, ItemStack::new(DIRT.item, 5))];
     let chest = entity(
         1,
         entity_types::CHEST_MINECART,
@@ -1002,18 +977,15 @@ fn a_chest_cart_broken_in_survival_spills_then_drops_itself_then_draws_its_empty
     let mut lying = items_lying(&region);
     lying.sort_by_key(|(key, ..)| *key);
     // The dirt first, then the cart's own item.
-    let stacks: Vec<ItemStack> = lying.iter().map(|(_, _, stack, ..)| *stack).collect();
+    let stacks: Vec<ItemStack> = lying
+        .iter()
+        .map(|(_, _, stack, ..)| stack.clone())
+        .collect();
     assert_eq!(
         stacks,
         [
-            ItemStack {
-                item: DIRT.item,
-                count: 5
-            },
-            ItemStack {
-                item: clustine_data::items::CHEST_MINECART,
-                count: 1
-            }
+            ItemStack::new(DIRT.item, 5),
+            ItemStack::new(clustine_data::items::CHEST_MINECART, 1)
         ]
     );
     // The stream has drawn both spills: 27 places, the piece and its motion, then 27
@@ -1060,10 +1032,7 @@ fn a_cushion_in_a_pistons_way_is_popped_and_drops_its_item() {
     // A red cushion, at the cushion's place.
     assert_eq!(
         *stack,
-        ItemStack {
-            item: clustine_data::items::WHITE_CUSHION + 14,
-            count: 1
-        }
+        ItemStack::new(clustine_data::items::WHITE_CUSHION + 14, 1)
     );
     assert_eq!(bits(*at), bits(seat.position));
     assert_eq!(*delay, 10);
@@ -1229,7 +1198,7 @@ fn a_players_hit_on_an_entity_in_another_regions_copy_is_an_effect_on_it() {
     checked(&mut region, &walked);
     let output = region.tick(&attack(&seat));
     assert_eq!(output.effects.len(), 1, "{:?}", output.effects);
-    let made = output.effects[0];
+    let made = &output.effects[0];
     assert_eq!(made.at, BlockPos::new(17, -60, 0));
     assert!(matches!(
         made.what,
@@ -1378,17 +1347,14 @@ fn a_player_who_leaves_alone_on_a_cushion_takes_it_with_them() {
 #[test]
 fn a_cushion_used_on_the_floor_is_laid_on_it_facing_the_player_s_way_and_sat_on() {
     let mut region = on_ticking_floor_with(&[]);
-    let held = ItemStack {
-        item: clustine_data::items::RED_CUSHION,
-        count: 1,
-    };
+    let held = ItemStack::new(clustine_data::items::RED_CUSHION, 1);
     checked(
         &mut region,
         &moves(vec![numbered(
             1,
             PlayerInput::SetInventorySlot {
                 slot: 0,
-                stack: Some(held),
+                stack: Some(held.clone()),
             },
         )]),
     );

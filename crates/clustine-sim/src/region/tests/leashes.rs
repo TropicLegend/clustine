@@ -140,7 +140,7 @@ fn leads(region: &Region) -> usize {
     of_kind(region, entity_types::ITEM)
         .iter()
         .filter(|entity| {
-            matches!(entity.data, EntityData::Item { stack, .. } if stack.item == items::LEAD)
+            matches!(entity.data, EntityData::Item { ref stack, .. } if stack.item == items::LEAD)
         })
         .count()
 }

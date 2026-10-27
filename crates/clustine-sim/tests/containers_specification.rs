@@ -470,7 +470,7 @@ fn two_chests_side_by_side_across_a_pinned_line_stay_single() {
         .effects
         .iter()
         .filter(|effect| effect.at.chunk() == ChunkPos::new(1, 0))
-        .copied()
+        .cloned()
         .collect();
     filed(&mut east, 40, crossing);
     assert_eq!(
@@ -803,7 +803,9 @@ fn a_hopper_moves_one_item_into_the_chest_it_faces_every_eight_ticks() {
     let mut scene = Scene::alone(&world, holding(), BESIDE);
     fill(&mut scene, BOX, MenuKind::Hopper);
     let (_, opening) = scene.open(chest);
-    let start = the_opened(&opening, player(1)).slots[0].map_or(0, |stack| stack.count);
+    let start = the_opened(&opening, player(1)).slots[0]
+        .as_ref()
+        .map_or(0, |stack| stack.count);
     let outputs = scene.idle_for(50);
     let changes = slot_zero_changes(&outputs);
     assert!(changes.len() >= 5, "{changes:?}");
@@ -828,7 +830,9 @@ fn a_hopper_pulls_from_the_chest_above_it() {
     let mut scene = Scene::alone(&world, holding(), BESIDE);
     fill(&mut scene, above, MenuKind::Rows3);
     let (_, opening) = scene.open(BOX);
-    let start = the_opened(&opening, player(1)).slots[0].map_or(0, |stack| stack.count);
+    let start = the_opened(&opening, player(1)).slots[0]
+        .as_ref()
+        .map_or(0, |stack| stack.count);
     let outputs = scene.idle_for(40);
     let changes = slot_zero_changes(&outputs);
     assert!(changes.len() >= 4, "{changes:?}");
@@ -926,7 +930,9 @@ fn a_hopper_feeds_a_chest_under_a_block_which_a_comparator_reads_as_empty() {
         assert_eq!(power_at(&scene, wire), 0, "a blocked chest reads 0");
     }
     let (_, output) = scene.open(hopper);
-    let left = the_opened(&output, player(1)).slots[0].map_or(0, |stack| stack.count);
+    let left = the_opened(&output, player(1)).slots[0]
+        .as_ref()
+        .map_or(0, |stack| stack.count);
     assert!(
         left < 60,
         "the hopper moved its dirt into the chest: {left} left"
