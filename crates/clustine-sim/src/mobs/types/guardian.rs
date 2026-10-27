@@ -119,7 +119,7 @@ impl Guardian {
 
 impl MobType for Guardian {
     fn register_goals(&self, setup: &mut Setup) {
-        guardians::register_goals(setup, 80);
+        guardians::register_goals(setup, 80, false);
     }
 
     /// `Guardian`'s constructor's draw.

@@ -166,9 +166,16 @@ pub(crate) fn shot_record(shot: &Shot, owner: Option<EntityId>) -> Option<Entity
             crit: false,
             pierce_level: 0,
             pierced: Vec::new(),
-            // `getDefaultHitGroundSoundEvent`: the trident's own.
+            // `getDefaultHitGroundSoundEvent`: the trident's own; an arrow a crossbow
+            // shoots is given the crossbow's (`CrossbowItem.createProjectile`).
             hit_sound: if kind == entity_types::TRIDENT {
                 "minecraft:item.trident.hit_ground"
+            } else if shot
+                .weapon
+                .as_ref()
+                .is_some_and(|weapon| weapon.item == clustine_data::items::CROSSBOW)
+            {
+                "minecraft:item.crossbow.hit"
             } else {
                 "minecraft:entity.arrow.hit"
             }

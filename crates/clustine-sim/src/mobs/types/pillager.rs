@@ -1,10 +1,13 @@
-//! The pillager (`Pillager`; `n7k-brief.md` 3.7), part K5: an illager with a crossbow
-//! that floats, strolls, keeps away from a creaking and looks.
+//! The pillager (`Pillager`; `n7k-brief.md` 3.7, `docs/groundwork/n9-plan.md` 8.4), part
+//! K5 and N9's S7: an illager with a crossbow that floats, strolls, keeps away from a
+//! creaking and looks; on patrol it holds its ground (`HoldGroundAttackGoal(10)`), and to
+//! a target it charges its crossbow over 25 ticks of its use, showing it
+//! (`IS_CHARGING_CROSSBOW`, data 17, which its arms are drawn by), and shoots it at 1.6
+//! (`RangedCrossbowAttackGoal(1.0, 8)`, `crate::mobs::ai::ranged_weapons`).
 //!
-//! Named differences: its crossbow is never enchanted, as item stacks carry no
-//! enchantments (the one time in 300 that would give it Piercing I is drawn and lost);
-//! its inventory of five, which it fills only once read from a save (`canPickUpLoot`),
-//! is not kept; its attack and its charging are N9's (its targets are `crate::mobs::ai::targets`').
+//! Named differences: its crossbow is never enchanted at easy (the one time in 300 that
+//! would give it Piercing I on hard is drawn and lost); its inventory of five, which it
+//! fills only once read from a save (`canPickUpLoot`), is not kept.
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
@@ -14,13 +17,14 @@ use super::illagers;
 use super::{MobType, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::ai::goals::{AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, RandomStrollGoal};
-use crate::mobs::ai::selector::flags;
-use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::goals::{
+    AvoidEntityGoal, FloatGoal, HoldGroundAttackGoal, LookAtPlayerGoal, RandomStrollGoal,
+};
+use crate::mobs::ai::ranged_weapons::{self, RangedCrossbowAttackGoal};
+use crate::mobs::ai::sensing::{Class, Looked};
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::making::enchant_spawned_equipment;
-use crate::mobs::types::tamable::Idle;
 use crate::region::Random;
 use crate::shown::DataShown;
 
@@ -44,8 +48,24 @@ pub(crate) struct Pillager;
 /// The pillager's own part of its raider state (`crate::mobs::types::illagers`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PillagerState {
-    /// `IS_CHARGING_CROSSBOW`, synced at 17: set only by its attack (N9).
+    /// `IS_CHARGING_CROSSBOW`, synced at 17: set by its attack while it charges.
     pub(crate) charging: bool,
+}
+
+/// `setChargingCrossbow(charging)`.
+pub(crate) fn set_charging(mob: &mut Mob, charging: bool) {
+    illagers::update_own(mob, |own: &mut PillagerState| own.charging = charging);
+}
+
+/// `Pillager.performRangedAttack(target, power)`: `performCrossbowAttack(this, 1.6)`,
+/// then `onCrossbowAttackPerformed`, its `noActionTime` back to nothing.
+pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, _power: f32) {
+    ranged_weapons::perform_crossbow_attack(ai, target, 1.6);
+    if let Some(since) = &mut ai.tick.mob.body.idle.no_action_since {
+        // `noActionTime = 0` as the step leaves it: the next step counts it to 1.
+        *since = ai.tick.lived + 1;
+        ai.tick.mob.body.idle_gained.gained = 0;
+    }
 }
 
 impl MobType for Pillager {
@@ -54,12 +74,19 @@ impl MobType for Pillager {
         illagers::register_raider_goals(setup);
         setup.add_goal(0, FloatGoal);
         setup.add_goal(1, AVOID_CREAKING);
-        // `HoldGroundAttackGoal(10)` and `RangedCrossbowAttackGoal(1.0, 8)`: a target's.
-        setup.add_goal(2, Idle { flags: flags::MOVE });
+        setup.add_goal(
+            2,
+            HoldGroundAttackGoal {
+                hostile_radius: 10.0,
+            },
+        );
         setup.add_goal(
             3,
-            Idle {
-                flags: flags::MOVE | flags::LOOK,
+            RangedCrossbowAttackGoal {
+                speed: 1.0,
+                radius: 8.0,
+                perform: perform_ranged_attack,
+                set_charging,
             },
         );
         setup.add_goal(8, RandomStrollGoal::new(0.6));

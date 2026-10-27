@@ -2,8 +2,9 @@
 //! health and its own sounds, that shears: shears on one not yet sheared play
 //! `bogged_shear` from the players' source, drop its table's two mushrooms
 //! (`shearing/bogged`) at the top of its box, shear it (its synced flag) and post the
-//! `shear` game event. Named: its arrows' poison is N9's; the shears wear nothing, every
-//! player being creative.
+//! `shear` game event. Its arrows poison what they hit for 100 ticks and it draws its bow
+//! every 70 ticks (`Bogged.getArrow`, `getAttackInterval`; [`super::skeletons`]). Named:
+//! the shears wear nothing, every player being creative.
 
 use clustine_data::{items, sounds};
 use clustine_world::{BlockPos, ItemStack};
@@ -57,7 +58,12 @@ fn shear(used: &mut Used<'_>) {
 
 impl MobType for Bogged {
     fn register_goals(&self, setup: &mut Setup) {
-        skeletons::register_goals(setup);
+        skeletons::register_goals(clustine_data::entity_types::BOGGED as u16, None, setup);
+    }
+
+    /// With `reassessWeaponGoal`'s goal for what it holds.
+    fn register_goals_of(&self, mob: &Mob, setup: &mut Setup) {
+        skeletons::register_goals(clustine_data::entity_types::BOGGED as u16, Some(mob), setup);
     }
 
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {

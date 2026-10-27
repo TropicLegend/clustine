@@ -1,6 +1,6 @@
 //! The stray (`Stray`; `n7k-brief.md` 11.2): a skeleton ([`super::skeletons`]) of its own
-//! sounds, which powder snow does not freeze (`#freeze_immune_entity_types`). Named: its
-//! arrows' slowness and its spawn rule are N9's.
+//! sounds, which powder snow does not freeze (`#freeze_immune_entity_types`), and whose
+//! arrows slow what they hit for 600 ticks (`Stray.getArrow`, [`super::skeletons`]).
 
 use clustine_data::sounds;
 use clustine_world::BlockPos;
@@ -16,7 +16,12 @@ pub(crate) struct Stray;
 
 impl MobType for Stray {
     fn register_goals(&self, setup: &mut Setup) {
-        skeletons::register_goals(setup);
+        skeletons::register_goals(clustine_data::entity_types::STRAY as u16, None, setup);
+    }
+
+    /// With `reassessWeaponGoal`'s goal for what it holds.
+    fn register_goals_of(&self, mob: &Mob, setup: &mut Setup) {
+        skeletons::register_goals(clustine_data::entity_types::STRAY as u16, Some(mob), setup);
     }
 
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {

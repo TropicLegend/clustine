@@ -447,7 +447,7 @@ fn a_guardian_shows_whether_it_moves_and_no_beam() {
         of(GUARDIAN).shown(&mob),
         [
             (16, DataShown::Boolean(false), true),
-            (17, DataShown::Int(0), true),
+            (17, DataShown::Entity(None), true),
         ]
     );
     guardians::update(&mut mob, |own| own.moving = true);

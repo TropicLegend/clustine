@@ -12,7 +12,9 @@
 //! alone (`isSameItem`).
 //!
 //! What an item does while it is used and at the end is the item's: of the mobs' uses
-//! only drinking is here, the wandering trader's potion and milk (`Consumable`'s
+//! a skeleton's bow (which does nothing of itself: the skeleton's goal shoots), a
+//! pillager's crossbow (its charge, `crate::mobs::ai::ranged_weapons`), and drinking,
+//! the wandering trader's potion and milk (`Consumable`'s
 //! mouthfuls and `onConsume`, with the type's own sound where it has one,
 //! `OverrideConsumeSound`). The witch does not use this part: its drinking is its own,
 //! as the game's is, and the living flags are never sent for it.
@@ -21,8 +23,8 @@
 //! game events, is not in the data, so both are always heard (as a player's are,
 //! `region/using.rs`); a meal's crumbs (`spawnItemParticles`), the potions' registry
 //! (only invisibility is known), and `on_consume_effects` other than milk's clearing
-//! wait for the mobs that eat (S1); an item whose use is not a meal or a drink lasts no
-//! ticks, as no mob uses one through this part yet.
+//! wait for the mobs that eat (S1); an item whose use is not a meal, a drink, a bow or a
+//! crossbow lasts no ticks, as no mob uses one through this part yet.
 
 use clustine_data::{ConsumeEffect, ItemComponents, SOUND_EVENTS, UseAnimation};
 use clustine_world::ItemStack;
@@ -87,12 +89,30 @@ fn in_hand(mob: &Mob, hand: Hand) -> Option<&ItemStack> {
 }
 
 /// `ItemStack.getUseDuration(entity)` of the items a mob uses: a meal's or a drink's
-/// `consumeTicks`, `(int) (consumeSeconds · 20)`; 0 for any other, whose use would never
+/// `consumeTicks`, `(int) (consumeSeconds · 20)`; the bow's and the crossbow's 72000
+/// (n9 BowItem, CrossbowItem `getUseDuration`); 0 for any other, whose use would never
 /// end of itself.
 fn use_duration(stack: &ItemStack) -> i32 {
-    ItemComponents::of(stack.item)
+    use_duration_of(stack.item)
+}
+
+/// [`use_duration`] of an item, which no item a mob uses has by its components alone.
+pub(crate) fn use_duration_of(item: i32) -> i32 {
+    if item == clustine_data::items::BOW || item == clustine_data::items::CROSSBOW {
+        return 72_000;
+    }
+    ItemComponents::of(item)
         .consumable
         .map_or(0, |consumable| (consumable.consume_seconds * 20.0) as i32)
+}
+
+/// `getTicksUsingItem()`: the use's ticks so far, its duration less its ticks left; 0
+/// with no use under way.
+pub(crate) fn ticks_using(mob: &Mob) -> i32 {
+    mob.body
+        .using
+        .using
+        .map_or(0, |using| use_duration_of(using.item) - using.remaining)
 }
 
 /// `startUsingItem(hand)`: nothing with an empty hand or a use under way; otherwise the
@@ -137,8 +157,7 @@ pub(crate) fn updating(tick: &mut MobTick<'_>) {
     update(tick, using);
 }
 
-/// `updateUsingItem(stack)`. No item of a mob's use ends on release
-/// (`useOnRelease`, the crossbow's), so each ends at its last tick.
+/// `updateUsingItem(stack)`: the item's `onUseTick`, a tick less, and the end at none.
 fn update(tick: &mut MobTick<'_>, using: InUse) {
     on_use_tick(tick, using);
     let Some(now) = tick.mob.body.using.using.as_mut() else {
@@ -150,17 +169,18 @@ fn update(tick: &mut MobTick<'_>, using: InUse) {
     }
 }
 
-/// `releaseUsingItem()`: the item's `releaseUsing` where the hand holds the item the
-/// use was begun with (none of a mob's items does anything on release yet), then the end
-/// of the use.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no mob lets go of a use yet: a bow's or a crossbow's (N9 S4) will"
-    )
-)]
+/// `releaseUsingItem()` (n9 LivingEntity 9942–9977): where the hand holds the item the
+/// use was begun with, the item's `releaseUsing` (nothing of a mob's: the bow's and the
+/// trident's act for a player only, the crossbow's loads nothing), then for an item used
+/// on release (`useOnRelease`, the crossbow) one more update of the use, whose
+/// `onUseTick` loads a crossbow charged to the full; then the end of the use.
 pub(crate) fn release_using(tick: &mut MobTick<'_>) {
+    if let Some(using) = tick.mob.body.using.using
+        && using.item == clustine_data::items::CROSSBOW
+        && in_hand(&tick.mob, using.hand).is_some_and(|stack| stack.item == using.item)
+    {
+        updating(tick);
+    }
     stop_using(tick);
 }
 
@@ -199,10 +219,15 @@ fn game_event(tick: &mut MobTick<'_>, name: &'static str) {
     });
 }
 
-/// `ItemStack.onUseTick` of the item in use: a meal's or a drink's mouthful where
+/// `ItemStack.onUseTick` of the item in use: a crossbow's charge
+/// (`crate::mobs::ai::ranged_weapons::crossbow_use_tick`); a meal's or a drink's mouthful where
 /// `shouldEmitParticlesAndSounds(remaining)` holds, from the eighth tick of a drink on
 /// (`(int) (consumeTicks · 0.21875)` ticks used) every fourth.
 fn on_use_tick(tick: &mut MobTick<'_>, using: InUse) {
+    if using.item == clustine_data::items::CROSSBOW {
+        crate::mobs::ai::ranged_weapons::crossbow_use_tick(tick, using);
+        return;
+    }
     let Some(consumable) = ItemComponents::of(using.item).consumable else {
         return;
     };

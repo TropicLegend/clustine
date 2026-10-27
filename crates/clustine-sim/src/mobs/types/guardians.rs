@@ -1,22 +1,25 @@
 //! What the guardian and the elder guardian share (`Guardian`, its move control and
-//! goals; `n7k-brief.md` 3.8), part K5: a monster of the water that swims where its
-//! water-bound navigation takes it, keeps near its home, looks about, flops on land, and
-//! whose spikes hurt what hits it while it keeps still.
+//! goals; `n7k-brief.md` 3.8, `docs/groundwork/n9-plan.md` 8.4), parts K5 and N9's S7: a
+//! monster of the water that swims where its water-bound navigation takes it, keeps near
+//! its home, looks about, flops on land, and whose spikes hurt what hits it while it
+//! keeps still. To a target it keeps still and turns its body to its head, and its beam
+//! (`GuardianAttackGoal`, [`GuardianAttackGoal`]) shows from ten ticks on (the target in
+//! `DATA_ID_ATTACK_TARGET`, data 17, and entity event 21), and strikes at 80 (the
+//! elder's at 60): magic of 1 (the elder's 3), then its bite.
 //!
-//! Named differences: its attack and its beam are N9's, its target goal real (the attack's goal
-//! holds its place; the beam's synced target stays 0, so its body is never turned to its
-//! head for one); the tail's and the spikes' animations, its bubbles and the flop's
+//! Named differences: the tail's and the spikes' animations, its bubbles and the flop's
 //! sound are its clients' own (the flop is heard by them, `playLocalSound`); and the
 //! spikes hurt their attacker in the region's order of things, after the guardian's own
 //! hurt, where the game hurts the attacker first.
 
 use clustine_blocks::data::fluid_in_tag;
 use clustine_data::{PathType, attributes as ids, entity_types};
-use clustine_world::{BlockPos, TypeState};
+use clustine_world::{BlockPos, EntityId, TypeState};
 use serde::{Deserialize, Serialize};
 
 use crate::living::{Sinks, Travel};
 use crate::mobs::Mob;
+use crate::mobs::ai::goals::look_at_thing;
 use crate::mobs::ai::goals::{
     LookAtPlayerGoal, MoveTowardsRestrictionGoal, RandomLookAroundGoal, RandomStrollGoal,
     Returning, Strolling,
@@ -24,16 +27,16 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::maths::{hotspot_cos, hotspot_sin, lerp, move_rotlerp, yaw_towards};
 use crate::mobs::ai::navigation::{self, Kind, Settings};
 use crate::mobs::ai::selector::{Goal, flags};
-use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::sensing::{self, Class};
 use crate::mobs::ai::{Ai, HeadLimits, Operation, Setup, controls};
+use crate::mobs::body::Event;
 use crate::mobs::body::hurt::{DamageSource, DamageType, Struck};
 use crate::mobs::tick::{Local, MobTick};
-use crate::mobs::types::tamable::Idle;
 use crate::region::Random;
 use crate::shown::DataShown;
 
-/// The version of a guardian's type state.
-const VERSION: u8 = 1;
+/// The version of a guardian's type state: 2 with the beam's target.
+const VERSION: u8 = 2;
 
 /// The synced data's index of `DATA_ID_MOVING`.
 pub(crate) const MOVING_INDEX: u8 = 16;
@@ -48,23 +51,44 @@ const GUARDIANS: [u16; 2] = [
 ];
 
 /// What a guardian keeps: whether it moves (synced), whether it was in water at its
-/// last tick (`isInWater`, which its sounds ask between ticks), and whether a hurt has
+/// last tick (`isInWater`, which its sounds ask between ticks), whether a hurt has
 /// triggered its stroll (`RandomStrollGoal.trigger`), which the stroll takes at its next
-/// asking.
+/// asking, and the beam's target (`DATA_ID_ATTACK_TARGET`, synced, none for 0).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GuardianState {
     pub(crate) moving: bool,
     pub(crate) in_water: bool,
     pub(crate) stroll_triggered: bool,
+    pub(crate) beam: Option<EntityId>,
+}
+
+/// [`GuardianState`] as version 1 wrote it, before the beam.
+#[derive(Deserialize)]
+struct Version1 {
+    moving: bool,
+    in_water: bool,
+    stroll_triggered: bool,
 }
 
 /// A guardian's state from its type state; a record of nothing, or one this build
-/// cannot read, as a fresh guardian's.
+/// cannot read, as a fresh guardian's; one of version 1 with no beam.
 pub(crate) fn state_of(mob: &Mob) -> GuardianState {
-    if mob.state.bytes.is_empty() || mob.state.version != VERSION {
+    if mob.state.bytes.is_empty() {
         return GuardianState::default();
     }
-    postcard::from_bytes(&mob.state.bytes).unwrap_or_default()
+    match mob.state.version {
+        VERSION => postcard::from_bytes(&mob.state.bytes).unwrap_or_default(),
+        1 => postcard::from_bytes::<Version1>(&mob.state.bytes).map_or_else(
+            |_| GuardianState::default(),
+            |old| GuardianState {
+                moving: old.moving,
+                in_water: old.in_water,
+                stroll_triggered: old.stroll_triggered,
+                beam: None,
+            },
+        ),
+        _ => GuardianState::default(),
+    }
 }
 
 /// Changes a guardian's state by `change`, writing it back only where it changed.
@@ -163,18 +187,139 @@ impl Goal for GuardianReturnGoal {
     }
 }
 
+/// `GuardianAttackGoal`'s state: `attackTime`, which counts from −10 at its start.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Beaming {
+    pub(crate) attack_time: i32,
+}
+
+/// `Guardian$GuardianAttackGoal(guardian)` (n7 Guardian$GuardianAttackGoal): with a
+/// living target (the guardian's within 3 blocks no longer), it keeps still and looks at
+/// it; losing sight of it, it drops it; ten ticks on it shows its beam at it
+/// (`setActiveAttackTarget`, entity event 21), and at `getAttackDuration()` (80, the
+/// elder's 60) it strikes with magic (1, 2 more for the elder and 2 more on hard), then
+/// bites (`doHurtTarget`) and drops the target. At its end the beam goes, the target is
+/// dropped and its stroll triggered.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GuardianAttackGoal {
+    pub(crate) elder: bool,
+}
+
+impl GuardianAttackGoal {
+    /// `getAttackDuration()`.
+    pub(crate) fn attack_duration(self) -> i32 {
+        if self.elder { 60 } else { 80 }
+    }
+}
+
+impl Goal for GuardianAttackGoal {
+    type State = Beaming;
+
+    fn flags(&self) -> u8 {
+        flags::MOVE | flags::LOOK
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn can_use(&self, _: &mut Beaming, ai: &mut Ai<'_, '_>) -> bool {
+        sensing::target(ai).is_some_and(|target| target.alive)
+    }
+
+    fn can_continue(&self, state: &mut Beaming, ai: &mut Ai<'_, '_>) -> bool {
+        if !self.can_use(state, ai) {
+            return false;
+        }
+        self.elder
+            || sensing::target(ai).is_some_and(|target| target.distance_sqr(ai.position()) > 9.0)
+    }
+
+    fn start(&self, state: &mut Beaming, ai: &mut Ai<'_, '_>) {
+        state.attack_time = -10;
+        navigation::stop(ai);
+        if let Some(target) = sensing::target(ai) {
+            look_at_thing(ai, &target, 90.0, 90.0);
+        }
+        ai.tick.out.needs_sync = true;
+    }
+
+    fn stop(&self, _: &mut Beaming, ai: &mut Ai<'_, '_>) {
+        update(&mut ai.tick.mob, |own| {
+            own.beam = None;
+            own.stroll_triggered = true;
+        });
+        sensing::set_target(ai, None);
+    }
+
+    fn tick(&self, state: &mut Beaming, ai: &mut Ai<'_, '_>) {
+        let Some(target) = sensing::target(ai) else {
+            return;
+        };
+        navigation::stop(ai);
+        look_at_thing(ai, &target, 90.0, 90.0);
+        if !sensing::has_line_of_sight(ai, &target) {
+            sensing::set_target(ai, None);
+            return;
+        }
+        state.attack_time += 1;
+        if state.attack_time == 0 {
+            update(&mut ai.tick.mob, |own| own.beam = Some(target.key));
+            // No mob is silent.
+            ai.tick.out.events.push(Event::Entity(BEAM_EVENT));
+        } else if state.attack_time >= self.attack_duration() {
+            let mut amount = 1.0_f32;
+            if clustine_world::Difficulty::WORLD == clustine_world::Difficulty::Hard {
+                amount += 2.0;
+            }
+            if self.elder {
+                amount += 2.0;
+            }
+            // `indirectMagic(guardian, guardian)`, then `doHurtTarget`: both land on the
+            // target after the guardian's tick, in this order.
+            let guardian = clustine_world::Causer {
+                key: ai.tick.key,
+                kind: ai.tick.kind,
+                position: ai.position().map(clustine_world::Double),
+                player: None,
+                living: true,
+            };
+            let hurt = clustine_world::HurtBy {
+                damage_type: "minecraft:indirect_magic".to_owned(),
+                cause: Some(guardian.clone()),
+                direct: Some(guardian),
+                position: None,
+                projectile_motion: None,
+                amount: clustine_world::Float(amount),
+                knockback: None,
+                fire_before: 0,
+                fire_after: 0,
+                effects: Vec::new(),
+                arrow: false,
+                extras: Vec::new(),
+                sound: None,
+                hit: None,
+            };
+            ai.tick.out.local.push(Local::Strike {
+                key: target.key,
+                hurt: Box::new(hurt),
+            });
+            let mob_type = ai.tick.mob_type;
+            mob_type.do_hurt_target(ai, &target);
+            sensing::set_target(ai, None);
+        }
+    }
+}
+
+/// The entity event that starts a client's beam (`handleEntityEvent(21)`).
+pub(crate) const BEAM_EVENT: u8 = 21;
+
 /// `Guardian.registerGoals`, the constructor's water malus and `createNavigation`: the
 /// stroll's interval 80, the elder's 400.
-pub(crate) fn register_goals(setup: &mut Setup, interval: i32) {
+pub(crate) fn register_goals(setup: &mut Setup, interval: i32, elder: bool) {
     setup.config.navigation = Settings::of(Kind::WaterBound { breach: false });
     setup.set_malus(PathType::Water, 0.0);
-    // `GuardianAttackGoal`: a target's (N9).
-    setup.add_goal(
-        4,
-        Idle {
-            flags: flags::MOVE | flags::LOOK,
-        },
-    );
+    setup.add_goal(4, GuardianAttackGoal { elder });
     setup.add_goal(5, GuardianReturnGoal);
     setup.add_goal(7, GuardianStrollGoal { interval });
     setup.add_goal(8, LookAtPlayerGoal::new(Class::Player, 8.0));
@@ -253,7 +398,8 @@ pub(crate) fn tick_move_control(ai: &mut Ai<'_, '_>) {
 
 /// `Guardian.aiStep` before `Monster`'s, on a living guardian: in water its air full;
 /// else on the ground the flop, three draws of its own: a push about and up, a yaw,
-/// off the ground. Where it is in water is kept for its sounds.
+/// off the ground; then, while its beam has a target, its body's yaw its head's. Where
+/// it is in water is kept for its sounds.
 pub(crate) fn before_ai_step(tick: &mut MobTick<'_>) {
     if tick.mob.body.vitals.dying() {
         return;
@@ -273,12 +419,16 @@ pub(crate) fn before_ai_step(tick: &mut MobTick<'_>) {
         tick.living.body.on_ground = false;
         tick.out.needs_sync = true;
     }
+    // `hasActiveAttackTarget()`: `setYRot(yHeadRot)`.
+    if state_of(&tick.mob).beam.is_some() {
+        tick.yaw = tick.mob.body.head.head_yaw;
+    }
 }
 
 /// `travelInWater`: `moveRelative(0.1)`, its move, its motion times 0.9, and a sink of
-/// 0.005 unless it moves or has a target (none before N9).
+/// 0.005 unless it moves or has a target.
 pub(crate) fn travel(tick: &MobTick<'_>) -> Travel {
-    let sinks = if state_of(&tick.mob).moving {
+    let sinks = if state_of(&tick.mob).moving || tick.mob.body.combat.target.is_some() {
         Sinks::Never
     } else {
         Sinks::Always
@@ -320,12 +470,17 @@ pub(crate) fn before_hurt_server(struck: &mut Struck<'_>, source: &DamageSource)
     update(struck.mob, |own| own.stroll_triggered = true);
 }
 
-/// `isMoving()` and the beam's target, as clients are sent them.
+/// `isMoving()` and the beam's target, as clients are sent them: the target by its key,
+/// which the edge writes as its id (an `INT`, 0 for none).
 pub(crate) fn shown(mob: &Mob) -> Vec<(u8, DataShown, bool)> {
-    let moving = state_of(mob).moving;
+    let own = state_of(mob);
     vec![
-        (MOVING_INDEX, DataShown::Boolean(moving), !moving),
-        (ATTACK_TARGET_INDEX, DataShown::Int(0), true),
+        (MOVING_INDEX, DataShown::Boolean(own.moving), !own.moving),
+        (
+            ATTACK_TARGET_INDEX,
+            DataShown::Entity(own.beam),
+            own.beam.is_none(),
+        ),
     ]
 }
 

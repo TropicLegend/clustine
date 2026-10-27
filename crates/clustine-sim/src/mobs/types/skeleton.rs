@@ -74,7 +74,16 @@ fn tick_tracker(tick: &mut MobTick<'_>) {
 
 impl MobType for Skeleton {
     fn register_goals(&self, setup: &mut Setup) {
-        skeletons::register_goals(setup);
+        skeletons::register_goals(clustine_data::entity_types::SKELETON as u16, None, setup);
+    }
+
+    /// With `reassessWeaponGoal`'s goal for what it holds.
+    fn register_goals_of(&self, mob: &Mob, setup: &mut Setup) {
+        skeletons::register_goals(
+            clustine_data::entity_types::SKELETON as u16,
+            Some(mob),
+            setup,
+        );
     }
 
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {

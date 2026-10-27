@@ -102,6 +102,8 @@ pub(crate) mod pillager;
 pub(crate) mod polar_bear;
 pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
+#[cfg(test)]
+mod ranged_n9_tests;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod silverfish;

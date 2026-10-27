@@ -17,6 +17,13 @@
 //! holds the player). No weapon in Clustine is enchanted, so looting's level is 0:
 //! `enchanted_count_increase` adds nothing and draws nothing, the enchanted chance is
 //! never taken, and no weapon smelts what it kills.
+//!
+//! The functions that write a component write it on the stack (`docs/groundwork/
+//! n9-plan.md` 8.4, finding 56): `set_potion`, the stray's, the bogged's and the
+//! parched's tipped arrows (n7 SetPotionFunction: the potion of the stack's
+//! `potion_contents` set, the rest of it kept). The enchanting functions
+//! (`enchant_randomly`, `enchant_with_levels`, `set_enchantments`) are in no entity's
+//! table of 26.3, so `cargo datagen` compiles none and none is applied here.
 
 use clustine_blocks::data::entity_in_tag;
 use clustine_data::loot::{
@@ -24,7 +31,8 @@ use clustine_data::loot::{
     entity_table, modifier, smelted, table,
 };
 use clustine_data::{ENTITY_TYPES, ITEMS, ItemComponents, TAGS};
-use clustine_world::ItemStack;
+use clustine_world::components::{Component, Kind, PotionContents};
+use clustine_world::{Components, ItemStack};
 
 use super::hurt::{Causer, DamageSource};
 use crate::region::Random;
@@ -126,15 +134,34 @@ pub(crate) fn table_drops(
 }
 
 /// A stack as the game's `ItemStack` counts it while the functions run: any count, an
-/// empty stack where it is not above nought.
-#[derive(Debug, Clone, Copy)]
+/// empty stack where it is not above nought, and the components the functions wrote.
+#[derive(Debug, Clone)]
 struct Stack {
     item: i32,
     count: i32,
+    components: Components,
 }
 
 impl Stack {
-    fn count(self) -> i32 {
+    /// `count` of `item`, of no components.
+    fn of(item: i32, count: i32) -> Self {
+        Self {
+            item,
+            count,
+            components: Components::NONE,
+        }
+    }
+
+    /// The stack as Clustine's world keeps it, of `count`.
+    fn with_count(&self, count: i32) -> ItemStack {
+        ItemStack {
+            item: self.item,
+            count,
+            components: self.components.clone(),
+        }
+    }
+
+    fn count(&self) -> i32 {
         if self.count <= 0 || self.item == clustine_data::items::AIR {
             0
         } else {
@@ -282,10 +309,7 @@ impl Context<'_> {
             LootEntry::Item {
                 item, modifiers, ..
             } => {
-                let stack = Stack {
-                    item: i32::from(*item),
-                    count: 1,
-                };
+                let stack = Stack::of(i32::from(*item), 1);
                 out.push(self.apply_all(modifiers, stack));
             }
             LootEntry::Table {
@@ -305,7 +329,7 @@ impl Context<'_> {
                     None => tag_items(tag),
                 };
                 for item in items {
-                    out.push(self.apply_all(modifiers, Stack { item, count: 1 }));
+                    out.push(self.apply_all(modifiers, Stack::of(item, 1)));
                 }
             }
             // A block entity's (the decorated pot's), which no entity's table names.
@@ -322,14 +346,14 @@ impl Context<'_> {
         let count = stack.count();
         let max = i32::from(ItemComponents::of(stack.item).max_stack_size);
         if count < max {
-            self.drops.push(ItemStack::new(stack.item, count));
+            self.drops.push(stack.with_count(count));
             return;
         }
         let mut left = count;
         while left > 0 {
             let part = max.min(left);
             left -= part;
-            self.drops.push(ItemStack::new(stack.item, part));
+            self.drops.push(stack.with_count(part));
         }
     }
 
@@ -379,8 +403,16 @@ impl Context<'_> {
                     stack.item = cooked;
                 }
             }
-            // Components Clustine's stacks do not carry; the amplifier is drawn.
-            LootModifier::SetPotion { .. } => {}
+            // `SetPotionFunction`: `update(POTION_CONTENTS, EMPTY, potion, withPotion)`.
+            LootModifier::SetPotion { potion, .. } => {
+                let mut contents = match stack.components.get(Kind::PotionContents) {
+                    Some(Component::PotionContents(contents)) => contents.clone(),
+                    _ => PotionContents::default(),
+                };
+                contents.potion = Some((*potion).to_owned());
+                stack.components.set(Component::PotionContents(contents));
+            }
+            // A component Clustine's stacks do not carry; the amplifier is drawn.
             LootModifier::SetOminousBottleAmplifier { amplifier, .. } => {
                 self.int(*amplifier);
             }

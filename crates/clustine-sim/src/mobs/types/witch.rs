@@ -1,17 +1,18 @@
-//! The witch (`Witch`; `n7k-brief.md` 3.6), part K5: a raider that floats, strolls and
-//! looks, and in its `aiStep` drinks a potion where it needs one (water breathing under
-//! water, fire resistance while it burns, healing when hurt; swiftness after a far
-//! target, which it has none of before N9), with the game's draws in the game's order.
+//! The witch (`Witch`; `n7k-brief.md` 3.6, `docs/groundwork/n9-plan.md` 8.4), part K5
+//! and N9's S7: a raider that floats, strolls and looks, and in its `aiStep` drinks a
+//! potion where it needs one (water breathing under water, fire resistance while it
+//! burns, healing when hurt, swiftness after a target beyond 11 blocks), with the game's
+//! draws in the game's order; to a target it throws splash potions every three seconds
+//! (`RangedAttackGoal(1.0, 60, 10)`, [`perform_ranged_attack`]).
 //!
-//! Named differences: the potion in its hand is a plain potion, as item stacks carry no
-//! contents (`n7k-plan.md`, section 10): the client draws an empty bottle, and the
-//! potion it drinks is kept in its type state; the witch's own splash potions, which
-//! it would throw at its targets and which its magic resistance spares it, are N9's,
-//! as are the cooldown of its healing of other raiders and the switch of its player
-//! goal, both its target goals'.
+//! Named differences: the potion in its hand is a plain potion (`n7k-plan.md`, section
+//! 10): the client draws an empty bottle, and the potion it drinks is kept in its type
+//! state; a player it aims at is read as of full health, with no effects and still,
+//! which no witch meets, every player being creative and so no target.
 
-use clustine_data::{attributes as ids, items, sounds};
+use clustine_data::{attributes as ids, entity_types, items, sounds};
 use clustine_world::ItemStack;
+use clustine_world::components::{Component, PotionContents};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,16 +20,16 @@ use super::illagers;
 use super::{MobType, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::ai::goals::{FloatGoal, LookAtPlayerGoal, RandomLookAroundGoal, RandomStrollGoal};
-use crate::mobs::ai::selector::flags;
-use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::goals::{
+    FloatGoal, LookAtPlayerGoal, RandomLookAroundGoal, RandomStrollGoal, RangedAttackGoal,
+};
+use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::attributes::ADD_VALUE;
 use crate::mobs::body::effects::{self, Effect};
 use crate::mobs::body::hurt::{DamageSource, DamageType};
 use crate::mobs::body::{Event, Modifier, attribute};
-use crate::mobs::tick::{Local, MobTick};
-use crate::mobs::types::tamable::Idle;
+use crate::mobs::tick::{Local, MobTick, Shot};
 use crate::region::Random;
 use crate::shown::DataShown;
 use clustine_world::BlockPos;
@@ -130,13 +131,136 @@ fn choose(tick: &mut MobTick<'_>) -> Option<Potion> {
     if tick.draws.next_float() < 0.05 && tick.mob.body.vitals.health < max {
         return Some(Potion::Healing);
     }
-    // `getTarget() != null && !hasEffect(SPEED) && distanceToSqr(target) > 121`: no
-    // target before N9.
-    let target_far = false;
+    // `getTarget() != null && !hasEffect(SPEED) && distanceToSqr(target) > 121`.
+    let target_far = target_position(tick)
+        .is_some_and(|at| crate::physics::distance_sqr(tick.living.body.position, at) > 121.0);
     if tick.draws.next_float() < 0.5 && target_far && !swift {
         return Some(Potion::Swiftness);
     }
     None
+}
+
+/// Where the witch's target stands (`getTarget()`, held while it is a valid one), where
+/// the view has it.
+fn target_position(tick: &MobTick<'_>) -> Option<crate::physics::Vec3> {
+    let key = tick.mob.body.combat.target?;
+    let looked = match tick.world.entity(key) {
+        Some(seen) => Looked::of_seen(&seen),
+        None => tick
+            .world
+            .players()
+            .iter()
+            .find(|player| player.key == key)
+            .map(Looked::of_player)?,
+    };
+    sensing::valid_target(&looked).then_some(looked.position)
+}
+
+/// The raiders (`Raider`), whom a witch heals rather than harms.
+const RAIDERS: [i32; 6] = [
+    entity_types::PILLAGER,
+    entity_types::VINDICATOR,
+    entity_types::EVOKER,
+    entity_types::WITCH,
+    entity_types::ILLUSIONER,
+    entity_types::RAVAGER,
+];
+
+/// What a witch reads of its target to choose a potion: its motion
+/// (`getDeltaMovement`), its health and the effects it has; a player's as of full health,
+/// with none and still.
+struct Aimed {
+    motion: crate::physics::Vec3,
+    health: f32,
+    slowed: bool,
+    poisoned: bool,
+    weakened: bool,
+}
+
+fn aimed(ai: &Ai<'_, '_>, target: &Looked) -> Aimed {
+    let record = ai.tick.world.entity(target.key);
+    let mob = record
+        .as_ref()
+        .and_then(|seen| Mob::decode(&seen.entity.data).ok());
+    let has = |name: &str| {
+        Effect::named(name)
+            .is_some_and(|effect| mob.as_ref().is_some_and(|mob| mob.body.effects.has(effect)))
+    };
+    Aimed {
+        motion: record.map_or([0.0; 3], |seen| seen.entity.motion),
+        health: mob.as_ref().map_or(20.0, |mob| mob.body.vitals.health),
+        slowed: has("minecraft:slowness"),
+        poisoned: has("minecraft:poison"),
+        weakened: has("minecraft:weakness"),
+    }
+}
+
+/// `Witch.performRangedAttack(target, power)` (n7 Witch 493–655): nothing while it
+/// drinks; else a splash potion chosen by the target (a raider healed, or given
+/// regeneration, and no longer its target; else slowness from 8 blocks on, poison to one
+/// of 8 health or more, weakness within 3 one time in four, the float drawn only there;
+/// else harming), thrown from a tenth below its eyes at where the target will be,
+/// 1.1 below its eyes and lifted by a fifth of the way across, at 0.45 within 2 blocks
+/// and 0.75 beyond, with an uncertainty of 8 (`region/thrown.rs` makes it); then
+/// `witch_throw` at a pitch of its own draw.
+pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, _power: f32) {
+    if illagers::own_of::<WitchState>(&ai.tick.mob)
+        .drinking
+        .is_some()
+    {
+        return;
+    }
+    let read = aimed(ai, target);
+    let [x, y, z] = ai.position();
+    let dx = target.position[0] + read.motion[0] - x;
+    let dy = target.eye_y - 1.100_000_023_841_858 - y;
+    let dz = target.position[2] + read.motion[2] - z;
+    let across = (dx * dx + dz * dz).sqrt();
+    let raider = target
+        .kind
+        .is_some_and(|kind| RAIDERS.contains(&i32::from(kind)));
+    let potion = if raider {
+        let potion = if read.health <= 4.0 {
+            "minecraft:healing"
+        } else {
+            "minecraft:regeneration"
+        };
+        sensing::set_target(ai, None);
+        potion
+    } else if across >= 8.0 && !read.slowed {
+        "minecraft:slowness"
+    } else if read.health >= 8.0 && !read.poisoned {
+        "minecraft:poison"
+    } else if across <= 3.0 && !read.weakened && ai.tick.draws.next_float() < 0.25 {
+        "minecraft:weakness"
+    } else {
+        "minecraft:harming"
+    };
+    let mut stack = ItemStack::new(items::SPLASH_POTION, 1);
+    stack
+        .components
+        .set(Component::PotionContents(PotionContents {
+            potion: Some(potion.to_owned()),
+            ..PotionContents::default()
+        }));
+    let eyes = ai.eye_y();
+    ai.tick.out.local.push(Local::Shoot(Shot {
+        kind: u16::try_from(entity_types::SPLASH_POTION).expect("entity type ids fit 16 bits"),
+        stack,
+        weapon: None,
+        at: [x, eyes - crate::physics::thrown::BELOW_THE_EYES, z],
+        direction: [dx, dy + across * 0.2, dz],
+        power: if across <= 2.0 { 0.45 } else { 0.75 },
+        uncertainty: 8.0,
+        from_mob: None,
+    }));
+    // No mob is silent.
+    let pitch = 0.8 + ai.tick.draws.next_float() * 0.4;
+    ai.tick.out.events.push(Event::Sound {
+        sound: sounds::ENTITY_WITCH_THROW,
+        volume: 1.0,
+        pitch,
+    });
 }
 
 /// `getLastDamageSource()` is one of `#is_fire`.
@@ -184,11 +308,14 @@ impl MobType for Witch {
     fn register_goals(&self, setup: &mut Setup) {
         illagers::register_raider_goals(setup);
         setup.add_goal(1, FloatGoal);
-        // `RangedAttackGoal(1.0, 60, 10)`: a target's (N9).
         setup.add_goal(
             2,
-            Idle {
-                flags: flags::MOVE | flags::LOOK,
+            RangedAttackGoal {
+                speed: 1.0,
+                interval_min: 60,
+                interval_max: 60,
+                radius: 10.0,
+                perform: perform_ranged_attack,
             },
         );
         setup.add_goal(2, RandomStrollGoal::avoiding_water(1.0));
@@ -229,7 +356,9 @@ impl MobType for Witch {
     }
 
     /// `Witch.getDamageAfterMagicAbsorb`: what `#witch_resistant_to` hurts it is cut to
-    /// 0.15 of itself. (Its own potions' hurt, nothing, is N9's.)
+    /// 0.15 of itself. Named: what its own potions do to it (`getEntity() == this`), which
+    /// the game makes nothing, is cut as other magic, the hook knowing no key of the
+    /// witch's.
     fn magic_absorbed(&self, _: &Mob, source: &DamageSource, amount: f32) -> f32 {
         if source.kind.is("minecraft:witch_resistant_to") {
             amount * 0.15

@@ -68,7 +68,7 @@ pub(crate) fn curses_now(tick: &MobTick<'_>) -> bool {
 
 impl MobType for ElderGuardian {
     fn register_goals(&self, setup: &mut Setup) {
-        guardians::register_goals(setup, 400);
+        guardians::register_goals(setup, 400, true);
     }
 
     /// `Guardian`'s constructor's draw, then `setPersistenceRequired()`.

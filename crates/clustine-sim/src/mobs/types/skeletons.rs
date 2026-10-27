@@ -8,26 +8,37 @@
 //! `avoidSun`, which `RestrictSunGoal` sets and the path's trim reads (the game keeps it
 //! in the navigation); the skeleton's freezing tracker; the bogged's shearing.
 //!
-//! Named differences: the bow and melee goals are N9's (they hold their slots and draw
-//! nothing without a target, `monster_ai.rs`; the targets are `crate::mobs::ai::targets`'), so
-//! `reassessWeaponGoal` changes nothing a player sees; the body of a skeleton riding a
-//! spider does not take the spider's turn (`rideTick`); Halloween's pumpkins are never
-//! drawn for (`n7k-plan.md`, section 10).
+//! Its weapon goal (`reassessWeaponGoal`, n7k AbstractSkeleton 269–327) is at priority 4
+//! after the others: `RangedBowAttackGoal` (`crate::mobs::ai::ranged_weapons`) while its
+//! bow's hand holds a bow, at the type's interval (the skeleton's and the stray's 20 on
+//! hard and 40 else, the bogged's and the parched's 50 and 70), else the melee goal at
+//! 1.2. The goals are registered at every AI step from what the mob holds, so the goal
+//! is reassessed at its spawn, its load and any change of its hands alike. Its shot
+//! (`performRangedAttack`, [`perform_ranged_attack`]) is an arrow of the type's: the
+//! stray's slows for 600 ticks, the bogged's poisons for 100, the parched's weakens for
+//! 600 (`getArrow`'s `Arrow.addEffect`, on the arrow's pickup stack).
+//!
+//! Named differences: the body of a skeleton riding a spider does not take the spider's
+//! turn (`rideTick`); Halloween's pumpkins are never drawn for (`n7k-plan.md`, section
+//! 10); a change of weapon while its goal runs puts the other goal in the slot without
+//! the running one's `stop` (`removeGoal`'s), which no mob meets in N9, none changing
+//! what it holds after its spawn.
 
 use clustine_data::{entity_types, items};
 use clustine_world::{BlockPos, ItemStack, TypeState};
 use serde::{Deserialize, Serialize};
 
 use super::Spawning;
-use super::monster_ai::{self, AttackOfN9};
+use super::monster_ai;
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    AvoidEntityGoal, LookAtPlayerGoal, RandomLookAroundGoal, RandomStrollGoal,
+    AvoidEntityGoal, LookAtPlayerGoal, MeleeAttackGoal, RandomLookAroundGoal, RandomStrollGoal,
 };
 use crate::mobs::ai::navigation;
+use crate::mobs::ai::ranged_weapons::{self, RangedBowAttackGoal};
 use crate::mobs::ai::selector::{Goal, flags};
-use crate::mobs::ai::sensing::{self, Class};
+use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::making;
@@ -88,9 +99,94 @@ pub(crate) fn change(mob: &mut Mob, change: impl FnOnce(&mut SkeletonState)) {
 /// The wolf, which every skeleton runs from.
 const WOLVES: &[u16] = &[entity_types::WOLF as u16];
 
-/// `AbstractSkeleton.registerGoals`, then the weapon goal `reassessWeaponGoal` adds after
-/// them (`bowGoal` or `meleeGoal` at 4: N9's).
-pub(crate) fn register_goals(setup: &mut Setup) {
+/// `getHardAttackInterval()` and `getAttackInterval()` of the skeleton type `kind`: the
+/// bogged's and the parched's longer (`INCREASED_*`).
+fn attack_intervals(kind: u16) -> (i32, i32) {
+    let increased = [entity_types::BOGGED, entity_types::PARCHED].contains(&i32::from(kind));
+    if increased { (50, 70) } else { (20, 40) }
+}
+
+/// The effect a skeleton type's arrows carry (`getArrow`'s `Arrow.addEffect`): the
+/// stray's slowness for 600 ticks, the bogged's poison for 100, the parched's weakness
+/// for 600; none of the skeleton's.
+pub(crate) fn arrow_effect(kind: u16) -> Option<(&'static str, i32)> {
+    match i32::from(kind) {
+        entity_types::STRAY => Some(("minecraft:slowness", 600)),
+        entity_types::BOGGED => Some(("minecraft:poison", 100)),
+        entity_types::PARCHED => Some(("minecraft:weakness", 600)),
+        _ => None,
+    }
+}
+
+/// The pickup stack of an arrow of the entity type `arrow` shot by a skeleton of the
+/// type `shooter`, given the type's effect where it is an `Arrow` (not a spectral one).
+fn with_effect(shooter: u16, arrow: u16, stack: ItemStack) -> ItemStack {
+    match arrow_effect(shooter) {
+        Some((effect, duration)) if i32::from(arrow) == entity_types::ARROW => {
+            ranged_weapons::with_effect_added(&stack, effect, duration)
+        }
+        _ => stack,
+    }
+}
+
+/// `AbstractSkeleton.performRangedAttack(target, power)` with the type's `getArrow`
+/// (`ranged_weapons::skeleton_shot`).
+pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, power: f32) {
+    fn plain(_: u16, stack: ItemStack) -> ItemStack {
+        stack
+    }
+    fn stray(kind: u16, stack: ItemStack) -> ItemStack {
+        with_effect(entity_types::STRAY as u16, kind, stack)
+    }
+    fn bogged(kind: u16, stack: ItemStack) -> ItemStack {
+        with_effect(entity_types::BOGGED as u16, kind, stack)
+    }
+    fn parched(kind: u16, stack: ItemStack) -> ItemStack {
+        with_effect(entity_types::PARCHED as u16, kind, stack)
+    }
+    let effect: ranged_weapons::ArrowEffect = match i32::from(ai.tick.kind) {
+        entity_types::STRAY => stray,
+        entity_types::BOGGED => bogged,
+        entity_types::PARCHED => parched,
+        _ => plain,
+    };
+    ranged_weapons::skeleton_shot(ai, target, power, effect);
+}
+
+/// `reassessWeaponGoal()` of a skeleton of the type `kind` holding what `mob` holds: the
+/// bow goal at the difficulty's interval where the bow's hand holds a bow, else the melee
+/// goal (`AbstractSkeleton$1`: `MeleeAttackGoal(1.2, false)`, aggressive while it runs,
+/// as Clustine's is), at 4.
+fn reassess_weapon_goal(kind: u16, mob: &Mob, setup: &mut Setup) {
+    let hand = ranged_weapons::weapon_hand(mob, items::BOW);
+    let bow = ranged_weapons::in_hand(mob, hand).is_some_and(|stack| stack.item == items::BOW);
+    if bow {
+        let (hard, other) = attack_intervals(kind);
+        let hard_world = clustine_world::Difficulty::WORLD == clustine_world::Difficulty::Hard;
+        setup.add_goal(
+            4,
+            RangedBowAttackGoal {
+                speed: 1.0,
+                attack_interval_min: if hard_world { hard } else { other },
+                radius: 15.0,
+                perform: perform_ranged_attack,
+            },
+        );
+    } else {
+        setup.add_goal(
+            4,
+            MeleeAttackGoal {
+                speed: 1.2,
+                following_even_if_not_seen: false,
+            },
+        );
+    }
+}
+
+/// `AbstractSkeleton.registerGoals` of a skeleton of the type `kind`, then the weapon
+/// goal `reassessWeaponGoal` adds after them for what `mob` holds (none: a fresh
+/// skeleton's, which holds nothing until its spawn gives it its bow).
+pub(crate) fn register_goals(kind: u16, mob: Option<&Mob>, setup: &mut Setup) {
     setup.add_goal(2, RestrictSunGoal);
     setup.add_goal(3, FleeSunGoal { speed: 1.0 });
     setup.add_goal(
@@ -105,22 +201,19 @@ pub(crate) fn register_goals(setup: &mut Setup) {
     setup.add_goal(5, RandomStrollGoal::avoiding_water(1.0));
     setup.add_goal(6, LookAtPlayerGoal::new(Class::Player, 8.0));
     setup.add_goal(6, RandomLookAroundGoal);
-    // `reassessWeaponGoal`'s, removed and added again after the others: the bow's
-    // (`RangedBowAttackGoal`) or the melee's, both of moving and looking.
-    setup.add_goal(
-        4,
-        AttackOfN9 {
-            flags: flags::MOVE | flags::LOOK,
-        },
-    );
+    // `reassessWeaponGoal`'s, removed and added again after the others.
+    match mob {
+        Some(mob) => reassess_weapon_goal(kind, mob, setup),
+        None => reassess_weapon_goal(kind, &Mob::fresh(), setup),
+    }
     targets::register(setup, targets::SKELETON);
 }
 
 /// `AbstractSkeleton.finalizeSpawn` after `Monster`'s (the tail): the armour's draws and
 /// the bow in the main hand (`populateDefaultEquipmentSlots`), the enchantments' draws
 /// (the bow's, and each armour slot's that holds something), the weapon goal reassessed
-/// (nothing to do until N9), and the loot pick-up's draw against `0.55 × special`. On
-/// Halloween the game draws for a pumpkin; Clustine never is on it.
+/// (at its next AI step, from the bow it now holds), and the loot pick-up's draw against
+/// `0.55 × special`. On Halloween the game draws for a pumpkin; Clustine never is on it.
 pub(crate) fn finalize_spawn(spawn: &mut Spawning<'_>) {
     let special = spawn.difficulty.1;
     let hard = clustine_world::Difficulty::WORLD == clustine_world::Difficulty::Hard;
