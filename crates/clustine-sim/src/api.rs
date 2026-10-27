@@ -567,6 +567,10 @@ pub enum EntityKind {
         uuid: Uuid,
         motion: [f64; 3],
         hops: u32,
+        /// Its ticks lived as shown, which an edge that meets it after it was made
+        /// reckons a cloud's radius and wait by (`docs/groundwork/n9-plan.md`, section
+        /// 10).
+        lived: u32,
         data: EntityData,
         /// What it rides, who rides it and who holds its leash, so that a client shown
         /// it from a snapshot is shown those too.

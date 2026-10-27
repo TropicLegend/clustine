@@ -58,6 +58,7 @@ fn other(key: u64, position: [f64; 3], hops: u32, data: EntityData) -> EntitySta
             uuid: Uuid::from_u128(u128::from(key) + 9_000),
             motion: [0.0; 3],
             hops,
+            lived: 0,
             data,
             riding: Default::default(),
         },

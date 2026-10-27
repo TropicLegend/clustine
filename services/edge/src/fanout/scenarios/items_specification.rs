@@ -20,6 +20,7 @@ fn thrown(key: u64, x: f64, hops: u32) -> EntityState {
             uuid: Uuid::from_u128(u128::from(key) | (9 << 100)),
             motion: [0.0, 0.2, 0.1],
             hops,
+            lived: 0,
             data: EntityData::Item {
                 stack: STACK,
                 pick_up_delay: 40,

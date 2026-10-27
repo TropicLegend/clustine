@@ -79,6 +79,7 @@ pub(crate) fn state_of(entity: &Entity) -> EntityState {
             uuid: entity.uuid,
             motion: entity.motion,
             hops: entity.hops,
+            lived: entity.lived,
             data: entity.data.clone(),
             riding: entity.riding.clone(),
         },

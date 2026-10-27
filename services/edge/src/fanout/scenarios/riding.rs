@@ -27,6 +27,7 @@ fn cushion(key: u64) -> EntityState {
             uuid: Uuid::from_u128(u128::from(key) + 9_000),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::Cushion {
                 attached: clustine_world::Attached {
                     block: block_of(HOME),

@@ -3612,6 +3612,7 @@ impl Fanout {
                 kind,
                 motion,
                 data,
+                lived,
                 ..
             } => {
                 if self.was_gone(entity, *hops) || !self.takes_word_of(from, entity, *hops) {
@@ -3643,6 +3644,8 @@ impl Fanout {
                     None => {
                         let mut tracker =
                             Tracker::new(seen, data, start, &mut |key| self.wire.of(key));
+                        // A cloud met after it was made is as old as it has lived.
+                        tracker.lived(*lived, data);
                         if spawned && *hops == 0 {
                             tracker.made();
                         }
@@ -12690,6 +12693,7 @@ mod scenarios {
                 uuid: Uuid::from_u128(u128::from(entity.0)),
                 motion: [0.0, 0.0, 0.0],
                 hops: 0,
+                lived: 0,
                 data: EntityData::Mob {
                     body: Vec::new(),
                     mind: Vec::new(),
@@ -21784,6 +21788,7 @@ mod scenarios {
                 uuid: Uuid::from_u128(9),
                 motion: [0.0, -0.0784, 0.0],
                 hops: 0,
+                lived: 0,
                 data: data.clone(),
                 riding: Default::default(),
             },
@@ -21854,6 +21859,7 @@ mod scenarios {
                 uuid: Uuid::from_u128(9),
                 motion,
                 hops: 0,
+                lived: 0,
                 data: data.clone(),
                 riding: Default::default(),
             },

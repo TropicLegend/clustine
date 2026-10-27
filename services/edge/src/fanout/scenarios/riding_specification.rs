@@ -89,6 +89,7 @@ fn cart(position: [f64; 3], hops: u32, passengers: Vec<Seat>) -> EntityState {
             uuid: Uuid::from_u128(u128::from(CART) + 9_000),
             motion: [0.3, 0.0, 0.0],
             hops,
+            lived: 0,
             data: EntityData::Minecart {
                 hurt: Hurt::default(),
                 display: None,
@@ -115,6 +116,7 @@ fn boat(position: [f64; 3], passengers: Vec<Seat>) -> EntityState {
             uuid: Uuid::from_u128(u128::from(CART) + 9_000),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::Boat {
                 hurt: Hurt::default(),
                 paddles: [false, false],
@@ -139,6 +141,7 @@ fn stand(key: u64, position: [f64; 3], vehicle: Option<u64>) -> EntityState {
             uuid: Uuid::from_u128(u128::from(key) + 9_000),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::ArmorStand {
                 flags: 0,
                 disabled_slots: 0,

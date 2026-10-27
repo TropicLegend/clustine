@@ -35,6 +35,7 @@ fn item(key: u64, chunk: ChunkPos, hops: u32) -> EntityState {
             uuid: Uuid::from_u128(u128::from(key) + 7_000),
             motion: [0.1, 0.25, -0.2],
             hops,
+            lived: 0,
             data: EntityData::Item {
                 stack: STACK,
                 pick_up_delay: 40,

@@ -63,6 +63,7 @@ fn hanging(key: u64, kind: i32, position: [f64; 3], yaw: f32, data: EntityData) 
             uuid: Uuid::from_u128(u128::from(key) + 9_000),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data,
             riding: Default::default(),
         },

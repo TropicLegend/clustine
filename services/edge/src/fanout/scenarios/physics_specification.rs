@@ -72,6 +72,7 @@ fn spawn(key: u64, position: [f64; 3], motion: [f64; 3]) -> RegionEvent {
             uuid: Uuid::from_u128(u128::from(key) + 31),
             motion,
             hops: 0,
+            lived: 0,
             data: EntityData::Item {
                 stack: STACK,
                 pick_up_delay: 10,

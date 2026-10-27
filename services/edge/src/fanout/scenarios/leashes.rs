@@ -29,6 +29,7 @@ fn boat(key: u64) -> EntityState {
             uuid: Uuid::from_u128(u128::from(key) + 9_000),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::Boat {
                 hurt: Hurt::default(),
                 paddles: [false; 2],
@@ -170,6 +171,7 @@ async fn a_knot_is_spawned_at_its_fences_corner_with_no_data() {
             uuid: Uuid::from_u128(77),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::LeashKnot {
                 attached: Attached {
                     block: BlockPos::new(2, -60, 3),

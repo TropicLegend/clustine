@@ -49,6 +49,7 @@ fn state(key: u64, kind: i32, data: EntityData, motion: [f64; 3]) -> EntityState
             uuid: Uuid::from_u128(u128::from(key) + 7_000),
             motion,
             hops: 0,
+            lived: 0,
             data,
             riding: Default::default(),
         },
@@ -505,6 +506,55 @@ async fn a_cloud_waits_and_then_shrinks_tick_by_tick() {
     for (after, values) in sent_each {
         assert_eq!(values, expected(after), "{after} ticks after its spawn");
     }
+    edge.end().await;
+}
+
+/// A cloud met after it was made (here, entering the view from another region at the
+/// age of 13) is shown at the radius of its age, not at that of its making.
+#[tokio::test]
+async fn a_cloud_met_after_it_was_made_is_shown_at_its_age() {
+    let (mut edge, mut client) = at_home().await;
+    let key = (1 << 32) + 6;
+    let cloud = Cloud {
+        duration: 600,
+        wait_time: 10,
+        reapplication_delay: 20,
+        radius: Float(3.0),
+        radius_at: 0,
+        radius_on_use: Float(-0.5),
+        radius_per_tick: Float(-0.25),
+        duration_on_use: 0,
+        potion: PotionContents {
+            potion: Some("minecraft:swiftness".to_owned()),
+            ..PotionContents::default()
+        },
+        duration_scale: Float(0.25),
+        owner: None,
+        victims: Vec::new(),
+    };
+    let expected = clustine_sim::cloud_radius_at(&cloud, 13).expect("it lives at 13");
+    assert!(expected < 3.0, "it has shrunk by then: {expected}");
+    let mut entered = state(
+        key,
+        entity_types::AREA_EFFECT_CLOUD,
+        EntityData::Cloud(Box::new(cloud)),
+        [0.0; 3],
+    );
+    if let EntityKind::Other { lived, .. } = &mut entered.kind {
+        *lived = 13;
+    }
+    told(
+        &mut edge,
+        &mut client,
+        40,
+        vec![RegionEvent::EntityEntered(entered)],
+    )
+    .await;
+    let (_, values) = added(&client, key);
+    assert!(
+        values.contains(&(8, EntityDataValue::Float(expected))),
+        "{values:?}"
+    );
     edge.end().await;
 }
 

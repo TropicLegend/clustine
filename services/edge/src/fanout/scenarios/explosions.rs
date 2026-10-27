@@ -95,6 +95,7 @@ async fn primed_tnt_is_shown_with_its_fuse_and_a_new_viewer_is_told_what_it_burn
             uuid: Uuid::from_u128(77),
             motion: [0.0; 3],
             hops: 0,
+            lived: 0,
             data: EntityData::PrimedTnt {
                 fuse,
                 block: clustine_data::blocks::TNT.0,

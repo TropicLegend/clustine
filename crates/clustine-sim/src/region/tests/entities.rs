@@ -275,6 +275,7 @@ fn a_thrown_item_is_where_the_game_puts_it_with_the_game_s_motion_for_its_draws(
             uuid: item.uuid,
             motion: item.motion,
             hops: 0,
+            lived: 0,
             data: item.data.clone(),
             riding: Default::default(),
         }

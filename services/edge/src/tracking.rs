@@ -906,6 +906,17 @@ impl Tracker {
         tracker
     }
 
+    /// Takes the entity's ticks lived as shown, which a cloud's radius and wait are
+    /// reckoned by: an edge that meets a cloud after it was made (a snapshot, another
+    /// region's word) shows it at its age, not at that of its last use.
+    pub(crate) fn lived(&mut self, lived: u32, data: &EntityData) {
+        if matches!(data, EntityData::Cloud(_)) && lived != self.age {
+            self.age = lived;
+            self.projectile_sent = projectile_held(self.kind, data, self.age);
+            self.pairing = self.values(data, true, &mut |key| key.0 as i32);
+        }
+    }
+
     /// Marks the entity as made just now, so that its first update sends again the
     /// values it was made with (see [`DIRTY_MADE`]): an entity that came into a
     /// region from another, or into this edge's sight, was made before and is not.
