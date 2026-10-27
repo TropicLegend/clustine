@@ -68,7 +68,7 @@ pub(crate) fn seen(chunk: ChunkPos, raid: &Raid) -> RaidSeen {
         centre: raid.centre,
         active: raid.active,
         status: raid.status,
-        first_wave_spawned: raid.has_first_wave_spawned(),
+        groups_spawned: raid.groups_spawned,
         between_waves: raid.is_between_waves(),
         omen: raid.omen_level,
         bar: raid.bar,
@@ -239,6 +239,7 @@ impl Region {
                         && kept.groups_spawned == wave
                 });
                 if accepted {
+                    // `addWaveMob(…, true)`: its health counted in the raid's total.
                     self.change_raid(raid, output, |kept| {
                         if !kept.members.iter().any(|m| m.key == member) {
                             kept.members.push(clustine_world::raid::RaidMember {
@@ -247,6 +248,8 @@ impl Region {
                                 health,
                             });
                             kept.members.sort_by_key(|m| (m.wave, m.key));
+                            kept.total_health = Float(kept.total_health.0 + health.0);
+                            super::raid_tick::update_bossbar(kept);
                         }
                     });
                 } else if self.find_entity(member).is_some() {
@@ -283,8 +286,14 @@ impl Region {
                     kept.heroes.insert(at, hero);
                 }
             }),
+            // `removeFromRaid(…, true)`: its health, as it last told it, taken from the
+            // raid's total.
             RaidNews::Left { raid, member } => self.change_raid(raid, output, |kept| {
-                kept.members.retain(|m| m.key != member);
+                if let Some(at) = kept.members.iter().position(|m| m.key == member) {
+                    let left = kept.members.remove(at);
+                    kept.total_health = Float(kept.total_health.0 - left.health.0);
+                    super::raid_tick::update_bossbar(kept);
+                }
                 kept.leaders.retain(|(_, leader)| *leader != member);
             }),
         }

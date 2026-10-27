@@ -49,7 +49,7 @@ fn seen_far(id: u64, centre: BlockPos, active: bool) -> RaidSeen {
         centre,
         active,
         status: RaidStatus::Ongoing,
-        first_wave_spawned: false,
+        groups_spawned: 0,
         between_waves: false,
         omen: 1,
         bar: uuid::Uuid::from_u128(u128::from(id)),
@@ -157,6 +157,8 @@ fn a_member_s_death_by_a_player_makes_a_hero_and_one_that_leaves_is_gone() {
             &mut output,
         );
     }
+    // `addWaveMob(…, true)`: each joiner's health counted.
+    assert_eq!(region.find_raid(id).unwrap().1.total_health, Float(48.0));
     let hero = uuid::Uuid::from_u128(42);
     region.raid_news(
         RaidNews::Died {
@@ -185,6 +187,9 @@ fn a_member_s_death_by_a_player_makes_a_hero_and_one_that_leaves_is_gone() {
     let (_, raid) = region.find_raid(id).unwrap();
     assert!(raid.members.is_empty());
     assert_eq!(raid.heroes, [hero]);
+    // A death keeps its health in the total (`removeFromRaid(…, false)`), a leave takes
+    // it away (`removeFromRaid(…, true)`).
+    assert_eq!(raid.total_health, Float(24.0));
 }
 
 #[test]

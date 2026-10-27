@@ -506,7 +506,8 @@ pub struct RaidSeen {
     pub centre: BlockPos,
     pub active: bool,
     pub status: clustine_world::raid::RaidStatus,
-    pub first_wave_spawned: bool,
+    /// `getGroupsSpawned()`: the waves come so far, the wave a raider joining now joins.
+    pub groups_spawned: i32,
     pub between_waves: bool,
     pub omen: i32,
     /// The bar: its UUID, whether it is shown, its progress and its name.

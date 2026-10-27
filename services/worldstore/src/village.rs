@@ -428,7 +428,7 @@ mod tests {
             centre: BlockPos::new(0, 64, 0),
             active: true,
             status: clustine_world::raid::RaidStatus::Ongoing,
-            first_wave_spawned: false,
+            groups_spawned: 0,
             between_waves: false,
             omen: 1,
             bar: uuid::Uuid::from_u128(u128::from(id)),

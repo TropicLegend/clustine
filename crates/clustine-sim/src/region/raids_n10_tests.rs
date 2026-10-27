@@ -430,7 +430,7 @@ fn a_raider_of_another_region_s_raid_tells_its_death_to_the_raid_s_chunk() {
         centre: far,
         active: true,
         status: RaidStatus::Ongoing,
-        first_wave_spawned: true,
+        groups_spawned: 1,
         between_waves: false,
         omen: 1,
         bar: uuid::Uuid::from_u128(7),

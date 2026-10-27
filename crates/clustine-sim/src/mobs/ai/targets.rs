@@ -13,7 +13,7 @@
 //! | `NearestAttackableTargetGoal`, interval 10 | `nextInt(5)` first; it searches only on a 0 |
 //! | `NearestAttackableTargetGoal`, interval 0 (the vindicator's Johnny goal) | nothing |
 //! | `Spider$SpiderTargetGoal` | nothing in light worth a half or more at its eyes; else `nextInt(5)` |
-//! | `NearestHealableRaiderTargetGoal` (the witch's) | `nextBoolean()` while its cooldown is 0 or less, which outside a raid it always is; never more, as no raid is active |
+//! | `NearestHealableRaiderTargetGoal` (the witch's) | `nextBoolean()` while its cooldown is 0 or less, which outside a raid it always is; the raid's rules in `raider_goals.rs` |
 //! | `NearestAttackableWitchTargetGoal` (the witch's) | `nextInt(5)`: its `canAttack`, set by the witch's `aiStep` from the healer's cooldown, is always true outside a raid |
 //! | `VindicatorJohnnyAttackGoal` | nothing: a vindicator not named Johnny asks nothing more, and the goal's interval is 0 |
 //!
@@ -268,28 +268,6 @@ pub(crate) fn find_nearest(
     sensing::nearest(ai, candidates, &conditions, &|_| true, eyes)
 }
 
-/// `NearestHealableRaiderTargetGoal(witch, Raider, true, selector)`: its cooldown, which
-/// only its `start` raises, is 0 or less outside a raid, so every asked tick draws
-/// `nextBoolean()`; and with no raid active it never takes anything.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct NearestHealableRaiderTargetGoal;
-
-impl Goal for NearestHealableRaiderTargetGoal {
-    type State = Targeting;
-
-    fn flags(&self) -> u8 {
-        flags::TARGET
-    }
-
-    fn can_use(&self, _: &mut Targeting, ai: &mut Ai<'_, '_>) -> bool {
-        if !ai.tick.draws.next_bool() {
-            return false;
-        }
-        // `hasActiveRaid()`: no raid before N10.
-        false
-    }
-}
-
 /// `HurtByTargetGoal(mob, ignoreDamageFrom...).setAlertOthers(toIgnoreAlert...)`: the
 /// game's goal, and in its `start`, `alertOthers` (section 8.1). The class alerted is
 /// the mob's own (`getClass()`) and what it ignores is the class's (`alert_ignores`).
@@ -420,7 +398,10 @@ pub(crate) fn register(setup: &mut Setup, goals: &[(i32, Target)]) {
                 setup.add_target(priority, HurtByAlertingGoal { ignore });
             }
             Target::Nearest(goal) => setup.add_target(priority, goal),
-            Target::HealableRaider => setup.add_target(priority, NearestHealableRaiderTargetGoal),
+            Target::HealableRaider => setup.add_target(
+                priority,
+                crate::mobs::ai::raider_goals::NearestHealableRaiderTargetGoal,
+            ),
         }
     }
 }

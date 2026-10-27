@@ -562,7 +562,18 @@ fn pillager(
     position: [f64; 3],
     change: impl FnOnce(&mut illagers::RaiderState),
 ) -> EntityId {
-    let kind = entity_types::PILLAGER as u16;
+    raider_of(region, entity_types::PILLAGER, position, change)
+}
+
+/// A persistent raider of the type `kind` at `position`, its raider's state changed by
+/// `change`.
+fn raider_of(
+    region: &mut Region,
+    kind: i32,
+    position: [f64; 3],
+    change: impl FnOnce(&mut illagers::RaiderState),
+) -> EntityId {
+    let kind = kind as u16;
     let chunk = ChunkPos::containing(position[0], position[2]);
     let key = region.take_entity_key(chunk).expect("a key");
     let mut own = Random::of_entity(SEED, key, 0);
@@ -713,4 +724,27 @@ fn a_patrol_target_given_across_a_line_is_taken_by_a_raider_and_by_nothing_else(
     let before = region.find_entity(cow).expect("the cow").1.clone();
     region.patrol_target_given(cow, pos, &mut TickOutput::default());
     assert_eq!(region.find_entity(cow).expect("the cow").1, &before);
+}
+
+#[test]
+fn a_patrol_target_is_taken_by_a_ravager_and_by_a_raider_only_while_its_raid_is_not_active() {
+    // `Raider.canJoinPatrol`: `!hasActiveRaid()`, the ravager a raider like the rest.
+    let mut region = region_with(NOON, |_| None, false);
+    let mut output = TickOutput::default();
+    region.create_or_extend_raid(BlockPos::new(0, FLOOR + 1, 0), 1, &mut output);
+    let id = region.own_raids()[0].1.id;
+    region.change_raid(id, &mut output, |raid| raid.active = true);
+    let member = pillager(&mut region, [0.5, FEET, 0.5], |state| state.raid = Some(id));
+    let pos = BlockPos::new(9, FLOOR + 1, 9);
+    region.patrol_target_given(member, pos, &mut output);
+    assert_eq!(raider(&region, member).patrol_target, None);
+    assert!(!raider(&region, member).patrolling);
+    region.change_raid(id, &mut output, |raid| raid.active = false);
+    region.patrol_target_given(member, pos, &mut output);
+    assert_eq!(raider(&region, member).patrol_target, Some(pos));
+
+    let ravager = raider_of(&mut region, entity_types::RAVAGER, [2.5, FEET, 2.5], |_| {});
+    region.patrol_target_given(ravager, pos, &mut output);
+    assert_eq!(raider(&region, ravager).patrol_target, Some(pos));
+    assert!(raider(&region, ravager).patrolling);
 }

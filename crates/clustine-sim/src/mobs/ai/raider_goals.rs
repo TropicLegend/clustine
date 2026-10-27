@@ -78,13 +78,11 @@ impl RaidKnown {
         self.seen.status == RaidStatus::Loss
     }
 
-    /// The wave a raider joining now joins (`getGroupsSpawned()`): known of the region's
-    /// own; of another region's only before its first wave, as none.
-    fn joining_wave(&self) -> Option<i32> {
-        match self.groups_spawned {
-            Some(groups) => Some(groups),
-            None => (!self.seen.first_wave_spawned).then_some(0),
-        }
+    /// The wave a raider joining now joins (`getGroupsSpawned()`): the region's own
+    /// record's, or another region's as its table last published it (a wave that came
+    /// since, the holder refuses the join).
+    fn joining_wave(&self) -> i32 {
+        self.groups_spawned.unwrap_or(self.seen.groups_spawned)
     }
 }
 
@@ -179,9 +177,7 @@ pub(crate) fn ai_step(tick: &mut MobTick<'_>) {
             let Some(known) = tick.world.raid_known(seen.id, 0) else {
                 return;
             };
-            let Some(wave) = known.joining_wave() else {
-                return;
-            };
+            let wave = known.joining_wave();
             illagers::update(&mut tick.mob, |raider| {
                 raider.raid = Some(seen.id);
                 raider.wave = wave;
@@ -525,9 +521,7 @@ impl Goal for PathfindToRaidGoal {
 /// region's own within 16 of its box with no active raid that may join is asked to join
 /// on the raid's current wave.
 fn recruit_nearby(ai: &mut Ai<'_, '_>, raid: &RaidKnown) {
-    let Some(wave) = raid.joining_wave() else {
-        return;
-    };
+    let wave = raid.joining_wave();
     let bounds = super::goals::ai_bounds(ai).inflate([16.0, 16.0, 16.0]);
     let recruits: Vec<EntityId> = ai
         .tick

@@ -24,20 +24,28 @@ use crate::mobs::types::illagers;
 use crate::physics::{self, Vec3, aabb::Aabb};
 use crate::region::Random;
 
-/// The types that are `PatrollingMonster`s and so can join a patrol (`canJoinPatrol`,
-/// a raider's while it has no raid). The illusioner is not built. **Named**: the
-/// ravager, a `PatrollingMonster` too, has no `LongDistancePatrolGoal` here and so never
-/// joins a patrol (only one made by an egg could; patrols spawn only these four).
-pub(crate) const PATROLLING: [u16; 4] = [
+/// The types that are `PatrollingMonster`s (raiders all; the illusioner is not built).
+pub(crate) const PATROLLING: [u16; 5] = [
     entity_types::PILLAGER as u16,
     entity_types::VINDICATOR as u16,
     entity_types::EVOKER as u16,
     entity_types::WITCH as u16,
+    entity_types::RAVAGER as u16,
 ];
 
-/// Whether a mob of the type `kind` is a `PatrollingMonster` that can join a patrol.
-pub(crate) fn can_join_patrol(kind: u16) -> bool {
-    PATROLLING.contains(&kind)
+/// `canJoinPatrol()` of the mob `mob` of the type `kind`: a `PatrollingMonster`'s, and
+/// a raider's (each of them) only while it has no active raid (`Raider.canJoinPatrol`),
+/// `active` saying whether a raid, by its id and the mob's wave, is.
+pub(crate) fn can_join_patrol(
+    kind: u16,
+    mob: &crate::mobs::Mob,
+    active: impl Fn(EntityId, i32) -> bool,
+) -> bool {
+    if !PATROLLING.contains(&kind) {
+        return false;
+    }
+    let raider = illagers::state_of(mob);
+    !raider.raid.is_some_and(|raid| active(raid, raider.wave))
 }
 
 /// `NAVIGATION_FAILED_COOLDOWN`.
@@ -162,7 +170,17 @@ fn companions(ai: &Ai<'_, '_>) -> Vec<EntityId> {
         .world
         .entities_in(&bounds)
         .into_iter()
-        .filter(|seen| seen.entity.key != ai.tick.key && can_join_patrol(seen.entity.kind))
+        .filter(|seen| {
+            seen.entity.key != ai.tick.key
+                && crate::mobs::Mob::decode(&seen.entity.data).is_ok_and(|mob| {
+                    can_join_patrol(seen.entity.kind, &mob, |raid, wave| {
+                        ai.tick
+                            .world
+                            .raid_known(raid, wave)
+                            .is_some_and(|known| known.is_active())
+                    })
+                })
+        })
         .map(|seen| seen.entity.key)
         .collect()
 }

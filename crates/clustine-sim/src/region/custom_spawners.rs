@@ -534,7 +534,13 @@ impl Region {
         let Some((_, entity)) = self.find_entity(key) else {
             return;
         };
-        if !patrol::can_join_patrol(entity.kind) {
+        let joins = crate::mobs::Mob::decode(&entity.data).is_ok_and(|mob| {
+            patrol::can_join_patrol(entity.kind, &mob, |raid, wave| {
+                self.raid_known(raid, wave)
+                    .is_some_and(|known| known.is_active())
+            })
+        });
+        if !joins {
             return;
         }
         self.struck_between_ticks(key, output, |struck| {

@@ -140,7 +140,7 @@ fn stop(raid: &mut Raid) {
 /// `updateBossbar()`: the bar's progress, the health of the members as they last told
 /// it against the raid's total, kept within 0 and 1; kept as it is where no health was
 /// counted.
-fn update_bossbar(raid: &mut Raid) {
+pub(super) fn update_bossbar(raid: &mut Raid) {
     if raid.total_health.0 <= 0.0 {
         return;
     }
