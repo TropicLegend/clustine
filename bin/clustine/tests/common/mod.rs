@@ -19,6 +19,9 @@ use clustine_coordinator::Policy;
 
 pub fn config() -> Config {
     clustine_worker::check_light_in_turn(light_oracle());
+    // The tests count the entities they make: no mob comes of itself (the game rule
+    // `spawn_mobs` off), but in the tests of spawning, which say so.
+    clustine_worker::set_spawn_mobs(false);
     let pins = pins();
     // Regions follow their players, as in a server that is told nothing, by the
     // distances of the tests' view distance. Pinned regions stay as they are.
@@ -147,6 +150,7 @@ pub async fn spawn_server(
         .arg(world)
         .args(more)
         .env("CLUSTINE_LIGHT_ORACLE", light_oracle().to_string())
+        .env("CLUSTINE_SPAWN_MOBS", "0")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -183,6 +187,7 @@ pub async fn spawn_server_with_log(
         .args(more)
         .env("NO_COLOR", "1")
         .env("CLUSTINE_LIGHT_ORACLE", light_oracle().to_string())
+        .env("CLUSTINE_SPAWN_MOBS", "0")
         .stdout(std::process::Stdio::null())
         .stderr(written)
         .kill_on_drop(true)

@@ -86,6 +86,7 @@ mod tests {
                 seed: 0,
                 game_seed: 0,
                 sea_level: 63,
+                spawn_mobs: true,
                 light: LightSettings::default(),
                 features: Default::default(),
             },

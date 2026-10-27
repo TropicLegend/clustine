@@ -1066,6 +1066,7 @@ impl RegionSettings {
             // given `level-seed=0` shares.
             game_seed: seed.unwrap_or(0),
             sea_level: if seed.is_some() { 63 } else { -63 },
+            spawn_mobs: spawn_mobs(),
             // A server's budget for lighting what it loads (ADR-0029), and the checks the
             // end-to-end tests ask for.
             light: clustine_sim::LightSettings {
@@ -1074,6 +1075,27 @@ impl RegionSettings {
             },
             features: features_of(seed),
         }
+    }
+}
+
+/// Whether the regions this process opens spawn mobs (the game rule `spawn_mobs`), unless
+/// the environment says ([`set_spawn_mobs`]).
+static SPAWN_MOBS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Has the regions this process opens from now on spawn mobs or not (the game rule
+/// `spawn_mobs`), where `CLUSTINE_SPAWN_MOBS` does not say otherwise: for the end-to-end
+/// tests that count entities and run a server inside their own process.
+pub fn set_spawn_mobs(on: bool) {
+    SPAWN_MOBS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the regions spawn mobs: as `CLUSTINE_SPAWN_MOBS` says (`0` or `false` for
+/// not), else as [`set_spawn_mobs`] last said, else yes, as a game has it.
+fn spawn_mobs() -> bool {
+    match std::env::var("CLUSTINE_SPAWN_MOBS").ok().as_deref() {
+        Some("0" | "false") => false,
+        Some("1" | "true") => true,
+        _ => SPAWN_MOBS.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 

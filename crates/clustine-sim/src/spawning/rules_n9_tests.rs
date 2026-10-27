@@ -1003,6 +1003,7 @@ fn field_region(biome: Biome, floor: BlockState, structures: Vec<KeptStructure>)
         seed: 0x5_10,
         game_seed: 0,
         sea_level: 63,
+        spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
     };
@@ -1065,6 +1066,15 @@ fn run_nights(
 
 fn distance_sqr(a: [f64; 3], b: [f64; 3]) -> f64 {
     (0..3).map(|axis| (a[axis] - b[axis]).powi(2)).sum()
+}
+
+#[test]
+fn nothing_spawns_with_the_game_rule_spawn_mobs_off() {
+    let mut region = field_region(biome("minecraft:badlands"), blocks::STONE, Vec::new());
+    region.config.spawn_mobs = false;
+    add_player(&mut region, 1, PLAYER_AT, false);
+    let spawned = run_nights(&mut region, &PublishedCounts::default(), 6);
+    assert!(spawned.is_empty(), "{} came", spawned.len());
 }
 
 #[test]

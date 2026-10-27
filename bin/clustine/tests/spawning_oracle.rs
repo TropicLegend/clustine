@@ -149,6 +149,8 @@ async fn a_day_of_spawning_is_like_on_the_official_server() {
         .await
         .expect("the official server starts");
     let mut config = common::config();
+    // This comparison is of natural spawning: the game rule on.
+    clustine_worker::set_spawn_mobs(true);
     config.view_distance = VIEW_DISTANCE as i32;
     let (server, address) = common::start_with(config).await;
     // The seeds first, so that a wrong one fails before the day.
@@ -168,6 +170,8 @@ async fn a_day_of_spawning_is_like_on_the_official_server() {
         .expect("the official server's day");
     drop(oracle);
     let mut config = common::config();
+    // This comparison is of natural spawning: the game rule on.
+    clustine_worker::set_spawn_mobs(true);
     config.view_distance = VIEW_DISTANCE as i32;
     let (server, address) = common::start_with(config).await;
     let ours = a_day(&address).await.expect("Clustine's day");

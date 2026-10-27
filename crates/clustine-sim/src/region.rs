@@ -157,6 +157,9 @@ pub struct RegionConfig {
     /// classic flat world's, as the game's `FlatLevelSource` has it. What the phantoms'
     /// spawner and spawning's water rules read.
     pub sea_level: i32,
+    /// The game rule `spawn_mobs`: whether mobs spawn naturally and by the custom
+    /// spawners (on in a game; the end-to-end tests that count entities turn it off).
+    pub spawn_mobs: bool,
     /// How much of what it comes to have the region lights a tick (ADR-0029): a
     /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
     /// it comes.
@@ -3846,6 +3849,7 @@ mod tests {
             seed: 0,
             game_seed: 0,
             sea_level: 63,
+            spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
         }

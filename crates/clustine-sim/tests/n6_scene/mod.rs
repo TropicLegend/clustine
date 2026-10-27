@@ -66,6 +66,7 @@ pub fn config(inventory: Inventory) -> RegionConfig {
         seed: 0,
         game_seed: 0,
         sea_level: 63,
+        spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
     }

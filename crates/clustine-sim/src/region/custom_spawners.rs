@@ -140,6 +140,11 @@ impl Region {
     /// `tickCustomSpawners`, n7 ServerLevel): the phantoms' firings due since the
     /// region's previous tick, then the patrols'.
     pub(super) fn run_custom_spawners(&mut self, output: &mut TickOutput) {
+        // `spawn_mobs` off: no spawner fires, and none catches up when it is on again.
+        if !self.config.spawn_mobs {
+            self.custom_spawners.last = None;
+            return;
+        }
         let now = self.clock.game_time;
         let schedules = &mut self.custom_spawners;
         let after = schedules.last.unwrap_or(now.saturating_sub(1));

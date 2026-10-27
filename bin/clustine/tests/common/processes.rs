@@ -101,6 +101,7 @@ impl Cluster {
             .args(arguments)
             .env("NO_COLOR", "1")
             .env("CLUSTINE_LIGHT_ORACLE", super::light_oracle().to_string())
+            .env("CLUSTINE_SPAWN_MOBS", "0")
             .stdout(Stdio::null())
             .stderr(log)
             .kill_on_drop(true)

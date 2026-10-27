@@ -116,6 +116,9 @@ impl Region {
     /// once in 400 ticks of game time; then each chunk the region's entities tick in,
     /// near enough a player, in an order drawn from each chunk's stream.
     pub(super) fn spawn_naturally(&mut self, output: &mut TickOutput) {
+        if !self.config.spawn_mobs {
+            return;
+        }
         let Some(published) = self.published.as_ref() else {
             return;
         };
