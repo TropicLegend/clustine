@@ -106,6 +106,7 @@ fn config() -> RegionConfig {
         lowest_y: LOWEST_Y,
         seed: 0,
         game_seed: 0,
+        sea_level: 63,
         light: Default::default(),
         features: Default::default(),
     }

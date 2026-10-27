@@ -153,6 +153,10 @@ pub struct RegionConfig {
     /// slime chunks are drawn from (`docs/groundwork/n9-plan.md`, section 9.4). A
     /// generated world's terrain seed; a flat world's 0 until its identity keeps one.
     pub game_seed: i64,
+    /// The world's sea level (`getSeaLevel`): 63 for a generated world, -63 for the
+    /// classic flat world's, as the game's `FlatLevelSource` has it. What the phantoms'
+    /// spawner and spawning's water rules read.
+    pub sea_level: i32,
     /// How much of what it comes to have the region lights a tick (ADR-0029): a
     /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
     /// it comes.
@@ -3834,6 +3838,7 @@ mod tests {
             lowest_y: -64,
             seed: 0,
             game_seed: 0,
+            sea_level: 63,
             light: Default::default(),
             features: Default::default(),
         }

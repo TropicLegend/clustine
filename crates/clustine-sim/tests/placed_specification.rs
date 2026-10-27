@@ -69,6 +69,7 @@ fn config(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> RegionConfig {
         lowest_y: -64,
         seed: 0,
         game_seed: 0,
+        sea_level: 63,
         light: Default::default(),
         features: Default::default(),
     }

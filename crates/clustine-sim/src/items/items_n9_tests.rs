@@ -607,6 +607,7 @@ impl World {
             lowest_y: -64,
             seed: SEED,
             game_seed: 0,
+            sea_level: 63,
             light: Default::default(),
             features: Default::default(),
         };

@@ -85,6 +85,7 @@ mod tests {
                 lowest_y: -64,
                 seed: 0,
                 game_seed: 0,
+                sea_level: 63,
                 light: LightSettings::default(),
                 features: Default::default(),
             },

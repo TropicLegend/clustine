@@ -21,10 +21,10 @@
 //! regions hold tables a second apart that differ, a firing may make no patrol or two
 //! (named, rare).
 //!
-//! **Named**: the game's sea level is the generator's, 63 for the terrain and −63 for a
-//! flat world; a region knows neither, and takes 63, as the phantom's own rules do
-//! (`mobs/types/phantom.rs`), so that in a flat world phantoms come only to players
-//! above y 63. A patrol's member faces south (yaw 0), where the game leaves the yaw its
+//! The sea level is the world's (`RegionConfig::sea_level`: 63 for the terrain, −63 for
+//! a flat world, as the game's generators have it). **Named**: the phantom's own rules
+//! (`mobs/types/phantom.rs`) take 63. A patrol's member faces south (yaw 0), where the
+//! game leaves the yaw its
 //! constructor drew. Where a block or its light is not read, a phantom or a member is
 //! not made there.
 
@@ -47,9 +47,6 @@ mod custom_spawners_n9_tests;
 const PHANTOMS: u64 = 1;
 /// The patrol spawner's mark among the schedules.
 const PATROLS: u64 = 2;
-
-/// The level's sea level as the region takes it (see the module's comment).
-const SEA_LEVEL: i32 = 63;
 
 /// The ticks awake below which a player is never visited (`nextInt(timeSinceRest) >=
 /// 72000`).
@@ -212,7 +209,7 @@ impl Region {
                 continue;
             }
             let block = sleeper.block;
-            if block.y < SEA_LEVEL || !self.sees_sky(block) {
+            if block.y < self.config.sea_level || !self.sees_sky(block) {
                 continue;
             }
             let effective = self.difficulty_at(block);

@@ -62,6 +62,7 @@ fn config(seed: u64) -> RegionConfig {
         lowest_y: -64,
         seed,
         game_seed: 0,
+        sea_level: 63,
         light: Default::default(),
         features: Default::default(),
     }

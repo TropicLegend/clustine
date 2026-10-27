@@ -1065,6 +1065,7 @@ impl RegionSettings {
             // A flat world has no seed of its own yet: 0, which an official server
             // given `level-seed=0` shares.
             game_seed: seed.unwrap_or(0),
+            sea_level: if seed.is_some() { 63 } else { -63 },
             // A server's budget for lighting what it loads (ADR-0029), and the checks the
             // end-to-end tests ask for.
             light: clustine_sim::LightSettings {
@@ -5237,6 +5238,16 @@ mod tests {
     /// is the middle of.
     fn config(return_after: u64) -> RegionConfig {
         settings(return_after).with_spawn(BlockPos::new(0, -60, 0), flat_world(), None)
+    }
+
+    /// A flat world's regions get the game's flat sea level and seed 0, a generated
+    /// world's its seed and the terrain's sea level.
+    #[test]
+    fn a_region_is_given_its_world_s_seed_and_sea_level() {
+        let flat = settings(0).with_spawn(BlockPos::new(0, -60, 0), flat_world(), None);
+        assert_eq!((flat.game_seed, flat.sea_level), (0, -63));
+        let seeded = settings(0).with_spawn(BlockPos::new(0, 64, 0), 7, Some(3));
+        assert_eq!((seeded.game_seed, seeded.sea_level), (3, 63));
     }
 
     /// The number the store gives the classic flat world.
