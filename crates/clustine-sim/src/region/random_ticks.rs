@@ -124,6 +124,20 @@ impl Random {
         random
     }
 
+    /// The stream of a custom spawner's firing (`docs/groundwork/n9-plan.md`, section
+    /// 9.7): what the spawner `spawner` draws at its firing due at the game time
+    /// `due`, its next firing's delay first, the same in every region, by a mark of its
+    /// own.
+    pub(crate) fn of_schedule(world: u64, spawner: u64, due: u64) -> Self {
+        /// Mixed in first, so that this is no other stream.
+        const SCHEDULES: u64 = 0x7363_6865_6475_6c65;
+        let mut random = Self(world);
+        random.mix(SCHEDULES);
+        random.mix(spawner);
+        random.mix(due);
+        random
+    }
+
     /// The stream of the chunk at `position` in a tick of a world for the rule
     /// `purpose` (`docs/groundwork/n9-plan.md`, section 9.3: spawning draws from its
     /// chunk's stream). Apart from the streams of sections, entities and blocks by a mark

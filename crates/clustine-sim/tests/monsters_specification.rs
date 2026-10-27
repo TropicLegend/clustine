@@ -1232,8 +1232,8 @@ fn each_raider_s_egg_makes_it_holding_what_the_game_s_holds_and_shows_it() {
     }
 }
 
-/// The banner a patrol leader wears: the ominous banner, which Clustine makes a plain
-/// white one (the plan's section 10, "Items without components").
+/// The banner a patrol leader wears: the ominous banner, a white banner with its
+/// patterns and name (N9's components).
 const LEADER_BANNER: i32 = items::WHITE_BANNER;
 
 /// K 3.1 and K 5: a raider's egg (`SPAWN_ITEM_USE`, neither a patrol, an event nor a
@@ -1274,7 +1274,13 @@ fn about_six_raiders_in_a_hundred_from_eggs_lead_a_patrol_with_a_banner_and_no_w
         assert_eq!(made.len(), 300, "{kind}");
         let leaders = made
             .iter()
-            .filter(|key| shown_in(&outputs, **key, HEAD).flatten() == Some(one(LEADER_BANNER)))
+            .filter(|key| {
+                shown_in(&outputs, **key, HEAD)
+                    .flatten()
+                    .is_some_and(|stack| {
+                        stack.item == LEADER_BANNER && !stack.components.is_empty()
+                    })
+            })
             .count();
         if can_lead {
             assert!(

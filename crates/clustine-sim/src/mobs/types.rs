@@ -1195,6 +1195,8 @@ pub(crate) enum SpawnReason {
     Jockey,
     /// A mob another summons (an evoker's vex, `MOB_SUMMONED`).
     MobSummoned,
+    /// A patrol's member (`PATROL`, the patrol spawner's).
+    Patrol,
 }
 
 /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far

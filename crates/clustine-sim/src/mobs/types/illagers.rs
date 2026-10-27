@@ -4,17 +4,15 @@
 //!
 //! Named differences: no raid exists before N10, so the raid's goals hold their places
 //! as goals that never start, a raider never joins a raid nor celebrates, and its
-//! `Wave` and `CanJoinRaid` are kept and never read; no patrol is made before N9, so
-//! `LongDistancePatrolGoal` holds its place too and a patrol's target is kept only
-//! where a record gives one (a template's is not read: no template holds one); a patrol
-//! leader's banner is a plain white banner, as item stacks carry no patterns
-//! (`n7k-plan.md`, section 10, "Items without components"), so that killing a leader
-//! gives nobody bad omen. The targets of each type, with `AbstractIllager`'s refusal of
+//! `Wave` and `CanJoinRaid` are kept and never read; a patrol's target from a structure
+//! template is not read (no template holds one). Patrols, their goal and the leader's
+//! ominous banner are `crate::mobs::ai::patrol`'s (N9's S11). The targets of each type,
+//! with `AbstractIllager`'s refusal of
 //! a baby villager, are `crate::mobs::ai::targets`'; its allies of `#illager_friends`
 //! are never asked of a target any of them takes.
 
 use clustine_data::{entity_types, items};
-use clustine_world::{BlockPos, ItemStack, TypeState};
+use clustine_world::{BlockPos, TypeState};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +22,8 @@ use super::template;
 use super::{SpawnReason, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::ai::Setup;
 use crate::mobs::ai::selector::flags;
+use crate::mobs::ai::{Setup, patrol};
 use crate::mobs::types::tamable::Idle;
 use crate::region::Random;
 use crate::shown::DataShown;
@@ -161,25 +159,27 @@ pub(crate) fn update_own<T: OwnState>(mob: &mut Mob, change: impl FnOnce(&mut T)
 /// `setCanJoinRaid(!(witch && NATURAL))`; then, unless the reason is a patrol's, an
 /// event's or a structure's, one draw of the level's against 0.06, made before the type
 /// is asked whether it can lead (`canBeLeader`: the witch cannot), and a leader wears
-/// its banner (drop chance 2: always dropped, never worn out). A patrol's member
-/// patrols (no patrol is made before N9).
+/// the ominous banner (drop chance 2: always dropped, never worn out). A patrol's member
+/// patrols.
 pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader: bool) {
     let witch = i32::from(kind) == entity_types::WITCH;
     let mut leads = false;
     update(spawn.mob, |own| {
         own.can_join_raid = !(witch && spawn.reason == SpawnReason::Natural);
-        if spawn.reason != SpawnReason::Structure
+        if !matches!(spawn.reason, SpawnReason::Structure | SpawnReason::Patrol)
             && spawn.level.next_float() < 0.06
             && can_be_leader
         {
             own.patrol_leader = true;
         }
         leads = own.patrol_leader;
+        if spawn.reason == SpawnReason::Patrol {
+            own.patrolling = true;
+        }
     });
     if leads {
         let body = &mut spawn.mob.body;
-        body.equipment.slots[usize::from(slots::HEAD)] =
-            Some(ItemStack::new(items::WHITE_BANNER, 1));
+        body.equipment.slots[usize::from(slots::HEAD)] = Some(patrol::ominous_banner());
         let mut chances = body.equipment.drop_chances.unwrap_or([0.085; 8]);
         chances[usize::from(slots::HEAD)] = 2.0;
         body.equipment.drop_chances = Some(chances);
@@ -187,12 +187,12 @@ pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader:
 }
 
 /// The goals `PatrollingMonster.registerGoals` and `Raider.registerGoals` add before
-/// the type's own, each holding its place without starting: `LongDistancePatrolGoal`
-/// (4), which only a patrol's member starts, and the raid's `ObtainRaidLeaderBannerGoal`
-/// (1), `PathfindToRaidGoal` (3), `RaiderMoveThroughVillageGoal` (4) and
-/// `RaiderCelebration` (5), which only a raid's.
+/// the type's own: `LongDistancePatrolGoal` (4, `crate::mobs::ai::patrol`), and the
+/// raid's `ObtainRaidLeaderBannerGoal` (1), `PathfindToRaidGoal` (3),
+/// `RaiderMoveThroughVillageGoal` (4) and `RaiderCelebration` (5), each holding its
+/// place without starting, as only a raid's would.
 pub(crate) fn register_raider_goals(setup: &mut Setup) {
-    setup.add_goal(4, Idle { flags: flags::MOVE });
+    setup.add_goal(4, patrol::PATROL_GOAL);
     setup.add_goal(1, Idle { flags: flags::MOVE });
     setup.add_goal(3, Idle { flags: flags::MOVE });
     setup.add_goal(4, Idle { flags: flags::MOVE });

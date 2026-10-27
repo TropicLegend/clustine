@@ -280,6 +280,10 @@ pub(crate) enum Local {
     /// `Sheep.setColor(colour)` of the sheep `key` (an evoker's wololo). **Named**: a
     /// sheep in a copy keeps its colour.
     SheepColour { key: EntityId, colour: u8 },
+    /// `LongDistancePatrolGoal`'s `setPatrolTarget(pos)` of the patrol's companion `key`
+    /// by its leader (`crate::mobs::ai::patrol`): the region's own is told at once, one
+    /// in a copy through its holder (`EntityUse::PatrolTarget`).
+    PatrolTarget { key: EntityId, pos: BlockPos },
 }
 
 /// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and

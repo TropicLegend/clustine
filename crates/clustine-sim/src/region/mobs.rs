@@ -186,6 +186,10 @@ impl MobWorld for View<'_> {
         Some(chunk.min_y() + i32::from(chunk.heights().motion_blocking[z << 4 | x]))
     }
 
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> Option<i32> {
+        self.region.motion_blocking_no_leaves_height(x, z)
+    }
+
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
         // The region's light as of its step (ADR-0029); `None` where the chunk is not lit.
         self.region.light_at(pos).map(|light| LightAt {

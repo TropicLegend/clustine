@@ -378,6 +378,9 @@ impl Region {
                 Local::SheepColour { key: sheep, colour } => {
                     self.set_sheep_colour(sheep, colour, output);
                 }
+                Local::PatrolTarget { key: given, pos } => {
+                    self.patrol_target_set(given, pos, output);
+                }
             }
         }
     }

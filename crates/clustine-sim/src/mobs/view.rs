@@ -150,6 +150,14 @@ pub(crate) trait MobWorld: Holds {
         None
     }
 
+    /// `Level.getHeight(MOTION_BLOCKING_NO_LEAVES, x, z)`, as
+    /// [`MobWorld::motion_blocking_height`] for the heightmap that leaves leaves out (a
+    /// patrol's walk); `None` where the chunk is not read.
+    fn motion_blocking_no_leaves_height(&self, x: i32, z: i32) -> Option<i32> {
+        let _ = (x, z);
+        None
+    }
+
     /// The light at `pos`: the chunk's stored light, or where a change left the chunk
     /// none, the sky's above its highest block that blocks motion and none below, and no
     /// light of blocks (the plan's 9.7.2, until N8). `None` where the chunk is not read.

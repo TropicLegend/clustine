@@ -40,6 +40,7 @@ pub(crate) mod navigation;
     reason = "what the navigations of the types of N7e on search with"
 )]
 pub(crate) mod pathfinder;
+pub(crate) mod patrol;
 #[allow(dead_code, reason = "the positions the goals the types of N7e on draw")]
 pub(crate) mod random_pos;
 pub(crate) mod ranged_weapons;

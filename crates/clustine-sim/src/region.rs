@@ -578,6 +578,8 @@ pub struct Region {
     faces: faces::Faces,
     /// What the region remembers of the night (`sleep.rs`).
     sleep: sleep::SleepMemory,
+    /// The custom spawners' schedules (`custom_spawners.rs`), in memory only.
+    custom_spawners: custom_spawners::Schedules,
     /// The drops of the blocks each explosion across a line broke in this tick, by the
     /// explosion, merged as they come (`explosions.rs`). Empty between ticks.
     blast_drops: BTreeMap<(EntityId, u64), Vec<(BlockPos, ItemStack)>>,
@@ -723,6 +725,7 @@ impl Region {
             gone: Vec::new(),
             faces: faces::Faces::default(),
             sleep: sleep::SleepMemory::default(),
+            custom_spawners: custom_spawners::Schedules::default(),
             applying: None,
             foreign_boxes: Vec::new(),
             blast_drops: BTreeMap::new(),
@@ -1159,6 +1162,8 @@ impl Region {
         }
         self.spawn_naturally(&mut output);
         self.run_random_ticks(&mut output);
+        // Then the custom spawners: phantoms and patrols (`custom_spawners.rs`).
+        self.run_custom_spawners(&mut output);
         let broadcast = output.events.len();
         self.run_block_events(&mut output);
         self.handling_tick = false;
