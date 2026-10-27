@@ -67,13 +67,6 @@ pub(crate) fn source_of(hurt: &HurtBy) -> Option<DamageSource> {
 impl Region {
     /// `send_on_entity`'s path for a player: the use `by` addressed to the player
     /// `player`, whose stay is the entity `entity` and whom the maker last saw at `at`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the arrows, splashes and pearls send them (S2, S3)"
-        )
-    )]
     pub(crate) fn send_on_player(
         &mut self,
         player: PlayerId,

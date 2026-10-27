@@ -10,11 +10,20 @@
 //! place in the dying mob's stream (`crate::mobs::body::Death`). An orb's own draws (its
 //! UUID, its yaw, its motion; lava's toss) are its key's stream's.
 //!
+//! A bottle o' enchanting's orbs (`awardWithDirection`, n7 ExperienceOrb 556–583;
+//! `docs/groundwork/n9-plan.md`, section 4.4) are its experience split by
+//! `getExperienceValue`, each merged as a mob's are or made by the directed constructor
+//! (n7 ExperienceOrb 46–137): its own draws as any orb's, its throw turned back where it
+//! goes against the direction, moved a quarter of a block along it, and where its box
+//! meets a block eased out of it (`unstuckIfPossible`). Their merges' draws are the
+//! level's, of the region's stream aside (`next_draw`, as the player's throws' sounds
+//! are). One whose place is in a copy is made by its holder (section 4.1's rule).
+//!
 //! Named differences: an orb is neither burnt by fire or lava nor hurt by anything but
-//! an explosion (`applyEffectsFromBlocks` is left out), and one stuck in a block is not
-//! eased out of it (`unstuckIfPossible`, `moveTowardsClosestSpace`); a player's delay
-//! between orbs is the region's memory, which another region's does not share; the
-//! player's experience is theirs ([`Region::add_experience`]).
+//! an explosion (`applyEffectsFromBlocks` is left out), and one stuck in a block in its
+//! tick is not eased out of it (`moveTowardsClosestSpace`); a player's delay between orbs
+//! is the region's memory, which another region's does not share; the player's
+//! experience is theirs ([`Region::add_experience`]).
 
 use clustine_blocks::fluid::FluidState;
 use clustine_data::{EntityTypeInfo, entity_types};
@@ -84,6 +93,43 @@ impl Region {
         draw: u32,
         output: &mut TickOutput,
     ) {
+        if !self.merge_orb(position, value, draw, output) {
+            self.add_orb(position, value, output);
+        }
+    }
+
+    /// `ExperienceOrb.awardWithDirection(level, at, direction, amount)`: `amount` split
+    /// into orbs of the game's values, largest first; each merged into an orb of the
+    /// region's by the level's `nextInt(40)` (`tryMergeToExisting`), else a new orb made
+    /// by the directed constructor.
+    pub(crate) fn award_with_direction(
+        &mut self,
+        at: Vec3,
+        direction: Vec3,
+        amount: i32,
+        output: &mut TickOutput,
+    ) {
+        let mut amount = amount;
+        let mut level: Option<crate::region::Random> = None;
+        while amount > 0 {
+            let value = crate::mobs::body::hurt::experience_value(amount);
+            amount -= value;
+            let draw = level.get_or_insert_with(|| self.next_draw()).next_int(40);
+            if !self.merge_orb(at, value, draw, output) {
+                self.add_directed_orb(at, direction, value, output);
+            }
+        }
+    }
+
+    /// `tryMergeToExisting(level, at, value)` with its draw `draw`: whether an orb of the
+    /// region's took it in.
+    fn merge_orb(
+        &mut self,
+        position: Vec3,
+        value: i32,
+        draw: u32,
+        output: &mut TickOutput,
+    ) -> bool {
         let around = Aabb::new(
             [position[0] - 0.5, position[1] - 0.5, position[2] - 0.5],
             [position[0] + 0.5, position[1] + 0.5, position[2] + 0.5],
@@ -111,9 +157,112 @@ impl Region {
                 following,
             };
             self.commit_entity(chunk, key, vec![EntityField::Data(data)], output);
+            return true;
+        }
+        false
+    }
+
+    /// `new ExperienceOrb(level, at, direction, value)` added: its own draws turn it and
+    /// throw it a little, the throw turned back where it goes against `direction`; it is
+    /// moved half its size along `direction`, and where its box meets a block, to the
+    /// nearest place about it that is free (`unstuckIfPossible`). Made by section 4.1's
+    /// rule: in a copy by its holder, nowhere the region cannot read.
+    pub(crate) fn add_directed_orb(
+        &mut self,
+        at: Vec3,
+        direction: Vec3,
+        value: i32,
+        output: &mut TickOutput,
+    ) {
+        let info = EntityTypeInfo::of(entity_types::EXPERIENCE_ORB);
+        // `getBoundingBox().getSize()`: the mean of its sides.
+        let size = (f64::from(info.width) * 2.0 + f64::from(info.height)) / 3.0;
+        let mut position = physics::add(
+            at,
+            physics::scale(physics::normalize(direction), size * 0.5),
+        );
+        let view = View {
+            region: self,
+            home: ChunkPos::containing(position[0], position[2]),
+        };
+        let context = collide::Context {
+            bottom: position[1],
+            fall_distance: 0.0,
+            falling_block: false,
+            noclip: None,
+        };
+        let bounds = Aabb::of_entity(position, info.width, info.height);
+        // `Level.noCollision(box)`, of the blocks alone: a boat's or a minecart's box is
+        // left out (named).
+        if !collide::block_collisions(&view, context, &bounds).is_empty() {
+            let half = f64::from(info.height) / 2.0;
+            let centre = [position[0], position[1] + half, position[2]];
+            let shape = crate::physics::thrown::of_size(centre, [size; 3]);
+            let allowed = [
+                f64::from(info.width),
+                f64::from(info.height),
+                f64::from(info.width),
+            ];
+            if let Some(free) =
+                crate::physics::thrown::find_free_position(&view, context, shape, centre, allowed)
+            {
+                position = [free[0], free[1] - half, free[2]];
+            }
+        }
+        let chunk = ChunkPos::containing(position[0], position[2]);
+        let here = self.ticks_chunk(chunk);
+        if !here && !self.readable(chunk) {
             return;
         }
-        self.add_orb(position, value, output);
+        let key = if here {
+            self.take_entity_key(chunk)
+        } else {
+            self.take_key()
+        };
+        let Some(key) = key else {
+            return;
+        };
+        let mut own = self.entity_stream(key).random;
+        let start = own.clone();
+        let uuid = insecure_uuid(own.next_u64(), own.next_u64());
+        let yaw = own.next_float() * 360.0;
+        let x = (own.next_double() * 0.2 - 0.1) * 2.0;
+        let y = own.next_double() * 0.2 * 2.0;
+        let z = (own.next_double() * 0.2 - 0.1) * 2.0;
+        let mut motion = [x, y, z];
+        let along = direction[0] * x + direction[1] * y + direction[2] * z;
+        if physics::length_sqr(direction) > 0.0 && along < 0.0 {
+            motion = physics::scale(motion, -1.0);
+        }
+        let entity = Entity {
+            key,
+            kind: orb_kind(),
+            uuid,
+            position,
+            motion,
+            yaw,
+            pitch: 0.0,
+            on_ground: false,
+            hops: 0,
+            lived: 0,
+            fresh_at: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: EntityData::ExperienceOrb {
+                value,
+                count: 1,
+                health: 5,
+                age_offset: 0,
+                following: None,
+            },
+        };
+        if here {
+            self.entity_drew(key, own.draws_since(&start));
+            self.add_fresh_entity(entity, output);
+        } else {
+            self.send_made(entity, output);
+        }
     }
 
     /// `new ExperienceOrb(level, x, y, z, value)` added (a breeding's): an orb of its own,

@@ -3,21 +3,39 @@
 //! section 10): its shot (`shoot`, `getMovementToShoot`, `shootFromRotation`), its turn
 //! towards its motion (`updateRotation`), the margin its hit test grows boxes by
 //! (`computeMargin`), and the block it meets along its move (`Level.clip` with
-//! `ClipContext.Block.COLLIDER` and `Fluid.NONE`).
+//! `ClipContext.Block.COLLIDER` and `Fluid.NONE`) and the side it meets it on; each
+//! thrown kind's gravity (`docs/groundwork/n9-plan.md`, section 4.4); the gap between
+//! two boxes a splash measures; and the free place an egg's chick or a bottle's orb is
+//! put in (`findFreePosition`).
 //!
 //! Its tick, which reads the region's entities and players, is the region's
 //! (`region/thrown.rs`); what is here reads nothing but its arguments and a [`World`].
 
+use clustine_data::{Face, entity_types};
 use clustine_world::BlockPos;
 
 use super::aabb::Aabb;
-use super::collide::{Context, collision_shape};
+use super::collide::{Context, block_collisions, collision_shape};
 use super::{Vec3, World};
 use crate::mobs::ai::maths::{atan2, table_cos, table_sin};
 use crate::region::Random;
 
 /// `ThrowableProjectile.getDefaultGravity()`.
 pub(crate) const GRAVITY: f64 = 0.03;
+
+/// `getDefaultGravity()` of the thrown kind `kind` (D9 2.1): the potions' 0.05
+/// (`AbstractThrownPotion`), the bottle's 0.07 (`ThrownExperienceBottle`), and
+/// `ThrowableProjectile`'s 0.03 for the snowball, the egg and the pearl.
+pub(crate) fn gravity_of(kind: u16) -> f64 {
+    let kind = i32::from(kind);
+    if kind == entity_types::SPLASH_POTION || kind == entity_types::LINGERING_POTION {
+        0.05
+    } else if kind == entity_types::EXPERIENCE_BOTTLE {
+        0.07
+    } else {
+        GRAVITY
+    }
+}
 
 /// `ThrowableProjectile.getAirDrag()`, and what water keeps of the motion instead
 /// (`applyInertia`), as floats.
@@ -171,16 +189,57 @@ pub(crate) fn margin(tick_count: u32) -> f32 {
     0.0_f32.max(0.3_f32.min(grown))
 }
 
+/// The side of a block whose outward normal lies along `axis`, towards its positive or
+/// its negative end.
+fn face_along(axis: usize, positive: bool) -> Face {
+    match (axis, positive) {
+        (0, true) => Face::East,
+        (0, false) => Face::West,
+        (1, true) => Face::Up,
+        (1, false) => Face::Down,
+        (_, true) => Face::South,
+        (_, false) => Face::North,
+    }
+}
+
+/// `Direction.getUnitVec3()`: the side's outward normal.
+pub(crate) fn unit_of(face: Face) -> Vec3 {
+    match face {
+        Face::Down => [0.0, -1.0, 0.0],
+        Face::Up => [0.0, 1.0, 0.0],
+        Face::North => [0.0, 0.0, -1.0],
+        Face::South => [0.0, 0.0, 1.0],
+        Face::West => [-1.0, 0.0, 0.0],
+        Face::East => [1.0, 0.0, 0.0],
+    }
+}
+
+/// `Direction.getApproximateNearest(x, y, z)`: the side whose normal lies most along
+/// `delta`, the first in the game's order where two lie as much.
+fn nearest_face(delta: Vec3) -> Face {
+    let mut best = Face::North;
+    let mut most = f64::MIN;
+    for face in Face::ALL {
+        let [x, y, z] = unit_of(face);
+        let along = delta[0] * x + delta[1] * y + delta[2] * z;
+        if along > most {
+            most = along;
+            best = face;
+        }
+    }
+    best
+}
+
 /// `AABB.getDirection` of one box over a segment that moves by `delta` from `from`,
-/// sharing the nearest fraction `nearest` with the boxes before: whether the box is met
-/// nearer than any before, `nearest` lowered to where.
-fn clip_nearer(bounds: &Aabb, from: Vec3, delta: Vec3, nearest: &mut f64) -> bool {
-    let mut hit = false;
+/// sharing the nearest fraction `nearest` with the boxes before: the side the box is
+/// met on where it is met nearer than any before, `nearest` lowered to where.
+fn clip_nearer(bounds: &Aabb, from: Vec3, delta: Vec3, nearest: &mut f64) -> Option<Face> {
+    let mut hit = None;
     for (axis, other_a, other_b) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
-        let side = if delta[axis] > 1.0e-7 {
-            bounds.min[axis]
+        let (side, face) = if delta[axis] > 1.0e-7 {
+            (bounds.min[axis], face_along(axis, false))
         } else if delta[axis] < -1.0e-7 {
-            bounds.max[axis]
+            (bounds.max[axis], face_along(axis, true))
         } else {
             continue;
         };
@@ -196,7 +255,7 @@ fn clip_nearer(bounds: &Aabb, from: Vec3, delta: Vec3, nearest: &mut f64) -> boo
             && f < bounds.max[other_b] + 1.0e-7
         {
             *nearest = d;
-            hit = true;
+            hit = Some(face);
         }
     }
     hit
@@ -212,7 +271,14 @@ pub(crate) struct BlockHit {
 /// `VoxelShape.clip(from, to, pos)` of the block's collision `boxes`: the point a
 /// thousandth of the way along where that is inside the shape, else where the segment
 /// first enters one of its boxes (`AABB.clip` of the shape's boxes).
+#[cfg(test)]
 fn clip_shape(boxes: &[Aabb], from: Vec3, to: Vec3) -> Option<Vec3> {
+    clip_shape_faced(boxes, from, to).map(|(location, _)| location)
+}
+
+/// [`clip_shape`] with the side met: for a start inside the shape, the side that faces
+/// the segment most (`getApproximateNearest(delta).getOpposite()`).
+fn clip_shape_faced(boxes: &[Aabb], from: Vec3, to: Vec3) -> Option<(Vec3, Face)> {
     if boxes.is_empty() {
         return None;
     }
@@ -222,19 +288,22 @@ fn clip_shape(boxes: &[Aabb], from: Vec3, to: Vec3) -> Option<Vec3> {
     }
     let inside = super::add(from, super::scale(delta, 0.001));
     if boxes.iter().any(|bounds| bounds.contains(inside)) {
-        return Some(inside);
+        return Some((inside, nearest_face(delta).opposite()));
     }
     let mut nearest = 1.0;
-    let mut hit = false;
+    let mut hit = None;
     for bounds in boxes {
-        hit |= clip_nearer(bounds, from, delta, &mut nearest);
+        if let Some(face) = clip_nearer(bounds, from, delta, &mut nearest) {
+            hit = Some(face);
+        }
     }
-    hit.then(|| {
-        [
+    hit.map(|face| {
+        let location = [
             from[0] + nearest * delta[0],
             from[1] + nearest * delta[1],
             from[2] + nearest * delta[2],
-        ]
+        ];
+        (location, face)
     })
 }
 
@@ -248,21 +317,120 @@ pub(crate) fn clip_blocks<W: World + ?Sized>(
     from: Vec3,
     to: Vec3,
 ) -> Option<BlockHit> {
+    clip_blocks_faced(world, context, from, to).map(|(hit, _)| hit)
+}
+
+/// [`clip_blocks`] with the side of the block met (`BlockHitResult.getDirection`).
+pub(crate) fn clip_blocks_faced<W: World + ?Sized>(
+    world: &W,
+    context: Context,
+    from: Vec3,
+    to: Vec3,
+) -> Option<(BlockHit, Face)> {
     let mut found = None;
     super::walk::traverse(from, to, |pos| {
         let state = world.state(pos);
         let boxes: Vec<Aabb> = collision_shape(state, pos, context)
             .map(|(shape, _)| shape.boxes())
             .unwrap_or_default();
-        match clip_shape(&boxes, from, to) {
-            Some(location) => {
-                found = Some(BlockHit { pos, location });
+        match clip_shape_faced(&boxes, from, to) {
+            Some((location, face)) => {
+                found = Some((BlockHit { pos, location }, face));
                 true
             }
             None => false,
         }
     });
     found
+}
+
+/// `AABB.distanceToSqr(other)`: the square of the gap between two boxes, nothing where
+/// they meet.
+pub(crate) fn box_distance_sqr(a: &Aabb, b: &Aabb) -> f64 {
+    let gap = |axis: usize| {
+        (a.min[axis] - b.max[axis])
+            .max(b.min[axis] - a.max[axis])
+            .max(0.0)
+    };
+    let [x, y, z] = [gap(0), gap(1), gap(2)];
+    x * x + y * y + z * z
+}
+
+/// `AABB.ofSize(centre, x, y, z)`.
+pub(crate) fn of_size(centre: Vec3, size: Vec3) -> Aabb {
+    Aabb::new(
+        [
+            centre[0] - size[0] / 2.0,
+            centre[1] - size[1] / 2.0,
+            centre[2] - size[2] / 2.0,
+        ],
+        [
+            centre[0] + size[0] / 2.0,
+            centre[1] + size[1] / 2.0,
+            centre[2] + size[2] / 2.0,
+        ],
+    )
+}
+
+/// What is left of `from` once `cut` is taken out of it, as boxes.
+fn subtract(from: Aabb, cut: &Aabb) -> Vec<Aabb> {
+    if !from.intersects(*cut) {
+        return vec![from];
+    }
+    let mut left = Vec::new();
+    let mut rest = from;
+    for axis in 0..3 {
+        if cut.min[axis] > rest.min[axis] {
+            let mut part = rest;
+            part.max[axis] = cut.min[axis];
+            left.push(part);
+            rest.min[axis] = cut.min[axis];
+        }
+        if cut.max[axis] < rest.max[axis] {
+            let mut part = rest;
+            part.min[axis] = cut.max[axis];
+            left.push(part);
+            rest.max[axis] = cut.max[axis];
+        }
+    }
+    left
+}
+
+/// `CollisionGetter.findFreePosition(entity, shape, centre, x, y, z)`: the point of
+/// `shape` nearest `centre` that the blocks' shapes, each grown by half of `allowed`,
+/// leave free (`Shapes.join(…, ONLY_FIRST)`, then `closestPointTo`); none where they
+/// cover all of it. **Inferred** as `region/riding.rs`' dismount has it:
+/// `VoxelShape.closestPointTo` is not dumped and is taken as the nearest point of the
+/// free part's boxes, the first found where two are as near.
+pub(crate) fn find_free_position<W: World + ?Sized>(
+    world: &W,
+    context: Context,
+    shape: Aabb,
+    centre: Vec3,
+    allowed: Vec3,
+) -> Option<Vec3> {
+    let search = shape.inflate(allowed);
+    let half = [allowed[0] / 2.0, allowed[1] / 2.0, allowed[2] / 2.0];
+    let mut free = vec![shape];
+    for found in block_collisions(world, context, &search) {
+        for obstacle in found.shape.boxes() {
+            let grown = obstacle.inflate(half);
+            free = free
+                .into_iter()
+                .flat_map(|part| subtract(part, &grown))
+                .collect();
+        }
+    }
+    let mut best: Option<(f64, Vec3)> = None;
+    for one in &free {
+        let point: Vec3 =
+            std::array::from_fn(|axis| centre[axis].clamp(one.min[axis], one.max[axis]));
+        let distance = super::distance_sqr(centre, point);
+        if best.is_none_or(|(nearest, _)| distance < nearest) {
+            best = Some((distance, point));
+        }
+    }
+    best.map(|(_, point)| point)
 }
 
 /// Where a snow golem's snowball starts and which way it is shot
@@ -314,6 +482,42 @@ mod tests {
             Some([0.0, 0.5, 0.5])
         );
         assert_eq!(clip_shape(&block, [-1.0, 1.5, 0.5], [0.5, 1.5, 0.5]), None);
+    }
+
+    #[test]
+    fn a_segment_is_met_on_the_side_it_enters_by_or_against_its_way_from_inside() {
+        let block = [Aabb::of_block(BlockPos::new(0, 0, 0))];
+        assert_eq!(
+            clip_shape_faced(&block, [0.5, 1.5, 0.5], [0.5, 0.5, 0.5]),
+            Some(([0.5, 1.0, 0.5], Face::Up))
+        );
+        assert_eq!(
+            clip_shape_faced(&block, [-1.0, 0.5, 0.5], [0.5, 0.5, 0.5]).map(|(_, face)| face),
+            Some(Face::West)
+        );
+        // From inside, moving east: the side against its way, the west.
+        assert_eq!(
+            clip_shape_faced(&block, [0.5, 0.5, 0.5], [1.5, 0.5, 0.5]).map(|(_, face)| face),
+            Some(Face::West)
+        );
+    }
+
+    #[test]
+    fn each_thrown_kind_has_its_gravity() {
+        let of = |kind: i32| gravity_of(u16::try_from(kind).unwrap());
+        assert_eq!(of(entity_types::SNOWBALL), 0.03);
+        assert_eq!(of(entity_types::EGG), 0.03);
+        assert_eq!(of(entity_types::ENDER_PEARL), 0.03);
+        assert_eq!(of(entity_types::SPLASH_POTION), 0.05);
+        assert_eq!(of(entity_types::LINGERING_POTION), 0.05);
+        assert_eq!(of(entity_types::EXPERIENCE_BOTTLE), 0.07);
+    }
+
+    #[test]
+    fn the_gap_between_two_boxes_is_nothing_where_they_meet() {
+        let a = Aabb::new([0.0; 3], [1.0; 3]);
+        assert_eq!(box_distance_sqr(&a, &a.moved([0.5, 0.0, 0.0])), 0.0);
+        assert_eq!(box_distance_sqr(&a, &a.moved([3.0, 2.0, 0.0])), 4.0 + 1.0);
     }
 
     /// `SnowGolem.performRangedAttack` by hand: a target 3 east and 4 south, its eyes

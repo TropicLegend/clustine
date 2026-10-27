@@ -9,8 +9,10 @@
 //! the llama it follows, and that a llama has one following it is read from the others
 //! near it.
 //!
-//! Named differences: the spit (`LlamaSpit`) is a projectile, N9's: the llama spits (its
-//! sound and its `didSpit`) and nothing flies or hurts; a llama's own fall damage from six
+//! Its spit (`LlamaSpit`) is a projectile (`region/spit.rs`), shot as a mob's shot
+//! (`Local::Shoot`).
+//!
+//! Named differences: a llama's own fall damage from six
 //! blocks and its passengers' share are the body's and the riding's; a tamed wolf is not
 //! told from a wild one (the tamed animals' part brings the wolf's tame flag), so a llama
 //! spits at any wolf near it; a llama that follows another that dies or goes out of sight
@@ -630,9 +632,32 @@ impl Goal for RangedAttackGoal {
     }
 }
 
-/// `performRangedAttack(target, power)`: `spit(target)`. The spit itself is N9's
-/// projectile (named); the llama's sound with its two draws and its `didSpit` are here.
-fn spit(ai: &mut Ai<'_, '_>, _target: &Looked, _power: f32) {
+/// `performRangedAttack(target, power)`: `spit(target)` (n7 Llama 704–797): the spit
+/// made beside its mouth and shot at a third of the target's height and a fifth of the
+/// way across above it, at 1.5 and the difficulty's uncertainty
+/// (`spawnProjectileUsingShoot`, its own draws the spit's: `region/projectiles.rs`
+/// makes it); then the llama's sound with its two draws, and its `didSpit`.
+fn spit(ai: &mut Ai<'_, '_>, target: &Looked, _power: f32) {
+    let [at, direction] = spit_aim(
+        ai.position(),
+        ai.width(),
+        ai.eye_y(),
+        ai.tick.mob.body.head.body_yaw,
+        target,
+    );
+    ai.tick
+        .out
+        .local
+        .push(crate::mobs::tick::Local::Shoot(crate::mobs::tick::Shot {
+            kind: u16::try_from(entity_types::LLAMA_SPIT).expect("entity type ids fit 16 bits"),
+            stack: ItemStack::new(clustine_data::items::AIR, 0),
+            weapon: None,
+            at,
+            direction,
+            power: SPIT_POWER,
+            uncertainty: spit_uncertainty(),
+            from_mob: None,
+        }));
     let pitch = 1.0 + (ai.tick.draws.next_float() - ai.tick.draws.next_float()) * 0.2;
     ai.tick.out.events.push(Event::Sound {
         sound: sounds::ENTITY_LLAMA_SPIT,
@@ -640,6 +665,42 @@ fn spit(ai: &mut Ai<'_, '_>, _target: &Looked, _power: f32) {
         pitch,
     });
     equine::update(&mut ai.tick.mob, |horse| horse.did_spit = true);
+}
+
+/// The spit's speed (`spawnProjectileUsingShoot(…, 1.5f, …)`).
+const SPIT_POWER: f32 = 1.5;
+
+/// `RangedAttackMob.rangedAttackUncertainty(level)`: `14 - 4 · difficulty`.
+fn spit_uncertainty() -> f32 {
+    (14 - clustine_world::Difficulty::WORLD.id() * 4) as f32
+}
+
+/// Where a llama at `feet`, `width` wide with its eyes at `eye_y` and its body turned
+/// to `body_yaw`, makes its spit and which way it shoots it at `target`
+/// (`new LlamaSpit(level, llama)` and `Llama.spit`): half its width and a half beside
+/// its middle along its facing and a tenth below its eyes; at the target's x and z
+/// less the llama's, and a third of the target's height above its feet less the
+/// spit's, lifted by a fifth of the distance across.
+pub(crate) fn spit_aim(
+    feet: crate::physics::Vec3,
+    width: f32,
+    eye_y: f64,
+    body_yaw: f32,
+    target: &Looked,
+) -> [crate::physics::Vec3; 2] {
+    let reach = f64::from(width + 1.0) * 0.5;
+    let turn = f64::from(body_yaw * 0.017_453_292);
+    let at = [
+        feet[0] - reach * f64::from(clustine_noise::trig::sin(turn)),
+        eye_y - 0.100_000_001_490_116_12,
+        feet[2] + reach * f64::from(clustine_noise::trig::cos(turn)),
+    ];
+    let height = target.bounds.max[1] - target.bounds.min[1];
+    let dx = target.position[0] - feet[0];
+    let dy = (target.position[1] + height * (1.0 / 3.0)) - at[1];
+    let dz = target.position[2] - feet[2];
+    let lift = (dx * dx + dz * dz).sqrt() * 0.200_000_002_980_232_24;
+    [at, [dx, dy + lift, dz]]
 }
 
 /// `Llama$LlamaHurtByTargetGoal`: who hurt it is its target, until it has spat once.

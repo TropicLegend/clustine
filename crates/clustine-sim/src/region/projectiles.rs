@@ -371,7 +371,6 @@ impl Region {
 
     /// `new AreaEffectCloud(level, x, y, z)` with `cloud` set, and `addFreshEntity`
     /// (section 4.5: a lingering potion's, made by `thrown.rs`).
-    #[expect(dead_code, reason = "the lingering potion (S3) makes it")]
     pub(crate) fn make_cloud(
         &mut self,
         at: Vec3,
@@ -384,24 +383,24 @@ impl Region {
 
     /// `new FireworkRocketEntity(level, stack, …)` and `addFreshEntity` (section 4.7),
     /// made by a rocket used on a block (`items/rockets.rs`), a crossbow and a
-    /// dispenser. `fireworks.rs`' to build: its construction draws two triangles and
-    /// the lifetime's two ints, which the rocket's own tick reads. `shot` is the aim,
+    /// dispenser. Its construction is `fireworks.rs`' (`construct_firework`): two
+    /// triangles and the lifetime's two ints, which the rocket's own tick reads. `shot` is the aim,
     /// power and uncertainty of a rocket that is shot (a crossbow's, a dispenser's),
-    /// none for one used on a block, which flies up. Nothing is made until it is.
-    #[expect(
-        clippy::unused_self,
-        reason = "fireworks.rs builds it on the region's making"
-    )]
+    /// none for one used on a block, which flies up. Made by section 4.1's rule.
     pub(crate) fn make_firework(
         &mut self,
-        _stack: &ItemStack,
-        _at: Vec3,
-        _shot: Option<(Aim, f32, f32)>,
-        _shot_at_angle: bool,
-        _owner: Option<EntityId>,
-        _output: &mut TickOutput,
+        stack: &ItemStack,
+        at: Vec3,
+        shot: Option<(Aim, f32, f32)>,
+        shot_at_angle: bool,
+        owner: Option<EntityId>,
+        output: &mut TickOutput,
     ) -> Option<EntityId> {
-        None
+        let (entity, here, drawn) =
+            self.construct_firework(stack, at, shot, shot_at_angle, owner)?;
+        let key = entity.key;
+        self.add_made(entity, here, drawn, output);
+        Some(key)
     }
 
     /// `AbstractArrow.setBaseDamageFromMob(power)`, in an arrow's construction: its base
