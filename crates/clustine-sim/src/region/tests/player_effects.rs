@@ -131,6 +131,36 @@ fn invisibility_and_glowing_are_shown_to_the_others_in_the_shared_flags() {
     assert_eq!(flags, [1 << 5, (1 << 5) | (1 << 6)]);
 }
 
+/// `updateSynchronizedMobEffectParticles`: the others are shown a player's effect
+/// particles (10) and whether all are ambient (11) as an effect comes and as it goes.
+#[test]
+fn a_player_s_effect_particles_are_shown_to_the_others_as_effects_come_and_go() {
+    let mut region = on_ticking_floor_with(&[]);
+    let mut output = TickOutput::default();
+    let layer = Layer::new(0, 100, region.tick_number());
+    region.add_player_effect(player(1), Effect::SPEED, layer, &mut output);
+    region.remove_player_effect(player(1), Effect::SPEED, &mut output);
+    let shown: Vec<(usize, bool)> = output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::PlayerData { values, .. } => {
+                let particles = values.iter().find_map(|value| match value {
+                    (10, DataShown::Particles(particles)) => Some(particles.len()),
+                    _ => None,
+                })?;
+                let ambient = values.iter().find_map(|value| match value {
+                    (11, DataShown::Boolean(ambient)) => Some(*ambient),
+                    _ => None,
+                })?;
+                Some((particles, ambient))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, [(1, false), (0, false)]);
+}
+
 #[test]
 fn a_hand_over_carries_each_level_s_ticks_left_and_the_next_region_counts_them_on() {
     let mut region = on_ticking_floor_with(&[]);

@@ -26,6 +26,10 @@ use crate::api::{AttributeShown, PlayerEvent, RegionEvent, TickOutput};
 use crate::mobs::body::effects::{self, Added, Counted, Effect, Effects, Layer};
 use crate::shown::DataShown;
 
+/// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID`.
+const EFFECT_PARTICLES: u8 = 10;
+const EFFECT_AMBIENCE: u8 = 11;
+
 /// The shared flags' data index, and the bits the effects decide.
 const SHARED_FLAGS: u8 = 0;
 const CROUCHING: u8 = 1 << 1;
@@ -284,6 +288,25 @@ impl Region {
         if effect == Effect::INVISIBILITY || effect == Effect::GLOWING {
             self.show_shared_flags(id, output);
         }
+        self.show_particles(id, output);
+    }
+
+    /// The player `id`'s effect particles as the others are shown them
+    /// (`updateSynchronizedMobEffectParticles`: `DATA_EFFECT_PARTICLES`, 10, and
+    /// `DATA_EFFECT_AMBIENCE_ID`, 11), whenever an effect is added, changed or ends.
+    pub(crate) fn show_particles(&self, id: PlayerId, output: &mut TickOutput) {
+        let Some(player) = self.players.get(&id) else {
+            return;
+        };
+        let (particles, ambient) = effects::particles(&player.effects);
+        output.events.push(RegionEvent::PlayerData {
+            entity: player.entity_id,
+            chunk: player.chunk(),
+            values: vec![
+                (EFFECT_PARTICLES, DataShown::Particles(particles)),
+                (EFFECT_AMBIENCE, DataShown::Boolean(ambient)),
+            ],
+        });
     }
 
     /// Everything a client entering the world is told of the player's effects: each of
