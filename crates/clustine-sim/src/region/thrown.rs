@@ -717,7 +717,12 @@ impl Region {
             | EntityData::PrimedTnt { .. }
             | EntityData::Item { .. }
             | EntityData::ExperienceOrb { .. }
-            | EntityData::Thrown { .. } => {}
+            | EntityData::Thrown { .. }
+            | EntityData::Arrow(_)
+            | EntityData::Spit(_)
+            | EntityData::Firework(_)
+            | EntityData::Cloud(_)
+            | EntityData::Fangs(_) => {}
         }
     }
 }

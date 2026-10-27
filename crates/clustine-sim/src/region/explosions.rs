@@ -576,11 +576,16 @@ impl Region {
             }
             // `hurtServer` only marks it hurt, which sends its motion (a projectile's
             // too, `Projectile.hurtServer`).
-            EntityData::FallingBlock { .. } | EntityData::Thrown { .. } => {
+            EntityData::FallingBlock { .. }
+            | EntityData::Thrown { .. }
+            | EntityData::Arrow(_)
+            | EntityData::Spit(_)
+            | EntityData::Firework(_) => {
                 flags |= Tracked::SYNC_VELOCITY;
             }
-            // It cannot be hurt, and is pushed from its feet.
-            EntityData::PrimedTnt { .. } => {}
+            // It cannot be hurt, and is pushed from its feet. Neither can a cloud nor
+            // the fangs (their `hurtServer` hurts nothing).
+            EntityData::PrimedTnt { .. } | EntityData::Cloud(_) | EntityData::Fangs(_) => {}
             // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),
             // which pushes nothing of itself (`#no_knockback`).
             EntityData::Mob { .. } => {

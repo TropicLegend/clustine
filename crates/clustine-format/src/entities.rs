@@ -34,8 +34,14 @@
 //! section 11.3) and tag 12 an orb of experience, and tag 13 is N7k's thrown item
 //! (`docs/groundwork/n7k-plan.md`, section 10): its stack, u8 1
 //! followed by its owner's key u64 or u8 0 where it has none, and flags u8 (bit 0 it
-//! has left its owner, bit 1 it has been shot; the others 0), each written by
-//! `put_data` in the order of its
+//! has left its owner, bit 1 it has been shot; the others 0). Tags 14 to 18 are N9's
+//! projectiles (`docs/groundwork/n9-plan.md`, sections 4.1 and 18): 14 an arrow, a
+//! spectral arrow or a trident (see `put_arrow`), 15 the llama's spit (its owner as a
+//! thrown item's and the same flags), 16 a firework rocket (its stack, its owner, flags
+//! u8 as a thrown item's with bit 2 shot at an angle, its life i32 and lifetime i32), 17
+//! an area effect cloud (see `put_cloud`) and 18 the evoker's fangs (its owner and its
+//! warmup i32); a new tag needed no new format, since no world made before holds one.
+//! Each kind is written by `put_data` in the order of its
 //! fields (a minecart's TNT fuse i32 and a hopper cart's switch u8 after its push; the
 //! TNT's fuse i16, block u16, power f32 and owner as an item's thrower); a block-attached entity's attachment is its block (3 × i32)
 //! and direction (u8, 0 to 5), a container's contents a count u8 and per stack its slot
@@ -78,14 +84,17 @@
 //! A chunk without entities has no such file.
 
 use clustine_world::{
-    Attached, BlockPos, ChunkPos, Contents, Double, EdgeId, Entity, EntityChange, EntityData,
-    EntityField, EntityId, Entry, Float, Hurt, Leash, LeashHolder, Pending, Riding, Seat,
-    TypeState,
+    Arrow, ArrowKind, Attached, BlockPos, ChunkPos, Cloud, Contents, Double, EdgeId, Entity,
+    EntityChange, EntityData, EntityField, EntityId, Entry, Fangs, Firework, Float, Hurt, InGround,
+    Leash, LeashHolder, Pending, Pickup, Riding, Seat, Spit, TypeState,
 };
 use uuid::Uuid;
 
 use crate::bytes::Input;
-use crate::stacks::{put_optional_stack, put_stack, take_optional_stack, take_stack};
+use crate::stacks::{
+    put_optional_stack, put_potion_contents, put_stack, put_string, take_optional_stack,
+    take_potion_contents, take_stack, take_string,
+};
 use crate::{FORMAT_VERSION, FormatError};
 
 /// The kind of the file of a chunk's entities.
@@ -106,6 +115,15 @@ const DATA_PRIMED_TNT: u8 = 10;
 const DATA_MOB: u8 = 11;
 const DATA_EXPERIENCE_ORB: u8 = 12;
 const DATA_THROWN: u8 = 13;
+// N9's projectiles (`docs/groundwork/n9-plan.md`, sections 4.1 and 18). A tag that is
+// new is one that no world made before it holds, so these need no raise of the format
+// (finding 18): an older build never meets them, and this one reads every older record
+// as before.
+const DATA_ARROW: u8 = 14;
+const DATA_SPIT: u8 = 15;
+const DATA_FIREWORK: u8 = 16;
+const DATA_CLOUD: u8 = 17;
+const DATA_FANGS: u8 = 18;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -124,6 +142,18 @@ const CANCEL_DROP: u8 = 2;
 
 const LEFT_OWNER: u8 = 1;
 const HAS_BEEN_SHOT: u8 = 2;
+/// An arrow's third flag beside its owner's two: a critical arrow.
+const CRIT: u8 = 4;
+/// A firework's third flag beside its owner's two: shot at an angle.
+const SHOT_AT_ANGLE: u8 = 4;
+
+const PICKUP_DISALLOWED: u8 = 0;
+const PICKUP_ALLOWED: u8 = 1;
+const PICKUP_CREATIVE_ONLY: u8 = 2;
+
+const ARROW_PLAIN: u8 = 0;
+const ARROW_SPECTRAL: u8 = 1;
+const ARROW_TRIDENT: u8 = 2;
 
 const FIELD_POSITION: u8 = 1;
 const FIELD_MOTION: u8 = 2;
@@ -570,7 +600,260 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             }
             out.push(flags);
         }
+        EntityData::Arrow(arrow) => {
+            out.push(DATA_ARROW);
+            put_arrow(out, arrow);
+        }
+        EntityData::Spit(spit) => {
+            out.push(DATA_SPIT);
+            put_owner(out, spit.owner);
+            out.push(shot_flags(spit.left_owner, spit.has_been_shot));
+        }
+        EntityData::Firework(firework) => {
+            out.push(DATA_FIREWORK);
+            put_stack(out, &firework.stack);
+            put_owner(out, firework.owner);
+            let mut flags = shot_flags(firework.left_owner, firework.has_been_shot);
+            if firework.shot_at_angle {
+                flags |= SHOT_AT_ANGLE;
+            }
+            out.push(flags);
+            out.extend_from_slice(&firework.life.to_be_bytes());
+            out.extend_from_slice(&firework.lifetime.to_be_bytes());
+        }
+        EntityData::Cloud(cloud) => {
+            out.push(DATA_CLOUD);
+            put_cloud(out, cloud);
+        }
+        EntityData::Fangs(fangs) => {
+            out.push(DATA_FANGS);
+            put_owner(out, fangs.owner);
+            out.extend_from_slice(&fangs.warmup.to_be_bytes());
+        }
     }
+}
+
+/// A projectile's owner: u8 1 followed by its key u64, or u8 0 where it has none.
+fn put_owner(out: &mut Vec<u8>, owner: Option<EntityId>) {
+    match owner {
+        None => out.push(0),
+        Some(owner) => {
+            out.push(1);
+            out.extend_from_slice(&owner.0.to_be_bytes());
+        }
+    }
+}
+
+fn take_owner(input: &mut Input<'_>, what: &'static str) -> Result<Option<EntityId>, FormatError> {
+    Ok(if take_flag(input, what)? {
+        Some(EntityId(input.u64()?))
+    } else {
+        None
+    })
+}
+
+/// The flags of what `Projectile` keeps: bit 0 it has left its owner, bit 1 it has been
+/// shot.
+fn shot_flags(left_owner: bool, has_been_shot: bool) -> u8 {
+    let mut flags = 0;
+    if left_owner {
+        flags |= LEFT_OWNER;
+    }
+    if has_been_shot {
+        flags |= HAS_BEEN_SHOT;
+    }
+    flags
+}
+
+/// A count of a list in a projectile's record, u32, refused where it is beyond what is
+/// left of the record, since each element takes a byte at least.
+fn take_count(input: &mut Input<'_>, what: &'static str) -> Result<usize, FormatError> {
+    let count = usize::try_from(input.u32()?).map_err(|_| FormatError::Corrupt(what))?;
+    if count > input.0.len() {
+        return Err(FormatError::Corrupt(what));
+    }
+    Ok(count)
+}
+
+fn put_count(out: &mut Vec<u8>, count: usize) {
+    let count = u32::try_from(count).expect("a projectile's list is shorter than 2^32");
+    out.extend_from_slice(&count.to_be_bytes());
+}
+
+/// An arrow: its pickup u8 (the game's ids, 0 disallowed to 2 creative only), its
+/// pickup stack, the weapon as an optional stack, its owner, flags u8 (bit 0 it has left
+/// its owner, bit 1 it has been shot, bit 2 critical), its base damage f64, its pierce
+/// level u8, the entities pierced (a count u32 and each key u64, in the order pierced),
+/// its hit sound as a string, where it is stuck (u8 0, or u8 1 followed by the state u16
+/// and the `lived` it landed at u32), the `lived` its shake ends at u32, and its kind: u8
+/// 0 an arrow; 1 a spectral arrow, followed by the glowing's duration i32; 2 a trident,
+/// followed by u8 1 or 0 whether it has dealt its damage and its returning i32.
+fn put_arrow(out: &mut Vec<u8>, arrow: &Arrow) {
+    out.push(match arrow.pickup {
+        Pickup::Disallowed => PICKUP_DISALLOWED,
+        Pickup::Allowed => PICKUP_ALLOWED,
+        Pickup::CreativeOnly => PICKUP_CREATIVE_ONLY,
+    });
+    put_stack(out, &arrow.pickup_stack);
+    put_optional_stack(out, arrow.weapon.as_ref());
+    put_owner(out, arrow.owner);
+    let mut flags = shot_flags(arrow.left_owner, arrow.has_been_shot);
+    if arrow.crit {
+        flags |= CRIT;
+    }
+    out.push(flags);
+    out.extend_from_slice(&arrow.base_damage.0.to_be_bytes());
+    out.push(arrow.pierce_level);
+    put_count(out, arrow.pierced.len());
+    for key in &arrow.pierced {
+        out.extend_from_slice(&key.0.to_be_bytes());
+    }
+    put_string(out, &arrow.hit_sound);
+    match arrow.in_ground {
+        None => out.push(0),
+        Some(in_ground) => {
+            out.push(1);
+            out.extend_from_slice(&in_ground.state.to_be_bytes());
+            out.extend_from_slice(&in_ground.since.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&arrow.shake_until.to_be_bytes());
+    match arrow.of_kind {
+        ArrowKind::Arrow => out.push(ARROW_PLAIN),
+        ArrowKind::Spectral { glowing_duration } => {
+            out.push(ARROW_SPECTRAL);
+            out.extend_from_slice(&glowing_duration.to_be_bytes());
+        }
+        ArrowKind::Trident {
+            dealt_damage,
+            returning,
+        } => {
+            out.push(ARROW_TRIDENT);
+            out.push(u8::from(dealt_damage));
+            out.extend_from_slice(&returning.to_be_bytes());
+        }
+    }
+}
+
+fn take_arrow(input: &mut Input<'_>) -> Result<Arrow, FormatError> {
+    let pickup = match input.u8()? {
+        PICKUP_DISALLOWED => Pickup::Disallowed,
+        PICKUP_ALLOWED => Pickup::Allowed,
+        PICKUP_CREATIVE_ONLY => Pickup::CreativeOnly,
+        _ => return Err(FormatError::Corrupt("an arrow's pickup")),
+    };
+    let pickup_stack = take_stack(input)?;
+    let weapon = take_optional_stack(input, "an arrow's weapon flag")?;
+    let owner = take_owner(input, "an arrow's owner flag")?;
+    let flags = input.u8()?;
+    if flags & !(LEFT_OWNER | HAS_BEEN_SHOT | CRIT) != 0 {
+        return Err(FormatError::Corrupt("an arrow's flags"));
+    }
+    let base_damage = Double(input.f64()?);
+    let pierce_level = input.u8()?;
+    let count = take_count(input, "an arrow's pierced entities")?;
+    let mut pierced = Vec::with_capacity(count.min(input.0.len() / 8));
+    for _ in 0..count {
+        pierced.push(EntityId(input.u64()?));
+    }
+    let hit_sound = take_string(input)?;
+    let in_ground = if take_flag(input, "an arrow's in-ground flag")? {
+        Some(InGround {
+            state: input.u16()?,
+            since: input.u32()?,
+        })
+    } else {
+        None
+    };
+    let shake_until = input.u32()?;
+    let of_kind = match input.u8()? {
+        ARROW_PLAIN => ArrowKind::Arrow,
+        ARROW_SPECTRAL => ArrowKind::Spectral {
+            glowing_duration: input.i32()?,
+        },
+        ARROW_TRIDENT => ArrowKind::Trident {
+            dealt_damage: take_flag(input, "a trident's dealt-damage flag")?,
+            returning: input.i32()?,
+        },
+        _ => return Err(FormatError::Corrupt("an arrow's kind")),
+    };
+    Ok(Arrow {
+        pickup,
+        pickup_stack,
+        weapon,
+        owner,
+        left_owner: flags & LEFT_OWNER != 0,
+        has_been_shot: flags & HAS_BEEN_SHOT != 0,
+        base_damage,
+        crit: flags & CRIT != 0,
+        pierce_level,
+        pierced,
+        hit_sound,
+        in_ground,
+        shake_until,
+        of_kind,
+    })
+}
+
+/// An area effect cloud: its duration i32, wait time i32, reapplication delay i32,
+/// radius f32, the `lived` its radius is as of u32, radius on use f32, radius per tick
+/// f32, duration on use i32, its potion as a stack's `potion_contents` is written, its
+/// duration scale f32, its owner, and its victims: a count u32 and each one's key u64
+/// and the `lived` it may be affected again from u32, ascending by key.
+fn put_cloud(out: &mut Vec<u8>, cloud: &Cloud) {
+    out.extend_from_slice(&cloud.duration.to_be_bytes());
+    out.extend_from_slice(&cloud.wait_time.to_be_bytes());
+    out.extend_from_slice(&cloud.reapplication_delay.to_be_bytes());
+    out.extend_from_slice(&cloud.radius.0.to_be_bytes());
+    out.extend_from_slice(&cloud.radius_at.to_be_bytes());
+    out.extend_from_slice(&cloud.radius_on_use.0.to_be_bytes());
+    out.extend_from_slice(&cloud.radius_per_tick.0.to_be_bytes());
+    out.extend_from_slice(&cloud.duration_on_use.to_be_bytes());
+    put_potion_contents(out, &cloud.potion);
+    out.extend_from_slice(&cloud.duration_scale.0.to_be_bytes());
+    put_owner(out, cloud.owner);
+    put_count(out, cloud.victims.len());
+    for (key, until) in &cloud.victims {
+        out.extend_from_slice(&key.0.to_be_bytes());
+        out.extend_from_slice(&until.to_be_bytes());
+    }
+}
+
+fn take_cloud(input: &mut Input<'_>) -> Result<Cloud, FormatError> {
+    let duration = input.i32()?;
+    let wait_time = input.i32()?;
+    let reapplication_delay = input.i32()?;
+    let radius = Float(input.f32()?);
+    let radius_at = input.u32()?;
+    let radius_on_use = Float(input.f32()?);
+    let radius_per_tick = Float(input.f32()?);
+    let duration_on_use = input.i32()?;
+    let potion = take_potion_contents(input)?;
+    let duration_scale = Float(input.f32()?);
+    let owner = take_owner(input, "a cloud's owner flag")?;
+    let count = take_count(input, "a cloud's victims")?;
+    let mut victims: Vec<(EntityId, u32)> = Vec::with_capacity(count.min(input.0.len() / 12));
+    for _ in 0..count {
+        let victim = (EntityId(input.u64()?), input.u32()?);
+        if victims.last().is_some_and(|last| last.0 >= victim.0) {
+            return Err(FormatError::Corrupt("a cloud's victims out of order"));
+        }
+        victims.push(victim);
+    }
+    Ok(Cloud {
+        duration,
+        wait_time,
+        reapplication_delay,
+        radius,
+        radius_at,
+        radius_on_use,
+        radius_per_tick,
+        duration_on_use,
+        potion,
+        duration_scale,
+        owner,
+        victims,
+    })
 }
 
 fn put_entry(out: &mut Vec<u8>, entry: &Entry) {
@@ -810,6 +1093,41 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
                 has_been_shot: flags & HAS_BEEN_SHOT != 0,
             })
         }
+        DATA_ARROW => Ok(EntityData::Arrow(Box::new(take_arrow(input)?))),
+        DATA_SPIT => {
+            let owner = take_owner(input, "a spit's owner flag")?;
+            let flags = input.u8()?;
+            if flags & !(LEFT_OWNER | HAS_BEEN_SHOT) != 0 {
+                return Err(FormatError::Corrupt("a spit's flags"));
+            }
+            Ok(EntityData::Spit(Spit {
+                owner,
+                left_owner: flags & LEFT_OWNER != 0,
+                has_been_shot: flags & HAS_BEEN_SHOT != 0,
+            }))
+        }
+        DATA_FIREWORK => {
+            let stack = take_stack(input)?;
+            let owner = take_owner(input, "a firework's owner flag")?;
+            let flags = input.u8()?;
+            if flags & !(LEFT_OWNER | HAS_BEEN_SHOT | SHOT_AT_ANGLE) != 0 {
+                return Err(FormatError::Corrupt("a firework's flags"));
+            }
+            Ok(EntityData::Firework(Box::new(Firework {
+                stack,
+                owner,
+                left_owner: flags & LEFT_OWNER != 0,
+                has_been_shot: flags & HAS_BEEN_SHOT != 0,
+                life: input.i32()?,
+                lifetime: input.i32()?,
+                shot_at_angle: flags & SHOT_AT_ANGLE != 0,
+            })))
+        }
+        DATA_CLOUD => Ok(EntityData::Cloud(Box::new(take_cloud(input)?))),
+        DATA_FANGS => Ok(EntityData::Fangs(Fangs {
+            owner: take_owner(input, "the fangs' owner flag")?,
+            warmup: input.i32()?,
+        })),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -1136,6 +1454,9 @@ impl EntitiesFile {
 #[cfg(test)]
 pub(crate) mod tests {
     use clustine_world::ItemStack;
+    use clustine_world::components::{
+        Component, EffectInstance, FireworkExplosion, FireworkShape, Fireworks, PotionContents,
+    };
     use proptest::prelude::*;
 
     use super::*;
@@ -1358,6 +1679,310 @@ pub(crate) mod tests {
         assert!(take_entity_changes(&mut Input(&0u32.to_be_bytes())).is_err());
     }
 
+    /// Writes `data` and reads it back, and checks that the read took every byte.
+    fn round_trip(data: &EntityData) {
+        let mut out = Vec::new();
+        put_data(&mut out, data);
+        let mut input = Input(&out);
+        assert_eq!(take_data(&mut input).as_ref(), Ok(data));
+        assert!(input.0.is_empty(), "{} bytes left", input.0.len());
+        for length in 0..out.len() {
+            assert!(
+                take_data(&mut Input(&out[..length])).is_err(),
+                "cut at {length}"
+            );
+        }
+    }
+
+    fn rocket() -> ItemStack {
+        let mut stack = ItemStack::new(1_100, 1);
+        stack.components.set(Component::Fireworks(Fireworks {
+            flight_duration: 2,
+            explosions: vec![
+                FireworkExplosion {
+                    shape: FireworkShape::Creeper,
+                    colours: vec![0x00ff_0000, 0x0000_ff00],
+                    fade_colours: vec![0x0000_00ff],
+                    trail: true,
+                    twinkle: false,
+                },
+                FireworkExplosion {
+                    shape: FireworkShape::Burst,
+                    colours: vec![0x00ff_ffff],
+                    fade_colours: Vec::new(),
+                    trail: false,
+                    twinkle: true,
+                },
+            ],
+        }));
+        stack
+    }
+
+    fn tipped_arrow() -> ItemStack {
+        let mut stack = ItemStack::new(803, 1);
+        stack
+            .components
+            .set(Component::PotionContents(PotionContents {
+                potion: Some("minecraft:long_poison".into()),
+                ..PotionContents::default()
+            }));
+        stack
+    }
+
+    #[test]
+    fn an_arrow_of_each_kind_with_every_field_set_reads_as_it_was_written() {
+        let mut bow = ItemStack::new(810, 1);
+        bow.components.set(Component::Enchantments(vec![(
+            "minecraft:piercing".into(),
+            4,
+        )]));
+        let in_the_ground = Arrow {
+            pickup: Pickup::Allowed,
+            pickup_stack: tipped_arrow(),
+            weapon: Some(bow.clone()),
+            owner: Some(EntityId(0x0102_0304_0506_0708)),
+            left_owner: true,
+            has_been_shot: true,
+            base_damage: Double(2.5),
+            crit: true,
+            pierce_level: 4,
+            pierced: vec![EntityId(9), EntityId(3), EntityId(u64::MAX)],
+            hit_sound: "minecraft:item.crossbow.hit".into(),
+            in_ground: Some(InGround {
+                state: 0x1234,
+                since: 0x0010_0000,
+            }),
+            shake_until: 0x0010_0007,
+            of_kind: ArrowKind::Arrow,
+        };
+        round_trip(&EntityData::Arrow(Box::new(in_the_ground.clone())));
+        let flying_spectral = Arrow {
+            pickup: Pickup::CreativeOnly,
+            pickup_stack: ItemStack::new(804, 1),
+            weapon: Some(bow),
+            in_ground: None,
+            pierced: Vec::new(),
+            of_kind: ArrowKind::Spectral {
+                glowing_duration: 200,
+            },
+            ..in_the_ground.clone()
+        };
+        round_trip(&EntityData::Arrow(Box::new(flying_spectral.clone())));
+        round_trip(&EntityData::Arrow(Box::new(Arrow {
+            in_ground: in_the_ground.in_ground,
+            ..flying_spectral.clone()
+        })));
+        let trident = Arrow {
+            pickup: Pickup::Disallowed,
+            pickup_stack: ItemStack::new(1_150, 1),
+            weapon: None,
+            owner: None,
+            left_owner: false,
+            has_been_shot: false,
+            crit: false,
+            hit_sound: "minecraft:item.trident.hit".into(),
+            of_kind: ArrowKind::Trident {
+                dealt_damage: true,
+                returning: -7,
+            },
+            ..in_the_ground
+        };
+        round_trip(&EntityData::Arrow(Box::new(trident.clone())));
+        round_trip(&EntityData::Arrow(Box::new(Arrow {
+            in_ground: None,
+            of_kind: ArrowKind::Trident {
+                dealt_damage: false,
+                returning: 0,
+            },
+            ..trident
+        })));
+    }
+
+    #[test]
+    fn a_spit_reads_as_it_was_written() {
+        round_trip(&EntityData::Spit(Spit {
+            owner: Some(EntityId(77)),
+            left_owner: true,
+            has_been_shot: true,
+        }));
+        round_trip(&EntityData::Spit(Spit {
+            owner: None,
+            left_owner: false,
+            has_been_shot: true,
+        }));
+    }
+
+    #[test]
+    fn a_firework_whose_rocket_has_two_explosions_reads_as_it_was_written() {
+        let firework = Firework {
+            stack: rocket(),
+            owner: Some(EntityId(0x0A0B)),
+            left_owner: true,
+            has_been_shot: true,
+            life: 13,
+            lifetime: 37,
+            shot_at_angle: true,
+        };
+        round_trip(&EntityData::Firework(Box::new(firework.clone())));
+        round_trip(&EntityData::Firework(Box::new(Firework {
+            owner: None,
+            left_owner: false,
+            shot_at_angle: false,
+            life: 0,
+            ..firework
+        })));
+    }
+
+    fn cloud() -> Cloud {
+        let effect = |effect: &str, amplifier, duration| EffectInstance {
+            effect: effect.into(),
+            amplifier,
+            duration,
+            ambient: false,
+            visible: true,
+            show_icon: true,
+        };
+        Cloud {
+            duration: 600,
+            wait_time: 10,
+            reapplication_delay: 20,
+            radius: Float(3.0),
+            radius_at: 0x0002_0000,
+            radius_on_use: Float(-0.5),
+            radius_per_tick: Float(-0.005),
+            duration_on_use: -20,
+            potion: PotionContents {
+                potion: Some("minecraft:strong_harming".into()),
+                custom_colour: Some(0x0012_3456),
+                custom_effects: vec![
+                    effect("minecraft:slowness", 3, 400),
+                    effect("minecraft:weakness", 0, -1),
+                ],
+                custom_name: Some("lingering".into()),
+            },
+            duration_scale: Float(0.25),
+            owner: Some(EntityId(5)),
+            victims: vec![
+                (EntityId(1), 0x0002_0014),
+                (EntityId(4), 3),
+                (EntityId(u64::MAX), u32::MAX),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_cloud_with_two_custom_effects_and_three_victims_reads_as_it_was_written() {
+        round_trip(&EntityData::Cloud(Box::new(cloud())));
+        round_trip(&EntityData::Cloud(Box::new(Cloud {
+            potion: PotionContents::default(),
+            owner: None,
+            victims: Vec::new(),
+            ..cloud()
+        })));
+    }
+
+    /// A cloud's victims are kept ascending by key, each once, and a record that has
+    /// them otherwise is refused.
+    #[test]
+    fn a_cloud_whose_victims_are_out_of_order_or_twice_is_refused() {
+        for victims in [
+            vec![(EntityId(4), 0), (EntityId(1), 0)],
+            vec![(EntityId(4), 0), (EntityId(4), 1)],
+        ] {
+            let mut out = Vec::new();
+            put_data(
+                &mut out,
+                &EntityData::Cloud(Box::new(Cloud { victims, ..cloud() })),
+            );
+            assert_eq!(
+                take_data(&mut Input(&out)),
+                Err(FormatError::Corrupt("a cloud's victims out of order"))
+            );
+        }
+    }
+
+    #[test]
+    fn the_fangs_read_as_they_were_written() {
+        round_trip(&EntityData::Fangs(Fangs {
+            owner: Some(EntityId(0x0102)),
+            warmup: 12,
+        }));
+        round_trip(&EntityData::Fangs(Fangs {
+            owner: None,
+            warmup: -3,
+        }));
+    }
+
+    /// An arrow's data, byte by byte, and what is refused of one: flags beyond its three,
+    /// a pickup, an in-ground flag or a kind not known, and any cut.
+    #[test]
+    fn known_answer_of_an_arrow() {
+        let arrow = EntityData::Arrow(Box::new(Arrow {
+            pickup: Pickup::Allowed,
+            pickup_stack: ItemStack::new(0x0102, 1),
+            weapon: Some(ItemStack::new(5, 1)),
+            owner: Some(EntityId(0x0A0B)),
+            left_owner: true,
+            has_been_shot: false,
+            base_damage: Double(2.0),
+            crit: true,
+            pierce_level: 1,
+            pierced: vec![EntityId(7)],
+            hit_sound: "hit".into(),
+            in_ground: Some(InGround {
+                state: 0x0123,
+                since: 0x40,
+            }),
+            shake_until: 0x47,
+            of_kind: ArrowKind::Trident {
+                dealt_damage: true,
+                returning: 3,
+            },
+        }));
+        let mut out = Vec::new();
+        put_data(&mut out, &arrow);
+        let expected: Vec<u8> = [
+            &[14][..],                                // the tag
+            &[1],                                     // pickup allowed
+            &[0, 0, 1, 2, 0, 0, 0, 1, 0, 0, 0, 0],    // the pickup stack, plain
+            &[1, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 0], // a weapon, a plain stack
+            &[1, 0, 0, 0, 0, 0, 0, 0x0A, 0x0B],       // an owner and its key
+            &[5],                                     // left its owner and critical, not shot
+            &[0x40, 0, 0, 0, 0, 0, 0, 0],             // base damage 2.0
+            &[1],                                     // pierce level
+            &[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7],    // one entity pierced, its key
+            &[0, 0, 0, 3, b'h', b'i', b't'],          // the hit sound
+            &[1, 0x01, 0x23, 0, 0, 0, 0x40],          // in the ground: the state, since
+            &[0, 0, 0, 0x47],                         // its shake ends
+            &[2, 1, 0, 0, 0, 3], // a trident that has dealt its damage, returning
+        ]
+        .concat();
+        assert_eq!(out, expected);
+        assert_eq!(take_data(&mut Input(&out)), Ok(arrow));
+        let refused = |at: usize, value: u8, what: &'static str| {
+            let mut bytes = out.clone();
+            bytes[at] = value;
+            assert_eq!(
+                take_data(&mut Input(&bytes)),
+                Err(FormatError::Corrupt(what)),
+                "{at}"
+            );
+        };
+        refused(1, 3, "an arrow's pickup");
+        refused(14, 2, "an arrow's weapon flag");
+        refused(27, 2, "an arrow's owner flag");
+        refused(36, 8, "an arrow's flags");
+        refused(65, 2, "an arrow's in-ground flag");
+        refused(76, 3, "an arrow's kind");
+        refused(77, 2, "a trident's dealt-damage flag");
+        for length in 0..out.len() {
+            assert!(
+                take_data(&mut Input(&out[..length])).is_err(),
+                "cut at {length}"
+            );
+        }
+    }
+
     pub(crate) fn entities() -> impl Strategy<Value = Entity> {
         (
             any::<u64>(),
@@ -1460,6 +2085,11 @@ pub(crate) mod tests {
         };
         match &mut data {
             EntityData::Item { stack, .. } | EntityData::Thrown { stack, .. } => rich(stack),
+            EntityData::Arrow(arrow) => {
+                rich(&mut arrow.pickup_stack);
+                arrow.weapon.iter_mut().for_each(rich);
+            }
+            EntityData::Firework(firework) => rich(&mut firework.stack),
             EntityData::ItemFrame { item, .. } => item.iter_mut().for_each(rich),
             EntityData::Minecart { contents, .. }
             | EntityData::Boat { contents, .. }
@@ -1520,8 +2150,155 @@ pub(crate) mod tests {
             .prop_map(|(version, bytes)| TypeState { version, bytes })
     }
 
+    fn optional_stacks() -> impl Strategy<Value = Option<ItemStack>> {
+        any::<Option<(i32, i32)>>()
+            .prop_map(|stack| stack.map(|(item, count)| ItemStack::new(item, count)))
+    }
+
+    fn arrows() -> impl Strategy<Value = Arrow> {
+        let kind = prop_oneof![
+            Just(ArrowKind::Arrow),
+            any::<i32>().prop_map(|glowing_duration| ArrowKind::Spectral { glowing_duration }),
+            any::<(bool, i32)>().prop_map(|(dealt_damage, returning)| ArrowKind::Trident {
+                dealt_damage,
+                returning,
+            }),
+        ];
+        let pickup = prop_oneof![
+            Just(Pickup::Disallowed),
+            Just(Pickup::Allowed),
+            Just(Pickup::CreativeOnly),
+        ];
+        (
+            (pickup, any::<(i32, i32)>(), optional_stacks()),
+            (any::<Option<u64>>(), any::<[bool; 3]>(), any::<f64>()),
+            (any::<u8>(), prop::collection::vec(any::<u64>(), 0..6)),
+            ("[a-z:._]{0,24}", any::<Option<(u16, u32)>>(), any::<u32>()),
+            kind,
+        )
+            .prop_map(
+                |(
+                    (pickup, (item, count), weapon),
+                    (owner, [left_owner, has_been_shot, crit], base_damage),
+                    (pierce_level, pierced),
+                    (hit_sound, in_ground, shake_until),
+                    of_kind,
+                )| Arrow {
+                    pickup,
+                    pickup_stack: ItemStack::new(item, count),
+                    weapon,
+                    owner: owner.map(EntityId),
+                    left_owner,
+                    has_been_shot,
+                    base_damage: Double(base_damage),
+                    crit,
+                    pierce_level,
+                    pierced: pierced.into_iter().map(EntityId).collect(),
+                    hit_sound,
+                    in_ground: in_ground.map(|(state, since)| InGround { state, since }),
+                    shake_until,
+                    of_kind,
+                },
+            )
+    }
+
+    fn effects() -> impl Strategy<Value = EffectInstance> {
+        ("[a-z:_]{0,16}", any::<(i32, i32, [bool; 3])>()).prop_map(
+            |(effect, (amplifier, duration, [ambient, visible, show_icon]))| EffectInstance {
+                effect,
+                amplifier,
+                duration,
+                ambient,
+                visible,
+                show_icon,
+            },
+        )
+    }
+
+    fn clouds() -> impl Strategy<Value = Cloud> {
+        let potion = (
+            prop::option::of("[a-z:_]{0,16}"),
+            any::<Option<i32>>(),
+            prop::collection::vec(effects(), 0..3),
+            prop::option::of(".{0,8}"),
+        )
+            .prop_map(|(potion, custom_colour, custom_effects, custom_name)| {
+                PotionContents {
+                    potion,
+                    custom_colour,
+                    custom_effects,
+                    custom_name,
+                }
+            });
+        (
+            any::<(i32, i32, i32, i32)>(),
+            any::<(f32, u32, f32, f32, f32)>(),
+            potion,
+            any::<Option<u64>>(),
+            // Ascending by key, each once.
+            prop::collection::btree_map(any::<u64>(), any::<u32>(), 0..5),
+        )
+            .prop_map(
+                |(
+                    (duration, wait_time, reapplication_delay, duration_on_use),
+                    (radius, radius_at, radius_on_use, radius_per_tick, duration_scale),
+                    potion,
+                    owner,
+                    victims,
+                )| Cloud {
+                    duration,
+                    wait_time,
+                    reapplication_delay,
+                    radius: Float(radius),
+                    radius_at,
+                    radius_on_use: Float(radius_on_use),
+                    radius_per_tick: Float(radius_per_tick),
+                    duration_on_use,
+                    potion,
+                    duration_scale: Float(duration_scale),
+                    owner: owner.map(EntityId),
+                    victims: victims
+                        .into_iter()
+                        .map(|(key, until)| (EntityId(key), until))
+                        .collect(),
+                },
+            )
+    }
+
     fn datas() -> impl Strategy<Value = EntityData> {
         prop_oneof![
+            arrows().prop_map(|arrow| EntityData::Arrow(Box::new(arrow))),
+            any::<(Option<u64>, bool, bool)>().prop_map(|(owner, left_owner, has_been_shot)| {
+                EntityData::Spit(Spit {
+                    owner: owner.map(EntityId),
+                    left_owner,
+                    has_been_shot,
+                })
+            }),
+            any::<((i32, i32), Option<u64>, [bool; 3], i32, i32)>().prop_map(
+                |(
+                    (item, count),
+                    owner,
+                    [left_owner, has_been_shot, shot_at_angle],
+                    life,
+                    lifetime,
+                )| {
+                    EntityData::Firework(Box::new(Firework {
+                        stack: ItemStack::new(item, count),
+                        owner: owner.map(EntityId),
+                        left_owner,
+                        has_been_shot,
+                        life,
+                        lifetime,
+                        shot_at_angle,
+                    }))
+                }
+            ),
+            clouds().prop_map(|cloud| EntityData::Cloud(Box::new(cloud))),
+            any::<(Option<u64>, i32)>().prop_map(|(owner, warmup)| EntityData::Fangs(Fangs {
+                owner: owner.map(EntityId),
+                warmup,
+            })),
             (entries(), entries(), type_states()).prop_map(|(body, mind, state)| EntityData::Mob {
                 body,
                 mind,

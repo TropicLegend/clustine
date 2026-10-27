@@ -209,6 +209,7 @@ the experience and, since 12, the respawn point; `crates/clustine-format/src/log
 the place as it is now.)
 
 A stack, here and wherever the store keeps one (an item on the ground, a thrown item,
+an arrow's pickup stack and the weapon it was shot from, a firework rocket's stack,
 the contents of a cart or a boat, a stand's equipment, an item frame's item, a stack
 given to a player or held in a use of an entity across a line), is written since format
 14 as `crates/clustine-format/src/stacks.rs` says:
@@ -230,6 +231,13 @@ name, so that a game update that renumbers a registry needs no new format; a kin
 server does not know is skipped by its length, so that a kind added later needs no new
 format either. The stacks in a container block's entity in a chunk file are the game's
 NBT (`ItemStackWithSlot`), and keep no components yet.
+
+An entity's data begins with a tag of its kind, and `crates/clustine-format/src/entities.rs`
+says what follows each. Tags 14 to 18 are N9's projectiles (`docs/groundwork/n9-plan.md`,
+section 4.1): 14 an arrow, a spectral arrow or a trident, 15 the llama's spit, 16 a
+firework rocket, 17 an area effect cloud (its potion written as a stack's
+`potion_contents`) and 18 the evoker's fangs. They came within format 14: a tag no
+world made before holds needs no new format, as an older record never has it.
 
 The floating-point numbers are big-endian like the integers. A build from before kind 8
 cannot read such a record and does not start.

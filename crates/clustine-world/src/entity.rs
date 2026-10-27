@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::projectiles::{Arrow, Cloud, Fangs, Firework, Spit};
 use crate::{BlockPos, ChunkPos, Components, EdgeId, EntityId};
 
 /// A number of items of one kind, with the components it carries beyond its item's
@@ -417,6 +418,16 @@ pub enum EntityData {
         /// `hasBeenShot`: its first tick has posted `projectile_shoot`.
         has_been_shot: bool,
     },
+    /// An arrow, a spectral arrow or a trident (`docs/groundwork/n9-plan.md`, 4.2, 4.3).
+    Arrow(Box<Arrow>),
+    /// The llama's spit (4.4).
+    Spit(Spit),
+    /// A firework rocket (4.7).
+    Firework(Box<Firework>),
+    /// An area effect cloud (4.5).
+    Cloud(Box<Cloud>),
+    /// The evoker's fangs (4.8).
+    Fangs(Fangs),
 }
 
 /// A part of a mob's body or mind: an id that the code of that part gives it and keeps

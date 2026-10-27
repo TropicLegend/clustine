@@ -291,7 +291,12 @@ impl Region {
             | EntityData::FallingBlock { .. }
             | EntityData::PrimedTnt { .. }
             | EntityData::ExperienceOrb { .. }
-            | EntityData::Thrown { .. } => {}
+            | EntityData::Thrown { .. }
+            | EntityData::Arrow(_)
+            | EntityData::Spit(_)
+            | EntityData::Firework(_)
+            | EntityData::Cloud(_)
+            | EntityData::Fangs(_) => {}
         }
         self.using_across = outer;
     }
@@ -322,6 +327,13 @@ impl Region {
             EntityData::Mob { .. } => self.tick_mob(entity, position, output),
             EntityData::ExperienceOrb { .. } => self.tick_orb(entity, position, output),
             EntityData::Thrown { .. } => self.tick_thrown(entity, position, output),
+            // N9's projectiles, which nothing makes yet, tick with the step that makes
+            // them.
+            EntityData::Arrow(_)
+            | EntityData::Spit(_)
+            | EntityData::Firework(_)
+            | EntityData::Cloud(_)
+            | EntityData::Fangs(_) => {}
         }
         self.ticking = before;
     }

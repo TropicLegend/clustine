@@ -13,6 +13,7 @@ mod entity;
 pub mod generation;
 mod light;
 mod position;
+pub mod projectiles;
 mod section;
 pub mod spawn;
 
@@ -37,6 +38,7 @@ pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, Generated, PlayerId, RegionId, Vec3,
 };
+pub use projectiles::{Arrow, ArrowKind, Cloud, Fangs, Firework, InGround, Pickup, Spit};
 pub use section::{BIOME_CELLS, Biome, Section};
 
 /// Blocks along each edge of a section.

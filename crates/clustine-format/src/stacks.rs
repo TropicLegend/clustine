@@ -163,18 +163,7 @@ pub(crate) fn take_components(input: &mut Input<'_>, depth: u8) -> Result<Compon
 
 fn put_value(out: &mut Vec<u8>, component: &Component) {
     match component {
-        Component::PotionContents(contents) => {
-            put_option(out, contents.potion.as_ref(), |out, potion| {
-                put_string(out, potion);
-            });
-            put_option(out, contents.custom_colour.as_ref(), |out, colour| {
-                out.extend_from_slice(&colour.to_be_bytes());
-            });
-            put_list(out, &contents.custom_effects, put_effect);
-            put_option(out, contents.custom_name.as_ref(), |out, name| {
-                put_string(out, name);
-            });
-        }
+        Component::PotionContents(contents) => put_potion_contents(out, contents),
         Component::PotionDurationScale(scale) => put_float(out, *scale),
         Component::ChargedProjectiles(stacks) => put_list(out, stacks, put_stack),
         Component::Enchantments(levels) => put_list(out, levels, put_named_number),
@@ -217,12 +206,7 @@ fn put_value(out: &mut Vec<u8>, component: &Component) {
 
 fn take_value(input: &mut Input<'_>, kind: Kind, depth: u8) -> Result<Component, FormatError> {
     Ok(match kind {
-        Kind::PotionContents => Component::PotionContents(PotionContents {
-            potion: take_option(input, take_string)?,
-            custom_colour: take_option(input, |input| input.i32())?,
-            custom_effects: take_list(input, take_effect)?,
-            custom_name: take_option(input, take_string)?,
-        }),
+        Kind::PotionContents => Component::PotionContents(take_potion_contents(input)?),
         Kind::PotionDurationScale => Component::PotionDurationScale(Float(input.f32()?)),
         Kind::ChargedProjectiles => {
             if depth >= MOST_NESTED {
@@ -266,6 +250,31 @@ fn take_value(input: &mut Input<'_>, kind: Kind, depth: u8) -> Result<Component,
         }
         Kind::OminousBottleAmplifier => Component::OminousBottleAmplifier(input.i32()?),
         Kind::ChickenVariant => Component::ChickenVariant(take_string(input)?),
+    })
+}
+
+/// Appends the value of a `potion_contents` component, which an area effect cloud keeps
+/// too (`entities.rs`), so that the store has one encoding of it.
+pub(crate) fn put_potion_contents(out: &mut Vec<u8>, contents: &PotionContents) {
+    put_option(out, contents.potion.as_ref(), |out, potion| {
+        put_string(out, potion);
+    });
+    put_option(out, contents.custom_colour.as_ref(), |out, colour| {
+        out.extend_from_slice(&colour.to_be_bytes());
+    });
+    put_list(out, &contents.custom_effects, put_effect);
+    put_option(out, contents.custom_name.as_ref(), |out, name| {
+        put_string(out, name);
+    });
+}
+
+/// Reads what [`put_potion_contents`] wrote.
+pub(crate) fn take_potion_contents(input: &mut Input<'_>) -> Result<PotionContents, FormatError> {
+    Ok(PotionContents {
+        potion: take_option(input, take_string)?,
+        custom_colour: take_option(input, |input| input.i32())?,
+        custom_effects: take_list(input, take_effect)?,
+        custom_name: take_option(input, take_string)?,
     })
 }
 
@@ -380,12 +389,13 @@ fn take_list<T>(
     Ok(values)
 }
 
-fn put_string(out: &mut Vec<u8>, value: &str) {
+/// A string as every stack's strings are written: a length u32 and the UTF-8 bytes.
+pub(crate) fn put_string(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(&length_u32(value.len()).to_be_bytes());
     out.extend_from_slice(value.as_bytes());
 }
 
-fn take_string(input: &mut Input<'_>) -> Result<String, FormatError> {
+pub(crate) fn take_string(input: &mut Input<'_>) -> Result<String, FormatError> {
     let length =
         usize::try_from(input.u32()?).map_err(|_| FormatError::Corrupt("a string's length"))?;
     let bytes = input.take(length)?;
