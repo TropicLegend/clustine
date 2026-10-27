@@ -3241,6 +3241,9 @@ pub enum EntityDataValue {
     /// count and then each particle by its type's id and its options
     /// (`ParticleTypes.STREAM_CODEC`).
     Particles(Vec<EffectParticle>),
+    /// `EntityDataSerializers.PARTICLE`: one particle, as one of a list is written, by
+    /// its type's id and its options: an area effect cloud's (`DATA_PARTICLE`).
+    Particle(EffectParticle),
     /// `EntityDataSerializers.OPTIONAL_UNSIGNED_INT`: a number or none, as a VarInt of
     /// one more than it, 0 for none (n9 EntityDataSerializers$3).
     OptionalUnsignedInt(Option<u32>),
@@ -3290,6 +3293,8 @@ pub mod entity_data_serializer {
     pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    /// The seventeenth registered, before `PARTICLES` (n7 EntityDataSerializers 562).
+    pub const PARTICLE: i32 = 16;
     pub const PARTICLES: i32 = 17;
     pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     /// The nineteenth registered, after `PARTICLES` (EntityDataSerializers.txt 317).
@@ -3468,6 +3473,16 @@ impl Encode for SetEntityData {
                         }
                     });
                 }
+                EntityDataValue::Particle(particle) => {
+                    w.put_var_int(entity_data_serializer::PARTICLE);
+                    match *particle {
+                        EffectParticle::Simple(kind) => w.put_var_int(kind),
+                        EffectParticle::Colour { kind, argb } => {
+                            w.put_var_int(kind);
+                            w.put_i32(argb);
+                        }
+                    }
+                }
                 EntityDataValue::OptionalUnsignedInt(value) => {
                     w.put_var_int(entity_data_serializer::OPTIONAL_UNSIGNED_INT);
                     let raw = value.map_or(0, |value| value.wrapping_add(1));
@@ -3532,6 +3547,17 @@ impl Decode for SetEntityData {
                 entity_data_serializer::BLOCK_STATE => EntityDataValue::BlockState(r.var_int()?),
                 entity_data_serializer::OPTIONAL_BLOCK_STATE => {
                     EntityDataValue::OptionalBlockState(r.var_int()?)
+                }
+                entity_data_serializer::PARTICLE => {
+                    let kind = r.var_int()?;
+                    EntityDataValue::Particle(if particle::with_colour(kind) {
+                        EffectParticle::Colour {
+                            kind,
+                            argb: r.i32()?,
+                        }
+                    } else {
+                        EffectParticle::Simple(kind)
+                    })
                 }
                 entity_data_serializer::PARTICLES => EntityDataValue::Particles(r.array_at_most(
                     MAX_PARTICLES,
@@ -4044,6 +4070,31 @@ mod tests {
         // Index, serializer, value; then the end of the list (0xFF).
         let bytes = crate::packets::encode(&data);
         assert_eq!(bytes[bytes.len() - 7..], [9, 19, 0, 8, 19, 42, 0xFF]);
+        assert_round_trip(
+            data,
+            ClientboundPlay::decode,
+            ClientboundPlay::SetEntityData,
+        );
+    }
+
+    /// A cloud's particle is one particle under `PARTICLE` (16), written as one of a
+    /// list is: its type, then its colour.
+    #[test]
+    fn one_particle_round_trips_in_entity_data() {
+        let colour = EffectParticle::Colour {
+            kind: particle::ENTITY_EFFECT,
+            argb: -1,
+        };
+        let data = SetEntityData {
+            entity_id: 3,
+            values: vec![(10, EntityDataValue::Particle(colour))],
+        };
+        let bytes = crate::packets::encode(&data);
+        let kind = u8::try_from(particle::ENTITY_EFFECT).unwrap();
+        assert_eq!(
+            bytes[bytes.len() - 8..],
+            [10, 16, kind, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
         assert_round_trip(
             data,
             ClientboundPlay::decode,

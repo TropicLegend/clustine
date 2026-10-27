@@ -31,7 +31,7 @@ mod bone_meal;
 mod brains;
 mod breeding;
 mod changes;
-mod clouds;
+pub(crate) mod clouds;
 mod colliders;
 mod containers;
 mod conversions;

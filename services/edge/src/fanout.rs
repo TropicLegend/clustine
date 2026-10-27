@@ -947,11 +947,6 @@ impl WireIds {
         self.last
     }
 
-    /// The id clients know the entity `key` by, if it has one; none is given.
-    fn known(&self, key: EntityId) -> Option<i32> {
-        self.of.get(&key).copied()
-    }
-
     fn forget(&mut self, key: EntityId) {
         if let Some(id) = self.of.remove(&key) {
             self.by_id.remove(&id);
@@ -6251,7 +6246,10 @@ impl PlayerView {
                 let mut packets = Vec::new();
                 let EntityKind::Player { player, name } = &state.kind else {
                     self.visible.insert(state.entity, None);
-                    let owner = owner_of(state).and_then(|owner| wire.known(owner));
+                    // The owner's id, given now if it has none, so that an owner shown
+                    // after its projectile is the one it names (`n9-plan.md`, section
+                    // 10).
+                    let owner = owner_of(state).map(|owner| wire.of(owner));
                     let mut packets = spawn_packets(
                         state,
                         wire.of(state.entity),
@@ -6425,13 +6423,18 @@ fn attribute_snapshot(shown: AttributeShown) -> AttributeSnapshot {
     }
 }
 
-/// The owner of a projectile `state` shows, if it has one.
+/// The owner of a projectile `state` shows, if it has one: a thrown item's, an arrow's
+/// or a trident's, the llama's spit's or a rocket's (each a `Projectile`, whose add
+/// packet carries its owner). A cloud and the fangs are not projectiles.
 fn owner_of(state: &EntityState) -> Option<EntityId> {
     match &state.kind {
-        EntityKind::Other {
-            data: EntityData::Thrown { owner, .. },
-            ..
-        } => *owner,
+        EntityKind::Other { data, .. } => match data {
+            EntityData::Thrown { owner, .. } => *owner,
+            EntityData::Arrow(arrow) => arrow.owner,
+            EntityData::Spit(spit) => spit.owner,
+            EntityData::Firework(rocket) => rocket.owner,
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -6477,7 +6480,10 @@ fn spawn_packets(
                 ];
                 0
             }
-            EntityData::Thrown { .. } => owner,
+            EntityData::Thrown { .. }
+            | EntityData::Arrow(_)
+            | EntityData::Spit(_)
+            | EntityData::Firework(_) => owner,
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
@@ -8862,6 +8868,7 @@ mod scenarios {
     mod leashes;
     mod menus;
     mod physics_specification;
+    mod projectiles;
     mod redstone;
     mod riding;
     mod riding_specification;

@@ -49,7 +49,7 @@ const HEIGHT: f32 = 0.5;
 /// the record holds: each tick after `radius_at` that did not wait adds the radius per
 /// tick, the radius kept within nothing and 32 as `setRadius` keeps it; `None` where a
 /// tick took it below half a block, which ends it.
-pub(crate) fn radius_at(cloud: &Cloud, age: u32) -> Option<f32> {
+pub fn radius_at(cloud: &Cloud, age: u32) -> Option<f32> {
     let mut radius = cloud.radius.0;
     let per_tick = cloud.radius_per_tick.0;
     if per_tick == 0.0 {
@@ -65,6 +65,24 @@ pub(crate) fn radius_at(cloud: &Cloud, age: u32) -> Option<f32> {
         radius = radius.clamp(0.0, MAX_RADIUS);
     }
     Some(radius)
+}
+
+/// The colour a cloud of the potion `contents` shows (`PotionContents.getColor()`), which
+/// the edge writes, opaque, into the cloud's particle (`updateParticle`).
+pub fn potion_colour(contents: &clustine_world::components::PotionContents) -> i32 {
+    super::thrown::potion_colour(contents)
+}
+
+/// The colour an arrow whose pickup stack is `stack` shows (`Arrow.updateColor`): -1
+/// where the stack carries no potion (`PotionContents.EMPTY`), else its potion's colour.
+/// The edge writes it into a tipped arrow's data.
+pub fn arrow_colour(stack: &clustine_world::ItemStack) -> i32 {
+    let contents = super::thrown::potion_of(stack);
+    if contents == clustine_world::components::PotionContents::default() {
+        -1
+    } else {
+        super::thrown::potion_colour(&contents)
+    }
 }
 
 /// `canBeAffected(instance)` of a living entity of the type `kind` (none for a

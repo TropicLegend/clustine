@@ -1048,10 +1048,10 @@ mod tests {
     #[test]
     fn data_with_a_value_it_cannot_read_is_read_up_to_it() {
         // set_entity_data of entity 7: index 8 a float 3.0, index 9 a boolean, index
-        // 10 a particle (serializer 16), which is not read.
+        // 10 of a serializer no codec knows (120), which is not read.
         let mut frame = vec![clientbound::SET_ENTITY_DATA as u8, 7, 8, 3];
         frame.extend(3.0f32.to_be_bytes());
-        frame.extend([9, 8, 1, 10, 16, 0, 0xFF]);
+        frame.extend([9, 8, 1, 10, 120, 0, 0xFF]);
         let (entity, values) = lenient_data(&frame).unwrap();
         assert_eq!(entity, 7);
         assert_eq!(

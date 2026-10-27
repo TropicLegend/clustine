@@ -32,6 +32,7 @@ use clustine_protocol::packets::{
 use clustine_sim::api::Tracked;
 use clustine_sim::shown::{DataShown, Holder, Serialiser, ShownParticle};
 use clustine_world::EntityData;
+use clustine_world::components::{Component, Kind};
 
 use crate::encode::wire_stack;
 
@@ -74,6 +75,9 @@ const DIRTY_TNT: u16 = 512;
 /// `getNonDefaultValues` and clears nothing).
 const DIRTY_MADE: u16 = 1024;
 
+/// A projectile's own values ([`projectile_values`]) changed since they were sent.
+const DIRTY_PROJECTILE: u16 = 2048;
+
 /// An experience orb's worth (`ExperienceOrb.DATA_VALUE`), the first of its own.
 const ORB_VALUE: u8 = 8;
 
@@ -82,6 +86,167 @@ const ORB_VALUE: u8 = 8;
 const TNT_FUSE: u8 = 8;
 const TNT_BLOCK: u8 = 9;
 const TNT_DEFAULT_FUSE: i16 = 80;
+
+/// The indices of N9's projectiles' data, after `Entity`'s eight
+/// (`docs/groundwork/n9-plan.md`, section 10): an arrow's (`AbstractArrow`'s flags,
+/// pierce level and being in the ground; then `Arrow`'s effect colour, or
+/// `ThrownTrident`'s loyalty and foil), a rocket's (`FireworkRocketEntity`'s stack, the
+/// entity it is attached to and being shot at an angle) and the area effect cloud's
+/// (its radius, its waiting and its particle).
+mod projectile_data {
+    pub(super) const ARROW_FLAGS: u8 = 8;
+    pub(super) const PIERCE_LEVEL: u8 = 9;
+    pub(super) const IN_GROUND: u8 = 10;
+    pub(super) const EFFECT_COLOUR: u8 = 11;
+    pub(super) const LOYALTY: u8 = 11;
+    pub(super) const FOIL: u8 = 12;
+    pub(super) const ROCKET_STACK: u8 = 8;
+    pub(super) const ROCKET_AT_ANGLE: u8 = 10;
+    pub(super) const CLOUD_RADIUS: u8 = 8;
+    pub(super) const CLOUD_WAITING: u8 = 9;
+    pub(super) const CLOUD_PARTICLE: u8 = 10;
+    /// `AbstractArrow.ID_FLAGS`' bits: a critical arrow (`setCritArrow`, bit 1) and one
+    /// with no physics (`setNoPhysics`, bit 2), a returning trident.
+    pub(super) const CRIT: u8 = 1;
+    pub(super) const NO_PHYSICS: u8 = 2;
+}
+
+/// A value of a projectile's data: its index, what it is now, and its type's default
+/// (`defineSynchedData`), none where the game's value is an object it compares by
+/// identity (a rocket's stack, a cloud's particle), which is never the default once set.
+type ProjectileValue = (u8, EntityDataValue, Option<EntityDataValue>);
+
+/// The values of the data of an arrow, a spectral arrow, a trident, a firework rocket or
+/// an area effect cloud of the type `kind`, as the game's `SynchedEntityData` holds them;
+/// `age` is a cloud's `tickCount` as of `data` (its `lived`), from which its radius and
+/// its waiting are derived (`clouds.rs`, finding 53). Anything else has none.
+///
+/// The rocket's attached entity (index 9) is left out: nobody glides, so it is always
+/// none, its default. A cloud's custom particle is not kept, so its particle is always
+/// `entity_effect` in its potion's colour, opaque (`updateParticle`).
+fn projectile_values(kind: u16, data: &EntityData, age: u32) -> Vec<ProjectileValue> {
+    use projectile_data as at;
+    match data {
+        EntityData::Arrow(arrow) => {
+            let no_physics = matches!(
+                arrow.of_kind,
+                clustine_world::projectiles::ArrowKind::Trident { returning, .. } if returning > 0
+            );
+            let flags =
+                if arrow.crit { at::CRIT } else { 0 } | if no_physics { at::NO_PHYSICS } else { 0 };
+            let mut values = vec![
+                (
+                    at::ARROW_FLAGS,
+                    EntityDataValue::Byte(flags),
+                    Some(EntityDataValue::Byte(0)),
+                ),
+                (
+                    at::PIERCE_LEVEL,
+                    EntityDataValue::Byte(arrow.pierce_level),
+                    Some(EntityDataValue::Byte(0)),
+                ),
+                (
+                    at::IN_GROUND,
+                    EntityDataValue::Boolean(arrow.in_ground.is_some()),
+                    Some(EntityDataValue::Boolean(false)),
+                ),
+            ];
+            match i32::from(kind) {
+                entity_types::ARROW => values.push((
+                    at::EFFECT_COLOUR,
+                    EntityDataValue::Int(clustine_sim::arrow_colour(&arrow.pickup_stack)),
+                    Some(EntityDataValue::Int(-1)),
+                )),
+                entity_types::TRIDENT => {
+                    values.push((
+                        at::LOYALTY,
+                        EntityDataValue::Byte(trident_loyalty(&arrow.pickup_stack)),
+                        Some(EntityDataValue::Byte(0)),
+                    ));
+                    values.push((
+                        at::FOIL,
+                        EntityDataValue::Boolean(has_foil(&arrow.pickup_stack)),
+                        Some(EntityDataValue::Boolean(false)),
+                    ));
+                }
+                _ => {}
+            }
+            values
+        }
+        EntityData::Firework(rocket) => vec![
+            (
+                at::ROCKET_STACK,
+                EntityDataValue::ItemStack(Some(wire_stack(&rocket.stack))),
+                None,
+            ),
+            (
+                at::ROCKET_AT_ANGLE,
+                EntityDataValue::Boolean(rocket.shot_at_angle),
+                Some(EntityDataValue::Boolean(false)),
+            ),
+        ],
+        EntityData::Cloud(cloud) => {
+            // A tick that took it below half a block removes it; until the removal
+            // the radius it had is shown.
+            let radius = clustine_sim::cloud_radius_at(cloud, age).unwrap_or(cloud.radius.0);
+            // `setWaiting` is called only by its ticks: one never ticked is not waiting.
+            let waiting = age >= 1 && i64::from(age) < i64::from(cloud.wait_time);
+            let colour = clustine_sim::potion_colour(&cloud.potion);
+            vec![
+                (
+                    at::CLOUD_RADIUS,
+                    EntityDataValue::Float(radius),
+                    Some(EntityDataValue::Float(3.0)),
+                ),
+                (
+                    at::CLOUD_WAITING,
+                    EntityDataValue::Boolean(waiting),
+                    Some(EntityDataValue::Boolean(false)),
+                ),
+                (
+                    at::CLOUD_PARTICLE,
+                    EntityDataValue::Particle(EffectParticle::Colour {
+                        kind: particle::ENTITY_EFFECT,
+                        // `ARGB.opaque`.
+                        argb: colour | (0xFF00_0000_u32 as i32),
+                    }),
+                    None,
+                ),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `ThrownTrident.getLoyaltyFromItem`: `getTridentReturnToOwnerAcceleration`, which for
+/// Loyalty is `linear(1, 1)` of its level, the level itself, held within 0 and 127.
+fn trident_loyalty(stack: &clustine_world::ItemStack) -> u8 {
+    let level = match stack.components.get(Kind::Enchantments) {
+        Some(Component::Enchantments(enchantments)) => enchantments
+            .iter()
+            .find(|(name, _)| name == "minecraft:loyalty")
+            .map_or(0, |(_, level)| *level),
+        _ => 0,
+    };
+    u8::try_from(level.clamp(0, 127)).expect("held within a byte")
+}
+
+/// `ItemStack.hasFoil` of a trident: `Item.isFoil`, whether it is enchanted. Clustine
+/// keeps no `enchantment_glint_override`, which would come first.
+fn has_foil(stack: &clustine_world::ItemStack) -> bool {
+    matches!(
+        stack.components.get(Kind::Enchantments),
+        Some(Component::Enchantments(enchantments)) if !enchantments.is_empty()
+    )
+}
+
+/// The values of a projectile's data with their defaults: what clients hold of it.
+fn projectile_held(kind: u16, data: &EntityData, age: u32) -> Vec<(u8, EntityDataValue)> {
+    projectile_values(kind, data, age)
+        .into_iter()
+        .map(|(index, value, _)| (index, value))
+        .collect()
+}
 
 /// The default of primed TNT's value at `index`.
 fn tnt_default(index: u8) -> Option<EntityDataValue> {
@@ -544,6 +709,13 @@ impl Sent {
             Self::Pos(moved) => {
                 moved.delta == VecDelta::Linear([0; 3]) && moved.on_ground == held.on_ground
             }
+            // An arrow's moves always carry its angles (`createMovePacket(…, true,
+            // true)`), even where it lies still.
+            Self::PosRot(moved) => {
+                moved.delta == VecDelta::Linear([0; 3])
+                    && moved.on_ground == held.on_ground
+                    && (moved.yaw, moved.pitch) == held.angles
+            }
             Self::Sync(moved) => {
                 let [x, y, z] = held.position;
                 moved.path.end() == Some((x, y, z))
@@ -599,6 +771,9 @@ pub(crate) struct Tracker {
     corner: Option<[f64; 3]>,
     track_delta: bool,
     item: bool,
+    /// Whether it is an arrow, a spectral arrow or a trident (`AbstractArrow`), whose
+    /// every update sends its position and its angles.
+    arrow: bool,
     tick_count: i32,
     teleport_delay: i32,
     codec: VecDeltaCodec,
@@ -627,6 +802,14 @@ pub(crate) struct Tracker {
     /// Where a falling block started (`DATA_START_POS`): the block it was in when this
     /// edge first heard of it.
     start: Option<Position>,
+    /// A cloud's age (its `lived`, the game's `tickCount` of its last tick), by which
+    /// its radius and waiting are shown: 0 where the edge saw it made, counted by its
+    /// reports, one a tick. For one met otherwise (a snapshot, another region's word),
+    /// whose age the region does not report, it starts at the age of its last use or
+    /// its making (`Cloud.radius_at`), the most this edge can know of it.
+    age: u32,
+    /// A projectile's own values as clients hold them ([`projectile_held`]).
+    projectile_sent: Vec<(u8, EntityDataValue)>,
 
     position: [f64; 3],
     motion: [f64; 3],
@@ -663,6 +846,10 @@ impl Tracker {
             info.map_or((20, true), |info| (info.update_interval, info.track_deltas));
         let never = interval == NO_UPDATE_INTERVAL;
         let at = tracking_position(data, seen.position);
+        let age = match data {
+            EntityData::Cloud(cloud) => cloud.radius_at,
+            _ => 0,
+        };
         let start = matches!(data, EntityData::FallingBlock { .. }).then(|| Position {
             x: seen.position[0].floor() as i32,
             y: seen.position[1].floor() as i32,
@@ -674,6 +861,10 @@ impl Tracker {
             corner: matches!(data, EntityData::Painting { .. }).then_some(at),
             track_delta,
             item: i32::from(seen.kind) == entity_types::ITEM,
+            arrow: matches!(
+                i32::from(seen.kind),
+                entity_types::ARROW | entity_types::SPECTRAL_ARROW | entity_types::TRIDENT
+            ),
             tick_count: 0,
             teleport_delay: 0,
             codec: VecDeltaCodec::new(at),
@@ -689,6 +880,8 @@ impl Tracker {
             dirty_values: 0,
             kind: seen.kind,
             start,
+            age,
+            projectile_sent: projectile_held(seen.kind, data, age),
             position: at,
             motion: seen.motion,
             yaw: seen.yaw,
@@ -754,6 +947,14 @@ impl Tracker {
         if let Some(new) = &tracked.data {
             self.dirty |= hanging_changes(data, new);
             self.data_changed(data, new);
+        }
+        // A cloud is reported every tick it lives (`write_projectile`).
+        if matches!(data, EntityData::Cloud(_)) {
+            self.age = self.age.saturating_add(1);
+        }
+        let now = tracked.data.as_ref().unwrap_or(data);
+        if projectile_held(self.kind, now, self.age) != self.projectile_sent {
+            self.dirty |= DIRTY_PROJECTILE;
         }
     }
 
@@ -922,6 +1123,19 @@ impl Tracker {
                     EntityDataValue::ItemStack(Some(stack)),
                 ));
             }
+            EntityData::Arrow(_) | EntityData::Firework(_) | EntityData::Cloud(_) => {
+                for (index, value, default) in projectile_values(self.kind, data, self.age) {
+                    let held = self
+                        .projectile_sent
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, held)| held);
+                    let changed = self.dirty & DIRTY_PROJECTILE != 0 && held != Some(&value);
+                    if (pairing && default.as_ref() != Some(&value)) || (!pairing && changed) {
+                        values.push((index, value));
+                    }
+                }
+            }
             // `ExperienceOrb.DATA_VALUE`, 0 by default: what it is worth, by which a
             // client sizes it. It is set as the orb is made and never changes.
             EntityData::ExperienceOrb { value, .. } if pairing && *value != 0 => {
@@ -984,6 +1198,7 @@ impl Tracker {
         self.dirty = 0;
         self.dirty_values = 0;
         self.pairing = self.values(data, true);
+        self.projectile_sent = projectile_held(self.kind, data, self.age);
         if !values.is_empty() {
             out.push(Sent::Data(SetEntityData {
                 entity_id: id,
@@ -1018,7 +1233,7 @@ impl Tracker {
     }
 
     /// One tick's update, the game's `ServerEntity.sendChanges` for an entity that is no
-    /// passenger, minecart or arrow, with `id` its wire id and `data` its data.
+    /// passenger or minecart (an arrow among them), with `id` its wire id and `data` its data.
     pub(crate) fn send_changes(&mut self, id: i32, data: &EntityData) -> Vec<Sent> {
         let mut out = Vec::new();
         if self.once & Tracked::SYNC_POSITION != 0 {
@@ -1033,10 +1248,12 @@ impl Tracker {
         if needs_sync || periodic || self.dirty != 0 {
             let yaw = pack_degrees(self.yaw);
             let pitch = pack_degrees(self.pitch);
-            let rotated = yaw != self.last_yaw || pitch != self.last_pitch;
             self.teleport_delay = self.teleport_delay.wrapping_add(1);
             let away = length_squared(self.codec.delta(self.position)) >= POSITION_TOLERANCE;
-            let positioned = away || self.tick_count % FORCED_POSITION_PERIOD == 0;
+            // An arrow's update sends its position and its angles whatever they did
+            // (`sendChanges`' `instanceof AbstractArrow`).
+            let rotated = self.arrow || yaw != self.last_yaw || pitch != self.last_pitch;
+            let positioned = self.arrow || away || self.tick_count % FORCED_POSITION_PERIOD == 0;
             let packet = self.move_packet(id, yaw, pitch, positioned, rotated);
             if needs_sync || self.track_delta {
                 let change = distance_squared(self.motion, self.last_motion);

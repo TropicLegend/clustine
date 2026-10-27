@@ -44,6 +44,8 @@ pub use api::{
     RemoteStep, StayNote, TickInputs, TickOutput, Ticket, Unit, VehicleMove, WorldClock,
     WorldPlayer,
 };
+/// What the edge needs to show a cloud's radius and a potion's colour (part S12b).
+pub use region::clouds::{arrow_colour, potion_colour, radius_at as cloud_radius_at};
 pub use region::{
     Features, Holdings, KeptLight, Knowledge, LightChecks, LightSettings, NoSplit, Part, Region,
     RegionConfig, Sides, Splitting,
