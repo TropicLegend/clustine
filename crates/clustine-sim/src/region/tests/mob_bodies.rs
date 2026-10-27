@@ -10,6 +10,7 @@ use clustine_world::{
 };
 
 use super::*;
+use crate::api::WorldPlayer;
 use crate::living::MAX_AIR;
 use crate::mobs::Mob;
 use crate::mobs::body::attributes::RANDOM_SPAWN_BONUS;
@@ -496,10 +497,62 @@ fn an_animal_never_despawns_and_a_fish_far_from_every_player_does() {
     lay(&mut region, &fish);
     // The player goes far beyond both: 64 is a fish's despawn distance, 128 a cow's.
     region.players.get_mut(&player(1)).unwrap().pose.position = Vec3::new(300.0, -60.0, 0.5);
-    for _ in 0..3 {
+    // Nothing goes until the region has heard of the world's players: then the fish
+    // does, as nobody is near.
+    checked(&mut region, &TickInputs::default());
+    assert!(record(&region, EntityId(42)).is_some(), "no table yet");
+    checked(
+        &mut region,
+        &TickInputs {
+            world_players: Some(Vec::new()),
+            ..TickInputs::default()
+        },
+    );
+    for _ in 0..2 {
         checked(&mut region, &TickInputs::default());
     }
     assert!(record(&region, COW_KEY).is_some());
+    assert!(record(&region, EntityId(42)).is_none());
+}
+
+#[test]
+fn a_mob_far_from_the_region_s_players_stays_while_a_player_of_another_region_is_near() {
+    let mut region = on_ticking_floor_with(&[]);
+    let fish = mob_of(EntityId(42), entity_types::COD, [5.5, -60.0, 5.5], true);
+    lay(&mut region, &fish);
+    region.players.get_mut(&player(1)).unwrap().pose.position = Vec3::new(300.0, -60.0, 0.5);
+    let elsewhere = WorldPlayer {
+        player: player(2),
+        entity: EntityId(9_000),
+        position: [10.5, -60.0, 5.5],
+        game_mode: 1,
+        sleeping: None,
+    };
+    checked(
+        &mut region,
+        &TickInputs {
+            world_players: Some(vec![elsewhere.clone()]),
+            ..TickInputs::default()
+        },
+    );
+    for _ in 0..3 {
+        checked(&mut region, &TickInputs::default());
+    }
+    assert!(
+        record(&region, EntityId(42)).is_some(),
+        "a player stands near it"
+    );
+    // A spectator counts for nobody.
+    checked(
+        &mut region,
+        &TickInputs {
+            world_players: Some(vec![WorldPlayer {
+                game_mode: 3,
+                ..elsewhere
+            }]),
+            ..TickInputs::default()
+        },
+    );
     assert!(record(&region, EntityId(42)).is_none());
 }
 

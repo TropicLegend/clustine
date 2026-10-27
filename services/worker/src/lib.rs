@@ -1685,6 +1685,8 @@ impl RegionRunner {
                     self.inputs.clock = Some(self.inputs.clock.unwrap_or(clock).later(clock));
                     self.inputs.world_players = Some(players);
                 }
+                // The other regions' counts, which come behind the clock.
+                StoreReply::Counts(counts) => self.inputs.counts = Some(counts),
                 // Faces go to the next tick as they come, whatever the borders hold
                 // back: the region keeps them all and shows those it holds or copies
                 // (`docs/groundwork/n7-faces.md`).
@@ -2869,6 +2871,11 @@ impl RegionRunner {
                 arrivals_taken,
                 clock: output.clock,
             });
+        }
+        // The counts of its mobs the tick reported, behind its commit
+        // (`docs/groundwork/n9-plan.md`, section 9.2).
+        if let Some(counts) = output.counts {
+            self.store.request(StoreRequest::Counts(counts));
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
         // last save went out when its last ticket was let go of, before the tick that
@@ -5122,7 +5129,8 @@ mod tests {
                 | StoreRequest::EndCouplings
                 | StoreRequest::Lend { .. }
                 | StoreRequest::LendRefused { .. }
-                | StoreRequest::Lending { .. } => return None,
+                | StoreRequest::Lending { .. }
+                | StoreRequest::Counts(_) => return None,
             })
         }
     }

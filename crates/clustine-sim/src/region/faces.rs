@@ -50,8 +50,9 @@ pub(super) struct Faces {
     /// The latest stay of each player the region has held or let go, by its entity and
     /// hand-overs.
     known: BTreeMap<PlayerId, (EntityId, u32)>,
-    /// The world's players, as the store last published them.
-    pub(super) world: Vec<WorldPlayer>,
+    /// The world's players, as the store last published them; none until it has once
+    /// (what despawning waits for: `docs/groundwork/n9-plan.md`, section 9.5).
+    pub(super) world: Option<Vec<WorldPlayer>>,
 }
 
 impl Faces {
@@ -218,7 +219,7 @@ impl Region {
         }
         self.faces.expire(self.tick);
         if let Some(world) = world {
-            self.faces.world.clone_from(world);
+            self.faces.world = Some(world.clone());
         }
     }
 }

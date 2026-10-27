@@ -1915,6 +1915,10 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
             expected.chunk_requests.clear();
             actual.chunk_requests.clear();
             actual.claims.clear();
+            // Nor that the restored region reports its spawn counts whole, then the
+            // chunk it is given (docs/groundwork/n9-plan.md, section 9.2).
+            expected.counts = None;
+            actual.counts = None;
             if index == 0 {
                 expected.stays.clear();
                 actual.stays.clear();

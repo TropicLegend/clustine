@@ -456,7 +456,7 @@ impl Region {
                 }
             }
         }
-        for other in &self.faces.world {
+        for other in self.faces.world.iter().flatten() {
             if self.players.contains_key(&other.player) {
                 continue;
             }

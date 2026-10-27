@@ -99,6 +99,7 @@ mod sculk;
 mod shulker_boxes;
 mod sleep;
 mod sniffer_eggs;
+mod spawn_caps;
 mod spawn_eggs;
 mod spit;
 mod stack_nbt;
@@ -446,6 +447,8 @@ pub struct Region {
     /// [`Region::restore`], so the tick after either names every stay as well, in a
     /// region that is run on from memory as in one that another worker restores.
     unnamed: bool,
+    /// Its counts of mobs by chunk as last reported (`spawn_caps.rs`), in memory only.
+    counts: spawn_caps::Counts,
     journal: Journal,
     /// What one change of a block makes in turn while it runs; empty between changes,
     /// and no part of the state.
@@ -678,6 +681,7 @@ impl Region {
             edges: state.edges,
             entering: state.entering,
             unnamed: true,
+            counts: Default::default(),
             journal: Journal::default(),
             lends_asked,
             clock: state.clock,
@@ -1271,6 +1275,9 @@ impl Region {
         // One change of each entity that the tick changed several times, of what it
         // changed last (`changes.rs`).
         changes::merge(&mut output.entity_changes);
+        // The counts of its mobs, all of them in the tick that names every stay
+        // (`spawn_caps.rs`).
+        self.report_counts(first, &mut output);
 
         // Riders who left the world, noted where they got off, and those let go.
         let dismounted = std::mem::take(&mut self.dismounted);

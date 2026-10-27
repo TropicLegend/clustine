@@ -119,6 +119,8 @@ pub(crate) struct Lanes {
     spawn: BlockPos,
     /// The world's number ([`Restored::world`]).
     world: u64,
+    /// The regions' counts of their mobs, in memory only (`spawn_counts.rs`).
+    counts: crate::spawn_counts::Counts,
     /// The seed of the world's features ([`Restored::seed`]).
     seed: Option<i64>,
     /// A lane for every living region, and for no other.
@@ -766,6 +768,7 @@ impl Lanes {
         let tabled = stored.is_some();
         let used = stored.as_ref().map_or(0, |table| table.next_region);
         let mut lanes = Self {
+            counts: Default::default(),
             disk,
             root: root.to_owned(),
             jobs,
@@ -1227,6 +1230,11 @@ impl Lanes {
         };
         let peer = Arc::clone(&owner.peer);
         let job = match request {
+            // Kept as it comes, behind the commit it goes with: in memory only.
+            StoreRequest::Counts(report) => {
+                self.counts.report(session.region, session.number, report);
+                return;
+            }
             StoreRequest::Commit {
                 tick,
                 changes,
@@ -2185,11 +2193,24 @@ impl Lanes {
             let players = self
                 .faces
                 .world(|region| committed.get(&region).copied().unwrap_or(0));
-            for owner in self.regions.values().filter_map(|lane| lane.owner.as_ref()) {
+            let owners: BTreeMap<RegionId, u64> = self
+                .regions
+                .iter()
+                .filter_map(|(region, lane)| {
+                    Some((*region, lane.owner.as_ref()?.peer.session.number))
+                })
+                .collect();
+            for (region, lane) in &self.regions {
+                let Some(owner) = lane.owner.as_ref() else {
+                    continue;
+                };
                 owner.peer.answer(StoreReply::Clock {
                     clock,
                     players: players.clone(),
                 });
+                if let Some(counts) = self.counts.published(*region, &owners, &players) {
+                    owner.peer.answer(StoreReply::Counts(counts));
+                }
             }
         }
         for peer in group.flushes {

@@ -1775,6 +1775,12 @@ fn a_monster_far_from_every_player_despawns_and_one_near_does_not() {
     let world = World::of(&blocks)
         .with_entities(&[placed(&husk, 1, feet(28, 28)), placed(&husk, 2, feet(3, 3))]);
     let mut scene = scene_at(&world, Inventory::default(), NIGHT);
+    // Nothing despawns until the region has heard of the world's players
+    // (docs/groundwork/n9-plan.md, section 9.5): here, nobody but its own.
+    scene.region.tick(&TickInputs {
+        world_players: Some(Vec::new()),
+        ..TickInputs::default()
+    });
     let lived = the(&scene, key(1)).lived;
     let mut seen = Vec::new();
     let gone = scene.idle_until(8_000, &mut seen, |scene, _| record(scene, key(1)).is_none());

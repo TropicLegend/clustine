@@ -92,6 +92,20 @@ pub(crate) trait MobWorld: Holds {
     /// copies show (N7a2's faces), each by key.
     fn players(&self) -> Vec<SeenPlayer>;
 
+    /// Where the non-spectator players stand that a despawning mob measures to
+    /// (`docs/groundwork/n9-plan.md`, section 9.5): those it reads, and in a region the
+    /// world's players beyond them; none until the region has heard of the world's
+    /// players, when a mob measures to those it reads but is not removed.
+    fn despawn_players(&self) -> Option<Vec<[f64; 3]>> {
+        Some(
+            self.players()
+                .into_iter()
+                .filter(|player| !player.spectator)
+                .map(|player| player.position)
+                .collect(),
+        )
+    }
+
     /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
     /// a wolf's anger ends at (none where a view knows no clock).
     fn game_time(&self) -> i64 {

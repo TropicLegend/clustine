@@ -512,16 +512,28 @@ pub(crate) fn check_despawn(tick: &mut MobTick<'_>) {
         || tick.leashed
         || tick.mob_type.requires_custom_persistence(&tick.mob);
     let at = tick.living.body.position;
-    let nearest = tick
-        .world
-        .players()
+    // Until the region has heard of the world's players, a player of another region may
+    // stand near unseen: the mob measures to those it sees, but is not removed.
+    let (players, may_remove) = match tick.world.despawn_players() {
+        Some(players) => (players, true),
+        None => (
+            tick.world
+                .players()
+                .into_iter()
+                .filter(|player| !player.spectator)
+                .map(|player| player.position)
+                .collect(),
+            false,
+        ),
+    };
+    let keep = keep || !may_remove;
+    let nearest = players
         .into_iter()
-        .filter(|player| !player.spectator)
-        .map(|player| {
+        .map(|position| {
             let d = [
-                player.position[0] - at[0],
-                player.position[1] - at[1],
-                player.position[2] - at[2],
+                position[0] - at[0],
+                position[1] - at[1],
+                position[2] - at[2],
             ];
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
         })

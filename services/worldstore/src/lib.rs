@@ -36,6 +36,7 @@ mod lanes;
 mod lends;
 mod local;
 mod players;
+mod spawn_counts;
 mod table;
 mod tally;
 mod tcp;

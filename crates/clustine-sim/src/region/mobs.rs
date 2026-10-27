@@ -135,6 +135,7 @@ impl MobWorld for View<'_> {
             .faces
             .world
             .iter()
+            .flatten()
             .find(|player| player.player.0.as_u128() == uuid)?;
         let at = clustine_world::Vec3::new(known.position[0], known.position[1], known.position[2]);
         let mut face = PlayerFace::of(
@@ -152,6 +153,30 @@ impl MobWorld for View<'_> {
             .sleeping
             .map(|counter| now.saturating_sub(u64::from(counter)));
         Some(seen(known.player, known.entity, &face))
+    }
+
+    /// Those the mob reads, then the world's players beyond them as the store last
+    /// published them; none until it has published them once.
+    fn despawn_players(&self) -> Option<Vec<[f64; 3]>> {
+        let world = self.region.faces.world.as_ref()?;
+        let seen = self.players();
+        let mut positions: Vec<[f64; 3]> = seen
+            .iter()
+            .filter(|player| !player.spectator)
+            .map(|player| player.position)
+            .collect();
+        positions.extend(
+            world
+                .iter()
+                .filter(|other| other.game_mode != 3)
+                .filter(|other| {
+                    !seen
+                        .iter()
+                        .any(|player| player.uuid == other.player.0.as_u128())
+                })
+                .map(|other| other.position),
+        );
+        Some(positions)
     }
 
     fn motion_blocking_height(&self, x: i32, z: i32) -> Option<i32> {

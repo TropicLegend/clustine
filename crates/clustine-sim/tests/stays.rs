@@ -3527,6 +3527,13 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
                 }
                 assert_eq!(theirs.chunk_requests, asked, "{context}");
                 theirs.chunk_requests = output.chunk_requests.clone();
+                // Its spawn counts it reports whole (docs/groundwork/n9-plan.md,
+                // section 9.2).
+                assert!(
+                    theirs.counts.as_ref().is_some_and(|counts| counts.full),
+                    "{context}"
+                );
+                theirs.counts.clone_from(&output.counts);
             }
             assert_eq!(theirs, output, "{context}");
             *ticks += 1;

@@ -397,6 +397,10 @@ pub enum StoreRequest {
     /// on disk, the store keeps `state` in place of the commits up to `tick`; later ones
     /// are kept. Not answered.
     Checkpoint { tick: u64, state: Vec<u8> },
+    /// The counts of the region's mobs the tick of the commit sent just before reported
+    /// (`docs/groundwork/n9-plan.md`, section 9.2): kept in memory, never written to the
+    /// log. Not answered.
+    Counts(clustine_sim::CountsReport),
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
     /// Grant the region these chunks. Each is granted unless another region holds it,
@@ -542,6 +546,10 @@ pub enum StoreReply {
         /// (`docs/groundwork/n7-plan.md`, section 7.3.3).
         players: Vec<WorldPlayer>,
     },
+    /// Behind a [`StoreReply::Clock`]: the other regions' counts of mobs, reckoned at the
+    /// players' positions it published, where the store has every owned region's
+    /// (`docs/groundwork/n9-plan.md`, section 9.2).
+    Counts(clustine_sim::PublishedCounts),
     /// On the stream: faces of players and their removals, in the order the store took
     /// them, for the chunks the region holds or copies; and, behind a hello's answer, a
     /// merge, a split, a grant or a copy's base, the faces of those chunks then

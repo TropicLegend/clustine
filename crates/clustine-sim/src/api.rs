@@ -428,6 +428,30 @@ pub struct PlayerTransfer {
     pub time_since_rest: u32,
 }
 
+/// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
+pub const SPAWN_CATEGORIES: usize = 7;
+
+/// A chunk's or a region's mobs by spawning category.
+pub type SpawnCounts = [u32; SPAWN_CATEGORIES];
+
+/// A tick's counts of mobs (`docs/groundwork/n9-plan.md`, section 9.2): each chunk's,
+/// whole, and whether it is every loaded chunk's (a region's first tick after it is made
+/// or restored), which replaces what the store kept of the region.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CountsReport {
+    pub full: bool,
+    pub chunks: Vec<(ChunkPos, SpawnCounts)>,
+}
+
+/// What the store published of the other regions' mobs (section 9.2): their totals by
+/// category, and each world player's counts over the other regions' chunks within 128
+/// blocks of them, reckoned at the positions it published with them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedCounts {
+    pub totals: SpawnCounts,
+    pub players: Vec<(PlayerId, SpawnCounts)>,
+}
+
 /// A hand (`InteractionHand`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hand {
@@ -1132,6 +1156,9 @@ pub struct TickInputs {
     /// The world's players as the store last published them, if it did since the last
     /// tick.
     pub world_players: Option<Vec<WorldPlayer>>,
+    /// The other regions' counts the store published with the players, where it has
+    /// every region's (section 9.2).
+    pub counts: Option<PublishedCounts>,
 }
 
 /// The world's clock (`docs/groundwork/n7-plan.md`, sections 7.4, 8.4 and 9.3): the game
@@ -1870,6 +1897,10 @@ pub struct TickOutput {
     /// it: to be committed with the tick (`docs/adr/0028-entities.md`, section 3). Only
     /// for chunks the region has loaded.
     pub entity_changes: Vec<(ChunkPos, EntityChange)>,
+    /// The counts of the region's mobs by spawning category, of the chunks whose counts
+    /// changed in the tick, or of every loaded chunk (`docs/groundwork/n9-plan.md`,
+    /// section 9.2): carried with the commit, not written to the log.
+    pub counts: Option<CountsReport>,
     /// The chunks whose entities changed in the tick without a commit: counters, and a
     /// resting item's motion (`docs/groundwork/n4-plan.md`, sections 2 and 7). The
     /// worker saves their entities at its checkpoints and its stop, so that what the

@@ -1310,6 +1310,7 @@ impl Region {
             .faces
             .world
             .iter()
+            .flatten()
             .find(|known| known.entity == owner)?;
         let [x, y, z] = known.position;
         Some(Seen {
