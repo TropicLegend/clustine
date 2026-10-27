@@ -48,7 +48,7 @@ use super::random_ticks::Random;
 use super::stands::{INVISIBLE, MARKER, stand_size};
 use super::updates::{UPDATE_ALL, UPDATE_LIMIT};
 use super::uses::block_in;
-use crate::api::{RegionEvent, TickOutput, Tracked};
+use crate::api::{ExplosionKind, RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::{Aabb, lerp};
 use crate::physics::body::clips_shape;
 use crate::physics::collide::{Context, collision_shape};
@@ -219,6 +219,7 @@ impl Region {
             large: explosion.radius >= 2.0,
             // The source is never silent.
             sound: true,
+            kind: ExplosionKind::Blast,
         });
     }
 
@@ -425,6 +426,20 @@ impl Region {
             }
             self.blasted(explosion, &record, hit, output);
         }
+        self.player_pushes(explosion.centre, reach, &bounds)
+    }
+
+    /// The push of each of the region's players within `reach` of `centre` and in
+    /// `bounds` (`hurtEntities`' hit players): away from the centre by how near they are
+    /// and how much of them is seen, none for a player who flies. A creative player is
+    /// invulnerable, and pushed unless they fly; the push reaches them only in the
+    /// packet, as the client moves the player.
+    pub(super) fn player_pushes(
+        &self,
+        centre: [f64; 3],
+        reach: f64,
+        bounds: &Aabb,
+    ) -> Vec<(EntityId, [f64; 3])> {
         let players: Vec<(EntityId, [f64; 3], bool)> = self
             .players
             .values()
@@ -436,25 +451,23 @@ impl Region {
         let mut knockback = Vec::new();
         for (entity, feet, flying) in players {
             let shape = Aabb::of_entity(feet, PLAYER_WIDTH, PLAYER_HEIGHT);
-            if !shape.intersects(bounds) {
+            if !shape.intersects(*bounds) {
                 continue;
             }
-            let distance = physics::distance_sqr(feet, explosion.centre).sqrt();
+            let distance = physics::distance_sqr(feet, centre).sqrt();
             let d = distance / reach;
             if d > 1.0 {
                 continue;
             }
             let eyes = [feet[0], feet[1] + PLAYER_EYES, feet[2]];
-            let towards = physics::normalize(physics::sub(eyes, explosion.centre));
+            let towards = physics::normalize(physics::sub(eyes, centre));
             let context = Context {
                 bottom: feet[1],
                 fall_distance: 0.0,
                 falling_block: false,
                 noclip: None,
             };
-            let seen = self.seen_percent(explosion.centre, shape, context);
-            // A creative player is invulnerable, and pushed unless they fly; the push
-            // reaches them only in the packet, as the client moves the player.
+            let seen = self.seen_percent(centre, shape, context);
             if !flying {
                 let push = physics::scale(towards, (1.0 - d) * f64::from(seen));
                 knockback.push((entity, push));

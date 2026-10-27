@@ -262,6 +262,44 @@ pub fn mob_data_wearing(stacks: &[(u8, clustine_world::ItemStack)]) -> EntityDat
     mob.encode()
 }
 
+/// A fresh mob's record of the type `kind`, its values N9 shows (`docs/groundwork/n9-plan.md`,
+/// section 10) changed from their defaults, as an edge's tests make one to show: a vex
+/// charging, a slime of size 4, an enderman carrying dirt, screaming and stared at, a phantom of size 3, an evoker casting fangs, a pillager charging its
+/// crossbow, a witch drinking, a guardian moving with its beam on `beam`. Another type's
+/// is a fresh mob's.
+pub fn n9_mob_data_changed(kind: u16, beam: Option<EntityId>) -> EntityData {
+    use clustine_data::entity_types as kinds;
+    let mut mob = Mob::fresh();
+    match i32::from(kind) {
+        kinds::VEX => types::vex::update(&mut mob, |own| own.set_charging(true)),
+        kinds::SLIME => types::cube_mob::change(&mut mob, |own| own.size_less_one = 3),
+        kinds::ENDERMAN => types::enderman::change(&mut mob, |own| {
+            own.carried = Some(clustine_data::blocks::DIRT.0);
+            own.creepy = true;
+            own.stared_at = true;
+        }),
+        kinds::PHANTOM => types::phantom::change(&mut mob, |own| own.size = 3),
+        kinds::EVOKER => {
+            let fangs = crate::mobs::ai::spells::Spell::Fangs.id();
+            types::illagers::update_own(&mut mob, |own: &mut types::evoker::EvokerState| {
+                own.spell = fangs;
+            });
+        }
+        kinds::PILLAGER => types::pillager::set_charging(&mut mob, true),
+        kinds::WITCH => {
+            types::illagers::update_own(&mut mob, |own: &mut types::witch::WitchState| {
+                own.drinking = Some(types::witch::Potion::Healing);
+            });
+        }
+        kinds::GUARDIAN => types::guardians::update(&mut mob, |own| {
+            own.moving = true;
+            own.beam = beam;
+        }),
+        _ => {}
+    }
+    mob.encode()
+}
+
 /// The yaw of a mob's head (`getYHeadRot`) as its record has it, which a client is sent
 /// apart from its body's (`ClientboundRotateHeadPacket`, and in its spawn); none for a
 /// record that is no mob's. Read from the head's part alone, whose first value it is in
@@ -323,5 +361,230 @@ mod tests {
             },
         };
         assert!(mob_values(cow, &knot).is_empty());
+    }
+
+    use clustine_data::entity_types as kinds;
+
+    /// The values `mob_values` shows of `mob` of the type `kind` that are the type's own
+    /// (from index 16) or its `NoGravity` (5), with whether each is its default.
+    fn own_values(kind: i32, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
+        mob_values(kind as u16, &mob.encode())
+            .into_iter()
+            .filter(|(index, _, _)| *index >= 16 || *index == 5)
+            .collect()
+    }
+
+    #[test]
+    fn a_vex_shows_its_no_gravity_and_its_charging_flag_at_16() {
+        // Vex: `DATA_FLAGS_ID`, `EntityDataSerializers.BYTE`, defined 0, after
+        // `Monster`'s (Mob's last is 15); `setNoGravity(true)` at the end of its tick.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::VEX, &mob),
+            [
+                (5, DataShown::Boolean(false), true),
+                (16, DataShown::Byte(0), true),
+            ]
+        );
+        types::vex::update(&mut mob, |own| {
+            own.no_gravity = true;
+            own.set_charging(true);
+        });
+        assert_eq!(
+            own_values(kinds::VEX, &mob),
+            [
+                (5, DataShown::Boolean(true), false),
+                // `FLAG_IS_CHARGING`, 1.
+                (16, DataShown::Byte(1), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_slime_shows_the_ageable_mobs_baby_and_age_lock_and_its_size_at_18() {
+        // `AbstractCubeMob extends AgeableMob`: `DATA_BABY_ID` (16) and `AGE_LOCKED`
+        // (17), both `BOOLEAN` defined false, then `ID_SIZE`, `INT` defined 1.
+        let mut mob = Mob::fresh();
+        let defaults = [
+            (16, DataShown::Boolean(false), true),
+            (17, DataShown::Boolean(false), true),
+            (18, DataShown::Int(1), true),
+        ];
+        assert_eq!(own_values(kinds::SLIME, &mob), defaults);
+        types::cube_mob::change(&mut mob, |own| own.size_less_one = 3);
+        assert_eq!(
+            own_values(kinds::SLIME, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Boolean(false), true),
+                (18, DataShown::Int(4), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_enderman_shows_its_carried_block_and_whether_it_screams_and_is_stared_at() {
+        // `DATA_CARRY_STATE` (`OPTIONAL_BLOCK_STATE`, empty), `DATA_CREEPY` and
+        // `DATA_STARED_AT` (`BOOLEAN`, false), after `Monster`'s.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::ENDERMAN, &mob),
+            [
+                (16, DataShown::OptionalBlockState(None), true),
+                (17, DataShown::Boolean(false), true),
+                (18, DataShown::Boolean(false), true),
+            ]
+        );
+        let dirt = clustine_data::blocks::DIRT.0;
+        types::enderman::change(&mut mob, |own| {
+            own.carried = Some(dirt);
+            own.creepy = true;
+            own.stared_at = true;
+        });
+        assert_eq!(
+            own_values(kinds::ENDERMAN, &mob),
+            [
+                (16, DataShown::OptionalBlockState(Some(dirt)), false),
+                (17, DataShown::Boolean(true), false),
+                (18, DataShown::Boolean(true), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_phantom_shows_its_size_at_16_from_0() {
+        // `Phantom extends Mob`: `ID_SIZE`, `INT`, defined 0.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::PHANTOM, &mob),
+            [(16, DataShown::Int(0), true)]
+        );
+        types::phantom::change(&mut mob, |own| own.size = 3);
+        assert_eq!(
+            own_values(kinds::PHANTOM, &mob),
+            [(16, DataShown::Int(3), false)]
+        );
+    }
+
+    #[test]
+    fn an_evoker_shows_the_spell_it_casts_by_its_id_at_17() {
+        // `Raider.IS_CELEBRATING` (16, `BOOLEAN`), then
+        // `SpellcasterIllager.DATA_SPELL_CASTING_ID` (17, `BYTE`, defined 0, `NONE`).
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::EVOKER, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Byte(0), true),
+            ]
+        );
+        let fangs = crate::mobs::ai::spells::Spell::Fangs.id();
+        types::illagers::update_own(&mut mob, |own: &mut types::evoker::EvokerState| {
+            own.spell = fangs;
+        });
+        assert_eq!(
+            own_values(kinds::EVOKER, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                // `IllagerSpell.FANGS`, 2.
+                (17, DataShown::Byte(2), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pillager_shows_whether_it_charges_its_crossbow_at_17() {
+        // `Pillager.IS_CHARGING_CROSSBOW`: `BOOLEAN`, after the raider's 16.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::PILLAGER, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Boolean(false), true),
+            ]
+        );
+        types::pillager::set_charging(&mut mob, true);
+        assert_eq!(
+            own_values(kinds::PILLAGER, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Boolean(true), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_witch_shows_its_drinking_at_17_and_never_the_living_flags() {
+        // `Witch.DATA_USING_ITEM`: `BOOLEAN`, after the raider's 16.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::WITCH, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Boolean(false), true),
+            ]
+        );
+        types::illagers::update_own(&mut mob, |own: &mut types::witch::WitchState| {
+            own.drinking = Some(types::witch::Potion::Healing);
+        });
+        assert_eq!(
+            own_values(kinds::WITCH, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Boolean(true), false),
+            ]
+        );
+        let all = mob_values(kinds::WITCH as u16, &mob.encode());
+        assert!(
+            !all.iter()
+                .any(|(index, _, _)| *index == index::LIVING_FLAGS)
+        );
+    }
+
+    #[test]
+    fn the_records_the_edges_tests_show_change_each_of_n9s_values_but_the_slimes_age() {
+        let changed = |kind: i32| -> Vec<u8> {
+            mob_values(
+                kind as u16,
+                &n9_mob_data_changed(kind as u16, Some(EntityId(9))),
+            )
+            .into_iter()
+            .filter(|(index, _, default)| *index >= 16 && !default)
+            .map(|(index, _, _)| index)
+            .collect()
+        };
+        assert_eq!(changed(kinds::VEX), [16]);
+        assert_eq!(changed(kinds::SLIME), [18]);
+        assert_eq!(changed(kinds::ENDERMAN), [16, 17, 18]);
+        assert_eq!(changed(kinds::PHANTOM), [16]);
+        assert_eq!(changed(kinds::EVOKER), [17]);
+        assert_eq!(changed(kinds::PILLAGER), [17]);
+        assert_eq!(changed(kinds::WITCH), [17]);
+        assert_eq!(changed(kinds::GUARDIAN), [16, 17]);
+    }
+
+    #[test]
+    fn a_guardian_shows_whether_it_moves_and_its_beams_target_as_an_entity() {
+        // `DATA_ID_MOVING` (16, `BOOLEAN`) and `DATA_ID_ATTACK_TARGET` (17, `INT` of the
+        // target's id, 0 for none), which the edge writes by the target's wire id.
+        let mut mob = Mob::fresh();
+        assert_eq!(
+            own_values(kinds::GUARDIAN, &mob),
+            [
+                (16, DataShown::Boolean(false), true),
+                (17, DataShown::Entity(None), true),
+            ]
+        );
+        types::guardians::update(&mut mob, |own| {
+            own.moving = true;
+            own.beam = Some(EntityId(9));
+        });
+        assert_eq!(
+            own_values(kinds::GUARDIAN, &mob),
+            [
+                (16, DataShown::Boolean(true), false),
+                (17, DataShown::Entity(Some(EntityId(9))), false),
+            ]
+        );
     }
 }

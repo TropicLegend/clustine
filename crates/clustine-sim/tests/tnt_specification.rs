@@ -161,6 +161,7 @@ fn explosions(output: &TickOutput) -> Vec<Exploded> {
                 knockback,
                 large,
                 sound,
+                ..
             } => Some(Exploded {
                 centre: *centre,
                 radius: *radius,

@@ -2943,6 +2943,10 @@ pub mod particle {
     // `minecraft:particle_type` (the 26.3 report's `registries.json`).
     pub const ENTITY_EFFECT: i32 = 28;
     pub const SMALL_GUST: i32 = 32;
+    /// A wind burst's (`ServerLevel.explode` of a wind charge, `docs/groundwork/n9-plan.md`,
+    /// section 5.2).
+    pub const GUST_EMITTER_LARGE: i32 = 33;
+    pub const GUST_EMITTER_SMALL: i32 = 34;
     pub const INFESTED: i32 = 40;
     pub const ITEM_SLIME: i32 = 62;
     pub const ITEM_COBWEB: i32 = 63;

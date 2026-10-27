@@ -29,6 +29,7 @@ fn explosion(centre: [f64; 3], knockback: Vec<(EntityId, [f64; 3])>) -> RegionEv
         knockback,
         large: true,
         sound: true,
+        kind: clustine_sim::api::ExplosionKind::Blast,
     }
 }
 

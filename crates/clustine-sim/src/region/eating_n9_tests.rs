@@ -643,13 +643,89 @@ fn a_wind_charged_death_bursts_pushing_and_triggering_but_hurting_and_breaking_n
     let mut replay = aside(&region, key, lived);
     let radius = 3.0 + replay.next_float() * 2.0;
     assert!((3.0..5.0).contains(&radius));
+    // Shown as the wind's explosion, its sound in the packet and not apart.
+    let centre = [feet[0], feet[1] + f64::from(1.4_f32 / 2.0), feet[2]];
+    assert_eq!(
+        wind_bursts_of(&output),
+        [(centre, radius, Vec::new(), true, true)]
+    );
     assert!(
-        sounds_of(&output)
+        !sounds_of(&output)
             .iter()
             .any(|(sound, ..)| *sound == sounds::ENTITY_BREEZE_WIND_BURST)
     );
     // Its own, the rays' 1352 and the shuffle's draws, then the door's pitch.
     assert!(drawn(&region, key) > 1 + 1352);
+}
+
+/// The wind's explosions the output reports: the centre, radius, players' pushes,
+/// whether large and whether its sound plays.
+type Burst = ([f64; 3], f32, Vec<(EntityId, [f64; 3])>, bool, bool);
+
+fn wind_bursts_of(output: &TickOutput) -> Vec<Burst> {
+    output
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RegionEvent::Explosion {
+                centre,
+                radius,
+                knockback,
+                large,
+                sound,
+                kind: crate::api::ExplosionKind::Wind,
+                ..
+            } => Some((*centre, *radius, knockback.clone(), *large, *sound)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_wind_charged_death_pushes_the_players_near_it_in_its_packet_but_not_one_who_flies() {
+    let mut region = world(SEED, nothing);
+    let feet = [4.5, -60.0, 4.5];
+    let key = cow(&mut region, feet);
+    let (_, walking) = add_player(&mut region, 1, [6.5, -60.0, 4.5], false);
+    let (_, flying) = add_player(&mut region, 2, [2.5, -60.0, 4.5], true);
+    let (_, far) = add_player(&mut region, 3, [30.5, -60.0, 4.5], false);
+    let mut output = TickOutput::default();
+    region.effects_at_removal(key, feet, &[(Effect::WIND_CHARGED, 0)], &mut output);
+    let [(centre, radius, knockback, large, sound)] = &wind_bursts_of(&output)[..] else {
+        panic!("one burst: {:?}", wind_bursts_of(&output));
+    };
+    assert!(*large, "a radius of {radius} is large");
+    assert!(*sound);
+    // The walking player alone, away from the centre: east and up from its middle.
+    let [(pushed, push)] = &knockback[..] else {
+        panic!("{knockback:?}");
+    };
+    assert_eq!(*pushed, walking);
+    assert!(push[0] > 0.0 && push[1] > 0.0, "{push:?}");
+    assert!(push[2].abs() < 1.0e-9, "{push:?}");
+    assert!(
+        !knockback
+            .iter()
+            .any(|(hit, _)| *hit == flying || *hit == far)
+    );
+    // The push is a TNT's of the same size: `(1 − the feet's distance / reach) · seen`
+    // along the way from the centre to the eyes, all of the player seen on open ground.
+    let eyes = [6.5, -60.0 + 1.62, 4.5];
+    let to = [
+        eyes[0] - centre[0],
+        eyes[1] - centre[1],
+        eyes[2] - centre[2],
+    ];
+    let length = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+    let reach = f64::from(radius * 2.0);
+    let from_feet = ((6.5 - centre[0]).powi(2) + (-60.0 - centre[1]).powi(2)).sqrt();
+    let expected = to.map(|part| part / length * (1.0 - from_feet / reach));
+    for (got, wanted) in push.iter().zip(expected) {
+        assert!(
+            (got - wanted).abs() < 1.0e-9,
+            "{push:?} against {expected:?}"
+        );
+    }
 }
 
 /// The draws of a hurt of 1 of magic between the ticks of a cow with `effects`.

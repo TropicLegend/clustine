@@ -2865,10 +2865,26 @@ impl Fanout {
         radius: f32,
         blocks: i32,
         knockback: &[(EntityId, [f64; 3])],
-        large: bool,
+        (large, kind): (bool, clustine_sim::api::ExplosionKind),
         sound: bool,
     ) {
         use clustine_protocol::packets::play::{EXPLOSION_BLOCK_PARTICLES, Explode, particle};
+        use clustine_sim::api::ExplosionKind;
+        // `ServerLevel.explode`'s particles, sound and block particles, by the kind.
+        let (small_particle, large_particle, shown_sound, block_particles) = match kind {
+            ExplosionKind::Blast => (
+                particle::EXPLOSION,
+                particle::EXPLOSION_EMITTER,
+                clustine_data::sounds::ENTITY_GENERIC_EXPLODE,
+                &EXPLOSION_BLOCK_PARTICLES[..],
+            ),
+            ExplosionKind::Wind => (
+                particle::GUST_EMITTER_SMALL,
+                particle::GUST_EMITTER_LARGE,
+                clustine_data::sounds::ENTITY_BREEZE_WIND_BURST,
+                &[][..],
+            ),
+        };
         let mut outgoing = Vec::new();
         for (player, view) in &self.players {
             let Some(entity) = view.entity else {
@@ -2894,12 +2910,12 @@ impl Fanout {
                 block_count: blocks,
                 knockback: push,
                 particle: if large {
-                    particle::EXPLOSION_EMITTER
+                    large_particle
                 } else {
-                    particle::EXPLOSION
+                    small_particle
                 },
-                sound: clustine_data::sounds::ENTITY_GENERIC_EXPLODE,
-                block_particles: EXPLOSION_BLOCK_PARTICLES.to_vec(),
+                sound: shown_sound,
+                block_particles: block_particles.to_vec(),
                 play_sound: sound,
             };
             outgoing.push((*player, encoded(&packet)));
@@ -3504,8 +3520,9 @@ impl Fanout {
                 knockback,
                 large,
                 sound,
+                kind,
             } => {
-                self.show_explosion(centre, radius, blocks, &knockback, large, sound)
+                self.show_explosion(centre, radius, blocks, &knockback, (large, kind), sound)
                     .await;
             }
             RegionEvent::TransientBlock { position, state } => {
@@ -8901,6 +8918,7 @@ mod scenarios {
     mod items_specification;
     mod leashes;
     mod menus;
+    mod n9_mobs;
     mod physics_specification;
     mod projectiles;
     mod redstone;

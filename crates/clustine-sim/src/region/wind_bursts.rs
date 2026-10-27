@@ -16,14 +16,16 @@
 //! stream aside (`effect_deaths.rs`): the rays' floats, the shuffle, a door's,
 //! trapdoor's or gate's sound's pitch.
 //!
-//! Named differences: what clients are sent is the burst's sound alone
-//! (`breeze_wind_charge_burst`, at the volume and pitch of the explosion packet's sound
-//! without its client draw), not the explosion packet, whose particles (the gust
-//! emitters) and sound the region's explosion event cannot name; so a player is not
-//! pushed by it (their push travels in that packet). A block or an entity in another
-//! region's land is not reached (an explosion's effects across a line break and hurt,
-//! which this burst must not do). A beehive's bees are not angered
-//! (`BeehiveBlock.onExplosionHit`), as Clustine's bees take no anger from a hive.
+//! Clients are sent the explosion's packet as any explosion's, of the wind's kind
+//! ([`ExplosionKind::Wind`]: the gust emitters, `breeze_wind_charge_burst`, no particles
+//! over the blocks), with each of the region's players' push as a TNT's
+//! (`explosions.rs`): the wind charge's calculator pushes them by 1, and a player who
+//! flies not at all (`SimpleExplosionDamageCalculator.getKnockbackMultiplier`).
+//!
+//! Named differences: a block, an entity or a player in another region's land is not
+//! reached (an explosion's effects across a line break and hurt, which this burst must
+//! not do). A beehive's bees are not angered (`BeehiveBlock.onExplosionHit`), as
+//! Clustine's bees take no anger from a hive.
 
 use std::collections::BTreeSet;
 
@@ -36,7 +38,7 @@ use super::random_ticks::Random;
 use super::updates::{UPDATE_ALL, UPDATE_CLIENTS, UPDATE_LIMIT};
 use super::vibrations::{Context, Source, Vibration};
 use super::{Region, redstone};
-use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
+use crate::api::{ExplosionKind, RegionEvent, TickOutput};
 use crate::mobs::Mob;
 use crate::mobs::body::attribute;
 use crate::physics::aabb::Aabb;
@@ -56,11 +58,6 @@ const IMMUNE: f32 = 3_600_000.0;
 /// `Block.UPDATE_IMMEDIATE`, with which a door is set.
 const UPDATE_IMMEDIATE: u32 = 8;
 
-/// The explosion packet's sound as its client plays it, without the client's own draw
-/// (`4.0f`, and `0.7f` the middle of its pitch).
-const BURST_VOLUME: f32 = 4.0;
-const BURST_PITCH: f32 = 0.7;
-
 /// The wind charge's calculator's `getBlockExplosionResistance`: 3 600 000 for a block
 /// the wind charge cannot move, else any explosion's (none for air without a fluid).
 fn wind_resistance(state: clustine_data::BlockState) -> Option<f32> {
@@ -73,9 +70,9 @@ fn wind_resistance(state: clustine_data::BlockState) -> Option<f32> {
 impl Region {
     /// The burst of wind of `radius` at `at` that the region's entity `source` makes as it
     /// dies (`ServerLevel.explode(source, null, the wind charge's calculator, …, false,
-    /// TRIGGER, …)`): its `explode` heard, its rays, the entities it pushes, the blocks it
-    /// triggers, its sound. `random` is the level's, whose draws it makes in the game's
-    /// order.
+    /// TRIGGER, …)`): its `explode` heard, its rays, the entities and players it pushes,
+    /// the blocks it triggers, and the explosion's packet for the edges. `random` is the
+    /// level's, whose draws it makes in the game's order.
     pub(crate) fn wind_burst(
         &mut self,
         source: EntityId,
@@ -87,15 +84,20 @@ impl Region {
         let context = Context::of(Some(Source::of(source)), None);
         self.vibrate(Vibration::EXPLODE, at, context);
         let positions = self.burst_positions(at, radius, random);
-        self.burst_push(source, at, radius, output);
+        let blocks = i32::try_from(positions.len()).unwrap_or(i32::MAX);
+        let knockback = self.burst_push(source, at, radius, output);
         self.burst_trigger(source, positions, random, output);
-        output.events.push(RegionEvent::Sound {
-            sound: sounds::ENTITY_BREEZE_WIND_BURST,
-            source: SOUND_SOURCE_BLOCKS,
-            position: clustine_world::Vec3::new(at[0], at[1], at[2]),
-            volume: BURST_VOLUME,
-            pitch: BURST_PITCH,
-            except: None,
+        output.events.push(RegionEvent::Explosion {
+            centre: at,
+            radius,
+            blocks,
+            knockback,
+            // `isSmall()`: a radius below 2 (a burst triggers blocks, so it interacts
+            // with them).
+            large: radius >= 2.0,
+            // `ClientboundExplodePacket`'s `playSound`: its source is not silent.
+            sound: true,
+            kind: ExplosionKind::Wind,
         });
     }
 
@@ -162,10 +164,16 @@ impl Region {
     /// within twice the radius of its feet, but `source`, is pushed away from the centre
     /// by how near it is and how much of it the burst sees, less what of it resists an
     /// explosion's push (`explosion_knockback_resistance`). Only the region's own
-    /// entities.
-    fn burst_push(&mut self, source: EntityId, at: Vec3, radius: f32, output: &mut TickOutput) {
+    /// entities. What it returns is each of the region's players' push, for the packet.
+    fn burst_push(
+        &mut self,
+        source: EntityId,
+        at: Vec3,
+        radius: f32,
+        output: &mut TickOutput,
+    ) -> Vec<(EntityId, [f64; 3])> {
         if radius < 1.0e-5 {
-            return;
+            return Vec::new();
         }
         let reach = f64::from(radius * 2.0);
         let corner = |value: f64, by: f64| f64::from(physics::floor(value + by));
@@ -218,6 +226,7 @@ impl Region {
             let push = physics::scale(hit.push, 1.0 - resists);
             self.push_from_explosion(record.key, push, 0, output);
         }
+        self.player_pushes(at, reach, &bounds)
     }
 
     /// `interactWithBlocks(positions)` of a burst that triggers: the positions shuffled

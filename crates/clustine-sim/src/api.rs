@@ -1413,6 +1413,20 @@ pub enum PlayerEvent {
     Attributes(Vec<AttributeShown>),
 }
 
+/// What an explosion shows (the particles and the sound `ServerLevel.explode` is given),
+/// which the edge writes into the explosion's packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExplosionKind {
+    /// Any explosion's: `explosion` or `explosion_emitter`, `entity.generic.explode`,
+    /// and poof and smoke over the blocks.
+    Blast,
+    /// A wind charge's burst (`AbstractWindCharge`, and the wind charged effect's):
+    /// `gust_emitter_small` or `gust_emitter_large`, `entity.breeze.wind_burst`
+    /// (`SoundEvents.BREEZE_WIND_CHARGE_BURST`), and no particles over the blocks
+    /// (`WeightedList.of()`).
+    Wind,
+}
+
 /// Something that happened in the region and concerns everyone who can see it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RegionEvent {
@@ -1597,8 +1611,9 @@ pub enum RegionEvent {
     /// `knockback` names for them, if any (`docs/groundwork/n6-brief.md`, finding 2.9 and
     /// section 9.1). `blocks` is how many positions the rays reached, air among them;
     /// `large` whether it shows the large particle (a radius of 2 or more that breaks
-    /// blocks); `sound` whether it plays its sound (its source is not silent). The
-    /// blocks it broke come as changes of their own.
+    /// blocks); `sound` whether it plays its sound (its source is not silent); `kind`
+    /// which particles and sound it shows. The blocks it broke come as changes of their
+    /// own.
     Explosion {
         centre: [f64; 3],
         radius: f32,
@@ -1606,6 +1621,7 @@ pub enum RegionEvent {
         knockback: Vec<(EntityId, [f64; 3])>,
         large: bool,
         sound: bool,
+        kind: ExplosionKind,
     },
     /// The particle of a vibration a sculk sensor took up (`VibrationParticleOption`,
     /// sent by `ServerLevel.sendParticles` as `level_particles` with count 1 and no
