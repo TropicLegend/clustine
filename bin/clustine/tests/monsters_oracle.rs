@@ -247,14 +247,7 @@ fn of_kind(bot: &Bot, kind: i32) -> Vec<i32> {
 /// entity of `kind`, whose id it returns.
 async fn egg(bot: &mut Bot, egg: i32, kind: i32, (x, z): (i32, i32)) -> Result<i32> {
     let before = of_kind(bot, kind);
-    bot.put_in_hotbar(
-        0,
-        ItemStack {
-            item: egg,
-            count: 1,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(0, ItemStack::new(egg, 1)).await?;
     bot.select_slot(0).await?;
     bot.use_item_on(x, GROUND, z, face::TOP).await?;
     bot.wait_until(PATIENCE, |bot| {
@@ -353,7 +346,7 @@ fn comparable(mob: &FirstShown, clicked: (i32, i32), drawn: Drawn) -> Comparable
         mob.equipment
             .iter()
             .filter(|(slot, _)| !(drawn == Drawn::Raider && *slot == HEAD))
-            .filter_map(|(slot, stack)| stack.map(|stack| (*slot, stack)))
+            .filter_map(|(slot, stack)| stack.clone().map(|stack| (*slot, stack)))
             .collect()
     };
     equipment.sort_by_key(|(slot, _)| *slot);
@@ -486,14 +479,8 @@ async fn light_a_creeper(address: &str) -> Result<Lit> {
         (x + 2, z),
     )
     .await?;
-    bot.put_in_hotbar(
-        1,
-        ItemStack {
-            item: items::FLINT_AND_STEEL,
-            count: 1,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(1, ItemStack::new(items::FLINT_AND_STEEL, 1))
+        .await?;
     bot.select_slot(1).await?;
     bot.interact(creeper, [0.0, 0.85, 0.0]).await?;
     let exploded = |bot: &Bot| {
@@ -591,14 +578,8 @@ async fn throw_a_snowball(address: &str) -> Result<Thrown> {
         (x + 3, z),
     )
     .await?;
-    bot.put_in_hotbar(
-        1,
-        ItemStack {
-            item: items::SNOWBALL,
-            count: 16,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(1, ItemStack::new(items::SNOWBALL, 16))
+        .await?;
     bot.select_slot(1).await?;
     // From the eyes at the middle of the bot's column to the villager's middle, three
     // blocks east: east is a yaw of -90; down by the drop from the eyes (1.62) to its
@@ -748,14 +729,7 @@ async fn zombie_in_a_pit(bot: &mut Bot, (x, z): (i32, i32), roof: i32, east: boo
         bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
             .await?;
     }
-    bot.put_in_hotbar(
-        2,
-        ItemStack {
-            item: roof,
-            count: 1,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(2, ItemStack::new(roof, 1)).await?;
     bot.select_slot(2).await?;
     // The grass a step towards the builder, and its face towards the pit.
     let (beside, side, cursor) = if east {
@@ -778,14 +752,8 @@ async fn zombie_in_a_pit(bot: &mut Bot, (x, z): (i32, i32), roof: i32, east: boo
     .await
     .context("the pit's roof")?;
     let before = of_kind(bot, entity_types::ZOMBIE);
-    bot.put_in_hotbar(
-        0,
-        ItemStack {
-            item: items::ZOMBIE_SPAWN_EGG,
-            count: 1,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(0, ItemStack::new(items::ZOMBIE_SPAWN_EGG, 1))
+        .await?;
     bot.select_slot(0).await?;
     bot.use_item_on(x, GROUND - 3, z, face::TOP).await?;
     bot.wait_until(PATIENCE, |bot| {

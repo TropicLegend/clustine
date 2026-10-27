@@ -1226,9 +1226,9 @@ impl Player {
             rows: [lane_block + 1, lane_block + 2],
             entered: entered.floor() as i32,
             slot: bot.selected_slot as i16,
-            hotbar: bot.hotbar,
+            hotbar: bot.hotbar.clone(),
             told_slot: bot.selected_slot,
-            told_hotbar: bot.hotbar,
+            told_hotbar: bot.hotbar.clone(),
             entries: Vec::new(),
             open: Vec::new(),
             words: BTreeMap::new(),
@@ -1618,9 +1618,9 @@ impl Player {
         let acknowledged = self.bot.acknowledged_sequence;
         self.bot = bot;
         self.slot = told.selected_slot as i16;
-        self.hotbar = told.hotbar;
+        self.hotbar = told.hotbar.clone();
         self.told_slot = told.selected_slot;
-        self.told_hotbar = told.hotbar;
+        self.told_hotbar = told.hotbar.clone();
 
         let now = Instant::now();
         let until = now + self.ledger.doubt;
@@ -1741,7 +1741,7 @@ impl Player {
                 let slot = self.random.below(9) as i16;
                 let item = PALETTE[self.random.below(PALETTE.len() as u64) as usize];
                 self.bot.take_from_creative_inventory(slot, item).await?;
-                self.hotbar[slot as usize] = Some(ItemStack { item, count: 1 });
+                self.hotbar[slot as usize] = Some(ItemStack::new(item, 1));
                 self.hotbar_changes += 1;
             }
             1 | 2 => {
@@ -1796,6 +1796,7 @@ impl Player {
         };
         let (kind, expected, sequence) = if word == AIR {
             let held = self.hotbar[self.slot as usize]
+                .clone()
                 .filter(|stack| stack.item != items::DIRT)
                 .and_then(|stack| ITEMS.get(usize::try_from(stack.item).ok()?)?.block);
             // Dirt from the starting hotbar is not placed: grass beside it spreads onto it
@@ -1975,7 +1976,7 @@ impl Player {
             );
         }
         if self.bot.hotbar != self.told_hotbar {
-            self.told_hotbar = self.bot.hotbar;
+            self.told_hotbar = self.bot.hotbar.clone();
             ensure!(
                 self.told_hotbar == self.hotbar,
                 "the server says the hotbar holds {:?}, the bot put {:?} there",
@@ -2690,7 +2691,7 @@ mod tests {
         let away = Kept {
             location: (66.5, -60.0, 4.5),
             selected_slot: 3,
-            ..newcomer
+            ..newcomer.clone()
         };
         // By default nobody was here before: the spawn point, the starting hotbar.
         let fresh = Ledger::default();
@@ -2703,7 +2704,7 @@ mod tests {
 
         // Whoever an earlier scenario left somewhere is there, and not at the spawn
         // point; whoever it does not name is still a newcomer.
-        let earlier = BTreeMap::from([("Ledger0".to_owned(), Left::exactly(away))]);
+        let earlier = BTreeMap::from([("Ledger0".to_owned(), Left::exactly(away.clone()))]);
         let returning = Ledger {
             earlier: Some(earlier),
             ..Ledger::default()

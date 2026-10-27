@@ -79,7 +79,7 @@ fn a_menu_opens_with_a_new_window_shown_whole() {
     );
     assert_eq!((content.window_id, content.state_id), (1, 1));
     assert_eq!(content.slots.len(), 63);
-    assert_eq!(content.slots[0], Some(WireStack { item: 1, count: 64 }));
+    assert_eq!(content.slots[0], Some(WireStack::new(1, 64)));
     assert_eq!(menus.serial(), Some(7));
 }
 
@@ -163,7 +163,7 @@ fn a_slot_the_client_shows_otherwise_is_sent_with_the_next_state_id() {
             window_id: 1,
             state_id: 2,
             slot: 5,
-            stack: Some(WireStack { item: 2, count: 3 }),
+            stack: Some(WireStack::new(2, 3)),
         })]
     );
 }
@@ -311,4 +311,39 @@ fn a_horse_s_menu_opens_by_mount_screen_open_naming_the_horse_then_its_window_wh
         ]
     ));
     assert_eq!(kind.slots(), 2 + 15 + 36);
+}
+
+/// Section 3.3 of the N9 plan, "Hashes": a client's word on a slot that holds a potion
+/// matches when it names the potion's contents by the game's own hash of them
+/// (`HashOps.CRC32C_INSTANCE`, the known answer the game gives for a swiftness potion),
+/// and not when it names another hash, leaves the component out, or names one removed
+/// that the stack does not remove.
+#[test]
+fn a_hashed_potion_matches_by_the_game_s_hash_of_its_contents() {
+    use clustine_world::components::{Component, PotionContents};
+    let mut potion = ItemStack::new(clustine_data::items::POTION, 1);
+    potion
+        .components
+        .set(Component::PotionContents(PotionContents {
+            potion: Some("minecraft:swiftness".into()),
+            ..PotionContents::default()
+        }));
+    let said = |added: Vec<(i32, i32)>, removed: Vec<i32>| {
+        Remote::Hashed(Some(HashedStack {
+            item: clustine_data::items::POTION,
+            count: 1,
+            added,
+            removed,
+        }))
+    };
+    let contents = data_component_type::POTION_CONTENTS;
+    assert!(said(vec![(contents, -1_164_789_092)], Vec::new()).shows(Some(&potion)));
+    assert!(!said(vec![(contents, -1_164_789_093)], Vec::new()).shows(Some(&potion)));
+    assert!(!said(Vec::new(), Vec::new()).shows(Some(&potion)));
+    let damage = data_component_type::DAMAGE;
+    assert!(!said(vec![(contents, -1_164_789_092)], vec![damage]).shows(Some(&potion)));
+    // A plain stack is matched by item and count alone, as before.
+    let plain = ItemStack::new(clustine_data::items::POTION, 1);
+    assert!(said(Vec::new(), Vec::new()).shows(Some(&plain)));
+    assert!(!said(vec![(contents, -1_164_789_092)], Vec::new()).shows(Some(&plain)));
 }

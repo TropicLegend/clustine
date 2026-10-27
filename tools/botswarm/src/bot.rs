@@ -574,9 +574,9 @@ impl Bot {
             vanished: Vec::new(),
             taken: Vec::new(),
             transient_blocks: Vec::new(),
-            hotbar: [None; 9],
+            hotbar: [const { None }; 9],
             selected_slot: 0,
-            own_hotbar: [None; 9],
+            own_hotbar: [const { None }; 9],
             own_slot: 0,
             journal: None,
             block_changes: BTreeMap::new(),
@@ -852,7 +852,7 @@ impl Bot {
             location: self.location,
             look: self.look,
             flying: self.flying,
-            hotbar: self.own_hotbar,
+            hotbar: self.own_hotbar.clone(),
             selected_slot: self.own_slot,
         }
     }
@@ -927,7 +927,7 @@ impl Bot {
                 .abilities
                 .last()
                 .is_some_and(PlayerAbilities::is_flying),
-            hotbar: self.hotbar,
+            hotbar: self.hotbar.clone(),
             selected_slot: self.selected_slot,
         })
     }
@@ -1077,7 +1077,9 @@ impl Bot {
         let Some(menu) = self.menu.as_mut() else {
             bail!("no window is shown");
         };
-        let hashed = |stack: Option<ItemStack>| {
+        // The bots click only stacks without components of their own, whose hashed
+        // form is the item and the count alone.
+        let hashed = |stack: Option<&ItemStack>| {
             stack.map(|stack| clustine_protocol::packets::play::HashedStack {
                 item: stack.item,
                 count: stack.count,
@@ -1093,16 +1095,16 @@ impl Bot {
             input,
             changed: changed
                 .iter()
-                .map(|(slot, stack)| (*slot, hashed(*stack)))
+                .map(|(slot, stack)| (*slot, hashed(stack.as_ref())))
                 .collect(),
-            carried: hashed(carried),
+            carried: hashed(carried.as_ref()),
         };
         for (at, stack) in &changed {
             if let Some(place) = usize::try_from(*at)
                 .ok()
                 .and_then(|at| menu.slots.get_mut(at))
             {
-                *place = *stack;
+                *place = stack.clone();
             }
         }
         self.cursor = carried;
@@ -1152,14 +1154,14 @@ impl Bot {
         self.connection
             .write(&SetCreativeModeSlot {
                 slot: inventory::HOTBAR_START as i16 + slot,
-                stack: Some(ItemStack { item, count: 1 }),
+                stack: Some(ItemStack::new(item, 1)),
             })
             .await?;
         if let Some(held) = usize::try_from(slot)
             .ok()
             .and_then(|slot| self.own_hotbar.get_mut(slot))
         {
-            *held = Some(ItemStack { item, count: 1 });
+            *held = Some(ItemStack::new(item, 1));
         }
         self.has_sent();
         Ok(())
@@ -1171,7 +1173,7 @@ impl Bot {
         self.connection
             .write(&SetCreativeModeSlot {
                 slot: inventory::HOTBAR_START as i16 + slot,
-                stack: Some(stack),
+                stack: Some(stack.clone()),
             })
             .await?;
         if let Some(held) = usize::try_from(slot)
@@ -1898,12 +1900,12 @@ impl Bot {
                         *held = packet
                             .slots
                             .get(inventory::HOTBAR_START + slot)
-                            .copied()
+                            .cloned()
                             .flatten();
                     }
-                    let hotbar = self.hotbar;
-                    self.own_hotbar = hotbar;
-                    self.was_told(|state| state.hotbar = hotbar);
+                    self.own_hotbar = self.hotbar.clone();
+                    let hotbar = self.hotbar.clone();
+                    self.was_told(|state| state.hotbar = hotbar.clone());
                 }
             }
             // A slot the server changed of its own accord, numbered as the game's
@@ -1913,10 +1915,10 @@ impl Bot {
                     .ok()
                     .filter(|slot| *slot < self.hotbar.len())
                 {
-                    self.hotbar[slot] = packet.stack;
+                    self.hotbar[slot] = packet.stack.clone();
                     self.own_hotbar[slot] = packet.stack;
-                    let hotbar = self.hotbar;
-                    self.was_told(|state| state.hotbar = hotbar);
+                    let hotbar = self.hotbar.clone();
+                    self.was_told(|state| state.hotbar = hotbar.clone());
                 }
             }
             ClientboundPlay::SetHeldSlot(packet) => {

@@ -239,11 +239,8 @@ async fn a_thrown_item_is_sent_like_on_the_official_server() {
         assert_eq!(shown.off_the_feet, (0.0, 0.0), "{server}");
         assert_eq!(shown.values, [(8, 7)], "{server}");
         assert_eq!(
-            shown.stack,
-            Some(ItemStack {
-                item: items::STONE,
-                count: 1
-            }),
+            shown.stack.clone(),
+            Some(ItemStack::new(items::STONE, 1)),
             "{server}"
         );
     }
@@ -254,7 +251,7 @@ async fn a_thrown_item_is_sent_like_on_the_official_server() {
             shown.head_yaw,
             shown.data,
             shown.values.clone(),
-            shown.stack,
+            shown.stack.clone(),
             shown.data_next,
         )
     };

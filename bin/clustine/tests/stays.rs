@@ -174,10 +174,10 @@ type Kit = ([Option<ItemStack>; 9], i32);
 /// something else in, and select the second: a hotbar and a slot that no join gives.
 /// Returns what the bot then holds, from the hotbar it was sent on entering.
 async fn furnish(bot: &mut Bot) -> Kit {
-    let mut hotbar = bot.hotbar;
+    let mut hotbar = bot.hotbar.clone();
     for (slot, item) in [(2, items::GLASS), (6, items::BRICKS)] {
         bot.take_from_creative_inventory(slot, item).await.unwrap();
-        hotbar[slot as usize] = Some(ItemStack { item, count: 1 });
+        hotbar[slot as usize] = Some(ItemStack::new(item, 1));
     }
     bot.select_slot(6).await.unwrap();
     (hotbar, 6)
@@ -185,7 +185,7 @@ async fn furnish(bot: &mut Bot) -> Kit {
 
 /// What the kit is for someone who has only just entered and done nothing to it.
 fn kit_of(bot: &Bot) -> Kit {
-    (bot.hotbar, bot.selected_slot)
+    (bot.hotbar.clone(), bot.selected_slot)
 }
 
 /// A player as they were when they left, or as their latest connection last was.
@@ -204,7 +204,7 @@ struct Left {
 }
 
 impl Left {
-    fn of(bot: &Bot, kit: Kit) -> Self {
+    fn of(bot: &Bot, kit: &Kit) -> Self {
         Self {
             name: bot.info.profile.name.clone(),
             uuid: bot.info.profile.uuid,
@@ -212,7 +212,7 @@ impl Left {
             place: bot.location,
             look: bot.look,
             flying: bot.flying,
-            hotbar: kit.0,
+            hotbar: kit.0.clone(),
             slot: kit.1,
         }
     }
@@ -595,7 +595,7 @@ async fn a_player_who_leaves_and_joins_again_is_where_they_left_with_their_look_
     let mut roamer = join(&address, "Roamer").await;
     let kit = furnish(&mut roamer).await;
     goes_to(&mut roamer, FAR, A_LOOK).await;
-    let left = Left::of(&roamer, kit);
+    let left = Left::of(&roamer, &kit);
     sees(&mut watcher, "Roamer", FAR).await;
     drop(roamer);
     sees_no_more(&mut watcher, left.uuid).await;
@@ -608,7 +608,7 @@ async fn a_player_who_leaves_and_joins_again_is_where_they_left_with_their_look_
     let aloft = (FAR.0 - 6.0, GROUND + 9.0, FAR.2 + 5.0);
     again.set_flying(true).await.unwrap();
     goes_to(&mut again, aloft, ANOTHER_LOOK).await;
-    let left = Left::of(&again, kit);
+    let left = Left::of(&again, &kit);
     assert!(left.flying);
     drop(again);
     let mut third = join(&address, "Roamer").await;
@@ -668,7 +668,7 @@ async fn a_player_who_leaves_below_the_world_comes_back_at_the_spawn_point_with_
     goes_to(&mut faller, (20.5, GROUND, 9.5), A_LOOK).await;
     // Half a block below the lowest block.
     goes_to(&mut faller, (20.5, LOWEST - 0.5, 9.5), A_LOOK).await;
-    let below = Left::of(&faller, kit);
+    let below = Left::of(&faller, &kit);
     assert!(below.flying);
     drop(faller);
 
@@ -702,7 +702,7 @@ async fn a_player_who_leaves_at_the_height_of_the_lowest_block_or_high_above_the
     digger.set_flying(true).await.unwrap();
     goes_to(&mut digger, (20.5, GROUND, 9.5), A_LOOK).await;
     goes_to(&mut digger, (20.5, LOWEST, 9.5), A_LOOK).await;
-    let left = Left::of(&digger, kit);
+    let left = Left::of(&digger, &kit);
     drop(digger);
     let mut back = join(&address, "Digger").await;
     is_back(&mut back, &left).await;
@@ -712,7 +712,7 @@ async fn a_player_who_leaves_at_the_height_of_the_lowest_block_or_high_above_the
         .await
         .unwrap();
     heard(&mut back).await;
-    let left = Left::of(&back, kit);
+    let left = Left::of(&back, &kit);
     drop(back);
     let mut again = join(&address, "Digger").await;
     is_back(&mut again, &left).await;
@@ -738,13 +738,13 @@ async fn players_are_where_they_left_after_the_server_was_stopped_and_started_tw
     let mut leaver = join(&address, "Leaver").await;
     let kit = furnish(&mut leaver).await;
     goes_to(&mut leaver, FAR, A_LOOK).await;
-    let mut leaver_left = Left::of(&leaver, kit);
+    let mut leaver_left = Left::of(&leaver, &kit);
     drop(leaver);
     let mut stayer = join(&address, "Stayer").await;
     let stayer_kit = kit_of(&stayer);
     stayer.set_flying(true).await.unwrap();
     goes_to(&mut stayer, hover, ANOTHER_LOOK).await;
-    let mut stayer_left = Left::of(&stayer, stayer_kit);
+    let mut stayer_left = Left::of(&stayer, &stayer_kit);
     server.stop().await;
     drop(stayer);
 
@@ -758,8 +758,8 @@ async fn players_are_where_they_left_after_the_server_was_stopped_and_started_tw
     is_back(&mut stayer, &stayer_left).await;
     goes_to(&mut leaver, second_far, ANOTHER_LOOK).await;
     goes_to(&mut stayer, second_hover, A_LOOK).await;
-    leaver_left = Left::of(&leaver, kit);
-    stayer_left = Left::of(&stayer, stayer_kit);
+    leaver_left = Left::of(&leaver, &kit);
+    stayer_left = Left::of(&stayer, &stayer_kit);
     drop(leaver);
     server.stop().await;
     drop(stayer);
@@ -788,7 +788,7 @@ async fn a_player_is_where_they_were_last_answered_after_the_server_was_killed()
     let kit = furnish(&mut player).await;
     player.set_flying(true).await.unwrap();
     goes_to(&mut player, (FAR.0, GROUND + 5.0, FAR.2), A_LOOK).await;
-    let left = Left::of(&player, kit);
+    let left = Left::of(&player, &kit);
     server.kill().await.unwrap();
     drop(player);
 
@@ -814,7 +814,7 @@ async fn rows_2_and_3_a_second_login_puts_the_first_out_with_the_sentence_and_st
     first.set_flying(true).await.unwrap();
     let place = (FAR.0, GROUND + 4.0, FAR.2);
     goes_to(&mut first, place, A_LOOK).await;
-    let left = Left::of(&first, kit);
+    let left = Left::of(&first, &kit);
     sees(&mut bystander, "Twin", place).await;
 
     let mut second = logs_in_over(&mut first, &address).await;
@@ -855,7 +855,7 @@ async fn rows_13_and_14_a_second_login_while_the_first_is_still_entering_leaves_
     let mut seed = join(&address, "Hasty").await;
     let kit = furnish(&mut seed).await;
     goes_to(&mut seed, FAR, A_LOOK).await;
-    let mut left = Left::of(&seed, kit);
+    let mut left = Left::of(&seed, &kit);
     drop(seed);
     sees_no_more(&mut watcher, left.uuid).await;
 
@@ -899,7 +899,7 @@ async fn row_16_leaving_and_joining_again_many_times_quickly_leaves_one_player_w
     let mut seed = join(&address, "Restless").await;
     let kit = furnish(&mut seed).await;
     goes_to(&mut seed, FAR, A_LOOK).await;
-    let mut left = Left::of(&seed, kit);
+    let mut left = Left::of(&seed, &kit);
     drop(seed);
 
     for round in 0..24 {
@@ -954,7 +954,7 @@ async fn rows_13_to_15_of_two_logins_racing_exactly_one_stays_and_the_world_has_
     let mut seed = join(&address, "Racer").await;
     let kit = furnish(&mut seed).await;
     goes_to(&mut seed, FAR, A_LOOK).await;
-    let mut left = Left::of(&seed, kit);
+    let mut left = Left::of(&seed, &kit);
     drop(seed);
     sees_no_more(&mut watcher, left.uuid).await;
 
@@ -1033,7 +1033,7 @@ async fn row_20_players_are_where_they_left_when_the_world_is_started_with_other
         let kit = match &left {
             Some(left) => {
                 is_back(&mut traveller, left).await;
-                (left.hotbar, left.slot)
+                (left.hotbar.clone(), left.slot)
             }
             None => furnish(&mut traveller).await,
         };
@@ -1043,7 +1043,7 @@ async fn row_20_players_are_where_they_left_when_the_world_is_started_with_other
         let fresh = join(&address, &format!("Fresh{session}")).await;
         traveller.set_flying(place.1 > GROUND).await.unwrap();
         goes_to(&mut traveller, place, A_LOOK).await;
-        left = Some(Left::of(&traveller, kit));
+        left = Some(Left::of(&traveller, &kit));
         drop((traveller, fresh));
         server.stop().await;
     }
@@ -1092,7 +1092,7 @@ async fn a_player_who_left_in_another_region_than_the_home_region_enters_there_a
         settler.set_flying(true).await.unwrap();
         let place = (IN_THE_EAST.0, GROUND + 2.0, IN_THE_EAST.2);
         goes_to(&mut settler, place, A_LOOK).await;
-        let left = Left::of(&settler, kit);
+        let left = Left::of(&settler, &kit);
         for watcher in [&mut westerner, &mut easterner] {
             sees(watcher, "Settler", place).await;
         }
@@ -1116,7 +1116,7 @@ async fn a_player_who_left_in_another_region_than_the_home_region_enters_there_a
         assert_eq!(back.stats.teleports_confirmed, 1);
         // And once more from the east, at once.
         goes_to(&mut back, place, A_LOOK).await;
-        let left = Left::of(&back, kit);
+        let left = Left::of(&back, &kit);
         drop(back);
         let mut third = join(&address, "Settler").await;
         is_back(&mut third, &left).await;
@@ -1138,7 +1138,7 @@ async fn row_2_a_second_login_while_the_first_stands_in_another_region_stands_th
     let mut first = join(&address, "Twin").await;
     let kit = furnish(&mut first).await;
     goes_to(&mut first, IN_THE_EAST, A_LOOK).await;
-    let mut left = Left::of(&first, kit);
+    let mut left = Left::of(&first, &kit);
     let mut current = first;
     for _ in 0..3 {
         let mut next = logs_in_over(&mut current, &address).await;
@@ -1172,7 +1172,7 @@ async fn row_16_a_player_who_leaves_while_entering_another_region_is_not_left_st
     let mut seed = join(&address, "Fickle").await;
     let kit = furnish(&mut seed).await;
     goes_to(&mut seed, IN_THE_EAST, A_LOOK).await;
-    let mut left = Left::of(&seed, kit);
+    let mut left = Left::of(&seed, &kit);
     drop(seed);
 
     for _ in 0..12 {
@@ -1203,7 +1203,7 @@ async fn rows_4_and_18_a_player_enters_where_they_were_while_a_region_is_taken_o
     let mut seed = join(&address, "Punctual").await;
     let kit = furnish(&mut seed).await;
     goes_to(&mut seed, IN_THE_EAST, A_LOOK).await;
-    let mut left = Left::of(&seed, kit);
+    let mut left = Left::of(&seed, &kit);
     drop(seed);
     sees_no_more(&mut westerner, left.uuid).await;
 
@@ -1430,7 +1430,7 @@ async fn measured_a_player_alone_far_out_comes_back_after_their_region_was_absor
     let (world, worlds) = a_world();
     let (server, address) = start_with(following(REST, &world)).await;
     let (bot, kit) = walks_out_alone(&server, &address, "Hermit").await;
-    let left = Left::of(&bot, kit);
+    let left = Left::of(&bot, &kit);
     drop(bot);
     let leaving = Instant::now();
     let absorbed = until_the_regions(&server, &mut [], "the hermit's region absorbed", |list| {
@@ -1495,7 +1495,7 @@ async fn measured_a_player_alone_far_out_who_comes_back_within_half_a_minute_is_
     let (world, worlds) = a_world();
     let (server, address) = start_with(following(REST, &world)).await;
     let (bot, kit) = walks_out_alone(&server, &address, "Hermit").await;
-    let mut left = Left::of(&bot, kit);
+    let mut left = Left::of(&bot, &kit);
     drop(bot);
     // At once, and again a few seconds later, each well within half a minute.
     for round in 0..3 {
@@ -1563,7 +1563,7 @@ async fn measured_a_player_who_joins_inside_a_friends_land_causes_no_merge_no_sp
     // the friend's again.
     heard(&mut guest).await;
     sees(&mut friend, "Guest", beside).await;
-    let left = Left::of(&guest, kit);
+    let left = Left::of(&guest, &kit);
     drop(guest);
     sees_no_more(&mut friend, left.uuid).await;
     let settled = |list: &RegionList| {
@@ -1687,7 +1687,7 @@ async fn measured_a_player_who_joins_near_a_friends_land_and_how_long_the_friend
         .unwrap();
     guest.fly_to(near_by, A_LOOK, OUT).await.unwrap();
     heard(&mut guest).await;
-    let left = Left::of(&guest, kit);
+    let left = Left::of(&guest, &kit);
     drop(guest);
     let before = until_the_regions(
         &server,
@@ -1762,7 +1762,7 @@ async fn measured_twenty_players_join_far_apart_at_once_and_how_long_the_spawn_p
             let kit = furnish(&mut bot).await;
             bot.fly_to(place(number), A_LOOK, 8.0).await.unwrap();
             heard(&mut bot).await;
-            Left::of(&bot, kit)
+            Left::of(&bot, &kit)
         })
     });
     let mut left = Vec::new();
@@ -1961,7 +1961,7 @@ impl Stage {
         let mut twin = join(&self.first, "Twin").await;
         let kit = furnish(&mut twin).await;
         goes_to(&mut twin, place, A_LOOK).await;
-        let left = Left::of(&twin, kit);
+        let left = Left::of(&twin, &kit);
         sees(&mut self.friend, "Twin", place).await;
         sees(&mut self.onlooker, "Twin", place).await;
         (twin, left)

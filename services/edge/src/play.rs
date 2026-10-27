@@ -19,7 +19,7 @@ use clustine_protocol::packets::play::{
     PlayerAction, ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags,
     player_action, player_command, player_input,
 };
-use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, ItemStack, Keys, PlayerInput, VehicleMove};
+use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -631,7 +631,7 @@ fn in_hand(hand: i32, used: PlayerInput) -> PlayerInput {
 fn creative_slot(slot: i16, stack: Option<protocol::ItemStack>) -> Option<PlayerInput> {
     let slot = Inventory::from_container(slot)?;
     let slot = u8::try_from(slot).expect("an inventory slot fits a byte");
-    let stack = stack.map(|stack| ItemStack::new(stack.item, stack.count));
+    let stack = stack.as_ref().map(crate::stack_wire::client_stack);
     Some(PlayerInput::SetInventorySlot { slot, stack })
 }
 
@@ -699,7 +699,7 @@ fn creative_throw(
 ) -> Option<PlayerInput> {
     // `handleSetCreativeModeSlot`: a stack of an item that exists, within the item's own
     // maximum (`minecraft:max_stack_size`).
-    let valid = stack.is_none_or(|stack| {
+    let valid = stack.as_ref().is_none_or(|stack| {
         usize::try_from(stack.item).is_ok_and(|item| item < ITEMS.len())
             && (1..=i32::from(ItemComponents::of(stack.item).max_stack_size)).contains(&stack.count)
     });
@@ -712,7 +712,7 @@ fn creative_throw(
     }
     let stack = stack?;
     Some(PlayerInput::Throw {
-        stack: ItemStack::new(stack.item, stack.count),
+        stack: crate::stack_wire::client_stack(&stack),
     })
 }
 
@@ -768,15 +768,53 @@ mod tests {
     /// The slot a creative client's setting of `container` asks the region to set,
     /// with a stone in it.
     fn set_by(container: i16) -> Option<u8> {
-        let stone = protocol::ItemStack { item: 1, count: 3 };
+        let stone = protocol::ItemStack::new(1, 3);
         match creative_slot(container, Some(stone)) {
             Some(PlayerInput::SetInventorySlot { slot, stack }) => {
-                assert_eq!(stack, Some(ItemStack::new(1, 3)));
+                assert_eq!(stack, Some(clustine_sim::api::ItemStack::new(1, 3)));
                 Some(slot)
             }
             None => None,
             Some(other) => panic!("{other:?} is no setting of a slot"),
         }
+    }
+
+    /// Section 3.3 of the N9 plan: a potion a creative player takes from the tab keeps
+    /// its contents in the world, and a stack whose components the edge refuses (a
+    /// potion no registry has) is kept with none of them.
+    #[test]
+    fn a_creative_player_s_potion_keeps_its_contents_and_a_malformed_one_loses_them() {
+        use clustine_protocol::components::{PotionContents, WireComponent, potion};
+        use clustine_world::components::{Component, Kind};
+        let set = |number: i32| {
+            let mut stack = protocol::ItemStack::new(items::POTION, 1);
+            stack
+                .components
+                .added
+                .push(WireComponent::PotionContents(PotionContents {
+                    potion: Some(number),
+                    ..PotionContents::default()
+                }));
+            match creative_slot(36, Some(stack)) {
+                Some(PlayerInput::SetInventorySlot { stack, .. }) => stack.expect("a stack"),
+                other => panic!("{other:?} is no setting of a slot"),
+            }
+        };
+        let swiftness = potion::NAMES
+            .iter()
+            .position(|name| *name == "minecraft:swiftness")
+            .unwrap();
+        let kept = set(i32::try_from(swiftness).unwrap());
+        assert_eq!(kept.item, items::POTION);
+        match kept.components.get(Kind::PotionContents) {
+            Some(Component::PotionContents(contents)) => {
+                assert_eq!(contents.potion.as_deref(), Some("minecraft:swiftness"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let malformed = set(10_000);
+        assert_eq!(malformed.item, items::POTION);
+        assert!(malformed.components.is_empty(), "{malformed:?}");
     }
 
     #[test]
@@ -811,11 +849,11 @@ mod tests {
     }
 
     fn thrown(
-        stack: Option<protocol::ItemStack>,
+        stack: Option<&protocol::ItemStack>,
         throttler: &mut DropThrottler,
         now: Instant,
     ) -> bool {
-        match creative_throw(stack, throttler, now) {
+        match creative_throw(stack.cloned(), throttler, now) {
             Some(PlayerInput::Throw { stack: thrown }) => {
                 let stack = stack.expect("only a stack is thrown");
                 assert_eq!((thrown.item, thrown.count), (stack.item, stack.count));
@@ -831,26 +869,32 @@ mod tests {
      {
         let start = Instant::now();
         let mut throttler = DropThrottler::new(start);
-        let stone = Some(protocol::ItemStack { item: 1, count: 64 });
+        let stone = Some(protocol::ItemStack::new(1, 64));
         // 1480 / 20: the 74 throws that keep the count below the threshold before each.
         for throw in 0..74 {
-            assert!(thrown(stone, &mut throttler, start), "throw {throw}");
+            assert!(
+                thrown(stone.as_ref(), &mut throttler, start),
+                "throw {throw}"
+            );
         }
-        assert!(!thrown(stone, &mut throttler, start));
+        assert!(!thrown(stone.as_ref(), &mut throttler, start));
         // A tick takes one away, which lets one more through; then twenty ticks have
         // to take its twenty away before the next.
         let tick = DropThrottler::TICK;
-        assert!(thrown(stone, &mut throttler, start + tick));
-        assert!(!thrown(stone, &mut throttler, start + tick * 2));
-        assert!(!thrown(stone, &mut throttler, start + tick * 20));
-        assert!(thrown(stone, &mut throttler, start + tick * 21));
-        assert!(!thrown(stone, &mut throttler, start + tick * 21));
+        assert!(thrown(stone.as_ref(), &mut throttler, start + tick));
+        assert!(!thrown(stone.as_ref(), &mut throttler, start + tick * 2));
+        assert!(!thrown(stone.as_ref(), &mut throttler, start + tick * 20));
+        assert!(thrown(stone.as_ref(), &mut throttler, start + tick * 21));
+        assert!(!thrown(stone.as_ref(), &mut throttler, start + tick * 21));
         // Time with nobody throwing lets the count down to nothing, and no further.
         let later = start + tick * 10_000;
         for throw in 0..74 {
-            assert!(thrown(stone, &mut throttler, later), "throw {throw} later");
+            assert!(
+                thrown(stone.as_ref(), &mut throttler, later),
+                "throw {throw} later"
+            );
         }
-        assert!(!thrown(stone, &mut throttler, later));
+        assert!(!thrown(stone.as_ref(), &mut throttler, later));
     }
 
     #[test]
@@ -863,25 +907,19 @@ mod tests {
         }
         assert!(!throttler.lets_through(start));
         let mut throttler = DropThrottler::new(start);
-        let too_many = protocol::ItemStack {
-            item: items::STONE,
-            count: 65,
-        };
-        let too_many_snowballs = protocol::ItemStack {
-            item: items::SNOWBALL,
-            count: 17,
-        };
-        let two_swords = protocol::ItemStack {
-            item: items::DIAMOND_SWORD,
-            count: 2,
-        };
-        let unknown = protocol::ItemStack {
-            item: i32::MAX,
-            count: 1,
-        };
-        let negative = protocol::ItemStack { item: -1, count: 1 };
+        let too_many = protocol::ItemStack::new(items::STONE, 65);
+        let too_many_snowballs = protocol::ItemStack::new(items::SNOWBALL, 17);
+        let two_swords = protocol::ItemStack::new(items::DIAMOND_SWORD, 2);
+        let unknown = protocol::ItemStack::new(i32::MAX, 1);
+        let negative = protocol::ItemStack::new(-1, 1);
         for _ in 0..100 {
-            for stack in [too_many, too_many_snowballs, two_swords, unknown, negative] {
+            for stack in [
+                &too_many,
+                &too_many_snowballs,
+                &two_swords,
+                &unknown,
+                &negative,
+            ] {
                 assert!(!thrown(Some(stack), &mut throttler, start));
             }
         }
@@ -893,8 +931,8 @@ mod tests {
             (items::SNOWBALL, 16),
             (items::DIAMOND_SWORD, 1),
         ] {
-            let most = protocol::ItemStack { item, count };
-            assert!(thrown(Some(most), &mut throttler, start));
+            let most = protocol::ItemStack::new(item, count);
+            assert!(thrown(Some(&most), &mut throttler, start));
         }
     }
 

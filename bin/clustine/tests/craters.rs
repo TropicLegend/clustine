@@ -71,15 +71,9 @@ async fn measured_a_crater_of_64_tnt() {
     bot.walk_to(f64::from(cx) + 2.0, f64::from(cz) - 1.5, 0.2)
         .await
         .unwrap();
-    bot.put_in_hotbar(
-        0,
-        clustine_protocol::item::ItemStack {
-            item: items::TNT,
-            count: 64,
-        },
-    )
-    .await
-    .unwrap();
+    bot.put_in_hotbar(0, clustine_protocol::item::ItemStack::new(items::TNT, 64))
+        .await
+        .unwrap();
     bot.select_slot(0).await.unwrap();
     for y in 0..SIDE {
         for x in 0..SIDE {

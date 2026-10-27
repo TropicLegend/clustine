@@ -174,7 +174,7 @@ fn sorted_attributes(attributes: &[AttributeSnapshot]) -> Vec<AttributeSnapshot>
 fn worn(equipment: &[(u8, Option<ItemStack>)]) -> Vec<(u8, ItemStack)> {
     let mut worn: Vec<(u8, ItemStack)> = equipment
         .iter()
-        .filter_map(|(slot, stack)| stack.map(|stack| (*slot, stack)))
+        .filter_map(|(slot, stack)| stack.clone().map(|stack| (*slot, stack)))
         .collect();
     worn.sort_by_key(|(slot, _)| *slot);
     worn

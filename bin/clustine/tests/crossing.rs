@@ -272,7 +272,7 @@ impl Thrower {
         self.connection
             .write(&SetCreativeModeSlot {
                 slot: inventory::HOTBAR_START as i16,
-                stack: Some(ItemStack { item, count: 1 }),
+                stack: Some(ItemStack::new(item, 1)),
             })
             .await
             .unwrap();

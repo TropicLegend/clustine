@@ -82,10 +82,6 @@ const MAX_TEMPLATE_COUNT: i32 = 99;
 
 /// The world's patch as the wire carries it: the added components in the patch's order,
 /// then the removed kinds by their ids.
-#[allow(
-    dead_code,
-    reason = "the lead's join of the world's stacks to the packets calls it"
-)]
 pub(crate) fn wire_components(components: &Components) -> WireComponents {
     let Some(patch) = &components.0 else {
         return WireComponents::default();
@@ -236,10 +232,6 @@ fn convert_to_wire(component: &Component) -> Option<WireComponent> {
 /// removed is removed, since the game puts the removals into the same map after the
 /// additions; a removed kind outside Clustine's set is let go, as the world has nothing
 /// of it to remove.
-#[allow(
-    dead_code,
-    reason = "the lead's join of the clients' stacks to the world calls it"
-)]
 pub(crate) fn world_components(components: &WireComponents) -> Checked<Components> {
     let mut world = Components::NONE;
     for component in &components.added {
@@ -653,6 +645,24 @@ fn tag_value(tag: &Nbt) -> Value {
         ),
         Nbt::IntArray(values) => Value::List(values.iter().copied().map(Value::Int).collect()),
         Nbt::LongArray(values) => Value::List(values.iter().copied().map(Value::Long).collect()),
+    }
+}
+
+/// A client's stack as the world keeps it. Components the edge refuses (a number no
+/// registry has, a value out of the game's range) are dropped all together, as the
+/// stack's patch would not have read in the game (`docs/groundwork/n9-plan.md`,
+/// section 3.3), and the item is kept with its defaults.
+pub(crate) fn client_stack(
+    stack: &clustine_protocol::item::ItemStack,
+) -> clustine_world::ItemStack {
+    let components = world_components(&stack.components).unwrap_or_else(|refusal| {
+        tracing::debug!(%refusal, "a client's stack had components that were refused");
+        Components::NONE
+    });
+    clustine_world::ItemStack {
+        item: stack.item,
+        count: stack.count,
+        components,
     }
 }
 

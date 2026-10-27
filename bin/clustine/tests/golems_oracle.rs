@@ -162,14 +162,7 @@ async fn build(bot: &mut Bot, case: &Case, corner: (i32, i32, i32)) -> Result<Bu
     let relative = |(x, y, z): (i32, i32, i32)| (x - corner.0, y - corner.1, z - corner.2);
     let (last, rest) = case.blocks.split_last().context("a case has blocks")?;
     for (item, (dx, dy, dz), side) in rest {
-        bot.put_in_hotbar(
-            0,
-            ItemStack {
-                item: *item,
-                count: 1,
-            },
-        )
-        .await?;
+        bot.put_in_hotbar(0, ItemStack::new(*item, 1)).await?;
         bot.select_slot(0).await?;
         let sequence = bot
             .use_item_on(corner.0 + dx, corner.1 + dy, corner.2 + dz, *side)
@@ -177,14 +170,7 @@ async fn build(bot: &mut Bot, case: &Case, corner: (i32, i32, i32)) -> Result<Bu
         bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
             .await?;
     }
-    bot.put_in_hotbar(
-        0,
-        ItemStack {
-            item: last.0,
-            count: 1,
-        },
-    )
-    .await?;
+    bot.put_in_hotbar(0, ItemStack::new(last.0, 1)).await?;
     bot.select_slot(0).await?;
     // From here on.
     bot.heard = Some(Vec::new());

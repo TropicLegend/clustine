@@ -135,15 +135,7 @@ async fn go_to(bot: &mut Bot, x: f64, z: f64) {
 /// Uses the spawn egg `egg` `count` times on the grass about where the bot stands,
 /// within two blocks of it, and waits until it is shown each animal of type `kind`.
 async fn lay(bot: &mut Bot, egg: i32, kind: i32, count: usize) {
-    bot.put_in_hotbar(
-        0,
-        ItemStack {
-            item: egg,
-            count: 1,
-        },
-    )
-    .await
-    .unwrap();
+    bot.put_in_hotbar(0, ItemStack::new(egg, 1)).await.unwrap();
     bot.select_slot(0).await.unwrap();
     let (x, z) = (bot.location.0.floor() as i32, bot.location.2.floor() as i32);
     let before = shown(bot, kind);
@@ -161,15 +153,9 @@ async fn lay(bot: &mut Bot, egg: i32, kind: i32, count: usize) {
 
 /// Fences the square from `(x0, z0)` to `(x1, z1)` on the grass, walking about inside it.
 async fn fence(bot: &mut Bot, (x0, z0): (i32, i32), (x1, z1): (i32, i32)) {
-    bot.put_in_hotbar(
-        1,
-        ItemStack {
-            item: items::OAK_FENCE,
-            count: 64,
-        },
-    )
-    .await
-    .unwrap();
+    bot.put_in_hotbar(1, ItemStack::new(items::OAK_FENCE, 64))
+        .await
+        .unwrap();
     bot.select_slot(1).await.unwrap();
     let mut ring = Vec::new();
     for x in x0..=x1 {
@@ -302,15 +288,9 @@ async fn measured_twenty_sheep_following_wheat_across_a_line() {
     let mut bot = joined(&cluster, "Shepherd").await;
     go_to(&mut bot, LINE - 8.5, 0.5).await;
     lay(&mut bot, items::SHEEP_SPAWN_EGG, entity_types::SHEEP, 20).await;
-    bot.put_in_hotbar(
-        1,
-        ItemStack {
-            item: items::WHEAT,
-            count: 1,
-        },
-    )
-    .await
-    .unwrap();
+    bot.put_in_hotbar(1, ItemStack::new(items::WHEAT, 1))
+        .await
+        .unwrap();
     bot.select_slot(1).await.unwrap();
 
     let (marks, bytes) = (marks(&cluster), bytes_under(&cluster.world));

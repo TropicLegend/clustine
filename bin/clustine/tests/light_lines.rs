@@ -111,7 +111,7 @@ async fn join(address: &str, name: &str) -> Bot {
         (MUSHROOM_SLOT, items::RED_MUSHROOM),
         (DIRT_SLOT, items::DIRT),
     ] {
-        bot.put_in_hotbar(slot, ItemStack { item, count: 64 })
+        bot.put_in_hotbar(slot, ItemStack::new(item, 64))
             .await
             .unwrap();
     }

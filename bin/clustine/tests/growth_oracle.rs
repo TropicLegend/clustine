@@ -786,7 +786,7 @@ async fn do_steps(bot: &mut Bot, steps: &[Step]) -> Result<()> {
 async fn do_step(bot: &mut Bot, step: Step) -> Result<i32> {
     match step.held {
         Some(item) => {
-            bot.put_in_hotbar(0, clustine_protocol::item::ItemStack { item, count: 64 })
+            bot.put_in_hotbar(0, clustine_protocol::item::ItemStack::new(item, 64))
                 .await?;
             bot.select_slot(0).await?;
         }

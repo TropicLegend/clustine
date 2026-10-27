@@ -22,7 +22,7 @@ use clustine_data::items;
 use clustine_protocol::item::ItemStack;
 
 /// What a server keeps of a player across a leave.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Kept {
     /// Where the player's feet are, as x, y and z.
     pub location: (f64, f64, f64),
@@ -36,7 +36,7 @@ pub struct Kept {
 }
 
 /// What a server does with players it has no place for.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct World {
     /// Where a player enters who was never in the world, looking ahead and not flying.
     pub spawn: (f64, f64, f64),
@@ -65,7 +65,7 @@ impl World {
         ];
         Self {
             spawn: (0.5, -60.0, 0.5),
-            starting_hotbar: starting.map(|item| Some(ItemStack { item, count: 1 })),
+            starting_hotbar: starting.map(|item| Some(ItemStack::new(item, 1))),
             lowest_y: -64.0,
         }
     }
@@ -76,7 +76,7 @@ impl World {
             location: self.spawn,
             look: (0.0, 0.0),
             flying: false,
-            hotbar: self.starting_hotbar,
+            hotbar: self.starting_hotbar.clone(),
             selected_slot: 0,
         }
     }
@@ -90,12 +90,12 @@ impl World {
     pub fn gives_back(&self, left: &Kept) -> Kept {
         if left.location.1 < self.lowest_y {
             Kept {
-                hotbar: left.hotbar,
+                hotbar: left.hotbar.clone(),
                 selected_slot: left.selected_slot,
                 ..self.newcomer()
             }
         } else {
-            *left
+            left.clone()
         }
     }
 
@@ -350,7 +350,7 @@ impl Journal {
 
     /// What the bot would have left with, were its stay to end now.
     pub(crate) fn left(&self) -> Left {
-        let mut states = self.states.iter().map(|(_, state)| *state);
+        let mut states = self.states.iter().map(|(_, state)| state.clone());
         Left {
             sure: states.next().expect("a journal always has a first state"),
             since: states.collect(),
@@ -363,7 +363,7 @@ mod tests {
     use super::*;
 
     fn stack(item: i32) -> Option<ItemStack> {
-        Some(ItemStack { item, count: 1 })
+        Some(ItemStack::new(item, 1))
     }
 
     /// Someone on the ground at `x`, as a newcomer otherwise.
@@ -393,11 +393,11 @@ mod tests {
         // Each part by itself is a fault, and is named.
         let elsewhere = Kept {
             location: (40.5, -60.0, 0.5),
-            ..newcomer
+            ..newcomer.clone()
         };
         let fault = world.newcomer_fault(&elsewhere).unwrap();
         assert!(fault.contains("put them at (40.5, -60.0, 0.5) and not at (0.5, -60.0, 0.5)"));
-        let mut emptied = newcomer;
+        let mut emptied = newcomer.clone();
         emptied.hotbar[3] = None;
         let fault = world.newcomer_fault(&emptied).unwrap();
         assert!(fault.contains("the hotbar holds"), "{fault}");
@@ -405,21 +405,21 @@ mod tests {
             (
                 Kept {
                     look: (90.0, 0.0),
-                    ..newcomer
+                    ..newcomer.clone()
                 },
                 "look along",
             ),
             (
                 Kept {
                     flying: true,
-                    ..newcomer
+                    ..newcomer.clone()
                 },
                 "has them fly",
             ),
             (
                 Kept {
                     selected_slot: 4,
-                    ..newcomer
+                    ..newcomer.clone()
                 },
                 "slot 4 is held and not slot 0",
             ),
@@ -440,7 +440,7 @@ mod tests {
             hotbar,
             selected_slot: 2,
         };
-        let left = Left::exactly(had);
+        let left = Left::exactly(had.clone());
         assert_eq!(left.fault(&World::clustine(), &had), None);
 
         // At the spawn point with the starting hotbar, as every join was once.
@@ -462,23 +462,23 @@ mod tests {
         for changed in [
             Kept {
                 location: (43.25, -48.0, -7.0),
-                ..had
+                ..had.clone()
             },
             Kept {
                 look: (135.0, 0.0),
-                ..had
+                ..had.clone()
             },
             Kept {
                 flying: false,
-                ..had
+                ..had.clone()
             },
             Kept {
                 selected_slot: 3,
-                ..had
+                ..had.clone()
             },
             Kept {
                 hotbar: World::clustine().starting_hotbar,
-                ..had
+                ..had.clone()
             },
         ] {
             assert!(left.fault(&World::clustine(), &changed).is_some());
@@ -527,13 +527,13 @@ mod tests {
     #[test]
     fn a_player_who_left_below_the_world_is_expected_at_the_spawn_point_with_what_they_held() {
         let world = World::clustine();
-        let mut hotbar = world.starting_hotbar;
+        let mut hotbar = world.starting_hotbar.clone();
         hotbar[0] = stack(items::BRICKS);
         let fallen = Kept {
             location: (300.5, -64.5, 12.5),
             look: (20.0, 80.0),
             flying: true,
-            hotbar,
+            hotbar: hotbar.clone(),
             selected_slot: 7,
         };
         let back = Kept {
@@ -542,7 +542,7 @@ mod tests {
             ..world.newcomer()
         };
         assert_eq!(world.gives_back(&fallen), back);
-        let left = Left::exactly(fallen);
+        let left = Left::exactly(fallen.clone());
         assert_eq!(left.fault(&world, &back), None);
         // Not where they fell, and not with the starting hotbar.
         assert!(left.fault(&world, &fallen).is_some());
@@ -551,7 +551,7 @@ mod tests {
         // Standing on the lowest block, or in a hole anywhere above, is a place.
         let low = Kept {
             location: (300.5, -64.0, 12.5),
-            ..fallen
+            ..fallen.clone()
         };
         assert_eq!(world.gives_back(&low), low);
         assert!(Left::exactly(low).fault(&world, &back).is_some());
@@ -622,17 +622,17 @@ mod tests {
     fn what_the_server_says_the_player_has_is_so_in_every_state() {
         // The position comes first on entering, the hotbar a moment later.
         let mut empty = at(0.5);
-        empty.hotbar = [None; 9];
-        let mut journal = Journal::new(empty);
+        empty.hotbar = [const { None }; 9];
+        let mut journal = Journal::new(empty.clone());
         journal.sent(
             0,
             Kept {
                 location: (1.0, -60.0, 0.5),
-                ..empty
+                ..empty.clone()
             },
         );
         let hotbar = World::clustine().starting_hotbar;
-        journal.told(|state| state.hotbar = hotbar);
+        journal.told(|state| state.hotbar = hotbar.clone());
         journal.told(|state| state.selected_slot = 6);
         let left = journal.left();
         let with = |x: f64| Kept {

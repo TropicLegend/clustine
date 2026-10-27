@@ -160,7 +160,7 @@ async fn go_to(bot: &mut Bot, x: f64, z: f64) {
 
 /// Holds `item` in the first hotbar slot.
 async fn hold(bot: &mut Bot, item: i32, count: i32) {
-    bot.put_in_hotbar(0, ItemStack { item, count })
+    bot.put_in_hotbar(0, ItemStack::new(item, count))
         .await
         .unwrap();
     bot.select_slot(0).await.unwrap();
@@ -214,15 +214,9 @@ async fn post(bot: &mut Bot, (x, z): (i32, i32)) {
 /// Fences the square from `(x0, z0)` to `(x1, z1)` on the grass, walking about inside it,
 /// as `herds.rs` does.
 async fn fence(bot: &mut Bot, (x0, z0): (i32, i32), (x1, z1): (i32, i32)) {
-    bot.put_in_hotbar(
-        1,
-        ItemStack {
-            item: items::OAK_FENCE,
-            count: 64,
-        },
-    )
-    .await
-    .unwrap();
+    bot.put_in_hotbar(1, ItemStack::new(items::OAK_FENCE, 64))
+        .await
+        .unwrap();
     bot.select_slot(1).await.unwrap();
     let mut ring = Vec::new();
     for x in x0..=x1 {

@@ -13,14 +13,13 @@ use clustine_world::{
     Chunk, ChunkPos, ItemStack, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
 };
 
-/// The world's stack as the protocol writes it: the one place the edge turns one into
-/// the other. Its components are left out for now: the protocol's stack carries none
-/// until the wire's codecs for them are joined (`docs/groundwork/n9-plan.md`, section
-/// 3.3), and a client is shown the item with its defaults.
+/// The world's stack as the protocol writes it, with its components: the one place the
+/// edge turns one into the other (`docs/groundwork/n9-plan.md`, section 3.3).
 pub(crate) fn wire_stack(stack: &ItemStack) -> clustine_protocol::item::ItemStack {
     clustine_protocol::item::ItemStack {
         item: stack.item,
         count: stack.count,
+        components: crate::stack_wire::wire_components(&stack.components),
     }
 }
 

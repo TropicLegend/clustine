@@ -160,10 +160,7 @@ async fn a_frame_is_spawned_at_its_blocks_corner_and_sent_only_what_changes() {
             (8, EntityDataValue::Direction(2)),
             (
                 9,
-                EntityDataValue::ItemStack(Some(clustine_protocol::item::ItemStack {
-                    item: 1,
-                    count: 1
-                }))
+                EntityDataValue::ItemStack(Some(clustine_protocol::item::ItemStack::new(1, 1)))
             ),
             (10, EntityDataValue::Int(3)),
         ]

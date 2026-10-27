@@ -4272,7 +4272,7 @@ impl Fanout {
         if let Some(shown) = self.entities.get_mut(&entity) {
             for (slot, stack) in &slots {
                 match stack {
-                    Some(stack) => shown.living.equipment.insert(*slot, *stack),
+                    Some(stack) => shown.living.equipment.insert(*slot, stack.clone()),
                     None => shown.living.equipment.remove(slot),
                 };
             }
@@ -6295,7 +6295,7 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
             slots: living
                 .equipment
                 .iter()
-                .map(|(slot, stack)| (*slot, Some(*stack)))
+                .map(|(slot, stack)| (*slot, Some(stack.clone())))
                 .collect(),
         }));
     }
@@ -6406,7 +6406,7 @@ fn spawn_packets(
                 slots: pairing
                     .equipment
                     .iter()
-                    .map(|(slot, stack)| (*slot, Some(*stack)))
+                    .map(|(slot, stack)| (*slot, Some(stack.clone())))
                     .collect(),
             }));
         }
@@ -11819,7 +11819,7 @@ mod scenarios {
         else {
             panic!("the first packet is the container's content");
         };
-        let item = |container: usize| content.slots[container].map(|stack| stack.item);
+        let item = |container: usize| content.slots[container].as_ref().map(|stack| stack.item);
         assert_eq!(content.slots.len(), 46);
         // The crafting grid and its result are empty.
         assert!(content.slots[..5].iter().all(Option::is_none));
@@ -11831,7 +11831,10 @@ mod scenarios {
         assert_eq!(item(36), Some(1));
         assert_eq!(item(44), Some(9));
         assert_eq!(item(45), Some(41));
-        assert_eq!(content.slots[45].map(|stack| stack.count), Some(41));
+        assert_eq!(
+            content.slots[45].as_ref().map(|stack| stack.count),
+            Some(41)
+        );
         let Ok(ClientboundPlay::SetHeldSlot(held)) = ClientboundPlay::decode(&held) else {
             panic!("the second packet selects the slot");
         };
@@ -12656,13 +12659,7 @@ mod scenarios {
                 })
                 .collect::<Vec<_>>()
         };
-        let expected = vec![vec![(
-            0,
-            Some(WireStack {
-                item: 1021,
-                count: 1,
-            }),
-        )]];
+        let expected = vec![vec![(0, Some(WireStack::new(1021, 1)))]];
         assert!(watcher.entities.contains(&key.0), "{:?}", watcher.entities);
         assert_eq!(worn(&watcher.living), expected, "{:?}", watcher.living);
 
@@ -21691,16 +21688,7 @@ mod scenarios {
             ]
         );
         assert_eq!(worn.entity_id, 4);
-        assert_eq!(
-            worn.slots,
-            [(
-                5,
-                Some(protocol::ItemStack {
-                    item: 1100,
-                    count: 1
-                })
-            )]
-        );
+        assert_eq!(worn.slots, [(5, Some(protocol::ItemStack::new(1100, 1)))]);
     }
 
     /// A snowball is spawned with its motion and its owner's id as its data
@@ -21762,10 +21750,10 @@ mod scenarios {
             values.values,
             [(
                 8,
-                EntityDataValue::ItemStack(Some(protocol::ItemStack {
-                    item: clustine_data::items::SNOWBALL,
-                    count: 1
-                }))
+                EntityDataValue::ItemStack(Some(protocol::ItemStack::new(
+                    clustine_data::items::SNOWBALL,
+                    1
+                )))
             )]
         );
         // The owner whose id the edge looks up is the projectile's.

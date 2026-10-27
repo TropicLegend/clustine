@@ -160,9 +160,9 @@ async fn a_placed_block_is_there_for_everyone() {
             .wait_until(PATIENCE, |bot| bot.hotbar[0].is_some())
             .await
             .unwrap();
-        assert_eq!(builder.hotbar[0].unwrap().item, items::STONE);
-        assert_eq!(builder.hotbar[1].unwrap().item, items::COBBLESTONE);
-        assert_eq!(builder.hotbar[2].unwrap().item, items::DIRT);
+        assert_eq!(builder.hotbar[0].as_ref().unwrap().item, items::STONE);
+        assert_eq!(builder.hotbar[1].as_ref().unwrap().item, items::COBBLESTONE);
+        assert_eq!(builder.hotbar[2].as_ref().unwrap().item, items::DIRT);
         assert_eq!(builder.selected_slot, 0);
 
         // On top of the ground, two blocks from where players stand.

@@ -167,15 +167,9 @@ async fn on_a_pig(address: &str, name: &str, x: f64, z: f64) -> (Bot, Vehicle) {
         .iter()
         .map(|pig| pig.uuid)
         .collect();
-    let egg = ItemStack {
-        item: items::PIG_SPAWN_EGG,
-        count: 1,
-    };
+    let egg = ItemStack::new(items::PIG_SPAWN_EGG, 1);
     bot.put_in_hotbar(0, egg).await.unwrap();
-    let saddle = ItemStack {
-        item: items::SADDLE,
-        count: 1,
-    };
+    let saddle = ItemStack::new(items::SADDLE, 1);
     bot.put_in_hotbar(1, saddle).await.unwrap();
     bot.select_slot(0).await.unwrap();
     let (bx, bz) = (x.floor() as i32, z.floor() as i32);

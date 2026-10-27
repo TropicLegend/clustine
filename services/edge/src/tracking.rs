@@ -975,7 +975,7 @@ impl Tracker {
             let stack_in = |worn: &[(u8, WireStack)], slot: u8| {
                 worn.iter()
                     .find(|(at, _)| *at == slot)
-                    .map(|(_, stack)| *stack)
+                    .map(|(_, stack)| stack.clone())
             };
             let slots: Vec<(u8, Option<WireStack>)> = (0..8)
                 .filter_map(|slot| {
@@ -1641,15 +1641,12 @@ mod tests {
         let mut report = tick([3.5, -60.0, 3.5], [0.0, -0.0784, 0.0], true, 0);
         report.data = Some(worn.clone());
         tracker.report(&report, &bare);
-        let helmet = WireStack {
-            item: HELMET.item,
-            count: 1,
-        };
+        let helmet = WireStack::new(HELMET.item, 1);
         assert_eq!(
             worn_and_data(tracker.send_changes(ID, &worn)),
             [Sent::Equipment(SetEquipment {
                 entity_id: ID,
-                slots: vec![(5, Some(helmet))],
+                slots: vec![(5, Some(helmet.clone()))],
             })]
         );
         assert_eq!(tracker.pairing().equipment, [(5, helmet)]);
@@ -2106,7 +2103,7 @@ mod tests {
         let stack_value = |count| {
             (
                 entity_data::ITEM_STACK,
-                EntityDataValue::ItemStack(Some(WireStack { item: 1, count })),
+                EntityDataValue::ItemStack(Some(WireStack::new(1, count))),
             )
         };
         let data = |values| {

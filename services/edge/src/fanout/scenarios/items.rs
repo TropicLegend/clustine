@@ -151,10 +151,7 @@ fn shown_once(client: &Client, state: &EntityState) -> i32 {
         .iter()
         .filter(|data| data.entity_id == id)
         .collect();
-    let stack = clustine_protocol::item::ItemStack {
-        item: STACK.item,
-        count: STACK.count,
-    };
+    let stack = clustine_protocol::item::ItemStack::new(STACK.item, STACK.count);
     let expected = SetEntityData {
         entity_id: id,
         values: vec![(

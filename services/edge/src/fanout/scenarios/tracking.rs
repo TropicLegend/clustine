@@ -486,10 +486,7 @@ async fn a_change_of_an_item_s_data_is_sent_in_the_next_update() {
                 ),
                 (
                     entity_data::ITEM_STACK,
-                    EntityDataValue::ItemStack(Some(clustine_protocol::item::ItemStack {
-                        item: 1,
-                        count: 9
-                    }))
+                    EntityDataValue::ItemStack(Some(clustine_protocol::item::ItemStack::new(1, 9)))
                 ),
             ],
         }]

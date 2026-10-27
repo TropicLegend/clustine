@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use clustine_protocol::components::data_component_type;
 use clustine_protocol::item::ItemStack as WireStack;
 use clustine_protocol::packets;
 use clustine_protocol::packets::play::{
@@ -26,6 +27,9 @@ use clustine_protocol::packets::play::{
 };
 use clustine_protocol::text::Text;
 use clustine_sim::api::{ClickKind, ItemStack, MenuKind, PlayerInput};
+use clustine_world::components::Kind;
+
+use crate::component_hash;
 
 /// What the client shows of a slot, as far as the edge knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,9 +46,50 @@ impl Remote {
         match self {
             Self::Sent(sent) => sent.as_ref() == real,
             Self::Hashed(None) => real.is_none(),
-            Self::Hashed(Some(hashed)) => hashed.matches(real.map(wire)),
+            Self::Hashed(Some(hashed)) => real.is_some_and(|real| hashed_matches(hashed, real)),
         }
     }
+}
+
+/// Whether a client that says `hashed` of a slot shows `real` (`HashedStack$ActualItem.
+/// matches`): the same item and count, the same kinds added with the same hashes of
+/// their values (`HashedPatchMap.matches`, the game's `HashOps` over each value), and
+/// the same kinds removed, in whatever order the client names them. A client that
+/// names a kind twice is not matched, and is sent the slot again, which it does not
+/// show.
+fn hashed_matches(hashed: &HashedStack, real: &ItemStack) -> bool {
+    if hashed.item != real.item || hashed.count != real.count {
+        return false;
+    }
+    let (added, removed) = real
+        .components
+        .0
+        .as_deref()
+        .map_or((&[][..], &[][..]), |patch| {
+            (&patch.added[..], &patch.removed[..])
+        });
+    let mut ours: Vec<(i32, i32)> = added
+        .iter()
+        .map(|component| (kind_id(component.kind()), component_hash::hash(component)))
+        .collect();
+    let mut theirs = hashed.added.clone();
+    ours.sort_unstable();
+    theirs.sort_unstable();
+    let mut ours_removed: Vec<i32> = removed.iter().map(|kind| kind_id(*kind)).collect();
+    let mut theirs_removed = hashed.removed.clone();
+    ours_removed.sort_unstable();
+    theirs_removed.sort_unstable();
+    theirs_removed.dedup();
+    ours == theirs && ours_removed == theirs_removed
+}
+
+/// The id of `kind` in the `data_component_type` registry.
+fn kind_id(kind: Kind) -> i32 {
+    let at = data_component_type::NAMES
+        .iter()
+        .position(|name| *name == kind.name())
+        .expect("every kind Clustine knows is in the registry");
+    i32::try_from(at).expect("the registry is small")
 }
 
 /// A click forwarded to the region, held until its answer.

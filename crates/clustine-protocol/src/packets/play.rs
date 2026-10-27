@@ -2202,7 +2202,7 @@ impl Packet for SetCreativeModeSlot {
 impl Encode for SetCreativeModeSlot {
     fn encode(&self, w: &mut Writer) {
         w.put_i16(self.slot);
-        w.put_item_stack(self.stack);
+        w.put_item_stack_serverbound(self.stack.as_ref());
     }
 }
 
@@ -2236,8 +2236,8 @@ impl Encode for SetContainerContent {
     fn encode(&self, w: &mut Writer) {
         w.put_var_int(self.window_id);
         w.put_var_int(self.state_id);
-        w.put_array(&self.slots, |w, stack| w.put_item_stack(*stack));
-        w.put_item_stack(self.carried);
+        w.put_array(&self.slots, |w, stack| w.put_item_stack(stack.as_ref()));
+        w.put_item_stack(self.carried.as_ref());
     }
 }
 
@@ -2268,7 +2268,7 @@ impl Packet for SetPlayerInventory {
 impl Encode for SetPlayerInventory {
     fn encode(&self, w: &mut Writer) {
         w.put_var_int(self.slot);
-        w.put_item_stack(self.stack);
+        w.put_item_stack(self.stack.as_ref());
     }
 }
 
@@ -2623,19 +2623,6 @@ pub struct HashedStack {
     pub removed: Vec<i32>,
 }
 
-impl HashedStack {
-    /// Whether this is what a client would say of `stack`, which has no components: the
-    /// same item and count, and no component added or removed.
-    pub fn matches(&self, stack: Option<ItemStack>) -> bool {
-        stack.is_some_and(|stack| {
-            stack.item == self.item
-                && stack.count == self.count
-                && self.added.is_empty()
-                && self.removed.is_empty()
-        })
-    }
-}
-
 impl Writer {
     /// Writes a hashed stack, or an empty slot.
     pub fn put_hashed_stack(&mut self, stack: Option<&HashedStack>) {
@@ -2874,7 +2861,7 @@ impl Encode for ContainerSetSlot {
         w.put_var_int(self.window_id);
         w.put_var_int(self.state_id);
         w.put_i16(self.slot);
-        w.put_item_stack(self.stack);
+        w.put_item_stack(self.stack.as_ref());
     }
 }
 
@@ -2933,7 +2920,7 @@ impl Packet for SetCursorItem {
 
 impl Encode for SetCursorItem {
     fn encode(&self, w: &mut Writer) {
-        w.put_item_stack(self.stack);
+        w.put_item_stack(self.stack.as_ref());
     }
 }
 
@@ -3384,7 +3371,7 @@ impl Encode for SetEntityData {
                 }
                 EntityDataValue::ItemStack(stack) => {
                     w.put_var_int(entity_data_serializer::ITEM_STACK);
-                    w.put_item_stack(*stack);
+                    w.put_item_stack(stack.as_ref());
                 }
                 EntityDataValue::BlockPos(position) => {
                     w.put_var_int(entity_data_serializer::BLOCK_POS);
@@ -3575,7 +3562,7 @@ impl Encode for SetEquipment {
                 0
             };
             w.put_u8((slot & !MORE_EQUIPMENT) | more);
-            w.put_item_stack(*stack);
+            w.put_item_stack(stack.as_ref());
         }
     }
 }
@@ -3919,7 +3906,7 @@ mod tests {
     fn equipment_is_written_slot_by_slot_with_the_high_bit_on_all_but_the_last() {
         let worn = SetEquipment {
             entity_id: 3,
-            slots: vec![(5, Some(ItemStack { item: 7, count: 1 })), (0, None)],
+            slots: vec![(5, Some(ItemStack::new(7, 1))), (0, None)],
         };
         // The head with one of item 7 and no components changed, then an empty hand.
         assert_eq!(
@@ -4020,7 +4007,7 @@ mod tests {
             Set::decode,
             Set::SpawnEntity,
         );
-        let stack = ItemStack { item: 1, count: 64 };
+        let stack = ItemStack::new(1, 64);
         assert_round_trip(
             SetEntityData {
                 entity_id: 7,
@@ -4051,7 +4038,7 @@ mod tests {
             entity_id: 300,
             values: vec![(
                 entity_data::ITEM_STACK,
-                EntityDataValue::ItemStack(Some(ItemStack { item: 5, count: 2 })),
+                EntityDataValue::ItemStack(Some(ItemStack::new(5, 2))),
             )],
         };
         let bytes = crate::packets::encode(&packet);
@@ -4245,7 +4232,7 @@ mod tests {
                 window_id: 1,
                 state_id: 9,
                 slot: 26,
-                stack: Some(ItemStack { item: 1, count: 64 }),
+                stack: Some(ItemStack::new(1, 64)),
             },
             Client::decode,
             Client::ContainerSetSlot,
@@ -4330,24 +4317,6 @@ mod tests {
         let read = |slots| ServerboundPlay::decode(&crate::packets::encode(&click(slots)));
         assert_eq!(read(128), Ok(ServerboundPlay::ContainerClick(click(128))));
         assert!(read(129).is_err());
-    }
-
-    #[test]
-    fn a_hashed_stack_matches_only_a_stack_of_its_item_and_count_without_components() {
-        let plain = HashedStack {
-            item: 4,
-            count: 2,
-            added: Vec::new(),
-            removed: Vec::new(),
-        };
-        assert!(plain.matches(Some(ItemStack { item: 4, count: 2 })));
-        assert!(!plain.matches(Some(ItemStack { item: 4, count: 3 })));
-        assert!(!plain.matches(None));
-        let named = HashedStack {
-            added: vec![(1, 0)],
-            ..plain
-        };
-        assert!(!named.matches(Some(ItemStack { item: 4, count: 2 })));
     }
 
     #[test]
@@ -4834,7 +4803,7 @@ mod tests {
 
     #[test]
     fn item_packets_round_trip() {
-        let stone = Some(ItemStack { item: 1, count: 1 });
+        let stone = Some(ItemStack::new(1, 1));
         assert_round_trip(
             UseItemOn {
                 hand: 0,
@@ -4857,7 +4826,7 @@ mod tests {
             ServerboundPlay::decode,
             ServerboundPlay::SetHeldItem,
         );
-        for stack in [stone, None] {
+        for stack in [stone.clone(), None] {
             assert_round_trip(
                 SetCreativeModeSlot { slot: 36, stack },
                 ServerboundPlay::decode,
@@ -4865,7 +4834,7 @@ mod tests {
             );
         }
         let mut slots = vec![None; inventory::SLOT_COUNT];
-        slots[inventory::HOTBAR_START] = stone;
+        slots[inventory::HOTBAR_START] = stone.clone();
         assert_round_trip(
             SetContainerContent {
                 window_id: inventory::PLAYER_WINDOW,

@@ -31,19 +31,11 @@ const TAG_BOOLEAN: u8 = 13;
 
 /// The game's hash of `component`, as `HashedPatchMap` sends it: `HashOps.CRC32C_INSTANCE`
 /// over the component's codec encoding, read as `HashCode.asInt()`.
-#[allow(
-    dead_code,
-    reason = "the lead's join of `HashedStack` matching to the menus calls it"
-)]
 pub fn hash(component: &Component) -> i32 {
     hash_value(&structure(component)) as i32
 }
 
 /// `HashOps`'s hash of `value`, as the unsigned number `HashCode.asInt()` reads.
-#[allow(
-    dead_code,
-    reason = "the lead's join of `HashedStack` matching to the menus calls it"
-)]
 fn hash_value(value: &Value) -> u32 {
     let mut bytes = Vec::new();
     match value {

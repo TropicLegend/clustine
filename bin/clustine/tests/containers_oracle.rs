@@ -83,11 +83,8 @@ async fn run(address: &str) -> Ran {
     })
     .await
     .unwrap();
-    let stone = ItemStack {
-        item: items::STONE,
-        count: 16,
-    };
-    bot.put_in_hotbar(STACK_SLOT, stone).await.unwrap();
+    let stone = ItemStack::new(items::STONE, 16);
+    bot.put_in_hotbar(STACK_SLOT, stone.clone()).await.unwrap();
     // Clustine gives a new player a hotbar of blocks and the official server none: the
     // rest of it emptied, the two are alike.
     for slot in (2..=8).chain([0]) {
@@ -105,14 +102,20 @@ async fn run(address: &str) -> Ran {
 
     // The stack picked up from the hotbar, guessed right: nothing is sent back.
     let at = hotbar_in_chest(STACK_SLOT);
-    bot.click_window(at, 0, click::PICKUP, vec![(at, None)], Some(stone))
+    bot.click_window(at, 0, click::PICKUP, vec![(at, None)], Some(stone.clone()))
         .await
         .unwrap();
     step(&mut bot, "pick up, guessed right", &mut ran).await;
 
     // Put down in the chest's first slot, guessed wrong: the client says it kept one.
-    let kept = ItemStack { count: 1, ..stone };
-    let put = ItemStack { count: 15, ..stone };
+    let kept = ItemStack {
+        count: 1,
+        ..stone.clone()
+    };
+    let put = ItemStack {
+        count: 15,
+        ..stone.clone()
+    };
     bot.click_window(0, 0, click::PICKUP, vec![(0, Some(put))], Some(kept))
         .await
         .unwrap();

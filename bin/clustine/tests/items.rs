@@ -352,7 +352,7 @@ impl Player {
                 if let Some(item) = self.items.get_mut(&data.entity_id) {
                     for (index, value) in &data.values {
                         if let (8, EntityDataValue::ItemStack(stack)) = (index, value) {
-                            item.stack = *stack;
+                            item.stack = stack.clone();
                         }
                     }
                 }
@@ -425,7 +425,7 @@ impl Player {
     async fn at_rest(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
         let shown = |player: &Self| {
             let all = (player.items.iter())
-                .map(|(id, item)| (*id, item.position, item.on_ground, item.stack))
+                .map(|(id, item)| (*id, item.position, item.on_ground, item.stack.clone()))
                 .collect::<Vec<_>>();
             (done(player) && all.iter().all(|(_, _, on_ground, _)| *on_ground)).then_some(all)
         };
@@ -455,7 +455,7 @@ impl Player {
     /// How many of each item the items it is shown hold together, by item id.
     fn totals(&self) -> BTreeMap<i32, i32> {
         let mut totals = BTreeMap::new();
-        for stack in self.items.values().filter_map(|item| item.stack) {
+        for stack in self.items.values().filter_map(|item| item.stack.clone()) {
             *totals.entry(stack.item).or_default() += stack.count;
         }
         totals
@@ -495,7 +495,7 @@ impl Player {
                         continue;
                     }
                     let stack = data.values.iter().find_map(|(index, value)| match value {
-                        EntityDataValue::ItemStack(stack) if *index == 8 => Some(*stack),
+                        EntityDataValue::ItemStack(stack) if *index == 8 => Some(stack.clone()),
                         _ => None,
                     });
                     return Ok(Some(ShownToTheThrower {
@@ -571,10 +571,7 @@ async fn throw_a_stone_and_let_it_land(
     (own, lies)
 }
 
-const STONE: ItemStack = ItemStack {
-    item: items::STONE,
-    count: 1,
-};
+const STONE: ItemStack = ItemStack::new(items::STONE, 1);
 
 /// A world in `directory`, divided as `CLUSTINE_TEST_PINS` says.
 fn on_disk(directory: &std::path::Path) -> Config {
@@ -684,10 +681,7 @@ async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an
     let frames = thrower.round_trip().await;
     assert_eq!(spawns_an_item(&frames), 0, "an empty hand threw something");
 
-    let five = ItemStack {
-        item: items::STONE,
-        count: 5,
-    };
+    let five = ItemStack::new(items::STONE, 5);
     thrower.hold(Some(five)).await;
     thrower.drop_held(false).await;
     let one = thrower.shown_an_item().await.unwrap();
@@ -697,10 +691,7 @@ async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an
     let rest = thrower.shown_an_item().await.unwrap();
     assert_eq!(
         rest.stack,
-        Some(ItemStack {
-            item: items::STONE,
-            count: 4
-        }),
+        Some(ItemStack::new(items::STONE, 4)),
         "ctrl+Q throws the rest of the stack"
     );
     // Now the hand is empty: Q throws nothing more.
@@ -712,11 +703,8 @@ async fn q_ctrl_q_and_the_creative_screen_each_throw_what_the_game_throws_and_an
         "the emptied hand threw something"
     );
 
-    let dirt = ItemStack {
-        item: items::DIRT,
-        count: 3,
-    };
-    thrower.throw_from_the_screen(dirt).await;
+    let dirt = ItemStack::new(items::DIRT, 3);
+    thrower.throw_from_the_screen(dirt.clone()).await;
     let screen = thrower.shown_an_item().await.unwrap();
     assert_eq!(screen.stack, Some(dirt));
 
@@ -1129,18 +1117,12 @@ async fn a_creative_throw_of_more_than_the_item_s_maximum_stack_is_passed_over()
     let mut watcher = join(&address, "Watcher").await;
     let mut thrower = Player::join(&address, "Thrower", &mut watcher).await;
     thrower
-        .throw_from_the_screen(ItemStack {
-            item: items::STONE,
-            count: 65,
-        })
+        .throw_from_the_screen(ItemStack::new(items::STONE, 65))
         .await;
     let frames = thrower.round_trip().await;
     assert_eq!(spawns_an_item(&frames), 0, "65 stone were thrown");
-    let full = ItemStack {
-        item: items::STONE,
-        count: 64,
-    };
-    thrower.throw_from_the_screen(full).await;
+    let full = ItemStack::new(items::STONE, 64);
+    thrower.throw_from_the_screen(full.clone()).await;
     let shown = thrower.shown_an_item().await.unwrap();
     assert_eq!(shown.stack, Some(full));
     server.stop().await;

@@ -71,16 +71,13 @@ async fn a_stack_put_into_a_chest_is_there_for_whoever_opens_it_next() {
         .take_from_creative_inventory(1, items::STONE)
         .await
         .unwrap();
-    let stone = ItemStack {
-        item: items::STONE,
-        count: 1,
-    };
+    let stone = ItemStack::new(items::STONE, 1);
     builder
-        .click_window(55, 0, click::PICKUP, vec![(55, None)], Some(stone))
+        .click_window(55, 0, click::PICKUP, vec![(55, None)], Some(stone.clone()))
         .await
         .unwrap();
     builder
-        .click_window(0, 0, click::PICKUP, vec![(0, Some(stone))], None)
+        .click_window(0, 0, click::PICKUP, vec![(0, Some(stone.clone()))], None)
         .await
         .unwrap();
     builder.close_window().await.unwrap();

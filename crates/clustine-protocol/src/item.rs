@@ -1,30 +1,61 @@
 //! Item stacks as they appear inside packets.
 //!
 //! An item stack is a count, an item and a patch of "components" that deviate from the
-//! item's defaults, such as a custom name or enchantments. Clustine does not model
-//! components yet. It writes stacks without any, and when reading it keeps only the
-//! item and the count.
+//! item's defaults, such as a potion's contents or enchantments. The components of the
+//! set Clustine reads travel by the game's stream codecs (`crate::components`): a
+//! server writes them with nothing between them, so a stack from a server with a
+//! component outside the set cannot be read, and a client puts a length before each,
+//! so those outside the set are stepped over and dropped.
 
 use crate::codec::{DecodeError, Reader, Writer};
+use crate::components::WireComponents;
 
-/// A number of items of one kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A number of items of one kind, and the components it differs in from the item's
+/// defaults.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ItemStack {
     /// Id in the item registry.
     pub item: i32,
     pub count: i32,
+    pub components: WireComponents,
+}
+
+impl ItemStack {
+    /// A stack with no components of its own.
+    pub const fn new(item: i32, count: i32) -> Self {
+        Self {
+            item,
+            count,
+            components: WireComponents {
+                added: Vec::new(),
+                removed: Vec::new(),
+            },
+        }
+    }
 }
 
 impl Writer {
-    /// Writes an item stack without components, or an empty slot.
-    pub fn put_item_stack(&mut self, stack: Option<ItemStack>) {
+    /// Writes an item stack with its components, or an empty slot
+    /// (`ItemStack.OPTIONAL_STREAM_CODEC`).
+    pub fn put_item_stack(&mut self, stack: Option<&ItemStack>) {
         match stack {
             Some(stack) if stack.count > 0 => {
                 self.put_var_int(stack.count);
                 self.put_var_int(stack.item);
-                // No components added and none removed.
-                self.put_var_int(0);
-                self.put_var_int(0);
+                self.put_components(&stack.components);
+            }
+            _ => self.put_var_int(0),
+        }
+    }
+
+    /// Writes an item stack the way clients send it, each component after its length:
+    /// for the bots and the tests.
+    pub fn put_item_stack_serverbound(&mut self, stack: Option<&ItemStack>) {
+        match stack {
+            Some(stack) if stack.count > 0 => {
+                self.put_var_int(stack.count);
+                self.put_var_int(stack.item);
+                self.put_components_serverbound(&stack.components);
             }
             _ => self.put_var_int(0),
         }
@@ -34,53 +65,41 @@ impl Writer {
 impl Reader<'_> {
     /// Reads an item stack the way servers send it. `None` is an empty slot.
     ///
-    /// Fails for a stack with components: servers send them without lengths, so they
-    /// cannot be skipped without knowing every component's format.
+    /// Fails for a stack with a component outside the set: servers send components
+    /// without lengths, so one cannot be stepped over without knowing its format.
     pub fn item_stack(&mut self) -> Result<Option<ItemStack>, DecodeError> {
-        let Some(stack) = self.item_and_count()? else {
+        let Some((item, count)) = self.item_and_count()? else {
             return Ok(None);
         };
-        let (added, removed) = (self.var_int()?, self.var_int()?);
-        if added != 0 || removed != 0 {
-            return Err(DecodeError::InvalidValue {
-                what: "item stack without components",
-                value: i64::from(added) + i64::from(removed),
-            });
-        }
-        Ok(Some(stack))
+        let components = self.components_clientbound()?;
+        Ok(Some(ItemStack {
+            item,
+            count,
+            components,
+        }))
     }
 
-    /// Reads an item stack the way clients send it, ignoring its components. `None` is
-    /// an empty slot.
-    ///
-    /// Clients prefix every component with its length, so that a server can skip those
-    /// it does not understand.
+    /// Reads an item stack the way clients send it. `None` is an empty slot. The
+    /// components of the set are read; those outside it are stepped over by their
+    /// lengths and dropped.
     pub fn untrusted_item_stack(&mut self) -> Result<Option<ItemStack>, DecodeError> {
-        let Some(stack) = self.item_and_count()? else {
+        let Some((item, count)) = self.item_and_count()? else {
             return Ok(None);
         };
-        let added = self.length()?;
-        let removed = self.length()?;
-        for _ in 0..added {
-            self.var_int()?;
-            let length = self.length()?;
-            self.bytes(length)?;
-        }
-        for _ in 0..removed {
-            self.var_int()?;
-        }
-        Ok(Some(stack))
+        let components = self.components_serverbound()?.components;
+        Ok(Some(ItemStack {
+            item,
+            count,
+            components,
+        }))
     }
 
-    fn item_and_count(&mut self) -> Result<Option<ItemStack>, DecodeError> {
+    fn item_and_count(&mut self) -> Result<Option<(i32, i32)>, DecodeError> {
         let count = self.var_int()?;
         if count <= 0 {
             return Ok(None);
         }
-        Ok(Some(ItemStack {
-            item: self.var_int()?,
-            count,
-        }))
+        Ok(Some((self.var_int()?, count)))
     }
 }
 
@@ -89,26 +108,40 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::components::{WireComponent, data_component_type};
 
-    fn written(stack: Option<ItemStack>) -> Vec<u8> {
+    fn written(stack: Option<&ItemStack>) -> Vec<u8> {
         let mut writer = Writer::new();
         writer.put_item_stack(stack);
         writer.into_bytes()
     }
 
+    fn damaged(item: i32, count: i32, damage: i32) -> ItemStack {
+        let mut stack = ItemStack::new(item, count);
+        stack.components.added.push(WireComponent::Damage(damage));
+        stack
+    }
+
     #[test]
     fn known_answers() {
         assert_eq!(written(None), [0]);
-        let stone = ItemStack { item: 1, count: 64 };
-        assert_eq!(written(Some(stone)), [64, 1, 0, 0]);
+        let stone = ItemStack::new(1, 64);
+        assert_eq!(written(Some(&stone)), [64, 1, 0, 0]);
         // A stack of nothing is an empty slot.
-        assert_eq!(written(Some(ItemStack { item: 1, count: 0 })), [0]);
+        assert_eq!(written(Some(&ItemStack::new(1, 0))), [0]);
+        // One component added, none removed: the kind's id and its value, with no
+        // length between them.
+        let id = u8::try_from(data_component_type::DAMAGE).unwrap();
+        assert_eq!(
+            written(Some(&damaged(800, 1, 5))),
+            [1, 0xA0, 6, 1, 0, id, 5]
+        );
     }
 
     #[test]
     fn plain_stacks_read_the_same_either_way() {
-        let stone = ItemStack { item: 1, count: 64 };
-        for bytes in [written(Some(stone)), written(None)] {
+        let stone = ItemStack::new(1, 64);
+        for bytes in [written(Some(&stone)), written(None)] {
             let trusted = Reader::new(&bytes).item_stack().unwrap();
             let untrusted = Reader::new(&bytes).untrusted_item_stack().unwrap();
             assert_eq!(trusted, untrusted);
@@ -117,31 +150,44 @@ mod tests {
     }
 
     #[test]
-    fn components_from_a_client_are_skipped() {
-        // One stone with two added components (type 5 with three bytes, type 9 with
-        // none) and one removed component (type 12), followed by another field.
-        let bytes = [1, 1, 2, 1, 5, 3, 0xAA, 0xBB, 0xCC, 9, 0, 12, 0x7F];
+    fn a_stack_with_components_reads_back_from_either_side() {
+        let sword = damaged(800, 1, 5);
+        let mut bytes = written(Some(&sword));
+        assert_eq!(Reader::new(&bytes).item_stack(), Ok(Some(sword.clone())));
+        let mut writer = Writer::new();
+        writer.put_item_stack_serverbound(Some(&sword));
+        bytes.clear();
+        bytes.extend(writer.into_bytes());
+        assert_eq!(Reader::new(&bytes).untrusted_item_stack(), Ok(Some(sword)));
+    }
+
+    #[test]
+    fn components_from_a_client_outside_the_set_are_dropped() {
+        // One stone with two added components outside the set (type 5 with three
+        // bytes, type 6 with none) and one removed component (type 12), followed by
+        // another field.
+        let bytes = [1, 1, 2, 1, 5, 3, 0xAA, 0xBB, 0xCC, 6, 0, 12, 0x7F];
         let mut reader = Reader::new(&bytes);
-        assert_eq!(
-            reader.untrusted_item_stack(),
-            Ok(Some(ItemStack { item: 1, count: 1 }))
-        );
+        let mut stone = ItemStack::new(1, 1);
+        stone.components.removed.push(12);
+        assert_eq!(reader.untrusted_item_stack(), Ok(Some(stone)));
         assert_eq!(reader.u8(), Ok(0x7F));
     }
 
     #[test]
-    fn components_from_a_server_are_refused() {
+    fn components_from_a_server_outside_the_set_are_refused() {
         assert!(Reader::new(&[1, 1, 1, 0, 5, 0]).item_stack().is_err());
     }
 
     proptest! {
         #[test]
-        fn stacks_round_trip(item in 0..2000i32, count in 1..100i32) {
-            let stack = ItemStack { item, count };
-            let bytes = written(Some(stack));
-            let mut reader = Reader::new(&bytes);
-            prop_assert_eq!(reader.item_stack(), Ok(Some(stack)));
-            prop_assert_eq!(reader.finish(), Ok(()));
+        fn stacks_round_trip(item in 0..2000i32, count in 1..100i32, damage in 0..2000i32) {
+            for stack in [ItemStack::new(item, count), damaged(item, count, damage)] {
+                let bytes = written(Some(&stack));
+                let mut reader = Reader::new(&bytes);
+                prop_assert_eq!(reader.item_stack(), Ok(Some(stack)));
+                prop_assert_eq!(reader.finish(), Ok(()));
+            }
         }
 
         #[test]

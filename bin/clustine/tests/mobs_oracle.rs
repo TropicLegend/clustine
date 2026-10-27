@@ -173,10 +173,7 @@ fn cows(bot: &Bot) -> Vec<i32> {
 /// shown one cow more.
 async fn egg(bot: &mut Bot, x: i32, z: i32) -> Result<i32> {
     let before = cows(bot);
-    let egg = ItemStack {
-        item: items::COW_SPAWN_EGG,
-        count: 1,
-    };
+    let egg = ItemStack::new(items::COW_SPAWN_EGG, 1);
     bot.put_in_hotbar(0, egg).await?;
     bot.select_slot(0).await?;
     bot.use_item_on(x, GROUND, z, face::TOP).await?;
@@ -218,10 +215,7 @@ async fn watched(address: &str) -> Result<Watched> {
     // Two others, away from the one hit, which panics.
     let second = egg(&mut builder, x - 2, z + 2).await?;
     let third = egg(&mut builder, x - 2, z - 2).await?;
-    let wheat = ItemStack {
-        item: items::WHEAT,
-        count: 1,
-    };
+    let wheat = ItemStack::new(items::WHEAT, 1);
     builder.put_in_hotbar(1, wheat).await?;
     builder.select_slot(1).await?;
     builder.interact(second, [0.0, 0.7, 0.0]).await?;
@@ -523,13 +517,7 @@ async fn rode(address: &str) -> Result<Rode> {
         .context("the watcher is shown the rider")?
         .entity_id;
     rider
-        .put_in_hotbar(
-            0,
-            ItemStack {
-                item: items::PIG_SPAWN_EGG,
-                count: 1,
-            },
-        )
+        .put_in_hotbar(0, ItemStack::new(items::PIG_SPAWN_EGG, 1))
         .await?;
     rider.select_slot(0).await?;
     rider.use_item_on(x + 2, GROUND, z, face::TOP).await?;
@@ -546,22 +534,10 @@ async fn rode(address: &str) -> Result<Rode> {
         off_at: (0.0, 0.0, 0.0),
     };
     rider
-        .put_in_hotbar(
-            1,
-            ItemStack {
-                item: items::SADDLE,
-                count: 1,
-            },
-        )
+        .put_in_hotbar(1, ItemStack::new(items::SADDLE, 1))
         .await?;
     rider
-        .put_in_hotbar(
-            2,
-            ItemStack {
-                item: items::CARROT_ON_A_STICK,
-                count: 1,
-            },
-        )
+        .put_in_hotbar(2, ItemStack::new(items::CARROT_ON_A_STICK, 1))
         .await?;
     rider.select_slot(1).await?;
     rider.interact(pig, [0.0, 0.5, 0.0]).await?;
@@ -652,10 +628,7 @@ async fn probe_a_rider_who_leaves_on_a_pig_on_the_official_server() {
             .filter(|entity| entity.kind == entity_types::PIG)
             .count()
     };
-    let egg = ItemStack {
-        item: items::PIG_SPAWN_EGG,
-        count: 1,
-    };
+    let egg = ItemStack::new(items::PIG_SPAWN_EGG, 1);
     rider.put_in_hotbar(0, egg).await.unwrap();
     rider.select_slot(0).await.unwrap();
     rider
@@ -672,10 +645,7 @@ async fn probe_a_rider_who_leaves_on_a_pig_on_the_official_server() {
         .find(|entity| entity.kind == entity_types::PIG)
         .unwrap()
         .entity_id;
-    let saddle = ItemStack {
-        item: items::SADDLE,
-        count: 1,
-    };
+    let saddle = ItemStack::new(items::SADDLE, 1);
     rider.put_in_hotbar(1, saddle).await.unwrap();
     rider.select_slot(1).await.unwrap();
     rider.interact(pig, [0.0, 0.5, 0.0]).await.unwrap();
