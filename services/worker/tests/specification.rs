@@ -955,6 +955,7 @@ impl Witness {
                         | RegionEvent::AttributesChanged { .. }
                         | RegionEvent::EquipmentChanged { .. }
                         | RegionEvent::Animated { .. }
+                        | RegionEvent::PlayerData { .. }
                         | RegionEvent::Sleeping { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
@@ -985,7 +986,8 @@ impl Witness {
                 | PlayerEvent::MenuOpened { .. }
                 | PlayerEvent::MenuChanged { .. }
                 | PlayerEvent::MenuClosed { .. }
-                | PlayerEvent::NoMenu { .. } => {}
+                | PlayerEvent::NoMenu { .. }
+                | PlayerEvent::Cooldown { .. } => {}
             },
             WorkerToEdge::Outbox { number, entry } => {
                 // An entry it has seen is ignored, as section 5 has it: it is sent again
@@ -5378,6 +5380,8 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         respawn: None,
         experience: Default::default(),
         attack_reset: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: "someone".to_owned(),
         pose: Pose {

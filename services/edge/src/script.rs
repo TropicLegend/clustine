@@ -1160,6 +1160,8 @@ impl Script {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: person.entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

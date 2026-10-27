@@ -8,11 +8,12 @@
 //! event shows its fall.
 
 use clustine_world::{EntityData, EntityId, ItemStack};
+use serde::{Deserialize, Serialize};
 
 use crate::mobs::{Mob, types};
 
 /// A synced value as the edge writes it, by the serializer the game's index has.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DataShown {
     Byte(u8),
     Int(i32),
@@ -56,7 +57,7 @@ pub enum DataShown {
 
 /// A particle of a [`DataShown::Particles`] list: `entity_effect` with a colour, or a
 /// particle without options by its type's id (`docs/groundwork/n9-plan.md`, 5.2).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ShownParticle {
     EntityEffect { colour: i32 },
     Simple(i32),
@@ -64,7 +65,7 @@ pub enum ShownParticle {
 
 /// The serializer of a [`DataShown::Serialised`] value: the enumerations the game syncs
 /// by their ordinals with serializers of their own (`EntityDataSerializers`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Serialiser {
     ArmadilloState,
     SnifferState,
@@ -73,7 +74,7 @@ pub enum Serialiser {
 }
 
 /// The registry an entry of [`DataShown::Holder`] is of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Holder {
     CowVariant,
     CowSoundVariant,

@@ -1885,6 +1885,8 @@ impl Bot {
             ClientboundPlay::UpdateAttributes(packet) => self.attribute_updates.push(packet),
             ClientboundPlay::SetExperience(packet) => self.experience = Some(packet),
             ClientboundPlay::SystemChat(packet) => self.messages.push(packet),
+            // The bots use no item that has a cooldown.
+            ClientboundPlay::Cooldown(_) => {}
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

@@ -150,6 +150,8 @@ impl Vibration {
     pub(crate) const FLUID_PICKUP: Vibration = Vibration(25);
     pub(crate) const FLUID_PLACE: Vibration = Vibration(26);
     pub(crate) const HIT_GROUND: Vibration = Vibration(27);
+    pub(crate) const ITEM_INTERACT_FINISH: Vibration = Vibration(29);
+    pub(crate) const ITEM_INTERACT_START: Vibration = Vibration(30);
     pub(crate) const JUKEBOX_PLAY: Vibration = Vibration(31);
     pub(crate) const JUKEBOX_STOP_PLAY: Vibration = Vibration(32);
     pub(crate) const NOTE_BLOCK_PLAY: Vibration = Vibration(34);

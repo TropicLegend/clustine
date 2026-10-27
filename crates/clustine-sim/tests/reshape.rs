@@ -367,6 +367,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
@@ -391,6 +393,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
@@ -414,6 +418,8 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         respawn: None,
         experience: Default::default(),
         attack_reset: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: transfer.entity_id,
         name: transfer.name.clone(),
         pose: transfer.pose,
@@ -2349,6 +2355,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         respawn: None,
         experience: Default::default(),
         attack_reset: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: format!("entity-{n}"),
         pose: Pose {
@@ -6055,6 +6063,8 @@ impl Pair {
                     // which a hand-over's ticks on the way leave out (a named difference
                     // of `docs/groundwork/n7-plan.md`, 7.7.2).
                     attack_reset: None,
+                    using: None,
+                    cooldowns: Vec::new(),
                     ..player
                 };
                 assert!(
@@ -6074,6 +6084,8 @@ impl Pair {
                     // which a hand-over's ticks on the way leave out (a named difference
                     // of `docs/groundwork/n7-plan.md`, 7.7.2).
                     attack_reset: None,
+                    using: None,
+                    cooldowns: Vec::new(),
                     ..player
                 };
                 (id, plain)

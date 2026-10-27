@@ -10,10 +10,6 @@ use clustine_world::components::{Component, Kind};
 /// The level of the enchantment `name` (`minecraft:power`, say) on `stack`, 0 where it
 /// has none (`EnchantmentHelper.getItemEnchantmentLevel`). An item's defaults hold no
 /// enchantments, so only the patch is read.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the arrows (S2) and the weapons (S4) read it")
-)]
 pub(crate) fn level(stack: &ItemStack, name: &str) -> i32 {
     match stack.components.get(Kind::Enchantments) {
         Some(Component::Enchantments(enchantments)) => enchantments

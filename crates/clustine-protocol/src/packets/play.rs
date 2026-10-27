@@ -3892,6 +3892,7 @@ packet_set! {
         UpdateAttributes,
         SetExperience,
         SystemChat,
+        Cooldown,
     }
 }
 
@@ -3946,6 +3947,20 @@ mod tests {
             ClientboundPlay::decode,
             ClientboundPlay::UpdateAttributes,
         );
+    }
+
+    #[test]
+    fn a_cooldown_is_its_group_then_its_ticks() {
+        let cooldown = Cooldown {
+            group: "minecraft:ender_pearl".to_owned(),
+            ticks: 20,
+        };
+        let bytes = crate::packets::encode(&cooldown);
+        let mut expected = vec![u8::try_from(Cooldown::ID).unwrap(), 21];
+        expected.extend_from_slice(b"minecraft:ender_pearl");
+        expected.push(20);
+        assert_eq!(bytes, expected);
+        assert_round_trip(cooldown, ClientboundPlay::decode, ClientboundPlay::Cooldown);
     }
 
     #[test]
@@ -5871,6 +5886,34 @@ impl Decode for UpdateAttributes {
         Ok(Self {
             entity_id,
             attributes,
+        })
+    }
+}
+
+/// An item group's cooldown (`ClientboundCooldownPacket`): the group's identifier, then
+/// its ticks as a VarInt; 0 ends it (n9 ClientboundCooldownPacket 74–80).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cooldown {
+    pub group: String,
+    pub ticks: i32,
+}
+
+impl Packet for Cooldown {
+    const ID: i32 = clientbound::COOLDOWN;
+}
+
+impl Encode for Cooldown {
+    fn encode(&self, w: &mut Writer) {
+        w.put_string(&self.group);
+        w.put_var_int(self.ticks);
+    }
+}
+
+impl Decode for Cooldown {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            group: r.string(IDENTIFIER_LENGTH)?,
+            ticks: r.var_int()?,
         })
     }
 }

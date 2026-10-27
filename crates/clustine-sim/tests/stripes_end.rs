@@ -401,6 +401,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         respawn: None,
         experience: Default::default(),
         attack_reset: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: format!("entity-{n}"),
         pose: Pose {
@@ -2533,6 +2535,8 @@ impl Pair {
                     // which a hand-over's ticks on the way leave out (a named difference
                     // of `docs/groundwork/n7-plan.md`, 7.7.2).
                     attack_reset: None,
+                    using: None,
+                    cooldowns: Vec::new(),
                     ..player
                 };
                 assert!(
@@ -2552,6 +2556,8 @@ impl Pair {
                     // which a hand-over's ticks on the way leave out (a named difference
                     // of `docs/groundwork/n7-plan.md`, 7.7.2).
                     attack_reset: None,
+                    using: None,
+                    cooldowns: Vec::new(),
                     ..player
                 };
                 (id, plain)

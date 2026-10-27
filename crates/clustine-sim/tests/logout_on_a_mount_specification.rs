@@ -697,6 +697,8 @@ fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: "Player1".to_owned(),
         pose: Pose::at(at),

@@ -282,6 +282,8 @@ fn riding_transfer() -> PlayerTransfer {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: RIDER,
         name: "Player1".to_owned(),
         pose: Pose::at(Vec3::new(TAKEN[0], SEATED.y, TAKEN[2])),

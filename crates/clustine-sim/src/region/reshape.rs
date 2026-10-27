@@ -503,6 +503,8 @@ mod tests {
             respawn: None,
             experience: Default::default(),
             attack_reset: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: EntityId(entity as u64),
             name: format!("Stay{entity}"),
             pose: Pose {
@@ -540,6 +542,8 @@ mod tests {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: stay.entity_id,
             name: stay.name,
             pose: stay.pose,

@@ -87,4 +87,46 @@ impl Region {
         self.make_projectile(making, |_, _| {}, output);
         true
     }
+
+    /// `CrossbowItem.use` of a charged crossbow in the player `id`'s hand `hand`: its
+    /// projectiles shot and its charge emptied (part S4's).
+    #[expect(
+        clippy::unused_self,
+        reason = "part S4 fills it (docs/groundwork/n9-plan.md, section 4.6)"
+    )]
+    pub(crate) fn shoot_charged_crossbow(
+        &mut self,
+        _id: PlayerId,
+        _hand: crate::api::Hand,
+        _output: &mut TickOutput,
+    ) {
+    }
+
+    /// `CrossbowItem.onUseTick` of the player `id`'s use: the charging sounds, and the
+    /// projectiles loaded into the crossbow once its charge is full (part S4's).
+    #[expect(
+        clippy::unused_self,
+        reason = "part S4 fills it (docs/groundwork/n9-plan.md, section 4.6)"
+    )]
+    pub(crate) fn charge_crossbow(
+        &mut self,
+        _id: PlayerId,
+        _using: crate::api::Using,
+        _output: &mut TickOutput,
+    ) {
+    }
+
+    /// `Item.releaseUsing` of the player `id`'s use: a bow loosed, a trident thrown
+    /// (part S4's; a creative player's bow draws intangible ammunition).
+    #[expect(
+        clippy::unused_self,
+        reason = "part S4 fills it (docs/groundwork/n9-plan.md, section 4.6)"
+    )]
+    pub(crate) fn release_using(
+        &mut self,
+        _id: PlayerId,
+        _using: crate::api::Using,
+        _output: &mut TickOutput,
+    ) {
+    }
 }

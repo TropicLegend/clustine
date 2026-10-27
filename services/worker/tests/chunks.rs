@@ -1298,6 +1298,8 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: "arriving".to_owned(),
         pose: Pose::at(Vec3::new(x, FEET, 8.5)),

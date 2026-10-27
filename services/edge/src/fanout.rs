@@ -25,7 +25,7 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
     ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
-    DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
+    Cooldown, DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
     PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
     RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
     SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
@@ -998,6 +998,9 @@ struct LivingShown {
     attributes: BTreeMap<i32, AttributeSnapshot>,
     equipment: BTreeMap<u8, WireStack>,
     sleeping: Option<Position>,
+    /// A player's values its region reports apart (`RegionEvent::PlayerData`: the
+    /// living flags of a use), by index.
+    data: BTreeMap<u8, EntityDataValue>,
 }
 
 impl Fanout {
@@ -1855,6 +1858,13 @@ impl Fanout {
                 player,
                 event: PlayerEvent::Teleported { pose },
             } => self.rides(player, pose).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::Cooldown { group, ticks },
+            } => {
+                let packet = encoded(&Cooldown { group, ticks });
+                self.send_to_player(player, [packet]).await;
+            }
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::Experience(experience),
@@ -3379,6 +3389,11 @@ impl Fanout {
                     self.show_sleeping(entity, head).await;
                 }
             }
+            RegionEvent::PlayerData { entity, values, .. } => {
+                if self.is_of(entity, from) {
+                    self.show_player_data(entity, values).await;
+                }
+            }
             RegionEvent::AttributesChanged {
                 entity, attributes, ..
             } => {
@@ -4258,6 +4273,30 @@ impl Fanout {
         if let Some(player) = own {
             self.send_to_player(player, [packet]).await;
         }
+    }
+
+    /// Values a player's entity shows changed (the living flags of a use): remembered
+    /// for those who come to see the player, and sent to those who see them now, but
+    /// not to the player, whose own client foresees them.
+    async fn show_player_data(
+        &mut self,
+        entity: EntityId,
+        values: Vec<(u8, clustine_sim::shown::DataShown)>,
+    ) {
+        let values: Vec<(u8, EntityDataValue)> = values
+            .into_iter()
+            .filter_map(|(index, value)| Some((index, crate::tracking::data_value(value)?)))
+            .collect();
+        if let Some(shown) = self.entities.get_mut(&entity) {
+            for (index, value) in &values {
+                shown.living.data.insert(*index, value.clone());
+            }
+        }
+        let packet = encoded(&SetEntityData {
+            entity_id: self.wire.of(entity),
+            values,
+        });
+        self.show_to_watchers(entity, packet).await;
     }
 
     /// What a mob wears and holds changed: remembered, and sent to those who see it.
@@ -6289,6 +6328,16 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
     if let Some(head) = living.sleeping {
         packets.push(encoded(&sleeping_data(id, Some(head))));
     }
+    if !living.data.is_empty() {
+        packets.push(encoded(&SetEntityData {
+            entity_id: id,
+            values: living
+                .data
+                .iter()
+                .map(|(index, value)| (*index, value.clone()))
+                .collect(),
+        }));
+    }
     if !living.equipment.is_empty() {
         packets.push(encoded(&SetEquipment {
             entity_id: id,
@@ -6991,6 +7040,8 @@ mod tests {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: entity,
             name: "Player1".to_owned(),
             pose: Pose::at(Vec3::new(64.5, -60.0, 0.5)),
@@ -9942,6 +9993,8 @@ mod scenarios {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

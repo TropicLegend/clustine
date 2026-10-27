@@ -728,6 +728,8 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: second,
         name: "player-1".to_owned(),
         pose: standing(EAST_X + 1.0),

@@ -825,6 +825,8 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: EntityId(5000),
         name: "Visitor".to_owned(),
         pose: Pose::at(Vec3::new(3.5, -60.0, 0.5)),

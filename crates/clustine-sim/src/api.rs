@@ -410,6 +410,40 @@ pub struct PlayerTransfer {
     pub attack_ticks: Option<u32>,
     pub sleeping: Option<Sleep>,
     pub respawn: Option<Respawn>,
+    /// The use under way, which goes on in the next region (the client does not see a
+    /// hand-over).
+    pub using: Option<Using>,
+    /// Each cooldown's group, the ticks it has run and the ticks it lasts, which the
+    /// next region counts on from.
+    pub cooldowns: Vec<(String, u32, u32)>,
+}
+
+/// A hand (`InteractionHand`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Hand {
+    Main,
+    Off,
+}
+
+/// A use of an item under way (`LivingEntity.useItem` and `useItemRemaining`,
+/// `docs/groundwork/n9-plan.md`, section 5.5): the hand it is made with, the item it
+/// was begun with (the use stops when the hand holds another: `isSameItem`), and the
+/// ticks it has left. The stack is read from the hand, not copied: a crossbow's charge
+/// is written into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Using {
+    pub hand: Hand,
+    pub item: i32,
+    pub remaining: i32,
+}
+
+/// An item group's cooldown (`ItemCooldowns`), by the group's name, from the tick it
+/// began in to the tick it ends in, on the region's ticks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cooldown {
+    pub group: String,
+    pub start: u64,
+    pub end: u64,
 }
 
 /// A player entering or leaving the region. Each but `Discard` names the edge it came
@@ -642,6 +676,9 @@ pub enum PlayerInput {
     /// The player swung their arm at nothing they hit (`punch`): at air, or at a block
     /// they begin to break. Everyone else near sees the arm swing.
     Punch,
+    /// The player let go of the use key (`RELEASE_USE_ITEM`): a bow is loosed, a
+    /// trident thrown, a meal broken off (`docs/groundwork/n9-plan.md`, section 5.5).
+    ReleaseUse,
 }
 
 /// The kinds of click in a menu (the game's `ContainerInput`).
@@ -1314,6 +1351,9 @@ pub enum PlayerEvent {
     /// The answer to a [`PlayerInput::MenuResync`] of a player with no menu open: their
     /// inventory whole, as a resume may have lost what a close sent.
     NoMenu { applied: u64, inventory: Inventory },
+    /// An item's cooldown began, or ended at 0 (`ClientboundCooldownPacket`): the group
+    /// by name and its ticks.
+    Cooldown { group: String, ticks: i32 },
 }
 
 /// Something that happened in the region and concerns everyone who can see it.
@@ -1568,6 +1608,15 @@ pub enum RegionEvent {
         chunk: ChunkPos,
         action: u8,
     },
+    /// Values a player's entity shows the others changed (`docs/groundwork/n9-plan.md`,
+    /// section 10): the living flags of a use (index 8), and from N9d the effect
+    /// particles; the edge writes them as entity data to everyone but the player, whose
+    /// own client foresees them.
+    PlayerData {
+        entity: EntityId,
+        chunk: ChunkPos,
+        values: Vec<(u8, crate::shown::DataShown)>,
+    },
 }
 
 /// One attribute of an entity as clients are sent it: its id in the game's registry,
@@ -1634,6 +1683,7 @@ impl RegionEvent {
             | Self::AttributesChanged { chunk, .. }
             | Self::EquipmentChanged { chunk, .. }
             | Self::Animated { chunk, .. }
+            | Self::PlayerData { chunk, .. }
             | Self::Sleeping { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }

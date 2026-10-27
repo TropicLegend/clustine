@@ -370,7 +370,7 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
 
 /// A mob's synced value as the protocol writes it; `None` for those whose writing waits
 /// for part S12 (`docs/groundwork/n9-plan.md`, section 10), which no mob reports yet.
-fn data_value(value: DataShown) -> Option<EntityDataValue> {
+pub(crate) fn data_value(value: DataShown) -> Option<EntityDataValue> {
     Some(match value {
         DataShown::Byte(byte) => EntityDataValue::Byte(byte),
         DataShown::Int(int) => EntityDataValue::Int(int),

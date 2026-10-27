@@ -458,7 +458,10 @@ async fn acted(
             let input = thrown_by(action.status, sneaking).expect("a status that throws");
             send_input(shared, client, input).await
         }
-        // Using items over time does not exist yet.
+        // The use key let go: a bow loosed, a trident thrown, a meal broken off.
+        player_action::RELEASE_USE_ITEM => {
+            send_input(shared, client, PlayerInput::ReleaseUse).await
+        }
         _ => Ok(()),
     }
 }

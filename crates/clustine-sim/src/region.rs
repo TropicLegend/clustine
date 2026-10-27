@@ -42,6 +42,7 @@ mod diodes;
 mod dispensers;
 mod dried_ghasts;
 mod drops;
+mod eating;
 mod entities;
 mod experience;
 mod explosions;
@@ -106,6 +107,7 @@ mod trees;
 mod turtle_eggs;
 mod updates;
 mod uses;
+mod using;
 mod vehicles;
 mod vibrations;
 mod water_creatures;
@@ -372,6 +374,9 @@ struct Player {
     /// face shows a tamed wolf. In memory only: a hand-over or a restore forgets it,
     /// which the plan carries in the transfer (`docs/groundwork/n7-plan.md`, 8.3.6).
     last_hurt_mob: Option<(EntityId, u64)>,
+    /// See [`PlayerState::using`] and [`PlayerState::cooldowns`].
+    using: Option<crate::api::Using>,
+    cooldowns: Vec<crate::api::Cooldown>,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1082,8 +1087,11 @@ impl Region {
             self.applying = None;
         }
         self.made_in = None;
-        // `Player.tick`'s look at the main hand, after the inputs.
+        // `Player.tick`'s look at the main hand, after the inputs; then its cooldowns
+        // and `LivingEntity.tick`'s use of an item (`using.rs`).
         self.watch_main_hands(&main_hands);
+        self.tick_cooldowns(&mut output);
+        self.tick_uses(&mut output);
         // The level's sleep check, before the blocks and entities, which see a morning it
         // moves to (`sleep.rs`).
         self.check_sleep(&mut output);
@@ -1726,6 +1734,19 @@ impl Region {
                 .map(|ticks| self.tick.saturating_sub(u64::from(ticks))),
             last_level_up: None,
             last_hurt_mob: None,
+            using: transfer.using,
+            cooldowns: transfer
+                .cooldowns
+                .iter()
+                .map(|(group, ran, lasts)| {
+                    let start = self.tick.saturating_sub(u64::from(*ran));
+                    crate::api::Cooldown {
+                        group: group.clone(),
+                        start,
+                        end: start + u64::from(*lasts),
+                    }
+                })
+                .collect(),
         };
         // Those watching already show the entity if they saw it cross over; to them
         // this is nothing new.
@@ -1836,6 +1857,8 @@ impl Region {
                         kept: Vec::new(),
                         experience: place.experience,
                         attack_ticks: None,
+                        using: None,
+                        cooldowns: Vec::new(),
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -1879,6 +1902,8 @@ impl Region {
             attack_reset: None,
             last_level_up: None,
             last_hurt_mob: None,
+            using: None,
+            cooldowns: Vec::new(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -2143,9 +2168,18 @@ impl Region {
             }
             PlayerInput::SelectSlot { slot } => {
                 if usize::from(*slot) < HOTBAR_SLOTS {
+                    // `handleSetCarriedItem`: another slot ends a use of the main hand.
+                    let stops = *slot != player.selected_slot
+                        && player
+                            .using
+                            .is_some_and(|using| using.hand == crate::api::Hand::Main);
                     player.selected_slot = *slot;
+                    if stops {
+                        self.stop_using(id, output);
+                    }
                 }
             }
+            PlayerInput::ReleaseUse => self.release_use(id, output),
             PlayerInput::SetInventorySlot { slot, stack } => {
                 // Only stacks of items that exist are kept, and only in slots the
                 // inventory has.
@@ -2339,7 +2373,13 @@ impl Region {
                     inventory: player.inventory.clone(),
                 };
                 let sequence = *sequence;
+                let hand = if off_hand {
+                    crate::api::Hand::Off
+                } else {
+                    crate::api::Hand::Main
+                };
                 if self.steered_boost(id, item_use.held, output)
+                    || self.start_item_use(id, hand, output)
                     || self.throw_snowball(&item_use, id, output)
                     || self.entity_item_used(&item_use, id, output)
                 {
@@ -3347,6 +3387,8 @@ impl Player {
             attack_reset: self.attack_reset,
             sleeping: self.sleeping,
             respawn: self.respawn,
+            using: self.using,
+            cooldowns: self.cooldowns.clone(),
         }
     }
 
@@ -3374,6 +3416,8 @@ impl Player {
             swinging: None,
             experience: state.experience,
             attack_reset: state.attack_reset,
+            using: state.using,
+            cooldowns: state.cooldowns,
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
@@ -3435,6 +3479,18 @@ impl Player {
                 .map(|reset| u32::try_from((tick + 1).saturating_sub(reset)).unwrap_or(u32::MAX)),
             sleeping: self.sleeping,
             respawn: self.respawn,
+            using: self.using,
+            // Counted as the attack's is.
+            cooldowns: self
+                .cooldowns
+                .into_iter()
+                .map(|cooldown| {
+                    let ran = (tick + 1).saturating_sub(cooldown.start);
+                    let lasts = cooldown.end.saturating_sub(cooldown.start);
+                    let ticks = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
+                    (cooldown.group, ticks(ran), ticks(lasts))
+                })
+                .collect(),
         }
     }
 
@@ -3604,6 +3660,7 @@ mod tests {
     mod tamed;
     mod thrown;
     mod trees;
+    mod using;
     mod villagers;
     mod water;
     mod wild;
@@ -5603,6 +5660,8 @@ mod tests {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: EntityId(entity as u64),
             name: format!("Player{number}"),
             pose: Pose {
@@ -6184,6 +6243,8 @@ mod tests {
                         experience: Default::default(),
                         // The selection changed the main hand in the tick.
                         attack_ticks: Some(0),
+                        using: None,
+                        cooldowns: Vec::new(),
                         entity_id: EntityId(1),
                         name: "Player1".to_owned(),
                         pose,
@@ -6499,6 +6560,8 @@ mod tests {
             respawn: None,
             experience: Default::default(),
             attack_ticks: None,
+            using: None,
+            cooldowns: Vec::new(),
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
             pose: Pose::at(SPAWN),

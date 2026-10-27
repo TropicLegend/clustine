@@ -299,6 +299,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
@@ -323,6 +325,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         respawn: None,
         experience: Default::default(),
         attack_ticks: None,
+        using: None,
+        cooldowns: Vec::new(),
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
@@ -2224,6 +2228,8 @@ fn a_player_who_steps_into_a_chunk_believed_anothers_is_let_go_in_that_tick_to_t
         // The selection changed what the main hand holds in the tick it was let go in,
         // which resets the attack strength (`docs/groundwork/n7-plan.md`, 7.7.2).
         attack_ticks: Some(0),
+        using: None,
+        cooldowns: Vec::new(),
         ..transfer_of(&before)
     };
     assert_eq!(before.attempt, Some(attempt(player(1))));

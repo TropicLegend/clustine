@@ -107,6 +107,11 @@ pub struct PlayerState {
     pub sleeping: Option<crate::api::Sleep>,
     /// Where a bed set their respawn point.
     pub respawn: Option<crate::api::Respawn>,
+    /// The use of an item under way (`docs/groundwork/n9-plan.md`, section 5.5).
+    pub using: Option<crate::api::Using>,
+    /// The item groups' cooldowns, on the region's ticks; a merge keeps them as they
+    /// were, as it keeps `attack_reset`.
+    pub cooldowns: Vec<crate::api::Cooldown>,
 }
 
 /// A menu a player has open: what it shows, the stack on the cursor and a drag under
