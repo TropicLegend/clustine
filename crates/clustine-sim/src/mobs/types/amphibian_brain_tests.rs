@@ -1086,8 +1086,9 @@ fn a_frog_s_tongue_catches_for_seven_ticks_then_eats_and_stops_after_four() {
             "{tick}"
         );
         for local in &ticked.out.local {
-            if let Local::Hurt { key, amount, .. } = local {
-                hits.push((tick, *key, *amount));
+            // `doHurtTarget` (N9 part S9).
+            if let Local::Strike { key, hurt } = local {
+                hits.push((tick, *key, hurt.amount.0));
             }
         }
         let pose = frog::read(&pet.mob).pose;

@@ -185,6 +185,8 @@ impl Region {
         {
             let hops = record.hops;
             if out.removed == Some(Removed::Killed) {
+                // A cube's `remove` splits it before `LivingEntity.remove` (`splits.rs`).
+                self.cube_split(key, before, at, output);
                 // `triggerOnDeathMobEffects`, before it leaves the world. Its effects at
                 // the tick's start are those it holds at its removal: `tickDeath`
                 // removes it before `tickEffects`, and a dying mob is hurt by nothing.
@@ -218,6 +220,8 @@ impl Region {
                 Local::DestroyBlock { pos } => {
                     self.destroy_block(pos, false, super::updates::UPDATE_LIMIT, output);
                 }
+                Local::BreakBlock { pos } => self.mob_breaks_block(pos, output),
+                Local::RemoveDead { key: dead } => self.remove_if_dead(dead, output),
                 Local::LevelEvent { kind, pos, data } => {
                     output.events.push(RegionEvent::LevelEvent {
                         kind,

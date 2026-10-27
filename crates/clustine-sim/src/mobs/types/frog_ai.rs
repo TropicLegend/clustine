@@ -20,14 +20,14 @@
 //!
 //! Named differences:
 //!
-//! - **The tongue** (`ShootTongue`) has no prey until slimes and magma cubes are built
-//!   (N7k, N9), and so never starts. Built here as far as the contract reaches: its prey's
-//!   pull towards the frog (`setDeltaMovement`) and its removal as soon as it is dead are
-//!   not made (no local write sets another mob's motion or removes it), its hit is
-//!   [`Local::Hurt`], its tongue target is kept in the frog's state and not shown (the
-//!   contract has no synced value of an optional entity), and a slime's size is not read
-//!   (`Frog.canEat` takes every one of `#frog_food`). Its counters are kept as values
-//!   written each tick it runs, for at most 100 ticks.
+//! - **The tongue** (`ShootTongue`) eats a slime of size 1 (N9, part S9; the magma cube
+//!   is not built): its prey's pull towards the frog (`setDeltaMovement`) is a push of
+//!   what its motion lacks of the pull, which the region applies only to a mob of its own
+//!   (named: a prey in a copy is not pulled), its hit is `Mob.doHurtTarget`'s
+//!   ([`Local::Strike`]), and a prey it kills is removed at once ([`Local::RemoveDead`]),
+//!   where the region holds it; its tongue target is kept in the frog's state and not
+//!   shown (the contract has no synced value of an optional entity). Its counters are kept
+//!   as values written each tick it runs, for at most 100 ticks.
 //! - `unreachable_tongue_targets` keeps the targets' entity keys where the game keeps
 //!   their UUIDs: the contract's values have no list of UUIDs.
 //! - Its pregnancy (`IS_PREGNANT`) comes from a breeding by the frog's type state, which
@@ -97,12 +97,26 @@ pub(crate) const TIME_BETWEEN_LONG_JUMPS: (i32, i32) = (100, 140);
 /// `#frog_prefer_jump_to`: lily pads and big dripleaf.
 pub(crate) const PREFER_JUMP_TO: &str = "minecraft:frog_prefer_jump_to";
 
-/// `Frog.canEat(entity)`: of `#frog_food` (slimes and magma cubes). **Named**: a cube's
-/// size, which only one of 1 may be, is not read until slimes are built.
-pub(crate) fn can_eat(looked: &Looked) -> bool {
-    looked
-        .kind
-        .is_some_and(|kind| entity_in_tag(i32::from(kind), "minecraft:frog_food"))
+/// `Frog.canEat(entity)`: a cube only of size 1, and of `#frog_food` (slimes and magma
+/// cubes). A cube the view does not read the size of is taken as of size 1.
+pub(crate) fn can_eat(world: &dyn crate::mobs::view::MobWorld, looked: &Looked) -> bool {
+    let Some(kind) = looked.kind else {
+        return false;
+    };
+    if i32::from(kind) == entity_types::SLIME
+        && let Some(seen) = world.entity(looked.key)
+        && let clustine_world::EntityData::Mob { state, .. } = &seen.entity.data
+    {
+        let cube = Mob {
+            body: Default::default(),
+            mind: Default::default(),
+            state: state.clone(),
+        };
+        if super::cube_mob::size(&cube) != 1 {
+            return false;
+        }
+    }
+    entity_in_tag(i32::from(kind), "minecraft:frog_food")
 }
 
 /// The keys of `unreachable_tongue_targets`, none where it is not there.
@@ -137,7 +151,7 @@ impl Sensor for FrogAttackablesSensor {
         let out_of_reach = unreachable(cx);
         let found = find_closest_visible(cx, &mut |cx, looked| {
             sensors::attackable(cx, looked)
-                && can_eat(looked)
+                && can_eat(cx.ai.tick.world, looked)
                 && !out_of_reach.contains(&looked.key)
                 && closer_than(cx.ai, looked, 10.0)
         });
@@ -381,7 +395,8 @@ fn set_tongue_target(cx: &mut Cx<'_, '_, '_>, target: Option<EntityId>) {
 
 impl ShootTongue {
     /// `eatEntity(level, frog)`: the eating sound, and the tongue's target, where it is
-    /// there and alive, hit (`doHurtTarget`).
+    /// there and alive, hit (`doHurtTarget`), and removed where that killed it
+    /// (`remove(KILLED)`).
     fn eat(cx: &mut Cx<'_, '_, '_>) {
         cx.ai.tick.out.events.push(Event::Sound {
             sound: sounds::ENTITY_FROG_EAT,
@@ -395,15 +410,33 @@ impl ShootTongue {
         else {
             return;
         };
-        let amount = cx.ai.attribute(clustine_data::attributes::ATTACK_DAMAGE) as f32;
-        cx.ai.tick.out.local.push(Local::Hurt {
+        let mob_type = cx.ai.tick.mob_type;
+        mob_type.do_hurt_target(cx.ai, &target);
+        cx.ai
+            .tick
+            .out
+            .local
+            .push(Local::RemoveDead { key: target.key });
+    }
+
+    /// `target.setDeltaMovement(target.position().vectorTo(frog.position()).normalize()
+    /// .scale(0.75))`: a push of what the prey's motion lacks of that pull, as its record
+    /// has it now.
+    fn pull(cx: &mut Cx<'_, '_, '_>, target: &Looked) {
+        let Some(seen) = cx.ai.tick.world.entity(target.key) else {
+            return;
+        };
+        let motion = seen.entity.motion;
+        let towards = physics::sub(cx.ai.position(), target.position);
+        let length = physics::length_sqr(towards).sqrt();
+        let pull = if length < 1.0e-5 {
+            [0.0; 3]
+        } else {
+            physics::scale(towards, 0.75 / length)
+        };
+        cx.ai.tick.out.local.push(Local::Push {
             key: target.key,
-            kind: cx.ai.tick.kind,
-            from: cx.ai.position(),
-            amount,
-            sound: None,
-            knockback: None,
-            fling: None,
+            by: physics::sub(pull, motion),
         });
     }
 }
@@ -437,7 +470,7 @@ impl Timed for ShootTongue {
             cx.memories.erase(MemoryKind::AttackTarget);
             add_unreachable(cx, target.key);
         }
-        reaches && pose(cx) != Pose::Croaking && can_eat(&target)
+        reaches && pose(cx) != Pose::Croaking && can_eat(cx.ai.tick.world, &target)
     }
 
     fn can_still_use(&self, tongue: &mut Tongue, cx: &mut Cx<'_, '_, '_>) -> bool {
@@ -481,7 +514,7 @@ impl Timed for ShootTongue {
                         pitch: 1.0,
                     });
                     set_pose(cx, Pose::UsingTongue);
-                    // The prey's pull towards the frog is not made (named).
+                    Self::pull(cx, &target);
                     tongue.eat_timer = 0;
                     tongue.phase = Phase::CatchAnimation;
                 } else if tongue.path_counter <= 0 {

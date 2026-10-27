@@ -54,6 +54,12 @@ pub(crate) enum Local {
     },
     /// `level.destroyBlock(pos, false)`: a plant a sheep ate, without drops.
     DestroyBlock { pos: BlockPos },
+    /// `level.destroyBlock(pos, true, the mob)`: an infested block a silverfish wakes,
+    /// broken with its drops (`region/infested.rs`).
+    BreakBlock { pos: BlockPos },
+    /// `remove(KILLED)` of the region's mob `key` where it is dead or dying (a slime a
+    /// frog's tongue killed, `ShootTongue.eatEntity`; `region/splits.rs`).
+    RemoveDead { key: EntityId },
     /// `level.levelEvent(kind, pos, data)`.
     LevelEvent { kind: i32, pos: BlockPos, data: i32 },
     /// `level.gameEvent(event, pos, the mob)`, by the event's name.

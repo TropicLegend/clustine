@@ -90,6 +90,8 @@ pub(crate) mod llama;
 pub(crate) mod monster_ai;
 pub(crate) mod mooshroom;
 pub(crate) mod mule;
+#[cfg(test)]
+mod n9_mobs_tests;
 pub(crate) mod nautilus;
 pub(crate) mod neutral;
 pub(crate) mod ocelot;
