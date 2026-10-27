@@ -1071,9 +1071,9 @@ fn a_comparator_behind_a_double_chests_right_half_reads_the_left_halfs_slots() {
     );
 }
 
-/// Decision 7: projectiles wait for N9; a dispenser of arrows drops one as an item.
+/// N9 plan, section 4.9: a dispenser of arrows shoots one as an arrow, and drops none.
 #[test]
-fn a_dispenser_of_arrows_drops_one_as_an_item() {
+fn a_dispenser_of_arrows_shoots_one_as_an_arrow() {
     let world = World::of(&[(BOX, state(&format!("minecraft:dispenser{FACING_EAST}")))]);
     let mut scene = Scene::alone(
         &world,
@@ -1094,15 +1094,10 @@ fn a_dispenser_of_arrows_drops_one_as_an_item() {
     power(&mut scene, BOX.offset(0, 0, -1));
     let mut seen = Vec::new();
     assert!(scene.idle_until(10, &mut seen, |scene, _| {
-        !items_lying(&scene.all()).is_empty()
+        !scene.of_kind(clustine_data::entity_types::ARROW).is_empty()
     }));
-    assert_eq!(lying_count(&scene.all(), items::ARROW), 1);
-    assert!(
-        scene.all().iter().all(|entity| i32::from(entity.kind)
-            == clustine_data::entity_types::ITEM
-            || i32::from(entity.kind) == clustine_data::entity_types::PLAYER),
-        "no arrow entity"
-    );
+    assert_eq!(scene.of_kind(clustine_data::entity_types::ARROW).len(), 1);
+    assert!(items_lying(&scene.all()).is_empty(), "no item dropped");
 }
 
 /// Brief 4.18 and 5.7: a dropper facing a full chest keeps the item and makes no sound.

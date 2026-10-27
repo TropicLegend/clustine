@@ -333,17 +333,6 @@ fn a_dispenser_drops_one_item_out_of_its_front_with_its_click_and_smoke() {
     assert_eq!(slots_of(&region, AT)[3], stack(items::COBBLESTONE, 9));
 }
 
-/// Projectiles are dropped as items until N9 (decision 7).
-#[test]
-fn an_arrow_is_dropped_as_an_item_until_projectiles_come() {
-    let mut region = with(dispenser("east"), &[]);
-    fill(&mut region, AT, &[(0, stack(items::ARROW, 1))]);
-    let output = fire(&mut region);
-    assert_eq!(level_events(&output), clicked(DISPENSED, Face::East));
-    assert_eq!(items_lying(&region).len(), 1);
-    assert_eq!(slots_of(&region, AT)[0], None);
-}
-
 /// `$3`: a water bucket empties into the air in front, the empty bucket takes its slot,
 /// and the bucket's sound plays there (BucketItem.txt 212–452).
 #[test]

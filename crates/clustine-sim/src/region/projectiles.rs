@@ -373,10 +373,6 @@ impl Region {
         clippy::unused_self,
         reason = "fireworks.rs builds it on the region's making"
     )]
-    #[expect(
-        dead_code,
-        reason = "the rocket's use, the crossbow and the dispenser (S4, S5) makes it"
-    )]
     pub(crate) fn make_firework(
         &mut self,
         _stack: &ItemStack,
