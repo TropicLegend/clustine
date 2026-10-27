@@ -5591,7 +5591,9 @@ mod tests {
     /// Steps `runner` until `done` holds, giving the store thread and links that
     /// serialise time to deliver.
     fn step_until(runner: &mut RegionRunner, mut done: impl FnMut(&RegionRunner) -> bool) {
-        for _ in 0..2000 {
+        // As many as `settle` waits: on a machine busy with builds the store thread and
+        // the links took more than two thousand.
+        for _ in 0..20_000 {
             step(runner);
             if done(runner) {
                 return;
