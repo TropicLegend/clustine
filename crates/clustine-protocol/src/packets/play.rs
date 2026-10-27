@@ -2939,6 +2939,19 @@ pub mod particle {
     pub const EXPLOSION: i32 = 30;
     pub const POOF: i32 = 69;
     pub const SMOKE: i32 = 72;
+    // The effects' (`docs/groundwork/n9-plan.md`, section 5.2), by their ids in
+    // `minecraft:particle_type` (the 26.3 report's `registries.json`).
+    pub const ENTITY_EFFECT: i32 = 28;
+    pub const SMALL_GUST: i32 = 32;
+    pub const INFESTED: i32 = 40;
+    pub const ITEM_SLIME: i32 = 62;
+    pub const ITEM_COBWEB: i32 = 63;
+
+    /// Whether particles of the type `kind` carry a colour: `entity_effect` alone of
+    /// those Clustine writes in entity data (`ColorParticleOption`).
+    pub fn with_colour(kind: i32) -> bool {
+        kind == ENTITY_EFFECT
+    }
 }
 
 /// One of the particles an explosion scatters over the blocks it broke
@@ -3224,6 +3237,13 @@ pub enum EntityDataValue {
     /// show air shows none. The codec, `EntityDataSerializers$2`, is not dumped; this is
     /// how the reference servers write it.
     OptionalBlockState(i32),
+    /// `EntityDataSerializers.PARTICLES`: a living entity's effect particles, a VarInt
+    /// count and then each particle by its type's id and its options
+    /// (`ParticleTypes.STREAM_CODEC`).
+    Particles(Vec<EffectParticle>),
+    /// `EntityDataSerializers.OPTIONAL_UNSIGNED_INT`: a number or none, as a VarInt of
+    /// one more than it, 0 for none (n9 EntityDataSerializers$3).
+    OptionalUnsignedInt(Option<u32>),
     /// `EntityDataSerializers.PAINTING_VARIANT`: a painting's variant, by its id in the
     /// registry the client was sent. `PaintingVariant.STREAM_CODEC` is
     /// `ByteBufCodecs.holder` with the direct codec (PaintingVariant's static
@@ -3270,6 +3290,8 @@ pub mod entity_data_serializer {
     pub const OPTIONAL_LIVING_ENTITY_REFERENCE: i32 = 13;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_BLOCK_STATE: i32 = 15;
+    pub const PARTICLES: i32 = 17;
+    pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     /// The nineteenth registered, after `PARTICLES` (EntityDataSerializers.txt 317).
     pub const VILLAGER_DATA: i32 = 18;
     pub const POSE: i32 = 20;
@@ -3292,6 +3314,19 @@ pub mod entity_data_serializer {
     pub const WEATHERING_COPPER_STATE: i32 = 38;
     pub const DYE_COLOR: i32 = 43;
 }
+
+/// A particle of [`EntityDataValue::Particles`]: one without options, by its type's id
+/// in the `particle_type` registry, or one with a colour (`ColorParticleOption`, its
+/// ARGB as an int).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectParticle {
+    Simple(i32),
+    Colour { kind: i32, argb: i32 },
+}
+
+/// The most particles Clustine reads in a list: the game sets no bound, and a living
+/// entity has one a visible effect.
+const MAX_PARTICLES: usize = 64;
 
 /// The ordinals of the game's `Pose` that [`EntityDataValue::Pose`] carries
 /// (`docs/groundwork/n7d-brief.md`, section 2.3).
@@ -3423,6 +3458,21 @@ impl Encode for SetEntityData {
                     w.put_var_int(entity_data_serializer::OPTIONAL_BLOCK_STATE);
                     w.put_var_int(*state);
                 }
+                EntityDataValue::Particles(particles) => {
+                    w.put_var_int(entity_data_serializer::PARTICLES);
+                    w.put_array(particles, |w, particle| match *particle {
+                        EffectParticle::Simple(kind) => w.put_var_int(kind),
+                        EffectParticle::Colour { kind, argb } => {
+                            w.put_var_int(kind);
+                            w.put_i32(argb);
+                        }
+                    });
+                }
+                EntityDataValue::OptionalUnsignedInt(value) => {
+                    w.put_var_int(entity_data_serializer::OPTIONAL_UNSIGNED_INT);
+                    let raw = value.map_or(0, |value| value.wrapping_add(1));
+                    w.put_var_int(i32::from_ne_bytes(raw.to_ne_bytes()));
+                }
                 EntityDataValue::PaintingVariant(variant) => {
                     w.put_var_int(entity_data_serializer::PAINTING_VARIANT);
                     w.put_var_int(*variant + 1);
@@ -3482,6 +3532,25 @@ impl Decode for SetEntityData {
                 entity_data_serializer::BLOCK_STATE => EntityDataValue::BlockState(r.var_int()?),
                 entity_data_serializer::OPTIONAL_BLOCK_STATE => {
                     EntityDataValue::OptionalBlockState(r.var_int()?)
+                }
+                entity_data_serializer::PARTICLES => EntityDataValue::Particles(r.array_at_most(
+                    MAX_PARTICLES,
+                    "particles",
+                    |r| {
+                        let kind = r.var_int()?;
+                        Ok(if particle::with_colour(kind) {
+                            EffectParticle::Colour {
+                                kind,
+                                argb: r.i32()?,
+                            }
+                        } else {
+                            EffectParticle::Simple(kind)
+                        })
+                    },
+                )?),
+                entity_data_serializer::OPTIONAL_UNSIGNED_INT => {
+                    let raw = u32::from_ne_bytes(r.var_int()?.to_ne_bytes());
+                    EntityDataValue::OptionalUnsignedInt(raw.checked_sub(1))
                 }
                 entity_data_serializer::PAINTING_VARIANT => match r.var_int()? {
                     // As for a sound: the server sends no variant whole.
@@ -3948,6 +4017,37 @@ mod tests {
             attributes,
             ClientboundPlay::decode,
             ClientboundPlay::UpdateAttributes,
+        );
+    }
+
+    #[test]
+    fn effect_particles_and_an_optional_unsigned_int_round_trip_in_entity_data() {
+        let values = vec![
+            (
+                10,
+                EntityDataValue::Particles(vec![
+                    EffectParticle::Colour {
+                        kind: particle::ENTITY_EFFECT,
+                        argb: 0x26_33_EB_FF,
+                    },
+                    EffectParticle::Simple(particle::ITEM_SLIME),
+                ]),
+            ),
+            (9, EntityDataValue::OptionalUnsignedInt(None)),
+            (8, EntityDataValue::OptionalUnsignedInt(Some(41))),
+        ];
+        let data = SetEntityData {
+            entity_id: 3,
+            values,
+        };
+        // The optional int writes one more than its value, 0 for none.
+        // Index, serializer, value; then the end of the list (0xFF).
+        let bytes = crate::packets::encode(&data);
+        assert_eq!(bytes[bytes.len() - 7..], [9, 19, 0, 8, 19, 42, 0xFF]);
+        assert_round_trip(
+            data,
+            ClientboundPlay::decode,
+            ClientboundPlay::SetEntityData,
         );
     }
 
