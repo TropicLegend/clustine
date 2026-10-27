@@ -591,6 +591,13 @@ pub(crate) fn data_value(value: DataShown, ids: WireIds<'_>) -> Option<EntityDat
                 .collect(),
         ),
         DataShown::OptionalUnsignedInt(value) => EntityDataValue::OptionalUnsignedInt(value),
+        DataShown::OptionalBlockPos(pos) => {
+            EntityDataValue::OptionalBlockPos(pos.map(|pos| clustine_protocol::codec::Position {
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+            }))
+        }
         // The guardian's beam: its target's wire id, 0 for none (`Guardian.DATA_ID_ATTACK_TARGET`).
         DataShown::Entity(key) => EntityDataValue::Int(key.map_or(0, ids)),
     })

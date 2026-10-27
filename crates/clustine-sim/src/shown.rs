@@ -53,6 +53,9 @@ pub enum DataShown {
     Stack(Option<ItemStack>),
     /// A number or none (`OPTIONAL_UNSIGNED_INT`).
     OptionalUnsignedInt(Option<u32>),
+    /// A block or none (`OPTIONAL_BLOCK_POS`): the bed a villager sleeps in
+    /// (`LivingEntity.SLEEPING_POS_ID`).
+    OptionalBlockPos(Option<clustine_world::BlockPos>),
 }
 
 /// A particle of a [`DataShown::Particles`] list: `entity_effect` with a colour, or a

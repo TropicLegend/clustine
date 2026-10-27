@@ -8,24 +8,31 @@
 //! the spawn; a straw bed sleeps when dark, never sets the spawn and breaks when its
 //! sleeper leaves it. Dark is the day timeline's (`crate::time`).
 //!
+//! A villager sleeps in beds too (`mobs/brain/behaviours/rest.rs`); a player's use of a
+//! bed a villager sleeps in gets it up and lays nobody down (`kickVillagerOutOfBed`,
+//! `docs/groundwork/n10-brief.md` section 3.4).
+//!
 //! Named differences: monsters do not keep anyone awake until N9 (every player is
 //! creative anyway); a bed is slept in only by a player whose region holds its head's
 //! chunk, and one used across a line does nothing; another region's sleepers count a
 //! second late, and a region announces the night's state to its own players only; the
 //! sleep counter's run from 100 to 110 after a wake (the client's fade) is not kept;
 //! statistics, the advancement and phantoms are not kept; a player riding does not lie
-//! down.
+//! down; a villager a player's use wakes gets up at its own tick, not in the use (in the
+//! same tick, as the players' inputs come before the mobs), and only a villager of the
+//! region's own land is woken.
 
-use clustine_blocks::data::{facing, flag, in_tag, is_block, is_class, set_flag};
-use clustine_data::{BlockClass, BlockState, Face, blocks, sounds};
+use clustine_blocks::data::{facing, flag, is_class, set_flag};
+use clustine_data::{BlockClass, BlockState, Face, blocks, entity_types, sounds};
 use clustine_world::{BlockPos, ChunkPos, PlayerId, Vec3};
 
 use super::Region;
 use super::cushions::is_suffocating;
-use super::riding::{block_floor_height, is_floor_valid, non_climbable};
 use crate::api::{PlayerEvent, RegionEvent, Respawn, Sleep, TickOutput};
+use crate::mobs::Mob;
+use crate::mobs::brain::behaviours::rest;
+use crate::mobs::types::villager;
 use crate::physics::aabb::Aabb;
-use crate::physics::collide::{Context, block_collisions};
 use crate::time::{DAY, is_dark};
 
 /// The game rule `players_sleeping_percentage` (B 4.1): Clustine has no game rules yet.
@@ -46,34 +53,6 @@ fn step_of(direction: Face) -> (i32, i32) {
 
 fn offset(pos: BlockPos, (dx, dz): (i32, i32), times: i32) -> BlockPos {
     BlockPos::new(pos.x + dx * times, pos.y, pos.z + dz * times)
-}
-
-/// `Direction.getClockWise` of a horizontal step.
-fn clockwise((dx, dz): (i32, i32)) -> (i32, i32) {
-    (-dz, dx)
-}
-
-/// `Direction.isFacingAngle(yRot)`, with the game's sine table (B 3.3).
-fn is_facing_angle((dx, dz): (i32, i32), yaw: f32) -> bool {
-    let radians = yaw * 0.017_453_292;
-    let x = -crate::mobs::ai::maths::table_sin(radians);
-    let z = crate::mobs::ai::maths::table_cos(radians);
-    dx as f32 * x + dz as f32 * z > 0.0
-}
-
-/// `EntityType.isBlockDangerous` for a player (B 3.3; **Inferred**: no block a player is
-/// immune to, and not immune to fire): what burns (`NodeEvaluator.isBurningBlock`) and
-/// what hurts by touch.
-fn is_dangerous(state: BlockState) -> bool {
-    in_tag(state, "minecraft:fire")
-        || is_block(state, blocks::LAVA)
-        || is_block(state, blocks::MAGMA_BLOCK)
-        || is_block(state, blocks::LAVA_CAULDRON)
-        || (in_tag(state, "minecraft:campfires") && flag(state, "lit"))
-        || is_block(state, blocks::WITHER_ROSE)
-        || is_block(state, blocks::SWEET_BERRY_BUSH)
-        || is_block(state, blocks::CACTUS)
-        || is_block(state, blocks::POWDER_SNOW)
 }
 
 /// The height a sleeper lies at above a bed's block (`getSleepHeight`, B 1.1).
@@ -135,7 +114,9 @@ impl Region {
             (pos, state)
         };
         if flag(head_state, "occupied") {
-            self.say(id, "block.minecraft.bed.occupied", Vec::new(), true, output);
+            if !self.kick_villager_out_of_bed(head, output) {
+                self.say(id, "block.minecraft.bed.occupied", Vec::new(), true, output);
+            }
             return;
         }
         self.start_sleep(id, head, head_state, toward, output);
@@ -292,34 +273,25 @@ impl Region {
                 );
                 self.set_block(sleep.head, blocks::AIR, output);
             }
-            let up = self.stand_up(sleep.head, toward, yaw).unwrap_or(Vec3::new(
-                f64::from(sleep.head.x) + 0.5,
-                f64::from(sleep.head.y) + 1.1,
-                f64::from(sleep.head.z) + 0.5,
-            ));
+            let view = super::items::View {
+                region: self,
+                home: sleep.head.chunk(),
+            };
+            let up = rest::stand_up_position(&view, sleep.head, toward, yaw, 0.6, 1.8).unwrap_or(
+                Vec3::new(
+                    f64::from(sleep.head.x) + 0.5,
+                    f64::from(sleep.head.y) + 1.1,
+                    f64::from(sleep.head.z) + 0.5,
+                ),
+            );
             stand = Some(up);
         }
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
         if let Some(up) = stand {
-            let bed = Vec3::new(
-                f64::from(sleep.head.x) + 0.5,
-                f64::from(sleep.head.y),
-                f64::from(sleep.head.z) + 0.5,
-            );
-            let (dx, dz) = (bed.x - up.x, bed.z - up.z);
-            let length = (dx * dx + (bed.y - up.y).powi(2) + dz * dz).sqrt();
-            let (vx, vz) = if length < 1.0e-4 {
-                (0.0, 0.0)
-            } else {
-                (dx / length, dz / length)
-            };
-            let turned = crate::mobs::ai::maths::wrap_degrees(
-                (crate::mobs::ai::maths::atan2(vz, vx) * 57.295_776_367_187_5 - 90.0) as f32,
-            );
             player.pose.position = up;
-            player.pose.yaw = turned;
+            player.pose.yaw = rest::yaw_to_bed(sleep.head, up);
             player.pose.pitch = 0.0;
         }
         player.sleeping = None;
@@ -345,98 +317,36 @@ impl Region {
         }
     }
 
-    /// `AbstractBedBlock.findStandUpPosition` for a player (B 3.3): beside the bed on the
-    /// side away from where they look, then the rest of the ring about it, then on it,
-    /// the first that is safe, and then again without the danger checks.
-    fn stand_up(&self, head: BlockPos, facing: (i32, i32), yaw: f32) -> Option<Vec3> {
-        let mut side = clockwise(facing);
-        if is_facing_angle(side, yaw) {
-            side = (-side.0, -side.1);
-        }
-        let (d, s) = (facing, side);
-        let ring = [
-            (s.0, s.1),
-            (s.0 - d.0, s.1 - d.1),
-            (s.0 - 2 * d.0, s.1 - 2 * d.1),
-            (-2 * d.0, -2 * d.1),
-            (-s.0 - 2 * d.0, -s.1 - 2 * d.1),
-            (-s.0 - d.0, -s.1 - d.1),
-            (-s.0, -s.1),
-            (-s.0 + d.0, -s.1 + d.1),
-            (d.0, d.1),
-            (s.0 + d.0, s.1 + d.1),
-        ];
-        let on = [(0, 0), (-d.0, -d.1)];
-        let below = BlockPos::new(head.x, head.y - 1, head.z);
-        let bunk = self
-            .own_block(below)
-            .is_some_and(|state| is_class(state, BlockClass::AbstractBedBlock));
-        let at =
-            |(dx, dz): (i32, i32), dy: i32| BlockPos::new(head.x + dx, head.y + dy, head.z + dz);
-        let mut order: Vec<(BlockPos, bool)> = Vec::new();
-        if bunk {
-            for dangerous in [true, false] {
-                order.extend(ring.iter().map(|o| (at(*o, 0), dangerous)));
-                order.extend(ring.iter().map(|o| (at(*o, -1), dangerous)));
-                if dangerous {
-                    order.extend(on.iter().map(|o| (at(*o, 0), dangerous)));
-                }
+    /// `AbstractBedBlock.kickVillagerOutOfBed(level, head)` (V 3.4): the first of the
+    /// region's villagers in the head's block that sleeps is woken (it gets up at its
+    /// tick, [`villager::VillagerState::kicked`]). Whether there was one.
+    fn kick_villager_out_of_bed(&mut self, head: BlockPos, output: &mut TickOutput) -> bool {
+        let block = Aabb {
+            min: [f64::from(head.x), f64::from(head.y), f64::from(head.z)],
+            max: [
+                f64::from(head.x) + 1.0,
+                f64::from(head.y) + 1.0,
+                f64::from(head.z) + 1.0,
+            ],
+        };
+        for (key, chunk) in self.entities_in(&block) {
+            let Some(record) = self.entity_record(key, chunk).cloned() else {
+                continue;
+            };
+            if i32::from(record.kind) != entity_types::VILLAGER {
+                continue;
             }
-            order.extend(on.iter().map(|o| (at(*o, 0), false)));
-        } else {
-            for dangerous in [true, false] {
-                order.extend(ring.iter().chain(&on).map(|o| (at(*o, 0), dangerous)));
+            let Ok(mut mob) = Mob::decode(&record.data) else {
+                continue;
+            };
+            if villager::state_of(&mob).1.sleeping.is_none() {
+                continue;
             }
+            villager::update(&mut mob, |own| own.kicked = true);
+            self.commit_mob(&record, chunk, &mob, output);
+            return true;
         }
-        order
-            .into_iter()
-            .find_map(|(pos, checked)| self.safe_dismount(pos, checked))
-    }
-
-    /// `DismountHelper.findSafeDismountLocation` of a player standing at `pos` (B 3.3):
-    /// a block the region cannot read is unsafe.
-    fn safe_dismount(&self, pos: BlockPos, checked: bool) -> Option<Vec3> {
-        let here = self.block(pos)?;
-        let below_pos = BlockPos::new(pos.x, pos.y - 1, pos.z);
-        let below = self.block(below_pos)?;
-        if checked && is_dangerous(here) {
-            return None;
-        }
-        let floor = block_floor_height(non_climbable(here), || non_climbable(below));
-        if !is_floor_valid(floor) {
-            return None;
-        }
-        if checked && floor <= 0.0 && is_dangerous(below) {
-            return None;
-        }
-        let at = Vec3::new(
-            f64::from(pos.x) + 0.5,
-            f64::from(pos.y) + floor,
-            f64::from(pos.z) + 0.5,
-        );
-        let bounds = Aabb::of_entity([at.x, at.y, at.z], 0.6, 1.8);
-        let view = super::items::View {
-            region: self,
-            home: pos.chunk(),
-        };
-        let context = Context {
-            bottom: at.y,
-            fall_distance: 0.0,
-            falling_block: false,
-            noclip: None,
-        };
-        if !block_collisions(&view, context, &bounds).is_empty() {
-            return None;
-        }
-        let above = BlockPos::new(pos.x, pos.y + 1, pos.z);
-        let invalid = |p: BlockPos| {
-            self.block(p)
-                .is_none_or(|state| in_tag(state, "minecraft:invalid_spawn_inside"))
-        };
-        if invalid(pos) || invalid(above) {
-            return None;
-        }
-        Some(at)
+        false
     }
 
     /// The region's view of the level's players for the night (B 4.1): the world's players

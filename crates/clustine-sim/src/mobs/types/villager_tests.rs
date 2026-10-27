@@ -419,6 +419,10 @@ fn clients_are_shown_a_villager_s_unhappiness_data_and_settling_and_a_baby_s_siz
                 true
             ),
             (villager::FINALIZED_INDEX, DataShown::Boolean(false), true),
+            // Its pose and its bed, which a sleeper shows (N10's part V1): standing, in
+            // no bed, as a fresh one is.
+            (6, DataShown::Pose(0), true),
+            (14, DataShown::OptionalBlockPos(None), true),
         ]
     );
     let mut baby = Mob::fresh();

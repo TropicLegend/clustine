@@ -29,6 +29,8 @@ pub(crate) mod memory;
 pub(crate) mod sensors;
 #[cfg(test)]
 mod sensors_tests;
+/// The villager's own sensors (part V1 of N10).
+pub(crate) mod sensors_villager;
 #[cfg(test)]
 mod tests;
 

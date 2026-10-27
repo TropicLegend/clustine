@@ -119,7 +119,7 @@ impl KeptShot for InteractWithDoor {
             remember(doors.get_or_insert_with(Vec::new), nodes.next);
         }
         if let Some(mut doors) = doors {
-            close_passed(cx, &nodes, &mut doors);
+            close_passed(cx, Some(&nodes), &mut doors);
             cx.memories
                 .set(MemoryKind::DoorsToClose, Value::Blocks(doors));
         }
@@ -127,11 +127,22 @@ impl KeptShot for InteractWithDoor {
     }
 }
 
+/// `closeDoorsThatIHaveOpenedOrPassedThrough(level, mob, null, null, doors, mobs)` of a
+/// villager lying down (`SleepInBed.start`): every remembered door, no path's nodes kept.
+pub(crate) fn close_doors_passed(cx: &mut Cx<'_, '_, '_>) {
+    let Some(Value::Blocks(mut doors)) = cx.memories.get(MemoryKind::DoorsToClose) else {
+        return;
+    };
+    close_passed(cx, None, &mut doors);
+    cx.memories
+        .set(MemoryKind::DoorsToClose, Value::Blocks(doors));
+}
+
 /// `closeDoorsThatIHaveOpenedOrPassedThrough`: each remembered door but the two nodes',
 /// forgotten where it is three blocks or more away, no longer an open door, or (without
 /// closing it) on the way of another mob of the kind within 2 of it; else closed and
 /// forgotten.
-fn close_passed(cx: &mut Cx<'_, '_, '_>, nodes: &Nodes, doors: &mut Vec<BlockPos>) {
+fn close_passed(cx: &mut Cx<'_, '_, '_>, nodes: Option<&Nodes>, doors: &mut Vec<BlockPos>) {
     let world = cx.ai.tick.world;
     let position = cx.ai.position();
     let others: Vec<EntityId> = match cx.memories.get(MemoryKind::Mobs) {
@@ -141,7 +152,7 @@ fn close_passed(cx: &mut Cx<'_, '_, '_>, nodes: &Nodes, doors: &mut Vec<BlockPos
     let kind = cx.ai.tick.kind;
     let mut kept = Vec::new();
     for door in std::mem::take(doors) {
-        if door == nodes.previous || door == nodes.next {
+        if nodes.is_some_and(|nodes| door == nodes.previous || door == nodes.next) {
             kept.push(door);
             continue;
         }

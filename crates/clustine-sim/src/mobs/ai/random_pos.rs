@@ -91,7 +91,19 @@ pub(crate) fn random_pos_toward_direction(
 /// middle of its bottom.
 pub(crate) fn generate(
     ai: &mut Ai<'_, '_>,
+    supplier: impl FnMut(&mut Ai<'_, '_>) -> Option<BlockPos>,
+) -> Option<Vec3> {
+    generate_scored(ai, supplier, |ai, pos| {
+        f64::from(ai.tick.mob_type.walk_target_value(ai, pos))
+    })
+}
+
+/// `RandomPos.generateRandomPos(supplier, scorer)`: as [`generate`], the places liked by
+/// `scorer`.
+fn generate_scored(
+    ai: &mut Ai<'_, '_>,
     mut supplier: impl FnMut(&mut Ai<'_, '_>) -> Option<BlockPos>,
+    scorer: impl Fn(&Ai<'_, '_>, BlockPos) -> f64,
 ) -> Option<Vec3> {
     let mut best: Option<BlockPos> = None;
     let mut best_score = f64::NEG_INFINITY;
@@ -99,7 +111,7 @@ pub(crate) fn generate(
         let Some(pos) = supplier(ai) else {
             continue;
         };
-        let score = f64::from(ai.tick.mob_type.walk_target_value(ai, pos));
+        let score = scorer(ai, pos);
         if score > best_score {
             best_score = score;
             best = Some(pos);
@@ -309,6 +321,26 @@ pub(crate) fn land_pos(ai: &mut Ai<'_, '_>, horizontal: i32, vertical: i32) -> O
         let pos = land_towards(ai, f64::from(horizontal), restricted, direction)?;
         land_up_out_of_solid(ai, pos)
     })
+}
+
+/// `LandRandomPos.getPos(mob, h, v, scorer)`: as [`land_pos`], the places liked by
+/// `scorer` (a villager's search for the nearest village, `GoToClosestVillage`).
+pub(crate) fn land_pos_scored(
+    ai: &mut Ai<'_, '_>,
+    horizontal: i32,
+    vertical: i32,
+    scorer: impl Fn(&Ai<'_, '_>, BlockPos) -> f64,
+) -> Option<Vec3> {
+    let restricted = mob_restricted(ai, f64::from(horizontal));
+    generate_scored(
+        ai,
+        |ai| {
+            let direction = random_direction(ai, horizontal, vertical);
+            let pos = land_towards(ai, f64::from(horizontal), restricted, direction)?;
+            land_up_out_of_solid(ai, pos)
+        },
+        scorer,
+    )
 }
 
 /// `LandRandomPos.getPosTowards(mob, h, v, target)`.

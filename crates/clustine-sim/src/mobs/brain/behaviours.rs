@@ -35,6 +35,7 @@ pub(crate) mod liquids;
 pub(crate) mod looking;
 pub(crate) mod panic;
 pub(crate) mod ramming;
+pub(crate) mod rest;
 pub(crate) mod social;
 pub(crate) mod social_villagers;
 pub(crate) mod villagers;

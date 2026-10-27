@@ -1,43 +1,41 @@
 //! The villager as a body (`Villager`, `AbstractVillager`; `docs/groundwork/n7k-brief.md`
-//! section 2 and `n7k-plan.md` section 10, "The villager"), part K2: an ageable mob of a
-//! type, a profession and a level (`VillagerData`), its type settled by the biome at its
-//! feet unless a saved one settled it, which floats, strolls by day and looks about,
-//! panics by a zombie or when hit, goes for food on the ground and keeps it in its eight
-//! slots, rests at night as a villager with no bed does, and shakes its head at a
-//! player who would trade with it.
+//! section 2 and `n7k-plan.md` section 10, "The villager"), part K2, and its brain
+//! (`docs/groundwork/n10-brief.md` section 1, cited as V; `n10-plan.md` section 5), part
+//! V1 of N10: an ageable mob of a type, a profession and a level (`VillagerData`), its
+//! type settled by the biome at its feet unless a saved one settled it, which keeps food
+//! and its profession's wants in its eight slots.
 //!
-//! Its mind is a brain ([`PROVIDER`]): the game's nine sensors, of which those of points
-//! of interest find nothing (the bed's, the secondary points', the golems' and the
-//! babies' are kept for their start delays and the bed's draw); the core package
-//! reduced to what runs without points of interest, trading, bells and raids (`Swim`,
-//! `InteractWithDoor`, `LookAtTargetSink`, `VillagerPanicTrigger`, `MoveToTargetSink`,
-//! `GoToWantedItem`); the idle package of B 7.14.2 (a stroll, walking to what it looks
-//! at, doing nothing, and the full look); the panic package whole; the rest package's
-//! part that runs without a home; and the schedule (`villager_schedule`'s activities by
-//! the overworld's clock), whose work, meeting and play need what no villager has
-//! (`job_site`, `meeting_point`, a baby's play package), so that those times are idle.
+//! Its mind is a brain ([`PROVIDER`], `Villager.BRAIN_PROVIDER`): the game's nine sensors
+//! (the bed's, the babies', the secondary points' and the golem's are
+//! `mobs/brain/sensors_villager.rs`), and its ten activities with their packages as
+//! `VillagerGoalPackages` makes them (V 1.4, D10 B section 9), its schedule
+//! (`villager_schedule`'s activities by the overworld's clock) reaching work where it has
+//! a job site, the meeting where it has a meeting point, and a baby's play. The packages
+//! name the behaviours of work and points of interest (`behaviours/work.rs`, part V2) and
+//! of its social life (`behaviours/social_villagers.rs`, part V3) by their constructors;
+//! its own walks, sleep and play are `behaviours/rest.rs` and `behaviours/villagers.rs`.
+//! A villager sleeps in its bed (`startSleeping`, the bed's `occupied`), gets up at dawn,
+//! when its bed is gone or when a player uses the bed (`region/sleep.rs`).
 //!
 //! Its state ([`VillagerState`]) follows what every ageable mob keeps
 //! ([`animal::Animal`]), so that the golden dandelion and a baby's growing are the
-//! animals'.
+//! animals'. What its neighbours read of it ([`Shown`]) is written from its brain at the
+//! end of each of its ticks, so that a copy of it in another region shows it too.
 //!
 //! **Across a line**: what it sees and runs from is the region's land and copies; what
 //! hurt it and walked over a line is kept, as every brain's; its type and data are in
 //! its record, which copies carry.
 //!
-//! Named differences: no trades, so a click never opens a screen and the template's
-//! `Offers` are not kept (an igloo's cleric shakes its head too); the statistic of a
-//! talk is not kept; no gossip, reputation, golem summoning, raids, points of interest,
-//! work or beds (N10, N9); the stroll is `VillageBoundRandomStroll` with no village
-//! anywhere, which is `LandRandomPos.getPos(10, 7)`, so villagers leave their village;
-//! the core's poi and trading behaviours (`WakeUp`, `ReactToBell`, `SetRaidStatus`,
-//! `ValidateNearbyPoi`, `PoiCompetitorScan`, `LookAndFollowTradingPlayerSink`,
-//! `AcquirePoi`, `GoToPotentialJobSite`, `YieldJobSite`, `AssignProfessionFromJobSite`,
-//! `ResetProfession`) and the idle package's interactions, gifts, trades, bed jumping
-//! and love are left out, so that its draws are not the game's once they would run;
-//! the schedule's activity is set at its first tick, not at its construction; a load of
-//! a template's tag draws nothing for the brain it makes again (`refreshBrain`), as the
-//! hook has no stream; the template's `Inventory`, `Gossips` and `Xp` are not read.
+//! Named differences: the profession its core and work packages are made for is read
+//! at each tick, where the game's is the one of the brain's last making, which differs
+//! only between a profession's change and the making of the brain again in the same
+//! tick; a baby's brain has the work activity, and an adult's the play, which their
+//! schedules never ask; the schedule's activity is set at its first tick, not at its
+//! construction; a load of a template's tag draws nothing for the brain it makes again
+//! (`refreshBrain`), as the hook has no stream; the template's `Inventory`, `Gossips`
+//! and `Xp` are not read; raids are none until N10d, so the pre-raid, raid and hide
+//! activities are never reached but by a bell (part V3); a player's use of a bed it
+//! sleeps in wakes it at its next tick, which is this tick's where the use comes first.
 
 use clustine_blocks::data::item_in_tag;
 use clustine_data::villagers::{self, professions, types as kinds};
@@ -57,19 +55,25 @@ use crate::mobs::body::{Event, ladder};
 use crate::mobs::brain::behaviours::fleeing::away_from;
 use crate::mobs::brain::behaviours::items::{GoToWantedItem, go_to_wanted_item};
 use crate::mobs::brain::behaviours::looking::{LookAt, look_at};
-use crate::mobs::brain::behaviours::social_villagers;
+use crate::mobs::brain::behaviours::rest::{
+    self, go_to_closest_village, inside_brownian_walk, move_to_sky_seeing_spot,
+    set_closest_home_as_walk_target, sleep_in_bed, village_bound_random_stroll,
+    village_bound_random_stroll_within, wake_up,
+};
+use crate::mobs::brain::behaviours::social_villagers::{self as social};
 use crate::mobs::brain::behaviours::villagers::{
-    calm_down, from_schedule, go_to_closest_village, inside_brownian_walk, panic_trigger,
-    set_raid_status, wants_a_home,
+    calm_down, from_schedule, jump_on_bed, panic_trigger, play_tag_with_other_kids,
+    reset_raid_status, set_raid_status,
 };
 use crate::mobs::brain::behaviours::walking::{
-    StrollTo, look_sink, sink, stroll_to, walk_to_look_target,
+    MoveToTargetSink, look_sink, sink, walk_to_look_target,
 };
-use crate::mobs::brain::behaviours::{doors, panic};
-use crate::mobs::brain::sensors::{self, InertSensor, NearestItemSensor, VILLAGER_HOSTILES};
+use crate::mobs::brain::behaviours::{doors, panic, trigger_if, work};
+use crate::mobs::brain::sensors::{self, NearestItemSensor, VILLAGER_HOSTILES};
+use crate::mobs::brain::sensors_villager;
 use crate::mobs::brain::{
     self, Activity, ActivityData, Behaviour, Cx, DoNothing, Gate, HeldTimed, MemoryKind, Order,
-    Provider, Running, Status,
+    Provider, Running, Status, Value,
 };
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::aabb::Aabb;
@@ -158,6 +162,21 @@ pub(crate) struct VillagerState {
     /// `region/trading.rs`) and let go after its next brain by the trade's reputation
     /// event (part V3's `after_brain`).
     pub(crate) last_traded_player: Option<clustine_world::PlayerId>,
+    /// The head of the bed it sleeps in (`LivingEntity.getSleepingPos`), none awake.
+    pub(crate) sleeping: Option<clustine_world::BlockPos>,
+    /// A player used the bed it sleeps in (`kickVillagerOutOfBed`): it gets up at its
+    /// next tick (`region/sleep.rs`).
+    pub(crate) kicked: bool,
+    /// What a baby's bed sensor keeps between its scans (`NearestBedSensor`'s
+    /// `lastUpdate` and its cache of beds tried).
+    pub(crate) bed_search: BedSearch,
+}
+
+/// `NearestBedSensor`'s own fields, which the game keeps in the sensor of each brain.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BedSearch {
+    pub(crate) last_update: i64,
+    pub(crate) cache: rest::BedCache,
 }
 
 /// What a villager's neighbours read of it, kept in its type's state so that a copy of it
@@ -197,6 +216,9 @@ impl Default for VillagerState {
             last_restock_check_day: 0,
             shown: Shown::default(),
             last_traded_player: None,
+            sleeping: None,
+            kicked: false,
+            bed_search: BedSearch::default(),
         }
     }
 }
@@ -340,14 +362,16 @@ pub(crate) fn scheduled(day: u64, baby: bool) -> Activity {
         .1
 }
 
-/// What `setActiveActivityIfPossible` makes of a scheduled activity: idle, the default,
-/// for those this brain never added or whose memories no villager has (work, meeting,
-/// play).
-fn possible(activity: Activity) -> Activity {
-    match activity {
-        Activity::Rest => Activity::Rest,
-        _ => Activity::Idle,
-    }
+/// What `setActiveActivityIfPossible` makes of a scheduled activity for a brain whose
+/// memories are `memories`: work only with a job site and the meeting only with a
+/// meeting point (their activities' conditions); idle, the default, otherwise.
+fn possible(activity: Activity, memories: &brain::Memories) -> Activity {
+    let met = match activity {
+        Activity::Work => memories.check(MemoryKind::JobSite, Status::Present),
+        Activity::Meet => memories.check(MemoryKind::MeetingPoint, Status::Present),
+        _ => true,
+    };
+    if met { activity } else { Activity::Idle }
 }
 
 /// `brain.updateActivityFromSchedule(attributes, gameTime, position)`: more than 20 game
@@ -375,7 +399,8 @@ fn schedule_now(tick: &mut MobTick<'_>) {
     let day = tick.world.day();
     let baby = animal::is_baby(&tick.mob);
     update(&mut tick.mob, |own| own.schedule_at = Some(time));
-    brain::set_recorded_activity(&mut tick.mob, possible(scheduled(day, baby)));
+    let memories = brain::memories_of(&PROVIDER, &tick.mob, tick.lived);
+    brain::set_recorded_activity(&mut tick.mob, possible(scheduled(day, baby), &memories));
 }
 
 /// `NEAREST_ITEMS`: what it wants to pick up.
@@ -383,35 +408,27 @@ static NEAREST_ITEMS: NearestItemSensor = NearestItemSensor {
     wants: |ai, stack| wants_to_pick_up(&ai.tick.mob, stack),
 };
 
-/// `VILLAGER_BABIES`, `SECONDARY_POIS` and `GOLEM_DETECTED`, which find nothing that
-/// anything of it reads.
-static VILLAGER_BABIES: InertSensor = InertSensor {
-    rate: 20,
-    requires: &[MemoryKind::VisibleVillagerBabies],
-};
-static SECONDARY_POIS: InertSensor = InertSensor {
-    rate: 40,
-    requires: &[MemoryKind::SecondaryJobSite],
-};
-static GOLEM_DETECTED: InertSensor = InertSensor {
-    rate: 200,
-    requires: &[MemoryKind::VisibleMobs, MemoryKind::GolemDetectedRecently],
-};
-
 /// `Villager.BRAIN_PROVIDER` (Villager.txt 2313–2343): its nine sensors in the game's
-/// order and its activities.
+/// order and its activities. The memories of its points of interest
+/// (`Villager.POI_MEMORIES`) are named here too, so that they are kept whichever of the
+/// behaviours that name them are built.
 pub(crate) static PROVIDER: Provider = Provider {
-    memories: &[],
+    memories: &[
+        MemoryKind::Home,
+        MemoryKind::JobSite,
+        MemoryKind::PotentialJobSite,
+        MemoryKind::MeetingPoint,
+    ],
     sensors: &[
         &sensors::NEAREST_LIVING_ENTITIES,
         &sensors::NEAREST_PLAYERS,
         &NEAREST_ITEMS,
-        &sensors::NEAREST_BED,
+        &sensors_villager::NEAREST_BED,
         &sensors::HURT_BY,
         &VILLAGER_HOSTILES,
-        &VILLAGER_BABIES,
-        &SECONDARY_POIS,
-        &GOLEM_DETECTED,
+        &sensors_villager::VILLAGER_BABIES,
+        &sensors_villager::SECONDARY_POIS,
+        &sensors_villager::GOLEM_DETECTED,
     ],
     activities,
     core: &[Activity::Core],
@@ -421,6 +438,93 @@ pub(crate) static PROVIDER: Provider = Provider {
 /// `canPickUpLoot()` of the villager its brain runs.
 fn can_pick_up(cx: &Cx<'_, '_, '_>) -> bool {
     cx.ai.tick.mob.body.flags.picks_up_loot
+}
+
+/// The profession of the villager whose brain runs, by its registry id.
+fn profession(cx: &Cx<'_, '_, '_>) -> u8 {
+    state_of(&cx.ai.tick.mob).1.data.profession
+}
+
+/// A behaviour its package makes for the villager's profession (`getCorePackage(
+/// profession, …)`, `getWorkPackage`): one made for each profession it may have, the one
+/// of the profession it has now asked to start (see the module's comment). Each keeps its
+/// own state; at most one runs, since a profession changes only as the brain is made
+/// again.
+struct ByProfession {
+    options: Vec<Box<dyn Behaviour>>,
+    /// The option of the villager's profession now.
+    pick: fn(&Cx<'_, '_, '_>) -> usize,
+}
+
+impl Behaviour for ByProfession {
+    fn required(&self, into: &mut std::collections::BTreeSet<MemoryKind>) {
+        for option in &self.options {
+            option.required(into);
+        }
+    }
+
+    fn running(&self) -> bool {
+        self.options.iter().any(|option| option.running())
+    }
+
+    fn try_start(&mut self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        let at = (self.pick)(cx).min(self.options.len() - 1);
+        self.options[at].try_start(cx)
+    }
+
+    fn tick_or_stop(&mut self, cx: &mut Cx<'_, '_, '_>) {
+        for option in &mut self.options {
+            if option.running() {
+                option.tick_or_stop(cx);
+            }
+        }
+    }
+
+    fn do_stop(&mut self, cx: &mut Cx<'_, '_, '_>) {
+        for option in &mut self.options {
+            if option.running() {
+                option.do_stop(cx);
+            }
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.options.iter().map(|option| option.count()).sum()
+    }
+
+    fn load(&mut self, first: u16, parts: &std::collections::BTreeMap<u16, clustine_world::Entry>) {
+        let mut next = first;
+        for option in &mut self.options {
+            option.load(next, parts);
+            next += option.count() as u16;
+        }
+    }
+
+    fn save(&self, first: u16, into: &mut Vec<clustine_world::Entry>) {
+        let mut next = first;
+        for option in &self.options {
+            option.save(next, into);
+            next += option.count() as u16;
+        }
+    }
+
+    fn left(&mut self, now: u32, time: i64) {
+        for option in &mut self.options {
+            option.left(now, time);
+        }
+    }
+}
+
+/// `ValidateNearbyPoi.create(profession.heldJobSite(), JOB_SITE)` (core 0) for the
+/// profession it has, among one for each of the fifteen.
+fn validate_job_site() -> Box<dyn Behaviour> {
+    let count = villagers::PROFESSION_NAMES.len();
+    Box::new(ByProfession {
+        options: (0..count)
+            .map(|profession| work::validate_job_site(profession as u8))
+            .collect(),
+        pick: |cx| usize::from(profession(cx)),
+    })
 }
 
 /// `getMinimalLookBehavior()` (VillagerGoalPackages.txt 884–914): 5, a `RunOne` of a
@@ -460,18 +564,59 @@ fn full_look() -> (i32, Box<dyn Behaviour>) {
     (5, Box::new(Gate::run_one(children)))
 }
 
-/// The villager's activities (`lambda$static$0`, Villager.txt 2216–2311, and
-/// `VillagerGoalPackages`), each as the module's comment says it runs here.
-fn activities() -> Vec<ActivityData> {
-    let core = ActivityData {
+/// `DoNothing(min, max)`, boxed.
+fn do_nothing(min: i64, max: i64) -> Box<dyn Behaviour> {
+    Box::new(HeldTimed::new(DoNothing { min, max }))
+}
+
+/// A gate of one child, in order, that erases `memory` as it stops: the trade between
+/// villagers' (`interaction_target`) and love's (`breed_target`) in the idle and meeting
+/// packages (an ordered gate draws nothing).
+fn erasing_gate(memory: MemoryKind, child: Box<dyn Behaviour>) -> Box<dyn Behaviour> {
+    Box::new(Gate::new(
+        Vec::new(),
+        vec![memory],
+        Order::Ordered,
+        Running::RunOne,
+        vec![(child, 1)],
+    ))
+}
+
+/// `TriggerGate.triggerOneShuffled(children)`: its children shuffled at each try (one
+/// draw a child) and the first that fires.
+fn trigger_one_shuffled(children: Vec<(Box<dyn Behaviour>, u32)>) -> Box<dyn Behaviour> {
+    Box::new(Gate::run_one(children))
+}
+
+/// `VillagerGoalPackages.raidExistsAndNotVictory` (D10 B section 9, #8): a raid near
+/// that is won. None is kept until N10d.
+fn raid_won(_: &mut Cx<'_, '_, '_>) -> bool {
+    false
+}
+
+/// `raidExistsAndActive` (#9): a raid near, active, neither won nor lost. None is kept
+/// until N10d.
+fn raid_active(_: &mut Cx<'_, '_, '_>) -> bool {
+    false
+}
+
+/// The core package (`getCorePackage(profession, 0.5)`, VillagerGoalPackages.txt 17–180).
+fn core_package() -> ActivityData {
+    ActivityData {
         activity: Activity::Core,
         behaviours: vec![
             (0, panic::swim(0.8)),
             (0, doors::interact_with_door()),
             (0, look_sink(45, 90)),
             (0, panic_trigger()),
+            (0, wake_up()),
+            (0, social::react_to_bell()),
             (0, set_raid_status()),
+            (0, validate_job_site()),
+            (0, work::validate_potential_job_site()),
             (1, sink()),
+            (2, work::poi_competitor_scan()),
+            (3, social::look_and_follow_trading_player(SPEED)),
             (
                 5,
                 go_to_wanted_item(GoToWantedItem {
@@ -482,30 +627,172 @@ fn activities() -> Vec<ActivityData> {
                     can_pick_up,
                 }),
             ),
+            (6, work::acquire_job_site()),
+            (7, work::go_to_potential_job_site(SPEED)),
+            (8, work::yield_job_site(SPEED)),
+            (10, work::acquire_home()),
+            (10, work::acquire_meeting_point()),
+            (10, work::assign_profession_from_job_site()),
+            (10, work::reset_profession()),
         ],
         conditions: Vec::new(),
         erase: Vec::new(),
+    }
+}
+
+/// The `RunOne` of the work package for a farmer or for any other profession (the
+/// farmer's composter, and its weights of harvest and bone meal).
+fn work_run_one(farmer: bool) -> Box<dyn Behaviour> {
+    let work_at = if farmer {
+        work::work_at_composter()
+    } else {
+        work::work_at_poi()
     };
-    let rest = ActivityData {
+    Box::new(Gate::run_one(vec![
+        (work_at, 7),
+        (work::stroll_around_poi(MemoryKind::JobSite, 0.4, 4), 2),
+        (work::stroll_to_poi(MemoryKind::JobSite, 0.4, 1, 10), 5),
+        (
+            work::stroll_to_poi_list(
+                MemoryKind::SecondaryJobSite,
+                SPEED,
+                1,
+                6,
+                MemoryKind::JobSite,
+            ),
+            5,
+        ),
+        (work::harvest_farmland(), if farmer { 2 } else { 5 }),
+        (work::use_bonemeal(), if farmer { 4 } else { 7 }),
+    ]))
+}
+
+/// The work package (`getWorkPackage(profession, 0.5)`, 202–313), active with a job site.
+fn work_package() -> ActivityData {
+    let player = entity_types::PLAYER as u16;
+    ActivityData {
+        activity: Activity::Work,
+        behaviours: vec![
+            minimal_look(),
+            (
+                5,
+                Box::new(ByProfession {
+                    options: vec![work_run_one(true), work_run_one(false)],
+                    pick: |cx| usize::from(i32::from(profession(cx)) != professions::FARMER),
+                }),
+            ),
+            (10, social::show_trades_to_player(400, 1600)),
+            (10, social::set_look_and_interact(player, 4)),
+            (
+                2,
+                work::set_walk_target_from_block_memory(MemoryKind::JobSite, SPEED, 9, 100, 1200),
+            ),
+            (3, social::give_gift_to_hero(100)),
+            (99, from_schedule(update_from_schedule)),
+        ],
+        conditions: vec![(MemoryKind::JobSite, Status::Present)],
+        erase: Vec::new(),
+    }
+}
+
+/// The play package (`getPlayPackage(0.5)`, 314–389), a baby's.
+fn play_package() -> ActivityData {
+    let (villager, cat) = (entity_types::VILLAGER as u16, entity_types::CAT as u16);
+    ActivityData {
+        activity: Activity::Play,
+        behaviours: vec![
+            (0, Box::new(MoveToTargetSink::new(80, 120))),
+            full_look(),
+            (5, play_tag_with_other_kids()),
+            (
+                5,
+                Box::new(Gate::new(
+                    vec![(MemoryKind::VisibleVillagerBabies, Status::Absent)],
+                    Vec::new(),
+                    Order::Shuffled,
+                    Running::RunOne,
+                    vec![
+                        (
+                            social::interact_with(
+                                villager,
+                                8,
+                                MemoryKind::InteractionTarget,
+                                SPEED,
+                                2,
+                            ),
+                            2,
+                        ),
+                        (
+                            social::interact_with(cat, 8, MemoryKind::InteractionTarget, SPEED, 2),
+                            1,
+                        ),
+                        (village_bound_random_stroll(SPEED), 1),
+                        (walk_to_look_target(SPEED, 2), 1),
+                        (jump_on_bed(SPEED), 2),
+                        (do_nothing(20, 40), 2),
+                    ],
+                )),
+            ),
+            (99, from_schedule(update_from_schedule)),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    }
+}
+
+/// The meeting package (`getMeetPackage(0.5)`, 455–534), active with a meeting point.
+fn meet_package() -> ActivityData {
+    let player = entity_types::PLAYER as u16;
+    ActivityData {
+        activity: Activity::Meet,
+        behaviours: vec![
+            (
+                2,
+                trigger_one_shuffled(vec![
+                    (
+                        work::stroll_around_poi(MemoryKind::MeetingPoint, 0.4, 40),
+                        2,
+                    ),
+                    (social::socialize_at_bell(), 2),
+                ]),
+            ),
+            (10, social::show_trades_to_player(400, 1600)),
+            (10, social::set_look_and_interact(player, 4)),
+            (
+                2,
+                work::set_walk_target_from_block_memory(
+                    MemoryKind::MeetingPoint,
+                    SPEED,
+                    6,
+                    100,
+                    200,
+                ),
+            ),
+            (3, social::give_gift_to_hero(100)),
+            (3, work::validate_meeting_point()),
+            (
+                3,
+                erasing_gate(MemoryKind::InteractionTarget, social::trade_with_villager()),
+            ),
+            full_look(),
+            (99, from_schedule(update_from_schedule)),
+        ],
+        conditions: vec![(MemoryKind::MeetingPoint, Status::Present)],
+        erase: Vec::new(),
+    }
+}
+
+/// The rest package (`getRestPackage(0.5)`, 390–454).
+fn rest_package() -> ActivityData {
+    ActivityData {
         activity: Activity::Rest,
         behaviours: vec![
             (
                 2,
-                wants_a_home(&[
-                    MemoryKind::WalkTarget,
-                    MemoryKind::CantReachWalkTargetSince,
-                    MemoryKind::Home,
-                ]),
+                work::set_walk_target_from_block_memory(MemoryKind::Home, SPEED, 1, 150, 1200),
             ),
-            (3, wants_a_home(&[MemoryKind::Home])),
-            (
-                3,
-                wants_a_home(&[
-                    MemoryKind::Home,
-                    MemoryKind::LastWoken,
-                    MemoryKind::NearestBed,
-                ]),
-            ),
+            (3, work::validate_home()),
+            (3, sleep_in_bed()),
             (
                 5,
                 Box::new(Gate::new(
@@ -514,10 +801,10 @@ fn activities() -> Vec<ActivityData> {
                     Order::Shuffled,
                     Running::RunOne,
                     vec![
-                        (wants_a_home(&[MemoryKind::WalkTarget, MemoryKind::Home]), 1),
+                        (set_closest_home_as_walk_target(SPEED), 1),
                         (inside_brownian_walk(SPEED), 4),
                         (go_to_closest_village(SPEED, 4), 2),
-                        (Box::new(HeldTimed::new(DoNothing { min: 20, max: 40 })), 2),
+                        (do_nothing(20, 40), 2),
                     ],
                 )),
             ),
@@ -526,60 +813,229 @@ fn activities() -> Vec<ActivityData> {
         ],
         conditions: Vec::new(),
         erase: Vec::new(),
-    };
-    let idle = ActivityData {
+    }
+}
+
+/// The idle package (`getIdlePackage(0.5)`, 535–663).
+fn idle_package() -> ActivityData {
+    let (villager, cat, player) = (
+        entity_types::VILLAGER as u16,
+        entity_types::CAT as u16,
+        entity_types::PLAYER as u16,
+    );
+    ActivityData {
         activity: Activity::Idle,
         behaviours: vec![
             (
                 2,
                 Box::new(Gate::run_one(vec![
                     (
-                        stroll_to(
-                            SPEED,
-                            StrollTo::Land {
-                                horizontal: 10,
-                                vertical: 7,
-                                in_water: true,
-                            },
-                        ),
+                        social::interact_with(villager, 8, MemoryKind::InteractionTarget, SPEED, 2),
+                        2,
+                    ),
+                    (social::interact_with_breedable(8, SPEED, 2), 1),
+                    (
+                        social::interact_with(cat, 8, MemoryKind::InteractionTarget, SPEED, 2),
                         1,
                     ),
+                    (village_bound_random_stroll(SPEED), 1),
                     (walk_to_look_target(SPEED, 2), 1),
-                    (Box::new(HeldTimed::new(DoNothing { min: 30, max: 60 })), 1),
+                    (jump_on_bed(SPEED), 1),
+                    (do_nothing(30, 60), 1),
                 ])),
+            ),
+            (3, social::give_gift_to_hero(100)),
+            (3, social::set_look_and_interact(player, 4)),
+            (3, social::show_trades_to_player(400, 1600)),
+            (
+                3,
+                erasing_gate(MemoryKind::InteractionTarget, social::trade_with_villager()),
+            ),
+            (
+                3,
+                erasing_gate(MemoryKind::BreedTarget, social::villager_make_love()),
             ),
             full_look(),
             (99, from_schedule(update_from_schedule)),
         ],
         conditions: Vec::new(),
         erase: Vec::new(),
-    };
-    // `getPanicPackage(0.5)`: its speed half as much again.
+    }
+}
+
+/// The panic package (`getPanicPackage(0.5)`, 664–700): its speed half as much again.
+fn panic_package() -> ActivityData {
     let fleeing = SPEED * 1.5;
-    let panic = ActivityData {
+    ActivityData {
         activity: Activity::Panic,
         behaviours: vec![
             (0, calm_down(update_from_schedule)),
             (1, away_from(MemoryKind::NearestHostile, fleeing, 6, false)),
             (1, away_from(MemoryKind::HurtByEntity, fleeing, 6, false)),
-            (
-                3,
-                stroll_to(
-                    fleeing,
-                    StrollTo::Land {
-                        horizontal: 2,
-                        vertical: 2,
-                        in_water: true,
-                    },
-                ),
-            ),
+            (3, village_bound_random_stroll_within(fleeing, 2, 2)),
             minimal_look(),
         ],
         conditions: Vec::new(),
         erase: Vec::new(),
-    };
-    vec![core, rest, idle, panic]
+    }
 }
+
+/// The pre-raid package (`getPreRaidPackage(0.5)`, 701–737).
+fn pre_raid_package() -> ActivityData {
+    let hurried = SPEED * 1.5;
+    ActivityData {
+        activity: Activity::PreRaid,
+        behaviours: vec![
+            (0, social::ring_bell()),
+            (
+                0,
+                trigger_one_shuffled(vec![
+                    (
+                        work::set_walk_target_from_block_memory(
+                            MemoryKind::MeetingPoint,
+                            hurried,
+                            2,
+                            150,
+                            200,
+                        ),
+                        6,
+                    ),
+                    (village_bound_random_stroll(hurried), 2),
+                ]),
+            ),
+            minimal_look(),
+            (99, reset_raid_status(update_from_schedule)),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    }
+}
+
+/// The raid package (`getRaidPackage(0.5)`, 738–787; its predicates D10 B section 9).
+fn raid_package() -> ActivityData {
+    ActivityData {
+        activity: Activity::Raid,
+        behaviours: vec![
+            (
+                0,
+                trigger_if(
+                    raid_won,
+                    trigger_one_shuffled(vec![
+                        (move_to_sky_seeing_spot(SPEED), 5),
+                        (village_bound_random_stroll(SPEED * 1.1), 2),
+                    ]),
+                ),
+            ),
+            (0, social::celebrate_villagers_survived_raid(600, 600)),
+            (
+                2,
+                trigger_if(raid_active, social::locate_hiding_place(24, SPEED * 1.4, 1)),
+            ),
+            minimal_look(),
+            (99, reset_raid_status(update_from_schedule)),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    }
+}
+
+/// The hiding package (`getHidePackage(0.5)`, 788–810).
+fn hide_package() -> ActivityData {
+    ActivityData {
+        activity: Activity::Hide,
+        behaviours: vec![
+            (0, social::set_hidden_state(15, 3)),
+            (1, social::locate_hiding_place(32, SPEED * 1.25, 2)),
+            minimal_look(),
+        ],
+        conditions: Vec::new(),
+        erase: Vec::new(),
+    }
+}
+
+/// The villager's activities (`lambda$static$0`, Villager.txt 2216–2311), in the order
+/// the game adds them, which orders those of one priority and one bucket (B 7.1.1.6): a
+/// baby's play or an adult's work first (both here, see the module's comment), then the
+/// core, the meeting, rest, idle, panic, pre-raid, raid and hiding. None erases anything
+/// as it stops.
+fn activities() -> Vec<ActivityData> {
+    vec![
+        play_package(),
+        work_package(),
+        core_package(),
+        meet_package(),
+        rest_package(),
+        idle_package(),
+        panic_package(),
+        pre_raid_package(),
+        raid_package(),
+        hide_package(),
+    ]
+}
+
+/// What its neighbours read of it, from its state and its brain's memories as its tick
+/// leaves them (decision 3).
+fn shown_now(mob: &Mob, lived: u32) -> Shown {
+    let (_, own) = state_of(mob);
+    let memories = brain::memories_of(&PROVIDER, mob, lived.saturating_add(1));
+    let block = |kind: MemoryKind| match memories.get(kind) {
+        Some(Value::Block(pos)) => Some(pos),
+        _ => None,
+    };
+    let last_slept = match memories.get(MemoryKind::LastSlept) {
+        Some(Value::Long(time)) => Some(time),
+        _ => None,
+    };
+    let interaction_target = match memories.get(MemoryKind::InteractionTarget) {
+        Some(Value::Entity(key)) => Some(key),
+        _ => None,
+    };
+    // `countFoodPointsInInventory`: each slot's count by its food's nutrition.
+    let food_points = own
+        .inventory
+        .iter()
+        .flatten()
+        .filter_map(|stack| villager_food(stack.item).map(|food| food * stack.count))
+        .sum();
+    // The reputations of at most −100 (`getPlayerReputation`), each target once.
+    let mut bad_reputations: Vec<(uuid::Uuid, i32)> = Vec::new();
+    for (target, _, _) in &own.gossips.entries {
+        if bad_reputations
+            .last()
+            .is_some_and(|(seen, _)| seen == target)
+        {
+            continue;
+        }
+        let reputation = own.gossips.reputation(*target);
+        if reputation <= -100 {
+            bad_reputations.push((*target, reputation));
+        }
+    }
+    Shown {
+        job_site: block(MemoryKind::JobSite),
+        potential_job_site: block(MemoryKind::PotentialJobSite),
+        last_slept,
+        golem_detected: memories.check(MemoryKind::GolemDetectedRecently, Status::Present),
+        interaction_target,
+        food_points,
+        sleeping: own.sleeping.is_some(),
+        bad_reputations,
+    }
+}
+
+/// The sleeper's size (`LivingEntity.SLEEPING_DIMENSIONS`).
+const SLEEPING: Dimensions = Dimensions {
+    width: 0.2,
+    height: 0.2,
+    eye_height: 0.2,
+};
+
+/// The synced indices of `Entity.DATA_POSE` and `LivingEntity.SLEEPING_POS_ID`, and the
+/// pose's ordinals.
+const POSE_INDEX: u8 = 6;
+const SLEEPING_POS_INDEX: u8 = 14;
+const STANDING_POSE: i32 = 0;
+const SLEEPING_POSE: i32 = 2;
 
 /// The villager.
 pub(crate) struct Villager;
@@ -683,15 +1139,15 @@ impl MobType for Villager {
     }
 
     /// `brain.tick`, then (unless it has no AI) `random.nextInt(100)` for a raid at its
-    /// block, of which there is none. Its schedule's activity is set before its first
-    /// brain tick.
+    /// block, of which there is none until N10d. Its schedule's activity is set before
+    /// its first brain tick.
     fn custom_server_ai_step(&self, tick: &mut MobTick<'_>) {
         if state_of(&tick.mob).1.schedule_at.is_none() {
             schedule_now(tick);
         }
         brain::run(tick, |_, _| {});
         // `customServerAiStep`'s trade's reputation event after the brain (part V3).
-        social_villagers::after_brain(tick);
+        social::after_brain(tick);
         if !tick.mob.body.flags.no_ai {
             tick.draws.next_int(100);
         }
@@ -699,30 +1155,63 @@ impl MobType for Villager {
 
     /// `Villager.die`'s witnesses told and points of interest given back (part V3).
     fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
-        social_villagers::died(struck, source);
+        social::died(struck, source);
+    }
+
+    /// `LivingEntity.tick`'s check before `aiStep`: a sleeper whose bed is gone gets up
+    /// (`checkBedExists`), and one a player's use of its bed woke (`kickVillagerOutOfBed`,
+    /// `region/sleep.rs`) too; either way `Villager.stopSleeping`'s `last_woken`.
+    fn before_ai_step(&self, tick: &mut MobTick<'_>) {
+        let (_, own) = state_of(&tick.mob);
+        let Some(head) = own.sleeping else {
+            if own.kicked {
+                update(&mut tick.mob, |own| own.kicked = false);
+            }
+            return;
+        };
+        let bed = tick.world.is_loaded(head)
+            && clustine_blocks::data::is_class(
+                tick.world.state(head),
+                clustine_data::BlockClass::AbstractBedBlock,
+            );
+        if bed && !own.kicked {
+            return;
+        }
+        update(&mut tick.mob, |own| own.kicked = false);
+        if rest::stop_sleeping(tick) {
+            let time = tick.world.game_time();
+            let mut memories = brain::memories_of(&PROVIDER, &tick.mob, tick.lived);
+            memories.set(MemoryKind::LastWoken, Value::Long(time));
+            brain::write_memories(&PROVIDER, &mut tick.mob, memories);
+        }
     }
 
     /// `Mob.aiStep`'s pick-up, then `AgeableMob.aiStep`'s growing; a baby grown up has
-    /// its brain made again (`refreshBrain`) with the adult's schedule.
+    /// its brain made again (`refreshBrain`) with the adult's schedule, and its bed
+    /// sensor's search afresh.
     fn after_ai_step(&self, tick: &mut MobTick<'_>) {
         pick_up(tick);
         let was_baby = animal::is_baby(&tick.mob);
         animal::after_ai_step(tick);
         if was_baby && !animal::is_baby(&tick.mob) {
             brain::remake(tick);
+            update(&mut tick.mob, |own| own.bed_search = BedSearch::default());
             schedule_now(tick);
         }
     }
 
     /// `Villager.tick`'s after the entity's: the unhappy counter counted down, then
-    /// `maybeDecayGossip` (part V3).
+    /// `maybeDecayGossip` (part V3); and what its neighbours read of it written from its
+    /// brain as its tick leaves it.
     fn after_tick(&self, tick: &mut MobTick<'_>) {
+        let shown = shown_now(&tick.mob, tick.lived);
         update(&mut tick.mob, |own| {
             if own.unhappy > 0 {
                 own.unhappy -= 1;
             }
+            own.shown = shown;
         });
-        social_villagers::maybe_decay_gossip(tick);
+        social::maybe_decay_gossip(tick);
     }
 
     /// `Villager.mobInteract` (279–337): with anything but its egg, alive (and neither
@@ -809,15 +1298,22 @@ impl MobType for Villager {
             struck.out.events.push(Event::Entity(13));
         }
         // `setLastHurtByMob`'s `VILLAGER_HURT` reputation event (part V3).
-        social_villagers::hurt(struck, source, took);
+        social::hurt(struck, source, took);
     }
 
+    /// Its size: a sleeper's while it sleeps (its pose's), else an ageable mob's.
     fn dimensions(&self, mob: &Mob) -> Option<Dimensions> {
+        if state_of(mob).1.sleeping.is_some() {
+            return Some(SLEEPING);
+        }
         animal::dimensions(mob, BABY)
     }
 
-    /// `getAmbientSound()`: never asleep nor trading, so its ambient.
-    fn ambient_sound(&self, _: &Mob) -> Option<i32> {
+    /// `getAmbientSound()`: none asleep, else its ambient (a trade's is part T2's).
+    fn ambient_sound(&self, mob: &Mob) -> Option<i32> {
+        if state_of(mob).1.sleeping.is_some() {
+            return None;
+        }
         Some(sounds::ENTITY_VILLAGER_AMBIENT)
     }
 
@@ -850,6 +1346,18 @@ impl MobType for Villager {
             FINALIZED_INDEX,
             DataShown::Boolean(own.finalized),
             !own.finalized,
+        ));
+        // A sleeper's pose and its bed (`startSleeping`'s `setPose`, `setSleepingPos`).
+        let pose = if own.sleeping.is_some() {
+            SLEEPING_POSE
+        } else {
+            STANDING_POSE
+        };
+        values.push((POSE_INDEX, DataShown::Pose(pose), own.sleeping.is_none()));
+        values.push((
+            SLEEPING_POS_INDEX,
+            DataShown::OptionalBlockPos(own.sleeping),
+            own.sleeping.is_none(),
         ));
         values
     }

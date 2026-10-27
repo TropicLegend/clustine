@@ -3957,6 +3957,7 @@ mod tests {
     mod trees;
     mod using;
     mod villagers;
+    mod villagers_n10;
     mod water;
     mod wild;
     mod zombies;

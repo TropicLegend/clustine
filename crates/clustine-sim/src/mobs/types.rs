@@ -137,6 +137,8 @@ pub(crate) mod turtle;
 pub(crate) mod vex;
 pub(crate) mod villager;
 #[cfg(test)]
+mod villager_n10_tests;
+#[cfg(test)]
 mod villager_tests;
 pub(crate) mod vindicator;
 pub(crate) mod wandering_trader;
