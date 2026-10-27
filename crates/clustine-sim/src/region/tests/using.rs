@@ -126,6 +126,13 @@ fn a_meal_lasts_its_consume_seconds_and_ends_by_itself() {
     let output = region.tick(&TickInputs::default());
     assert_eq!(using(&region), None);
     assert_eq!(flags_shown(&output), [0]);
+    // The eater's client is told the use ran out (`completeUsingItem`'s event 9), once.
+    let completed = output
+        .player_events
+        .iter()
+        .filter(|(to, event)| *to == player(1) && matches!(event, PlayerEvent::UseCompleted))
+        .count();
+    assert_eq!(completed, 1);
 }
 
 #[test]

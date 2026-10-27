@@ -1862,6 +1862,19 @@ impl Fanout {
             } => self.own_effects(player, event).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event: PlayerEvent::UseCompleted,
+            } => {
+                // Entity event 9 of their own entity, to them alone.
+                if let Some(entity) = self.players.get(&player).and_then(|view| view.entity) {
+                    let packet = encoded(&EntityEvent {
+                        entity_id: self.wire.of(entity),
+                        event: 9,
+                    });
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::Cooldown { group, ticks },
             } => {
                 let packet = encoded(&Cooldown { group, ticks });

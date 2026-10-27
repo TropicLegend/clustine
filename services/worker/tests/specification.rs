@@ -102,6 +102,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// Of every chunk the region asks the store, which is divided into two stripes at
 /// [`CUT`], whether it is its own (`docs/adr/0012-the-tick-on-chunks.md`, section 1).
 fn settings() -> RegionSettings {
+    // These tests count and follow the entities they make: no mob comes of itself.
+    clustine_worker::set_spawn_mobs(false);
     RegionSettings {
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
@@ -988,6 +990,7 @@ impl Witness {
                 | PlayerEvent::MenuClosed { .. }
                 | PlayerEvent::NoMenu { .. }
                 | PlayerEvent::Cooldown { .. }
+                | PlayerEvent::UseCompleted
                 | PlayerEvent::EffectAdded { .. }
                 | PlayerEvent::EffectRemoved { .. }
                 | PlayerEvent::Attributes(_) => {}

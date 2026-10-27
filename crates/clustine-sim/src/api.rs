@@ -1392,6 +1392,9 @@ pub enum PlayerEvent {
     /// The answer to a [`PlayerInput::MenuResync`] of a player with no menu open: their
     /// inventory whole, as a resume may have lost what a close sent.
     NoMenu { applied: u64, inventory: Inventory },
+    /// Their use of an item ran out (`ServerPlayer.completeUsingItem`'s entity event 9, to
+    /// them alone): their client finishes it on this, its last mouthful and all.
+    UseCompleted,
     /// An item's cooldown began, or ended at 0 (`ClientboundCooldownPacket`): the group
     /// by name and its ticks.
     Cooldown { group: String, ticks: i32 },

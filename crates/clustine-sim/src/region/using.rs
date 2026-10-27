@@ -231,6 +231,8 @@ impl Region {
         let Some(using) = self.players.get(&id).and_then(|player| player.using) else {
             return;
         };
+        // `ServerPlayer.completeUsingItem`: the player's client is told first.
+        output.player_events.push((id, PlayerEvent::UseCompleted));
         if ItemComponents::of(using.item).consumable.is_some() {
             self.finish_consuming(id, using, output);
         }
