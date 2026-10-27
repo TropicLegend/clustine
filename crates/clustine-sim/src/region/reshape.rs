@@ -186,11 +186,17 @@ impl Region {
                 (present.entity_id, present.hops) >= (player.entity_id, player.hops)
             };
             if !state.players.get(id).is_some_and(later) {
-                // Their attack strength's reset is kept as the tick it was: the two
-                // regions' ticks run together but for a lag, which the player gains
-                // (a named difference of `docs/groundwork/n7-plan.md`, 7.7.2), and a
-                // region split and merged again is as one that never was.
-                state.players.insert(*id, player.clone());
+                // Their effects' ends and their cooldowns are moved onto the
+                // survivor's ticks: the two regions' ticks run together but for a lag,
+                // by which an effect would otherwise end early or late
+                // (`docs/groundwork/n9-plan.md`, section 5.4, decision 8; S13 part A's
+                // finding). The survivor's last tick is the one before the merge's.
+                // Their attack strength's reset and the tick their time since rest
+                // counts from are kept as the ticks they were, the lag theirs to gain
+                // (a named difference of `docs/groundwork/n7-plan.md`, 7.7.2), so that
+                // a region split and merged again is as one that never was.
+                let by = i128::from(tick - 1) - i128::from(other.tick);
+                state.players.insert(*id, on_ticks_moved_by(player, by));
             }
         }
         // The asks for lends of both; those the survivor holds or is pinned to go when
@@ -438,6 +444,21 @@ impl Region {
             },
         )
     }
+}
+
+/// `player` with their effects' ends and their cooldowns moved by `by` ticks: what a
+/// merge does to an absorbed region's player.
+fn on_ticks_moved_by(player: &PlayerState, by: i128) -> PlayerState {
+    let moved = |tick: u64| u64::try_from((i128::from(tick) + by).max(0)).unwrap_or(u64::MAX);
+    let mut player = player.clone();
+    for cooldown in &mut player.cooldowns {
+        cooldown.start = moved(cooldown.start);
+        cooldown.end = moved(cooldown.end);
+    }
+    for effect in &mut player.effects {
+        effect.end = effect.end.map(moved);
+    }
+    player
 }
 
 #[cfg(test)]

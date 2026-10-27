@@ -109,12 +109,12 @@ pub struct PlayerState {
     pub respawn: Option<crate::api::Respawn>,
     /// The use of an item under way (`docs/groundwork/n9-plan.md`, section 5.5).
     pub using: Option<crate::api::Using>,
-    /// The item groups' cooldowns, on the region's ticks; a merge keeps them as they
-    /// were, as it keeps `attack_reset`.
+    /// The item groups' cooldowns, on the region's ticks; a merge moves them onto the
+    /// survivor's.
     pub cooldowns: Vec<crate::api::Cooldown>,
     /// Their effects, each level's end on the region's ticks (`docs/groundwork/n9-plan.md`,
-    /// section 5.4), so that a state changes only when they do; a merge keeps them as
-    /// they were, as it keeps `attack_reset`.
+    /// section 5.4), so that a state changes only when they do; a merge moves them onto
+    /// the survivor's ticks.
     pub effects: Vec<KeptEffect>,
     /// The tick their time since rest counts from.
     pub rested: u64,

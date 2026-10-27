@@ -323,7 +323,6 @@ fn an_effect_saved_at_a_leave_comes_back_at_the_join_with_the_ticks_it_had_left(
 /// the absorbed one's lag; the effect of a player of the absorbed region ends after the
 /// merge in the ticks it had left.
 #[test]
-#[ignore = "finding: a merge keeps an absorbed player's effects' ends in the absorbed region's tick numbers, so they end early or late by its lag"]
 fn a_merge_ends_an_absorbed_player_s_effect_in_the_ticks_it_had_left() {
     // The absorbed region lags the survivor by forty ticks.
     let mut absorbed = west(1_000, clock_at(3_000));
