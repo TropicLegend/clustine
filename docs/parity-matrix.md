@@ -1,7 +1,7 @@
 # Vanilla parity matrix
 
 Tracks how closely Clustine matches the vanilla server. This is the main place to find
-something to work on. Brought up to date on 2026-10-15.
+something to work on. Brought up to date on 2026-10-15; its tiers T3 and T4 on 2026-10-27.
 
 Target Minecraft version: **26.3** (protocol 777).
 
@@ -87,23 +87,29 @@ seed is flat. Phases and steps are those of the
 
 ## T3 — Entities
 
+Phase N of the roadmap ([ADR-0028](adr/0028-entities.md)); each part's named differences
+are in its plan.
+
 | Feature | Status | Notes |
 |---|---|---|
-| Entity physics and collision | not started | |
-| Natural spawning and despawning | not started | |
-| Mob AI and pathfinding | not started | |
-| Combat, damage, status effects | not started | |
-| Villagers and trading | not started | |
-| Loot tables and drops | not started | |
+| Entity physics and collision | partial | The game's collider and `Entity.move` (N4): items, falling blocks, vehicles, mobs; entities kept in their chunks, crossing lines between regions whole (N3). Entities tick where a chunk's 3x3 is loaded or copied, not its 5x5 |
+| Natural spawning and despawning | partial | Every overworld type's rule under the caps counted across regions (N9); phantoms, patrols, cats, the siege and the wandering trader (N9, N10). Draws are the game's in distribution, not in value. Not yet: the Nether's and the End's |
+| Mob AI and pathfinding | verified | The game's goals, controls, sensing and brains; paths judged node for node against the jar's own path finder on 521 layouts (`crates/clustine-sim/tests/paths_official_server.rs`); a cow made, hit and bred compared with the official server (`mobs_oracle.rs`) |
+| Combat, damage, status effects | partial | The living body's hurts, death, loot and experience (N7); every monster's attacks, projectiles, mob effects on mobs and players, eating and drinking (N9). Players are in creative mode: survival's damage to players waits for survival |
+| Villagers and trading | partial | N10: the villager's brain, job sites, professions, work, beds, gossip, golems, raids, trading from the game's tables, the merchant window, the cure. The comparisons with the official server are written (`merchant_oracle.rs`, `villagers_oracle.rs`, `raids_oracle.rs`) and not yet run |
+| Loot tables and drops | partial | Block and entity loot tables; structures' chests are empty |
 
 ## T4 — Redstone
 
+Phase R of the roadmap ([ADR-0026](adr/0026-redstone.md)) and lending at a line
+([ADR-0027](adr/0027-lending-at-a-line.md)).
+
 | Feature | Status | Notes |
 |---|---|---|
-| Dust, torches, repeaters, comparators | not started | Redstone wire is placed with its shape from its neighbours; nothing is powered |
-| Pistons, including quasi-connectivity | not started | |
-| Observers, droppers, dispensers, hoppers | not started | |
-| Update order and scheduled tick order | not started | |
+| Dust, torches, repeaters, comparators | verified | With torches' burnout, comparators reading containers; eleven circuits send the same packets on the same ticks as the official server (`redstone_oracle.rs`) |
+| Pistons, including quasi-connectivity | verified | Pistons and sticky pistons with slime and honey, pushing entities; in the same circuits |
+| Observers, droppers, dispensers, hoppers | implemented | With the game's dispenser behaviours and hoppers moving items (N6) |
+| Update order and scheduled tick order | verified | The game's order of updates, ticks and block events, from its classes, in the same circuits; a circuit across a pinned line runs as in one region (L6) |
 
 ## T5 — Farms and edge cases
 

@@ -44,8 +44,8 @@ across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, plates pressed by mobs; villagers' work and trades, raids (N10); the Nether
-and the End; survival mode and crafting.
+sensors, crafters, plates pressed by mobs; commands; the Nether and the End; survival
+mode and crafting.
 
 **Built since M3:**
 
@@ -436,8 +436,78 @@ was up to a second before the leave; effects a mob gives a player across a line 
 cloud's, the arrow's) find them by the block they stand in, not their box; another
 player's armour and held items are sent when they come into view and when they change,
 not again; a flat world's game seed is 0 (its slime chunks are seed 0's). Next: N10,
-villagers' brain, trading, points of interest and raids
-([brief](groundwork/n10-brief.md)), being planned.
+below.
+
+**Villagers, trading and raids (N10, [plan](groundwork/n10-plan.md), reviewed twice;
+[brief](groundwork/n10-brief.md) and [dumps](groundwork/n10-dumps.md); built on
+2026-10-27).** Points of interest as the game's, derived from the blocks, their claims
+kept in the chunk and published beyond a region's land, so that a village is where
+villagers have claimed beds, job sites and bells, across lines too. The villager's whole
+brain: its schedule (work from 2000, the meeting at the bell from 9000, rest from 12000,
+babies' play), job sites taken and kept, a profession given by its site and lost by a
+villager that never traded, work at the site with its sound and restocks twice a day,
+beds claimed and slept in, getting up at dawn; gossip, its spread and decay; love and
+babies; three villagers who slept and see a zombie summoning an iron golem; the bell's
+alarm and hiding; panic. Trading as the game's: every profession's offers by level from
+the game's own tables, prices with demand, reputation, the cure's discount and Hero of
+the Village, the merchant window packet by packet, experience and levelling up, the
+wandering trader and its llamas. A zombie villager cured with weakness and a golden
+apple. Raids: Bad Omen from an ominous bottle, Raid Omen, the raid at the village's
+centre with its bar and horn, its waves by difficulty and omen, leaders with the banner,
+raiders that walk to the village, break no doors (the world is easy), celebrate and
+leave; victory gives Hero of the Village, a raid with no village left is lost; the
+ravager. The golem walks back to its village and strolls towards villagers who want one;
+cats come to villages and swamp huts, zombies besiege a village on a night in ten, the
+trader comes every day with a chance that rises to 75, kept by the world store. A raid
+held across a pinned line counts the raiders of the other region and shows its bar there.
+Tests from the specification by someone who did not write the code: part A (points of
+interest, 2026-10-27) found a claim that did not clear a chunk's mark of generated and a
+point read from the margin wrongly, mended, and named a release into an unloaded chunk
+lost; part B (55 tests of villagers, trading and raids) found that a nitwit, or a
+villager with experience whose site was broken, took another profession's job site and
+held it for ever, mended. The comparisons with the official server (trades, a librarian
+made and at work, a bed at dusk, a cure, a raid's bar) are written and wait for a quiet
+machine. Named, each in the plan's section 12: offers drawn from the villager's own
+stream; the margin up to 1.5 s old; the horn heard by every player near a wave of another
+player's raid; a raid's spawn places only in its region's land; a trade with a villager
+across a pinned line opens nothing. Next: the comparisons, the cost of a village of 30
+at dusk and of a raid's waves, measured in memory and on the real disk; then the Nether
+and the End.
+
+**What to try with a real client, phase N10** (`cargo run --release -p clustine`, a
+flat world; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64). Clustine
+has no commands, so everything is made from the creative inventory:
+
+1. A village of your own: five beds, a bell and a lectern, and three villagers from
+   their egg. Within a few seconds the one nearest the lectern walks to it and becomes a
+   librarian (green sparks, its clothes change); the others stay unemployed until you
+   place a composter, a smithing table or another job site. Right-click the librarian:
+   its trades open; take emeralds from the creative inventory and trade, use shift-click
+   to repeat. Trade enough and it levels up (its badge changes, new offers).
+2. Break a new librarian's lectern before you trade with it: it loses its profession;
+   place another lectern and its offers are new. One you have traded with keeps its
+   profession and takes only another lectern.
+3. The day: watch the time go by (or sleep): from morning they work at their sites
+   (the work sound), from 9000 they gather at the bell, at dusk each claims a bed and
+   lies down in it, and at dawn they get up. A baby (breed two with bread or carrots and
+   beds free) plays and chases others.
+4. Hit a villager: its prices go up for you, and others it meets hear of it. Ring the
+   bell: villagers near it run indoors.
+5. At night, by three villagers that have slept: spawn a zombie by them. They panic, and
+   an iron golem appears.
+6. A zombie villager (its egg): throw a splash potion of weakness at it and use a golden
+   apple on it: it shakes, and three to five minutes later it is a villager again, whose
+   prices for you are much lower.
+7. A raid: in the village, drink an ominous bottle. After thirty seconds of Raid Omen the
+   raid's bar appears, a horn sounds and pillagers and vindicators come in waves (a
+   ravager in the third), the first wave's captain carrying the banner. Kill them
+   (another player in survival would be their target; in creative they go for the
+   villagers): after the last wave, Hero of the Village, and the villagers' prices fall.
+   Break the bell and the beds during a raid: with no village left it is lost.
+8. With the line at x = 64: build the village at x = 60 and stand at x = 70: you see the
+   raid's bar; a pillager you spawn on your side near the raid joins it.
+9. Wait a game day or two near the village: a wandering trader comes with two llamas and
+   trades too; with more than four beds claimed, stray cats come.
 
 **What to try with a real client, phase N9 so far** (`cargo run --release -p clustine --
 --seed 3`; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64):

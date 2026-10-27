@@ -705,12 +705,35 @@ the horn. Everything else is built (entity events, data, sounds, level events, b
 16. A bell's ring reaches no entity beyond its region's copies (decision 17).
 17. A villager lying down in a bed whose head is across a line: the bed's `occupied` is set a
     tick later by effect (V 11).
-18. A trader firing doubled at a pinned line (decision 12).
+18. A trader firing doubled at a pinned line (decision 12): every region runs each firing,
+    and of one firing the store keeps the lowest chance told, the region that made the
+    trader's (section 9.6).
 19. A ticket given back into a chunk nobody has loaded is lost, and the point stays claimed:
     the store drops an effect into a chunk nobody uses, as the game drops an update into a
     chunk not loaded, where the game's `PoiManager` would read the chunk from disk. A site
     within 48 blocks of a ticking villager is nearly always in loaded land (found by the
     tests from the specification, X1 part A1).
+20. Raids (R1): the game rule `raids` always on and the world never peaceful; a wave's
+    places only in the region's land; raiders made facing south and not set on the ground;
+    the horn a sound at a place, so a player near another player's wave hears it too; the
+    bar's progress reckoned each raid tick from the health members last told; recruiting
+    and picking up the banner only among the region's own entities; the leaders of
+    another region's raid unknown; no door broken (the world is easy); the witch's healing
+    cooldown a deadline and its player target not held back while it heals; the
+    pillager's banner not kept in its inventory; a vindicator opens doors while of a raid,
+    not while one is near; raiders of a stopped raid keep its id.
+21. A raider joins another region's raid on the wave its table last published; a wave that
+    came since, the holder refuses the join and the raider forgets the raid.
+22. The village's spawners (G1): a region that began during a siege night knows of no
+    siege that night, and a player who crosses a line that night may meet a second; the
+    players a spawner chooses from are the world's table's, alive or not; a llama made in
+    another region's land than its trader's is not leashed to it; siege zombies and cats
+    make no jockeys, and a siege zombie's head and body face south; the regions that do
+    not hold a trader firing's player keep the raised chance until the store's next
+    publication (a second); the golem's defence target held by key, and one no longer
+    seen not taken; a trader's llama led beyond the copies counts as led by something
+    else, and a player may ride one; `MoveThroughVillageGoal` does not make its mob open
+    doors for good (navigation's door flags are the type's).
 
 ---------------------------------------------------------------------------------------
 
