@@ -322,6 +322,7 @@ fn every_writer_of_the_log_keeps_every_component_of_a_stack() {
         entity_changes,
         arrivals,
         arrivals_taken: Vec::new(),
+        claims: Vec::new(),
     };
     let (read, _) = read_log(&record.encode()).expect("the record reads");
     assert_eq!(read, [record]);

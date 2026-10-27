@@ -604,6 +604,7 @@ mod tests {
                 game_time: 6,
                 day: 7,
             },
+            claims: Vec::new(),
         };
         blocking::write(&mut written, &request).unwrap();
         blocking::write(&mut written, &StoreReply::Committed { tick: 9 }).unwrap();
@@ -794,6 +795,7 @@ mod tests {
                 game_time: 6,
                 day: 7,
             },
+            claims: Vec::new(),
         });
         for reply in [
             StoreReply::Enter {
@@ -991,6 +993,7 @@ mod tests {
                 game_time: 6,
                 day: 7,
             },
+            claims: Vec::new(),
         });
         let (one, two) = (ChunkPos::new(-2, 2), ChunkPos::new(-1, 2));
         for request in [
@@ -1040,6 +1043,7 @@ mod tests {
                 previous: 31,
                 changes: vec![(at, blocks::STONE).into()],
                 entity_changes: Vec::new(),
+                claims: None,
             },
             StoreReply::CopyUsed {
                 position: two,

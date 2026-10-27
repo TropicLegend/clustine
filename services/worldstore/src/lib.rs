@@ -40,6 +40,7 @@ mod spawn_counts;
 mod table;
 mod tally;
 mod tcp;
+mod village;
 
 #[cfg(test)]
 mod arrivals_specification;
@@ -79,6 +80,8 @@ mod n9_counts_specification;
 mod r7_redstone_kill;
 #[cfg(test)]
 mod regions;
+#[cfg(test)]
+mod replayed_claims;
 #[cfg(test)]
 mod replayed_marks_and_seams;
 #[cfg(test)]

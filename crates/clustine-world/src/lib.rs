@@ -12,6 +12,7 @@ mod effects;
 mod entity;
 pub mod generation;
 mod light;
+pub mod poi;
 mod position;
 pub mod projectiles;
 mod section;

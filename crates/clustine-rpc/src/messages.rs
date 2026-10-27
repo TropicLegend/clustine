@@ -5,6 +5,7 @@ use clustine_sim::api::{
     Durable, EntityState, FaceChange, Inventory, Place, PlayerEvent, PlayerInput, PlayerJoin,
     PlayerTransfer, Pose, RegionEvent, RemoteAction, StayNote, WorldClock, WorldPlayer,
 };
+use clustine_world::poi::Claim;
 use clustine_world::{
     Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, Entity,
     EntityChange, EntityId, EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
@@ -370,6 +371,10 @@ pub enum StoreRequest {
         /// The block events kept in each chunk whose kept events changed in the tick,
         /// whole, in their order (`docs/adr/0026-redstone.md`, section 4).
         events: Vec<(ChunkPos, Vec<KeptEvent>)>,
+        /// The claims on the points of interest of each chunk whose claims changed in
+        /// the tick, whole, ascending by chunk (`docs/groundwork/n10-plan.md`, section
+        /// 3.2).
+        claims: Vec<(ChunkPos, Vec<Claim>)>,
         /// What the tick did in chunks the region does not have loaded, made in `tick`,
         /// in the order the tick made them, each kept once as
         /// [`Effect::key`] says (`docs/adr/0025-effects-between-regions.md`, section 4).
@@ -401,6 +406,10 @@ pub enum StoreRequest {
     /// (`docs/groundwork/n9-plan.md`, section 9.2): kept in memory, never written to the
     /// log. Not answered.
     Counts(clustine_sim::CountsReport),
+    /// What the tick of the commit sent just before says of its land's points of interest
+    /// (`docs/groundwork/n10-plan.md`, section 3.5): kept in memory, never written to the
+    /// log. Not answered.
+    Village(clustine_sim::VillageReport),
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
     /// Grant the region these chunks. Each is granted unless another region holds it,
@@ -550,6 +559,12 @@ pub enum StoreReply {
     /// players' positions it published, where the store has every owned region's
     /// (`docs/groundwork/n9-plan.md`, section 9.2).
     Counts(clustine_sim::PublishedCounts),
+    /// Behind a [`StoreReply::Clock`]: the points of interest of the chunks within five of
+    /// the region's land that it neither holds nor copies, whole or as the changes since
+    /// the last to its owner (`docs/groundwork/n10-plan.md`, section 3.5). Not held back
+    /// for other regions' reports, as the counts are: the margin of each chunk is its
+    /// holder's word alone.
+    Village(clustine_sim::PublishedVillage),
     /// On the stream: faces of players and their removals, in the order the store took
     /// them, for the chunks the region holds or copies; and, behind a hello's answer, a
     /// merge, a split, a grant or a copy's base, the faces of those chunks then
@@ -659,6 +674,9 @@ pub enum StoreReply {
         changes: Vec<Change>,
         /// The commit's changes to the chunk's entities, in order.
         entity_changes: Vec<EntityChange>,
+        /// The chunk's claims on its points of interest, whole, where the commit changed
+        /// them (`docs/groundwork/n10-plan.md`, section 3.2).
+        claims: Option<Vec<Claim>>,
     },
     /// On the stream: who uses a chunk the region copies now (section 8 of the same
     /// record: a copy whose chunk comes to be used by a region not coupled to this one

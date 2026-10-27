@@ -39,6 +39,7 @@ needs no raise, as an older record never has it. The raises since 2:
 | 14 | Every stack carries its components after its count, kinds by name |
 | 15 | A place holds the effects and the time since rest after the respawn point |
 | 16 | A chunk keeps the structure starts that reach it which natural spawning and the patrol spawner ask |
+| 17 | A chunk keeps the claims on its points of interest, and a commit may carry them |
 
 ## Principles
 
@@ -150,7 +151,7 @@ A chunk's blocks file, of kind 5 (`crates/clustine-format/src/chunk.rs`):
 | Tick at which the chunk was saved | u64 |
 | Epoch of the region that saved it | u64 |
 | **Generated**: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-| Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures"; the others 0 |
+| Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims"; the others 0 |
 | Section count | u16 |
 | Codec of the body | u8: 0 as it is, 1 zstd |
 | Length of the body, as it is | u32, at most 8 MiB |
@@ -171,11 +172,12 @@ The body, before compression, is these parts in this order:
 | Seams, with bit 1 of the flags only | as below; not empty |
 | Block events, with bit 2 of the flags only | as below; not empty |
 | Structures, with bit 3 of the flags only | as below; not empty |
+| Claims, with bit 4 of the flags only | as below; not empty |
 
 A chunk has one light section more below its sections and one more above. The data of
 a block entity is one NBT compound as the game writes it on the network, without the
 keys `x`, `y`, `z` and `id`; no data stands for an empty compound. A chunk without
-seams, block events or structures has the flag clear and the part left out, so that
+seams, block events, structures or claims has the flag clear and the part left out, so that
 it is written as a chunk was before there were any.
 
 **Seams** (`seams.rs`) are the updates a region could not make, because they reach a
@@ -219,6 +221,22 @@ chunk keeps are `minecraft:swamp_hut`, `monument`, `pillager_outpost`,
 `ancient_city`, `trial_chambers`, `fortress`, `village_plains`, `village_desert`,
 `village_savanna`, `village_snowy` and `village_taiga`, all in the `minecraft`
 namespace.
+
+**Claims** are the points of interest of the chunk's blocks with fewer free tickets than
+their type has at most (`docs/groundwork/n10-plan.md`, section 3.2): a point of interest
+is wherever a block of its type is, so only how many of its tickets are taken is kept. A
+count u16, then per claim, ascending by position (y, then z, then x):
+
+| Field | Type |
+|---|---|
+| Where | `x << 4 \| z` u8, y i16 |
+| The point of interest's type, by the game's registry id (0 to 12 the job sites, 13 `home`, 14 `meeting`, up to 20 `lightning_rod`) | u8 |
+| Its free tickets | u8 |
+
+A type that does not exist is refused. A claim whose block is not of its type, or with
+as many free tickets as its type has, is dropped and counted with the block entities
+that were not as the blocks ask, and the chunk is read: such a mismatch can come of a
+change made without corruption, and the game drops such a record quietly too.
 
 - **The writer writes one form**: palettes ascending with nothing unused, lists in
   order, light that is all 0 or all 15 as `dark` and `full`. The body is compressed
@@ -447,6 +465,7 @@ begins with the format version (u8) and the kind of record (u8):
 | 14 | Commit with block events | the fields of kind 13, events |
 | 15 | Commit with entity changes | the fields of kind 14, entity changes |
 | 16 | Commit with arrivals | the fields of kind 14, a flag u8 whether entity changes follow, the entity changes if they do, arrivals, arrivals taken (numbers) |
+| 19 | Commit with claims | the fields of kind 16, whose arrivals may be none, claims |
 | 17 | Arrivals dropped | numbers |
 | 18 | Arrivals carried forward | filed arrivals |
 
@@ -495,12 +514,18 @@ what it carries. In order of the fields:
   other than players, as below. Not none.
 - **Arrivals** and **arrivals taken** (kind 16): the entities the tick sent across a
   line, a count (u32) and each an arrival; and the numbers of the arrivals it took,
-  ascending. Not both none.
+  ascending. Not both none in kind 16.
+- **Claims** (kind 19): a count of chunks (u32), not 0, and per chunk whose claims
+  changed i32 x, i32 z and the chunk's claims whole, as in a chunk file (here a chunk's
+  list may be empty, when its last ticket was given back). A replay puts them into the
+  chunk after the commit's blocks, so that a claim on a block placed in the same tick
+  holds, and a chunk with claims is no longer as generated.
 
 Each kind is written only when it has something of its own: the reader refuses a kind 8
 without notes, a kind 9 without ticks, marks taken or seams, a kind 10 without effects
 or taken, a kind 13 without block entities, a kind 14 without events, a kind 15 without
-entity changes and a kind 16 without arrivals or arrivals taken. The counts of the
+entity changes, a kind 16 without arrivals or arrivals taken and a kind 19 without
+claims. The counts of the
 fields a later kind takes over from an earlier one may all be 0. It refuses besides a
 block entity's place among the blocks that goes back or beyond them.
 
@@ -599,6 +624,7 @@ that kind carries:
 | 9, given | the player's key u64; the stack; a flag whether no duplicates |
 | 10, seated | the player's key u64; the vehicle's key u64; its root's chunk x i32 and z i32 |
 | 11, on a player | the player's UUID u128; their entity's key u64; then a use |
+| 12, a release | the point of interest's type u8, by its registry id |
 
 The blocks of kinds 1, 3, 4, 6 and 7 are state ids, and one that does not exist is
 refused; so is a direction above 5, a kind of update above 1, a tick of another kind

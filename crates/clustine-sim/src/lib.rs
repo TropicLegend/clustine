@@ -37,7 +37,10 @@ mod spawning;
 mod state;
 pub mod time;
 
-pub use api::{CountsReport, PublishedCounts, SPAWN_CATEGORIES, SpawnCounts};
+pub use api::{
+    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, SPAWN_CATEGORIES, SpawnCounts,
+    VillageReport,
+};
 pub use api::{
     Durable, EdgeEvent, Entered, FaceChange, FaceSeq, Keys, LendAnswer, LendAsked, Misdirected,
     Place, PlayerChange, PlayerEvent, PlayerFace, PlayerJoin, PlayerTransfer, RemoteAction,

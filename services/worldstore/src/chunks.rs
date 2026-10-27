@@ -23,6 +23,7 @@ use clustine_data::BlockState;
 use clustine_format::{ChunkFile, EntitiesFile, FormatError, StateFile, read_log};
 use clustine_rpc::{Parts, Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
+use clustine_world::poi::Claim;
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, EntityChange, KeptEvent, ScheduledTick, Seam,
 };
@@ -1604,6 +1605,9 @@ pub(crate) enum Replayed {
     /// The block events the chunk keeps, whole (`docs/adr/0026-redstone.md`, section
     /// 4).
     Events(ChunkPos, Vec<KeptEvent>),
+    /// The claims on the chunk's points of interest, whole, after its blocks
+    /// (`docs/groundwork/n10-plan.md`, section 3.2).
+    Claims(ChunkPos, Vec<Claim>),
     /// What the commit's tick did to an entity of the chunk, after its blocks
     /// (`docs/adr/0028-entities.md`, section 3).
     Entity(ChunkPos, EntityChange),
@@ -1617,6 +1621,7 @@ impl Replayed {
             | Self::MarksTaken(chunk)
             | Self::Seams(chunk, _)
             | Self::Events(chunk, _)
+            | Self::Claims(chunk, _)
             | Self::Entity(chunk, _) => *chunk,
         }
     }
@@ -1733,6 +1738,17 @@ fn put(chunk: &mut Chunk, change: &Replayed) {
         }
         Replayed::Events(_, events) => {
             chunk.set_events(events.clone());
+            chunk.clear_generated();
+        }
+        // After the commit's blocks, so that a claim on a block placed in the tick holds;
+        // one whose block is not of its type is dropped by the chunk. A chunk with claims
+        // is no longer as generated, so that remaking one whose generation failed does not
+        // lose them (`docs/groundwork/n10-plan.md`, section 3.2).
+        Replayed::Claims(_, claims) => {
+            let dropped = chunk.set_claims(claims.clone());
+            if dropped > 0 {
+                warn!(dropped, "claims on blocks of another type were dropped");
+            }
             chunk.clear_generated();
         }
         // After the commit's blocks. The generated mark is a statement about the blocks

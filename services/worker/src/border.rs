@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
 use clustine_sim::api::TickInputs;
+use clustine_world::poi::Claim;
 use clustine_world::{
     Arrival, Change, Chunk, ChunkPos, Due, Effect, EffectId, EffectKey, Effected, EntityChange,
     FiledEffect,
@@ -43,6 +44,9 @@ struct Copy {
     /// Entity changes the sim has not had of a copy it has, in their order
     /// (`docs/adr/0028-entities.md`, section 3).
     unsent_entities: Vec<EntityChange>,
+    /// The copy's claims on its points of interest, whole, where they changed since the
+    /// sim last had them (`docs/groundwork/n10-plan.md`, section 3.2).
+    unsent_claims: Option<Vec<Claim>>,
 }
 
 struct Based {
@@ -56,6 +60,7 @@ struct Update {
     previous: u64,
     changes: Vec<Change>,
     entity_changes: Vec<EntityChange>,
+    claims: Option<Vec<Claim>>,
 }
 
 /// What the runner asks the store for, from what came in.
@@ -191,6 +196,7 @@ impl Border {
                 copy.handed = false;
                 copy.unsent.clear();
                 copy.unsent_entities.clear();
+                copy.unsent_claims = None;
                 let early = std::mem::take(&mut copy.early);
                 for update in early {
                     if update.sequence > sequence {
@@ -204,6 +210,7 @@ impl Border {
                 previous,
                 changes,
                 entity_changes,
+                claims,
             } => {
                 let copy = self.copies.get_mut(&position)?;
                 let update = Update {
@@ -211,6 +218,7 @@ impl Border {
                     previous,
                     changes,
                     entity_changes,
+                    claims,
                 };
                 match &copy.base {
                     None => copy.early.push(update),
@@ -305,10 +313,16 @@ impl Border {
             for change in &update.entity_changes {
                 chunk.apply_entity(change);
             }
+            if let Some(claims) = &update.claims {
+                chunk.set_claims(claims.clone());
+            }
         }
         if copy.handed {
             copy.unsent.extend(update.changes);
             copy.unsent_entities.extend(update.entity_changes);
+            if update.claims.is_some() {
+                copy.unsent_claims = update.claims;
+            }
         }
     }
 
@@ -382,6 +396,7 @@ impl Border {
                     copy.handed = true;
                     copy.unsent.clear();
                     copy.unsent_entities.clear();
+                    copy.unsent_claims = None;
                 }
                 (true, true) => {
                     if !copy.unsent.is_empty() {
@@ -394,12 +409,16 @@ impl Border {
                             .copy_entity_updates
                             .push((position, std::mem::take(&mut copy.unsent_entities)));
                     }
+                    if let Some(claims) = copy.unsent_claims.take() {
+                        inputs.copy_claims.push((position, claims));
+                    }
                 }
                 (true, false) => {
                     inputs.copies_withdrawn.push(position);
                     copy.handed = false;
                     copy.unsent.clear();
                     copy.unsent_entities.clear();
+                    copy.unsent_claims = None;
                 }
                 _ => {}
             }
@@ -655,6 +674,7 @@ impl Border {
             copy.handed = false;
             copy.unsent.clear();
             copy.unsent_entities.clear();
+            copy.unsent_claims = None;
         }
         self.loaded = loaded.into_iter().collect();
     }
@@ -693,6 +713,7 @@ mod tests {
             previous,
             changes: vec![(BlockPos::new(16, 100, 0), blocks::STONE).into()],
             entity_changes: Vec::new(),
+            claims: None,
         }
     }
 
@@ -772,6 +793,7 @@ mod tests {
             previous,
             changes: Vec::new(),
             entity_changes: changes,
+            claims: None,
         }
     }
 

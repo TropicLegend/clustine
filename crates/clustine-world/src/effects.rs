@@ -88,6 +88,12 @@ pub enum Effected {
         vehicle: EntityId,
         chunk: crate::ChunkPos,
     },
+    /// A ticket of the point of interest of type `kind` at the block given back by a
+    /// region that does not hold it (`PoiManager.release` from a villager's death, a
+    /// timeout, a walk given up): the holder gives it back as the game's guarded
+    /// `releaseTicket` does, only where a point of that type is there and not all its
+    /// tickets are free (`docs/groundwork/n10-plan.md`, decision 2).
+    Release { kind: crate::poi::PoiType },
     /// A hurt, effects or a pearl's landing addressed to the player `player`, whose stay
     /// is the entity `entity`: the store delivers it to the region that holds that stay,
     /// whatever land they stand in (`docs/groundwork/n9-plan.md`, section 8.3); a stay
@@ -333,6 +339,7 @@ impl Effect {
             | Effected::PlayerInside { .. }
             | Effected::Given { .. }
             | Effected::Seated { .. }
+            | Effected::Release { .. }
             | Effected::OnPlayer { .. } => None,
         }
     }

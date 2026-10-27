@@ -170,6 +170,7 @@ fn commit(
         arrivals,
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
 }
 
@@ -971,6 +972,7 @@ fn an_opening_that_passes_over_a_taking_leaves_the_unit_in_the_record() {
         entity_changes: Vec::new(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        claims: Vec::new(),
     };
     let world = |restored: u64| {
         let disk = Arc::new(MemoryDisk::default());
@@ -1066,6 +1068,7 @@ fn a_segment_whose_only_stay_entry_is_a_taking_is_not_let_go_before_the_players_
         arrivals: Vec::new(),
         arrivals_taken: arrivals.iter().map(|arrival| arrival.id).collect(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
     // As a region does before it checkpoints, the west saves the chunk it changed.
     let mut chunk = generator().generate(ROOT_CHUNK);

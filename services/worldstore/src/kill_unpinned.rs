@@ -157,6 +157,7 @@ impl Actor {
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             clock: Default::default(),
+            claims: Vec::new(),
         });
         self.settle(told).map(|_| ())
     }

@@ -709,6 +709,7 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
         entity_changes: Vec::new(),
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
+        claims: Vec::new(),
     };
     let opened = |region, epoch| LogRecord::Opened {
         region,

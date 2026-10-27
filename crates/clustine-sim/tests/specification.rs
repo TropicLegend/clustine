@@ -1925,6 +1925,10 @@ fn a_restored_region_carries_on_as_the_original_from_every_tick_of_a_scenario() 
             // chunk it is given (docs/groundwork/n9-plan.md, section 9.2).
             expected.counts = None;
             actual.counts = None;
+            // Nor its land's points of interest (docs/groundwork/n10-plan.md, section
+            // 3.5), for the same reason.
+            expected.village = None;
+            actual.village = None;
             if index == 0 {
                 expected.stays.clear();
                 actual.stays.clear();

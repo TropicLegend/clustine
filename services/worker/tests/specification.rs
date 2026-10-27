@@ -5352,6 +5352,7 @@ fn store_by_hand(
             arrivals: Vec::new(),
             arrivals_taken: Vec::new(),
             clock: Default::default(),
+            claims: Vec::new(),
         });
     }
     handle.flush();

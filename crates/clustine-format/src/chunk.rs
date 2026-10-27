@@ -5,14 +5,14 @@
 //!
 //! | Field | Type |
 //! |---|---|
-//! | Format version | u8, 16 |
+//! | Format version | u8, 17 |
 //! | Kind | u8, 5 |
 //! | Chunk x, z | i32, i32 |
 //! | Y of the lowest block | i32 |
 //! | Tick at which the chunk was saved | u64 |
 //! | Epoch of the region that saved it | u64 |
 //! | Generated: the version of the generator the chunk is exactly as made by, or 0 | u16 |
-//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures"; the others 0 |
+//! | Flags | u8: bit 0 "with a failure", bit 1 "with seams", bit 2 "with block events", bit 3 "with structures", bit 4 "with claims"; the others 0 |
 //! | Section count | u16 |
 //! | Codec of the body | u8: 0 as it is, 1 zstd |
 //! | Length of the body, as it is | u32, at most 8 MiB |
@@ -33,6 +33,7 @@
 //! | Seams, with bit 1 of the flags only | as `seams.rs` says, which is not empty |
 //! | Block events, with bit 2 of the flags only | as `kept_events.rs` says, which is not empty |
 //! | Structures, with bit 3 of the flags only | count u32, not 0; then, in generation's order: the structure's name, its length u8 and its bytes; the chunk it starts in, x i32 and z i32; its box; the count of its pieces' boxes u32 and the boxes |
+//! | Claims, with bit 4 of the flags only | count u16, not 0; then, ascending by position: `x << 4 \| z` u8, y i16, the point of interest's type u8 (its registry id), its free tickets u8 |
 //!
 //! A box is its lowest corner and its highest, each x, y, z as i32: six i32s, the lowest
 //! no higher than the highest on any axis. A structure's name is one of those a chunk
@@ -49,6 +50,7 @@
 //! its blocks.
 
 use clustine_data::{BLOCK_ENTITY_TYPES, BLOCK_STATE_COUNT, BlockState, synced_registry};
+use clustine_world::poi::{Claim, PoiType};
 use clustine_world::{
     BIOME_CELLS, BLOCKS_PER_SECTION, Biome, BlockPos, Chunk, ChunkPos, InChunk, KeptBox, KeptKind,
     KeptStructure, LIGHT_ARRAY_LENGTH, Light, MAX_BLOCK_ENTITY_DATA, ScheduledTick, Section,
@@ -79,6 +81,10 @@ const WITH_EVENTS: u8 = 4;
 /// flat world, is written as before them but for the version
 /// (`docs/groundwork/n9-plan.md`, section 9.6).
 const WITH_STRUCTURES: u8 = 8;
+/// A chunk with claims on its points of interest says so, so that one without, as
+/// nearly every chunk, is written as before them but for the version
+/// (`docs/groundwork/n10-plan.md`, section 3.2).
+const WITH_CLAIMS: u8 = 16;
 /// What one box takes: two corners of three i32s.
 const BOX_LENGTH: usize = 6 * 4;
 /// The byte that says how a chunk's light is there: not at all, or with the version
@@ -241,6 +247,43 @@ fn put_structures(out: &mut Vec<u8>, structures: &[KeptStructure]) {
     }
 }
 
+/// Writes `claims`, which are not empty, as the table says.
+pub(crate) fn put_claims(out: &mut Vec<u8>, claims: &[Claim]) {
+    out.extend_from_slice(
+        &u16::try_from(claims.len())
+            .expect("a chunk has fewer points of interest than 65,536")
+            .to_be_bytes(),
+    );
+    for claim in claims {
+        put_in_chunk(out, claim.at);
+        out.push(claim.kind.id());
+        out.push(claim.free);
+    }
+}
+
+/// Reads what [`put_claims`] wrote. Whether each claim fits the chunk's blocks is the
+/// chunk's to judge ([`Chunk::set_claims`]), not the file's.
+pub(crate) fn take_claims(input: &mut Input) -> Result<Vec<Claim>, FormatError> {
+    let count = usize::from(input.u16()?);
+    let mut claims = Vec::with_capacity(count.min(input.0.len() / 5));
+    for _ in 0..count {
+        let at = in_chunk(input)?;
+        if at.x > 15 || at.z > 15 {
+            return Err(FormatError::Corrupt("a claim outside its chunk"));
+        }
+        let kind = PoiType::from_id(input.u8()?)
+            .ok_or(FormatError::Corrupt("a point of interest of no type"))?;
+        let free = input.u8()?;
+        claims.push(Claim { at, kind, free });
+    }
+    if !claims.windows(2).all(|pair| pair[0].at < pair[1].at) {
+        return Err(FormatError::Corrupt(
+            "a chunk's claims are not ascending, each once",
+        ));
+    }
+    Ok(claims)
+}
+
 fn structures(input: &mut Input) -> Result<Vec<KeptStructure>, FormatError> {
     let count = input.u32()? as usize;
     if count == 0 {
@@ -369,6 +412,9 @@ impl ChunkFile {
         if !chunk.structures().is_empty() {
             put_structures(&mut body, chunk.structures());
         }
+        if !chunk.claims().is_empty() {
+            put_claims(&mut body, chunk.claims());
+        }
         assert!(body.len() <= MAX_BODY, "a chunk of {} bytes", body.len());
 
         let compressed = zstd::bulk::compress(&body, ZSTD_LEVEL).ok();
@@ -403,7 +449,12 @@ impl ChunkFile {
         } else {
             WITH_STRUCTURES
         };
-        out.push(failure | seams | events | structures);
+        let claims = if chunk.claims().is_empty() {
+            0
+        } else {
+            WITH_CLAIMS
+        };
+        out.push(failure | seams | events | structures | claims);
         out.extend_from_slice(&(chunk.sections().len() as u16).to_be_bytes());
         out.push(codec);
         out.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -414,10 +465,10 @@ impl ChunkFile {
         out
     }
 
-    /// Reads a file. Returns the chunk and how many block entities were not as the
-    /// blocks ask: one that was missing is there without data, and one where the
-    /// blocks ask for none, or for another type, is dropped. Whoever reads says so of
-    /// the chunk.
+    /// Reads a file. Returns the chunk and how many block entities and claims were not
+    /// as the blocks ask: a block entity that was missing is there without data, and one
+    /// where the blocks ask for none, or for another type, is dropped, as is a claim on
+    /// a block of another type. Whoever reads says so of the chunk.
     pub fn decode(bytes: &[u8]) -> Result<(Self, usize), FormatError> {
         let (front, checksum) = bytes
             .split_last_chunk::<4>()
@@ -439,7 +490,7 @@ impl ChunkFile {
         let epoch = input.u64()?;
         let generated = input.u16()?;
         let flags = input.u8()?;
-        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS | WITH_STRUCTURES) != 0 {
+        if flags & !(WITH_FAILURE | WITH_SEAMS | WITH_EVENTS | WITH_STRUCTURES | WITH_CLAIMS) != 0 {
             return Err(FormatError::Corrupt("flags that mean nothing"));
         }
         let section_count = usize::from(input.u16()?);
@@ -588,6 +639,14 @@ impl ChunkFile {
         if flags & WITH_STRUCTURES != 0 {
             chunk.set_structures(structures(&mut input)?);
         }
+        let mut claims_dropped = 0;
+        if flags & WITH_CLAIMS != 0 {
+            let claims = take_claims(&mut input)?;
+            if claims.is_empty() {
+                return Err(FormatError::Corrupt("a chunk with claims that has none"));
+            }
+            claims_dropped = chunk.set_claims(claims);
+        }
         input.finish()?;
         chunk.mark_generated(generated, flags & WITH_FAILURE != 0);
         let file = Self {
@@ -596,7 +655,7 @@ impl ChunkFile {
             epoch,
             chunk,
         };
-        Ok((file, unfit + missing))
+        Ok((file, unfit + missing + claims_dropped))
     }
 }
 
@@ -811,6 +870,79 @@ mod tests {
         }
     }
 
+    /// A chunk with a lectern and a bell, a ticket taken of each.
+    fn claimed(base: Chunk) -> Chunk {
+        let mut chunk = base;
+        chunk.set(2, 0, 2, blocks::LECTERN);
+        chunk.set(9, 0, 9, blocks::BELL);
+        assert!(chunk.acquire_ticket(InChunk::new(2, 0, 2)));
+        assert!(chunk.acquire_ticket(InChunk::new(9, 0, 9)));
+        chunk
+    }
+
+    #[test]
+    fn a_chunk_with_claims_comes_back_with_them_and_one_without_is_as_before() {
+        for base in [empty(), full()] {
+            let chunk = claimed(base.clone());
+            let with = file(chunk);
+            let bytes = with.encode();
+            assert_eq!(bytes[32] & WITH_CLAIMS, WITH_CLAIMS);
+            let (read, unfit) = ChunkFile::decode(&bytes).unwrap();
+            assert_eq!(unfit, 0);
+            assert_eq!(read, with);
+            assert_eq!(read.chunk.free_tickets(InChunk::new(9, 0, 9)), Some(31));
+            assert_eq!(read.encode(), bytes);
+            assert_eq!(file(base).encode()[32] & WITH_CLAIMS, 0);
+        }
+    }
+
+    /// The claims' part is laid out as the table says: a count, then per claim the
+    /// column, the height, the type's id and the free tickets.
+    #[test]
+    fn the_claims_part_of_the_body_is_laid_out_as_the_table_says() {
+        let chunk = claimed(empty());
+        let mut out = Vec::new();
+        put_claims(&mut out, chunk.claims());
+        assert_eq!(
+            out,
+            [
+                0, 2, // two claims
+                0x22, 0, 0, 8, 0, // the lectern: a librarian's, none free
+                0x99, 0, 0, 14, 31, // the bell: a meeting point, 31 free
+            ]
+        );
+    }
+
+    /// A claim whose block is not of its type is dropped and counted, and the chunk is
+    /// read: a mismatch can come of a change made without corruption.
+    #[test]
+    fn a_claim_on_a_block_of_another_type_is_dropped_and_the_chunk_kept() {
+        let chunk = claimed(empty());
+        let stored = file(chunk).encode();
+        // The body as it is: the header is 44 bytes, its codec at 35.
+        let mut body = match stored[35] {
+            CODEC_ZSTD => zstd::bulk::decompress(&stored[44..stored.len() - 4], MAX_BODY).unwrap(),
+            _ => stored[44..stored.len() - 4].to_vec(),
+        };
+        // The lectern's claim names a mason's stonecutter instead.
+        let at = body
+            .windows(5)
+            .position(|window| window == [0x22, 0, 0, 8, 0])
+            .expect("the claims are at the body's end");
+        body[at + 3] = 9;
+        let mut bytes = stored[..35].to_vec();
+        bytes.push(CODEC_RAW);
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&body);
+        let checksum = crc32fast::hash(&bytes);
+        bytes.extend_from_slice(&checksum.to_be_bytes());
+        let (read, unfit) = ChunkFile::decode(&bytes).unwrap();
+        assert_eq!(unfit, 1);
+        assert_eq!(read.chunk.free_tickets(InChunk::new(2, 0, 2)), Some(1));
+        assert_eq!(read.chunk.free_tickets(InChunk::new(9, 0, 9)), Some(31));
+    }
+
     /// The structures' part of the body is laid out as the table says.
     #[test]
     fn a_kept_structure_is_written_by_its_name_its_source_its_box_and_its_pieces() {
@@ -889,17 +1021,17 @@ mod tests {
     /// A chunk of format 15, from before chunks kept structures, is refused as every
     /// earlier format is: worlds made before are not carried over.
     #[test]
-    fn a_chunk_file_of_format_15_is_refused() {
-        assert_eq!(FORMAT_VERSION, 16);
+    fn a_chunk_file_of_format_16_is_refused() {
+        assert_eq!(FORMAT_VERSION, 17);
         let mut bytes = file(full()).encode();
-        bytes[0] = 15;
+        bytes[0] = 16;
         let (front, _) = bytes.split_at(bytes.len() - 4);
         let checksum = crc32fast::hash(front);
         let at = bytes.len() - 4;
         bytes[at..].copy_from_slice(&checksum.to_be_bytes());
         assert_eq!(
             ChunkFile::decode(&bytes),
-            Err(FormatError::UnsupportedVersion(15))
+            Err(FormatError::UnsupportedVersion(16))
         );
     }
 

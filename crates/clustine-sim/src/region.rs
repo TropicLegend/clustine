@@ -82,6 +82,7 @@ mod picks;
 mod pistons;
 mod placing;
 mod player_effects;
+pub(crate) mod pois;
 mod pressed;
 mod projectile_hits;
 mod projectiles;
@@ -469,6 +470,12 @@ pub struct Region {
     /// What the store last published of the other regions' counts (`spawn_caps.rs`); none
     /// until it has once, and nothing spawns until then. In memory only.
     published: Option<crate::api::PublishedCounts>,
+    /// The points of interest the store published of the chunks within five of the land
+    /// that the region neither holds nor copies (`pois.rs`), and those of the land as last
+    /// reported; in memory only, so that a restore reports its land whole and learns its
+    /// margin again.
+    margin: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
+    reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
     mob_swings: BTreeMap<EntityId, (u64, u8)>,
@@ -708,6 +715,8 @@ impl Region {
             unnamed: true,
             counts: Default::default(),
             published: None,
+            margin: BTreeMap::new(),
+            reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
             lends_asked,
@@ -1319,6 +1328,7 @@ impl Region {
         // The counts of its mobs, all of them in the tick that names every stay
         // (`spawn_caps.rs`).
         self.report_counts(first, &mut output);
+        self.report_village(first, &mut output);
 
         // Riders who left the world, noted where they got off, and those let go.
         let dismounted = std::mem::take(&mut self.dismounted);
@@ -1331,6 +1341,8 @@ impl Region {
         output.ticks_changed = self.ticks_changed();
         output.ticks_pending = self.ticks_pending();
         output.seams_changed = self.seams_changed();
+        output.claims_changed.sort_unstable();
+        output.claims_changed.dedup();
         self.interactions_at_line();
         output.effects = mem::take(&mut self.made);
         self.draws = 0;
@@ -3348,6 +3360,14 @@ impl Region {
             }
         }
         self.update_copied_entities(&inputs.copy_entity_updates);
+        for (position, claims) in &inputs.copy_claims {
+            if let Some(copy) = self.copies.get_mut(position) {
+                copy.set_claims(claims.clone());
+            }
+        }
+        if let Some(village) = &inputs.village {
+            self.take_margin(village);
+        }
         for position in &inputs.copies_withdrawn {
             self.copies.remove(position);
         }
@@ -3866,6 +3886,7 @@ mod tests {
     mod pigs;
     mod pistons;
     mod player_effects;
+    mod pois;
     mod post_processing_and_seams;
     mod pressed;
     mod pushed;

@@ -281,6 +281,7 @@ fn commit_of(
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     }
 }
 
@@ -788,6 +789,7 @@ fn a_copy_is_based_on_the_committed_form_and_kept_up_by_a_chain_of_updates() {
                 previous: before,
                 changes,
                 entity_changes: _,
+                claims: _,
             } => {
                 assert_eq!(position, ORIGIN);
                 assert_eq!(changes, [(at, state).into()]);

@@ -172,8 +172,14 @@ impl Region {
         let Some(chunk) = self.chunks.get_mut(&pos.chunk()) else {
             return false;
         };
+        let claims = chunk.claims().len();
         if chunk.set(x, pos.y, z, state).is_none() {
             return false;
+        }
+        // A point of interest whose block changed type takes its claim with it
+        // (`Chunk::set`), which the commit carries.
+        if chunk.claims().len() != claims {
+            output.claims_changed.push(pos.chunk());
         }
         output.events.push(RegionEvent::BlockChanged {
             position: pos,
@@ -997,6 +1003,7 @@ impl Region {
                 vehicle,
                 chunk,
             } => self.take_seated(player, vehicle, chunk, output),
+            Effected::Release { kind } => self.release_held(at, kind, output),
             Effected::Exploded { expected, blast } => {
                 self.take_exploded(at, expected, blast, output);
             }

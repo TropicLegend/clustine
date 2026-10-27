@@ -3537,6 +3537,13 @@ fn a_region_restored_after_any_tick_does_what_the_region_run_on_does_but_for_its
                     "{context}"
                 );
                 theirs.counts.clone_from(&output.counts);
+                // And its land's points of interest (docs/groundwork/n10-plan.md,
+                // section 3.5).
+                assert!(
+                    theirs.village.as_ref().is_some_and(|village| village.full),
+                    "{context}"
+                );
+                theirs.village.clone_from(&output.village);
             }
             assert_eq!(theirs, output, "{context}");
             *ticks += 1;

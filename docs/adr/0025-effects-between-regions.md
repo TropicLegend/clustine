@@ -768,3 +768,15 @@ of the store sound. Its changes, made:
 8. Records in a group apply in log order (section 5).
 9. Ticks a second are measured by the store's clock over arriving commits, afresh from
    a hello (section 8).
+
+## Changed in N10
+
+Section 3, **copy updates**: an update carries, besides the block changes (and the entity
+changes of ADR-0028), the chunk's claims on its points of interest whole where its commit
+changed them (`docs/groundwork/n10-plan.md`, section 3.2), applied after the blocks; a
+commit that changes only a chunk's claims is the chunk's change for the chain and the gap
+check, as an entity change is, since a region reads the occupancy of points of interest in
+its copies (whether a bed or a bell is claimed, for the village). Section 4, **effects**:
+a ticket of a point of interest given back where the chunk is another region's is an
+effect (`Effected::Release`, log effect kind 12), which its holder applies as the game's
+guarded release: only where a point of that type is there and not every ticket is free.

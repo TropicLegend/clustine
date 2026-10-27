@@ -1713,6 +1713,13 @@ impl RegionRunner {
                 }
                 // The other regions' counts, which come behind the clock.
                 StoreReply::Counts(counts) => self.inputs.counts = Some(counts),
+                // The margin's publications are changes on changes: folded in order,
+                // never one put in place of another (`docs/groundwork/n10-plan.md`,
+                // section 3.5).
+                StoreReply::Village(village) => match &mut self.inputs.village {
+                    Some(folded) => folded.then(village),
+                    None => self.inputs.village = Some(village),
+                },
                 // Faces go to the next tick as they come, whatever the borders hold
                 // back: the region keeps them all and shows those it holds or copies
                 // (`docs/groundwork/n7-faces.md`).
@@ -2835,6 +2842,16 @@ impl RegionRunner {
             .filter(|position| self.region.chunk(**position).is_some())
             .map(|position| (*position, self.region.kept_events(*position)))
             .collect();
+        // The claims on each chunk's points of interest, whole, where they changed
+        // (`docs/groundwork/n10-plan.md`, section 3.2).
+        let claims: Vec<_> = output
+            .claims_changed
+            .iter()
+            .filter_map(|position| {
+                let chunk = self.region.chunk(*position)?;
+                Some((*position, chunk.claims().to_vec()))
+            })
+            .collect();
         // What the tick did to entities other than players, in its order. The sim makes
         // none for a chunk it does not have loaded (`docs/groundwork/n2-plan.md`,
         // section 11).
@@ -2852,6 +2869,7 @@ impl RegionRunner {
             && marks_taken.is_empty()
             && seams.is_empty()
             && events.is_empty()
+            && claims.is_empty()
             && output.delta.changes_only_the_tick();
         // A tick that takes effects commits, so that the store drops them; one that made
         // some commits them; and a coupled region commits every tick (section 8).
@@ -2871,7 +2889,8 @@ impl RegionRunner {
                 .chain(ticks.iter().map(|(position, _)| *position))
                 .chain(marks_taken.iter().copied())
                 .chain(seams.iter().map(|(position, _)| *position))
-                .chain(events.iter().map(|(position, _)| *position));
+                .chain(events.iter().map(|(position, _)| *position))
+                .chain(claims.iter().map(|(position, _)| *position));
             for position in blocks {
                 self.unsaved_part(position, Parts::BLOCKS);
             }
@@ -2892,6 +2911,7 @@ impl RegionRunner {
                 effects: self.border.take_for_commit(),
                 taken,
                 events,
+                claims,
                 entity_changes,
                 arrivals,
                 arrivals_taken,
@@ -2902,6 +2922,11 @@ impl RegionRunner {
         // (`docs/groundwork/n9-plan.md`, section 9.2).
         if let Some(counts) = output.counts {
             self.store.request(StoreRequest::Counts(counts));
+        }
+        // And what it says of its land's points of interest
+        // (`docs/groundwork/n10-plan.md`, section 3.5).
+        if let Some(village) = output.village {
+            self.store.request(StoreRequest::Village(village));
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
         // last save went out when its last ticket was let go of, before the tick that
@@ -5156,7 +5181,8 @@ mod tests {
                 | StoreRequest::Lend { .. }
                 | StoreRequest::LendRefused { .. }
                 | StoreRequest::Lending { .. }
-                | StoreRequest::Counts(_) => return None,
+                | StoreRequest::Counts(_)
+                | StoreRequest::Village(_) => return None,
             })
         }
     }

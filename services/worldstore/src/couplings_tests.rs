@@ -103,6 +103,7 @@ fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect]) {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
 }
 
@@ -448,6 +449,7 @@ fn what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_checkpoint() {
                         arrivals: Vec::new(),
                         arrivals_taken: Vec::new(),
                         clock: Default::default(),
+                        claims: Vec::new(),
                     });
                 }
             }

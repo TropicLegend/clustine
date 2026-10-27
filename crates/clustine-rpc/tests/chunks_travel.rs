@@ -58,6 +58,7 @@ struct ChunkOnWire {
     seams: Vec<Seam>,
     events: Vec<KeptEvent>,
     structures: Vec<KeptStructure>,
+    claims: Vec<clustine_world::poi::Claim>,
     entities: Vec<Entity>,
 }
 
@@ -595,6 +596,7 @@ fn a_section_with_a_state_that_is_none_of_the_games_is_not_a_panic() {
                 seams: Vec::new(),
                 events: Vec::new(),
                 structures: Vec::new(),
+                claims: Vec::new(),
                 entities: Vec::new(),
             };
             if let Ok(chunk) = chunk_from(&chunk) {

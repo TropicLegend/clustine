@@ -81,6 +81,8 @@ const SEATED: u8 = 10;
 /// An entity use addressed to a player wherever their stay is held (N9, a new tag
 /// without a raise of the format, as the uses 12 to 16 below).
 const ON_PLAYER: u8 = 11;
+/// A ticket of a point of interest given back (`docs/groundwork/n10-plan.md`, decision 2).
+const RELEASE: u8 = 12;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
@@ -225,6 +227,10 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.extend_from_slice(&vehicle.0.to_be_bytes());
             out.extend_from_slice(&chunk.x.to_be_bytes());
             out.extend_from_slice(&chunk.z.to_be_bytes());
+        }
+        Effected::Release { kind } => {
+            out.push(RELEASE);
+            out.push(kind.id());
         }
     }
 }
@@ -853,6 +859,10 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
             vehicle: EntityId(input.u64()?),
             chunk: clustine_world::ChunkPos::new(input.i32()?, input.i32()?),
         },
+        RELEASE => Effected::Release {
+            kind: clustine_world::poi::PoiType::from_id(input.u8()?)
+                .ok_or(FormatError::Corrupt("a point of interest of no type"))?,
+        },
         _ => return Err(FormatError::Corrupt("an effect's kind")),
     };
     Ok(Effect { at, what })
@@ -997,13 +1007,34 @@ mod tests {
         out
     }
 
+    /// A release of a ticket is its block, its kind and the point of interest's type id;
+    /// a type there is none of is corrupt.
+    #[test]
+    fn a_release_is_read_back_and_one_of_no_type_is_corrupt() {
+        let release = Effect {
+            at: BlockPos::new(-7, 64, 12),
+            what: Effected::Release {
+                kind: clustine_world::poi::PoiType::Meeting,
+            },
+        };
+        let bytes = bytes_of(&release);
+        assert_eq!(bytes[12..], [RELEASE, 14]);
+        assert_eq!(take_effect(&mut Input(&bytes)), Ok(release));
+        let mut unknown = bytes.clone();
+        unknown[13] = 21;
+        assert_eq!(
+            take_effect(&mut Input(&unknown)),
+            Err(FormatError::Corrupt("a point of interest of no type"))
+        );
+    }
+
     #[test]
     fn an_effect_with_a_direction_a_kind_or_a_block_out_of_range_is_corrupt() {
         let good = bytes_of(&effect());
         assert_eq!(take_effect(&mut Input(&good)), Ok(effect()));
         // The kind is after the block, three i32; the direction after the kind.
         let mut kind = good.clone();
-        kind[12] = ON_PLAYER + 1;
+        kind[12] = RELEASE + 1;
         assert_eq!(
             take_effect(&mut Input(&kind)),
             Err(FormatError::Corrupt("an effect's kind"))

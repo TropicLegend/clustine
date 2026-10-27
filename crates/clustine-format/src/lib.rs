@@ -54,8 +54,10 @@ pub use region::{
 /// kind needs no raise (`docs/groundwork/n9-plan.md`, section 3.2); 15 since a player's
 /// place holds their effects and their time since rest after their respawn point
 /// (section 5.4 of the same plan); 16 since a chunk keeps the structure starts that reach
-/// it which natural spawning and the patrol spawner ask (section 9.6).
-pub const FORMAT_VERSION: u8 = 16;
+/// it which natural spawning and the patrol spawner ask (section 9.6); 17 since a chunk
+/// keeps the claims on its points of interest and a commit may carry them
+/// (`docs/groundwork/n10-plan.md`, section 3.2).
+pub const FORMAT_VERSION: u8 = 17;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

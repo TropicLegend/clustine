@@ -452,6 +452,66 @@ pub struct PublishedCounts {
     pub players: Vec<(PlayerId, SpawnCounts)>,
 }
 
+/// A record of a point of interest as other regions read it from the published margin
+/// (`docs/groundwork/n10-plan.md`, section 3.5): where, of which type, and whether any
+/// ticket of it is taken. Its free tickets are not published: a region takes a ticket
+/// only in its own land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoiSeen {
+    pub at: BlockPos,
+    pub kind: clustine_world::poi::PoiType,
+    pub occupied: bool,
+}
+
+/// What a tick says of its land's points of interest (section 3.5): each chunk of the land
+/// whose records or occupancy changed, or that came into the land, with its records whole
+/// (none where it has none); the chunks the region stopped holding; and whether this is
+/// every chunk of its land (its first tick after it is made or restored), which replaces
+/// what the store kept of the region and makes the store publish to it whole.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VillageReport {
+    pub full: bool,
+    pub pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
+    pub let_go: Vec<ChunkPos>,
+}
+
+/// What the store published to a region of the points of interest of the chunks within
+/// five of its land that it neither holds nor copies (section 3.5): whole, or the changes
+/// since the last publication to the region's owner, with the chunks no longer published.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedVillage {
+    pub whole: bool,
+    pub pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
+    pub dropped: Vec<ChunkPos>,
+}
+
+impl PublishedVillage {
+    /// `later` taken after this one, as one publication: a whole one replaces it, and
+    /// changes are laid over it.
+    pub fn then(&mut self, later: PublishedVillage) {
+        if later.whole {
+            *self = later;
+            return;
+        }
+        let mut pois: std::collections::BTreeMap<ChunkPos, Vec<PoiSeen>> =
+            std::mem::take(&mut self.pois).into_iter().collect();
+        let mut dropped: std::collections::BTreeSet<ChunkPos> =
+            std::mem::take(&mut self.dropped).into_iter().collect();
+        for position in later.dropped {
+            pois.remove(&position);
+            if !self.whole {
+                dropped.insert(position);
+            }
+        }
+        for (position, seen) in later.pois {
+            dropped.remove(&position);
+            pois.insert(position, seen);
+        }
+        self.pois = pois.into_iter().collect();
+        self.dropped = dropped.into_iter().collect();
+    }
+}
+
 /// A hand (`InteractionHand`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hand {
@@ -1094,6 +1154,10 @@ pub struct TickInputs {
     /// touch other parts of a chunk than block changes, so their order among those does
     /// not matter.
     pub copy_entity_updates: Vec<(ChunkPos, Vec<EntityChange>)>,
+    /// The claims on copied chunks' points of interest, whole, where later commits
+    /// changed them, applied after the bases and the block changes
+    /// (`docs/groundwork/n10-plan.md`, section 3.2).
+    pub copy_claims: Vec<(ChunkPos, Vec<clustine_world::poi::Claim>)>,
     /// Copies the region no longer has: gone from its tickets' reach, withdrawn
     /// because their chunk came to be used by a region not coupled to this one, or
     /// loaded as the region's own.
@@ -1163,6 +1227,9 @@ pub struct TickInputs {
     /// The other regions' counts the store published with the players, where it has
     /// every region's (section 9.2).
     pub counts: Option<PublishedCounts>,
+    /// The points of interest beyond the land the store published since the last tick,
+    /// folded into one (`docs/groundwork/n10-plan.md`, section 3.5).
+    pub village: Option<PublishedVillage>,
 }
 
 /// The world's clock (`docs/groundwork/n7-plan.md`, sections 7.4, 8.4 and 9.3): the game
@@ -1884,6 +1951,10 @@ pub struct TickOutput {
     /// (`docs/adr/0026-redstone.md`, section 4). They are to be committed and saved as
     /// chunks whose blocks changed are.
     pub events_changed: Vec<ChunkPos>,
+    /// Chunks whose claims on their points of interest changed in this tick, in
+    /// ascending order (`docs/groundwork/n10-plan.md`, section 3.2). They are to be
+    /// committed and saved as chunks whose blocks changed are.
+    pub claims_changed: Vec<ChunkPos>,
     /// What the tick did in chunks the region does not have loaded and does not hold
     /// or ask for, in the order it did them
     /// (`docs/adr/0025-effects-between-regions.md`, section 4). They are to be
@@ -1924,6 +1995,9 @@ pub struct TickOutput {
     /// changed in the tick, or of every loaded chunk (`docs/groundwork/n9-plan.md`,
     /// section 9.2): carried with the commit, not written to the log.
     pub counts: Option<CountsReport>,
+    /// What the tick says of its land's points of interest (`docs/groundwork/n10-plan.md`,
+    /// section 3.5): carried with the commit, not written to the log.
+    pub village: Option<VillageReport>,
     /// The chunks whose entities changed in the tick without a commit: counters, and a
     /// resting item's motion (`docs/groundwork/n4-plan.md`, sections 2 and 7). The
     /// worker saves their entities at its checkpoints and its stop, so that what the

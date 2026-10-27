@@ -88,6 +88,7 @@ fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
 }
 

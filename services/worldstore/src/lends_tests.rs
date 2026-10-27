@@ -416,6 +416,7 @@ fn effects_the_lender_had_not_taken_go_to_the_borrower_with_the_lend() {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
     lent(&lender, &borrower, marked());
     // Behind the grant, on the borrower's stream before a mark.

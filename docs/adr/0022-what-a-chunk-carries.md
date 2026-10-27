@@ -1201,3 +1201,36 @@ whose corners are crossed, and the bit with none after it.
 
 **Section 4**: a chunk travels with its structures between services (its serde
 form gains the field); an edge's snapshot has none.
+
+## Changed in N10
+
+[The N10 plan](../groundwork/n10-plan.md) (section 3, decisions 1 and 2) gives a chunk
+the state of its points of interest that its blocks do not say. Built in step N10b;
+the store's format is 17 for it, and a world of an earlier format is refused.
+
+**Section 1**: a point of interest is wherever a block of its type is (`PoiTypes`; only
+the head of the sixteen coloured beds, every weathering of the lightning rod), so a
+chunk carries none of them, only **its claims**: for each point whose free tickets are
+fewer than its type has, its position, its type and its free tickets. Who holds a ticket
+is in the holder's memory, as in the game.
+
+**Section 2**: `Chunk` gains `claims: Vec<Claim>`, ascending by position, with
+`claims()`, `set_claims` (which drops a claim whose block is not of its type, or that
+has every ticket free, and says how many it dropped), `free_tickets`, `acquire_ticket`,
+`release_ticket`, `poi_type_at` and `pois()` (the records the blocks say, worked out
+when first asked after a change and forgotten by `set`, not serialised nor part of the
+equality). A block that changes to another type of point, or to none, takes its claim
+with it. The claims are part of the chunk's equality and of every copy, and not of what
+an edge is handed nor of `shows_the_same`.
+
+**Section 3**: the flags gain bit 4, "with claims", and the body gains, after the
+structures and only with that bit, the claims: a u16 count (not 0), then per claim the
+column `x << 4 | z` u8, y i16, the type's registry id u8 and the free tickets u8. A
+claim that does not fit the blocks is dropped and counted, not refused: a refused chunk
+is a hole never generated again, and a mismatch can come of a change made without
+corruption. A commit carries the claims of each chunk whose claims changed, whole (log
+kind 19), which a replay puts in after the commit's blocks; a chunk with claims is no
+longer as generated, so that remaking a chunk whose generation failed keeps them.
+
+**Section 4**: a chunk travels with its claims between services; an edge's snapshot has
+none.

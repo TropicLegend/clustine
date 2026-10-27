@@ -2,12 +2,14 @@
 //! (`docs/adr/0022-what-a-chunk-carries.md`).
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use clustine_data::{BLOCK_INFO, BLOCK_STATE_COUNT, BlockState, DimensionType, blocks};
 use serde::{Deserialize, Serialize};
 
 use crate::generation::{Done, Failed, GeneratorSettings, Wanted};
 use crate::light::{Light, SectionLight};
+use crate::poi::{Claim, PoiType, poi_type_of};
 use crate::{
     Biome, BlockPos, COLUMNS_PER_CHUNK, ChunkPos, Entity, EntityChange, EntityId, SECTION_SIZE,
     Section,
@@ -396,6 +398,10 @@ pub struct Chunk {
     /// The structure starts that reach the chunk which natural spawning and the patrol
     /// spawner ask, in generation's order (`docs/groundwork/n9-plan.md`, section 9.6).
     structures: Vec<KeptStructure>,
+    /// The points of interest of the chunk's blocks whose tickets are not all free,
+    /// ascending by position, each of its block's type (`docs/groundwork/n10-plan.md`,
+    /// section 3.2).
+    claims: Vec<Claim>,
     /// The entities other than players in the chunk, ascending by key
     /// (`docs/adr/0028-entities.md`, section 2).
     entities: Vec<Entity>,
@@ -405,6 +411,11 @@ pub struct Chunk {
     /// chunk's equality: every write to the blocks passes [`Chunk::set`], so none can go
     /// round it (`docs/groundwork/n8-plan.md`, section 4.2).
     light_noted: Option<Vec<InChunk>>,
+    /// The points of interest of the blocks, ascending by position, worked out when first
+    /// asked after a change (`docs/groundwork/n10-plan.md`, section 3.3). Not serialised,
+    /// and no part of the chunk's equality: it is what the blocks say, and every write to
+    /// them passes [`Chunk::set`], which forgets it.
+    pois: OnceLock<Box<[(InChunk, PoiType)]>>,
 }
 
 impl PartialEq for Chunk {
@@ -418,6 +429,7 @@ impl PartialEq for Chunk {
             && self.seams == other.seams
             && self.events == other.events
             && self.structures == other.structures
+            && self.claims == other.claims
             && self.entities == other.entities
     }
 }
@@ -449,8 +461,10 @@ impl Chunk {
             seams: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            claims: Vec::new(),
             entities: Vec::new(),
             light_noted: None,
+            pois: OnceLock::new(),
         };
         chunk.heights = chunk.scanned_heights();
         chunk.block_entities = chunk.owed_block_entities(BTreeMap::new());
@@ -495,6 +509,16 @@ impl Chunk {
         }
         self.follow_heights(x, y, z, old, state);
         let at = InChunk::new(x, y, z);
+        if poi_type_of(old) != poi_type_of(state) {
+            self.pois = OnceLock::new();
+        }
+        // A record whose block changes type is gone, and its claim with it; nobody is
+        // told (`PoiSection.remove`), its claimants find out by looking.
+        if poi_type_of(old) != poi_type_of(state)
+            && let Ok(index) = self.claims.binary_search_by(|claim| claim.at.cmp(&at))
+        {
+            self.claims.remove(index);
+        }
         match block_entity_type(state) {
             None => {
                 self.block_entities.remove(&at);
@@ -788,6 +812,110 @@ impl Chunk {
         self.structures = structures;
     }
 
+    /// The claims on the chunk's points of interest, ascending by position.
+    pub fn claims(&self) -> &[Claim] {
+        &self.claims
+    }
+
+    /// Takes `claims` as the chunk's, and says how many it dropped: a claim whose block
+    /// is not of its type, or with as many free tickets as its type has, says nothing
+    /// the blocks do not, and of two at one position the later is kept. A mismatch can
+    /// come of a change made without corruption (a chunk made again, a commit's order),
+    /// and the game itself drops such a record quietly, so it is no reason to refuse a
+    /// chunk (`docs/groundwork/n10-plan.md`, section 3.2).
+    pub fn set_claims(&mut self, claims: Vec<Claim>) -> usize {
+        let given = claims.len();
+        let mut kept: BTreeMap<InChunk, Claim> = BTreeMap::new();
+        for claim in claims {
+            if claim.free < claim.kind.max_tickets()
+                && self.poi_type_at(claim.at) == Some(claim.kind)
+            {
+                kept.insert(claim.at, claim);
+            }
+        }
+        self.claims = kept.into_values().collect();
+        given - self.claims.len()
+    }
+
+    /// The chunk's points of interest, ascending by position: every block whose state is
+    /// of a type (`PoiSection`'s records, as the blocks say them).
+    pub fn pois(&self) -> &[(InChunk, PoiType)] {
+        self.pois.get_or_init(|| {
+            let mut found = Vec::new();
+            for (index, section) in self.sections.iter().enumerate() {
+                if !section.may_hold(|state| poi_type_of(state).is_some()) {
+                    continue;
+                }
+                let bottom = self.min_y + (index * SECTION_SIZE) as i32;
+                for y in 0..SECTION_SIZE {
+                    for z in 0..SECTION_SIZE {
+                        for x in 0..SECTION_SIZE {
+                            if let Some(kind) = poi_type_of(section.get(x, y, z)) {
+                                found.push((InChunk::new(x, bottom + y as i32, z), kind));
+                            }
+                        }
+                    }
+                }
+            }
+            found.into_boxed_slice()
+        })
+    }
+
+    /// The type of point of interest of the block at `at`, if any.
+    pub fn poi_type_at(&self, at: InChunk) -> Option<PoiType> {
+        poi_type_of(self.get(usize::from(at.x), i32::from(at.y), usize::from(at.z))?)
+    }
+
+    /// How many of the tickets of the point of interest at `at` are free, if there is
+    /// one (`PoiRecord.freeTickets`).
+    pub fn free_tickets(&self, at: InChunk) -> Option<u8> {
+        let kind = self.poi_type_at(at)?;
+        Some(
+            match self.claims.binary_search_by(|claim| claim.at.cmp(&at)) {
+                Ok(index) => self.claims[index].free,
+                Err(_) => kind.max_tickets(),
+            },
+        )
+    }
+
+    /// Takes a ticket of the point of interest at `at` (`PoiRecord.acquireTicket`):
+    /// false where there is none or none is free.
+    pub fn acquire_ticket(&mut self, at: InChunk) -> bool {
+        let Some(kind) = self.poi_type_at(at) else {
+            return false;
+        };
+        match self.claims.binary_search_by(|claim| claim.at.cmp(&at)) {
+            Ok(index) => {
+                let claim = &mut self.claims[index];
+                if claim.free == 0 {
+                    return false;
+                }
+                claim.free -= 1;
+            }
+            Err(index) => {
+                let Some(free) = kind.max_tickets().checked_sub(1) else {
+                    return false;
+                };
+                self.claims.insert(index, Claim { at, kind, free });
+            }
+        }
+        true
+    }
+
+    /// Gives a ticket of the point of interest at `at` back (`PoiRecord.releaseTicket`):
+    /// false where there is none or all are free.
+    pub fn release_ticket(&mut self, at: InChunk) -> bool {
+        let Ok(index) = self.claims.binary_search_by(|claim| claim.at.cmp(&at)) else {
+            return false;
+        };
+        let claim = &mut self.claims[index];
+        claim.free += 1;
+        if claim.free >= claim.kind.max_tickets() {
+            self.claims.remove(index);
+        }
+        true
+    }
+
     /// Keeps `seam`, in place of an entry with its key.
     pub fn add_seam(&mut self, seam: Seam) {
         match self.seams.binary_search_by_key(&seam.key(), Seam::key) {
@@ -807,7 +935,8 @@ impl Chunk {
     }
 
     /// The chunk as an edge is handed it: without the ticks, the marks, the seams, the
-    /// block events and the structures, which are the simulation's and the store's, and
+    /// block events, the structures and the claims, which are the simulation's and the
+    /// store's, and
     /// without the entities, which an edge is told of as entities.
     pub fn for_viewers(&self) -> Self {
         Self {
@@ -816,6 +945,7 @@ impl Chunk {
             seams: Vec::new(),
             events: Vec::new(),
             structures: Vec::new(),
+            claims: Vec::new(),
             entities: Vec::new(),
             ..self.clone()
         }
@@ -883,6 +1013,7 @@ struct ChunkRepr {
     seams: Vec<Seam>,
     events: Vec<KeptEvent>,
     structures: Vec<KeptStructure>,
+    claims: Vec<Claim>,
     entities: Vec<Entity>,
 }
 
@@ -900,6 +1031,7 @@ impl From<Chunk> for ChunkRepr {
             seams: chunk.seams,
             events: chunk.events,
             structures: chunk.structures,
+            claims: chunk.claims,
             entities: chunk.entities,
         }
     }
@@ -951,6 +1083,7 @@ impl TryFrom<ChunkRepr> for Chunk {
         chunk.set_seams(repr.seams);
         chunk.events = repr.events;
         chunk.structures = repr.structures;
+        chunk.set_claims(repr.claims);
         if !repr
             .entities
             .windows(2)
@@ -1225,6 +1358,114 @@ mod tests {
         let travelled: Chunk = postcard::from_bytes(&postcard::to_stdvec(&chunk).unwrap()).unwrap();
         assert_eq!(travelled, chunk);
         assert_eq!(travelled.structures(), [hut()]);
+    }
+
+    fn lectern_at(chunk: &mut Chunk, x: usize, y: i32, z: usize) -> InChunk {
+        chunk.set(x, y, z, blocks::LECTERN);
+        InChunk::new(x, y, z)
+    }
+
+    #[test]
+    fn a_chunk_s_points_of_interest_follow_its_blocks() {
+        let mut chunk = empty();
+        assert!(chunk.pois().is_empty());
+        let lectern = lectern_at(&mut chunk, 3, 64, 5);
+        chunk.set(1, 70, 1, blocks::BELL);
+        assert_eq!(
+            chunk.pois(),
+            [
+                (lectern, PoiType::Librarian),
+                (InChunk::new(1, 70, 1), PoiType::Meeting)
+            ]
+        );
+        chunk.set(3, 64, 5, blocks::AIR);
+        assert_eq!(chunk.pois(), [(InChunk::new(1, 70, 1), PoiType::Meeting)]);
+    }
+
+    #[test]
+    fn tickets_are_taken_and_given_back_and_only_a_claim_is_kept() {
+        let mut chunk = empty();
+        let lectern = lectern_at(&mut chunk, 3, 64, 5);
+        assert_eq!(chunk.free_tickets(lectern), Some(1));
+        assert!(chunk.claims().is_empty());
+        assert!(chunk.acquire_ticket(lectern));
+        assert_eq!(chunk.free_tickets(lectern), Some(0));
+        assert!(!chunk.acquire_ticket(lectern), "a lectern has one ticket");
+        assert_eq!(
+            chunk.claims(),
+            [Claim {
+                at: lectern,
+                kind: PoiType::Librarian,
+                free: 0
+            }]
+        );
+        assert!(chunk.release_ticket(lectern));
+        assert!(!chunk.release_ticket(lectern), "every ticket is free");
+        assert!(chunk.claims().is_empty(), "a full record is no claim");
+        assert!(
+            !chunk.acquire_ticket(InChunk::new(0, 64, 0)),
+            "no record there"
+        );
+
+        // The bell's 32 tickets: a claim keeps how many are free.
+        chunk.set(1, 70, 1, blocks::BELL);
+        let bell = InChunk::new(1, 70, 1);
+        assert!(chunk.acquire_ticket(bell) && chunk.acquire_ticket(bell));
+        assert_eq!(chunk.free_tickets(bell), Some(30));
+    }
+
+    #[test]
+    fn a_block_of_another_type_takes_its_claim_with_it_and_one_of_the_same_does_not() {
+        let mut chunk = empty();
+        chunk.set(2, 64, 2, blocks::COMPOSTER);
+        let composter = InChunk::new(2, 64, 2);
+        assert!(chunk.acquire_ticket(composter));
+        let fuller = blocks::COMPOSTER
+            .with_property("level", "3")
+            .expect("a composter has levels");
+        chunk.set(2, 64, 2, fuller);
+        assert_eq!(
+            chunk.free_tickets(composter),
+            Some(0),
+            "still a farmer's site"
+        );
+        chunk.set(2, 64, 2, blocks::LECTERN);
+        assert!(chunk.claims().is_empty());
+        assert_eq!(chunk.free_tickets(composter), Some(1));
+    }
+
+    #[test]
+    fn claims_that_say_nothing_or_do_not_fit_the_blocks_are_dropped_not_refused() {
+        let mut chunk = empty();
+        let lectern = lectern_at(&mut chunk, 3, 64, 5);
+        let claim = |at, kind, free| Claim { at, kind, free };
+        let dropped = chunk.set_claims(vec![
+            claim(lectern, PoiType::Librarian, 0),
+            claim(InChunk::new(0, 64, 0), PoiType::Librarian, 0),
+            claim(lectern, PoiType::Mason, 0),
+        ]);
+        assert_eq!(dropped, 2);
+        assert_eq!(chunk.claims(), [claim(lectern, PoiType::Librarian, 0)]);
+        assert_eq!(
+            chunk.set_claims(vec![claim(lectern, PoiType::Librarian, 1)]),
+            1
+        );
+        assert!(chunk.claims().is_empty());
+    }
+
+    #[test]
+    fn a_chunk_s_claims_are_part_of_its_equality_and_its_copies_but_not_of_what_viewers_get() {
+        let mut chunk = empty();
+        let lectern = lectern_at(&mut chunk, 3, 64, 5);
+        let unclaimed = chunk.clone();
+        assert!(chunk.acquire_ticket(lectern));
+        assert_ne!(chunk, unclaimed);
+        assert!(chunk.shows_the_same(&unclaimed));
+        assert!(chunk.for_viewers().claims().is_empty());
+
+        let travelled: Chunk = postcard::from_bytes(&postcard::to_stdvec(&chunk).unwrap()).unwrap();
+        assert_eq!(travelled, chunk);
+        assert_eq!(travelled.free_tickets(lectern), Some(0));
     }
 
     #[test]

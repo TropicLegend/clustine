@@ -55,6 +55,7 @@ use clustine_rpc::{
     CopyUse, Decline, FaceChange, FaceSeq, Lends as LendsOf, RegionHello, RegionList, Restored,
     SplitPart, StayNote, StoreReply, StoreRequest, TickState,
 };
+use clustine_world::poi::Claim;
 use clustine_world::{
     Arrival, BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, Entity,
     EntityChange, EntityId, EntityIds, FiledEffect, PlayerId,
@@ -121,6 +122,9 @@ pub(crate) struct Lanes {
     world: u64,
     /// The regions' counts of their mobs, in memory only (`spawn_counts.rs`).
     counts: crate::spawn_counts::Counts,
+    /// The regions' points of interest and the margins they were published, in memory
+    /// only (`village.rs`).
+    village: crate::village::Village,
     /// The seed of the world's features ([`Restored::seed`]).
     seed: Option<i64>,
     /// A lane for every living region, and for no other.
@@ -769,6 +773,7 @@ impl Lanes {
         let used = stored.as_ref().map_or(0, |table| table.next_region);
         let mut lanes = Self {
             counts: Default::default(),
+            village: Default::default(),
             disk,
             root: root.to_owned(),
             jobs,
@@ -1235,6 +1240,10 @@ impl Lanes {
                 self.counts.report(session.region, session.number, report);
                 return;
             }
+            StoreRequest::Village(report) => {
+                self.village.report(session.region, session.number, report);
+                return;
+            }
             StoreRequest::Commit {
                 tick,
                 changes,
@@ -1246,6 +1255,7 @@ impl Lanes {
                 effects,
                 taken,
                 events,
+                claims,
                 entity_changes,
                 arrivals,
                 mut arrivals_taken,
@@ -1420,8 +1430,10 @@ impl Lanes {
                         .is_some_and(|from| tick > from);
                     held && !self.copies.copiers(chunk).is_empty()
                 };
-                let mut updates: BTreeMap<ChunkPos, (Vec<BlockChange>, Vec<EntityChange>)> =
-                    BTreeMap::new();
+                // A chunk's claims count as its change too, since copies read them
+                // (`docs/groundwork/n10-plan.md`, section 3.2).
+                type Update = (Vec<BlockChange>, Vec<EntityChange>, Option<Vec<Claim>>);
+                let mut updates: BTreeMap<ChunkPos, Update> = BTreeMap::new();
                 for change in &changes {
                     let chunk = change.position().chunk();
                     if copied(chunk) {
@@ -1431,6 +1443,11 @@ impl Lanes {
                 for (chunk, change) in &entity_changes {
                     if copied(*chunk) {
                         updates.entry(*chunk).or_default().1.push(change.clone());
+                    }
+                }
+                for (chunk, of_chunk) in &claims {
+                    if copied(*chunk) {
+                        updates.entry(*chunk).or_default().2 = Some(of_chunk.clone());
                     }
                 }
                 // The notes are in the commit's own record, so that the two are on
@@ -1452,6 +1469,7 @@ impl Lanes {
                         .collect(),
                     taken: taken.clone(),
                     events,
+                    claims,
                     entity_changes,
                     arrivals: arrivals
                         .iter()
@@ -1514,7 +1532,7 @@ impl Lanes {
                                 self.group.arrivals.push(ArrivalUndo::Removed(id, kept));
                             }
                         }
-                        for (chunk, (changes, entity_changes)) in updates {
+                        for (chunk, (changes, entity_changes, claims)) in updates {
                             let previous = self
                                 .copies
                                 .changed(chunk, at)
@@ -1526,6 +1544,7 @@ impl Lanes {
                                     previous,
                                     changes: changes.clone(),
                                     entity_changes: entity_changes.clone(),
+                                    claims: claims.clone(),
                                 };
                                 self.group.stream(copier, Streamed::Reply(Box::new(update)));
                             }
@@ -2210,6 +2229,15 @@ impl Lanes {
                 });
                 if let Some(counts) = self.counts.published(*region, &owners, &players) {
                     owner.peer.answer(StoreReply::Counts(counts));
+                }
+                let copies = &self.copies;
+                if let Some(margin) =
+                    self.village
+                        .publication(*region, owner.peer.session.number, |chunk| {
+                            copies.copiers(chunk).contains(region)
+                        })
+                {
+                    owner.peer.answer(StoreReply::Village(margin));
                 }
             }
         }
@@ -4149,8 +4177,9 @@ impl Log {
 /// Of a commit's record: its tick, what it changed in chunks (its blocks and their block
 /// entities' data in the order the tick changed them, then the
 /// ticks of its chunks, then whose marks it took, then their seams, then their kept
-/// events, then the changes of their entities in the order the tick made them) and its
-/// state.
+/// events, then their claims, after the blocks so that a claim on a block placed in the
+/// tick holds, then the changes of their entities in the order the tick made them) and
+/// its state.
 #[allow(clippy::type_complexity)]
 pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, Vec<u8>)> {
     let LogRecord::Commit {
@@ -4161,6 +4190,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         marks_taken,
         seams,
         events,
+        claims,
         entity_changes,
         ..
     } = record
@@ -4181,6 +4211,9 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
     let events = events
         .into_iter()
         .map(|(chunk, events)| Replayed::Events(chunk, events));
+    let claims = claims
+        .into_iter()
+        .map(|(chunk, claims)| Replayed::Claims(chunk, claims));
     let entities = entity_changes
         .into_iter()
         .map(|(chunk, change)| Replayed::Entity(chunk, change));
@@ -4188,6 +4221,7 @@ pub(crate) fn commit_changes(record: LogRecord) -> Option<(u64, Vec<Replayed>, V
         .chain(marks)
         .chain(seams)
         .chain(events)
+        .chain(claims)
         .chain(entities);
     Some((tick, blocks.chain(records).collect(), state))
 }

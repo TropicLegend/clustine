@@ -60,6 +60,7 @@ fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
 }
 
@@ -165,6 +166,7 @@ fn a_copy_is_based_on_its_chunk_with_the_holders_commits_and_kept_up_to_date() {
             previous: before_second,
             changes: second_changes,
             entity_changes: _,
+            claims: _,
         },
         StoreReply::CopyUpdate {
             previous: before_third,
@@ -375,6 +377,7 @@ fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::
         arrivals: Vec::new(),
         arrivals_taken: Vec::new(),
         clock: Default::default(),
+        claims: Vec::new(),
     });
 }
 
@@ -440,4 +443,75 @@ fn a_copy_follows_a_block_entitys_data_in_its_place_among_the_blocks() {
         expected.apply(change).unwrap();
     }
     assert_eq!(chunk.as_ref(), Some(&expected));
+}
+
+/// A commit that changes only a copied chunk's claims on its points of interest is an
+/// update of the copy, with the claims whole, in the chain as a block change is
+/// (`docs/groundwork/n10-plan.md`, section 3.2): copies read occupancy.
+#[test]
+fn a_change_of_claims_alone_is_an_update_of_the_copy_with_the_claims() {
+    use clustine_world::InChunk;
+    use clustine_world::poi::{Claim, PoiType};
+
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let holder = opened(&store, 0);
+    let copier = opened(&store, 1);
+    let lectern = (block(WEST, 0), blocks::LECTERN);
+    commit(&holder, 1, &[lectern]);
+    streamed_before_flush(&holder);
+    copies(&copier, &[WEST], &[]);
+    let based = match &up_to_mark(&copier)[..] {
+        [StoreReply::CopyBase { sequence, .. }] => *sequence,
+        other => panic!("expected a base, got {other:?}"),
+    };
+
+    let claim = Claim {
+        at: InChunk::new(0, 100, 1),
+        kind: PoiType::Librarian,
+        free: 0,
+    };
+    holder.request(StoreRequest::Commit {
+        tick: 2,
+        changes: Vec::new(),
+        state: b"tick 2".to_vec(),
+        stays: Vec::new(),
+        ticks: Vec::new(),
+        marks_taken: Vec::new(),
+        seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
+        events: Vec::new(),
+        claims: vec![(WEST, vec![claim])],
+        entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
+        clock: Default::default(),
+    });
+    streamed_before_flush(&holder);
+    match &streamed_before_flush(&copier)[..] {
+        [
+            StoreReply::CopyUpdate {
+                position,
+                previous,
+                changes,
+                entity_changes,
+                claims,
+                ..
+            },
+        ] => {
+            assert_eq!(*position, WEST);
+            assert_eq!(*previous, based);
+            assert!(changes.is_empty() && entity_changes.is_empty());
+            assert_eq!(claims.as_deref(), Some(&[claim][..]));
+        }
+        other => panic!("expected an update, got {other:?}"),
+    }
+    // And a restore of the holder replays it into the chunk.
+    holder.flush();
+    let (again, _) = store.open_region(hello(0, 2)).unwrap();
+    let mut expected = with(WEST, &[lectern]);
+    assert!(expected.acquire_ticket(claim.at));
+    assert_eq!(load(&again, WEST).claims(), expected.claims());
+    again.flush();
 }
