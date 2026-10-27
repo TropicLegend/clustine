@@ -108,6 +108,7 @@ pub(crate) mod pufferfish;
 pub(crate) mod rabbit;
 #[cfg(test)]
 mod ranged_n9_tests;
+pub(crate) mod ravager;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
 pub(crate) mod silverfish;
@@ -1446,6 +1447,7 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::PILLAGER => &pillager::Pillager,
         entity_types::VINDICATOR => &vindicator::Vindicator,
         entity_types::EVOKER => &evoker::Evoker,
+        entity_types::RAVAGER => &ravager::Ravager,
         entity_types::GUARDIAN => &guardian::Guardian,
         entity_types::ELDER_GUARDIAN => &elder_guardian::ElderGuardian,
         entity_types::ZOMBIE => &zombie::Zombie,

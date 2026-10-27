@@ -839,7 +839,7 @@ fn can_float(tick: &MobTick<'_>) -> bool {
 /// `jumpFromGround()`: its jump strength times the jump factor of what it is in or
 /// stands on (honey's half), as its upward motion where that is more; its move is sent
 /// at the next update.
-fn jump_from_ground(tick: &mut MobTick<'_>) {
+pub(crate) fn jump_from_ground(tick: &mut MobTick<'_>) {
     let strength = tick
         .mob
         .body
