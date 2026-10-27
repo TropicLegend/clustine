@@ -133,6 +133,20 @@ impl PoiType {
         self.id() <= PoiType::Meeting.id()
     }
 
+    /// The job site a profession, by its registry id, holds (`VillagerProfession.heldJobSite`):
+    /// each of the thirteen working professions its own; none for none and the nitwit.
+    pub fn held_by(profession: i32) -> Option<Self> {
+        use clustine_data::villagers::professions;
+        let index = match profession {
+            professions::ARMORER..=professions::MASON => profession - professions::ARMORER,
+            professions::SHEPHERD..=professions::WEAPONSMITH => {
+                profession - professions::SHEPHERD + Self::Shepherd as i32
+            }
+            _ => return None,
+        };
+        Self::from_id(u8::try_from(index).ok()?)
+    }
+
     /// Of `#bee_home`.
     pub fn is_bee_home(self) -> bool {
         matches!(self, PoiType::Beehive | PoiType::BeeNest)
@@ -287,6 +301,30 @@ mod tests {
         );
         assert_eq!(poi_type_of(blocks::STONE), None);
         assert_eq!(poi_type_of(blocks::AIR), None);
+    }
+
+    #[test]
+    fn each_working_profession_holds_its_own_job_site() {
+        use clustine_data::villagers::professions;
+        assert_eq!(
+            PoiType::held_by(professions::ARMORER),
+            Some(PoiType::Armorer)
+        );
+        assert_eq!(
+            PoiType::held_by(professions::LIBRARIAN),
+            Some(PoiType::Librarian)
+        );
+        assert_eq!(PoiType::held_by(professions::MASON), Some(PoiType::Mason));
+        assert_eq!(
+            PoiType::held_by(professions::SHEPHERD),
+            Some(PoiType::Shepherd)
+        );
+        assert_eq!(
+            PoiType::held_by(professions::WEAPONSMITH),
+            Some(PoiType::Weaponsmith)
+        );
+        assert_eq!(PoiType::held_by(professions::NONE), None);
+        assert_eq!(PoiType::held_by(professions::NITWIT), None);
     }
 
     #[test]

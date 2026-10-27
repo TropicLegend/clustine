@@ -287,6 +287,11 @@ impl Region {
                     self.open_mount_menu(entity.key, id, output);
                 }
             }
+            Did::StartTrading => {
+                if let Some(id) = self.player_with_entity(player) {
+                    self.start_trading(entity.key, id, output);
+                }
+            }
             // `doPlayerRide` and `AbstractHorse.addPassenger`: on, and the player turned to
             // the horse's view (`getViewYRot(0)`), its head's yaw. The game's is the head's
             // yaw a tick ago (`yHeadRotO`), which the record does not keep: named. The

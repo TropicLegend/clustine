@@ -381,6 +381,11 @@ impl Region {
                 Local::PatrolTarget { key: given, pos } => {
                     self.patrol_target_set(given, pos, output);
                 }
+                Local::TakePoi { pos } => {
+                    self.acquire_poi(pos, output);
+                }
+                Local::ReleasePoi { pos, kind } => self.release_poi(pos, kind, output),
+                Local::Villager { key: other, used } => self.villager_write(other, used, output),
             }
         }
     }
@@ -537,7 +542,9 @@ impl Region {
             | EntityUse::Alert { .. }
             | EntityUse::Effects(_)
             | EntityUse::PearlLanded { .. }
-            | EntityUse::PatrolTarget { .. } => {}
+            | EntityUse::PatrolTarget { .. }
+            | EntityUse::Villager(_)
+            | EntityUse::Raider(_) => {}
             EntityUse::Attack {
                 attacker,
                 damage,

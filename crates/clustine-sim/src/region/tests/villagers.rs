@@ -525,7 +525,19 @@ fn bread_at(position: [f64; 3]) -> Entity {
 
 #[test]
 fn a_villager_walks_to_bread_on_the_ground_and_takes_it_into_its_slots() {
-    let mut region = on_ticking_floor_with(&[]);
+    // Walled in within the bread's reach, so that a stroll its stream starts first cannot
+    // take it beyond: the walls at x 3 and 8 and z 2 and 7, two blocks high.
+    let mut walls = Vec::new();
+    for x in 3..=8 {
+        for z in 2..=7 {
+            if x == 3 || x == 8 || z == 2 || z == 7 {
+                for y in -60..=-59 {
+                    walls.push((BlockPos::new(x, y, z), blocks::STONE));
+                }
+            }
+        }
+    }
+    let mut region = on_ticking_floor_with(&walls);
     region.clock.day = 6000;
     lay(
         &mut region,

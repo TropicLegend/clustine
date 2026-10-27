@@ -67,6 +67,8 @@ pub(crate) mod goat;
 #[cfg(test)]
 mod golem_tests;
 pub(crate) mod golem_transport;
+#[allow(dead_code, reason = "part V3 fills the gossip's rules")]
+pub(crate) mod gossip;
 pub(crate) mod guardian;
 #[cfg(test)]
 mod guardian_tests;
@@ -793,6 +795,13 @@ pub(crate) trait MobType: Sync {
         let _ = mob;
     }
 
+    /// What the type's `die` does to others, from the hurt that killed it: a villager
+    /// tells its witnesses and gives its points of interest back
+    /// (`docs/groundwork/n10-plan.md`, section 7), by the mob's locals.
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        let _ = (struck, source);
+    }
+
     /// Whether the type's `hurtServer` refuses `source` before anything else (an allay
     /// is not hurt by the player it likes).
     fn refuses_hurt(&self, mob: &Mob, source: &DamageSource) -> bool {
@@ -1051,6 +1060,14 @@ pub(crate) enum Did {
     OpenInventory,
     /// `doPlayerRide(player)`: the player turned to the horse's way, and on.
     Ride,
+    /// `startTrading(player)`: the merchant's window opens for the player who used it,
+    /// where the player is the region's (`region/trading.rs`;
+    /// `docs/groundwork/n10-plan.md`, section 8.2).
+    #[expect(
+        dead_code,
+        reason = "part T2 has the villager's and the trader's clicks start trading"
+    )]
+    StartTrading,
     /// A tadpole fed to its end grows up (`Tadpole.ageUp()`): a frog of its biome made
     /// where it is, and itself gone (`region/frogspawn.rs`).
     GrowUp,
@@ -1197,6 +1214,13 @@ pub(crate) enum SpawnReason {
     MobSummoned,
     /// A patrol's member (`PATROL`, the patrol spawner's).
     Patrol,
+    /// A mob of an event (`EVENT`): a raid's raider, the siege's zombie, the wandering
+    /// trader and its llamas (`docs/groundwork/n10-plan.md`, section 4).
+    #[expect(
+        dead_code,
+        reason = "parts R1 and G1 spawn raiders, the siege's zombies and the trader"
+    )]
+    Event,
 }
 
 /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far

@@ -29,7 +29,7 @@ pub use components::{Component, Components};
 pub use difficulty::Difficulty;
 pub use effects::{
     Arrival, Blast, Causer, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
-    GivenEffects, HitExtra, HurtBy, Thrower,
+    GivenEffects, HitExtra, HurtBy, RaiderUse, Thrower, VillagerUse,
 };
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,

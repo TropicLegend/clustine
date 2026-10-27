@@ -1451,7 +1451,21 @@ fn a_villager_walks_to_bread_on_the_ground_and_takes_it() {
             age_offset: 0,
         },
     };
-    let world = world_in("minecraft:plains", &[], &[villager, bread]);
+    // Walled in within the bread's reach (walls at x 3 and 8, z 2 and 7), so that a
+    // stroll its stream happens to start first cannot take it beyond: which way a
+    // villager strolls is a draw (V 1.6), and the game's would sometimes stroll off too.
+    let floor = FLOOR as i32;
+    let mut walls = Vec::new();
+    for x in 3..=8 {
+        for z in 2..=7 {
+            if x == 3 || x == 8 || z == 2 || z == 7 {
+                for y in floor..=floor + 1 {
+                    walls.push((BlockPos::new(x, y, z), blocks::STONE));
+                }
+            }
+        }
+    }
+    let world = world_in("minecraft:plains", &walls, &[villager, bread]);
     let mut scene = scene_at(&world, &[], Vec3::new(4.5, FLOOR, -6.5), NOON);
     let mut seen = Vec::new();
     let taken = scene.idle_until(300, &mut seen, |scene, _| record(scene, key(2)).is_none());

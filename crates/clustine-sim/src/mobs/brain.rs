@@ -262,6 +262,30 @@ pub(crate) trait Shot: 'static {
     fn trigger(&self, cx: &mut Cx<'_, '_, '_>) -> bool;
 }
 
+/// A behaviour that never starts and draws nothing: what the contract step of N10 gives
+/// for a behaviour another part builds, so that a package that names it compiles before
+/// that part lands (`docs/groundwork/n10-plan.md`, section 4.1).
+struct Inert;
+
+impl Shot for Inert {
+    fn required(&self) -> &[MemoryKind] {
+        &[]
+    }
+
+    fn trigger(&self, _: &mut Cx<'_, '_, '_>) -> bool {
+        false
+    }
+}
+
+/// [`Inert`], boxed.
+#[allow(
+    dead_code,
+    reason = "the stubs of N10's parts V2 and V3 until they land"
+)]
+pub(crate) fn inert() -> Box<dyn Behaviour> {
+    Box::new(HeldShot::new(Inert))
+}
+
 /// A [`Shot`] and whether it runs, which no tick ends with.
 pub(crate) struct HeldShot<S: Shot> {
     shot: S,

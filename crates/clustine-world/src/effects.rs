@@ -235,6 +235,58 @@ pub enum EntityUse {
     /// A patrol's leader names its target to the mob (`LongDistancePatrolGoal`, section
     /// 8.6), which a mob that can join the patrol takes.
     PatrolTarget { pos: BlockPos },
+    /// What a villager does to another across a line (`docs/groundwork/n10-plan.md`,
+    /// decision 4).
+    Villager(VillagerUse),
+    /// What a raid or a bell does to a raider across a line (section 9.3, decision 17).
+    Raider(RaiderUse),
+}
+
+/// A villager's write into another villager held by another region: the writer acts as
+/// if it took, but where a ticket of a point of interest rides on it (`Yield`), the
+/// holder checks the game's conditions as it lands and gives the ticket back where they
+/// fail (`docs/groundwork/n10-plan.md`, decisions 2 and 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VillagerUse {
+    /// `Villager.gossip` stamps the partner's `lastGossipTime` with the game time `at`.
+    Gossiped { at: u64 },
+    /// `BehaviorUtils.lockGazeAndWalkToEachOther`: the partner looks at the villager
+    /// `to` and walks to it at `speed`, close enough within `close`.
+    Gaze {
+        to: EntityId,
+        speed: Float,
+        close: i32,
+    },
+    /// `YieldJobSite`: the partner is given the site at `site` of type `kind` as its
+    /// potential job site, and walks to it at `speed`; its ticket passes with it.
+    Yield {
+        site: BlockPos,
+        kind: crate::poi::PoiType,
+        speed: Float,
+    },
+    /// `PoiCompetitorScan`: the partner, which holds the job site at `site` with less
+    /// experience, loses it (no ticket is given back: the winner holds it).
+    LoseJobSite { site: BlockPos },
+    /// `VillagerMakeLove`'s birth: the partner eats and digests its food, and its age
+    /// becomes 6000.
+    Born,
+    /// `GolemSensor.golemDetected`: a golem was summoned beside the partner.
+    GolemDetected,
+    /// `tellWitnessesThatIWasMurdered`: the partner gossips `major_negative` +25 about the
+    /// murderer.
+    Witnessed { murderer: Uuid },
+    /// A bell heard: `heard_bell_time` is the game time `at`.
+    Heard { at: u64 },
+}
+
+/// A raid's or a bell's write into a raider held by another region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaiderUse {
+    /// `BellBlockEntity.makeRaidersGlow`: glowing for 60 ticks.
+    Glow,
+    /// The raid `raid` refused the raider's join: it clears its raid
+    /// (`docs/groundwork/n10-plan.md`, section 9.3).
+    Rejected { raid: EntityId },
 }
 
 /// An entity that caused or dealt a hurt, as its damage source names it: its key, its

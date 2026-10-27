@@ -993,7 +993,9 @@ impl Witness {
                 | PlayerEvent::UseCompleted
                 | PlayerEvent::EffectAdded { .. }
                 | PlayerEvent::EffectRemoved { .. }
-                | PlayerEvent::Attributes(_) => {}
+                | PlayerEvent::Attributes(_)
+                | PlayerEvent::MerchantOffers { .. }
+                | PlayerEvent::RaidBar { .. } => {}
             },
             WorkerToEdge::Outbox { number, entry } => {
                 // An entry it has seen is ignored, as section 5 has it: it is sent again

@@ -132,6 +132,7 @@ impl Effect {
     pub(crate) const SLOW_FALLING: Self = Self(27);
     pub(crate) const CONDUIT_POWER: Self = Self(28);
     pub(crate) const BAD_OMEN: Self = Self(30);
+    pub(crate) const HERO_OF_THE_VILLAGE: Self = Self(31);
     pub(crate) const TRIAL_OMEN: Self = Self(33);
     pub(crate) const RAID_OMEN: Self = Self(34);
     pub(crate) const WIND_CHARGED: Self = Self(35);

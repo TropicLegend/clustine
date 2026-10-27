@@ -549,6 +549,7 @@ pub(crate) fn die(struck: &mut Struck<'_>, source: &DamageSource) {
     // neither scores nor names.
     // The type's own `die` before `LivingEntity`'s (a sniffer idle again).
     struck.mob_type.before_die(struck.mob);
+    struck.mob_type.on_die(struck, source);
     struck.mob.body.vitals.died_from = Some(struck.moment);
     struck
         .out

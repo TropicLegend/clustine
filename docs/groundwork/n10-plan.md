@@ -422,6 +422,57 @@ breaking a bed and claiming a new one at one position kept through the store's f
   `region.rs` into R1's `region/raid_tick.rs`; and the village switch above.
 - `STATE_FORMAT` 22.
 
+### 4.1 As built (N10c)
+
+What the contract step put where, for the parts' briefs; where it differs from the list
+above, this holds.
+
+- **Trading**: T1 built `clustine-world/src/trading.rs` (`Offer`, `ItemCost`, `Offers`) and
+  the evaluation; N10c gave `VillagerState` `offers`, `gossips`, `trading_player`,
+  `last_gossip_time`, `last_restock_check_day` and `shown: Shown`, the zombie villager's
+  record `offers` and `gossips`; `Did::StartTrading` (a mob's click opening its window);
+  `MenuKind::Merchant { entity }` (three slots, menu type 19) and `MenuOf::Merchant`, the
+  kept menu's `trade: Option<Box<TradeSlots>>` (the payments, the result, the trade picked);
+  `PlayerInput::SelectTrade { serial, index }` from the edge; `PlayerEvent::MerchantOffers`;
+  the merchant's arms of `region/menu_play.rs` (its slots read and written, its validity,
+  its title, its close) calling T2's hooks in **`region/trading.rs`** (`start_trading`,
+  `select_trade`, `merchant_payments_changed`, `merchant_still_valid`, `merchant_title`,
+  `trading_closed`), which is T2's file in place of `menus/merchant.rs`; and at a take-in a
+  villager's trading player is let go unless the region holds that player with that
+  merchant's menu open (`region/entities.rs`). `STATE_FORMAT` 22 for the kept menu.
+- **The village and points of interest for mobs**: `MobWorld` gains `pois_in_range`,
+  `pois_in_square`, `poi_type_at`, `sections_to_village`, `is_close_to_village` and
+  `is_village`; `Local::TakePoi`, `Local::ReleasePoi` and `Local::Villager` (a write into
+  another villager, sent as `EntityUse::Villager` where it is in a copy). A mob's locals are
+  applied after its own tick and before the next mob's, so that no two take one ticket.
+  The region reads the village through `village_level` and `close_to_village`, which answer
+  by the stand-in while `VILLAGES_CLAIMED` is off (`region/pois.rs`); the patrol spawner
+  asks `close_to_village`.
+- **The holder's side** of `EntityUse::Villager` and `EntityUse::Raider` is
+  `region/villagers_across.rs` (the yield's re-check and release, the gaze, the job site
+  lost, the golem seen, the witness's gossip, the bell heard, the glow); the birth's
+  digestion calls V3's `social_villagers::born_as_partner`. The raider's `Rejected` waits
+  for N10d's raid field.
+- **The social hooks**: the mob type's `on_die` (called in `die`), and in the villager's
+  file calls to V3's `social_villagers::after_brain` (the trade's reputation event),
+  `died` (witnesses, releases) and `hurt` (`VILLAGER_HURT`), all in
+  `mobs/brain/behaviours/social_villagers.rs`; `mobs/types/gossip.rs` with `GossipType`'s
+  constants, `Gossips::add` and `reputation`.
+- **The bell**: the ring's block event calls `bell_rang` and the bell's tick
+  `bell_ticked`, in V3's **`region/bells.rs`**, with the region's `bell_rings` (what each
+  ringing bell listed).
+- **Raids' contracts**: `SpawnReason::Event` (no leader draw for it), `PlayerFace.omens`
+  (bad omen, raid omen, Hero of the Village), `PlayerEvent::RaidBar` with
+  `RaidBarChange` and `RaidBarName`; the protocol's `boss_event`, `merchant_offers`,
+  `select_trade` and the edge's dispatch to E1's `merchant.rs` and `boss_bars.rs`.
+- **The villager's core** draws `SetRaidStatus`'s level `nextInt(20)` every tick
+  (`behaviours/villagers.rs`), so its streams are the game's from now on.
+- **Not built, named**: composting by a player's hand and by a hopper (a block rule never
+  built; V2 builds the farmer's composting as a rule its behaviour applies by the set-block
+  local); a merge for a villager whose site, bed or meeting point is merely across a line
+  (its take there is refused anyway, and its writes across, being entity effects, already
+  merge regions that follow players at the line).
+
 ---------------------------------------------------------------------------------------
 
 ## 5. The villager's brain (V1, on N10b and N10c)
@@ -686,9 +737,9 @@ file:
 |---|---|---|
 | V1 | The brain (section 5), the bed's kick | `mobs/types/villager.rs`, `mobs/brain/behaviours/villagers.rs`, `mobs/brain/behaviours/rest.rs` (new), `mobs/brain/sensors_villager.rs` (new, the four sensors; `sensors.rs` keeps the shared ones), `region/sleep.rs`, `mobs/types/villager_n10_tests.rs` (new) |
 | V2 | Work and professions (section 6) | `mobs/brain/behaviours/work.rs` (new), `region/composting.rs` (new; `region/hoppers.rs` calls it through N10c's hook), `mobs/brain/behaviours/work_n10_tests.rs` (new) |
-| V3 | The social life (section 7) | `mobs/types/gossip.rs`, `mobs/brain/behaviours/social_villagers.rs` (new), `region/spawn_util.rs` (new), `region/bells.rs` (new), `mobs/types/social_n10_tests.rs` (new) |
+| V3 | The social life (section 7) | `mobs/types/gossip.rs`, `mobs/brain/behaviours/social_villagers.rs` and `region/bells.rs` (N10c's hooks), `region/spawn_util.rs` (new), `mobs/types/social_n10_tests.rs` (new) |
 | T1 | Trading's data and evaluation, enchanting (8.1) | `trading/offers.rs`, `trading/evaluate.rs`, `items/enchanting.rs` (new; `items/enchantments.rs` stays N9's), `mobs/making.rs`, the two new components in `clustine-world/src/components.rs`, `trading/trading_n10_tests.rs` |
-| T2 | Trading's rules and menu, the cure (8.2) | `trading/merchant.rs`, `menus/merchant.rs` (new module beside `menus.rs`, declared by N10c), `mobs/types/wandering_trader.rs`, `mobs/types/zombie_villager.rs`, `trading/merchant_n10_tests.rs` |
+| T2 | Trading's rules and menu, the cure (8.2) | `trading/merchant.rs` (new), `region/trading.rs` (N10c's hooks), `mobs/types/wandering_trader.rs`, `mobs/types/zombie_villager.rs`, `trading/merchant_n10_tests.rs` |
 | E1 | The edge: the merchant window, the boss bar per player, the horn | `services/edge/src/merchant.rs` (new), `services/edge/src/boss_bars.rs` (new) |
 | R1 | Raids' rules on N10d's frame (9.7) | `region/raid_tick.rs` (new; `region/raids.rs` is N10d's), `mobs/ai/raider_goals.rs` (new), `mobs/types/pillager.rs`, `vindicator.rs`, `witch.rs`, `illagers.rs`, `region/raids_n10_tests.rs` |
 | R2 | The ravager | `mobs/types/ravager.rs`, `mobs/types/ravager_n10_tests.rs` |

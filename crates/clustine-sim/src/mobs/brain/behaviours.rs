@@ -36,8 +36,10 @@ pub(crate) mod looking;
 pub(crate) mod panic;
 pub(crate) mod ramming;
 pub(crate) mod social;
+pub(crate) mod social_villagers;
 pub(crate) mod villagers;
 pub(crate) mod walking;
+pub(crate) mod work;
 
 use std::collections::{BTreeMap, BTreeSet};
 

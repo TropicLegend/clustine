@@ -317,6 +317,10 @@ async fn pump(
                         let window = packet.window_id;
                         menu_command(shared, client, MenuCommand::Close { window }).await?;
                     }
+                    ServerboundPlay::SelectTrade(packet) => {
+                        let item = packet.item;
+                        menu_command(shared, client, MenuCommand::SelectTrade { item }).await?;
+                    }
                     ServerboundPlay::ClientTickEnd(_)
                     | ServerboundPlay::PlayerLoaded(_)
                     | ServerboundPlay::Unhandled { .. } => {}

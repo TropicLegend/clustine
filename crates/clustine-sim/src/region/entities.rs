@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use super::Region;
 use crate::api::{EntityKind, EntityState, ItemStack, Pose, RegionEvent, TickOutput};
+use crate::mobs::types::villager;
 
 /// How far above a player's feet their eyes are, standing and crouching: the game's
 /// `Avatar` dimensions, which it keeps as floats.
@@ -142,6 +143,17 @@ impl Region {
         continued: bool,
         mut output: Option<&mut TickOutput>,
     ) {
+        // The merchants the region's players have open, whose trading goes on through
+        // a take-in; any other villager's trading player is let go
+        // (`docs/groundwork/n10-plan.md`, section 8.2).
+        let trading: std::collections::BTreeSet<(clustine_world::PlayerId, EntityId)> = self
+            .players
+            .iter()
+            .filter_map(|(id, player)| match player.menu.as_ref()?.of {
+                crate::state::MenuOf::Merchant(merchant) => Some((*id, merchant)),
+                _ => None,
+            })
+            .collect();
         let Some(chunk) = self.chunks.get_mut(&position) else {
             return;
         };
@@ -207,6 +219,14 @@ impl Region {
                         && let Ok(mut mob) = crate::mobs::Mob::decode(&entity.data)
                     {
                         crate::mobs::types::of(entity.kind).first_take(&mut mob, game_time);
+                        raised.data = mob.encode();
+                    }
+                    if i32::from(entity.kind) == clustine_data::entity_types::VILLAGER
+                        && let Ok(mut mob) = crate::mobs::Mob::decode(&raised.data)
+                        && let Some(player) = villager::state_of(&mob).1.trading_player
+                        && !trading.contains(&(player, entity.key))
+                    {
+                        villager::update(&mut mob, |own| own.trading_player = None);
                         raised.data = mob.encode();
                     }
                     raised

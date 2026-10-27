@@ -146,6 +146,19 @@ pub struct Menu {
     pub carried: Option<ItemStack>,
     /// A drag under way (`quickcraftStatus`, `quickcraftType`, `quickcraftSlots`).
     pub drag: Option<Drag>,
+    /// A merchant's container (`MerchantContainer`): its two payments, its result, and
+    /// the trade picked last (`docs/groundwork/n10-plan.md`, section 8.2); none for any
+    /// other menu.
+    pub trade: Option<Box<TradeSlots>>,
+}
+
+/// What a merchant's window holds of its own: the two payments, the result, and the
+/// index of the trade the player picked last (`selectionHint`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradeSlots {
+    pub payments: [Option<ItemStack>; 2],
+    pub result: Option<ItemStack>,
+    pub selected: Option<i32>,
 }
 
 /// What a menu shows.
@@ -161,6 +174,8 @@ pub enum MenuOf {
     Ender { at: BlockPos },
     /// A container vehicle: a chest boat, a chest cart or a hopper cart.
     Entity(EntityId),
+    /// A villager's or a wandering trader's trades.
+    Merchant(EntityId),
 }
 
 /// A drag of the carried stack over slots (the game's quick craft), between its start
@@ -433,6 +448,7 @@ mod tests {
                     kind: DragKind::One,
                     slots: vec![53, 0, 27],
                 }),
+                trade: None,
             },
             Menu {
                 serial: u64::MAX,
@@ -442,6 +458,7 @@ mod tests {
                 kind: MenuKind::Rows3,
                 carried: None,
                 drag: None,
+                trade: None,
             },
             Menu {
                 serial: 0,
@@ -452,6 +469,7 @@ mod tests {
                     kind: DragKind::Clone,
                     slots: Vec::new(),
                 }),
+                trade: None,
             },
         ];
         for menu in menus {

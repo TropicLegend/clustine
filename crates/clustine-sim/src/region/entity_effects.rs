@@ -303,7 +303,7 @@ impl Region {
     }
 
     /// `addEffect(instance)` on the region's mob `key`, as its type takes it.
-    fn give_mob_effect(
+    pub(super) fn give_mob_effect(
         &mut self,
         key: EntityId,
         instance: &clustine_world::components::EffectInstance,
@@ -460,6 +460,9 @@ impl Region {
                 class,
             } => self.alerted(entity.key, *attacker, *kind, *class, output),
             EntityUse::PatrolTarget { pos } => self.patrol_target_given(entity.key, *pos, output),
+            // A villager's, a raid's or a bell's write (`villagers_across.rs`).
+            EntityUse::Villager(used) => self.villager_used(entity.key, *used, output),
+            EntityUse::Raider(used) => self.raider_used(entity.key, *used, output),
             // Only ever addressed to a player.
             EntityUse::PearlLanded { .. } => {}
             _ => return false,

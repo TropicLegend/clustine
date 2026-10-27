@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 21;
+pub const STATE_FORMAT: u8 = 22;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -3759,12 +3759,12 @@ impl RegionRunner {
                 // while one is on its way, so that a click after a merge waits for the
                 // chest rather than being refused (`docs/groundwork/n6-plan.md`, section 8
                 // item 6, bounded as section 9 item 3 has it, below).
-                PlayerInput::ContainerClick { .. } | PlayerInput::CloseContainer { .. } => {
-                    match &message.body {
-                        EdgeToWorker::Input { player, .. } => self.region.menu_chunks(*player),
-                        _ => return false,
-                    }
-                }
+                PlayerInput::ContainerClick { .. }
+                | PlayerInput::CloseContainer { .. }
+                | PlayerInput::SelectTrade { .. } => match &message.body {
+                    EdgeToWorker::Input { player, .. } => self.region.menu_chunks(*player),
+                    _ => return false,
+                },
                 PlayerInput::OpenVehicleInventory
                 | PlayerInput::MenuResync
                 | PlayerInput::Punch
@@ -8409,17 +8409,19 @@ mod tests {
     /// player's effects and the tick their time since rest counts from (section 5.4 of
     /// the same plan), two bytes more a player. Format 21 has N9's entity effects among
     /// the effects a state keeps (section 8.3 of the same plan); none is kept here, so
-    /// only the number differs.
+    /// only the number differs. Format 22 keeps a merchant's payments and result with a
+    /// player's menu (`docs/groundwork/n10-plan.md`, section 4.1); no menu is open here,
+    /// so only the number differs.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 21);
+        assert_eq!(STATE_FORMAT, 22);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "001502018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "001602018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
@@ -8440,7 +8442,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00150200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "00160200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",

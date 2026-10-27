@@ -239,6 +239,18 @@ pub struct PlayerFace {
     pub moved_horizontally: bool,
     /// `isSprinting` (an armadillo's scare reads it).
     pub sprinting: bool,
+    /// The amplifiers of their bad omen, raid omen and Hero of the Village, which raids
+    /// and villagers of other regions read (`docs/groundwork/n10-plan.md`, section 4).
+    pub omens: Omens,
+}
+
+/// A player's effects that raids and villagers read: each one's amplifier, if they have
+/// it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Omens {
+    pub bad_omen: Option<u8>,
+    pub raid_omen: Option<u8>,
+    pub hero: Option<u8>,
 }
 
 impl PlayerFace {
@@ -274,6 +286,7 @@ impl PlayerFace {
             last_hurt_by: None,
             moved_horizontally: false,
             sprinting: false,
+            omens: Omens::default(),
         }
     }
 
@@ -510,6 +523,30 @@ impl PublishedVillage {
         self.pois = pois.into_iter().collect();
         self.dropped = dropped.into_iter().collect();
     }
+}
+
+/// A change of a raid's bar for one player (section 9.4): shown with its name and progress,
+/// taken away, or a new progress or name while shown.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum RaidBarChange {
+    Add { name: RaidBarName, progress: f32 },
+    Remove,
+    Progress(f32),
+    Name(RaidBarName),
+}
+
+/// What a raid's bar says (D10, part C, section 3.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaidBarName {
+    /// `event.minecraft.raid`.
+    Raid,
+    /// `event.minecraft.raid`, `" - "` and `event.minecraft.raid.raiders_remaining` of
+    /// this many: shown for one or two left.
+    RaidersRemaining(i32),
+    /// `event.minecraft.raid.victory.full`.
+    Victory,
+    /// `event.minecraft.raid.defeat.full`.
+    Defeat,
 }
 
 /// A hand (`InteractionHand`).
@@ -758,6 +795,10 @@ pub enum PlayerInput {
     },
     /// The player's client closed the menu of the serial `serial`.
     CloseContainer { serial: u64 },
+    /// The player picked the trade `index` in the merchant's window of the menu of the
+    /// serial `serial` (`select_trade`, `handleSelectTrade`;
+    /// `docs/groundwork/n10-plan.md`, section 8.2).
+    SelectTrade { serial: u64, index: i32 },
     /// The player asked for the inventory of the vehicle they ride (`player_command`'s
     /// `OPEN_INVENTORY`, a chest boat's or a chest cart's key).
     OpenVehicleInventory,
@@ -810,6 +851,9 @@ pub enum MenuKind {
     /// (none without one). `entity` is the horse, whose id the client is told. Added at
     /// the end, so that a menu kept by an older build reads as it did.
     Mount { columns: u8, entity: EntityId },
+    /// A merchant's trades (`MerchantMenu`, `docs/groundwork/n10-plan.md`, section 8.2):
+    /// the two payments and the result. `entity` is the villager or the wandering trader.
+    Merchant { entity: EntityId },
 }
 
 impl MenuKind {
@@ -821,6 +865,7 @@ impl MenuKind {
             Self::Grid3x3 => 9,
             Self::Hopper => 5,
             Self::Mount { columns, .. } => 2 + usize::from(columns) * 3,
+            Self::Merchant { .. } => 3,
         }
     }
 
@@ -1410,6 +1455,22 @@ pub enum PlayerEvent {
     /// The player was put out for holding a vehicle in the air too long (the game's
     /// kick after 160 ticks).
     Kicked { reason: String },
+    /// A merchant's offers for the player's merchant menu of the serial `serial`, after it
+    /// opens and whenever they change (`sendMerchantOffers`, `merchant_offers`;
+    /// `docs/groundwork/n10-plan.md`, section 8.2): the villager's level and experience,
+    /// and whether the client shows the progress bar and the restock hint.
+    MerchantOffers {
+        serial: u64,
+        offers: clustine_world::trading::Offers,
+        level: i32,
+        xp: i32,
+        show_progress: bool,
+        can_restock: bool,
+    },
+    /// A raid's bar for the player (`ServerBossEvent`, `boss_event`; section 9.4): the
+    /// bar's UUID, which stays the raid's wherever it is held, and its change. Always red
+    /// and notched in ten (`Raid`'s `ServerBossEvent`).
+    RaidBar { id: Uuid, change: RaidBarChange },
     /// A sentence of the game by its key, with numbers for its arguments, in their chat
     /// or, with `overlay`, on their action bar (`sendSystemMessage`, `sendOverlayMessage`).
     Message {

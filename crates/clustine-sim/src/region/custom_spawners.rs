@@ -351,7 +351,8 @@ impl Region {
             player.pose.position.y,
             player.pose.position.z,
         ]);
-        if self.village_near(block) {
+        // `isCloseToVillage(pos, 2)`, through the switch of `pois.rs`.
+        if self.close_to_village(block, 2) {
             return;
         }
         let mut offset = || {

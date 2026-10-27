@@ -24,6 +24,7 @@ mod animals;
 mod arrivals;
 mod arrows;
 mod attached;
+mod bells;
 mod block_entities;
 mod block_events;
 mod boats;
@@ -115,6 +116,7 @@ mod thrown;
 mod throws;
 mod ticks;
 mod tnt;
+mod trading;
 mod trees;
 mod turtle_eggs;
 mod updates;
@@ -122,6 +124,7 @@ mod uses;
 mod using;
 mod vehicles;
 mod vibrations;
+mod villagers_across;
 mod water_creatures;
 mod wind_bursts;
 
@@ -475,6 +478,9 @@ pub struct Region {
     /// reported; in memory only, so that a restore reports its land whole and learns its
     /// margin again.
     margin: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
+    /// The bells that rang, what each listed of the living near it (`bells.rs`); in
+    /// memory only.
+    bell_rings: bells::Rings,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -716,6 +722,7 @@ impl Region {
             counts: Default::default(),
             published: None,
             margin: BTreeMap::new(),
+            bell_rings: bells::Rings::new(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
@@ -2413,6 +2420,10 @@ impl Region {
             PlayerInput::CloseContainer { serial } => {
                 self.menu_closed_by_client(id, *serial, output);
             }
+            // A merchant's trades (`trading.rs`).
+            PlayerInput::SelectTrade { serial, index } => {
+                self.select_trade(id, *serial, *index, output);
+            }
             PlayerInput::OpenVehicleInventory => self.open_vehicle_inventory(id, output),
             // `handlePlayerCommand`'s `STOP_SLEEPING` (`sleep.rs`).
             PlayerInput::LeaveBed => self.stop_sleep(id, false, true, output),
@@ -3619,6 +3630,14 @@ impl Player {
         face.sleeping = self.sleeping.map(|sleep| sleep.since);
         face.last_hurt_mob = self.last_hurt_mob;
         face.sprinting = self.keys.sprint;
+        {
+            use crate::mobs::body::effects::Effect;
+            face.omens = crate::api::Omens {
+                bad_omen: self.effects.amplifier(Effect::BAD_OMEN),
+                raid_omen: self.effects.amplifier(Effect::RAID_OMEN),
+                hero: self.effects.amplifier(Effect::HERO_OF_THE_VILLAGE),
+            };
+        }
         face
     }
 

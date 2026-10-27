@@ -108,7 +108,8 @@ impl Tracker {
 /// (type and profession by their registry ids, and its level), whether it is finalised,
 /// the profession its construction drew (the synched value's default, which a client
 /// being paired is not sent), its cure's countdown (`villagerConversionTime`, -1 when it
-/// is not curing) and its `Xp`.
+/// is not curing), its `Xp`, and the offers and gossips it kept of the villager it was,
+/// which a cure gives back (`docs/groundwork/n10-plan.md`, section 4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct VillagerState {
     pub(crate) kind: i32,
@@ -118,6 +119,8 @@ pub(crate) struct VillagerState {
     pub(crate) drawn_profession: i32,
     pub(crate) conversion: i32,
     pub(crate) xp: i32,
+    pub(crate) offers: Option<clustine_world::trading::Offers>,
+    pub(crate) gossips: super::gossip::Gossips,
 }
 
 /// What the zombie family keeps: the baby flag, `canBreakDoors`, the drowning tracker

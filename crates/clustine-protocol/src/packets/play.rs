@@ -2589,6 +2589,8 @@ pub mod menu {
     pub const GENERIC_3X3: i32 = 6;
     pub const CRAFTER_3X3: i32 = 7;
     pub const HOPPER: i32 = 16;
+    /// A villager's or a wandering trader's trades (`merchant`).
+    pub const MERCHANT: i32 = 19;
     pub const SHULKER_BOX: i32 = 20;
 }
 
@@ -3163,6 +3165,274 @@ impl Decode for LevelParticles {
     }
 }
 
+/// What an offer asks to be paid (`ItemCost.STREAM_CODEC`): the item, how many, and the
+/// components the payment has to have, others not looked at
+/// (`DataComponentExactPredicate.STREAM_CODEC`: a count, then each kind's id and value).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WireItemCost {
+    pub item: i32,
+    pub count: i32,
+    pub components: Vec<crate::components::WireComponent>,
+}
+
+impl Writer {
+    fn put_item_cost(&mut self, cost: &WireItemCost) {
+        self.put_var_int(cost.item);
+        self.put_var_int(cost.count);
+        self.put_length(cost.components.len());
+        for component in &cost.components {
+            self.put_var_int(component.id());
+            self.put_component(component);
+        }
+    }
+}
+
+impl Reader<'_> {
+    fn item_cost(&mut self) -> Result<WireItemCost, DecodeError> {
+        let item = self.var_int()?;
+        let count = self.var_int()?;
+        let length = self.length()?;
+        let mut components = Vec::with_capacity(length.min(64));
+        for _ in 0..length {
+            let id = self.var_int()?;
+            components.push(self.component(id, 0)?);
+        }
+        Ok(WireItemCost {
+            item,
+            count,
+            components,
+        })
+    }
+}
+
+/// One offer of a merchant as the client is sent it (`MerchantOffer.STREAM_CODEC`,
+/// `docs/groundwork/n10-dumps.md`, part B, section 7): its integers are four bytes each,
+/// not VarInts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WireOffer {
+    pub cost_a: WireItemCost,
+    pub result: Option<ItemStack>,
+    pub cost_b: Option<WireItemCost>,
+    /// `uses >= maxUses`; a client reading it true takes `uses` to be `max_uses`.
+    pub out_of_stock: bool,
+    pub uses: i32,
+    pub max_uses: i32,
+    pub xp: i32,
+    pub special_price: i32,
+    pub price_multiplier: f32,
+    pub demand: i32,
+}
+
+/// A merchant's offers, after its window opens and whenever they change
+/// (`merchant_offers`, `ClientboundMerchantOffersPacket`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MerchantOffers {
+    pub window_id: i32,
+    pub offers: Vec<WireOffer>,
+    pub level: i32,
+    pub xp: i32,
+    pub show_progress: bool,
+    pub can_restock: bool,
+}
+
+impl Packet for MerchantOffers {
+    const ID: i32 = clientbound::MERCHANT_OFFERS;
+}
+
+impl Encode for MerchantOffers {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.window_id);
+        w.put_length(self.offers.len());
+        for offer in &self.offers {
+            w.put_item_cost(&offer.cost_a);
+            w.put_item_stack(offer.result.as_ref());
+            w.put_bool(offer.cost_b.is_some());
+            if let Some(cost_b) = &offer.cost_b {
+                w.put_item_cost(cost_b);
+            }
+            w.put_bool(offer.out_of_stock);
+            w.put_i32(offer.uses);
+            w.put_i32(offer.max_uses);
+            w.put_i32(offer.xp);
+            w.put_i32(offer.special_price);
+            w.put_f32(offer.price_multiplier);
+            w.put_i32(offer.demand);
+        }
+        w.put_var_int(self.level);
+        w.put_var_int(self.xp);
+        w.put_bool(self.show_progress);
+        w.put_bool(self.can_restock);
+    }
+}
+
+impl Decode for MerchantOffers {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let window_id = r.var_int()?;
+        let count = r.length()?;
+        let mut offers = Vec::with_capacity(count.min(64));
+        for _ in 0..count {
+            let cost_a = r.item_cost()?;
+            let result = r.item_stack()?;
+            let cost_b = if r.bool()? {
+                Some(r.item_cost()?)
+            } else {
+                None
+            };
+            offers.push(WireOffer {
+                cost_a,
+                result,
+                cost_b,
+                out_of_stock: r.bool()?,
+                uses: r.i32()?,
+                max_uses: r.i32()?,
+                xp: r.i32()?,
+                special_price: r.i32()?,
+                price_multiplier: r.f32()?,
+                demand: r.i32()?,
+            });
+        }
+        Ok(Self {
+            window_id,
+            offers,
+            level: r.var_int()?,
+            xp: r.var_int()?,
+            show_progress: r.bool()?,
+            can_restock: r.bool()?,
+        })
+    }
+}
+
+/// The trade a player picked in a merchant's window (`select_trade`), by its index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectTrade {
+    pub item: i32,
+}
+
+impl Packet for SelectTrade {
+    const ID: i32 = serverbound::SELECT_TRADE;
+}
+
+impl Encode for SelectTrade {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.item);
+    }
+}
+
+impl Decode for SelectTrade {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { item: r.var_int()? })
+    }
+}
+
+/// A boss bar's change (`boss_event`, `ClientboundBossEventPacket` and its operations,
+/// dumped in `n10-javap`): the bar's UUID, the operation's ordinal, then its fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BossEvent {
+    pub id: Uuid,
+    pub operation: BossOperation,
+}
+
+/// A boss bar's operation, in the order of `$OperationType`. The properties are the
+/// bits of `encodeProperties`: 1 darken the screen, 2 play the boss music, 4 make fog.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BossOperation {
+    Add {
+        name: Nbt,
+        progress: f32,
+        colour: i32,
+        overlay: i32,
+        properties: u8,
+    },
+    Remove,
+    UpdateProgress(f32),
+    UpdateName(Nbt),
+    UpdateStyle {
+        colour: i32,
+        overlay: i32,
+    },
+    UpdateProperties(u8),
+}
+
+impl Packet for BossEvent {
+    const ID: i32 = clientbound::BOSS_EVENT;
+}
+
+impl Encode for BossEvent {
+    fn encode(&self, w: &mut Writer) {
+        w.put_uuid(self.id);
+        match &self.operation {
+            BossOperation::Add {
+                name,
+                progress,
+                colour,
+                overlay,
+                properties,
+            } => {
+                w.put_var_int(0);
+                w.put_nbt(name);
+                w.put_f32(*progress);
+                w.put_var_int(*colour);
+                w.put_var_int(*overlay);
+                w.put_u8(*properties);
+            }
+            BossOperation::Remove => w.put_var_int(1),
+            BossOperation::UpdateProgress(progress) => {
+                w.put_var_int(2);
+                w.put_f32(*progress);
+            }
+            BossOperation::UpdateName(name) => {
+                w.put_var_int(3);
+                w.put_nbt(name);
+            }
+            BossOperation::UpdateStyle { colour, overlay } => {
+                w.put_var_int(4);
+                w.put_var_int(*colour);
+                w.put_var_int(*overlay);
+            }
+            BossOperation::UpdateProperties(properties) => {
+                w.put_var_int(5);
+                w.put_u8(*properties);
+            }
+        }
+    }
+}
+
+impl Decode for BossEvent {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let id = r.uuid()?;
+        let text = |r: &mut Reader<'_>| {
+            r.nbt()?.ok_or(DecodeError::InvalidValue {
+                what: "text component",
+                value: 0,
+            })
+        };
+        let operation = match r.var_int()? {
+            0 => BossOperation::Add {
+                name: text(r)?,
+                progress: r.f32()?,
+                colour: r.var_int()?,
+                overlay: r.var_int()?,
+                properties: r.u8()?,
+            },
+            1 => BossOperation::Remove,
+            2 => BossOperation::UpdateProgress(r.f32()?),
+            3 => BossOperation::UpdateName(text(r)?),
+            4 => BossOperation::UpdateStyle {
+                colour: r.var_int()?,
+                overlay: r.var_int()?,
+            },
+            5 => BossOperation::UpdateProperties(r.u8()?),
+            value => {
+                return Err(DecodeError::InvalidValue {
+                    what: "boss event operation",
+                    value: value.into(),
+                });
+            }
+        };
+        Ok(Self { id, operation })
+    }
+}
+
 packet_set! {
     /// Packets a client can send in the play state.
     pub enum ServerboundPlay in crate::packet_ids::play::serverbound {
@@ -3192,6 +3462,7 @@ packet_set! {
         PlayerCommand,
         ContainerClick,
         ServerboundContainerClose,
+        SelectTrade,
     }
 }
 
@@ -3964,6 +4235,8 @@ packet_set! {
         SetContainerContent,
         OpenScreen,
         MountScreenOpen,
+        MerchantOffers,
+        BossEvent,
         ContainerSetSlot,
         ContainerSetData,
         SetCursorItem,
@@ -4003,6 +4276,106 @@ mod tests {
 
     use super::*;
     use crate::packets::testing::assert_round_trip;
+
+    /// One offer, as `docs/groundwork/n10-dumps.md`'s table lays it out: the costs and
+    /// the result first, then the four-byte integers and the float, then the level and
+    /// the xp as VarInts and the two flags.
+    #[test]
+    fn merchant_offers_are_written_with_four_byte_integers_as_the_game_writes_them() {
+        let offers = MerchantOffers {
+            window_id: 3,
+            offers: vec![WireOffer {
+                cost_a: WireItemCost {
+                    item: 5,
+                    count: 2,
+                    components: Vec::new(),
+                },
+                result: Some(ItemStack::new(7, 1)),
+                cost_b: None,
+                out_of_stock: false,
+                uses: 1,
+                max_uses: 12,
+                xp: 2,
+                special_price: -3,
+                price_multiplier: 0.05,
+                demand: 4,
+            }],
+            level: 1,
+            xp: 0,
+            show_progress: true,
+            can_restock: true,
+        };
+        let mut expected = vec![MerchantOffers::ID as u8, 3, 1];
+        expected.extend([5, 2, 0]); // cost A: item, count, no components
+        expected.extend([1, 7, 0, 0]); // the result: count, item, an empty patch
+        expected.extend([0, 0]); // no cost B; in stock
+        expected.extend([0, 0, 0, 1, 0, 0, 0, 12, 0, 0, 0, 2, 0xff, 0xff, 0xff, 0xfd]);
+        expected.extend(0.05f32.to_be_bytes());
+        expected.extend([0, 0, 0, 4]);
+        expected.extend([1, 0, 1, 1]);
+        assert_eq!(crate::packets::encode(&offers), expected);
+        assert_eq!(MerchantOffers::ID, 53);
+        assert_round_trip(
+            offers,
+            ClientboundPlay::decode,
+            ClientboundPlay::MerchantOffers,
+        );
+    }
+
+    #[test]
+    fn a_selected_trade_is_its_index() {
+        assert_eq!(SelectTrade::ID, 52);
+        assert_eq!(
+            crate::packets::encode(&SelectTrade { item: 4 }),
+            [SelectTrade::ID as u8, 4]
+        );
+        assert_round_trip(
+            SelectTrade { item: 4 },
+            ServerboundPlay::decode,
+            ServerboundPlay::SelectTrade,
+        );
+    }
+
+    /// A boss bar's change is its UUID, its operation's ordinal and its fields.
+    #[test]
+    fn a_boss_event_is_its_bar_its_operation_and_the_operation_s_fields() {
+        let id = Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
+        let progress = BossEvent {
+            id,
+            operation: BossOperation::UpdateProgress(0.5),
+        };
+        let mut expected = vec![BossEvent::ID as u8];
+        expected.extend(id.as_u128().to_be_bytes());
+        expected.extend([2, 0x3f, 0, 0, 0]);
+        assert_eq!(crate::packets::encode(&progress), expected);
+        assert_eq!(BossEvent::ID, 9);
+        let style = BossEvent {
+            id,
+            operation: BossOperation::UpdateStyle {
+                colour: 2,
+                overlay: 2,
+            },
+        };
+        assert_eq!(&crate::packets::encode(&style)[17..], [4, 2, 2]);
+        for operation in [
+            BossOperation::Add {
+                name: Text::translatable("event.minecraft.raid").to_nbt(),
+                progress: 0.0,
+                colour: 2,
+                overlay: 2,
+                properties: 0,
+            },
+            BossOperation::Remove,
+            BossOperation::UpdateName(Text::literal("Raid").to_nbt()),
+            BossOperation::UpdateProperties(1),
+        ] {
+            assert_round_trip(
+                BossEvent { id, operation },
+                ClientboundPlay::decode,
+                ClientboundPlay::BossEvent,
+            );
+        }
+    }
 
     #[test]
     fn equipment_is_written_slot_by_slot_with_the_high_bit_on_all_but_the_last() {

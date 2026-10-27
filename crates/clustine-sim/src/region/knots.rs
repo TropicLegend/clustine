@@ -89,7 +89,9 @@ impl Region {
             | EntityUse::Alert { .. }
             | EntityUse::Effects(_)
             | EntityUse::PearlLanded { .. }
-            | EntityUse::PatrolTarget { .. } => {}
+            | EntityUse::PatrolTarget { .. }
+            | EntityUse::Villager(_)
+            | EntityUse::Raider(_) => {}
             EntityUse::Attack { creative, .. } => {
                 self.hurt_attached(entity.key, Breaker::Player { creative }, output);
             }

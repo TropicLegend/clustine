@@ -91,6 +91,30 @@ impl Timed for VillagerPanicTrigger {
     }
 }
 
+/// `SetRaidStatus.create()` (core 0, after the panic trigger; `docs/groundwork/n10-brief.md`,
+/// section 1.3): a draw of the level's `nextInt(20)` every tick it is tried, and at 0, a raid
+/// near making the activity raid or pre-raid. The contract step N10c gives it its draw,
+/// so that the villager's streams are the game's from now on; part V1 gives it the raid.
+pub(crate) struct SetRaidStatus;
+
+/// [`SetRaidStatus`], boxed.
+pub(crate) fn set_raid_status() -> Box<dyn Behaviour> {
+    Box::new(HeldShot::new(SetRaidStatus))
+}
+
+impl Shot for SetRaidStatus {
+    fn required(&self) -> &[MemoryKind] {
+        &[]
+    }
+
+    fn trigger(&self, cx: &mut Cx<'_, '_, '_>) -> bool {
+        // `level.random.nextInt(20) == 0` comes first, every tick; no raid is known yet,
+        // so whatever it draws, nothing follows.
+        let _ = cx.ai.tick.draws.next_int(20);
+        false
+    }
+}
+
 /// `VillagerCalmDown.SAFE_DISTANCE_FROM_DANGER`, squared.
 const SAFE_DISTANCE_SQR: f64 = 36.0;
 

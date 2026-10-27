@@ -655,7 +655,11 @@ impl Region {
                 continue;
             };
             match self.block_entities.typed.get_mut(&pos) {
-                Some(Typed::Bell(bell)) if is_class(state, BlockClass::BellBlock) => bell.tick(),
+                Some(Typed::Bell(bell)) if is_class(state, BlockClass::BellBlock) => {
+                    bell.tick();
+                    // Its resonance and the raiders' glow (`bells.rs`).
+                    self.bell_ticked(pos, output);
+                }
                 Some(Typed::MovingPiston(_)) if is_class(state, BlockClass::MovingPistonBlock) => {
                     self.moving_piston_tick(pos, output);
                 }

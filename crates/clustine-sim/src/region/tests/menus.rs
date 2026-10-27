@@ -302,6 +302,7 @@ fn a_hand_over_closes_the_menu_and_the_carried_stack_travels_in_the_inventory() 
         kind: MenuKind::Rows3,
         carried: stack(items::DIAMOND, 3),
         drag: None,
+        trade: None,
     });
     let step = as_entity(40, walk(5, -0.5, 0.5));
     let output = region.tick(&moves(vec![with_number(1, step)]));

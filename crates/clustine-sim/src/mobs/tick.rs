@@ -284,6 +284,25 @@ pub(crate) enum Local {
     /// by its leader (`crate::mobs::ai::patrol`): the region's own is told at once, one
     /// in a copy through its holder (`EntityUse::PatrolTarget`).
     PatrolTarget { key: EntityId, pos: BlockPos },
+    /// `PoiManager.take`'s ticket of the point at `pos` (`docs/groundwork/n10-plan.md`,
+    /// section 3.3): taken after the mob's tick, before any other mob's, so that no two
+    /// take one ticket. Only a point of the region's land has space to take.
+    #[allow(dead_code, reason = "parts V1 and V2 take tickets")]
+    TakePoi { pos: BlockPos },
+    /// `PoiManager.release` of a ticket of the point at `pos` of type `kind`: given back
+    /// in the land, or sent to the chunk's holder (decision 2).
+    #[allow(dead_code, reason = "parts V1 and V2 give tickets back")]
+    ReleasePoi {
+        pos: BlockPos,
+        kind: clustine_world::poi::PoiType,
+    },
+    /// A villager's write into the villager `key` (decision 4): the region's own at once,
+    /// one in a copy through its holder (`EntityUse::Villager`).
+    #[allow(dead_code, reason = "parts V2 and V3 write into other villagers")]
+    Villager {
+        key: EntityId,
+        used: clustine_world::VillagerUse,
+    },
 }
 
 /// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and

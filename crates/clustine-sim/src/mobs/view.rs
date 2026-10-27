@@ -112,6 +112,56 @@ pub(crate) trait MobWorld: Holds {
         63
     }
 
+    /// The points of interest within `r` of `centre` of a type `wanted` passes, with the
+    /// tickets `occupancy` asks, in the fixed order of a query
+    /// (`PoiManager.getInRange`; `docs/groundwork/n10-plan.md`, section 3.3): the land's,
+    /// the copies' and the published margin's. None where a view knows none.
+    fn pois_in_range(
+        &self,
+        centre: BlockPos,
+        r: i32,
+        wanted: &dyn Fn(clustine_world::poi::PoiType) -> bool,
+        occupancy: crate::region::pois::Occupancy,
+    ) -> Vec<crate::region::pois::PoiRecord> {
+        let _ = (centre, r, wanted, occupancy);
+        Vec::new()
+    }
+
+    /// The same of `PoiManager.getInSquare`: within `r` on x and on z, at any height.
+    fn pois_in_square(
+        &self,
+        centre: BlockPos,
+        r: i32,
+        wanted: &dyn Fn(clustine_world::poi::PoiType) -> bool,
+        occupancy: crate::region::pois::Occupancy,
+    ) -> Vec<crate::region::pois::PoiRecord> {
+        let _ = (centre, r, wanted, occupancy);
+        Vec::new()
+    }
+
+    /// The type of the point of interest at `pos`, where the view knows it.
+    fn poi_type_at(&self, pos: BlockPos) -> Option<clustine_world::poi::PoiType> {
+        let _ = pos;
+        None
+    }
+
+    /// `PoiManager.sectionsToVillage(section)`: 0 to 5, or 7 where no village reaches
+    /// (section 3.4).
+    fn sections_to_village(&self, section: [i32; 3]) -> i32 {
+        let _ = section;
+        crate::region::pois::NO_VILLAGE
+    }
+
+    /// `ServerLevel.isCloseToVillage(pos, r)`.
+    fn is_close_to_village(&self, pos: BlockPos, r: i32) -> bool {
+        r <= 6 && self.sections_to_village(crate::region::pois::section_of(pos)) <= r
+    }
+
+    /// `ServerLevel.isVillage(pos)`.
+    fn is_village(&self, pos: BlockPos) -> bool {
+        self.is_close_to_village(pos, 1)
+    }
+
     /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
     /// a wolf's anger ends at (none where a view knows no clock).
     fn game_time(&self) -> i64 {

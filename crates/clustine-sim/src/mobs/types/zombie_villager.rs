@@ -46,6 +46,8 @@ pub(crate) fn villager(mob: &Mob) -> VillagerState {
         drawn_profession: professions::NONE,
         conversion: -1,
         xp: 0,
+        offers: None,
+        gossips: Default::default(),
     })
 }
 

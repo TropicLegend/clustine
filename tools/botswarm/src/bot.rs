@@ -2013,6 +2013,9 @@ impl Bot {
             | ClientboundPlay::SetEntityLink(_)
             | ClientboundPlay::SoundEntity(_)
             | ClientboundPlay::EntityEvent(_)
+            // The bots trade with nobody and fight in no raid.
+            | ClientboundPlay::MerchantOffers(_)
+            | ClientboundPlay::BossEvent(_)
             | ClientboundPlay::Unhandled { .. } => {}
         }
         Ok(true)

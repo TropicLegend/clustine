@@ -57,7 +57,8 @@ use clustine_data::{BLOCK_STATE_COUNT, BlockState};
 use clustine_world::components::EffectInstance;
 use clustine_world::{
     Blast, BlockPos, Causer, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse,
-    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, SeamKind, Thrower, Ticked,
+    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, RaiderUse, SeamKind, Thrower,
+    Ticked, VillagerUse,
 };
 use uuid::Uuid;
 
@@ -112,6 +113,23 @@ const USE_EFFECTS: u8 = 14;
 const USE_PEARL_LANDED: u8 = 15;
 /// A patrol's leader names its target.
 const USE_PATROL_TARGET: u8 = 16;
+/// A villager's write into another (`clustine_world::VillagerUse`), then its kind, a tag
+/// each (`docs/groundwork/n10-plan.md`, decision 4).
+const USE_VILLAGER: u8 = 17;
+/// A raid's or a bell's write into a raider (`clustine_world::RaiderUse`), then its kind.
+const USE_RAIDER: u8 = 18;
+
+const VILLAGER_GOSSIPED: u8 = 1;
+const VILLAGER_GAZE: u8 = 2;
+const VILLAGER_YIELD: u8 = 3;
+const VILLAGER_LOSE_JOB_SITE: u8 = 4;
+const VILLAGER_BORN: u8 = 5;
+const VILLAGER_GOLEM_DETECTED: u8 = 6;
+const VILLAGER_WITNESSED: u8 = 7;
+const VILLAGER_HEARD: u8 = 8;
+
+const RAIDER_GLOW: u8 = 1;
+const RAIDER_REJECTED: u8 = 2;
 
 /// What an attacker's type adds to a hurt (`clustine_world::HitExtra`), a tag each.
 const EXTRA_ZOMBIE_FIRE: u8 = 1;
@@ -431,6 +449,55 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
             out.extend_from_slice(&pos.y.to_be_bytes());
             out.extend_from_slice(&pos.z.to_be_bytes());
         }
+        EntityUse::Villager(used) => {
+            out.push(USE_VILLAGER);
+            match used {
+                VillagerUse::Gossiped { at } => {
+                    out.push(VILLAGER_GOSSIPED);
+                    out.extend_from_slice(&at.to_be_bytes());
+                }
+                VillagerUse::Gaze { to, speed, close } => {
+                    out.push(VILLAGER_GAZE);
+                    out.extend_from_slice(&to.0.to_be_bytes());
+                    out.extend_from_slice(&speed.0.to_be_bytes());
+                    out.extend_from_slice(&close.to_be_bytes());
+                }
+                VillagerUse::Yield { site, kind, speed } => {
+                    out.push(VILLAGER_YIELD);
+                    out.extend_from_slice(&site.x.to_be_bytes());
+                    out.extend_from_slice(&site.y.to_be_bytes());
+                    out.extend_from_slice(&site.z.to_be_bytes());
+                    out.push(kind.id());
+                    out.extend_from_slice(&speed.0.to_be_bytes());
+                }
+                VillagerUse::LoseJobSite { site } => {
+                    out.push(VILLAGER_LOSE_JOB_SITE);
+                    out.extend_from_slice(&site.x.to_be_bytes());
+                    out.extend_from_slice(&site.y.to_be_bytes());
+                    out.extend_from_slice(&site.z.to_be_bytes());
+                }
+                VillagerUse::Born => out.push(VILLAGER_BORN),
+                VillagerUse::GolemDetected => out.push(VILLAGER_GOLEM_DETECTED),
+                VillagerUse::Witnessed { murderer } => {
+                    out.push(VILLAGER_WITNESSED);
+                    out.extend_from_slice(&murderer.as_u128().to_be_bytes());
+                }
+                VillagerUse::Heard { at } => {
+                    out.push(VILLAGER_HEARD);
+                    out.extend_from_slice(&at.to_be_bytes());
+                }
+            }
+        }
+        EntityUse::Raider(used) => {
+            out.push(USE_RAIDER);
+            match used {
+                RaiderUse::Glow => out.push(RAIDER_GLOW),
+                RaiderUse::Rejected { raid } => {
+                    out.push(RAIDER_REJECTED);
+                    out.extend_from_slice(&raid.0.to_be_bytes());
+                }
+            }
+        }
     }
 }
 
@@ -609,6 +676,37 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
         USE_PATROL_TARGET => EntityUse::PatrolTarget {
             pos: BlockPos::new(input.i32()?, input.i32()?, input.i32()?),
         },
+        USE_VILLAGER => EntityUse::Villager(match input.u8()? {
+            VILLAGER_GOSSIPED => VillagerUse::Gossiped { at: input.u64()? },
+            VILLAGER_GAZE => VillagerUse::Gaze {
+                to: EntityId(input.u64()?),
+                speed: Float(input.f32()?),
+                close: input.i32()?,
+            },
+            VILLAGER_YIELD => VillagerUse::Yield {
+                site: BlockPos::new(input.i32()?, input.i32()?, input.i32()?),
+                kind: clustine_world::poi::PoiType::from_id(input.u8()?)
+                    .ok_or(FormatError::Corrupt("a point of interest of no type"))?,
+                speed: Float(input.f32()?),
+            },
+            VILLAGER_LOSE_JOB_SITE => VillagerUse::LoseJobSite {
+                site: BlockPos::new(input.i32()?, input.i32()?, input.i32()?),
+            },
+            VILLAGER_BORN => VillagerUse::Born,
+            VILLAGER_GOLEM_DETECTED => VillagerUse::GolemDetected,
+            VILLAGER_WITNESSED => VillagerUse::Witnessed {
+                murderer: Uuid::from_u128(input.u128()?),
+            },
+            VILLAGER_HEARD => VillagerUse::Heard { at: input.u64()? },
+            _ => return Err(FormatError::Corrupt("a villager use's kind")),
+        }),
+        USE_RAIDER => EntityUse::Raider(match input.u8()? {
+            RAIDER_GLOW => RaiderUse::Glow,
+            RAIDER_REJECTED => RaiderUse::Rejected {
+                raid: EntityId(input.u64()?),
+            },
+            _ => return Err(FormatError::Corrupt("a raider use's kind")),
+        }),
         _ => return Err(FormatError::Corrupt("an entity use's kind")),
     })
 }
@@ -1772,7 +1870,7 @@ mod entity_uses {
         let mut out = bytes_of(&on(EntityUse::PatrolTarget {
             pos: BlockPos::new(1, 2, 3),
         }));
-        out[21] = USE_PATROL_TARGET + 1;
+        out[21] = USE_RAIDER + 1;
         assert_eq!(
             take_effect(&mut Input(&out)),
             Err(FormatError::Corrupt("an entity use's kind"))

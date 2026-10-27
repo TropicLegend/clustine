@@ -108,6 +108,34 @@ impl MobWorld for View<'_> {
         self.region.config.sea_level
     }
 
+    fn pois_in_range(
+        &self,
+        centre: BlockPos,
+        r: i32,
+        wanted: &dyn Fn(clustine_world::poi::PoiType) -> bool,
+        occupancy: super::pois::Occupancy,
+    ) -> Vec<super::pois::PoiRecord> {
+        self.region.pois_in_range(centre, r, wanted, occupancy)
+    }
+
+    fn pois_in_square(
+        &self,
+        centre: BlockPos,
+        r: i32,
+        wanted: &dyn Fn(clustine_world::poi::PoiType) -> bool,
+        occupancy: super::pois::Occupancy,
+    ) -> Vec<super::pois::PoiRecord> {
+        self.region.pois_in_square(centre, r, wanted, occupancy)
+    }
+
+    fn poi_type_at(&self, pos: BlockPos) -> Option<clustine_world::poi::PoiType> {
+        self.region.poi_type_at(pos)
+    }
+
+    fn sections_to_village(&self, section: [i32; 3]) -> i32 {
+        self.region.village_level(section)
+    }
+
     fn game_time(&self) -> i64 {
         i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
     }

@@ -193,7 +193,12 @@ impl Region {
             return Some(self.note_block_event(at, state, output));
         }
         if is_class(state, BlockClass::BellBlock) {
-            return Some(self.bell_event(at, kind, data));
+            let rang = self.bell_event(at, kind, data);
+            // What the ring does to the living near it (`bells.rs`).
+            if rang {
+                self.bell_rang(at, output);
+            }
+            return Some(rang);
         }
         None
     }

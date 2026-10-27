@@ -176,7 +176,13 @@ pub(crate) enum Command {
 #[derive(Debug)]
 pub(crate) enum MenuCommand {
     Click(clustine_protocol::packets::play::ContainerClick),
-    Close { window: i32 },
+    Close {
+        window: i32,
+    },
+    /// `select_trade`: the trade the player picked in the window shown.
+    SelectTrade {
+        item: i32,
+    },
 }
 
 /// Settings of the fan-out task.
@@ -1690,6 +1696,7 @@ impl Fanout {
                     let input = match what {
                         MenuCommand::Click(packet) => view.menus.click(packet, number),
                         MenuCommand::Close { window } => view.menus.close(window, number),
+                        MenuCommand::SelectTrade { item } => view.menus.select_trade(item),
                     };
                     if let Some(input) = input {
                         self.player_input(session, player, input).await;
@@ -1853,6 +1860,42 @@ impl Fanout {
                 player,
                 event: PlayerEvent::Teleported { pose },
             } => self.rides(player, pose).await,
+            // A merchant's window and a raid's bar (`merchant.rs`, `boss_bars.rs`).
+            WorkerToEdge::ToPlayer {
+                player,
+                event:
+                    PlayerEvent::MerchantOffers {
+                        serial,
+                        offers,
+                        level,
+                        xp,
+                        show_progress,
+                        can_restock,
+                    },
+            } => {
+                let packet = self.players.get(&player).and_then(|view| {
+                    crate::merchant::offers(
+                        &view.menus,
+                        serial,
+                        &offers,
+                        level,
+                        xp,
+                        show_progress,
+                        can_restock,
+                    )
+                });
+                if let Some(packet) = packet {
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::RaidBar { id, change },
+            } => {
+                if let Some(packet) = crate::boss_bars::raid_bar(id, change) {
+                    self.send_to_player(player, [packet]).await;
+                }
+            }
             WorkerToEdge::ToPlayer {
                 player,
                 event:

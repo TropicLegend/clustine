@@ -166,8 +166,10 @@ pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader:
     let mut leads = false;
     update(spawn.mob, |own| {
         own.can_join_raid = !(witch && spawn.reason == SpawnReason::Natural);
-        if !matches!(spawn.reason, SpawnReason::Structure | SpawnReason::Patrol)
-            && spawn.level.next_float() < 0.06
+        if !matches!(
+            spawn.reason,
+            SpawnReason::Structure | SpawnReason::Patrol | SpawnReason::Event
+        ) && spawn.level.next_float() < 0.06
             && can_be_leader
         {
             own.patrol_leader = true;

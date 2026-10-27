@@ -763,7 +763,9 @@ impl Region {
             | EntityUse::Alert { .. }
             | EntityUse::Effects(_)
             | EntityUse::PearlLanded { .. }
-            | EntityUse::PatrolTarget { .. } => {}
+            | EntityUse::PatrolTarget { .. }
+            | EntityUse::Villager(_)
+            | EntityUse::Raider(_) => {}
             EntityUse::Attack { creative, .. } => {
                 self.hit_armor_stand(entity.key, creative, output);
             }

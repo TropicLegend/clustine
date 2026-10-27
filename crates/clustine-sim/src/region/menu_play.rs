@@ -370,6 +370,7 @@ impl Region {
             kind,
             carried: None,
             drag: None,
+            trade: None,
         });
         self.journal.players.insert(id);
         self.report_whole(id, output);
@@ -421,6 +422,12 @@ impl Region {
                     }
                 }
                 Some(slots)
+            }
+            // A merchant's own: the menu's payments and result (`MerchantContainer`).
+            MenuOf::Merchant(_) => {
+                let trade = self.players.get(&id)?.menu.as_ref()?.trade.as_deref()?;
+                let [first, second] = trade.payments.clone();
+                Some(vec![first, second, trade.result.clone()])
             }
         }
     }
@@ -499,6 +506,31 @@ impl Region {
                     _ => return,
                 }
                 self.commit_entity(chunk, key, vec![EntityField::Data(data)], output);
+            }
+            // A merchant's payments and result kept in the menu, then the result worked
+            // out again for the payments (`MerchantContainer.setItem`'s
+            // `updateSellItem`, `trading.rs`).
+            MenuOf::Merchant(key) => {
+                let Some(trade) = self
+                    .players
+                    .get_mut(&id)
+                    .and_then(|player| player.menu.as_mut())
+                    .and_then(|menu| menu.trade.as_deref_mut())
+                else {
+                    return;
+                };
+                let payments = [
+                    slots.first().cloned().flatten(),
+                    slots.get(1).cloned().flatten(),
+                ];
+                let result = slots.get(2).cloned().flatten();
+                let paid = trade.payments != payments;
+                trade.payments = payments;
+                trade.result = result;
+                self.journal.players.insert(id);
+                if paid {
+                    self.merchant_payments_changed(id, key, output);
+                }
             }
         }
     }
@@ -739,10 +771,21 @@ impl Region {
     /// stops counting them, and the edge is told, the inventory's slots that changed
     /// after the close (`closeContainer` sends `container_close` first).
     pub(super) fn close_menu(&mut self, id: PlayerId, output: &mut TickOutput) {
-        let Some(player) = self.players.get_mut(&id) else {
+        let Some(mut menu) = self
+            .players
+            .get_mut(&id)
+            .and_then(|player| player.menu.take())
+        else {
             return;
         };
-        let Some(mut menu) = player.menu.take() else {
+        // A merchant's payments back to the player and its trading ended, whatever
+        // closed it (`trading.rs`).
+        if let MenuOf::Merchant(merchant) = menu.of
+            && let Some(trade) = menu.trade.as_deref_mut()
+        {
+            self.trading_closed(id, merchant, trade, output);
+        }
+        let Some(player) = self.players.get_mut(&id) else {
             return;
         };
         let before = player.inventory.clone();
@@ -896,6 +939,14 @@ impl Region {
                 }
                 Validity::Valid
             }
+            // `AbstractVillager.stillValid` (`trading.rs`).
+            MenuOf::Merchant(key) => {
+                if self.merchant_still_valid(key, eyes) {
+                    Validity::Valid
+                } else {
+                    Validity::Invalid
+                }
+            }
         }
     }
 
@@ -976,7 +1027,7 @@ fn block_positions(of: MenuOf) -> Vec<BlockPos> {
     match of {
         MenuOf::Block { at, other } => std::iter::once(at).chain(other).collect(),
         MenuOf::Ender { at } => vec![at],
-        MenuOf::Entity(_) => Vec::new(),
+        MenuOf::Entity(_) | MenuOf::Merchant(_) => Vec::new(),
     }
 }
 
@@ -1008,6 +1059,8 @@ fn vehicle_menu(kind: u16) -> Option<MenuKind> {
 fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
     let key = match of {
         MenuOf::Ender { .. } => "container.enderchest",
+        // A villager's by its profession, a trader's by its name (`trading.rs`).
+        MenuOf::Merchant(key) => return region.merchant_title(key),
         MenuOf::Entity(key) => {
             let name = region
                 .find_entity(key)
@@ -1027,7 +1080,9 @@ fn title_of(of: MenuOf, kind: MenuKind, region: &Region) -> String {
                 MenuKind::Grid3x3 if is(BlockClass::DropperBlock) => "container.dropper",
                 MenuKind::Grid3x3 => "container.dispenser",
                 MenuKind::Rows3 if is(BlockClass::BarrelBlock) => "container.barrel",
-                MenuKind::Rows3 | MenuKind::Mount { .. } => "container.chest",
+                MenuKind::Rows3 | MenuKind::Mount { .. } | MenuKind::Merchant { .. } => {
+                    "container.chest"
+                }
             }
         }
     };

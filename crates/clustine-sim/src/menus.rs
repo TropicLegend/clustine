@@ -942,6 +942,7 @@ mod tests {
                     kind,
                     carried: None,
                     drag: None,
+                    trade: None,
                 },
             }
         }

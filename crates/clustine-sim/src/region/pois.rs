@@ -91,6 +91,11 @@ const VILLAGE_REACH: i32 = 5;
 /// The level of a section no village reaches.
 pub(crate) const NO_VILLAGE: i32 = 7;
 
+/// Whether the village is read from the claims of points of interest, which villagers
+/// make from part V2 on; until then from the stand-in of the kept villages' pieces
+/// (`docs/groundwork/n10-plan.md`, section 3.4). The lead turns it on with V2.
+const VILLAGES_CLAIMED: bool = false;
+
 /// A chunk's records in a query's order (sections bottom to top, then type, then
 /// position), each with its free tickets.
 fn chunk_records(position: ChunkPos, chunk: &Chunk, own: bool) -> Vec<PoiRecord> {
@@ -414,6 +419,37 @@ impl Region {
             }
         }
         nearest
+    }
+
+    /// How far the village is, as every reader of it asks: by the stand-in of the kept
+    /// villages' pieces while [`VILLAGES_CLAIMED`] is off, by the claims once villagers
+    /// claim (section 3.4): a generated village has no claims until its villagers make
+    /// them, and until then the stand-in keeps patrols out of it.
+    pub(crate) fn village_level(&self, section: [i32; 3]) -> i32 {
+        if VILLAGES_CLAIMED {
+            return self.sections_to_village(section);
+        }
+        let centre = BlockPos::new(
+            section[0] * 16 + 8,
+            section[1] * 16 + 8,
+            section[2] * 16 + 8,
+        );
+        if self.village_near(centre) {
+            0
+        } else {
+            NO_VILLAGE
+        }
+    }
+
+    /// `ServerLevel.isCloseToVillage(pos, r)` as the region's own readers ask it: through
+    /// the stand-in while [`VILLAGES_CLAIMED`] is off (a kept village's piece near `pos`,
+    /// `structures.rs`), through the claims after.
+    pub(crate) fn close_to_village(&self, pos: BlockPos, r: i32) -> bool {
+        if VILLAGES_CLAIMED {
+            self.is_close_to_village(pos, r)
+        } else {
+            r <= 6 && self.village_near(pos)
+        }
     }
 
     /// `ServerLevel.isCloseToVillage(pos, r)`.

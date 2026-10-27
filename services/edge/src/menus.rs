@@ -237,6 +237,17 @@ impl Menus {
         Some(PlayerInput::CloseContainer { serial })
     }
 
+    /// The client picked a trade in the window it shows (`select_trade`, which names no
+    /// window): the input, which the region refuses for a menu that is not a merchant's,
+    /// or `None` with no window shown.
+    pub(crate) fn select_trade(&mut self, item: i32) -> Option<PlayerInput> {
+        let open = self.open.as_ref()?;
+        Some(PlayerInput::SelectTrade {
+            serial: open.serial,
+            index: item,
+        })
+    }
+
     /// The region reported the menu `serial` whole: opened, which `openMenu` shows by
     /// closing any other window, a new id, `open_screen` and the window whole; or of the
     /// menu shown, which is sent whole again.
@@ -458,6 +469,7 @@ fn menu_id(kind: MenuKind) -> i32 {
         // A horse's window is no menu type: it opens by `mount_screen_open`, and one whose
         // horse has no id is shown as three rows, which its slots fit no worse.
         MenuKind::Mount { .. } => menu::GENERIC_9X3,
+        MenuKind::Merchant { .. } => menu::MERCHANT,
     }
 }
 

@@ -52,15 +52,15 @@ use super::{
 };
 use crate::mobs::Mob;
 use crate::mobs::ai::Setup;
-use crate::mobs::ai::goals::Items;
 use crate::mobs::body::hurt::{DamageSource, Struck};
 use crate::mobs::body::{Event, ladder};
 use crate::mobs::brain::behaviours::fleeing::away_from;
 use crate::mobs::brain::behaviours::items::{GoToWantedItem, go_to_wanted_item};
 use crate::mobs::brain::behaviours::looking::{LookAt, look_at};
+use crate::mobs::brain::behaviours::social_villagers;
 use crate::mobs::brain::behaviours::villagers::{
     calm_down, from_schedule, go_to_closest_village, inside_brownian_walk, panic_trigger,
-    wants_a_home,
+    set_raid_status, wants_a_home,
 };
 use crate::mobs::brain::behaviours::walking::{
     StrollTo, look_sink, sink, stroll_to, walk_to_look_target,
@@ -139,6 +139,38 @@ pub(crate) struct VillagerState {
     pub(crate) last_gossip_decay: i64,
     pub(crate) restocks_today: i32,
     pub(crate) schedule_at: Option<i64>,
+    /// Its offers, drawn when first asked (`AbstractVillager.offers`, none before;
+    /// `docs/groundwork/n10-plan.md`, section 4).
+    pub(crate) offers: Option<clustine_world::trading::Offers>,
+    pub(crate) gossips: super::gossip::Gossips,
+    /// The player it trades with (`tradingPlayer`), whose merchant menu on it is open;
+    /// cleared at the menu's every close and at every take-in where that player is not
+    /// the region's with that menu (section 8.2).
+    pub(crate) trading_player: Option<clustine_world::PlayerId>,
+    /// `lastGossipTime` and `lastRestockCheckDay`, which the game does not save and
+    /// Clustine keeps (decision 14).
+    pub(crate) last_gossip_time: Option<i64>,
+    pub(crate) last_restock_check_day: i64,
+    /// What other villagers read of it across a line, written from its brain at the end
+    /// of each of its ticks (decision 3): copies carry the type's state, not the mind.
+    pub(crate) shown: Shown,
+}
+
+/// What a villager's neighbours read of it, kept in its type's state so that a copy of it
+/// in another region carries it (`docs/groundwork/n10-plan.md`, decision 3): its job site
+/// and the one it reserved, when it last slept, whether a golem was seen lately, whom it
+/// interacts with, its food points, whether it sleeps, and the reputations at or below
+/// -100 a golem's defence reads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Shown {
+    pub(crate) job_site: Option<clustine_world::BlockPos>,
+    pub(crate) potential_job_site: Option<clustine_world::BlockPos>,
+    pub(crate) last_slept: Option<i64>,
+    pub(crate) golem_detected: bool,
+    pub(crate) interaction_target: Option<EntityId>,
+    pub(crate) food_points: i32,
+    pub(crate) sleeping: bool,
+    pub(crate) bad_reputations: Vec<(uuid::Uuid, i32)>,
 }
 
 impl Default for VillagerState {
@@ -154,6 +186,12 @@ impl Default for VillagerState {
             last_gossip_decay: 0,
             restocks_today: 0,
             schedule_at: None,
+            offers: None,
+            gossips: super::gossip::Gossips::default(),
+            trading_player: None,
+            last_gossip_time: None,
+            last_restock_check_day: 0,
+            shown: Shown::default(),
         }
     }
 }
@@ -427,6 +465,7 @@ fn activities() -> Vec<ActivityData> {
             (0, doors::interact_with_door()),
             (0, look_sink(45, 90)),
             (0, panic_trigger()),
+            (0, set_raid_status()),
             (1, sink()),
             (
                 5,
@@ -542,7 +581,7 @@ pub(crate) struct Villager;
 
 /// `setUnhappy()` of a player's use: 40 ticks of a shaking head, and `villager_no` at
 /// its volume and voice (two draws of its own stream), heard by everyone.
-fn set_unhappy(used: &mut Used<'_>) {
+pub(crate) fn set_unhappy(used: &mut Used<'_>) {
     update(used.mob, |own| own.unhappy = UNHAPPY_TICKS);
     let baby = animal::is_baby(used.mob);
     let pitch = crate::mobs::body::hurt::voice_pitch(used.draws, baby);
@@ -646,9 +685,16 @@ impl MobType for Villager {
             schedule_now(tick);
         }
         brain::run(tick, |_, _| {});
+        // `customServerAiStep`'s trade's reputation event after the brain (part V3).
+        social_villagers::after_brain(tick);
         if !tick.mob.body.flags.no_ai {
             tick.draws.next_int(100);
         }
+    }
+
+    /// `Villager.die`'s witnesses told and points of interest given back (part V3).
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        social_villagers::died(struck, source);
     }
 
     /// `Mob.aiStep`'s pick-up, then `AgeableMob.aiStep`'s growing; a baby grown up has
@@ -677,18 +723,8 @@ impl MobType for Villager {
     /// (none is ever made, its profession's or a template's), so it shakes its head and
     /// the use is consumed. Otherwise `AgeableMob`'s (the golden dandelion).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let egg = used
-            .held
-            .as_ref()
-            .is_some_and(|stack| stack.count > 0 && stack.item == items::VILLAGER_SPAWN_EGG);
-        if !egg && !used.mob.body.vitals.dying() {
-            set_unhappy(used);
-            if animal::is_baby(used.mob) {
-                return Interaction::Success;
-            }
-            return Interaction::Consume;
-        }
-        animal::mob_interact(used, Items::Of(&[]), None)
+        // Trading's (part T2, `trading/merchant.rs`).
+        crate::trading::merchant::villager_interact(used)
     }
 
     /// `Villager.getBreedOffspring` (1466–1521), of its own random: one `nextDouble()`,
@@ -765,6 +801,8 @@ impl MobType for Villager {
         if took && by_player && !source.kind.is("minecraft:no_anger") && !struck.dying() {
             struck.out.events.push(Event::Entity(13));
         }
+        // `setLastHurtByMob`'s `VILLAGER_HURT` reputation event (part V3).
+        social_villagers::hurt(struck, source, took);
     }
 
     fn dimensions(&self, mob: &Mob) -> Option<Dimensions> {

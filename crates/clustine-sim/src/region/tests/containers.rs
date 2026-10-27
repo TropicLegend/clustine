@@ -56,6 +56,7 @@ fn show(region: &mut Region, number: u128, of: MenuOf, kind: MenuKind) {
         kind,
         carried: None,
         drag: None,
+        trade: None,
     });
 }
 

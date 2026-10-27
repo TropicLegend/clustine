@@ -13,6 +13,7 @@
     reason = "the merchant's rules (T2) and the villager (N10c) call these"
 )]
 pub(crate) mod evaluate;
+pub(crate) mod merchant;
 #[allow(
     dead_code,
     reason = "the merchant's rules (T2) and the villager (N10c) call these"
