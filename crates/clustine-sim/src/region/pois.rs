@@ -92,9 +92,9 @@ const VILLAGE_REACH: i32 = 5;
 pub(crate) const NO_VILLAGE: i32 = 7;
 
 /// Whether the village is read from the claims of points of interest, which villagers
-/// make from part V2 on; until then from the stand-in of the kept villages' pieces
-/// (`docs/groundwork/n10-plan.md`, section 3.4). The lead turns it on with V2.
-const VILLAGES_CLAIMED: bool = false;
+/// make; off, from the stand-in of the kept villages' pieces that served before they did
+/// (`docs/groundwork/n10-plan.md`, section 3.4).
+const VILLAGES_CLAIMED: bool = true;
 
 /// A chunk's records in a query's order (sections bottom to top, then type, then
 /// position), each with its free tickets.

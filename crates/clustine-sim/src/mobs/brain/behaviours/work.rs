@@ -1131,11 +1131,11 @@ fn work_sound(profession: i32) -> Option<i32> {
     })
 }
 
-/// `Villager.shouldRestock` and `restock` at `WorkAtPoi.start`: trading's (part T2,
-/// `trading/merchant.rs`), which fills it in; until then it does nothing and draws
-/// nothing.
+/// `Villager.shouldRestock` and `restock` at `WorkAtPoi.start`: trading's
+/// (`trading/merchant.rs`); it draws nothing.
 pub(crate) fn restock_if_due(cx: &mut Cx<'_, '_, '_>) {
-    let _ = cx;
+    let day_ticks = cx.ai.tick.world.day();
+    crate::trading::merchant::restock_if_due(&mut cx.ai.tick.mob, cx.time, day_ticks);
 }
 
 /// `WorkAtPoi` (Behavior 60/60; WorkAtPoi.txt 20–133) and the farmer's `WorkAtComposter`,

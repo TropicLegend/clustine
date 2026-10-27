@@ -44,41 +44,13 @@ const MAX_LEVEL: i32 = 5;
 /// `Villager.restock`'s spacing: a second restock of a day waits 2400 ticks after the
 /// first (`allowedToRestock`), and a gap of 12000 since the last starts the count again
 /// (`shouldRestock`).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 const RESTOCK_SPACING: i64 = 2400;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 const RESTOCK_RESET: i64 = 12_000;
 
 /// How many times a villager restocks in a day.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 const RESTOCKS_A_DAY: i32 = 2;
 
 /// The ticks of a day of the overworld's clock (`OVERWORLD_DAY`'s period).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 pub(crate) const DAY_TICKS: u64 = 24_000;
 
 /// Whether an entity of the type `kind` is a villager (the other merchant is the
@@ -489,13 +461,6 @@ pub(crate) fn trader_interact(used: &mut Used<'_>) -> Interaction {
 /// `catchUpDemand`); it then restocks if it may (none yet today, or one and 2400 ticks
 /// since) and an offer was used. `restock` (430–468): every offer's demand updated and
 /// its uses set back, the time kept and the count raised.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 pub(crate) fn restock_if_due(mob: &mut Mob, game_time: i64, day_ticks: u64) -> bool {
     let day = i64::try_from(day_ticks / DAY_TICKS).unwrap_or(i64::MAX);
     let mut own = villager::state_of(mob).1;
@@ -533,13 +498,6 @@ pub(crate) fn restock_if_due(mob: &mut Mob, game_time: i64, day_ticks: u64) -> b
 
 /// `catchUpDemand` (585–626): for each of the day's restocks it missed, its uses set back
 /// and its demand updated once more.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "part V2's `WorkAtPoi.start` calls `restock_if_due`"
-    )
-)]
 fn catch_up_demand(own: &mut villager::VillagerState) {
     let missed = RESTOCKS_A_DAY - own.restocks_today;
     if missed <= 0 {

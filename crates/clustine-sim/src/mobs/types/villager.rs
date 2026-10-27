@@ -1145,7 +1145,10 @@ impl MobType for Villager {
         if state_of(&tick.mob).1.schedule_at.is_none() {
             schedule_now(tick);
         }
-        brain::run(tick, |_, _| {});
+        // A brain made again (`refreshBrain`) has its schedule's activity set at once.
+        if brain::run(tick, |_, _| {}) {
+            schedule_now(tick);
+        }
         // `customServerAiStep`'s trade's reputation event after the brain (part V3).
         social::after_brain(tick);
         if !tick.mob.body.flags.no_ai {
@@ -1214,12 +1217,9 @@ impl MobType for Villager {
         social::maybe_decay_gossip(tick);
     }
 
-    /// `Villager.mobInteract` (279–337): with anything but its egg, alive (and neither
-    /// trading nor asleep: never), a baby shakes its head; an adult has no offers
-    /// (none is ever made, its profession's or a template's), so it shakes its head and
-    /// the use is consumed. Otherwise `AgeableMob`'s (the golden dandelion).
+    /// `Villager.mobInteract` (279–337): trading's (`trading/merchant.rs`), which opens
+    /// the menu of an adult with offers and shakes the head of a baby or one without.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        // Trading's (part T2, `trading/merchant.rs`).
         crate::trading::merchant::villager_interact(used)
     }
 

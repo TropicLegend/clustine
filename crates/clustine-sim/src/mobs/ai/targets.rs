@@ -27,7 +27,7 @@
 //! `EndermanLookForPlayerGoal` (no draw), its `HurtByTargetGoal`, its endermite goal
 //! and its universal anger's reset; the phantom's `PhantomAttackPlayerTargetGoal` (a
 //! countdown); the silverfish's `HurtByTargetGoal` with its alert and its players; the
-//! endermite's. The ravager (raids, eggs only) is out of N9.
+//! endermite's.
 //!
 //! Named differences: no two mobs are of one team, so none is another's ally; none of
 //! the types here is tamable, so no alert passes over another owner's mob; `isInWater`

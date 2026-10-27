@@ -348,7 +348,8 @@ fn a_calm_idle_villager_s_tick_draws_the_panic_trigger_s_then_the_raid_status_s_
     // of the panic trigger's start, `SetRaidStatus`'s `nextInt(20)`, the idle `RunOne`'s
     // seven list draws and, where `DoNothing` comes before the stroll, its `nextInt(31)`;
     // the full look's ten list draws and its `DoNothing`'s `nextInt(31)` (nothing else
-    // there is to look at); then the villager's own `nextInt(100)`.
+    // there is to look at); the three `AcquirePoi`'s first `nextInt(20)`; then the
+    // villager's own `nextInt(100)`.
     let field = Field::new(6000);
     let villager_type = super::of(entity_types::VILLAGER as u16);
     let mut checked = 0;
@@ -374,6 +375,9 @@ fn a_calm_idle_villager_s_tick_draws_the_panic_trigger_s_then_the_raid_status_s_
             expected.next_float();
         }
         expected.next_int(31);
+        // The three `AcquirePoi` (job site at 6, home and meeting point at 10) each set
+        // their first search `nextInt(20)` ticks ahead (V 3.1).
+        let searches: Vec<u32> = (0..3).map(|_| expected.next_int(20)).collect();
         expected.next_int(100);
         let mob = made_villager();
         let (after, _, drawn) = step(&field, villager_type, mob, body([0.5, 0.0, 0.5]), lived);
@@ -381,10 +385,17 @@ fn a_calm_idle_villager_s_tick_draws_the_panic_trigger_s_then_the_raid_status_s_
         assert_eq!(active(&after, lived + 1), Some(Activity::Idle));
 
         // Its next tick, both gates still running their waits: only the two level
-        // draws and its own.
+        // draws, a search that is due, and its own.
         let mut expected = Random::of_entity(SEED, KEY, lived + 1);
         expected.next_int(1);
         expected.next_int(20);
+        // A search due by then (the field's clock stands still) draws its next; with
+        // nothing to find, nothing more.
+        for due in searches {
+            if due == 0 {
+                expected.next_int(20);
+            }
+        }
         expected.next_int(100);
         let (_, _, drawn) = step(
             &field,

@@ -173,8 +173,12 @@ fn the_schedule_reaches_work_with_a_job_site_and_the_meeting_with_a_meeting_poin
         assert_eq!(active(&region, ONE), Some(expected), "{day} {memories:?}");
     }
     // At 2000 the schedule's next update (more than 20 ticks after the last) switches
-    // an idle villager with a job site to work.
-    let mut region = on_ticking_floor_with(&[]);
+    // an idle villager with a job site to work. The lectern is there, or the villager's
+    // `ValidateNearbyPoi` forgets the site before then.
+    let mut region = on_ticking_floor_with(&[(
+        BlockPos::new(9, -60, 9),
+        BlockState::parse("minecraft:lectern").unwrap(),
+    )]);
     region.clock.day = 1990;
     lay(
         &mut region,

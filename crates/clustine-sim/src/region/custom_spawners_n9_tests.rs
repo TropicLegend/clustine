@@ -4,6 +4,8 @@
 //! replayed from the stream the rule says it is drawn from.
 
 use clustine_data::{blocks, entity_types};
+use clustine_world::InChunk;
+use clustine_world::poi::{Claim, PoiType};
 use clustine_world::{
     Biome, BlockPos, Chunk, ChunkPos, EntityIds, KeptBox, KeptKind, KeptStructure, PlayerId, Vec3,
 };
@@ -54,9 +56,9 @@ fn chunk_of(position: ChunkPos, blocks: &dyn Fn(BlockPos) -> Option<BlockState>)
     chunk
 }
 
-/// A region holding the chunks from -6 to 6 each way, with `blocks` over the floor and
-/// the chunk at `village` keeping a village's piece round the origin; ticked once, at
-/// the clock's day time `day`.
+/// A region holding the chunks from -6 to 6 each way, with `blocks` over the floor and,
+/// where `village`, the chunk at the origin keeping a village's piece and a claimed bell;
+/// ticked once, at the clock's day time `day`.
 fn region_with(day: u64, blocks: impl Fn(BlockPos) -> Option<BlockState>, village: bool) -> Region {
     let held: Vec<ChunkPos> = (-REACH..=REACH)
         .flat_map(|x| (-REACH..=REACH).map(move |z| ChunkPos::new(x, z)))
@@ -75,6 +77,13 @@ fn region_with(day: u64, blocks: impl Fn(BlockPos) -> Option<BlockState>, villag
                     source: ChunkPos::new(0, 0),
                     bounds: piece,
                     pieces: vec![piece],
+                }]);
+                // A village is where villagers claim: a bell with its meeting point taken.
+                chunk.set(4, FLOOR + 1, 4, blocks::BELL);
+                chunk.set_claims(vec![Claim {
+                    at: InChunk::new(4, FLOOR + 1, 4),
+                    kind: PoiType::Meeting,
+                    free: 31,
                 }]);
             }
             (*position, chunk)

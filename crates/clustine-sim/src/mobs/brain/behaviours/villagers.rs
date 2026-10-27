@@ -53,12 +53,6 @@ pub(crate) fn panic_trigger() -> Box<dyn Behaviour> {
     Box::new(HeldTimed::new(VillagerPanicTrigger))
 }
 
-/// `Villager.spawnGolemIfNeeded(level, time, 3)` of a panicking villager: the golem
-/// summoning of part V3, which this hook reaches once that part lands; nothing until then.
-fn spawn_golem_if_needed(cx: &mut Cx<'_, '_, '_>, needed: usize) {
-    let _ = (cx, needed);
-}
-
 impl Timed for VillagerPanicTrigger {
     type State = ();
 
@@ -90,7 +84,9 @@ impl Timed for VillagerPanicTrigger {
 
     fn tick(&self, _: &mut (), cx: &mut Cx<'_, '_, '_>) {
         if cx.time % 100 == 0 {
-            spawn_golem_if_needed(cx, 3);
+            // `Villager.spawnGolemIfNeeded(level, time, 3)` of a panicking villager.
+            let time = cx.time;
+            super::social_villagers::spawn_golem_if_needed(cx, time, 3);
         }
     }
 }

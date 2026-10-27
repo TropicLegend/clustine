@@ -25,8 +25,9 @@ use crate::physics::{self, Vec3, aabb::Aabb};
 use crate::region::Random;
 
 /// The types that are `PatrollingMonster`s and so can join a patrol (`canJoinPatrol`,
-/// a raider's while it has no raid: always, before N10's raids). The illusioner and the
-/// ravager are not built.
+/// a raider's while it has no raid). The illusioner is not built. **Named**: the
+/// ravager, a `PatrollingMonster` too, has no `LongDistancePatrolGoal` here and so never
+/// joins a patrol (only one made by an egg could; patrols spawn only these four).
 pub(crate) const PATROLLING: [u16; 4] = [
     entity_types::PILLAGER as u16,
     entity_types::VINDICATOR as u16,
