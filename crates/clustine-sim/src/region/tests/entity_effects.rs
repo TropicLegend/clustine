@@ -375,3 +375,32 @@ fn a_mob_swings_at_once_and_again_only_once_half_its_swing_is_over() {
     region.swing_mob(key, &mut output);
     assert_eq!(swings(&output), 1);
 }
+
+/// Section 8.5: a mob whose target is across the line notes the chunks about itself and
+/// about its target by the region that holds the target, as a crossing is noted, so that
+/// regions that follow their players merge for the fight.
+#[test]
+fn a_mob_whose_target_is_across_a_line_notes_both_places_by_the_target_s_holder() {
+    let mut region = crate::region::tnt::tests::west_of_a_line(SEED, nothing);
+    let villager = EntityId(77_777);
+    let across = cow(villager, [17.0, -60.0, 0.5]);
+    region
+        .copies
+        .get_mut(&across.chunk())
+        .expect("the column east of the line is copied")
+        .apply_entity(&EntityChange::Whole(across.clone()));
+    let key = region.take_entity_key(ChunkPos::new(0, 0)).expect("a key");
+    let mut zombie = cow(key, [3.5, -60.0, 0.5]);
+    zombie.kind = u16::try_from(entity_types::ZOMBIE).unwrap();
+    let mut decoded = crate::mobs::Mob::decode(&zombie.data).expect("a mob");
+    decoded.body.combat.target = Some(villager);
+    zombie.data = decoded.encode();
+    lay(&mut region, &zombie);
+    assert!(region.entities_at_line().is_empty());
+    region.tick(&TickInputs::default());
+    let noted = region.entities_at_line();
+    // The holder as the region knows it (here none told: the notes say so).
+    let holder = region.land.knowledge(across.chunk()).holder();
+    assert!(noted.contains(&(ChunkPos::new(0, 0), holder)), "{noted:?}");
+    assert!(noted.contains(&(across.chunk(), holder)), "{noted:?}");
+}

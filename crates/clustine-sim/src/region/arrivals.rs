@@ -121,6 +121,30 @@ impl Region {
     /// region knows it.
     fn at_line(&mut self, position: [f64; 3], chunk: ChunkPos) {
         let to = self.land.knowledge(chunk).holder();
+        self.at_line_to(position, to);
+    }
+
+    /// A mob of the region whose target `target` is seen in a copy, its feet at `at`
+    /// (`docs/groundwork/n9-plan.md`, section 8.5): the chunks about it and about its
+    /// target are noted, both by the region that holds the target (finding 40), so that
+    /// regions that follow their players merge for a fight across their line as for an
+    /// entity sent across. Named: a face of a player is no mob's target, every player
+    /// being creative.
+    pub(super) fn target_at_line(&mut self, at: [f64; 3], target: clustine_world::EntityId) {
+        if self.find_entity(target).is_some() {
+            return;
+        }
+        let Some((chunk, record)) = self.copied_entity(target) else {
+            return;
+        };
+        let to = self.land.knowledge(chunk).holder();
+        let there = record.position;
+        self.at_line_to(at, to);
+        self.at_line_to(there, to);
+    }
+
+    /// Notes the chunks about `position` by the region `to`.
+    fn at_line_to(&mut self, position: [f64; 3], to: Option<RegionId>) {
         let [x, _, z] = position;
         let low = ChunkPos::containing(x - AT_THE_LINE, z - AT_THE_LINE);
         let high = ChunkPos::containing(x + AT_THE_LINE, z + AT_THE_LINE);

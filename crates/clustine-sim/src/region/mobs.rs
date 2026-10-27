@@ -371,6 +371,9 @@ impl Region {
         // What it showed, dropped and did to others (`mob_bodies.rs`), then its record,
         // unless it left the world.
         let removed = out.removed;
+        if let Some(target) = mob.body.combat.target {
+            self.target_at_line(living.body.position, target);
+        }
         self.mob_ticked(&entity, living.body.position, out, position, output);
         if removed.is_none() {
             let shown = Shown { yaw, pitch, flags };
