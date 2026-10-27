@@ -166,7 +166,13 @@ pub(crate) fn shot_record(shot: &Shot, owner: Option<EntityId>) -> Option<Entity
             crit: false,
             pierce_level: 0,
             pierced: Vec::new(),
-            hit_sound: "minecraft:entity.arrow.hit".to_owned(),
+            // `getDefaultHitGroundSoundEvent`: the trident's own.
+            hit_sound: if kind == entity_types::TRIDENT {
+                "minecraft:item.trident.hit_ground"
+            } else {
+                "minecraft:entity.arrow.hit"
+            }
+            .to_owned(),
             in_ground: None,
             shake_until: 0,
             of_kind,

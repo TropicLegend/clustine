@@ -1154,6 +1154,7 @@ impl Region {
         self.players_push_minecarts(&mut output);
         self.players_push_boats(&mut output);
         self.pick_up_items(&mut output);
+        self.players_touch_arrows(&mut output);
         self.players_touch_orbs(&mut output);
         // The end of each riding player's tick: the checks of a driver's next moves
         // count from where their boat is now (`boats.rs`).

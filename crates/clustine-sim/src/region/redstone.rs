@@ -414,14 +414,19 @@ impl Region {
         }
         if is_class(state, BlockClass::ButtonBlock) {
             // `ButtonBlock.checkPressed`: nothing but an arrow keeps a button pressed
-            // (`projectile_hits.rs`).
-            if flag(state, "powered") && !self.arrow_on_button(pos, state) {
+            // (`projectile_hits.rs`), and one that does is looked at again as long on.
+            let arrow = self.arrow_on_button(pos, state);
+            if flag(state, "powered") && !arrow {
                 let released = set_flag(state, "powered", false);
                 self.set_block(pos, released, output);
                 self.update_attached(pos, released, output);
                 let sound = button_sound(state, false);
                 play(pos, sound, 1.0, 1.0, None, output);
                 self.vibrate_at(Vibration::BLOCK_DEACTIVATE, pos, Context::default());
+            }
+            if arrow {
+                let block = clustine_blocks::data::tick_id(state);
+                self.schedule_tick(pos, Ticked::Block(block), button_delay(state), 0);
             }
             return true;
         }

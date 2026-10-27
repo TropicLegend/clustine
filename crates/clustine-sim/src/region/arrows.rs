@@ -1328,13 +1328,6 @@ impl Region {
     /// One that may be picked up gives its stack; one only a creative player may take
     /// gives nothing (every player is creative); either way clients see it taken and it
     /// is gone.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the region's tick calls it after the items' (the lead's)"
-        )
-    )]
     pub(crate) fn players_touch_arrows(&mut self, output: &mut TickOutput) {
         let players: Vec<(clustine_world::PlayerId, EntityId, [f64; 3])> = self
             .players
