@@ -61,6 +61,7 @@ pub(crate) fn source_of(hurt: &HurtBy) -> Option<DamageSource> {
         projectile_motion: hurt
             .projectile_motion
             .map(|motion| motion.map(|value| value.0)),
+        clean_water: false,
     })
 }
 
@@ -343,10 +344,15 @@ impl Region {
             direct: given.source.as_ref().map(causer),
             position: None,
             projectile_motion: None,
+            clean_water: false,
         };
         if given.water {
             if SENSITIVE_TO_WATER.contains(&i32::from(entity.kind)) {
-                self.hurt_mob(key, &magic(DamageType::INDIRECT_MAGIC), 1.0, output);
+                let water = DamageSource {
+                    clean_water: true,
+                    ..magic(DamageType::INDIRECT_MAGIC)
+                };
+                self.hurt_mob(key, &water, 1.0, output);
             }
             return;
         }

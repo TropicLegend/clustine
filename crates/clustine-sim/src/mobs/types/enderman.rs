@@ -652,9 +652,18 @@ impl MobType for Enderman {
         });
     }
 
-    /// A projectile it refuses, unless it rides.
+    /// A projectile it refuses, unless it rides; and a thrown potion's hurt but water's
+    /// (`hurtWithCleanWater`: a harming splash does nothing to it, finding 25), whose
+    /// teleports `before_hurt_server` asked for all the same.
     fn refuses_hurt(&self, mob: &Mob, source: &DamageSource) -> bool {
-        source.kind.is("minecraft:is_projectile") && !state_of(mob).hurt_riding
+        let potion = source.direct.as_ref().is_some_and(|direct| {
+            matches!(
+                i32::from(direct.kind),
+                entity_types::SPLASH_POTION | entity_types::LINGERING_POTION
+            )
+        });
+        (source.kind.is("minecraft:is_projectile") && !state_of(mob).hurt_riding)
+            || (potion && !source.clean_water)
     }
 
     /// `Enderman.hurtServer`'s tail: after a hurt of what no living thing caused (not a

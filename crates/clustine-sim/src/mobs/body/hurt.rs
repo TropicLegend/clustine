@@ -122,6 +122,9 @@ pub(crate) struct DamageSource {
     pub(crate) direct: Option<Causer>,
     pub(crate) position: Option<Vec3>,
     pub(crate) projectile_motion: Option<Vec3>,
+    /// A thrown potion's of water (`Enderman.hurtWithCleanWater`): the one hurt by a
+    /// thrown potion an enderman takes.
+    pub(crate) clean_water: bool,
 }
 
 impl DamageSource {
@@ -133,6 +136,7 @@ impl DamageSource {
             direct: None,
             position: None,
             projectile_motion: None,
+            clean_water: false,
         }
     }
 
@@ -145,6 +149,7 @@ impl DamageSource {
             direct: Some(entity),
             position: None,
             projectile_motion: None,
+            clean_water: false,
         }
     }
 
@@ -157,6 +162,7 @@ impl DamageSource {
             direct: Some(direct),
             position: None,
             projectile_motion: Some(motion),
+            clean_water: false,
         }
     }
 

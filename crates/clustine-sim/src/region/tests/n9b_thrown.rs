@@ -417,7 +417,6 @@ fn a_splash_of_water_hurts_an_enderman_by_one_and_it_teleports() {
 /// enderman's `hurtWithCleanWater` refuses it: the plan's 8.4 says "a harming splash
 /// does nothing to it". It teleports all the same.
 #[test]
-#[ignore = "finding: a harming splash hurts an enderman, which the game's hurtWithCleanWater refuses"]
 fn a_splash_of_harming_does_not_hurt_an_enderman_but_it_teleports() {
     let (health, moved) = splashed_enderman("minecraft:harming");
     assert_eq!(health, 40.0, "harming does nothing to an enderman");
