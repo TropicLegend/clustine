@@ -154,7 +154,6 @@ fn a_chest_s_nbt_keeps_every_component_and_removal_of_its_stacks() {
 /// equal field for field. A crossbow with two enchantments saved in a chest and read back
 /// is the same kind as before.
 #[test]
-#[ignore = "finding: enchantments read from a container's NBT keep the compound's order, not the registry's, so the stack is no longer the same kind"]
 fn a_stack_with_two_enchantments_saved_in_a_chest_is_the_same_kind_read_back() {
     let chest = state("minecraft:chest[facing=north,type=single,waterlogged=false]");
     let mut crossbow = ItemStack::new(items::CROSSBOW, 1);

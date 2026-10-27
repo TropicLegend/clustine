@@ -302,7 +302,7 @@ fn convert_to_world(component: &WireComponent) -> Checked<Component> {
                     None => kept.push((name, *level)),
                 }
             }
-            Component::Enchantments(kept)
+            Component::Enchantments(clustine_world::components::in_registry_order(kept))
         }
         WireComponent::UseCooldown(cooldown) => {
             // `ExtraCodecs.POSITIVE_FLOAT` (n9 UseCooldown); the group's form is the

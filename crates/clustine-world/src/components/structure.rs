@@ -183,7 +183,7 @@ pub fn component_from(kind: Kind, value: &Value) -> Read<Component> {
                 }
                 levels.push((name, level));
             }
-            Component::Enchantments(levels)
+            Component::Enchantments(super::in_registry_order(levels))
         }
         Kind::UseCooldown => {
             let fields = map(value, what)?;

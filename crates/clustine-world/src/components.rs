@@ -88,6 +88,21 @@ impl Kind {
     }
 }
 
+/// `levels` in the order of the enchantment registry, names it does not know last by
+/// name: the one order an item's enchantments are kept in, whatever order they were
+/// read in (an NBT compound's, a client's).
+#[must_use]
+pub fn in_registry_order(mut levels: Vec<(String, i32)>) -> Vec<(String, i32)> {
+    let registry = clustine_data::synced_registry("minecraft:enchantment");
+    let place = |name: &str| {
+        registry
+            .and_then(|registry| registry.entries.iter().position(|entry| *entry == name))
+            .unwrap_or(usize::MAX)
+    };
+    levels.sort_by(|(a, _), (b, _)| place(a).cmp(&place(b)).then_with(|| a.cmp(b)));
+    levels
+}
+
 /// One component's value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Component {
@@ -97,7 +112,9 @@ pub enum Component {
     PotionDurationScale(Float),
     /// The stacks a crossbow is loaded with, at most 1,024.
     ChargedProjectiles(Vec<ItemStack>),
-    /// Enchantments by name with their levels, in the order the game keeps them.
+    /// Enchantments by name with their levels, in the registry's order
+    /// ([`in_registry_order`]): the game keeps them in a map, whose order counts for
+    /// nothing, so that two stacks of the same enchantments are the same kind.
     Enchantments(Vec<(String, i32)>),
     UseCooldown(UseCooldown),
     Fireworks(Fireworks),
