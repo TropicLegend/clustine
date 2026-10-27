@@ -368,11 +368,37 @@ impl Region {
         self.commit_entity(chunk, key, vec![EntityField::FireTicks(ticks)], output);
     }
 
-    /// `alertOthers`' word on the region's mob `key`: it targets `attacker` if it has no
-    /// target and its target goal's tests pass (section 8.1). The target goals are the
-    /// first mob commit's (N9f), which fills this; until then a mob is not alerted.
-    #[expect(clippy::unused_self, reason = "N9f's target goals take it")]
-    fn alerted(&mut self, _key: EntityId, _attacker: EntityId, _kind: u16, _class: u16) {}
+    /// `alertOthers`' word on the region's mob `key`: it targets `attacker` (of the type
+    /// `kind`) if it is of the alerting mob's class `class`, of no class the alert
+    /// ignores, and has no target (section 8.1; `mobs/ai/targets.rs`). `setTarget` keeps
+    /// the attacker, a valid target where the alerting mob's goal took it; a ghast never
+    /// is one. **Named**: a target held is taken as valid, which the holder cannot test
+    /// of a player or entity it does not hold.
+    pub(crate) fn alerted(
+        &mut self,
+        key: EntityId,
+        attacker: EntityId,
+        kind: u16,
+        class: u16,
+        output: &mut TickOutput,
+    ) {
+        let Some((_, entity)) = self.find_entity(key) else {
+            return;
+        };
+        if !crate::mobs::ai::targets::comes_to_alert(class, entity.kind)
+            || i32::from(kind) == entity_types::GHAST
+        {
+            return;
+        }
+        let free = crate::mobs::Mob::decode(&entity.data)
+            .is_ok_and(|mob| mob.body.combat.target.is_none());
+        if !free {
+            return;
+        }
+        self.struck_between_ticks(key, output, |struck| {
+            struck.mob.body.combat.target = Some(attacker);
+        });
+    }
 
     /// The holder's side of the uses of N9 on the region's entity `entity`: what
     /// `entities.rs` passes on.
@@ -391,7 +417,7 @@ impl Region {
                 attacker,
                 kind,
                 class,
-            } => self.alerted(entity.key, *attacker, *kind, *class),
+            } => self.alerted(entity.key, *attacker, *kind, *class, output),
             EntityUse::PatrolTarget { pos } => self.patrol_target_given(entity.key, *pos, output),
             // Only ever addressed to a player.
             EntityUse::PearlLanded { .. } => {}

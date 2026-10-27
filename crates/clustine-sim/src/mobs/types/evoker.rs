@@ -72,8 +72,7 @@ impl MobType for Evoker {
             },
         );
         setup.add_goal(10, LookAtPlayerGoal::new(Class::Mob, 8.0));
-        // `HurtByTargetGoal(Raider)`, players, villagers and iron golems.
-        illagers::register_targets(setup, &[1, 2, 3, 3]);
+        crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::EVOKER);
     }
 
     /// `Raider.finalizeSpawn`: the evoker has none of its own.

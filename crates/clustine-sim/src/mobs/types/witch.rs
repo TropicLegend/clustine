@@ -172,9 +172,7 @@ impl MobType for Witch {
         setup.add_goal(2, RandomStrollGoal::avoiding_water(1.0));
         setup.add_goal(3, LookAtPlayerGoal::new(Class::Player, 8.0));
         setup.add_goal(3, RandomLookAroundGoal);
-        // `HurtByTargetGoal(Raider)`, `NearestHealableRaiderTargetGoal`,
-        // `NearestAttackableWitchTargetGoal(Player)`.
-        illagers::register_targets(setup, &[1, 2, 3]);
+        crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::WITCH);
     }
 
     /// `Raider.finalizeSpawn`: the leader's draw, which a witch never passes for.

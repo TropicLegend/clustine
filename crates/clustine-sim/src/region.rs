@@ -3670,6 +3670,7 @@ mod tests {
 
     use crate::api::{Face, INVENTORY_SLOTS, PlayerJoin};
 
+    mod alerts_n9;
     mod amphibians;
     mod arrivals;
     mod attack_strength;

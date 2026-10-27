@@ -3,7 +3,7 @@
 //!
 //! Named differences: its axe is never enchanted, as item stacks carry no enchantments
 //! (the draw is made); a vindicator named Johnny is kept as one (`Johnny`), which only
-//! its targets read (N9), and no mob is named in Clustine but by a template's `Johnny`;
+//! its Johnny target goal reads, and no mob is named in Clustine but by a template's `Johnny`;
 //! the doors it opens and breaks are a raid's (N10), and its navigation, which the
 //! game lets open doors from its `finalizeSpawn` to its first AI step, opens none.
 
@@ -54,8 +54,7 @@ impl MobType for Vindicator {
             },
         );
         setup.add_goal(10, LookAtPlayerGoal::new(Class::Mob, 8.0));
-        // `HurtByTargetGoal(Raider)`, players, villagers, iron golems and Johnny's.
-        illagers::register_targets(setup, &[1, 2, 3, 3, 4]);
+        crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::VINDICATOR);
     }
 
     /// `Raider.finalizeSpawn`, which the vindicator's calls first.

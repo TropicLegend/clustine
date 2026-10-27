@@ -3,7 +3,7 @@
 //! water-bound navigation takes it, keeps near its home, looks about, flops on land, and
 //! whose spikes hurt what hits it while it keeps still.
 //!
-//! Named differences: its attack, its beam and its target are N9's (the attack's goal
+//! Named differences: its attack and its beam are N9's, its target goal real (the attack's goal
 //! holds its place; the beam's synced target stays 0, so its body is never turned to its
 //! head for one); the tail's and the spikes' animations, its bubbles and the flop's
 //! sound are its clients' own (the flop is heard by them, `playLocalSound`); and the
@@ -186,13 +186,7 @@ pub(crate) fn register_goals(setup: &mut Setup, interval: i32) {
         },
     );
     setup.add_goal(9, RandomLookAroundGoal);
-    // `NearestAttackableTargetGoal(LivingEntity, 10, true, false, GuardianAttackSelector)`.
-    setup.add_target(
-        1,
-        Idle {
-            flags: flags::TARGET,
-        },
-    );
+    crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::GUARDIAN);
 }
 
 /// `Mob.setSpeed(speed)`, which sets `zza` too.

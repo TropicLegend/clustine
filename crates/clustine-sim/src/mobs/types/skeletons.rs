@@ -8,8 +8,8 @@
 //! `avoidSun`, which `RestrictSunGoal` sets and the path's trim reads (the game keeps it
 //! in the navigation); the skeleton's freezing tracker; the bogged's shearing.
 //!
-//! Named differences: the bow and melee goals and the target goals are N9's (they hold
-//! their slots and draw what the game's draw without a target, `monster_ai.rs`), so
+//! Named differences: the bow and melee goals are N9's (they hold their slots and draw
+//! nothing without a target, `monster_ai.rs`; the targets are `crate::mobs::ai::targets`'), so
 //! `reassessWeaponGoal` changes nothing a player sees; the body of a skeleton riding a
 //! spider does not take the spider's turn (`rideTick`); Halloween's pumpkins are never
 //! drawn for (`n7k-plan.md`, section 10).
@@ -19,7 +19,7 @@ use clustine_world::{BlockPos, ItemStack, TypeState};
 use serde::{Deserialize, Serialize};
 
 use super::Spawning;
-use super::monster_ai::{self, AttackOfN9, TargetOfN9};
+use super::monster_ai::{self, AttackOfN9};
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
@@ -28,6 +28,7 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::navigation;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class};
+use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::making;
 use crate::physics::Vec3;
@@ -112,11 +113,7 @@ pub(crate) fn register_goals(setup: &mut Setup) {
             flags: flags::MOVE | flags::LOOK,
         },
     );
-    // Who last hurt it, players, iron golems, and baby turtles on land (every 10).
-    setup.add_target(1, TargetOfN9::HURT_BY);
-    setup.add_target(2, TargetOfN9::NEAREST);
-    setup.add_target(3, TargetOfN9::NEAREST);
-    setup.add_target(3, TargetOfN9::NEAREST);
+    targets::register(setup, targets::SKELETON);
 }
 
 /// `AbstractSkeleton.finalizeSpawn` after `Monster`'s (the tail): the armour's draws and

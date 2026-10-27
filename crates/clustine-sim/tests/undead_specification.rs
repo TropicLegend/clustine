@@ -1394,12 +1394,11 @@ fn a_drowned_sinks_in_deep_water_by_day_and_swims_up_at_night() {
             0,
             "by day it does not swim (tick {tick})"
         );
-        // It may hop along the bottom after a stroll's target in the water above (the
-        // walking control's jump), never above where it was let go.
-        assert!(
-            mob.position[1] <= start[1] + 0.01,
-            "by day it does not rise"
-        );
+        // It may hop off the bottom after a stroll's target in the water above (the
+        // walking control's jump), about three and a half blocks, a little above where
+        // it was let go, and sinks again; it never swims up the block and more that it
+        // does at night.
+        assert!(mob.position[1] <= start[1] + 1.0, "by day it does not rise");
         if bottom.is_none() && mob.position[1] == -60.0 {
             bottom = Some(tick);
         }

@@ -11,7 +11,7 @@
 //! them in fields it does not save), so that a restore or a crossing mid-swell goes on.
 //!
 //! Named differences: with no target it never swells but ignited (`SwellGoal` takes no
-//! target, N9's), and its melee goal and target goals are N9's; a fall's swelling
+//! target, N9's), and its melee goal is N9's (its targets are real); a fall's swelling
 //! (`causeFallDamage`, which only shortens a later fuse) is not kept; lightning, which
 //! would power it, never strikes; the item's wear is not kept, every player being
 //! creative; whether it is in water, which a frame's or a painting's ignoring of its
@@ -22,7 +22,7 @@ use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, TypeState};
 use serde::{Deserialize, Serialize};
 
-use super::monster_ai::{self, AttackOfN9, TargetOfN9};
+use super::monster_ai::{self, AttackOfN9};
 use super::{Did, Interaction, MobType, Used, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
@@ -31,6 +31,7 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::navigation;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class};
+use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::Event;
 use crate::mobs::body::hurt::DamageSource;
@@ -183,8 +184,7 @@ impl MobType for Creeper {
         setup.add_goal(5, RandomStrollGoal::avoiding_water(0.8));
         setup.add_goal(6, LookAtPlayerGoal::new(Class::Player, 8.0));
         setup.add_goal(6, RandomLookAroundGoal);
-        setup.add_target(1, TargetOfN9::NEAREST);
-        setup.add_target(2, TargetOfN9::HURT_BY);
+        targets::register(setup, targets::CREEPER);
     }
 
     fn walk_target_value(&self, ai: &Ai<'_, '_>, pos: BlockPos) -> f32 {

@@ -1,18 +1,13 @@
 //! What the skeletons, the creeper and the spiders (part K4) share of `Monster` and of
-//! the goals that only a target starts (`docs/groundwork/n7k-plan.md`, section 10:
-//! attacks and targets of monsters are N9's).
+//! the goals that only a target starts (`docs/groundwork/n7k-plan.md`, section 10).
 //!
-//! A goal of an attack or of a target holds its slot, so that its type's later goals keep
-//! their parts when N9 builds it, and makes the draws the game's makes without a target
-//! to start with: `NearestAttackableTargetGoal`'s `nextInt` of its interval, after the
-//! spider's light test. Every player is a creative one, whom no target goal of the game
-//! takes, so what the placeholders draw is the game's; what they never take (an iron
-//! golem, a baby turtle, a mob that hurt them) is N9's, named.
+//! A goal of an attack holds its slot, so that its type's later goals keep their parts
+//! when N9 builds it; none of them draws before it has a target. The targets are real
+//! (`crate::mobs::ai::targets`, N9f).
 
 use clustine_world::BlockPos;
 
 use crate::mobs::ai::Ai;
-use crate::mobs::ai::maths::reduced_tick_delay;
 use crate::mobs::ai::selector::Goal;
 
 /// `Monster.getWalkTargetValue(pos)`: less the light's worth (`getPathfindingCostFromLightLevels`),
@@ -55,51 +50,6 @@ impl Goal for AttackOfN9 {
     }
 
     fn can_use(&self, _: &mut (), _: &mut Ai<'_, '_>) -> bool {
-        false
-    }
-}
-
-/// A target goal: `HurtByTargetGoal` (no interval, no draw), a
-/// `NearestAttackableTargetGoal` of the interval `interval` (its `nextInt`, reduced as its
-/// constructor reduces it), or a spider's `SpiderTargetGoal`, which asks nothing in light
-/// worth a half or more (`dark_only`). It takes no target (N9).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct TargetOfN9 {
-    pub(crate) interval: Option<i32>,
-    pub(crate) dark_only: bool,
-}
-
-impl TargetOfN9 {
-    /// `HurtByTargetGoal(mob)`.
-    pub(crate) const HURT_BY: Self = Self {
-        interval: None,
-        dark_only: false,
-    };
-
-    /// `NearestAttackableTargetGoal(mob, class, mustSee)`, of the interval 10.
-    pub(crate) const NEAREST: Self = Self {
-        interval: Some(10),
-        dark_only: false,
-    };
-}
-
-impl Goal for TargetOfN9 {
-    type State = ();
-
-    fn flags(&self) -> u8 {
-        crate::mobs::ai::selector::flags::TARGET
-    }
-
-    fn can_use(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
-        if self.dark_only && magic_value_at_eyes(ai) >= 0.5 {
-            return false;
-        }
-        if let Some(interval) = self.interval {
-            let interval = reduced_tick_delay(interval);
-            if interval > 0 {
-                let _found_only_if_zero = ai.tick.draws.next_int(interval as u32);
-            }
-        }
         false
     }
 }

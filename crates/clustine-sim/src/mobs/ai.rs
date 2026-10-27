@@ -45,6 +45,7 @@ pub(crate) mod random_pos;
 pub(crate) mod selector;
 #[allow(dead_code, reason = "what the goals the types of N7e on sense")]
 pub(crate) mod sensing;
+pub(crate) mod targets;
 
 use clustine_data::{ATTRIBUTES, DEFAULT_ATTRIBUTES, PathType};
 use clustine_world::{BlockPos, Entry};

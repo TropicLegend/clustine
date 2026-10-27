@@ -277,6 +277,25 @@ impl Region {
                     sound,
                     output,
                 ),
+                Local::Alert {
+                    key: alerted,
+                    attacker,
+                    kind,
+                    class,
+                } => {
+                    if self.find_entity(alerted).is_some() {
+                        self.alerted(alerted, attacker, kind, class, output);
+                    } else {
+                        self.send_on_entity(
+                            alerted,
+                            clustine_world::EntityUse::Alert {
+                                attacker,
+                                kind,
+                                class,
+                            },
+                        );
+                    }
+                }
                 Local::Thorns {
                     key: hurt,
                     kind,

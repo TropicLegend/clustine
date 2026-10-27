@@ -9,10 +9,9 @@
 //! where a record gives one (a template's is not read: no template holds one); a patrol
 //! leader's banner is a plain white banner, as item stacks carry no patterns
 //! (`n7k-plan.md`, section 10, "Items without components"), so that killing a leader
-//! gives nobody bad omen; and the targets of each type are N9's, their goals held as
-//! goals that never start (so that no target goal's draw of its interval is made), and
-//! with them `AbstractIllager`'s refusal of a baby villager as a target and its allies
-//! of `#illager_friends`.
+//! gives nobody bad omen. The targets of each type, with `AbstractIllager`'s refusal of
+//! a baby villager, are `crate::mobs::ai::targets`'; its allies of `#illager_friends`
+//! are never asked of a target any of them takes.
 
 use clustine_data::{entity_types, items};
 use clustine_world::{BlockPos, ItemStack, TypeState};
@@ -139,18 +138,6 @@ pub(crate) fn register_raider_goals(setup: &mut Setup) {
     setup.add_goal(3, Idle { flags: flags::MOVE });
     setup.add_goal(4, Idle { flags: flags::MOVE });
     setup.add_goal(5, Idle { flags: flags::MOVE });
-}
-
-/// Target goals held in their places, N9's, one at each of `priorities`.
-pub(crate) fn register_targets(setup: &mut Setup, priorities: &[i32]) {
-    for &priority in priorities {
-        setup.add_target(
-            priority,
-            Idle {
-                flags: flags::TARGET,
-            },
-        );
-    }
 }
 
 /// `Raider.removeWhenFarAway(distance)`: with no raid, `PatrollingMonster`'s: a mob not

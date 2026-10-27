@@ -4,7 +4,7 @@
 //! Named differences: its crossbow is never enchanted, as item stacks carry no
 //! enchantments (the one time in 300 that would give it Piercing I is drawn and lost);
 //! its inventory of five, which it fills only once read from a save (`canPickUpLoot`),
-//! is not kept; its attack, its charging and its targets are N9's.
+//! is not kept; its attack and its charging are N9's (its targets are `crate::mobs::ai::targets`').
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
@@ -63,8 +63,7 @@ impl MobType for Pillager {
             },
         );
         setup.add_goal(10, LookAtPlayerGoal::new(Class::Mob, 15.0));
-        // `HurtByTargetGoal(Raider)`, then players, villagers and iron golems.
-        illagers::register_targets(setup, &[1, 2, 3, 3]);
+        crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::PILLAGER);
     }
 
     /// `Pillager.finalizeSpawn`: the crossbow, its enchantment's draws, then

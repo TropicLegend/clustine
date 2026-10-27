@@ -114,6 +114,17 @@ pub(crate) enum Local {
         /// The iron golem's fling where the hurt took (`IronGolem.doHurtTarget`).
         fling: Option<f32>,
     },
+    /// `HurtByTargetGoal.alertOthers`' word to the mob `key`, of the class `class` the
+    /// alerting mob is of: it takes `attacker` (of the type `kind`) as its target if it
+    /// is of the class, has no target and is of no class the alert ignores
+    /// (`docs/groundwork/n9-plan.md`, section 8.1). The region's own is told at once, one
+    /// in a copy through its holder (`EntityUse::Alert`).
+    Alert {
+        key: EntityId,
+        attacker: EntityId,
+        kind: u16,
+        class: u16,
+    },
     /// A guardian's spikes (`Guardian.hurtServer`): `hurtServer(thorns(this), amount)`
     /// of the region's mob `key` that hit this one (of the type `kind`, its feet at
     /// `from`). As [`Local::Hurt`], a mob in a copy is hit by its holder

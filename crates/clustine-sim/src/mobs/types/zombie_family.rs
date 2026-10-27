@@ -5,8 +5,9 @@
 //! every draw the game makes at easy, `handleAttributes`, the drowning conversion
 //! (`ConversionTracker`) and the turtle egg goal (`ZombieAttackTurtleEggGoal`).
 //!
-//! Named differences: targets and attacks are N9's (each holds its slot with a goal
-//! that never starts); `MoveThroughVillageGoal` finds no village, which needs the
+//! Named differences: the targets are real (`crate::mobs::ai::targets`, N9f) and the
+//! attacks are N9's (each holds its slot with a goal that never starts);
+//! `MoveThroughVillageGoal` finds no village, which needs the
 //! points of interest of N10, and holds its slot so; `BreakDoorGoal` is never added, as
 //! no door is broken below hard and no zombie can break doors at easy; Halloween's
 //! pumpkin is never drawn (the plan's section 10); a group of zombies made together
@@ -33,6 +34,7 @@ use crate::mobs::ai::maths::reduced_tick_delay;
 use crate::mobs::ai::navigation;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::attributes::{ADD_MULTIPLIED_BASE, ADD_MULTIPLIED_TOTAL, ADD_VALUE};
 use crate::mobs::body::{Modifier, attribute, ladder};
@@ -248,11 +250,7 @@ pub(crate) fn register_goals(setup: &mut Setup) {
     setup.add_goal(3, Idle { flags: 0 });
     setup.add_goal(6, Idle { flags: 0 });
     setup.add_goal(7, RandomStrollGoal::avoiding_water(1.0));
-    // `HurtByTargetGoal` and `NearestAttackableTargetGoal`s of players, villagers, iron
-    // golems and baby turtles: N9's.
-    for priority in [1, 2, 3, 3, 5] {
-        setup.add_target(priority, Idle { flags: 0 });
-    }
+    targets::register(setup, targets::ZOMBIE);
 }
 
 /// The weapon of `Zombie.populateDefaultEquipmentSlots` after `Mob`'s armour: one time in

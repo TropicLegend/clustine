@@ -25,7 +25,7 @@ use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, TypeState};
 use serde::{Deserialize, Serialize};
 
-use super::monster_ai::{self, AttackOfN9, TargetOfN9};
+use super::monster_ai::{self, AttackOfN9};
 use super::{CompanionSeat, MobType, SpawnReason, Spawning};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
@@ -34,6 +34,7 @@ use crate::mobs::ai::goals::{
 };
 use crate::mobs::ai::selector::flags;
 use crate::mobs::ai::sensing::{Class, Looked};
+use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::making;
@@ -137,15 +138,7 @@ pub(crate) fn register_goals(setup: &mut Setup) {
     setup.add_goal(5, RandomStrollGoal::avoiding_water(0.8));
     setup.add_goal(6, LookAtPlayerGoal::new(Class::Player, 8.0));
     setup.add_goal(6, RandomLookAroundGoal);
-    // Who last hurt it; `SpiderTargetGoal`s of players and iron golems, which ask nothing
-    // in light worth a half or more.
-    setup.add_target(1, TargetOfN9::HURT_BY);
-    let in_the_dark = TargetOfN9 {
-        interval: Some(10),
-        dark_only: true,
-    };
-    setup.add_target(2, in_the_dark);
-    setup.add_target(3, in_the_dark);
+    targets::register(setup, targets::SPIDER);
 }
 
 /// `Spider.tick` after `Monster`'s: climbing is whether its move ran into something

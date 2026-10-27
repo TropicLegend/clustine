@@ -26,6 +26,7 @@ use crate::mobs::ai::goals::{MoveToBlockGoal, MovingToBlock, RandomStrollGoal};
 use crate::mobs::ai::maths::{move_rotlerp, yaw_towards};
 use crate::mobs::ai::navigation::{self, Kind, Settings};
 use crate::mobs::ai::selector::{Goal, flags};
+use crate::mobs::ai::targets;
 use crate::mobs::ai::{Ai, Operation, Setup, controls, random_pos};
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::making;
@@ -382,10 +383,7 @@ impl MobType for Drowned {
         setup.add_goal(5, GoToBeachGoal);
         setup.add_goal(6, SwimUpGoal);
         setup.add_goal(7, RandomStrollGoal::new(1.0));
-        // Its targets: N9's.
-        for priority in [1, 2, 3, 3, 3, 5] {
-            setup.add_target(priority, Idle { flags: 0 });
-        }
+        targets::register(setup, targets::DROWNED_TARGETS);
     }
 
     fn walk_target_value(&self, ai: &Ai<'_, '_>, pos: BlockPos) -> f32 {
