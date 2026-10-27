@@ -67,6 +67,16 @@ impl Counts {
         }
     }
 
+    /// `chunks` went from `region` to another (a split's part): they are no longer
+    /// counted as `region`'s, whatever it last reported.
+    pub(crate) fn moved_away(&mut self, region: RegionId, chunks: &[ChunkPos]) {
+        if let Some(kept) = self.regions.get_mut(&region) {
+            for chunk in chunks {
+                kept.by_chunk.remove(chunk);
+            }
+        }
+    }
+
     /// What `region` is published of the other regions, the owners of the regions being
     /// `owners` (each region and its owner's session): none unless every owned region
     /// has reported as its owner now.

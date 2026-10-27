@@ -278,7 +278,6 @@ fn a_split_leaves_the_counts_right_once_both_have_reported() {
 /// splits cannot race. A part that reports before its parent has reported again has the
 /// chunk that went with it counted once, not in its parent's old set as well.
 #[test]
-#[ignore = "finding: a split's parent keeps its set until its next whole report, so a part that reports first has its chunks counted twice"]
 fn a_split_s_part_reporting_before_its_parent_has_its_chunks_counted_once() {
     let goes = ChunkPos::new(-5, 3);
     let (_store, [_west, _east, home, part], mut clock) = split_off(goes);

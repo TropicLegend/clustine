@@ -3494,6 +3494,9 @@ impl Lanes {
             .split(region, new, tick, &chunks)
             .expect("the next id and chunks the region holds, as was looked at above");
         self.table_last = Some(entry.segment);
+        // The part's chunks are counted by the part from its first report, not by the
+        // parent meanwhile (`docs/groundwork/n9-plan.md`, section 9.2).
+        self.counts.moved_away(region, &chunks);
         // A chunk lent to the region that goes to the part is the part's by a grant, and
         // its lender is told who holds it now (`docs/adr/0027-lending-at-a-line.md`,
         // section 4).
