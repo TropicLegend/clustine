@@ -246,8 +246,14 @@ impl Side {
 
     /// The first entity other than a player told spawned over the link.
     fn thrown(&self) -> Option<EntityId> {
+        // The item thrown, not a mob the world spawned meanwhile.
         self.events().find_map(|(_, event)| match event {
-            RegionEvent::EntitySpawned(state) if matches!(state.kind, EntityKind::Other { .. }) => {
+            RegionEvent::EntitySpawned(state)
+                if matches!(
+                    state.kind,
+                    EntityKind::Other { kind, .. } if i32::from(kind) == clustine_data::entity_types::ITEM
+                ) =>
+            {
                 Some(state.entity)
             }
             _ => None,

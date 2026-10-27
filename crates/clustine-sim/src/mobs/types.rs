@@ -1254,6 +1254,11 @@ pub(crate) enum SpawnGroup {
         ageable: AgeableGroup,
         variants: [i32; 2],
     },
+    /// `TropicalFish.TropicalFishGroupData`: the school's variant, which its later
+    /// members take without a draw (natural spawning's, `region/natural_spawning.rs`).
+    /// A `SchoolSpawnGroupData`, no ageable group: `ageable` is there for
+    /// [`SpawnGroup::ageable`] alone, and no fish reads it.
+    TropicalFish { ageable: AgeableGroup, variant: i32 },
 }
 
 impl SpawnGroup {
@@ -1266,7 +1271,8 @@ impl SpawnGroup {
             | Self::Rabbit { ageable, .. }
             | Self::Fox { ageable, .. }
             | Self::WolfPack { ageable, .. }
-            | Self::Axolotl { ageable, .. } => ageable,
+            | Self::Axolotl { ageable, .. }
+            | Self::TropicalFish { ageable, .. } => ageable,
         }
     }
 }

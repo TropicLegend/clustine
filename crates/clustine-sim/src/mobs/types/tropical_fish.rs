@@ -9,7 +9,7 @@
 use clustine_data::{entity_types, sounds};
 
 use super::fish::{self, Species};
-use super::{Interaction, MobType, Spawning, Used, water};
+use super::{AgeableGroup, Interaction, MobType, SpawnGroup, Spawning, Used, water};
 use crate::living::Travel;
 use crate::mobs::Mob;
 use crate::mobs::ai::{Ai, Setup};
@@ -101,18 +101,26 @@ pub(crate) fn pack(pattern: i32, base: i32, pattern_colour: i32) -> i32 {
     (pattern & 0xFFFF) | ((base & 255) << 16) | ((pattern_colour & 255) << 24)
 }
 
+/// The variant [`drawn_variant`] draws, as the tests read it.
+#[cfg(test)]
+pub(crate) fn random_variant(level: &mut dyn clustine_world::generation::Draws) -> i32 {
+    drawn_variant(level).0
+}
+
 /// `finalizeSpawn`'s variant, of the level's random after the parent's draws: nine times
 /// in ten (`nextFloat() < 0.9`, compared in double) one of the common ones
-/// (`nextInt(22)`), else a pattern (`nextInt(12)`) and two colours (`nextInt(16)` each).
-pub(crate) fn random_variant(level: &mut dyn clustine_world::generation::Draws) -> i32 {
+/// (`nextInt(22)`), else a pattern (`nextInt(12)`) and two colours (`nextInt(16)` each);
+/// and whether it was a common one, which makes a school (`TropicalFishGroupData`): one
+/// drawn whole leaves the fish no school's (`isSchool` false).
+fn drawn_variant(level: &mut dyn clustine_world::generation::Draws) -> (i32, bool) {
     if f64::from(level.next_float()) < 0.9 {
         let (pattern, base, colour) = COMMON[level.next_int(22) as usize];
-        return pack(pattern, base, colour);
+        return (pack(pattern, base, colour), true);
     }
     let pattern = PATTERNS[level.next_int(12) as usize];
     let base = level.next_int(16) as i32;
     let colour = level.next_int(16) as i32;
-    pack(pattern, base, colour)
+    (pack(pattern, base, colour), false)
 }
 
 /// The tropical fish.
@@ -131,8 +139,23 @@ impl MobType for TropicalFish {
         fish::construct(mob, Species::TropicalFish, own);
     }
 
+    /// `TropicalFish.finalizeSpawn` after its parents': the school's variant where the
+    /// group has one (no draw); else drawn, a common one making the group a school whose
+    /// later members take it.
     fn after_finalize_spawn(&self, spawn: &mut Spawning<'_>) {
-        let variant = random_variant(spawn.level);
+        let variant = match *spawn.group {
+            Some(SpawnGroup::TropicalFish { variant, .. }) => variant,
+            _ => {
+                let (variant, school) = drawn_variant(spawn.level);
+                if school {
+                    *spawn.group = Some(SpawnGroup::TropicalFish {
+                        ageable: AgeableGroup::new(false),
+                        variant,
+                    });
+                }
+                variant
+            }
+        };
         fish::update(kind(), spawn.mob, |fish| fish.variant = variant);
     }
 

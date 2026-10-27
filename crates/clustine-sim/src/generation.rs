@@ -19,7 +19,7 @@ use crate::mobs::types::{SpawnGroup, SpawnReason, Spawning};
 
 use crate::region::Random;
 
-mod spawning;
+pub(crate) mod spawning;
 mod template;
 #[cfg(test)]
 mod template_tests;

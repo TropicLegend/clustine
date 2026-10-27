@@ -43,10 +43,6 @@ impl Region {
     /// `pos` (`BiomeManager`, with the hashed game seed), whose eight cells may lie in a
     /// neighbouring chunk; its height held within the chunk's cells, as the game's.
     /// What spawning reads (`docs/groundwork/n9-plan.md`, section 9.3).
-    #[expect(
-        dead_code,
-        reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-    )]
     pub(crate) fn zoomed_biome_at(&self, pos: BlockPos) -> Option<&'static str> {
         let zoom = clustine_terrain::biome::zoom::Zoom::new(self.config.game_seed);
         let (x, y, z) = zoom.cell(pos.x, pos.y, pos.z);

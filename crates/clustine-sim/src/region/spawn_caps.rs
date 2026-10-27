@@ -208,10 +208,6 @@ const SPAWN_ORDER: u64 = 0x7370_6177_6e5f_6f72;
 
 /// The purpose mark of the stream a chunk's spawning draws from (section 9.3), apart
 /// from its order's.
-#[expect(
-    dead_code,
-    reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-)]
 pub(crate) const SPAWNING: u64 = 0x7370_6177_6e69_6e67;
 
 /// A player as spawning reads them: the region's own where they are now, the faces it
@@ -256,13 +252,6 @@ pub(crate) struct SpawnState {
     players: Vec<NearPlayer>,
     /// The non-spectators, by the chunk they stand in: what the nearest player is
     /// looked for in (finding 33).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-        )
-    )]
     by_chunk: BTreeMap<ChunkPos, Vec<usize>>,
     /// Each player's local counts: the other regions' as published, and the region's
     /// own within 128 blocks of where they are now, raised by the phase's spawns.
@@ -359,13 +348,6 @@ impl SpawnState {
 
     /// `afterSpawn`'s count (`LocalMobCapCalculator.addMob`): a mob of `category` made in
     /// `chunk` counts for every player near it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-        )
-    )]
     pub(crate) fn after_spawn(&mut self, category: usize, chunk: ChunkPos) {
         let near = self.near(chunk).to_vec();
         for index in near {
@@ -392,13 +374,6 @@ impl SpawnState {
     /// distance (`getNearestPlayer(x, y, z, -1, false)`), looked for in the chunks
     /// outward from `at`'s: a ring further out cannot hold anyone nearer once its inner
     /// edge is farther than the nearest found.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-        )
-    )]
     pub(crate) fn nearest(&self, at: [f64; 3]) -> Option<(NearPlayer, f64)> {
         let centre = ChunkPos::containing(at[0], at[2]);
         let mut best: Option<(usize, f64)> = None;
@@ -442,13 +417,6 @@ impl SpawnState {
 }
 
 /// The chunks at Chebyshev distance `ring` from `centre`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
-    )
-)]
 fn ring_of(centre: ChunkPos, ring: i32) -> Vec<ChunkPos> {
     if ring == 0 {
         return vec![centre];
