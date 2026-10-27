@@ -1042,6 +1042,9 @@ impl Region {
             ..TickOutput::default()
         };
         self.hold_leaving_units(inputs);
+        // What the players hold and wear as the tick begins, which its end is compared
+        // with.
+        let equipment = self.players_equipment();
         self.update_chunks(inputs, &mut output);
 
         for event in &inputs.edges {
@@ -1309,6 +1312,7 @@ impl Region {
             self.send(edge, departed, &mut output);
         }
         self.settle_chunks(&mut output);
+        self.show_changed_equipment(&equipment, &mut output);
         // One change of each entity that the tick changed several times, of what it
         // changed last (`changes.rs`).
         changes::merge(&mut output.entity_changes);
@@ -1616,6 +1620,7 @@ impl Region {
         output
             .events
             .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        output.events.extend(player.equipment_shown());
         let shows_flags = !player.effects.active.is_empty();
         self.players.insert(id, player);
         self.journal.players.insert(id);
@@ -1821,6 +1826,7 @@ impl Region {
         output
             .events
             .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        output.events.extend(player.equipment_shown());
         self.players.insert(id, player);
         self.rider_arrived(id, output);
         self.journal.players.insert(id);
@@ -2713,6 +2719,39 @@ impl Region {
             swing,
             own,
         });
+    }
+
+    /// What each of the region's players holds and wears, by player: what the tick's
+    /// start is compared with at its end.
+    fn players_equipment(&self) -> BTreeMap<PlayerId, Vec<(u8, Option<ItemStack>)>> {
+        self.players
+            .iter()
+            .map(|(id, player)| (*id, player.equipment()))
+            .collect()
+    }
+
+    /// Reports what each player still here holds and wears where the tick changed it
+    /// from `before` (`LivingEntity.detectEquipmentUpdates`, `SetEquipment`): a
+    /// slot chosen, a stack picked up, set or used up. A player new in the tick is
+    /// reported with their spawn.
+    fn show_changed_equipment(
+        &self,
+        before: &BTreeMap<PlayerId, Vec<(u8, Option<ItemStack>)>>,
+        output: &mut TickOutput,
+    ) {
+        for (id, player) in &self.players {
+            let Some(was) = before.get(id) else {
+                continue;
+            };
+            let now = player.equipment();
+            if *was != now {
+                output.events.push(RegionEvent::EquipmentChanged {
+                    entity: player.entity_id,
+                    chunk: player.chunk(),
+                    slots: now,
+                });
+            }
+        }
     }
 
     /// `MeleeAttackGoal`'s swing of the region's mob `key` (`swingForAttack(MAIN_HAND)`,
@@ -3632,6 +3671,35 @@ impl Player {
         }
     }
 
+    /// What the player holds and wears as the others are shown it, by `EquipmentSlot`
+    /// ordinal: the main hand (the selected hotbar slot), the off hand, the armour from
+    /// the feet up.
+    fn equipment(&self) -> Vec<(u8, Option<ItemStack>)> {
+        let slots = &self.inventory.0;
+        vec![
+            (0, slots[usize::from(self.selected_slot)].clone()),
+            (1, slots[clustine_world::OFF_HAND].clone()),
+            (2, slots[clustine_world::ARMOUR_START].clone()),
+            (3, slots[clustine_world::ARMOUR_START + 1].clone()),
+            (4, slots[clustine_world::ARMOUR_START + 2].clone()),
+            (5, slots[clustine_world::ARMOUR_START + 3].clone()),
+        ]
+    }
+
+    /// The report of what the player holds and wears, beside their spawn: none where
+    /// they hold and wear nothing, which a client takes as so.
+    fn equipment_shown(&self) -> Option<RegionEvent> {
+        let slots = self.equipment();
+        slots
+            .iter()
+            .any(|(_, stack)| stack.is_some())
+            .then(|| RegionEvent::EquipmentChanged {
+                entity: self.entity_id,
+                chunk: self.chunk(),
+                slots,
+            })
+    }
+
     fn entity_state(&self, id: PlayerId) -> EntityState {
         EntityState {
             entity: self.entity_id,
@@ -4516,7 +4584,7 @@ mod tests {
             [(player(1), spawned(1, 1)), (player(2), spawned(2, 2))]
         );
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [
                 RegionEvent::EntitySpawned(state(1, 1, SPAWN)),
                 RegionEvent::EntitySpawned(state(2, 2, SPAWN)),
@@ -4579,7 +4647,7 @@ mod tests {
         // The new stay is shown when the store has answered for it.
         let output = enter(&mut region);
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [RegionEvent::EntitySpawned(state(1, 2, SPAWN))]
         );
         assert_eq!(region.player(player(1)).unwrap().0, EntityId(2));
@@ -4636,7 +4704,7 @@ mod tests {
         };
         assert_eq!(told(&output), [(player(1), spawned)]);
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [RegionEvent::EntitySpawned(state(1, 2, SPAWN))]
         );
         assert_eq!(region.player_count(), 1);
@@ -5074,6 +5142,15 @@ mod tests {
     /// The changes of blocks a tick reports, without what clients show of a block
     /// breaking, without sounds and without the items that blocks broken by a rule
     /// drop, for the tests about what changed.
+    /// The events of `output` but what players hold and wear, as shown to the others.
+    fn without_equipment(events: &[RegionEvent]) -> Vec<RegionEvent> {
+        events
+            .iter()
+            .filter(|event| !matches!(event, RegionEvent::EquipmentChanged { .. }))
+            .cloned()
+            .collect()
+    }
+
     fn block_changes(output: &TickOutput) -> Vec<RegionEvent> {
         let mut changes: Vec<RegionEvent> = output
             .events
@@ -5084,6 +5161,7 @@ mod tests {
                     RegionEvent::BlockDestroyed { .. }
                         | RegionEvent::Sound { .. }
                         | RegionEvent::ArmSwung { .. }
+                        | RegionEvent::EquipmentChanged { .. }
                 ) && !is_drop(event)
             })
             .cloned()
@@ -5620,7 +5698,7 @@ mod tests {
                 select(1, slot),
                 place(1, 2, -61, 0, Face::Top),
             ]));
-            assert!(output.events.is_empty(), "slot {slot}");
+            assert!(without_equipment(&output.events).is_empty(), "slot {slot}");
             assert_eq!(told(&output), [acknowledged(1, 1)]);
         }
         // Selecting a slot that does not exist keeps the selection.
@@ -5646,7 +5724,7 @@ mod tests {
 
         // Emptying the slot again leaves nothing to place.
         let output = region.tick(&moves(vec![set(4, None), place(1, 3, -61, 0, Face::Top)]));
-        assert!(output.events.is_empty());
+        assert!(without_equipment(&output.events).is_empty());
 
         // Slots that do not exist and items that do not exist are ignored.
         let nonsense = ItemStack::new(i32::MAX, 1);
@@ -5655,7 +5733,43 @@ mod tests {
             set(4, Some(nonsense)),
             place(1, 3, -61, 0, Face::Top),
         ]));
-        assert!(output.events.is_empty());
+        assert!(without_equipment(&output.events).is_empty());
+    }
+
+    /// `LivingEntity.detectEquipmentUpdates`: the others are shown what a player holds
+    /// and wears as it changes, by `EquipmentSlot` ordinal, and nothing in a tick that
+    /// changes none of it.
+    #[test]
+    fn the_others_are_shown_what_a_player_holds_and_wears_as_it_changes() {
+        let mut region = on_floor(&[1]);
+        let set = |slot, stack| numbered(1, PlayerInput::SetInventorySlot { slot, stack });
+        let glass = ItemStack::new(items::GLASS, 1);
+        let helmet = ItemStack::new(items::IRON_HELMET, 1);
+        let shown = |output: &TickOutput| -> Vec<Vec<(u8, Option<ItemStack>)>> {
+            output
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    RegionEvent::EquipmentChanged { slots, .. } => Some(slots.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let output = region.tick(&moves(vec![set(4, Some(glass.clone())), select(1, 4)]));
+        let [slots] = &shown(&output)[..] else {
+            panic!("shown once: {:?}", output.events);
+        };
+        assert_eq!(slots[0], (0, Some(glass.clone())), "the main hand");
+        // Slot 39 is the head's.
+        let output = region.tick(&moves(vec![set(39, Some(helmet.clone()))]));
+        let [slots] = &shown(&output)[..] else {
+            panic!("shown once: {:?}", output.events);
+        };
+        assert_eq!(slots[5], (5, Some(helmet)), "the head");
+        assert_eq!(slots[0], (0, Some(glass)), "the main hand as it was");
+        // Nothing changed, nothing shown.
+        let output = region.tick(&TickInputs::default());
+        assert!(shown(&output).is_empty());
     }
 
     /// Something different in every slot of the inventory: in slot `n` the item `n + 1`,
@@ -6601,7 +6715,10 @@ mod tests {
             pose: transfer.pose,
             ..state(1, 77, SPAWN)
         };
-        assert_eq!(output.events, [RegionEvent::EntitySpawned(arrived.clone())]);
+        assert_eq!(
+            without_equipment(&output.events),
+            [RegionEvent::EntitySpawned(arrived.clone())]
+        );
         // The player is in the world already and is not told that they entered it.
         assert!(told(&output).is_empty());
         assert_eq!(
@@ -6614,7 +6731,7 @@ mod tests {
         region.tick(&changes(vec![join(2), join(3)]));
         let output = enter(&mut region);
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [
                 RegionEvent::EntitySpawned(state(2, 1, SPAWN)),
                 RegionEvent::EntitySpawned(state(3, 2, SPAWN)),
@@ -6889,7 +7006,7 @@ mod tests {
         };
         let output = checked(&mut region.clone(), &changes(vec![arrive(1, &later)]));
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [stood.clone(), RegionEvent::EntitySpawned(arrived)]
         );
         assert_eq!(output.durable, [(EDGE, 1, ended.clone())]);
@@ -7123,7 +7240,7 @@ mod tests {
         assert_eq!(told(&output), [(player(3), PlayerEvent::Refused)]);
         let output = enter(&mut region);
         assert_eq!(
-            output.events,
+            without_equipment(&output.events),
             [
                 RegionEvent::EntitySpawned(state(1, 7, SPAWN)),
                 RegionEvent::EntitySpawned(state(2, 8, SPAWN)),

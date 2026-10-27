@@ -614,8 +614,14 @@ fn a_join_through_another_edge_replaces_the_player() {
     assert_eq!(output.events, [removed(1, ChunkPos::new(0, 0))]);
     assert!(output.player_events.is_empty());
     let output = enter(&mut region);
+    // Shown with what they hold and wear.
+    let shown: Vec<&RegionEvent> = output
+        .events
+        .iter()
+        .filter(|event| !matches!(event, RegionEvent::EquipmentChanged { .. }))
+        .collect();
     assert!(
-        matches!(&output.events[..], [RegionEvent::EntitySpawned(state)] if state.entity == EntityId(3))
+        matches!(&shown[..], [RegionEvent::EntitySpawned(state)] if state.entity == EntityId(3))
     );
     assert_eq!(output.player_events.len(), 1);
     assert_eq!(region.state().players[&player(1)].edge, B);
@@ -632,8 +638,13 @@ fn a_join_through_another_edge_replaces_the_player() {
     assert_eq!(output.events, [removed(3, ChunkPos::new(0, 0))]);
     assert!(output.player_events.is_empty());
     let output = enter(&mut region);
+    let shown: Vec<&RegionEvent> = output
+        .events
+        .iter()
+        .filter(|event| !matches!(event, RegionEvent::EquipmentChanged { .. }))
+        .collect();
     assert!(
-        matches!(&output.events[..], [RegionEvent::EntitySpawned(state)] if state.entity == EntityId(4))
+        matches!(&shown[..], [RegionEvent::EntitySpawned(state)] if state.entity == EntityId(4))
     );
     assert_eq!(output.player_events.len(), 1);
     assert_eq!(region.state().players[&player(1)].edge, B);

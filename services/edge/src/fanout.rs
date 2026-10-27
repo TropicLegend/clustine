@@ -6291,6 +6291,9 @@ impl PlayerView {
                 }
                 let id = wire.of(state.entity);
                 packets.extend(spawn_packets(state, id, None, 0, &mut |key| wire.of(key)));
+                // What they hold and wear, their data (shared flags, effect particles)
+                // and their sleep, as the others were shown them.
+                packets.extend(living_packets(living, id));
                 packets
             }
             (true, true) if moved => move_packets(state, wire.of(state.entity)),
@@ -12770,6 +12773,61 @@ mod scenarios {
             "{:?}",
             newcomer.living
         );
+        edge.end().await;
+    }
+
+    /// What another player holds and wears is shown as their region reports it, to
+    /// those who see them then and to those who come to see them later.
+    #[tokio::test]
+    async fn another_player_is_shown_holding_and_wearing_what_they_do() {
+        let mut edge = Harness::start().await;
+        let mut watcher = edge.joined(player(1), far_key(1)).await;
+        edge.quiet().await;
+        edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
+        edge.settle(WEST).await;
+        let other = far_key(50);
+        let state = EntityState {
+            entity: other,
+            kind: EntityKind::Player {
+                player: player(9),
+                name: "Player9".to_owned(),
+            },
+            pose: Pose::at(SPAWN),
+        };
+        let sword = clustine_world::ItemStack::new(1021, 1);
+        let mut slots: Vec<(u8, Option<clustine_world::ItemStack>)> =
+            (0..6).map(|slot| (slot, None)).collect();
+        slots[0].1 = Some(sword);
+        edge.tell(
+            WEST,
+            ticked(vec![
+                RegionEvent::EntitySpawned(state),
+                RegionEvent::EquipmentChanged {
+                    entity: other,
+                    chunk: HOME,
+                    slots,
+                },
+            ]),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        let held = |living: &[ClientboundPlay]| {
+            living.iter().any(|packet| {
+                matches!(packet, ClientboundPlay::SetEquipment(worn)
+                    if worn.slots.contains(&(0, Some(WireStack::new(1021, 1)))))
+            })
+        };
+        assert!(
+            watcher.entities.contains(&other.0),
+            "{:?}",
+            watcher.entities
+        );
+        assert!(held(&watcher.living), "{:?}", watcher.living);
+        let mut newcomer = edge.joined(player(2), far_key(2)).await;
+        edge.quiet().await;
+        edge.sync(&mut newcomer).await;
+        assert!(newcomer.entities.contains(&other.0));
+        assert!(held(&newcomer.living), "{:?}", newcomer.living);
         edge.end().await;
     }
 
