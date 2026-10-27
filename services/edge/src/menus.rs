@@ -198,6 +198,14 @@ impl Menus {
         self.open.as_ref().map(|open| open.serial)
     }
 
+    /// The id of the window that shows the menu `serial`, if the client shows it.
+    pub(crate) fn window_of(&self, serial: u64) -> Option<i32> {
+        self.open
+            .as_ref()
+            .filter(|open| open.serial == serial)
+            .map(|open| open.window)
+    }
+
     /// The client's click, which will go to the region as the input numbered `number`:
     /// the input, or `None` for a click the game refuses here, of a window that is not
     /// the one shown (`handleContainerClick`'s `containerId` test).
