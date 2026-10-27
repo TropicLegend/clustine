@@ -3857,6 +3857,12 @@ mod tests {
     mod n9_targets;
     mod n9_using;
     mod n9_world;
+    mod n9b_arrows;
+    mod n9b_effects;
+    mod n9b_food;
+    mod n9b_monsters;
+    mod n9b_spawning;
+    mod n9b_thrown;
     mod pigs;
     mod pistons;
     mod player_effects;
