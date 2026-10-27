@@ -14,6 +14,8 @@ clustine-noise.workspace = true
 clustine-world.workspace = true
 clustine-light.workspace = true
 clustine-features.workspace = true
+# The game's zoomed biome lookup (`BiomeManager.getBiome`), which spawning reads.
+clustine-terrain.workspace = true
 # The configured trees' trunks, for the shortest a sapling grows (`TreeGrower.getMinimumHeight`).
 clustine-worldgen-data.workspace = true
 # `StrictMath`'s sine and cosine, for the one angle of a throw the game takes them for.

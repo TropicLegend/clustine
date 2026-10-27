@@ -39,6 +39,24 @@ impl Region {
             .copied()
     }
 
+    /// `ServerLevel.getBiome(pos)`: the biome of the cell the game's zoom gives the block
+    /// `pos` (`BiomeManager`, with the hashed game seed), whose eight cells may lie in a
+    /// neighbouring chunk; its height held within the chunk's cells, as the game's.
+    /// What spawning reads (`docs/groundwork/n9-plan.md`, section 9.3).
+    #[expect(
+        dead_code,
+        reason = "part S10's spawner reads it (docs/groundwork/n9-plan.md, section 9.3)"
+    )]
+    pub(crate) fn zoomed_biome_at(&self, pos: BlockPos) -> Option<&'static str> {
+        let zoom = clustine_terrain::biome::zoom::Zoom::new(self.config.game_seed);
+        let (x, y, z) = zoom.cell(pos.x, pos.y, pos.z);
+        let chunk = self.readable_chunk(BlockPos::new(x << 2, 0, z << 2).chunk())?;
+        let lowest = chunk.min_y() >> 2;
+        let highest = lowest + i32::try_from(chunk.sections().len() * 4).ok()? - 1;
+        let y = y.clamp(lowest, highest);
+        self.biome_at(BlockPos::new(x << 2, y << 2, z << 2))
+    }
+
     /// The UUID of the player whose stay is the entity `player`: the region's own, or a
     /// player whose face it keeps.
     pub(crate) fn uuid_of_player(&self, player: EntityId) -> Option<u128> {

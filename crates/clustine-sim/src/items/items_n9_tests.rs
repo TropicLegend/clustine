@@ -606,6 +606,7 @@ impl World {
             return_after: 0,
             lowest_y: -64,
             seed: SEED,
+            game_seed: 0,
             light: Default::default(),
             features: Default::default(),
         };

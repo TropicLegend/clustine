@@ -77,6 +77,7 @@ fn config(return_after: u64) -> RegionConfig {
         return_after,
         lowest_y: -64,
         seed: 0,
+        game_seed: 0,
         light: Default::default(),
         features: Default::default(),
     }
@@ -1570,6 +1571,7 @@ fn run_config() -> RegionConfig {
         return_after: 0,
         lowest_y: -64,
         seed: 0,
+        game_seed: 0,
         light: Default::default(),
         features: Default::default(),
     }

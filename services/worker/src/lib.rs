@@ -1062,6 +1062,9 @@ impl RegionSettings {
             return_after: self.return_after,
             lowest_y: self.lowest_y,
             seed: world,
+            // A flat world has no seed of its own yet: 0, which an official server
+            // given `level-seed=0` shares.
+            game_seed: seed.unwrap_or(0),
             // A server's budget for lighting what it loads (ADR-0029), and the checks the
             // end-to-end tests ask for.
             light: clustine_sim::LightSettings {

@@ -819,6 +819,7 @@ mod tests {
             return_after: u64::MAX,
             lowest_y: -64,
             seed,
+            game_seed: 0,
             light: Default::default(),
             features: Default::default(),
         };

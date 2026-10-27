@@ -105,6 +105,7 @@ fn config() -> RegionConfig {
         return_after: 1_000_000,
         lowest_y: LOWEST_Y,
         seed: 0,
+        game_seed: 0,
         light: Default::default(),
         features: Default::default(),
     }

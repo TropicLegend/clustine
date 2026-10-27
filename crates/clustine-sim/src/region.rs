@@ -147,6 +147,10 @@ pub struct RegionConfig {
     /// the world's own, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
     pub seed: u64,
+    /// The world's game seed (`level-seed`): what the zoomed biome lookup hashes and the
+    /// slime chunks are drawn from (`docs/groundwork/n9-plan.md`, section 9.4). A
+    /// generated world's terrain seed; a flat world's 0 until its identity keeps one.
+    pub game_seed: i64,
     /// How much of what it comes to have the region lights a tick (ADR-0029): a
     /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
     /// it comes.
@@ -3821,6 +3825,7 @@ mod tests {
             return_after: 0,
             lowest_y: -64,
             seed: 0,
+            game_seed: 0,
             light: Default::default(),
             features: Default::default(),
         }
