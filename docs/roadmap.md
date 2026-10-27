@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-26)
+## Where the work stands (2026-10-27)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -43,8 +43,8 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: monsters that fight,
-projectiles beyond the snowball, mob effects and natural spawning (N9, planned); sculk
+**What a player will miss within minutes**, all of it planned: natural spawning (N9,
+being built); sculk
 sensors, crafters, arrows, plates pressed by mobs; villagers' trades (N10); the Nether
 and the End; survival mode and crafting.
 
@@ -400,6 +400,58 @@ someone who did not write the engine found one defect (block light below the wor
 mended. Named: sky light below the world's floor is read as the lowest section has it;
 bone meal under water and on kelp, vines, dripleaf and nylium; a bee nest set across a
 line is empty.
+
+**Monsters, projectiles and effects (N9, [plan](groundwork/n9-plan.md), reviewed;
+under way on 2026-10-27).** Built: item stacks with their components (enchantments,
+potions, fireworks, charged crossbows, banners' patterns) everywhere a stack goes, hashed
+as the client hashes them; the player's use of an item over time (bow, crossbow, trident,
+shield, food and drink) with cooldowns (the ender pearl's); mob effects on mobs and
+players, their particles and the player's own effect list; the bow, the crossbow with
+Multishot, Piercing and Quick Charge, the trident with Loyalty, eggs (chicks), splash and
+lingering potions and their clouds, the experience bottle, the ender pearl (it moves you),
+rockets (placed or shot from a crossbow), evoker fangs and the llama's spit, each flying,
+hitting and shown as the game's, across a line too; dispensers shooting them; arrows
+picked up; every monster's target goals and attacks: zombies, husks, drowned (throwing
+tridents) and zombie villagers chase and hit (a burning zombie sets you alight), skeletons
+and their kin shoot (strays slow, bogged poison), creepers chase, spiders leap and let go
+in light, the witch throws potions, the pillager loads and shoots its crossbow, the
+vindicator swings its axe, the evoker casts fangs, summons vexes and turns blue sheep red,
+guardians fire their beam; new mobs: the slime (splitting), the enderman (teleporting,
+carrying blocks), the silverfish (hiding in stone, waking its friends), the endermite,
+the phantom, the vex; eating and drinking (milk clears effects, the chorus fruit
+teleports); a mob's hit lands with its extras in whichever region holds its target, and a
+mob's armour and weapon count. Despawning reads every player of the world, so a mob near
+a player of another region stays. Mobs count for the spawning caps across regions.
+Being built: natural spawning's rules (S10) and the phantoms and patrols (S11), the
+mounts steered by their riders (N9g), tests from the specification (S13).
+
+**What to try with a real client, phase N9 so far** (`cargo run --release -p clustine --
+--seed 3`; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64):
+
+1. Take a bow from the creative inventory: draw it (hold right click) and let go; the
+   arrow flies by how long you drew, crits at full draw (its trail), sticks in a wall and
+   can be picked up. Take a crossbow: it loads in a second and a quarter with its sounds
+   and shoots when used again. Enchant it with Multishot (in the creative inventory's
+   enchanted books, or a crossbow found so): three arrows. A trident thrown after holding
+   for half a second; with Loyalty it comes back.
+2. Throw an egg (sometimes a chick), a snowball, a splash potion of swiftness at a cow
+   and at yourself (the effect icon and the particles; another player sees your
+   particles), a lingering potion (a cloud that shrinks), an experience bottle (orbs), an
+   ender pearl (you land where it lands). Place a firework rocket on a block, and load one
+   into a crossbow. Drink a potion, eat bread, rotten flesh and a chorus fruit (it moves
+   you), drink milk (your effects end).
+3. Spawn eggs at night on a dark floor (monsters never target a creative player, so give
+   them another target): a zombie and a villager (it chases and hits,
+   swinging its arms), a skeleton and an iron golem (arrows every three seconds), a
+   pillager and a golem (it loads and shoots), a witch and a golem (potions), a drowned
+   with a trident in water by a squid, an evoker by a villager (fangs, then three vexes),
+   an evoker by a blue sheep (it turns red), a guardian by a squid (the beam, then the
+   strike). Hit a zombie among others: they all come for what hit it.
+4. New mobs from their eggs: a slime (kill a big one: it splits), an enderman (it carries
+   off grass and teleports when hit by an arrow), a silverfish (it hides in stone; break
+   infested stone and one comes out), a phantom (it circles), an endermite.
+5. A mob in one region near a player of another (with pins: a zombie at x = 70 and you at
+   x = 60) does not vanish when its own region's players are far.
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
