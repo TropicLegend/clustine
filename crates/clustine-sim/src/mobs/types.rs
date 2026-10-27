@@ -652,6 +652,14 @@ pub(crate) trait MobType: Sync {
         let _ = (tick, air);
     }
 
+    /// `Consumable.OverrideConsumeSound.getConsumeSound(stack)`: the sound of its
+    /// mouthfuls of `stack` where its type has its own (a wandering trader's), else none
+    /// and the item's (`body/using.rs`).
+    fn consume_sound(&self, stack: &ItemStack) -> Option<i32> {
+        let _ = stack;
+        None
+    }
+
     /// `isImmobile()`: a dying mob's (`LivingEntity`'s), unless its type says otherwise
     /// (a horse eating or rearing, a dying horse only under a saddled rider). An
     /// immobile mob's AI does not run and its inputs stop.

@@ -30,6 +30,7 @@ mod effects_tests;
 pub(crate) mod hurt;
 pub(crate) mod ladder;
 pub(crate) mod loot;
+pub(crate) mod using;
 
 use clustine_blocks::data::{entity_in_tag, item_in_tag};
 use clustine_data::{attributes as ids, items, sounds};
@@ -303,6 +304,7 @@ pub(crate) struct Body {
     pub(crate) last_damage: LastDamage,
     pub(crate) effects: effects::Effects,
     pub(crate) swimming: Swimming,
+    pub(crate) using: using::ItemUse,
 }
 
 /// `Entity.isSwimming()`, its shared flag 4, which clients draw a swimmer by: of the mobs
@@ -395,6 +397,7 @@ impl Body {
             last_damage: part::decode(entries)?,
             effects: effects::decode(entries)?,
             swimming: part::decode(entries)?,
+            using: part::decode(entries)?,
         })
     }
 
@@ -418,6 +421,7 @@ impl Body {
         part::put(&mut entries, &self.idle_gained);
         part::put(&mut entries, &self.effects);
         part::put(&mut entries, &self.swimming);
+        part::put(&mut entries, &self.using);
         entries
     }
 

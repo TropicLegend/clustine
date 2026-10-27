@@ -94,11 +94,16 @@ pub enum Holder {
 pub mod index {
     pub const AIR_SUPPLY: u8 = 1;
     pub const TICKS_FROZEN: u8 = 7;
+    /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS`: an item in use (1), with the off hand (2).
+    pub const LIVING_FLAGS: u8 = 8;
     pub const HEALTH: u8 = 9;
     pub const MOB_FLAGS: u8 = 15;
     /// `AgeableMob.DATA_BABY_ID`, an ageable type's.
     pub const BABY: u8 = 16;
 }
+
+/// The witch, whose living flags are never shown.
+const WITCH: u16 = clustine_data::entity_types::WITCH as u16;
 
 /// `Mob.DATA_MOB_FLAGS_ID`'s bits.
 const NO_AI: u8 = 1;
@@ -139,6 +144,12 @@ pub fn mob_values(kind: u16, data: &EntityData) -> Vec<(u8, DataShown, bool)> {
         ),
         (index::MOB_FLAGS, DataShown::Byte(mob_flags), mob_flags == 0),
     ];
+    // The living flags of its use of an item, but not a witch's: its drinking is its
+    // own, and the official server never sends them for it.
+    if kind != WITCH {
+        let living = mob.body.using.flags;
+        values.push((index::LIVING_FLAGS, DataShown::Byte(living), living == 0));
+    }
     values.extend(types::of(kind).shown(&mob));
     values.sort_by_key(|(index, _, _)| *index);
     values
@@ -265,6 +276,7 @@ mod tests {
             [
                 (index::AIR_SUPPLY, DataShown::Int(300), true),
                 (index::TICKS_FROZEN, DataShown::Int(0), true),
+                (index::LIVING_FLAGS, DataShown::Byte(0), true),
                 (index::HEALTH, DataShown::Float(10.0), false),
                 (
                     index::MOB_FLAGS,

@@ -344,6 +344,8 @@ pub(crate) fn tick(tick: &mut MobTick<'_>) {
     }
     tick.mob_type.after_base_tick(tick, air);
     take_hurts(tick);
+    // `updatingUsingItem`, after the entity's tick and before `aiStep`.
+    body::using::updating(tick);
     // `aiStep`: the type's own part before `LivingEntity`'s first (a fish's flop, a
     // horse's tail); a dying mob does not think, but falls and slides.
     tick.mob_type.before_ai_step(tick);

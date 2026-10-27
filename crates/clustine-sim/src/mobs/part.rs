@@ -50,6 +50,8 @@ pub(crate) mod body_ids {
     /// Whether it swims (`Entity`'s shared flag 4), which of the mobs only a drowned
     /// sets.
     pub(crate) const SWIMMING: u16 = 17;
+    /// An item in use, and the living flags it leaves (`body/using.rs`).
+    pub(crate) const USING: u16 = 18;
 }
 
 /// The ids of the mind's parts below [`mind_ids::FIRST_GOAL`]; a goal's part is its

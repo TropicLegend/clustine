@@ -4,25 +4,23 @@
 //! zombies and illagers, panics when hurt, strolls avoiding water and looks at players
 //! and mobs, and leaves when its despawn delay runs out (an egg's has none).
 //!
-//! Drinking is its own here: what `LivingEntity` does with an item in use
-//! (`startUsingItem`, `updatingUsingItem`, `completeUsingItem`) for the two drinks it
-//! has, kept in its state ([`Using`]) and shown to clients by the living flags. The
-//! `Consumable` component's sounds and its duration are not in the dumps (**Inferred**
-//! from the extracted components and the game's code as known: 32 ticks; from the eighth
-//! on, every fourth, the drinking sound at half or full volume and a pitch of
-//! `triangle(1, 0.2)`, and once more as it is finished).
+//! Its drinking is the body's use of an item (`mobs/body/using.rs`: `startUsingItem`,
+//! `updatingUsingItem`, `completeUsingItem`), which shows it to clients by the living
+//! flags; the trader gives it the sound of its mouthfuls (`getConsumeSound`).
 //!
 //! Named differences: it trades nothing, so its trading goals never start, a click opens
 //! nothing (the game always has offers and opens their screen) and the statistic of a
-//! talk is not kept; its potion is a plain potion in its hand (items carry no
-//! components); a template's `wander_target` is not read (a block position's int array).
+//! talk is not kept; a template's `wander_target` is not read (a block position's int
+//! array).
 
 use clustine_data::{entity_types, items, sounds};
+use clustine_world::components::{Component, PotionContents};
 use clustine_world::{BlockPos, ItemStack};
 use serde::{Deserialize, Serialize};
 
 use super::animal::{self, Animal, Own};
 use super::{AgeableGroup, Dimensions, Interaction, MobType, SpawnGroup, Spawning, Used, template};
+use crate::api::Hand;
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
@@ -32,18 +30,15 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::Class;
 use crate::mobs::ai::{Ai, Setup, navigation};
-use crate::mobs::body::effects::{self, Effect};
 use crate::mobs::body::hurt::DamageSource;
-use crate::mobs::body::{self, Event, Removed};
-use crate::mobs::tick::{Local, MobTick};
+use crate::mobs::body::{Event, Removed, using};
+use crate::mobs::tick::MobTick;
 use crate::physics;
 use crate::shown::DataShown;
 
 /// The synced data's index of `AbstractVillager.DATA_UNHAPPY_COUNTER`, never set of a
-/// trader, and `LivingEntity.DATA_LIVING_ENTITY_FLAGS`, whose first bit is an item in use.
+/// trader.
 const UNHAPPY_INDEX: u8 = 18;
-const LIVING_FLAGS_INDEX: u8 = 8;
-const USING_ITEM: u8 = 1;
 
 /// A baby's size: `AgeableMob`'s half of the type's (0.6 by 1.95, its eyes at 1.62).
 const BABY: Dimensions = Dimensions {
@@ -52,27 +47,15 @@ const BABY: Dimensions = Dimensions {
     eye_height: 0.81,
 };
 
-/// `Consumable.consumeTicks()` of a potion and of milk: 1.6 seconds (**Inferred**).
-pub(crate) const DRINK_TICKS: i32 = 32;
-
-/// `Potions.INVISIBILITY`'s effect: invisibility for 3600 ticks (Potions.txt 164–199).
-pub(crate) const INVISIBILITY_TICKS: i32 = 3600;
-
-/// An item in use (`useItem`, `useItemRemaining`): the drink in its main hand, and the
-/// ticks left until it is drunk.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Using {
-    pub(crate) item: ItemStack,
-    pub(crate) remaining: i32,
-}
-
 /// What a wandering trader keeps beyond an ageable mob: its despawn delay (an egg's 0,
-/// never), where it wanders to, and its drink in use.
+/// never) and where it wanders to. Its drink in use, kept here once, is the body's now
+/// (`mobs/body/using.rs`): a record written before has it after these two, where a read
+/// stops, so it reads with its use dropped (and the goal that began the drink, seeing
+/// none, ends it with its hand emptied).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TraderState {
     pub(crate) despawn_delay: i32,
     pub(crate) wander_target: Option<BlockPos>,
-    pub(crate) using: Option<Using>,
 }
 
 impl Own for TraderState {}
@@ -105,37 +88,30 @@ pub(crate) enum Drink {
 }
 
 impl Drink {
+    /// The goal's item: `PotionContents.createItemStack(POTION, INVISIBILITY)`, or milk.
     fn stack(self) -> ItemStack {
-        let item = match self {
-            Drink::Invisibility => items::POTION,
-            Drink::Milk => items::MILK_BUCKET,
-        };
-        ItemStack::new(item, 1)
-    }
-
-    /// What is left in the hand once drunk (`minecraft:use_remainder`).
-    fn remainder(self) -> ItemStack {
-        let item = match self {
-            Drink::Invisibility => items::GLASS_BOTTLE,
-            Drink::Milk => items::BUCKET,
-        };
-        ItemStack::new(item, 1)
-    }
-
-    fn of(item: i32) -> Option<Self> {
-        match item {
-            items::POTION => Some(Drink::Invisibility),
-            items::MILK_BUCKET => Some(Drink::Milk),
-            _ => None,
-        }
-    }
-
-    /// `getConsumeSound(stack)` (WanderingTrader.txt 407–417).
-    fn sound(self) -> i32 {
         match self {
-            Drink::Invisibility => sounds::ENTITY_WANDERING_TRADER_DRINK_POTION,
-            Drink::Milk => sounds::ENTITY_WANDERING_TRADER_DRINK_MILK,
+            Drink::Invisibility => {
+                let mut potion = ItemStack::new(items::POTION, 1);
+                potion
+                    .components
+                    .set(Component::PotionContents(PotionContents {
+                        potion: Some("minecraft:invisibility".to_owned()),
+                        ..PotionContents::default()
+                    }));
+                potion
+            }
+            Drink::Milk => ItemStack::new(items::MILK_BUCKET, 1),
         }
+    }
+}
+
+/// `getConsumeSound(stack)` (WanderingTrader.txt 407–417): milk's, else the potion's.
+fn consume_sound(stack: &ItemStack) -> i32 {
+    if stack.item == items::MILK_BUCKET {
+        sounds::ENTITY_WANDERING_TRADER_DRINK_MILK
+    } else {
+        sounds::ENTITY_WANDERING_TRADER_DRINK_POTION
     }
 }
 
@@ -166,13 +142,12 @@ impl Goal for UseItemGoal {
     }
 
     fn can_continue(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
-        state_of(&ai.tick.mob).1.using.is_some()
+        using::is_using(&ai.tick.mob)
     }
 
     fn start(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
-        let stack = self.drink.stack();
-        ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(stack.clone());
-        start_using(ai.tick, stack);
+        ai.tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(self.drink.stack());
+        using::start_using(ai.tick, Hand::Main);
     }
 
     fn stop(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
@@ -184,97 +159,6 @@ impl Goal for UseItemGoal {
             pitch,
         });
     }
-}
-
-/// `startUsingItem(MAIN_HAND)`: the stack in use for its whole time, and
-/// `ITEM_INTERACT_START` at it (a drink's, **Inferred**: `causeUseVibration` is not in
-/// the dumps).
-fn start_using(tick: &mut MobTick<'_>, stack: ItemStack) {
-    if state_of(&tick.mob).1.using.is_some() {
-        return;
-    }
-    update(&mut tick.mob, |own| {
-        own.using = Some(Using {
-            item: stack,
-            remaining: DRINK_TICKS,
-        });
-    });
-    tick.out.local.push(Local::GameEventAt {
-        name: "minecraft:item_interact_start",
-        at: tick.living.body.position,
-        affected: None,
-    });
-}
-
-/// `Consumable.emitParticlesAndSounds(random, trader, stack, count)` of a drink, which
-/// has no particles: its sound at half or full volume (`nextBoolean`) and a pitch of
-/// `triangle(1, 0.2)`, of its own random (**Inferred**).
-fn drinking_sound(tick: &mut MobTick<'_>, drink: Drink) {
-    let volume = if tick.draws.next_bool() { 0.5 } else { 1.0 };
-    let pitch = 1.0 + 0.2 * (tick.draws.next_float() - tick.draws.next_float());
-    tick.out.events.push(Event::Sound {
-        sound: drink.sound(),
-        volume,
-        pitch,
-    });
-}
-
-/// `LivingEntity.updatingUsingItem()`, after `baseTick`: with its drink still in its
-/// hand, `onUseTick` (the drinking sound every fourth tick after the first seven,
-/// **Inferred**) and a tick less, drunk at none (`completeUsingItem`: the sound, the
-/// potion's invisibility or milk's end of every effect, `DRINK` at it, what is left of
-/// it in its hand); with anything else in its hand, its use stopped.
-fn updating_using_item(tick: &mut MobTick<'_>) {
-    let Some(using) = state_of(&tick.mob).1.using else {
-        return;
-    };
-    let hand = &tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)];
-    let same = hand
-        .as_ref()
-        .is_some_and(|held| held.count > 0 && held.item == using.item.item);
-    let Some(drink) = Drink::of(using.item.item).filter(|_| same) else {
-        update(&mut tick.mob, |own| own.using = None);
-        return;
-    };
-    let used = DRINK_TICKS - using.remaining;
-    let start = (DRINK_TICKS as f32 * 0.21875) as i32;
-    if used > start && using.remaining % 4 == 0 {
-        drinking_sound(tick, drink);
-    }
-    let remaining = using.remaining - 1;
-    if remaining > 0 {
-        update(&mut tick.mob, |own| {
-            if let Some(using) = own.using.as_mut() {
-                using.remaining = remaining;
-            }
-        });
-        return;
-    }
-    drinking_sound(tick, drink);
-    let kind = tick.kind;
-    let now = body::moment(tick);
-    match drink {
-        Drink::Invisibility => {
-            effects::add(
-                &mut tick.mob,
-                kind,
-                Effect::INVISIBILITY,
-                0,
-                INVISIBILITY_TICKS,
-                now,
-            );
-        }
-        Drink::Milk => {
-            effects::remove_all(&mut tick.mob, kind);
-        }
-    }
-    tick.out.local.push(Local::GameEventAt {
-        name: "minecraft:drink",
-        at: tick.living.body.position,
-        affected: None,
-    });
-    tick.mob.body.equipment.slots[usize::from(slots::MAIN_HAND)] = Some(drink.remainder());
-    update(&mut tick.mob, |own| own.using = None);
 }
 
 /// A goal of trading that never starts, as no player trades with a trader:
@@ -442,11 +326,6 @@ impl MobType for WanderingTrader {
         animal::finalize_ageable(spawn, SpawnGroup::Ageable(AgeableGroup::new(false)));
     }
 
-    /// `updatingUsingItem` in `LivingEntity.tick`, after the entity's.
-    fn after_base_tick(&self, tick: &mut MobTick<'_>, _: i32) {
-        updating_using_item(tick);
-    }
-
     /// `AgeableMob.aiStep`'s growing, then `maybeDespawn`: a delay above nothing counts
     /// down (no player trades) and at nothing the trader is gone.
     fn after_ai_step(&self, tick: &mut MobTick<'_>) {
@@ -507,11 +386,14 @@ impl MobType for WanderingTrader {
         animal::is_baby(mob)
     }
 
+    fn consume_sound(&self, stack: &ItemStack) -> Option<i32> {
+        Some(consume_sound(stack))
+    }
+
+    /// Its ageable values and its unhappiness; the living flags are the body's
+    /// (`crate::shown`).
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
-        let using = state_of(mob).1.using.is_some();
-        let living = if using { USING_ITEM } else { 0 };
         let mut values = animal::shown(mob);
-        values.push((LIVING_FLAGS_INDEX, DataShown::Byte(living), living == 0));
         values.push((UNHAPPY_INDEX, DataShown::Int(0), true));
         values
     }

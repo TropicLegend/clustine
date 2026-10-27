@@ -710,7 +710,7 @@ fn a_goat_shows_its_scream_and_horns_and_a_camel_its_dash_to_clients() {
     let shown = crate::shown::mob_values(entity_types::CAMEL as u16, &record(&region, TWO).data);
     // Sorted by index: the pose before the age's.
     let indices: Vec<u8> = shown.iter().map(|(index, _, _)| *index).collect();
-    assert_eq!(indices, [1, 6, 7, 9, 15, 16, 17, 18, 19, 20]);
+    assert_eq!(indices, [1, 6, 7, 8, 9, 15, 16, 17, 18, 19, 20]);
     assert!(shown.contains(&(19, DataShown::Boolean(true), false)));
 }
 
