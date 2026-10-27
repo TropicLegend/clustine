@@ -43,8 +43,7 @@ comes back where they left. The world runs in regions that follow their players
 across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
-**What a player will miss within minutes**, all of it planned: natural spawning (N9,
-being built); sculk
+**What a player will miss within minutes**, all of it planned: sculk
 sensors, crafters, arrows, plates pressed by mobs; villagers' trades (N10); the Nether
 and the End; survival mode and crafting.
 
@@ -421,9 +420,15 @@ carrying blocks), the silverfish (hiding in stone, waking its friends), the ende
 the phantom, the vex; eating and drinking (milk clears effects, the chorus fruit
 teleports); a mob's hit lands with its extras in whichever region holds its target, and a
 mob's armour and weapon count. Despawning reads every player of the world, so a mob near
-a player of another region stays. Mobs count for the spawning caps across regions.
-Being built: natural spawning's rules (S10) and the phantoms and patrols (S11), the
-mounts steered by their riders (N9g), tests from the specification (S13).
+a player of another region stays. Natural spawning as the game's: each region spawns in
+its chunks near players by every overworld type's rule (light, the moon's slimes and
+slime chunks, water creatures by depth, the swamp hut's witches), under the caps counted
+across every region, which the world store publishes once a second; phantoms come to
+players who have not slept for three days, patrols of pillagers by day once the world
+is five days old, their leader with the ominous banner. A mob steers the mob it rides
+(a chicken jockey's chicken goes where its zombie wants). Being built: tests from the
+specification (S13); the comparisons with the official server are written (S14) and
+wait to be run.
 
 **What to try with a real client, phase N9 so far** (`cargo run --release -p clustine --
 --seed 3`; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64):
@@ -452,6 +457,14 @@ mounts steered by their riders (N9g), tests from the specification (S13).
    infested stone and one comes out), a phantom (it circles), an endermite.
 5. A mob in one region near a player of another (with pins: a zombie at x = 70 and you at
    x = 60) does not vanish when its own region's players are far.
+6. Natural spawning: in a new seeded world, wait for night away from light: zombies,
+   skeletons, creepers, spiders and endermen come at a distance (never within 24 blocks
+   of you) and up to about seventy around you; by day animals come on grass now and then
+   (every 20 seconds a chance). In the flat world, slimes in the slime chunks below
+   y 40. Stay awake three nights (do not use a bed): phantoms come at night under the
+   open sky. Squid and fish in the sea, bats in caves. With pins, a mob spawned in one
+   region counts for the caps of the other.
+7. A chicken jockey (sometimes from a baby zombie's egg) runs where its zombie wants.
 
 **What to try with a real client, phase N so far** (`cargo run --release -p clustine --
 --seed 3 --pin 4 --reshape by-hand`, a line at block x = 64 that does not move; and
