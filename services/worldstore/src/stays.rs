@@ -71,6 +71,8 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
         inventory,
         selected_slot: 3,
         ender,
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -173,6 +175,8 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
         selected_slot: place.selected_slot,
         inventory,
         ender,
+        effects: place.effects.clone(),
+        time_since_rest: place.time_since_rest,
     }
 }
 

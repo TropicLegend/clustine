@@ -228,6 +228,8 @@ impl Region {
         let previous_chunk = player.chunk();
         player.pose.position = lying;
         player.sleeping = Some(Sleep { head, since });
+        // `ServerPlayer.startSleeping`: the time since rest starts again.
+        player.rested = self.tick;
         let (entity, pose) = (player.entity_id, player.pose);
         self.journal.players.insert(id);
         output.events.push(RegionEvent::EntityMoved {
@@ -321,6 +323,8 @@ impl Region {
             player.pose.pitch = 0.0;
         }
         player.sleeping = None;
+        // Not counted while asleep: the count goes on from the waking.
+        player.rested = self.tick;
         let pose = player.pose;
         self.journal.players.insert(id);
         output.events.push(RegionEvent::EntityMoved {

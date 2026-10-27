@@ -733,6 +733,8 @@ mod tests {
             inventory,
             selected_slot: 8,
             ender: Default::default(),
+            effects: Vec::new(),
+            time_since_rest: 0,
         };
         let standing = Place {
             respawn: None,
@@ -742,6 +744,8 @@ mod tests {
             inventory: Inventory::default(),
             selected_slot: 0,
             ender: Default::default(),
+            effects: Vec::new(),
+            time_since_rest: 0,
         };
 
         round_trip(StoreRequest::Commit {

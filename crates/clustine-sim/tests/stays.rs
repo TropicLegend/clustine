@@ -152,7 +152,47 @@ fn place_in(chunk: ChunkPos) -> Place {
         inventory: kept(),
         selected_slot: 5,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
+}
+
+/// `place` with its time since rest left out: it counts the ticks a test ran, which
+/// these tests do not judge, and the region's own tests check it.
+fn unrested(place: Place) -> Place {
+    Place {
+        time_since_rest: 0,
+        ..place
+    }
+}
+
+/// The tick's notes of stays, their places' time since rest left out ([`unrested`]).
+fn stays(output: &TickOutput) -> Vec<StayNote> {
+    output
+        .stays
+        .iter()
+        .cloned()
+        .map(|note| match note {
+            StayNote::Has {
+                unit,
+                player,
+                entity,
+                hops,
+                place,
+                face,
+                let_go,
+            } => StayNote::Has {
+                unit,
+                player,
+                entity,
+                hops,
+                place: unrested(place),
+                face,
+                let_go,
+            },
+            other => other,
+        })
+        .collect()
 }
 
 /// Where a player is and what they hold, as a region's state has it.
@@ -165,6 +205,8 @@ fn place_of(state: &PlayerState) -> Place {
         inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -178,6 +220,8 @@ fn place_from(transfer: &PlayerTransfer) -> Place {
         inventory: transfer.inventory.clone(),
         selected_slot: transfer.selected_slot,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -290,6 +334,8 @@ fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -436,7 +482,15 @@ fn check_tick(output: &TickOutput, after: &RegionState) {
                     }
                     _ => None,
                 });
-                let said = Some((*hops, place.clone()));
+                // Its time since rest counts the ticks the run took, which the state's
+                // and the transfer's places here leave out.
+                let said = Some((
+                    *hops,
+                    Place {
+                        time_since_rest: 0,
+                        ..place.clone()
+                    },
+                ));
                 assert_eq!(here.or(let_go), said, "tick {tick}: {note:?}");
             }
         }
@@ -578,6 +632,8 @@ fn at_spawn() -> Place {
         inventory: Inventory::with_hotbar(starting()),
         selected_slot: 0,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -589,7 +645,7 @@ fn a_join_is_held_as_entering_and_named_to_the_store_and_nobody_is_told() {
     let output = tick(&mut region, &changes(vec![join(E, 1, ATTEMPT)]));
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.durable.is_empty() && output.claims.is_empty());
-    assert_eq!(output.stays, [entering_note(1, entity(1))]);
+    assert_eq!(stays(&output), [entering_note(1, entity(1))]);
 
     let held = EnteringState {
         entity_id: entity(1),
@@ -623,7 +679,7 @@ fn an_entering_stay_without_a_place_is_placed_at_the_spawn_point_with_the_starti
         assert_eq!(output.player_events, [spawned(&at_spawn())]);
         assert_eq!(shown(&output), [entity(1)]);
         assert!(output.durable.is_empty());
-        assert_eq!(output.stays, [has(1, entity(1), 0, at_spawn())]);
+        assert_eq!(stays(&output), [has(1, entity(1), 0, at_spawn())]);
 
         let state = state_of(&region, 1);
         assert_eq!(place_of(&state), at_spawn());
@@ -645,7 +701,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     assert_eq!(output.player_events, [spawned(&place)]);
     assert_eq!(shown(&output), [entity(1)]);
     assert!(output.durable.is_empty());
-    assert_eq!(output.stays, [has(1, entity(1), 0, place.clone())]);
+    assert_eq!(stays(&output), [has(1, entity(1), 0, place.clone())]);
     let state = state_of(&region, 1);
     assert_eq!(place_of(&state), place);
     assert_eq!((state.attempt, state.hops), (Some(ATTEMPT), 0));
@@ -689,6 +745,10 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        effects: Vec::new(),
+        // Their place had none: the tick that placed them and the one that lets them
+        // go, as the next region's first tick counts it.
+        time_since_rest: 2,
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -696,7 +756,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
         to: OTHER,
     };
     assert_eq!(output.durable, [(E, 1, departed)]);
-    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place)]);
+    assert_eq!(stays(&output), [let_go_note(1, entity(1), 1, place)]);
     assert!(output.events.is_empty(), "the entity lives on");
     assert_eq!(region.player_count(), 0);
 }
@@ -730,6 +790,8 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     };
     let departed = Durable::Departed {
         player: player(1),
@@ -737,7 +799,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
         to: OTHER,
     };
     assert_eq!(output.durable, [(E, 1, departed)]);
-    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place)]);
+    assert_eq!(stays(&output), [let_go_note(1, entity(1), 1, place)]);
     // The region has nothing of the stay any more.
     assert_eq!(region.entering_state(player(1)), None);
     assert_eq!(region.player(player(1)), None);
@@ -762,6 +824,8 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
         inventory: kept(),
         selected_slot: 5,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     };
     for holder in [None, Some(OTHER)] {
         for y in [-64.01, -70.0, -1.0e7] {
@@ -770,7 +834,7 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
             let output = tick(&mut region, &answers(vec![answer]));
             assert_eq!(output.player_events, [spawned(&back)], "{y}");
             assert!(output.durable.is_empty(), "{y}: nobody is let go");
-            assert_eq!(output.stays, [has(1, entity(1), 0, back.clone())]);
+            assert_eq!(stays(&output), [has(1, entity(1), 0, back.clone())]);
             assert!(
                 output.claims.is_empty(),
                 "{y}: they stand in the home chunk"
@@ -832,7 +896,7 @@ fn an_arrival_is_named_with_the_hops_it_came_with() {
     let arriving = transfer(TRAVELLER, 4, None, NEARBY);
     let place = place_from(&arriving);
     let output = tick(&mut region, &changes(vec![arrive(F, 5, arriving)]));
-    assert_eq!(output.stays, [has(5, TRAVELLER, 4, place)]);
+    assert_eq!(stays(&output), [has(5, TRAVELLER, 4, place)]);
     assert!(output.durable.is_empty());
 
     // One that goes on to the region the chunk is believed to be of is not named:
@@ -864,7 +928,7 @@ fn whatever_changes_of_a_player_is_named_with_their_place_and_nothing_else_is() 
     let output = tick(&mut region, &act(E, 1, entity(1), 1, walk_to(NEARBY)));
     let state = state_of(&region, 1);
     assert_eq!(state.pose.position, NEARBY);
-    assert_eq!(output.stays, [has(1, entity(1), 0, place_of(&state))]);
+    assert_eq!(stays(&output), [has(1, entity(1), 0, place_of(&state))]);
     for (number, input) in [
         (2, PlayerInput::SelectSlot { slot: 4 }),
         (3, PlayerInput::SetFlying { flying: true }),
@@ -879,7 +943,7 @@ fn whatever_changes_of_a_player_is_named_with_their_place_and_nothing_else_is() 
         let output = tick(&mut region, &act(E, 1, entity(1), number, input.clone()));
         let state = state_of(&region, 1);
         assert_eq!(
-            output.stays,
+            stays(&output),
             [has(1, entity(1), 0, place_of(&state))],
             "{input:?}"
         );
@@ -907,7 +971,7 @@ fn a_player_who_is_let_go_is_named_with_the_place_and_the_hops_the_next_region_b
     assert_eq!((*to, transfer.hops, transfer.attempt), (OTHER, 1, None));
     assert_eq!(transfer.pose.position, step);
     assert_eq!(
-        output.stays,
+        stays(&output),
         [let_go_note(1, entity(1), 1, place_from(transfer))]
     );
     assert_eq!(region.player_count(), 0);
@@ -927,7 +991,7 @@ fn a_player_who_is_let_go_is_named_with_the_place_and_the_hops_the_next_region_b
     };
     assert_eq!(transfer.hops, 2);
     assert_eq!(
-        output.stays,
+        stays(&output),
         [let_go_note(1, entity(1), 2, place_from(transfer))]
     );
 }
@@ -958,7 +1022,7 @@ fn the_first_tick_after_a_restore_names_every_stay_and_no_later_tick_does() {
     };
     let mut restored = Region::restore(config(), state.clone(), holdings.clone());
     let output = tick(&mut restored, &TickInputs::default());
-    assert_eq!(output.stays, every);
+    assert_eq!(stays(&output), every);
     // Naming changes nothing of the state, and happens once.
     assert!(output.delta.changes_only_the_tick());
     assert!(silent(&idle(&mut restored)));
@@ -1019,6 +1083,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     };
     other.players.insert(player(5), theirs.clone());
     let merged = region.absorb(OTHER, &other);
@@ -1026,7 +1092,7 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     let output = tick(&mut region, &TickInputs::default());
     let far_place = place_in(FAR);
     assert_eq!(
-        output.stays,
+        stays(&output),
         [
             has(1, entity(1), 0, far_place.clone()),
             entering_note(3, entity(2)),
@@ -1051,11 +1117,11 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     assert_eq!(told, Some(&split_off));
     let (_, mut part) = region.take_split(splitting, &[]);
     let output = tick(&mut part.region, &TickInputs::default());
-    assert_eq!(output.stays, [has(1, entity(1), 1, far_place)]);
+    assert_eq!(stays(&output), [has(1, entity(1), 1, far_place)]);
     assert!(silent(&idle(&mut part.region)));
     let output = tick(&mut region, &TickInputs::default());
     assert_eq!(
-        output.stays,
+        stays(&output),
         [
             entering_note(3, entity(2)),
             has(5, TRAVELLER, 3, place_of(&theirs)),
@@ -1071,7 +1137,7 @@ fn a_player_who_leaves_or_whose_edge_goes_is_named_gone_and_one_a_later_stay_end
     // join over them, the store knows already (the plan's faces design, question 3).
     let mut region = with_player();
     let output = tick(&mut region, &changes(vec![leave_as(E, 1, entity(1))]));
-    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
+    assert_eq!(stays(&output), [gone(1, entity(1), 0)]);
     assert_eq!(removed(&output), [entity(1)]);
 
     let mut region = with_player();
@@ -1081,13 +1147,13 @@ fn a_player_who_leaves_or_whose_edge_goes_is_named_gone_and_one_a_later_stay_end
 
     let mut region = with_player();
     let output = tick(&mut region, &edges(vec![EdgeEvent::Gone { edge: E }]));
-    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
+    assert_eq!(stays(&output), [gone(1, entity(1), 0)]);
     assert_eq!(removed(&output), [entity(1)]);
 
     // A join over them names the stay that is entering, and not the one that went.
     let mut region = with_player();
     let output = tick(&mut region, &changes(vec![join(F, 1, 77)]));
-    assert_eq!(output.stays, [entering_note(1, entity(2))]);
+    assert_eq!(stays(&output), [entering_note(1, entity(2))]);
     assert_eq!(removed(&output), [entity(1)]);
 }
 
@@ -1138,7 +1204,7 @@ fn a_leave_without_an_entity_ends_a_present_stay_only_while_it_carries_that_atte
     let output = tick(&mut region, &changes(vec![leave_of(E, 1, Some(ATTEMPT))]));
     assert_eq!(removed(&output), [entity(1)]);
     assert!(output.durable.is_empty());
-    assert_eq!(output.stays, [gone(1, entity(1), 0)]);
+    assert_eq!(stays(&output), [gone(1, entity(1), 0)]);
 
     // Once an input of the stay is applied its edge knows the entity, the stay
     // carries no attempt, and only a leave that names the entity ends it.
@@ -1233,7 +1299,7 @@ fn a_region_keeps_nothing_of_the_stores_word_and_takes_a_dead_stay_in_when_it_ar
     let late = transfer(entity(1), 1, None, NEARBY);
     let output = tick(&mut region, &changes(vec![arrive(E, 1, late.clone())]));
     assert_eq!(shown(&output), [entity(1)]);
-    assert_eq!(output.stays, [has(1, entity(1), 1, place_from(&late))]);
+    assert_eq!(stays(&output), [has(1, entity(1), 1, place_from(&late))]);
     let output = tick(&mut region, &dead(&[(1, entity(4), 0)]));
     assert_eq!(removed(&output), [entity(1)]);
     assert_eq!(entries(&output), [(E, ended(1, entity(1), None))]);
@@ -1273,7 +1339,7 @@ fn a_join_over_a_present_stay_tells_the_edge_that_had_it() {
         let output = tick(&mut region, &changes(vec![join(edge, 1, 77)]));
         assert_eq!(removed(&output), [entity(1)]);
         assert_eq!(entries(&output), [(E, ended(1, entity(1), None))]);
-        assert_eq!(output.stays, [entering_note(1, entity(2))]);
+        assert_eq!(stays(&output), [entering_note(1, entity(2))]);
         assert_eq!(region.player(player(1)), None);
         assert_eq!(
             region.entering_state(player(1)).map(|held| held.edge),
@@ -1320,7 +1386,7 @@ fn a_join_over_an_entering_stay_tells_its_edge_and_the_first_answer_is_passed_ov
     let output = tick(&mut region, &changes(vec![join(F, 1, 77)]));
     assert!(output.events.is_empty(), "no entity was shown");
     assert_eq!(entries(&output), [(E, ended(1, entity(1), Some(ATTEMPT)))]);
-    assert_eq!(output.stays, [entering_note(1, entity(2))]);
+    assert_eq!(stays(&output), [entering_note(1, entity(2))]);
     let first = answers(vec![entered(1, entity(1), None, None)]);
     assert!(silent(&tick(&mut region, &first)));
     let second = answers(vec![entered(1, entity(2), None, None)]);
@@ -1338,7 +1404,7 @@ fn a_join_over_an_entering_stay_tells_its_edge_and_the_first_answer_is_passed_ov
     let both = changes(vec![join(E, 1, ATTEMPT), join(F, 1, 77)]);
     let output = tick(&mut region, &both);
     assert_eq!(entries(&output), [(E, ended(1, entity(1), Some(ATTEMPT)))]);
-    assert_eq!(output.stays, [entering_note(1, entity(2))]);
+    assert_eq!(stays(&output), [entering_note(1, entity(2))]);
     assert_eq!(region.state().entering.len(), 1);
 }
 
@@ -1350,7 +1416,7 @@ fn an_arrival_over_an_earlier_stay_tells_the_edge_of_the_stay_that_was_there() {
     assert_eq!(removed(&output), [entity(1)]);
     assert_eq!(shown(&output), [entity(2)]);
     assert_eq!(entries(&output), [(E, ended(1, entity(1), Some(ATTEMPT)))]);
-    assert_eq!(output.stays, [has(1, entity(2), 1, place_from(&later))]);
+    assert_eq!(stays(&output), [has(1, entity(2), 1, place_from(&later))]);
     let state = state_of(&region, 1);
     assert_eq!((state.entity_id, state.edge), (entity(2), F));
 }
@@ -1444,7 +1510,7 @@ fn an_arrival_of_the_stay_that_is_there_with_more_hops_takes_its_place_without_a
     let state = state_of(&region, 5);
     assert_eq!((state.hops, state.edge), (3, F));
     assert_eq!(state.pose.position, NEARBY);
-    assert_eq!(output.stays, [has(5, TRAVELLER, 3, place_from(&later))]);
+    assert_eq!(stays(&output), [has(5, TRAVELLER, 3, place_from(&later))]);
 }
 
 #[test]
@@ -1477,6 +1543,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     };
     state.players.insert(player(1), earlier.clone());
     let holdings = Holdings {
@@ -1499,7 +1567,7 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     assert_eq!(state_of(&region, 1).entity_id, entity(1));
     // The first tick of this region names every stay: of the player, the one that is
     // here after it.
-    assert_eq!(output.stays, [has(1, entity(1), 0, at_spawn())]);
+    assert_eq!(stays(&output), [has(1, entity(1), 0, at_spawn())]);
 
     // Let go without being placed.
     let mut region = both.clone();
@@ -1515,7 +1583,10 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
         ]
     ));
     assert_eq!(region.player_count(), 0);
-    assert_eq!(output.stays, [let_go_note(1, entity(1), 1, place_in(FAR))]);
+    assert_eq!(
+        stays(&output),
+        [let_go_note(1, entity(1), 1, place_in(FAR))]
+    );
 
     // A stay that is here and not below the entering one cannot be while only the
     // home region gives out ids. If it is, the entering stay goes instead.
@@ -1567,6 +1638,8 @@ fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     };
     for (ours, theirs) in [(1, 3), (3, 1), (2, 2)] {
         let survivor = home();
@@ -1726,6 +1799,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     };
     state.players.insert(player(1), earlier);
     let holdings = Holdings {
@@ -2738,7 +2813,7 @@ impl World {
             assert_eq!(Self::holder(chunk_of(state.pose.position)), *region);
             let record = &self.store.records[&player(*n)];
             assert_eq!((record.stay, record.hops), (*entity, state.hops));
-            assert_eq!(record.place, Some(place_of(&state)));
+            assert_eq!(record.place.clone().map(unrested), Some(place_of(&state)));
         }
     }
 }
@@ -2895,7 +2970,7 @@ fn rows_8_and_9_a_stay_in_the_middle_of_a_hand_over_is_ended_where_it_lands() {
     assert!(new > record.stay);
     assert_eq!(
         Some(place_of(&state_of(world.region(EAST_REGION), 1))),
-        record.place
+        record.place.clone().map(unrested)
     );
 
     // The old edge wakes and passes its stay on: it lands where the later one is, is
@@ -3582,7 +3657,7 @@ fn a_discard_is_noted_gone_unless_the_region_holds_that_stay_or_a_later_one() {
     let output = tick(&mut region, &changes(vec![discard(1, entity(1), 0)]));
     assert!(output.stays.is_empty(), "{:?}", output.stays);
     let output = tick(&mut region, &changes(vec![discard(1, entity(1), 1)]));
-    assert_eq!(output.stays, [gone(1, entity(1), 1)]);
+    assert_eq!(stays(&output), [gone(1, entity(1), 1)]);
     let output = tick(&mut region, &changes(vec![discard(2, entity(7), 3)]));
-    assert_eq!(output.stays, [gone(2, entity(7), 3)]);
+    assert_eq!(stays(&output), [gone(2, entity(7), 3)]);
 }

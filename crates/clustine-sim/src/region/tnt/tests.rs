@@ -153,6 +153,8 @@ pub(in crate::region) fn add_player(
         last_hurt_mob: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Default::default(),
+        rested: 0,
         entity_id,
         name: format!("player{number}"),
         pose: Pose::at(Vec3::new(feet[0], feet[1], feet[2])),

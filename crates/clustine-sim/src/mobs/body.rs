@@ -393,7 +393,7 @@ impl Body {
             idle: part::decode(entries)?,
             idle_gained: part::decode(entries)?,
             last_damage: part::decode(entries)?,
-            effects: part::decode(entries)?,
+            effects: effects::decode(entries)?,
             swimming: part::decode(entries)?,
         })
     }

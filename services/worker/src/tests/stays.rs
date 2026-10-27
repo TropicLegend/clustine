@@ -350,6 +350,8 @@ fn place_at(x: f64) -> Place {
         inventory: Inventory::default(),
         selected_slot: 0,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -400,6 +402,8 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                     inventory,
                     selected_slot,
                     ender: Default::default(),
+                    effects: Vec::new(),
+                    time_since_rest: 0,
                 };
                 Some((entity_id, place))
             }
@@ -615,6 +619,8 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
         inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 4,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     };
 
     let (second, entered) = enters(&mut [&mut west], &mut [&mut e], 0, player(), 72);
@@ -721,7 +727,12 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         "the stay being let go to the region that holds its place",
         |_, seats| seats[0].entries().len() > before,
     );
-    let (number, entry) = e.entries().pop().unwrap();
+    let (number, mut entry) = e.entries().pop().unwrap();
+    // The time since rest their place kept counts the ticks the run took, which this
+    // test does not judge.
+    if let Durable::Departed { transfer, .. } = &mut entry {
+        transfer.time_since_rest = 0;
+    }
     let second = EntityId(2);
     let transfer = PlayerTransfer {
         sleeping: None,
@@ -730,6 +741,8 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: second,
         name: "player-1".to_owned(),
         pose: standing(EAST_X + 1.0),
@@ -851,6 +864,8 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
         inventory: Inventory::with_hotbar(hotbar),
         selected_slot: 2,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     };
     assert_eq!((second, entered), (EntityId(2), place));
     assert_eq!(e.entries().len(), 1, "only the first stay was let go");

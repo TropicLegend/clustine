@@ -301,6 +301,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(position),
@@ -327,6 +329,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: state.entity_id,
         name: state.name.clone(),
         pose: state.pose,
@@ -407,7 +411,36 @@ fn entries(output: &TickOutput) -> Vec<Durable> {
     output
         .durable
         .iter()
-        .map(|(_, _, entry)| entry.clone())
+        .map(|(_, _, entry)| unrested(entry.clone()))
+        .collect()
+}
+
+/// `entry` with the time since rest of a transfer it carries left out: it counts the
+/// ticks a test ran, which these tests do not judge.
+fn unrested(entry: Durable) -> Durable {
+    match entry {
+        Durable::Departed {
+            player,
+            mut transfer,
+            to,
+        } => {
+            transfer.time_since_rest = 0;
+            Durable::Departed {
+                player,
+                transfer,
+                to,
+            }
+        }
+        other => other,
+    }
+}
+
+/// The tick's durable entries, as [`entries`] leaves them, by edge and number.
+fn durable(output: &TickOutput) -> Vec<(EdgeId, u64, Durable)> {
+    output
+        .durable
+        .iter()
+        .map(|(edge, number, entry)| (*edge, *number, unrested(entry.clone())))
         .collect()
 }
 
@@ -1972,7 +2005,7 @@ fn a_player_in_a_chunk_that_turns_out_to_be_anothers_is_let_go_in_the_tick_of_th
     let output = world.tick(&inputs);
 
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -2107,7 +2140,7 @@ fn a_player_who_joins_at_a_spawn_point_the_region_knows_nothing_of_stays_until_t
     inputs.input(E, player(1), joined.entity_id, 1, move_to(13.5));
     let output = world.tick(&inputs);
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -2230,11 +2263,13 @@ fn a_player_who_steps_into_a_chunk_believed_anothers_is_let_go_in_that_tick_to_t
         attack_ticks: Some(0),
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         ..transfer_of(&before)
     };
     assert_eq!(before.attempt, Some(attempt(player(1))));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -2374,7 +2409,7 @@ fn an_arrival_for_a_chunk_believed_anothers_goes_on_to_that_region() {
     let output = world.tick(&arrive(F, player(5), arriving.clone()));
 
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             F,
             1,
@@ -2946,7 +2981,7 @@ fn a_dig_at_a_block_of_a_chunk_believed_anothers_is_passed_on_with_that_region()
         dig(BORDER_BLOCK_B, 5),
     ));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -2981,7 +3016,7 @@ fn a_dig_at_a_block_of_a_chunk_the_region_has_asked_for_is_passed_on_without_a_r
         dig(SOUTH_BLOCK, 5),
     ));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -3006,7 +3041,7 @@ fn a_dig_at_a_block_of_an_unknown_chunk_is_passed_on_without_a_region_and_claims
     inputs.input(E, player(1), entity(1), 2, dig(NORTH_BLOCK, 5));
     let output = world.tick(&inputs);
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -3415,7 +3450,7 @@ fn remotely(action: RemoteAction) -> (World, TickOutput) {
 fn a_remote_action_about_a_held_chunk_is_taken() {
     let (world, output) = remotely(remote(player(9), 4, break_at(OWN_BLOCK)));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             F,
             1,
@@ -3504,7 +3539,7 @@ fn a_remote_placement_against_a_held_block_into_a_held_spot_is_placed_and_done()
         place_against(against, spot, ELSEWHERE),
     ));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             F,
             1,
@@ -3699,17 +3734,17 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
     inputs.input(E, player(3), entity(3), 2, dig(BORDER_BLOCK_B, 13));
     let output = world.tick(&inputs);
 
-    let departed = |index: usize| match &output.durable[index].2 {
+    let departed = |index: usize| match unrested(output.durable[index].2.clone()) {
         Durable::Departed {
             player, transfer, ..
-        } => (*player, transfer.clone()),
+        } => (player, transfer),
         other => panic!("entry {index} is {other:?}"),
     };
     assert_eq!(output.durable.len(), 11, "{:?}", output.durable);
     let (_, transfer_3) = departed(9);
     let (_, transfer_4) = departed(10);
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![
             // Step 4, in the order of the changes.
             (
@@ -4321,7 +4356,7 @@ fn a_restored_player_in_a_chunk_the_store_does_not_name_stays_and_the_chunk_is_c
     // The answer lets the player go or not, as it would have.
     let output = world.tick(&foreign(&[(EAST, REGION_B)]));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(
             E,
             1,
@@ -4395,7 +4430,7 @@ fn a_region_with_the_empty_block_of_entity_ids_answers_every_join_with_refused()
     world.tick(&edges(vec![started(E, 10), started(F, 10)]));
     let output = world.tick(&changes(vec![join(E, player(1)), join(F, player(2))]));
     assert_eq!(
-        output.durable,
+        durable(&output),
         vec![(E, 1, refused(player(1))), (F, 1, refused(player(2))),]
     );
     assert_eq!(world.region.player_count(), 0);

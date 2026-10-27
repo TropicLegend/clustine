@@ -382,6 +382,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -408,6 +410,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
         riding: None,
         keys: Default::default(),
         kept: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -436,6 +440,8 @@ fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     }
 }
 
@@ -512,10 +518,42 @@ fn silent(output: &TickOutput) -> bool {
     output.events.is_empty() && output.player_events.is_empty() && output.durable.is_empty()
 }
 
+/// The player's state in `region`, with the tick their time since rest counts from left
+/// out: it is the tick the region placed or took in their stay, which these tests do not
+/// judge (the region's own tests check it).
 fn state_of(region: &Region, id: PlayerId) -> PlayerState {
-    region
-        .player_state(id)
-        .expect("the player is in the region")
+    PlayerState {
+        rested: 0,
+        ..region
+            .player_state(id)
+            .expect("the player is in the region")
+    }
+}
+
+/// `entries` with the time since rest of the transfers they carry left out, as
+/// [`state_of`] leaves it out.
+fn unrested(entries: &[(EdgeId, u64, Durable)]) -> Vec<(EdgeId, u64, Durable)> {
+    entries
+        .iter()
+        .map(|(edge, number, entry)| {
+            let entry = match entry.clone() {
+                Durable::Departed {
+                    player,
+                    mut transfer,
+                    to,
+                } => {
+                    transfer.time_since_rest = 0;
+                    Durable::Departed {
+                        player,
+                        transfer,
+                        to,
+                    }
+                }
+                other => other,
+            };
+            (*edge, *number, entry)
+        })
+        .collect()
 }
 
 /// What the region has of the block at `position`, if its chunk is loaded.
@@ -2085,7 +2123,7 @@ fn what_the_store_answers_after_a_doubt_is_the_truth_of_that_moment() {
     tick(&mut region, &arrive(F, player(5), arriving.clone()));
     let output = tick(&mut region, &foreign(&[(SOUTH, OTHER)]));
     assert_eq!(
-        output.durable,
+        unrested(&output.durable),
         vec![(
             F,
             1,
@@ -2128,7 +2166,7 @@ fn a_remote_action_about_a_chunk_of_the_regions_own_area_believed_anothers_goes_
         let action = remote(player(9), 4, step);
         let output = tick(&mut region, &remotely(F, action.clone()));
         assert_eq!(
-            output.durable,
+            unrested(&output.durable),
             vec![(F, 1, Durable::Remote { action, to: None })]
         );
         assert!(output.events.is_empty());
@@ -2174,7 +2212,7 @@ fn outside_its_pinned_areas_a_region_answers_not_mine_as_before() {
     inputs.remote_actions.push((E, action.clone()));
     let output = tick(&mut region, &inputs);
     assert_eq!(
-        output.durable,
+        unrested(&output.durable),
         vec![
             (
                 F,
@@ -2243,7 +2281,7 @@ fn a_players_own_action_on_a_doubted_chunk_names_the_believed_region_as_before()
         &single_input(E, player(1), entity(1), 2, dig(SOUTH_BLOCK, 6)),
     );
     assert_eq!(
-        output.durable,
+        unrested(&output.durable),
         vec![(
             E,
             1,
@@ -2289,7 +2327,7 @@ fn a_remote_placement_whose_step_concerns_a_held_chunk_leaves_the_belief_about_i
     );
     let output = tick(&mut region, &remotely(F, action));
     assert_eq!(
-        output.durable,
+        unrested(&output.durable),
         vec![(
             F,
             1,
@@ -2313,7 +2351,7 @@ fn an_arrival_and_an_action_for_a_doubted_chunk_in_one_tick_are_both_handled_as_
     inputs.remote_actions.push((E, action.clone()));
     let output = tick(&mut region, &inputs);
     assert_eq!(
-        output.durable,
+        unrested(&output.durable),
         vec![(E, 1, Durable::Remote { action, to: None })]
     );
     assert!(region.player(player(5)).is_some());
@@ -2378,6 +2416,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     }
 }
 
@@ -4552,7 +4592,7 @@ fn a_player_who_stays_and_steps_into_a_chunk_of_the_part_is_let_go_to_it_when_th
         // and with the store's word that the part holds it they are let go to it.
         let output = tick(&mut region, &foreign(&[(THIRD, PART)]));
         assert_eq!(
-            output.durable,
+            unrested(&output.durable),
             vec![(
                 F,
                 1,
@@ -4618,7 +4658,7 @@ fn a_player_who_went_and_walks_back_is_let_go_by_the_part_and_taken_in_with_the_
         assert_eq!(leaving.last_input, 3);
         let output = tick(&mut part.region, &foreign(&[(SECOND, REGION_A)]));
         assert_eq!(
-            output.durable,
+            unrested(&output.durable),
             vec![(
                 E,
                 1,
@@ -4661,7 +4701,7 @@ fn an_arrival_and_an_action_for_a_chunk_of_the_part_are_handled_as_for_a_chunk_n
         // The player is taken in and the chunk claimed; the action goes on without a
         // region, to whoever serves the edge the chunk.
         assert_eq!(
-            output.durable,
+            unrested(&output.durable),
             vec![(E, 2, Durable::Remote { action, to: None })]
         );
         assert_eq!(state_of(&region, player(5)), taken_in(&arriving, F));
@@ -4705,14 +4745,14 @@ fn once_told_that_the_part_holds_a_chunk_the_region_sends_on_what_comes_for_it_o
             // The chunk is of its own areas: it may have come back without a word
             // (section 2.2).
             assert_eq!(
-                output.durable,
+                unrested(&output.durable),
                 vec![(E, 2, Durable::Remote { action, to: None })]
             );
             assert!(region.player(player(5)).is_some());
             assert_eq!(output.claims, [THIRD]);
         } else {
             assert_eq!(
-                output.durable,
+                unrested(&output.durable),
                 vec![
                     (
                         F,
@@ -4935,6 +4975,8 @@ fn place_of(state: &PlayerState) -> Place {
         inventory: state.inventory.clone(),
         selected_slot: state.selected_slot,
         ender: Default::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -6048,7 +6090,12 @@ impl Pair {
                 // The store has the stay, how often it was handed on, and its place.
                 let kept = &cluster.places.records[&id];
                 assert_eq!((kept.stay, kept.hops), (player.entity_id, player.hops));
-                assert_eq!(kept.place, Some(place_of(&player)), "{id:?}");
+                // Its time since rest counts the ticks the run took (`state_of`).
+                let place = kept.place.clone().map(|place| Place {
+                    time_since_rest: 0,
+                    ..place
+                });
+                assert_eq!(place, Some(place_of(&player)), "{id:?}");
                 let stay = cluster.stays.get(&id).expect("the edge has the stay");
                 assert_eq!(
                     (stay.site, stay.entity),
@@ -6061,10 +6108,12 @@ impl Pair {
                     hops: 0,
                     // The attack strength counts the ticks a player spends in a region,
                     // which a hand-over's ticks on the way leave out (a named difference
-                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2), and so does the time
+                    // since rest (`docs/groundwork/n9-plan.md`, 9.7).
                     attack_reset: None,
                     using: None,
                     cooldowns: Vec::new(),
+                    rested: 0,
                     ..player
                 };
                 assert!(
@@ -6082,10 +6131,12 @@ impl Pair {
                     hops: 0,
                     // The attack strength counts the ticks a player spends in a region,
                     // which a hand-over's ticks on the way leave out (a named difference
-                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2), and so does the time
+                    // since rest (`docs/groundwork/n9-plan.md`, 9.7).
                     attack_reset: None,
                     using: None,
                     cooldowns: Vec::new(),
+                    rested: 0,
                     ..player
                 };
                 (id, plain)

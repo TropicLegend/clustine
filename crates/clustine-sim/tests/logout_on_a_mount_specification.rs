@@ -222,6 +222,8 @@ fn place_at(at: [f64; 3]) -> Place {
         inventory: Inventory::default(),
         selected_slot: 0,
         ender: EnderChest::default(),
+        effects: Vec::new(),
+        time_since_rest: 0,
     }
 }
 
@@ -699,6 +701,8 @@ fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: entity,
         name: "Player1".to_owned(),
         pose: Pose::at(at),

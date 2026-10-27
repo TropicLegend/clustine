@@ -278,7 +278,7 @@ pub(crate) fn take_potion_contents(input: &mut Input<'_>) -> Result<PotionConten
     })
 }
 
-fn put_effect(out: &mut Vec<u8>, effect: &EffectInstance) {
+pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &EffectInstance) {
     put_string(out, &effect.effect);
     out.extend_from_slice(&effect.amplifier.to_be_bytes());
     out.extend_from_slice(&effect.duration.to_be_bytes());
@@ -287,7 +287,7 @@ fn put_effect(out: &mut Vec<u8>, effect: &EffectInstance) {
     out.push(u8::from(effect.show_icon));
 }
 
-fn take_effect(input: &mut Input<'_>) -> Result<EffectInstance, FormatError> {
+pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<EffectInstance, FormatError> {
     Ok(EffectInstance {
         effect: take_string(input)?,
         amplifier: input.i32()?,

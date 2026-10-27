@@ -112,6 +112,24 @@ pub struct PlayerState {
     /// The item groups' cooldowns, on the region's ticks; a merge keeps them as they
     /// were, as it keeps `attack_reset`.
     pub cooldowns: Vec<crate::api::Cooldown>,
+    /// Their effects, each level's end on the region's ticks (`docs/groundwork/n9-plan.md`,
+    /// section 5.4), so that a state changes only when they do; a merge keeps them as
+    /// they were, as it keeps `attack_reset`.
+    pub effects: Vec<KeptEffect>,
+    /// The tick their time since rest counts from.
+    pub rested: u64,
+}
+
+/// A level of an effect as a region's state keeps it: the effect by name, its amplifier,
+/// the region's tick it ends in (none for ever) and the instance's flags.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptEffect {
+    pub effect: String,
+    pub amplifier: u8,
+    pub end: Option<u64>,
+    pub ambient: bool,
+    pub visible: bool,
+    pub show_icon: bool,
 }
 
 /// A menu a player has open: what it shows, the stack on the cursor and a drag under

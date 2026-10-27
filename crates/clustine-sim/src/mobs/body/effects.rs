@@ -30,6 +30,7 @@
 
 use clustine_blocks::data::entity_in_tag;
 use clustine_data::attributes as ids;
+use clustine_world::components::EffectInstance;
 use serde::{Deserialize, Serialize};
 
 use super::attributes::{ADD_MULTIPLIED_TOTAL, SPEED_EFFECT};
@@ -97,6 +98,7 @@ impl Effect {
     pub(crate) const FIRE_RESISTANCE: Self = Self(11);
     pub(crate) const WATER_BREATHING: Self = Self(12);
     pub(crate) const INVISIBILITY: Self = Self(13);
+    pub(crate) const GLOWING: Self = Self(24);
     pub(crate) const POISON: Self = Self(18);
     pub(crate) const CONDUIT_POWER: Self = Self(28);
     pub(crate) const OOZING: Self = Self(37);
@@ -104,56 +106,70 @@ impl Effect {
     pub(crate) const BREATH_OF_THE_NAUTILUS: Self = Self(39);
 
     /// The effect of the name `name` (`minecraft:` and all).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the witch's potions name their effects (N7k)")
-    )]
     pub(crate) fn named(name: &str) -> Option<Self> {
         let at = NAMES.iter().position(|known| *known == name)?;
         Some(Self(u8::try_from(at).expect("forty names fit a byte")))
     }
 
     /// Its name, or none for an id this build does not know.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the witch's potions name their effects (N7k)")
-    )]
     pub(crate) fn name(self) -> Option<&'static str> {
         NAMES.get(usize::from(self.0)).copied()
     }
 }
 
-/// One level of an effect: its amplifier, and the moment it ends (none for an infinite
-/// one, `duration` -1).
+/// One level of an effect: its amplifier, the moment it ends (none for an infinite one,
+/// `duration` -1), and the flags the game keeps of an instance (`ambient`, from a
+/// beacon or a conduit; `visible`, its particles; `showIcon`). A mob's moments are its
+/// own (its `lived`), a player's the region's ticks (`docs/groundwork/n9-plan.md`,
+/// 5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Layer {
     pub(crate) amplifier: u8,
-    pub(crate) end: Option<u32>,
+    pub(crate) end: Option<u64>,
+    pub(crate) ambient: bool,
+    pub(crate) visible: bool,
+    pub(crate) show_icon: bool,
+}
+
+/// A level as version 1 of the part kept it, before the flags, which an effect then had
+/// as the game's defaults: not ambient, visible, with its icon.
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct LayerV1 {
+    amplifier: u8,
+    end: Option<u32>,
 }
 
 impl Layer {
-    /// A level of `amplifier` for `duration` ticks from the moment `now`; -1 is for
-    /// ever, and a duration below that is none.
-    fn new(amplifier: u8, duration: i32, now: u32) -> Self {
+    /// A level of `amplifier` for `duration` ticks from the moment `now`, not ambient,
+    /// visible and with its icon (`new MobEffectInstance(effect, duration, amplifier)`);
+    /// -1 is for ever, and a duration below that is none.
+    pub(crate) fn new(amplifier: u8, duration: i32, now: u64) -> Self {
         let end = (duration != -1)
-            .then(|| now.saturating_add(u32::try_from(duration.max(0)).unwrap_or(0)));
-        Self { amplifier, end }
+            .then(|| now.saturating_add(u64::try_from(duration.max(0)).unwrap_or(0)));
+        Self {
+            amplifier,
+            end,
+            ambient: false,
+            visible: true,
+            show_icon: true,
+        }
     }
 
     /// `duration` at the moment `now`: what is left, never below 0 (`mapDuration` stops
     /// a count at 0, a hidden level's too), or -1 for ever.
-    fn duration(self, now: u32) -> i64 {
-        self.end
-            .map_or(-1, |end| (i64::from(end) - i64::from(now)).max(0))
+    pub(crate) fn duration(self, now: u64) -> i64 {
+        self.end.map_or(-1, |end| {
+            i64::try_from(end.saturating_sub(now)).unwrap_or(i64::MAX)
+        })
     }
 
     /// `hasRemainingDuration()` at the moment `now`.
-    fn remains(self, now: u32) -> bool {
+    fn remains(self, now: u64) -> bool {
         self.end.is_none() || self.duration(now) > 0
     }
 
     /// `isShorterDurationThan(other)` at the moment `now`.
-    fn shorter_than(self, other: Self, now: u32) -> bool {
+    fn shorter_than(self, other: Self, now: u64) -> bool {
         self.end.is_some() && (self.duration(now) < other.duration(now) || other.end.is_none())
     }
 }
@@ -168,9 +184,30 @@ pub(crate) struct Active {
 
 impl Active {
     /// The level in force.
-    fn top(&self) -> Layer {
+    pub(crate) fn top(&self) -> Layer {
         self.layers[0]
     }
+}
+
+/// What an addition did to a store of effects (`addEffect`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Added {
+    /// Spared, or no stronger nor longer than what it has: nothing changed.
+    Nothing,
+    /// A new effect (`onEffectAdded`).
+    New,
+    /// The level in force or its length changed (`onEffectUpdated`).
+    Updated,
+}
+
+/// What the count down of a store did to one of its effects (`tickEffects`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Counted {
+    /// Its level in force ended and gave way to the one it hid
+    /// (`downgradeToHiddenEffect`, `onEffectUpdated`).
+    Downgraded(Effect),
+    /// It ended (`onEffectsRemoved`).
+    Ended(Effect),
 }
 
 /// The effects a mob has, ascending by effect. A part of its own, so that a record
@@ -182,13 +219,120 @@ pub(crate) struct Effects {
 
 impl Part for Effects {
     const ID: u16 = body_ids::EFFECTS;
-    const VERSION: u8 = 1;
+    const VERSION: u8 = 2;
+}
+
+/// The part as its version 1 kept it.
+#[derive(Debug, Clone, Deserialize)]
+struct EffectsV1 {
+    active: Vec<(Effect, Vec<LayerV1>)>,
+}
+
+/// The effects of `entries`, from the part of either version.
+pub(crate) fn decode(
+    entries: &[clustine_world::Entry],
+) -> Result<Effects, crate::mobs::part::PartError> {
+    Ok(
+        match crate::mobs::part::decode_or_older::<Effects, EffectsV1>(entries, 1)? {
+            Ok(effects) => effects,
+            Err(old) => Effects {
+                active: old
+                    .active
+                    .into_iter()
+                    .map(|(effect, layers)| Active {
+                        effect,
+                        layers: layers
+                            .into_iter()
+                            .map(|layer| Layer {
+                                amplifier: layer.amplifier,
+                                end: layer.end.map(u64::from),
+                                ambient: false,
+                                visible: true,
+                                show_icon: true,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+        },
+    )
 }
 
 impl Effects {
     fn at(&self, effect: Effect) -> Result<usize, usize> {
         self.active
             .binary_search_by_key(&effect, |active| active.effect)
+    }
+
+    /// `addEffect` of `effect` at the level `new` at the moment `now`, as
+    /// `MobEffectInstance.update` keeps the levels: what it did. Whoever has the store
+    /// makes the effect's modifiers again where it is new or updated.
+    pub(crate) fn add(&mut self, effect: Effect, new: Layer, now: u64) -> Added {
+        match self.at(effect) {
+            Err(at) => {
+                self.active.insert(
+                    at,
+                    Active {
+                        effect,
+                        layers: vec![new],
+                    },
+                );
+                Added::New
+            }
+            Ok(at) => {
+                if update(&mut self.active[at].layers, 0, new, now) {
+                    Added::Updated
+                } else {
+                    Added::Nothing
+                }
+            }
+        }
+    }
+
+    /// `removeEffect(effect)`: whether it had it.
+    pub(crate) fn remove(&mut self, effect: Effect) -> bool {
+        match self.at(effect) {
+            Ok(at) => {
+                self.active.remove(at);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// The effects that do their tick in the `tickEffects` at the moment `now`, with
+    /// their levels in force: those that had time left before it.
+    pub(crate) fn due(&self, now: u64) -> Vec<(Effect, Layer)> {
+        self.active
+            .iter()
+            .map(|active| (active.effect, active.top()))
+            .filter(|(_, top)| top.remains(now.saturating_sub(1)))
+            .collect()
+    }
+
+    /// The count down of `tickEffects` at the moment `now`, after the effects due did
+    /// their tick: each level in force at its end gives way to the one it hid, or the
+    /// effect ends. What it did, in the order of the effects.
+    pub(crate) fn count_down(&mut self, now: u64) -> Vec<Counted> {
+        let mut counted = Vec::new();
+        let mut at = 0;
+        while at < self.active.len() {
+            let active = &mut self.active[at];
+            let (effect, top) = (active.effect, active.top());
+            if top.remains(now.saturating_sub(1)) {
+                if top.end.is_some() && top.duration(now) == 0 && active.layers.len() > 1 {
+                    active.layers.remove(0);
+                    counted.push(Counted::Downgraded(effect));
+                }
+                if self.active[at].top().remains(now) {
+                    at += 1;
+                    continue;
+                }
+            }
+            self.active.remove(at);
+            counted.push(Counted::Ended(effect));
+        }
+        counted
     }
 
     /// `hasEffect(effect)`. An effect is taken off in the `tickEffects` at its end, so
@@ -211,6 +355,12 @@ impl Effects {
             .map(|at| self.active[at].top().amplifier)
     }
 
+    /// The amplifier in force of an effect it has.
+    fn amplifier_in_force(&self, effect: Effect) -> u8 {
+        self.at(effect)
+            .map_or(0, |at| self.active[at].top().amplifier)
+    }
+
     /// `MobEffectUtil.hasWaterBreathing`: under water it loses no air.
     pub(crate) fn water_breathing(&self) -> bool {
         self.has(Effect::WATER_BREATHING)
@@ -231,6 +381,110 @@ impl Effects {
     pub(crate) fn invisible(&self) -> bool {
         self.has(Effect::INVISIBILITY)
     }
+}
+
+/// The effects of `effects` as a place or a hand-over carries them at the moment `now`:
+/// each level by its effect's name with the ticks it has left (-1 for ever), the
+/// levels of an effect one after another from the one in force down.
+pub(crate) fn instances(effects: &Effects, now: u64) -> Vec<EffectInstance> {
+    effects
+        .active
+        .iter()
+        .filter_map(|active| Some((active.effect.name()?, active)))
+        .flat_map(|(name, active)| {
+            active.layers.iter().map(move |layer| EffectInstance {
+                effect: name.to_owned(),
+                amplifier: i32::from(layer.amplifier),
+                duration: i32::try_from(layer.duration(now)).unwrap_or(i32::MAX),
+                ambient: layer.ambient,
+                visible: layer.visible,
+                show_icon: layer.show_icon,
+            })
+        })
+        .collect()
+}
+
+/// The effects `instances` of a place or a hand-over, counted on from the moment `now`
+/// (the inverse of [`instances`]); an effect this build does not know is dropped.
+pub(crate) fn from_instances(instances: &[EffectInstance], now: u64) -> Effects {
+    let mut effects = Effects::default();
+    for instance in instances {
+        let Some(effect) = Effect::named(&instance.effect) else {
+            continue;
+        };
+        let layer = Layer {
+            ambient: instance.ambient,
+            visible: instance.visible,
+            show_icon: instance.show_icon,
+            ..Layer::new(
+                u8::try_from(instance.amplifier.clamp(0, 255)).unwrap_or(0),
+                instance.duration,
+                now,
+            )
+        };
+        match effects.at(effect) {
+            Ok(at) => effects.active[at].layers.push(layer),
+            Err(at) => effects.active.insert(
+                at,
+                Active {
+                    effect,
+                    layers: vec![layer],
+                },
+            ),
+        }
+    }
+    effects
+}
+
+/// The effects of `effects` as a region's state keeps them, their ends as they are.
+pub(crate) fn kept(effects: &Effects) -> Vec<crate::state::KeptEffect> {
+    effects
+        .active
+        .iter()
+        .filter_map(|active| Some((active.effect.name()?, active)))
+        .flat_map(|(name, active)| {
+            active
+                .layers
+                .iter()
+                .map(move |layer| crate::state::KeptEffect {
+                    effect: name.to_owned(),
+                    amplifier: layer.amplifier,
+                    end: layer.end,
+                    ambient: layer.ambient,
+                    visible: layer.visible,
+                    show_icon: layer.show_icon,
+                })
+        })
+        .collect()
+}
+
+/// The effects a region's state kept (the inverse of [`kept`]); an effect this build does
+/// not know is dropped.
+pub(crate) fn from_kept(kept: &[crate::state::KeptEffect]) -> Effects {
+    let mut effects = Effects::default();
+    for level in kept {
+        let Some(effect) = Effect::named(&level.effect) else {
+            continue;
+        };
+        let layer = Layer {
+            amplifier: level.amplifier,
+            end: level.end,
+            ambient: level.ambient,
+            visible: level.visible,
+            show_icon: level.show_icon,
+        };
+        match effects.at(effect) {
+            Ok(at) => effects.active[at].layers.push(layer),
+            Err(at) => effects.active.insert(
+                at,
+                Active {
+                    effect,
+                    layers: vec![layer],
+                },
+            ),
+        }
+    }
+    effects
 }
 
 /// `canBeAffected(instance)`: the types of a tag are spared its effect.
@@ -280,7 +534,7 @@ fn remove_modifiers(attributes: &mut Attributes, kind: u16, effect: Effect) {
 /// stronger effect takes over, and hides the one it took over from if it is the shorter;
 /// a longer one of the same level lengthens it; a longer weaker one waits hidden below
 /// (or updates the one hidden there). Whether the level in force or its length changed.
-fn update(layers: &mut Vec<Layer>, at: usize, new: Layer, now: u32) -> bool {
+fn update(layers: &mut Vec<Layer>, at: usize, new: Layer, now: u64) -> bool {
     let this = layers[at];
     if new.amplifier > this.amplifier {
         if new.shorter_than(this, now) {
@@ -321,26 +575,19 @@ pub(crate) fn add(
     if !can_be_affected(kind, effect) {
         return false;
     }
-    let new = Layer::new(amplifier, duration, now);
+    let now = u64::from(now);
     let body = &mut mob.body;
-    match body.effects.at(effect) {
-        Err(at) => {
-            body.effects.active.insert(
-                at,
-                Active {
-                    effect,
-                    layers: vec![new],
-                },
-            );
+    match body
+        .effects
+        .add(effect, Layer::new(amplifier, duration, now), now)
+    {
+        Added::Nothing => false,
+        Added::New => {
             add_modifiers(&mut body.attributes, kind, effect, amplifier);
             true
         }
-        Ok(at) => {
-            let active = &mut body.effects.active[at];
-            if !update(&mut active.layers, 0, new, now) {
-                return false;
-            }
-            let amplifier = active.top().amplifier;
+        Added::Updated => {
+            let amplifier = body.effects.amplifier_in_force(effect);
             remove_modifiers(&mut body.attributes, kind, effect);
             add_modifiers(&mut body.attributes, kind, effect, amplifier);
             true
@@ -396,34 +643,24 @@ pub(crate) fn tick_effects(tick: &mut MobTick<'_>) {
     if tick.mob.body.effects.active.is_empty() {
         return;
     }
-    let now = super::moment(tick);
+    let now = u64::from(super::moment(tick));
     let kind = tick.kind;
-    let mut at = 0;
-    while at < tick.mob.body.effects.active.len() {
-        let active = &tick.mob.body.effects.active[at];
-        let (effect, top) = (active.effect, active.top());
-        // `tickServer`: nothing left before the tick (added for no time) ends it.
-        if top.remains(now.saturating_sub(1)) {
-            // `shouldApplyEffectTickThisTick`: an instantaneous effect's every tick it
-            // lasts; the others built do nothing in their tick.
-            if effect == Effect::INSTANT_HEALTH || effect == Effect::INSTANT_DAMAGE {
-                instant(tick, effect == Effect::INSTANT_DAMAGE, top.amplifier);
-            }
-            let body = &mut tick.mob.body;
-            let active = &mut body.effects.active[at];
-            if top.end.is_some() && top.duration(now) == 0 && active.layers.len() > 1 {
-                active.layers.remove(0);
-                let amplifier = active.top().amplifier;
+    // `tickServer`: nothing left before the tick (added for no time) ends it; an
+    // instantaneous effect does its tick every tick it lasts, the others built nothing.
+    for (effect, top) in tick.mob.body.effects.due(now) {
+        if effect == Effect::INSTANT_HEALTH || effect == Effect::INSTANT_DAMAGE {
+            instant(tick, effect == Effect::INSTANT_DAMAGE, top.amplifier);
+        }
+    }
+    let body = &mut tick.mob.body;
+    for counted in body.effects.count_down(now) {
+        match counted {
+            Counted::Downgraded(effect) => {
+                let amplifier = body.effects.amplifier_in_force(effect);
                 remove_modifiers(&mut body.attributes, kind, effect);
                 add_modifiers(&mut body.attributes, kind, effect, amplifier);
             }
-            if body.effects.active[at].top().remains(now) {
-                at += 1;
-                continue;
-            }
+            Counted::Ended(effect) => remove_modifiers(&mut body.attributes, kind, effect),
         }
-        let body = &mut tick.mob.body;
-        body.effects.active.remove(at);
-        remove_modifiers(&mut body.attributes, kind, effect);
     }
 }

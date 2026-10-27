@@ -27,12 +27,12 @@ use clustine_protocol::packets::play::{
     ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
     Cooldown, DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
     PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
-    RemoveEntities, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
+    RemoveEntities, RemoveMobEffect, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
     SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
     SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
     SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity,
-    UnloadChunk, UpdateAttributes, abilities, angle, entity_data, game_event, game_mode,
-    inventory as protocol_inventory, level_event, player_info, pose, relative,
+    UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle, entity_data, game_event,
+    game_mode, inventory as protocol_inventory, level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -1860,6 +1860,13 @@ impl Fanout {
             } => self.rides(player, pose).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event:
+                    event @ (PlayerEvent::EffectAdded { .. }
+                    | PlayerEvent::EffectRemoved { .. }
+                    | PlayerEvent::Attributes(_)),
+            } => self.own_effects(player, event).await,
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::Cooldown { group, ticks },
             } => {
                 let packet = encoded(&Cooldown { group, ticks });
@@ -3012,6 +3019,60 @@ impl Fanout {
 
     /// Tells the client of `player` that the region selected the hotbar slot `slot`
     /// (`ClientboundSetHeldSlotPacket`), once it has entered.
+    /// What changed of the player's own effects and the attributes they touch, sent to
+    /// their client about their own entity (`ServerPlayer.onEffectAdded`,
+    /// `onEffectUpdated`, `onEffectsRemoved`; `docs/groundwork/n9-plan.md`, section 5.4).
+    async fn own_effects(&mut self, player: PlayerId, event: PlayerEvent) {
+        let Some(entity) = self.players.get(&player).and_then(|view| view.entity) else {
+            return;
+        };
+        let entity_id = self.wire.of(entity);
+        let effect_id = |name: &str| {
+            clustine_protocol::components::mob_effect::NAMES
+                .iter()
+                .position(|known| *known == name)
+                .and_then(|at| i32::try_from(at).ok())
+        };
+        let packet = match event {
+            PlayerEvent::EffectAdded { instance, blend } => {
+                use clustine_protocol::packets::play::effect_flags;
+                let Some(effect) = effect_id(&instance.effect) else {
+                    return;
+                };
+                let mut flags = 0;
+                for (set, flag) in [
+                    (instance.ambient, effect_flags::AMBIENT),
+                    (instance.visible, effect_flags::VISIBLE),
+                    (instance.show_icon, effect_flags::SHOW_ICON),
+                    (blend, effect_flags::BLEND),
+                ] {
+                    if set {
+                        flags |= flag;
+                    }
+                }
+                encoded(&UpdateMobEffect {
+                    entity_id,
+                    effect,
+                    amplifier: instance.amplifier,
+                    duration: instance.duration,
+                    flags,
+                })
+            }
+            PlayerEvent::EffectRemoved { effect } => {
+                let Some(effect) = effect_id(&effect) else {
+                    return;
+                };
+                encoded(&RemoveMobEffect { entity_id, effect })
+            }
+            PlayerEvent::Attributes(attributes) => encoded(&UpdateAttributes {
+                entity_id,
+                attributes: attributes.into_iter().map(attribute_snapshot).collect(),
+            }),
+            _ => return,
+        };
+        self.send_to_player(player, [packet]).await;
+    }
+
     async fn held_slot(&mut self, player: PlayerId, slot: u8) {
         let entered = self
             .players
@@ -7042,6 +7103,8 @@ mod tests {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: entity,
             name: "Player1".to_owned(),
             pose: Pose::at(Vec3::new(64.5, -60.0, 0.5)),
@@ -9995,6 +10058,8 @@ mod scenarios {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

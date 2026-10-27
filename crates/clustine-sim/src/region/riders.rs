@@ -536,7 +536,7 @@ impl Region {
             &player.as_passenger(riding.vehicle),
             &PLAYER_POSES,
         );
-        let mut place = player.place();
+        let mut place = player.place(self.tick);
         place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
         let mut face = player.face();
         face.position = at;

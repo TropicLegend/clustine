@@ -76,6 +76,7 @@ mod mounts;
 mod picks;
 mod pistons;
 mod placing;
+mod player_effects;
 mod pressed;
 mod projectile_hits;
 mod projectiles;
@@ -377,6 +378,11 @@ struct Player {
     /// See [`PlayerState::using`] and [`PlayerState::cooldowns`].
     using: Option<crate::api::Using>,
     cooldowns: Vec<crate::api::Cooldown>,
+    /// Their effects, each level's end in the region's ticks (`effects.rs`).
+    effects: crate::mobs::body::effects::Effects,
+    /// The tick their time since rest counts from, which a sleep starts again: the
+    /// count is the ticks since, and none while they sleep.
+    rested: u64,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -924,7 +930,7 @@ impl Region {
     /// Everything the region knows of `player`, if they are in the region: among it the
     /// edge they belong to, which is whom the region tells what concerns them.
     pub fn player_state(&self, player: PlayerId) -> Option<PlayerState> {
-        self.players.get(&player).map(Player::to_state)
+        self.players.get(&player).map(|player| player.to_state())
     }
 
     /// The stay the region holds as entering for `player`, if it holds one: the runner
@@ -1090,6 +1096,7 @@ impl Region {
         // `Player.tick`'s look at the main hand, after the inputs; then its cooldowns
         // and `LivingEntity.tick`'s use of an item (`using.rs`).
         self.watch_main_hands(&main_hands);
+        self.tick_player_effects(&mut output);
         self.tick_cooldowns(&mut output);
         self.tick_uses(&mut output);
         // The level's sleep check, before the blocks and entities, which see a morning it
@@ -1226,6 +1233,8 @@ impl Region {
                     selected_slot: transfer.selected_slot,
                     ender: transfer.ender.clone(),
                     experience: transfer.experience,
+                    effects: transfer.effects.clone(),
+                    time_since_rest: transfer.time_since_rest,
                 },
                 face: PlayerFace {
                     sprinting: transfer.keys.sprint,
@@ -1559,8 +1568,14 @@ impl Region {
         output
             .events
             .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        let shows_flags = !player.effects.active.is_empty();
         self.players.insert(id, player);
         self.journal.players.insert(id);
+        // Every effect again, and what they show the others (`player_effects.rs`).
+        self.tell_effects(id, output);
+        if shows_flags {
+            self.show_shared_flags(id, output);
+        }
     }
 
     /// A connection of a player through `edge` has ended.
@@ -1735,6 +1750,11 @@ impl Region {
             last_level_up: None,
             last_hurt_mob: None,
             using: transfer.using,
+            // Counted on from the region's ticks, as the cooldowns are.
+            effects: crate::mobs::body::effects::from_instances(&transfer.effects, self.tick),
+            rested: self
+                .tick
+                .saturating_sub(u64::from(transfer.time_since_rest)),
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -1812,6 +1832,12 @@ impl Region {
             .as_ref()
             .map(|place| place.experience)
             .unwrap_or_default();
+        // Their effects and their time since rest too, counted on from now.
+        let (effects, time_since_rest) = answer
+            .place
+            .as_ref()
+            .map(|place| (place.effects.clone(), place.time_since_rest))
+            .unwrap_or_default();
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
         // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). They wait at
@@ -1859,6 +1885,8 @@ impl Region {
                         attack_ticks: None,
                         using: None,
                         cooldowns: Vec::new(),
+                        effects: place.effects.clone(),
+                        time_since_rest: place.time_since_rest,
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -1904,6 +1932,8 @@ impl Region {
             last_hurt_mob: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: crate::mobs::body::effects::from_instances(&effects, self.tick),
+            rested: self.tick.saturating_sub(u64::from(time_since_rest)),
         };
         self.enter(id, player, attempt, output);
     }
@@ -1980,7 +2010,7 @@ impl Region {
                     player: *id,
                     entity: player.entity_id,
                     hops: player.hops,
-                    place: player.place(),
+                    place: player.place(self.tick),
                     face: player.face(),
                     let_go: false,
                 };
@@ -2026,7 +2056,7 @@ impl Region {
             players: journal
                 .players
                 .into_iter()
-                .map(|id| (id, self.players.get(&id).map(Player::to_state)))
+                .map(|id| (id, self.players.get(&id).map(|player| player.to_state())))
                 .collect(),
             edges: journal
                 .edges
@@ -2333,7 +2363,13 @@ impl Region {
             }
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
-            PlayerInput::Keys(keys) => player.keys = *keys,
+            PlayerInput::Keys(keys) => {
+                let shown = (player.keys.sneak, player.keys.sprint) != (keys.sneak, keys.sprint);
+                player.keys = *keys;
+                if shown {
+                    self.show_shared_flags(id, output);
+                }
+            }
             // A driven vehicle's moves and paddles (`boats.rs`).
             // A player on their way to their unit keeps its moves for when they come.
             PlayerInput::MoveVehicle(moved) => {
@@ -3389,9 +3425,12 @@ impl Player {
             respawn: self.respawn,
             using: self.using,
             cooldowns: self.cooldowns.clone(),
+            effects: crate::mobs::body::effects::kept(&self.effects),
+            rested: self.rested,
         }
     }
 
+    /// The player of `state`, the state of the region's tick `tick`.
     fn from_state(state: PlayerState) -> Self {
         Self {
             entity_id: state.entity_id,
@@ -3418,6 +3457,8 @@ impl Player {
             attack_reset: state.attack_reset,
             using: state.using,
             cooldowns: state.cooldowns,
+            effects: crate::mobs::body::effects::from_kept(&state.effects),
+            rested: state.rested,
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
@@ -3441,8 +3482,18 @@ impl Player {
         face
     }
 
-    /// Where the player is and what they hold, as the world store keeps it.
-    fn place(&self) -> Place {
+    /// Their time since rest at the tick `tick` (`TIME_SINCE_REST`): none while they
+    /// sleep.
+    fn time_since_rest(&self, tick: u64) -> u32 {
+        if self.sleeping.is_some() {
+            return 0;
+        }
+        u32::try_from(tick.saturating_sub(self.rested)).unwrap_or(u32::MAX)
+    }
+
+    /// Where the player is and what they hold, as the world store keeps it after the
+    /// tick `tick`.
+    fn place(&self, tick: u64) -> Place {
         Place {
             pose: self.pose,
             flying: self.flying,
@@ -3451,12 +3502,17 @@ impl Player {
             ender: self.ender.clone(),
             experience: self.experience,
             respawn: self.respawn,
+            effects: crate::mobs::body::effects::instances(&self.effects, tick + 1),
+            time_since_rest: self.time_since_rest(tick + 1),
         }
     }
 
     /// What another region needs to carry on with the player, who has been handed on
     /// once more by it in `tick`.
     fn into_transfer(self, tick: u64) -> PlayerTransfer {
+        // Counted as the attack's is, from the next region's first tick.
+        let effects = crate::mobs::body::effects::instances(&self.effects, tick + 1);
+        let time_since_rest = self.time_since_rest(tick + 1);
         PlayerTransfer {
             entity_id: self.entity_id,
             name: self.name,
@@ -3480,7 +3536,8 @@ impl Player {
             sleeping: self.sleeping,
             respawn: self.respawn,
             using: self.using,
-            // Counted as the attack's is.
+            effects,
+            time_since_rest,
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -3643,6 +3700,7 @@ mod tests {
     mod n8_specification;
     mod pigs;
     mod pistons;
+    mod player_effects;
     mod post_processing_and_seams;
     mod pressed;
     mod pushed;
@@ -4105,7 +4163,15 @@ mod tests {
             .filter_map(|(_, _, entry)| match entry {
                 Durable::Departed {
                     player, transfer, ..
-                } => Some((*player, PlayerEvent::Departed(transfer.clone()))),
+                } => {
+                    // The time since rest counts the ticks the test ran, which these
+                    // tests do not judge; `tests/player_effects.rs` checks it.
+                    let transfer = PlayerTransfer {
+                        time_since_rest: 0,
+                        ..transfer.clone()
+                    };
+                    Some((*player, PlayerEvent::Departed(transfer)))
+                }
                 _ => None,
             });
         let mut told = events[..spawned].to_vec();
@@ -5662,6 +5728,8 @@ mod tests {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: EntityId(entity as u64),
             name: format!("Player{number}"),
             pose: Pose {
@@ -6245,6 +6313,8 @@ mod tests {
                         attack_ticks: Some(0),
                         using: None,
                         cooldowns: Vec::new(),
+                        effects: Vec::new(),
+                        time_since_rest: 0,
                         entity_id: EntityId(1),
                         name: "Player1".to_owned(),
                         pose,
@@ -6562,6 +6632,8 @@ mod tests {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: EntityId(1),
             name: "Player1".to_owned(),
             pose: Pose::at(SPAWN),

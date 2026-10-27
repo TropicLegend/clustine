@@ -1162,6 +1162,8 @@ impl Script {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: person.entity,
             name: "Player".to_owned(),
             pose: Pose::at(within(chunk)),

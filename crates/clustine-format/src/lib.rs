@@ -51,8 +51,10 @@ pub use region::{
 /// first blocks file follows its entities, and a seat may be granted across a line
 /// (`docs/groundwork/n7l-plan.md`, section 4; `n7j-mount-across-a-line.md`); 14 since
 /// every stack carries its components after its count, kinds by name, so that a later
-/// kind needs no raise (`docs/groundwork/n9-plan.md`, section 3.2).
-pub const FORMAT_VERSION: u8 = 14;
+/// kind needs no raise (`docs/groundwork/n9-plan.md`, section 3.2); 15 since a player's
+/// place holds their effects and their time since rest after their respawn point
+/// (section 5.4 of the same plan).
+pub const FORMAT_VERSION: u8 = 15;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

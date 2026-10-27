@@ -424,6 +424,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         keys: Default::default(),
         kept: Vec::new(),
         menu: None,
+        effects: Vec::new(),
+        rested: 0,
     }
 }
 
@@ -2533,10 +2535,12 @@ impl Pair {
                     hops: 0,
                     // The attack strength counts the ticks a player spends in a region,
                     // which a hand-over's ticks on the way leave out (a named difference
-                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2), and so does the time
+                    // since rest (`docs/groundwork/n9-plan.md`, 9.7).
                     attack_reset: None,
                     using: None,
                     cooldowns: Vec::new(),
+                    rested: 0,
                     ..player
                 };
                 assert!(
@@ -2554,10 +2558,12 @@ impl Pair {
                     hops: 0,
                     // The attack strength counts the ticks a player spends in a region,
                     // which a hand-over's ticks on the way leave out (a named difference
-                    // of `docs/groundwork/n7-plan.md`, 7.7.2).
+                    // of `docs/groundwork/n7-plan.md`, 7.7.2), and so does the time
+                    // since rest (`docs/groundwork/n9-plan.md`, 9.7).
                     attack_reset: None,
                     using: None,
                     cooldowns: Vec::new(),
+                    rested: 0,
                     ..player
                 };
                 (id, plain)

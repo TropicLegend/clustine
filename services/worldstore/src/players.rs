@@ -467,6 +467,8 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
         selected_slot: place.selected_slot,
         inventory: (*place.inventory.0).clone(),
         ender: (*place.ender.0).clone(),
+        effects: place.effects.clone(),
+        time_since_rest: place.time_since_rest,
     }
 }
 
@@ -497,6 +499,8 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
         inventory: Inventory(Box::new(logged.inventory.clone())),
         selected_slot: logged.selected_slot,
         ender: EnderChest(Box::new(logged.ender.clone())),
+        effects: logged.effects.clone(),
+        time_since_rest: logged.time_since_rest,
     }
 }
 

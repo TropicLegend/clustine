@@ -962,6 +962,8 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: entity,
         name: "traveller".to_owned(),
         pose: Pose::at(Vec3::new(12.5, 64.0, 8.5)),

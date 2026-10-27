@@ -372,6 +372,8 @@ impl Scene {
                     inventory: self.inventory.clone(),
                     selected_slot: 0,
                     ender: EnderChest::default(),
+                    effects: Vec::new(),
+                    time_since_rest: 0,
                 }),
                 holder: None,
             }],

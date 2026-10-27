@@ -258,6 +258,8 @@ mod tests {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: EntityId(5),
             name: "Notch".to_owned(),
             pose: Pose::at(Vec3::new(-0.5, -60.0, 2.5)),

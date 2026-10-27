@@ -1423,6 +1423,8 @@ fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
         attack_ticks: None,
         using: None,
         cooldowns: Vec::new(),
+        effects: Vec::new(),
+        time_since_rest: 0,
         entity_id: entity,
         name: "arriving".to_owned(),
         pose: Pose::at(Vec3::new(x, FEET, 8.5)),
@@ -5947,6 +5949,26 @@ fn assert_the_same(live: &Run, restored: &Run) {
             "the entities shown"
         );
     }
+    // The tick a player's time since rest counts from is the one the region placed
+    // their stay in, plus what their place carried: a region restored from the record
+    // places its stays again in a tick of its own, later than the one that lived, and
+    // the count goes on from there, as an effect's does after a join
+    // (`docs/groundwork/n9-plan.md`, section 5.4). It is left out here.
+    let unrested = |text: String| {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("rested: ") {
+            let (before, after) = rest.split_at(at + "rested: ".len());
+            out.push_str(before);
+            let digits = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            out.push('_');
+            rest = &after[digits..];
+        }
+        out.push_str(rest);
+        out
+    };
     for (((one, other), live_given), restored_given) in live
         .states
         .iter()
@@ -5955,8 +5977,8 @@ fn assert_the_same(live: &Run, restored: &Run) {
         .zip(&restored.given)
     {
         assert_eq!(
-            given_keys(one, *live_given),
-            given_keys(other, *restored_given)
+            unrested(given_keys(one, *live_given)),
+            unrested(given_keys(other, *restored_given))
         );
     }
 }

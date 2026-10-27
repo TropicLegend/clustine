@@ -1887,6 +1887,8 @@ impl Bot {
             ClientboundPlay::SystemChat(packet) => self.messages.push(packet),
             // The bots use no item that has a cooldown.
             ClientboundPlay::Cooldown(_) => {}
+            // Nothing gives the bots effects.
+            ClientboundPlay::UpdateMobEffect(_) | ClientboundPlay::RemoveMobEffect(_) => {}
             ClientboundPlay::SetContainerContent(packet) => {
                 if let Some(menu) = self
                     .menu

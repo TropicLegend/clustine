@@ -505,6 +505,8 @@ mod tests {
             attack_reset: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            rested: 0,
             entity_id: EntityId(entity as u64),
             name: format!("Stay{entity}"),
             pose: Pose {
@@ -544,6 +546,8 @@ mod tests {
             attack_ticks: None,
             using: None,
             cooldowns: Vec::new(),
+            effects: Vec::new(),
+            time_since_rest: 0,
             entity_id: stay.entity_id,
             name: stay.name,
             pose: stay.pose,

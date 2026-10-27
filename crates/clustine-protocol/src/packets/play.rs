@@ -3893,6 +3893,8 @@ packet_set! {
         SetExperience,
         SystemChat,
         Cooldown,
+        UpdateMobEffect,
+        RemoveMobEffect,
     }
 }
 
@@ -3946,6 +3948,29 @@ mod tests {
             attributes,
             ClientboundPlay::decode,
             ClientboundPlay::UpdateAttributes,
+        );
+    }
+
+    #[test]
+    fn an_effect_and_its_end_round_trip() {
+        assert_round_trip(
+            UpdateMobEffect {
+                entity_id: 7,
+                effect: 1,
+                amplifier: 2,
+                duration: 600,
+                flags: effect_flags::VISIBLE | effect_flags::SHOW_ICON | effect_flags::BLEND,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::UpdateMobEffect,
+        );
+        assert_round_trip(
+            RemoveMobEffect {
+                entity_id: 7,
+                effect: 1,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::RemoveMobEffect,
         );
     }
 
@@ -5886,6 +5911,81 @@ impl Decode for UpdateAttributes {
         Ok(Self {
             entity_id,
             attributes,
+        })
+    }
+}
+
+/// One of a living entity's effects (`ClientboundUpdateMobEffectPacket`): the entity, the
+/// effect by its id in the `mob_effect` registry (`MobEffect.STREAM_CODEC`), its
+/// amplifier and duration as VarInts, then its flags (n9 ClientboundUpdateMobEffectPacket
+/// 108–135): ambient 1, visible 2, its icon 4, and 8 where the client blends it in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateMobEffect {
+    pub entity_id: i32,
+    pub effect: i32,
+    pub amplifier: i32,
+    pub duration: i32,
+    pub flags: u8,
+}
+
+/// [`UpdateMobEffect`]'s flags.
+pub mod effect_flags {
+    pub const AMBIENT: u8 = 1;
+    pub const VISIBLE: u8 = 2;
+    pub const SHOW_ICON: u8 = 4;
+    pub const BLEND: u8 = 8;
+}
+
+impl Packet for UpdateMobEffect {
+    const ID: i32 = clientbound::UPDATE_MOB_EFFECT;
+}
+
+impl Encode for UpdateMobEffect {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.effect);
+        w.put_var_int(self.amplifier);
+        w.put_var_int(self.duration);
+        w.put_u8(self.flags);
+    }
+}
+
+impl Decode for UpdateMobEffect {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            effect: r.var_int()?,
+            amplifier: r.var_int()?,
+            duration: r.var_int()?,
+            flags: r.u8()?,
+        })
+    }
+}
+
+/// The end of one of a living entity's effects (`ClientboundRemoveMobEffectPacket`): the
+/// entity, then the effect by its registry id, both VarInts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveMobEffect {
+    pub entity_id: i32,
+    pub effect: i32,
+}
+
+impl Packet for RemoveMobEffect {
+    const ID: i32 = clientbound::REMOVE_MOB_EFFECT;
+}
+
+impl Encode for RemoveMobEffect {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.entity_id);
+        w.put_var_int(self.effect);
+    }
+}
+
+impl Decode for RemoveMobEffect {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.var_int()?,
+            effect: r.var_int()?,
         })
     }
 }

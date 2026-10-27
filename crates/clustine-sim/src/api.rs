@@ -96,6 +96,12 @@ pub struct Place {
     pub experience: Experience,
     /// Where they wake after a death, if a bed set it (`docs/groundwork/n7d-plan.md`).
     pub respawn: Option<Respawn>,
+    /// Their effects, each level with the ticks it has left, in the order of the effects
+    /// and of the levels they hide (`docs/groundwork/n9-plan.md`, section 5.4): an
+    /// effect does not run down while they are away.
+    pub effects: Vec<clustine_world::components::EffectInstance>,
+    /// The ticks since they last slept (`TIME_SINCE_REST`), which the phantoms read.
+    pub time_since_rest: u32,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -416,6 +422,10 @@ pub struct PlayerTransfer {
     /// Each cooldown's group, the ticks it has run and the ticks it lasts, which the
     /// next region counts on from.
     pub cooldowns: Vec<(String, u32, u32)>,
+    /// Their effects with the ticks each level has left, and the ticks since they last
+    /// slept, as the place has them.
+    pub effects: Vec<clustine_world::components::EffectInstance>,
+    pub time_since_rest: u32,
 }
 
 /// A hand (`InteractionHand`).
@@ -1354,6 +1364,19 @@ pub enum PlayerEvent {
     /// An item's cooldown began, or ended at 0 (`ClientboundCooldownPacket`): the group
     /// by name and its ticks.
     Cooldown { group: String, ticks: i32 },
+    /// One of their effects was added or changed (`ClientboundUpdateMobEffectPacket`):
+    /// the level in force, with the ticks it has left, and whether the client blends it
+    /// in (an effect new to them, `onEffectAdded`).
+    EffectAdded {
+        instance: clustine_world::components::EffectInstance,
+        blend: bool,
+    },
+    /// One of their effects ended or was taken off (`ClientboundRemoveMobEffectPacket`),
+    /// by name.
+    EffectRemoved { effect: String },
+    /// Attributes of their own entity that their effects changed
+    /// (`ClientboundUpdateAttributesPacket`): their client moves by them.
+    Attributes(Vec<AttributeShown>),
 }
 
 /// Something that happened in the region and concerns everyone who can see it.

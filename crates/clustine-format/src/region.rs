@@ -1083,6 +1083,8 @@ mod tests {
                         selected_slot: 1,
                         inventory,
                         ender,
+                        effects: Vec::new(),
+                        time_since_rest: 0,
                     }),
                 },
             ],
@@ -1253,8 +1255,10 @@ mod tests {
         body.extend_from_slice(&[1, 0, 0, 0, 11, 0, 0, 0, 2, 0, 0, 0, 0]);
         // The experience: level 2, half way to the next, 13 points.
         body.extend_from_slice(&[0, 0, 0, 2, 0x3F, 0, 0, 0, 0, 0, 0, 13]);
-        // No respawn point.
+        // No respawn point, no effects, and no time since rest.
         body.push(0);
+        body.extend_from_slice(&[0; 4]);
+        body.extend_from_slice(&[0; 4]);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
         assert_eq!(PlayersFile::decode(&bytes), Ok(players()));
@@ -1584,6 +1588,8 @@ mod tests {
                                     selected_slot,
                                     inventory,
                                     ender,
+                                    effects: Vec::new(),
+                                    time_since_rest: 0,
                                 }
                             },
                         ),

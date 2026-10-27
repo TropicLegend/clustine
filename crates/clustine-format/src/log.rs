@@ -265,6 +265,10 @@ pub struct LoggedPlace {
     pub experience: (i32, f32, i32),
     /// Where a bed set their respawn point: the bed's head, and the yaw and pitch.
     pub respawn: Option<([i32; 3], f32, f32)>,
+    /// Their effects, each level with the ticks it has left (`docs/groundwork/n9-plan.md`,
+    /// section 5.4), and the ticks since they last slept.
+    pub effects: Vec<clustine_world::components::EffectInstance>,
+    pub time_since_rest: u32,
 }
 
 impl PartialEq for LoggedPlace {
@@ -286,6 +290,8 @@ impl PartialEq for LoggedPlace {
                 == other
                     .respawn
                     .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
+            && self.effects == other.effects
+            && self.time_since_rest == other.time_since_rest
     }
 }
 
@@ -1100,6 +1106,12 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
             out.extend_from_slice(&pitch.to_be_bytes());
         }
     }
+    let count = u32::try_from(place.effects.len()).expect("fewer effects than a u32 counts");
+    out.extend_from_slice(&count.to_be_bytes());
+    for effect in &place.effects {
+        crate::stacks::put_effect(out, effect);
+    }
+    out.extend_from_slice(&place.time_since_rest.to_be_bytes());
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1126,6 +1138,16 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         )),
         _ => return Err(FormatError::Corrupt("a place's respawn flag")),
     };
+    let count = input.u32()?;
+    // Every effect takes more than a byte: a count beyond what is left is corrupt.
+    if usize::try_from(count).map_or(true, |count| count > input.0.len()) {
+        return Err(FormatError::Corrupt("a place's count of effects"));
+    }
+    let mut effects = Vec::new();
+    for _ in 0..count {
+        effects.push(crate::stacks::take_effect(input)?);
+    }
+    let time_since_rest = input.u32()?;
     Ok(LoggedPlace {
         position,
         yaw,
@@ -1137,6 +1159,8 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         ender,
         experience,
         respawn,
+        effects,
+        time_since_rest,
     })
 }
 
@@ -2684,6 +2708,8 @@ mod tests {
             selected_slot: 8,
             inventory,
             ender,
+            effects: Vec::new(),
+            time_since_rest: 0,
         }
     }
 
@@ -2968,8 +2994,10 @@ mod tests {
         payload.extend_from_slice(&[0; 26]);
         // The experience: level 5, a quarter of the way to the next, 87 points.
         payload.extend_from_slice(&[0, 0, 0, 5, 0x3E, 0x80, 0, 0, 0, 0, 0, 87]);
-        // No respawn point.
+        // No respawn point, no effects, and no time since rest.
         payload.push(0);
+        payload.extend_from_slice(&[0; 4]);
+        payload.extend_from_slice(&[0; 4]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3112,18 +3140,47 @@ mod tests {
         input.finish().unwrap();
     }
 
-    /// A record of format 13, written before stacks had components, is refused as any
-    /// record of another format is.
+    /// Records of format 13, written before stacks had components, and of 14, before
+    /// places kept effects, are refused as any record of another format is.
     #[test]
-    fn a_record_of_format_13_is_refused() {
-        assert_eq!(FORMAT_VERSION, 14);
-        let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
-        assert_eq!(payload[0], FORMAT_VERSION);
-        payload[0] = 13;
-        assert_eq!(
-            read_log(&frame(&payload)),
-            Err(FormatError::UnsupportedVersion(13))
-        );
+    fn records_of_formats_13_and_14_are_refused() {
+        assert_eq!(FORMAT_VERSION, 15);
+        for earlier in [13, 14] {
+            let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
+            assert_eq!(payload[0], FORMAT_VERSION);
+            payload[0] = earlier;
+            assert_eq!(
+                read_log(&frame(&payload)),
+                Err(FormatError::UnsupportedVersion(earlier))
+            );
+        }
+    }
+
+    /// A place keeps its effects, the levels of one effect in their order, and the time
+    /// since its player last slept.
+    #[test]
+    fn a_place_keeps_its_effects_and_its_time_since_rest() {
+        use clustine_world::components::EffectInstance;
+        let effect = |name: &str, amplifier: i32, duration: i32| EffectInstance {
+            effect: name.to_owned(),
+            amplifier,
+            duration,
+            ambient: amplifier == 0,
+            visible: duration > 0,
+            show_icon: true,
+        };
+        let mut place = place();
+        place.effects = vec![
+            effect("minecraft:speed", 2, 40),
+            effect("minecraft:speed", 0, 600),
+            effect("minecraft:night_vision", 0, -1),
+        ];
+        place.time_since_rest = 72_000;
+        let mut bytes = Vec::new();
+        put_place(&mut bytes, &place);
+        let mut input = Input(&bytes);
+        assert_eq!(take_place(&mut input), Ok(place));
+        assert!(input.0.is_empty());
     }
 
     /// Places are the same if their bytes are, so that a record that was read is the
@@ -3216,6 +3273,8 @@ mod tests {
                         inventory,
                         ender,
                         experience,
+                        effects: Vec::new(),
+                        time_since_rest: 0,
                     }
                 },
             )
