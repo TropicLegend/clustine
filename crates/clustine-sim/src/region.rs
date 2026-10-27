@@ -1200,7 +1200,11 @@ impl Region {
         }
         self.spawn_naturally(&mut output);
         self.run_random_ticks(&mut output);
-        // Then the custom spawners: phantoms and patrols (`custom_spawners.rs`).
+        // Then the custom spawners: phantoms and patrols (`custom_spawners.rs`), the
+        // trader's with the chance the store last published.
+        if let Some((firing, chance)) = inputs.trader_chance {
+            self.take_trader_chance(firing, chance);
+        }
         self.run_custom_spawners(&mut output);
         let broadcast = output.events.len();
         self.run_block_events(&mut output);

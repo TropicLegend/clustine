@@ -40,7 +40,7 @@ needs no raise, as an older record never has it. The raises since 2:
 | 15 | A place holds the effects and the time since rest after the respawn point |
 | 16 | A chunk keeps the structure starts that reach it which natural spawning and the patrol spawner ask |
 | 17 | A chunk keeps the claims on its points of interest, and a commit may carry them |
-| 18 | A chunk keeps raids, and a commit may carry them; a place holds where the raid omen began after the time since rest |
+| 18 | A chunk keeps raids, and a commit may carry them; a place holds where the raid omen began after the time since rest; the log has the trader's chance (kind 21), and the table keeps it after the clock |
 
 ## Principles
 
@@ -486,6 +486,7 @@ begins with the format version (u8) and the kind of record (u8):
 | 20 | Commit with raids | the fields of kind 19, whose claims may be none, raids |
 | 17 | Arrivals dropped | numbers |
 | 18 | Arrivals carried forward | filed arrivals |
+| 21 | The trader's chance | firing u64, chance i32 |
 
 where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a u16
 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z; and a
@@ -793,15 +794,19 @@ place can go.
 | … its grants, ascending by x then z: count, then per grant x, z, tick | u32, (i32, i32, u64)… |
 | Absorbed regions, oldest first: count, then per pair absorbed, into | u32, (u32, u32)… |
 | The world's clock: its game time and the ticks of the overworld's clock | u64, u64 |
+| The wandering trader spawner's chance: a flag (0 none yet, 1 one), and with 1 the firing that left it and the chance | u8, (u64, i32) |
 | CRC-32 of everything before | u32 |
 
 An area is a u8 of flags (bit 0: it has a western end, bit 1: an eastern end; the others
 0) followed by i32 `min_x` and i32 `max_x`, each 0 if absent: the chunks with
 `min_x <= x < max_x`, whatever their z. The reader refuses regions or grants out of
 order or twice, and an end that is absent and not 0. The clock is the later of every
-region's the store took (`docs/groundwork/n7-plan.md`, section 8.4).
+region's the store took (`docs/groundwork/n7-plan.md`, section 8.4). The trader's chance
+is the world's (`docs/groundwork/n10-plan.md`, section 9.6): of the records of kind 21,
+the latest firing's stands, and of one firing the lowest chance, as only the region that
+made the trader sets it back.
 
-The table as the store has it is this file with the records of kinds 4 to 7 applied
+The table as the store has it is this file with the records of kinds 4 to 7 and 21 applied
 that are in segments from `from` on, in the order of the log. Records in earlier
 segments are in the file already. The file is written when the world is first started,
 when it is made over for another division, and whenever a checkpoint leaves the first

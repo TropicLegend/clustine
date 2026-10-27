@@ -30,14 +30,16 @@
 //! that holds that player runs it, its draws from a world stream of each tick. **The
 //! trader** fires every 24 000 ticks as a chain (its delay depends on nothing else), its
 //! own random the firing's stream; its chance depends on how the firings went, and is
-//! the region's memory for now ([`Region::trader_chance`]), not durable, until the
-//! store keeps it (plan 9.6).
+//! the world's: each firing's is told the store, which keeps the latest firing's (of one
+//! firing, the lowest) and publishes it with the clock ([`Region::trader_chance`], plan
+//! 9.6).
 //!
 //! Named differences of these: a region that did not tick at a siege's roll (it began
 //! that night) knows of no siege that night; a player who crosses a line in the night of
 //! their siege may meet a second one set up by the region they come to; the regions
 //! that do not hold a trader firing's player keep the raised chance where the game's,
-//! where the trader was made, is back at 25, until the store keeps it; a llama made in
+//! where the trader was made, is back at 25, until the store's next publication (a
+//! second at most); a llama made in
 //! another region's land than its trader's is not leashed to it; the players chosen
 //! from are the world's table's, alive or not; a siege's zombie and a cat make no
 //! jockey; a siege's zombie faces its drawn yaw with its head and body to the south.
@@ -99,8 +101,9 @@ pub(crate) struct Schedules {
     pub(super) last: Option<u64>,
     pub(super) cats: Option<u64>,
     pub(super) traders: Option<u64>,
-    /// The trader spawner's chance, once a firing set it ([`Region::trader_chance`]).
-    pub(super) trader_chance: Option<i32>,
+    /// The trader spawner's chance and the firing that left it, once one did
+    /// ([`Region::trader_chance`]).
+    pub(super) trader_chance: Option<(u64, i32)>,
     pub(super) siege: Siege,
 }
 
@@ -1009,22 +1012,32 @@ impl Region {
     // -----------------------------------------------------------------------------
     // The wandering trader.
 
-    /// The trader spawner's chance (`WanderingTraderData.spawnChance`, 25 to 75): kept by
-    /// the region in memory, from 25, and so not durable for now; the store's record of
-    /// it is a later step (`docs/groundwork/n10-plan.md`, sections 9.6 and decision 12),
-    /// which makes this read the record.
+    /// The trader spawner's chance (`WanderingTraderData.spawnChance`, 25 to 75): the
+    /// world's, kept by the store with the firing that left it and published with the
+    /// clock (`docs/groundwork/n10-plan.md`, decision 12 and section 9.6); 25 before any
+    /// firing.
     pub(crate) fn trader_chance(&self) -> i32 {
         self.custom_spawners
             .trader_chance
-            .unwrap_or(MIN_TRADER_CHANCE)
+            .map_or(MIN_TRADER_CHANCE, |(_, chance)| chance)
     }
 
-    /// The trader spawner's chance set at its firing due at `due`: kept in memory; the
-    /// store's record makes this its request (`StoreRequest::TraderChance`, the later
-    /// firing winning).
-    fn set_trader_chance(&mut self, due: u64, chance: i32) {
-        let _ = due;
-        self.custom_spawners.trader_chance = Some(chance);
+    /// The store's word of the chance: taken unless the region's own is of a later
+    /// firing, which the store has not published yet. Of one firing the lower stands, as
+    /// in the store: only the region that made the trader set it back to 25.
+    pub(crate) fn take_trader_chance(&mut self, firing: u64, chance: i32) {
+        let stands = match self.custom_spawners.trader_chance {
+            Some(kept) if kept.0 > firing || (kept.0 == firing && kept.1 <= chance) => kept,
+            _ => (firing, chance),
+        };
+        self.custom_spawners.trader_chance = Some(stands);
+    }
+
+    /// The trader spawner's chance set at its firing due at `due`: kept, and told the
+    /// store for its record.
+    fn set_trader_chance(&mut self, due: u64, chance: i32, output: &mut TickOutput) {
+        self.custom_spawners.trader_chance = Some((due, chance));
+        output.trader_chance = Some((due, chance));
     }
 
     /// `WanderingTraderSpawner.tick`'s firing (n7 WanderingTraderSpawner 1–200), its own
@@ -1034,12 +1047,12 @@ impl Region {
     pub(crate) fn trader_fired(&mut self, due: u64, mut stream: Random, output: &mut TickOutput) {
         let old = self.trader_chance();
         let raised = (old + 25).clamp(MIN_TRADER_CHANCE, MAX_TRADER_CHANCE);
-        self.set_trader_chance(due, raised);
+        self.set_trader_chance(due, raised, output);
         if stream.next_int(100) as i32 > old {
             return;
         }
         if self.spawn_trader(&mut stream, output) {
-            self.set_trader_chance(due, MIN_TRADER_CHANCE);
+            self.set_trader_chance(due, MIN_TRADER_CHANCE, output);
         }
     }
 

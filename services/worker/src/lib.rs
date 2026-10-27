@@ -1720,6 +1720,11 @@ impl RegionRunner {
                     Some(folded) => folded.then(village),
                     None => self.inputs.village = Some(village),
                 },
+                // The trader's chance: the store's latest, which the region weighs
+                // against its own.
+                StoreReply::TraderChance { firing, chance } => {
+                    self.inputs.trader_chance = Some((firing, chance));
+                }
                 // Faces go to the next tick as they come, whatever the borders hold
                 // back: the region keeps them all and shows those it holds or copies
                 // (`docs/groundwork/n7-faces.md`).
@@ -2940,6 +2945,12 @@ impl RegionRunner {
         // (`docs/groundwork/n10-plan.md`, section 3.5).
         if let Some(village) = output.village {
             self.store.request(StoreRequest::Village(village));
+        }
+        // And the trader's chance a firing of the tick left (section 9.6 of the same
+        // plan).
+        if let Some((firing, chance)) = output.trader_chance {
+            self.store
+                .request(StoreRequest::TraderChance { firing, chance });
         }
         // A chunk the region gives back is not loaded and has no unsaved change: its
         // last save went out when its last ticket was let go of, before the tick that
@@ -5195,7 +5206,8 @@ mod tests {
                 | StoreRequest::LendRefused { .. }
                 | StoreRequest::Lending { .. }
                 | StoreRequest::Counts(_)
-                | StoreRequest::Village(_) => return None,
+                | StoreRequest::Village(_)
+                | StoreRequest::TraderChance { .. } => return None,
             })
         }
     }

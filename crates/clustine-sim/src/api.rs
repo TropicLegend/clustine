@@ -1295,6 +1295,9 @@ pub struct TickInputs {
     /// The points of interest beyond the land the store published since the last tick,
     /// folded into one (`docs/groundwork/n10-plan.md`, section 3.5).
     pub village: Option<PublishedVillage>,
+    /// The wandering trader spawner's chance and the firing that left it, as the store
+    /// last published it (`docs/groundwork/n10-plan.md`, section 9.6).
+    pub trader_chance: Option<(u64, i32)>,
 }
 
 /// The world's clock (`docs/groundwork/n7-plan.md`, sections 7.4, 8.4 and 9.3): the game
@@ -2083,6 +2086,9 @@ pub struct TickOutput {
     /// What the tick says of its land's points of interest (`docs/groundwork/n10-plan.md`,
     /// section 3.5): carried with the commit, not written to the log.
     pub village: Option<VillageReport>,
+    /// The wandering trader spawner's chance as a firing of the tick left it, with the
+    /// firing (`docs/groundwork/n10-plan.md`, section 9.6): for the store's record.
+    pub trader_chance: Option<(u64, i32)>,
     /// The chunks whose entities changed in the tick without a commit: counters, and a
     /// resting item's motion (`docs/groundwork/n4-plan.md`, sections 2 and 7). The
     /// worker saves their entities at its checkpoints and its stop, so that what the

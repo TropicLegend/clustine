@@ -611,6 +611,12 @@ impl Lanes {
                             table_last = Some(segment);
                         }
                     }
+                    LogRecord::TraderChance { firing, chance } => {
+                        if let Some(table) = changed_by(&mut stored, segment)? {
+                            table.take_trader_chance(firing, chance);
+                            table_last = Some(segment);
+                        }
+                    }
                     LogRecord::Returned { region, chunks } => {
                         if let Some(table) = changed_by(&mut stored, segment)? {
                             for chunk in chunks {
@@ -1242,6 +1248,21 @@ impl Lanes {
             }
             StoreRequest::Village(report) => {
                 self.village.report(session.region, session.number, report);
+                return;
+            }
+            // Written to the log and kept with the table: the world's, published with
+            // the clock (`docs/groundwork/n10-plan.md`, section 9.6).
+            StoreRequest::TraderChance { firing, chance } => {
+                let record = LogRecord::TraderChance { firing, chance };
+                match self.log.append(&record.encode()) {
+                    Ok((segment, _)) => self.table_last = Some(segment),
+                    Err(error) => {
+                        error!(%error, "the trader's chance could not be written to the log");
+                        self.fail_log();
+                        return;
+                    }
+                }
+                self.table.take_trader_chance(firing, chance);
                 return;
             }
             StoreRequest::Commit {
@@ -2240,6 +2261,11 @@ impl Lanes {
                     &owners,
                 ) {
                     owner.peer.answer(StoreReply::Village(margin));
+                }
+                if let Some((firing, chance)) = self.table.trader {
+                    owner
+                        .peer
+                        .answer(StoreReply::TraderChance { firing, chance });
                 }
             }
         }

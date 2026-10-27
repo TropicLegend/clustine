@@ -382,3 +382,99 @@ fn a_region_s_first_commit_after_a_hello_marks_offline_whom_it_wrote_and_does_no
     commit(&west, 3, vec![has(r, 7, 2, in_the_west())]);
     answers(&west);
 }
+
+/// A commit of `handle`'s region at `tick` with nothing in it but the clock at
+/// `game_time`.
+fn clocked(handle: &StoreHandle, tick: u64, game_time: u64) {
+    handle.request(StoreRequest::Commit {
+        tick,
+        changes: Vec::new(),
+        state: format!("delta {tick}").into_bytes(),
+        stays: Vec::<StayNote>::new(),
+        ticks: Vec::new(),
+        marks_taken: Vec::new(),
+        seams: Vec::new(),
+        effects: Vec::new(),
+        taken: Vec::new(),
+        events: Vec::new(),
+        entity_changes: Vec::new(),
+        arrivals: Vec::new(),
+        arrivals_taken: Vec::new(),
+        clock: WorldClock {
+            game_time,
+            day: game_time,
+        },
+        claims: Vec::new(),
+        raids: Vec::new(),
+    });
+}
+
+/// The trader's chance among `replies`, the last published.
+fn trader_chance(replies: &[StoreReply]) -> Option<(u64, i32)> {
+    replies.iter().rev().find_map(|reply| match reply {
+        StoreReply::TraderChance { firing, chance } => Some((*firing, *chance)),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_trader_s_chance_of_the_latest_firing_is_published_with_the_clock_the_lowest_of_one_firing() {
+    // `docs/groundwork/n10-plan.md`, section 9.6: every region runs each firing, and
+    // the one that made the trader set the chance back to 25, which the others' raised
+    // chance of the same firing does not undo, whatever order they are told in.
+    let (_store, home, west, east) = three();
+    west.request(StoreRequest::TraderChance {
+        firing: 24_000,
+        chance: 50,
+    });
+    east.request(StoreRequest::TraderChance {
+        firing: 24_000,
+        chance: 25,
+    });
+    west.request(StoreRequest::TraderChance {
+        firing: 24_000,
+        chance: 50,
+    });
+    answers(&west);
+    answers(&east);
+    clocked(&home, 1, 40);
+    answers(&home);
+    assert_eq!(trader_chance(&answers(&west)), Some((24_000, 25)));
+    // A later firing's stands, and an earlier one told late does not.
+    home.request(StoreRequest::TraderChance {
+        firing: 48_000,
+        chance: 50,
+    });
+    east.request(StoreRequest::TraderChance {
+        firing: 24_000,
+        chance: 25,
+    });
+    answers(&east);
+    clocked(&home, 2, 80);
+    answers(&home);
+    assert_eq!(trader_chance(&answers(&east)), Some((48_000, 50)));
+}
+
+#[test]
+fn the_trader_s_chance_is_the_world_s_after_the_store_is_started_again() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let home = open(&store, hello(HOME, 1));
+    let west = open(&store, hello(WEST, 1));
+    west.request(StoreRequest::TraderChance {
+        firing: 72_000,
+        chance: 75,
+    });
+    answers(&west);
+    clocked(&home, 1, 40);
+    answers(&home);
+    drop((home, west));
+    drop(store);
+
+    let store = store_on(&disk, &gap()).unwrap();
+    let home = open(&store, hello(HOME, 2));
+    let west = open(&store, hello(WEST, 2));
+    clocked(&home, 2, 80);
+    answers(&home);
+    assert_eq!(trader_chance(&answers(&west)), Some((72_000, 75)));
+}

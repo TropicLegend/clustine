@@ -646,7 +646,7 @@ fn a_trader_comes_with_two_llamas_leashed_to_it_and_stays_forty_eight_thousand_t
     let mut came = None;
     for firing in 1..600 {
         let due = firing * 24_000;
-        region.custom_spawners.trader_chance = Some(75);
+        region.custom_spawners.trader_chance = Some((0, 75));
         region.trader_fired(due, trader_stream(due), &mut TickOutput::default());
         if !of_kind(&region, entity_types::WANDERING_TRADER).is_empty() {
             came = Some(firing);
@@ -684,7 +684,7 @@ fn a_trader_s_llama_leaves_with_its_trader() {
     region.faces.world = Some(table(&[1]));
     for firing in 1..600 {
         let due = firing * 24_000;
-        region.custom_spawners.trader_chance = Some(75);
+        region.custom_spawners.trader_chance = Some((0, 75));
         region.trader_fired(due, trader_stream(due), &mut TickOutput::default());
         if !of_kind(&region, entity_types::WANDERING_TRADER).is_empty() {
             break;
@@ -772,4 +772,27 @@ fn a_zombie_does_not_walk_through_a_village_by_day_nor_outside_one() {
             );
         }
     }
+}
+
+#[test]
+fn the_trader_s_chance_is_told_the_store_and_its_word_taken_but_for_a_later_firing_s() {
+    // `docs/groundwork/n10-plan.md`, section 9.6.
+    let mut region = region_at(NOON, 4, Kept::Nothing, &[]);
+    region.take_trader_chance(24_000, 50);
+    assert_eq!(region.trader_chance(), 50);
+    // A firing with nobody in the world: the chance raised, then back to 25 (the game
+    // counts no player as a spawn); the store is told the last.
+    let mut output = TickOutput::default();
+    region.trader_fired(48_000, trader_stream(48_000), &mut output);
+    let told = output.trader_chance.expect("the store is told");
+    assert_eq!(told.0, 48_000);
+    assert_eq!(region.trader_chance(), told.1);
+    // The store's word of an earlier firing does not undo it; of the same firing, the
+    // lower stands; of a later one, it is taken.
+    region.take_trader_chance(24_000, 75);
+    assert_eq!(region.trader_chance(), told.1);
+    region.take_trader_chance(48_000, MIN_TRADER_CHANCE);
+    assert_eq!(region.trader_chance(), MIN_TRADER_CHANCE.min(told.1));
+    region.take_trader_chance(72_000, 75);
+    assert_eq!(region.trader_chance(), 75);
 }

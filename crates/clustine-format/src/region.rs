@@ -236,6 +236,9 @@ pub struct TableFile {
     /// clock, the later of every region's the store took (`docs/groundwork/n7-plan.md`,
     /// section 8.4).
     pub clock: [u64; 2],
+    /// The wandering trader spawner's chance and the firing that left it, once one did
+    /// (`docs/groundwork/n10-plan.md`, decision 12).
+    pub trader: Option<(u64, i32)>,
 }
 
 /// A region as the table file has it.
@@ -279,6 +282,14 @@ impl TableFile {
         }
         out.extend_from_slice(&self.clock[0].to_be_bytes());
         out.extend_from_slice(&self.clock[1].to_be_bytes());
+        match self.trader {
+            None => out.push(0),
+            Some((firing, chance)) => {
+                out.push(1);
+                out.extend_from_slice(&firing.to_be_bytes());
+                out.extend_from_slice(&chance.to_be_bytes());
+            }
+        }
         seal(out)
     }
 
@@ -319,6 +330,11 @@ impl TableFile {
             absorbed.push((input.u32()?, input.u32()?));
         }
         let clock = [input.u64()?, input.u64()?];
+        let trader = match input.u8()? {
+            0 => None,
+            1 => Some((input.u64()?, input.i32()?)),
+            _ => return Err(FormatError::Corrupt("trader chance")),
+        };
         input.finish()?;
         Ok(Self {
             from,
@@ -329,6 +345,7 @@ impl TableFile {
             regions,
             absorbed,
             clock,
+            trader,
         })
     }
 }
@@ -811,6 +828,7 @@ mod tests {
             ],
             absorbed: vec![(0, 1), (2, 3)],
             clock: [24_000, 13_000],
+            trader: Some((48_000, 50)),
         }
     }
 
@@ -1010,6 +1028,19 @@ mod tests {
             0,
             0x32,
             0xC8, // the overworld's clock, 13000
+            1,    // a trader's chance
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0xBB,
+            0x80, // its firing, 48000
+            0,
+            0,
+            0,
+            50, // the chance
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -1025,8 +1056,12 @@ mod tests {
             regions: Vec::new(),
             absorbed: Vec::new(),
             clock: [0, 0],
+            trader: None,
         };
-        assert_eq!(empty.encode().len(), 2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 4);
+        assert_eq!(
+            empty.encode().len(),
+            2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 1 + 4
+        );
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
 
@@ -1392,7 +1427,8 @@ mod tests {
             TableFile::decode(&end),
             Err(FormatError::Corrupt("an end of an area that has none"))
         );
-        // Something behind the clock, and the clock cut short.
+        // Something behind the trader's chance, and the chance cut short, and a flag
+        // of the chance that is neither none nor one.
         let trailing = resealed(bytes.clone(), |body| body.push(0));
         assert_eq!(
             TableFile::decode(&trailing),
@@ -1400,11 +1436,19 @@ mod tests {
         );
         let short = resealed(bytes.clone(), |body| body.truncate(body.len() - 8));
         assert_eq!(TableFile::decode(&short), Err(FormatError::Truncated));
+        let flag = resealed(bytes.clone(), |body| {
+            let at = body.len() - 13;
+            body[at] = 2;
+        });
+        assert_eq!(
+            TableFile::decode(&flag),
+            Err(FormatError::Corrupt("trader chance"))
+        );
         // More of anything than the file holds, which must not be reserved either: of
-        // absorbed regions, whose count is before the two pairs and the clock, and of
-        // areas.
+        // absorbed regions, whose count is before the two pairs, the clock and the
+        // trader's chance, and of areas.
         let forged = resealed(bytes.clone(), |body| {
-            let count = body.len() - 36;
+            let count = body.len() - 49;
             body[count..count + 4].fill(0xFF);
         });
         assert_eq!(TableFile::decode(&forged), Err(FormatError::Truncated));
@@ -1507,6 +1551,7 @@ mod tests {
                     .collect(),
                 absorbed,
                 clock: [from.wrapping_mul(3), next_region.into()],
+                trader: None,
             };
             prop_assert_eq!(TableFile::decode(&table.encode()), Ok(table));
         }

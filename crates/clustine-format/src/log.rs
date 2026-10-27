@@ -142,6 +142,7 @@ const KIND_ARRIVALS_DROPPED: u8 = 17;
 const KIND_ARRIVALS_FORWARD: u8 = 18;
 const KIND_COMMIT_WITH_CLAIMS: u8 = 19;
 const KIND_COMMIT_WITH_RAIDS: u8 = 20;
+const KIND_TRADER_CHANCE: u8 = 21;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -408,6 +409,10 @@ pub enum LogRecord {
     },
     /// `region` no longer holds `chunks`.
     Returned { region: u32, chunks: Vec<ChunkPos> },
+    /// The wandering trader spawner's chance as its firing due at `firing` left it
+    /// (`docs/groundwork/n10-plan.md`, decision 12 and section 9.6). The world's: the
+    /// record of the latest firing stands.
+    TraderChance { firing: u64, chance: i32 },
     /// The merge of two regions. `state` is the whole state of `region` as of `tick`;
     /// every chunk `absorbed` was granted is granted to `region` with that tick, every
     /// area `absorbed` was pinned to is one `region` is pinned to, and `absorbed` is no
@@ -589,6 +594,11 @@ impl LogRecord {
                 payload.push(KIND_RETURNED);
                 payload.extend_from_slice(&region.to_be_bytes());
                 put_chunks(&mut payload, chunks);
+            }
+            Self::TraderChance { firing, chance } => {
+                payload.push(KIND_TRADER_CHANCE);
+                payload.extend_from_slice(&firing.to_be_bytes());
+                payload.extend_from_slice(&chance.to_be_bytes());
             }
             Self::Absorbed {
                 region,
@@ -851,6 +861,10 @@ impl LogRecord {
             KIND_RETURNED => Self::Returned {
                 region: input.u32()?,
                 chunks: take_chunks(&mut input)?,
+            },
+            KIND_TRADER_CHANCE => Self::TraderChance {
+                firing: input.u64()?,
+                chance: input.i32()?,
             },
             KIND_ABSORBED => Self::Absorbed {
                 region: input.u32()?,
@@ -1922,8 +1936,9 @@ mod tests {
         // notes, one with the ticks of chunks, one with effects, the store's records
         // of effects, a commit with block entities, one with block events, one with
         // entity changes, one with arrivals, the store's records of arrivals and one with
-        // claims and one with raids became kinds of their own; 21 stands in for them.
-        for kind in [0, 21, 255] {
+        // claims and one with raids, and the trader's chance, became kinds of their own;
+        // 22 stands in for them.
+        for kind in [0, 22, 255] {
             assert_eq!(
                 read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -3544,8 +3559,10 @@ mod tests {
             returned in chunks(),
             state in prop::collection::vec(any::<u8>(), 0..200),
             other_state in prop::collection::vec(any::<u8>(), 0..200),
+            chance: i32,
         ) {
             let records = vec![
+                LogRecord::TraderChance { firing: tick, chance },
                 LogRecord::Granted { region, tick, chunks: granted },
                 LogRecord::Returned { region, chunks: returned.clone() },
                 LogRecord::Absorbed {

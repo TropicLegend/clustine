@@ -171,6 +171,9 @@ pub(crate) struct Table {
     /// The world's clock: the later of every region's the store has taken
     /// (`docs/groundwork/n7-plan.md`, section 8.4).
     pub(crate) clock: WorldClock,
+    /// The wandering trader spawner's chance and the firing that left it, the latest
+    /// firing's the store took (`docs/groundwork/n10-plan.md`, section 9.6).
+    pub(crate) trader: Option<(u64, i32)>,
 }
 
 impl Table {
@@ -217,6 +220,7 @@ impl Table {
             granted,
             absorbed: VecDeque::new(),
             clock: WorldClock::default(),
+            trader: None,
         }
     }
 
@@ -262,6 +266,7 @@ impl Table {
                 game_time: file.clock[0],
                 day: file.clock[1],
             },
+            trader: file.trader,
         };
         let areas: Vec<(RegionId, ChunkArea)> = table.areas().collect();
         for (index, (region, area)) in areas.iter().enumerate() {
@@ -311,6 +316,7 @@ impl Table {
                 .map(|(absorbed, into)| (absorbed.0, into.0))
                 .collect(),
             clock: [self.clock.game_time, self.clock.day],
+            trader: self.trader,
         }
     }
 
@@ -319,6 +325,14 @@ impl Table {
     /// changes that and the division stays the one the store is started with.
     pub(crate) fn is_of(&self, division: &Division) -> bool {
         self.division == division.pinned && self.home_chunk == division.home
+    }
+
+    /// The trader's chance as the firing due at `firing` left it: kept unless a later
+    /// firing's is. Every region runs each firing, and only the one that holds the
+    /// player it chose can make a trader and set the chance back: of one firing, the
+    /// lowest chance told stands.
+    pub(crate) fn take_trader_chance(&mut self, firing: u64, chance: i32) {
+        self.trader = Some(later_trader_chance(self.trader, (firing, chance)));
     }
 
     /// Whether `region` is a living region.
@@ -585,6 +599,15 @@ fn bounds(chunks: impl Iterator<Item = ChunkPos>) -> Option<ChunkBox> {
 
 fn misfit(what: String) -> StoreError {
     StoreError::Table(what)
+}
+
+/// Of two of the trader's chances with their firings, the one that stands: the later
+/// firing's, and of one firing the lower (`Table::take_trader_chance`).
+fn later_trader_chance(kept: Option<(u64, i32)>, told: (u64, i32)) -> (u64, i32) {
+    match kept {
+        Some(kept) if kept.0 > told.0 || (kept.0 == told.0 && kept.1 <= told.1) => kept,
+        _ => told,
+    }
 }
 
 #[cfg(test)]

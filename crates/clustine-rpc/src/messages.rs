@@ -413,6 +413,10 @@ pub enum StoreRequest {
     /// (`docs/groundwork/n10-plan.md`, section 3.5): kept in memory, never written to the
     /// log. Not answered.
     Village(clustine_sim::VillageReport),
+    /// The wandering trader spawner's chance as its firing due at `firing` left it
+    /// (`docs/groundwork/n10-plan.md`, decision 12 and section 9.6): written to the log
+    /// and kept with the table, the latest firing's standing. Not answered.
+    TraderChance { firing: u64, chance: i32 },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
     /// Grant the region these chunks. Each is granted unless another region holds it,
@@ -568,6 +572,13 @@ pub enum StoreReply {
     /// for other regions' reports, as the counts are: the margin of each chunk is its
     /// holder's word alone.
     Village(clustine_sim::PublishedVillage),
+    /// Behind a [`StoreReply::Clock`]: the wandering trader spawner's chance and the
+    /// firing that left it, the latest the store took of any region
+    /// (`docs/groundwork/n10-plan.md`, section 9.6).
+    TraderChance {
+        firing: u64,
+        chance: i32,
+    },
     /// On the stream: faces of players and their removals, in the order the store took
     /// them, for the chunks the region holds or copies; and, behind a hello's answer, a
     /// merge, a split, a grant or a copy's base, the faces of those chunks then
