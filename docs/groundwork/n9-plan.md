@@ -1116,6 +1116,12 @@ applies it. The sender knows a player by their face (its entity key) or by the p
 table (the pearl's owner beyond the faces). This is the lead's (N9e), and it is the one
 new path through the store N9 makes; A28 section 7 records it.
 
+*As built (N9e)*: the effect is addressed to the block where the sender last saw the
+player, and the holder of that chunk takes it for the player of that entity, where it has
+them; the store routes it as any effect. The store keeps no stay's holder, and the two
+differ only while a hand-over is under way, which both miss. ADR-0028 section 7 records
+it.
+
 **Interactions at the line.** Each of these, being `Effected::OnEntity`, already counts as
 work at the line for the merge of regions that follow players (`arrivals.rs` 95–115);
 `interactions_at_line` gains `Effected::OnPlayer`.

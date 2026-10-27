@@ -25,4 +25,13 @@ impl Region {
         _output: &mut TickOutput,
     ) {
     }
+
+    /// An arrow counted in the body of the region's mob `key`, after a hurt that took
+    /// (`setArrowCount`, the living value 12; section 4.2).
+    #[expect(
+        clippy::unused_self,
+        reason = "part S2 fills it (docs/groundwork/n9-plan.md, section 4.2)"
+    )]
+    pub(crate) fn count_arrow(&mut self, _key: clustine_world::EntityId, _output: &mut TickOutput) {
+    }
 }

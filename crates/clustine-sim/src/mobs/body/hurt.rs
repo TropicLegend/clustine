@@ -29,6 +29,16 @@ use crate::region::Random;
 pub(crate) struct DamageType(pub(crate) &'static str);
 
 impl DamageType {
+    /// The damage type of the name `name`, where the game has one (its synced
+    /// `minecraft:damage_type` registry).
+    pub(crate) fn named(name: &str) -> Option<Self> {
+        clustine_data::synced_registry("minecraft:damage_type")?
+            .entries
+            .iter()
+            .find(|entry| **entry == name)
+            .map(|entry| Self(entry))
+    }
+
     pub(crate) const PLAYER_ATTACK: Self = Self("minecraft:player_attack");
     pub(crate) const IN_FIRE: Self = Self("minecraft:in_fire");
     pub(crate) const CAMPFIRE: Self = Self("minecraft:campfire");
@@ -43,6 +53,7 @@ impl DamageType {
     pub(crate) const DRY_OUT: Self = Self("minecraft:dry_out");
     pub(crate) const MOB_ATTACK: Self = Self("minecraft:mob_attack");
     pub(crate) const MAGIC: Self = Self("minecraft:magic");
+    pub(crate) const INDIRECT_MAGIC: Self = Self("minecraft:indirect_magic");
     pub(crate) const THROWN: Self = Self("minecraft:thrown");
     pub(crate) const THORNS: Self = Self("minecraft:thorns");
 

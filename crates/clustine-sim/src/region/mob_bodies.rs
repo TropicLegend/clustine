@@ -479,6 +479,12 @@ impl Region {
         output: &mut TickOutput,
     ) {
         match by {
+            // Taken before the dispatch by kind (`entity_effects.rs`).
+            EntityUse::Hurt(_)
+            | EntityUse::Alert { .. }
+            | EntityUse::Effects(_)
+            | EntityUse::PearlLanded { .. }
+            | EntityUse::PatrolTarget { .. } => {}
             EntityUse::Attack {
                 attacker,
                 damage,
@@ -656,7 +662,7 @@ impl Region {
 
     /// Does `what` to the region's mob `key` between its ticks, at its `lived`, and
     /// commits, shows and lays down what it left; `None` where there is no such mob.
-    fn struck_between_ticks<T>(
+    pub(super) fn struck_between_ticks<T>(
         &mut self,
         key: EntityId,
         output: &mut TickOutput,

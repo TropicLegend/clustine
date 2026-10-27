@@ -108,6 +108,22 @@ impl Random {
         random
     }
 
+    /// The stream of a hit (`docs/groundwork/n9-plan.md`, section 8.2): what the extras
+    /// of the hit of `attacker` at its `lived` on `target` draw where it lands, the same
+    /// in the attacker's region and across a line, by a mark of its own; keyed by the
+    /// target too, so that a piercing arrow's hits draw apart, and not by a region's tick,
+    /// since the lander's region may not be the attacker's.
+    pub(crate) fn of_hit(world: u64, attacker: EntityId, lived: u32, target: EntityId) -> Self {
+        /// Mixed in first, so that this is no other stream.
+        const HIT: u64 = 0x68_6974;
+        let mut random = Self(world);
+        random.mix(HIT);
+        random.mix(attacker.0);
+        random.mix(u64::from(lived));
+        random.mix(target.0);
+        random
+    }
+
     /// The stream of the block at `pos` in a tick of a world for the rule `purpose`
     /// (`docs/groundwork/n4-plan.md`, section 7, "Drops"): what a block broken by a
     /// rule drops, and where. Apart from the streams of sections and entities by a

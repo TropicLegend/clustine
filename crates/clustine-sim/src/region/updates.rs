@@ -990,6 +990,8 @@ impl Region {
                 }
             }
             Effected::OnEntity { key, by } => self.entity_used(key, by, output),
+            // Addressed to a player of the region (`entity_effects.rs`).
+            Effected::OnPlayer { entity, by, .. } => self.player_used(entity, by, output),
             Effected::Seated {
                 player,
                 vehicle,

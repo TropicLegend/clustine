@@ -432,6 +432,15 @@ there, as the game's hit would miss:
 - a push (`Entity.push`), with its vector;
 - an explosion's damage and knockback, with its blocks as block effects (`SetIf`).
 
+**Addressed to a player** (`docs/groundwork/n9-plan.md`, section 8.3; step N9e): a hurt,
+effects or a pearl's landing for a player goes as `Effected::OnPlayer`, naming the player
+and their stay's entity, addressed to the block where the sender last saw them (their
+face, or the players' table) and carried as every effect is. The holder of that chunk
+looks the player up by their entity among its own players. That is the region holding
+the stay except while a hand-over is under way, when the effect finds nobody and is
+dropped; the plan's delivery by the stay's holder would miss the same, and needs no path
+of its own through the store, which keeps no stay's holder.
+
 **Pick-up** happens only in the player's own region: a player picks up an item in their
 box that their region has; an item across a line is picked up once it or the player has
 crossed. In creative `Inventory.add` never fails (what does not fit is destroyed:

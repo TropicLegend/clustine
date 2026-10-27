@@ -261,6 +261,10 @@ impl Region {
             return;
         };
         let entity = entity.clone();
+        // N9's hurts, effects and words to a mob (`entity_effects.rs`).
+        if self.n9_entity_used(&entity, &by, output) {
+            return;
+        }
         // A use by another region's player, sent across a line: a mount it ends in is
         // theirs to take (`granted.rs`).
         let across = match by {

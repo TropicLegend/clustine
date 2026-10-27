@@ -26,7 +26,8 @@ pub use chunk::{
 pub use components::{Component, Components};
 pub use difficulty::Difficulty;
 pub use effects::{
-    Arrival, Blast, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect, Thrower,
+    Arrival, Blast, Causer, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
+    GivenEffects, HitExtra, HurtBy, Thrower,
 };
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,

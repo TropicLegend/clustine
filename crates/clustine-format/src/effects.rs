@@ -16,6 +16,7 @@
 //! | 8, a player inside | the box's lower corner 3 × f64 and its upper corner 3 × f64 |
 //! | 9, given | the player's key u64, the stack (as `stacks.rs` writes one), u8 0 or 1 whether no duplicates |
 //! | 10, seated | the player's key u64, the vehicle's key u64, its root's chunk x i32 and z i32 |
+//! | 11, on a player | the player's UUID u128, their entity's key u64, then a use as kind 5 writes one after its key |
 //!
 //! The uses of kind 5 since: 4, a request to breed; 5, its answer; 6, a mob's hit; 7, a
 //! use as 2 followed by the player's edge u64; 8, a seat declined, the player's key u64;
@@ -24,6 +25,25 @@
 //! its motion 3 × f64, the damage f32, and u8 0 where nobody threw it, or u8 1 and the
 //! thrower's key u64, type u16 and feet 3 × f64, then u8 0, or u8 1 and the player's
 //! UUID u128 where a player threw it.
+//!
+//! N9's uses (`docs/groundwork/n9-plan.md`, section 8.3). An option is u8 0, or u8 1 and
+//! the value; a list is a count u32 and its elements; a string a length u32 and its UTF-8
+//! bytes; an effect instance as `stacks.rs` writes one in `potion_contents`; a causer its
+//! key u64, type u16, feet 3 × f64, an option of the player's UUID u128, and u8 0 or 1
+//! whether it is living.
+//!
+//! - 12, a hurt: the damage type (a string), the cause and the direct entity (each an
+//!   option of a causer), the position and the projectile's motion (each an option of
+//!   3 × f64), the amount f32, the knockback (an option of 3 × f64), the fire before i32
+//!   and after i32, the effects (a list of instances), u8 0 or 1 an arrow, the extras (a
+//!   list, each u8 1 a zombie's fire, 2 a husk's hunger, or 3 a fling and its f32), the
+//!   sound (an option of i32, the volume f32 and the pitch f32) and the hit (an option of
+//!   the attacker's key u64 and its `lived` u32).
+//! - 13, an alert: the attacker's key u64, its type u16, the class u16.
+//! - 14, effects: the instances (a list), the instant factor f32, the source and the owner
+//!   (each an option of a causer), u8 0 or 1 water.
+//! - 15, a pearl landed: where 3 × f64, u8 0 or 1 an endermite.
+//! - 16, a patrol's target: x i32, y i32, z i32.
 //!
 //! A blast (`clustine_world::Blast`) is the exploding entity's key u64, the tick u64, the
 //! centre 3 × f64, the radius f32, flags u8 (bit 0 its drops decay, bit 1 it has a direct
@@ -34,15 +54,19 @@
 //! tick u64. An effect's number is its sequence u64 and its index u32.
 
 use clustine_data::{BLOCK_STATE_COUNT, BlockState};
+use clustine_world::components::EffectInstance;
 use clustine_world::{
-    Blast, BlockPos, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse, FiledEffect,
-    Float, SeamKind, Thrower, Ticked,
+    Blast, BlockPos, Causer, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse,
+    FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, SeamKind, Thrower, Ticked,
 };
 use uuid::Uuid;
 
 use crate::FormatError;
 use crate::bytes::Input;
-use crate::stacks::{put_optional_stack, put_stack, take_optional_stack, take_stack};
+use crate::stacks::{
+    put_effect as put_effect_instance, put_optional_stack, put_stack, put_string,
+    take_effect as take_effect_instance, take_optional_stack, take_stack, take_string,
+};
 
 const UPDATE: u8 = 1;
 const TICK: u8 = 2;
@@ -54,6 +78,9 @@ const BURNT: u8 = 7;
 const PLAYER_INSIDE: u8 = 8;
 const GIVEN: u8 = 9;
 const SEATED: u8 = 10;
+/// An entity use addressed to a player wherever their stay is held (N9, a new tag
+/// without a raise of the format, as the uses 12 to 16 below).
+const ON_PLAYER: u8 = 11;
 
 const USE_ATTACK: u8 = 1;
 const USE_INTERACT: u8 = 2;
@@ -70,6 +97,24 @@ const USE_MOB_HIT_FLUNG: u8 = 9;
 const USE_THROWN: u8 = 10;
 /// A guardian's spikes: a mob's hit of `thorns`, which carries no fling.
 const USE_MOB_HIT_THORNS: u8 = 11;
+// N9's entity effects (`docs/groundwork/n9-plan.md`, section 8.3), and the effect
+// addressed to a player. New tags need no raise of the format: a world made before them
+// is refused anyway (the plan's finding 55), and none of the old tags changes meaning.
+/// A hurt and what follows it if it took (`clustine_world::HurtBy`).
+const USE_HURT: u8 = 12;
+/// A mob told of an attacker (`alertOthers`).
+const USE_ALERT: u8 = 13;
+/// Effects given by a splash or a cloud (`clustine_world::GivenEffects`).
+const USE_EFFECTS: u8 = 14;
+/// A player's ender pearl landed.
+const USE_PEARL_LANDED: u8 = 15;
+/// A patrol's leader names its target.
+const USE_PATROL_TARGET: u8 = 16;
+
+/// What an attacker's type adds to a hurt (`clustine_world::HitExtra`), a tag each.
+const EXTRA_ZOMBIE_FIRE: u8 = 1;
+const EXTRA_HUSK_HUNGER: u8 = 2;
+const EXTRA_FLING: u8 = 3;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -134,135 +179,17 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
         Effected::OnEntity { key, ref by } => {
             out.push(ON_ENTITY);
             out.extend_from_slice(&key.0.to_be_bytes());
-            match by.clone() {
-                EntityUse::Attack {
-                    attacker,
-                    creative,
-                    sprinting,
-                    damage,
-                    from,
-                } => {
-                    out.push(USE_ATTACK);
-                    out.extend_from_slice(&attacker.0.to_be_bytes());
-                    out.push(u8::from(creative) | (u8::from(sprinting) << 1));
-                    out.extend_from_slice(&damage.0.to_be_bytes());
-                    put_doubles(out, from);
-                }
-                EntityUse::Interact {
-                    player,
-                    creative,
-                    held,
-                    location,
-                    sneaking,
-                    from,
-                    edge,
-                } => {
-                    out.push(if edge.is_some() {
-                        USE_INTERACT_FROM_EDGE
-                    } else {
-                        USE_INTERACT
-                    });
-                    out.extend_from_slice(&player.0.to_be_bytes());
-                    out.push(u8::from(creative) | (u8::from(sneaking) << 1));
-                    put_optional_stack(out, held.as_ref());
-                    put_doubles(out, location);
-                    put_doubles(out, from);
-                    if let Some(edge) = edge {
-                        out.extend_from_slice(&edge.0.to_be_bytes());
-                    }
-                }
-                EntityUse::SeatDeclined { player } => {
-                    out.push(USE_SEAT_DECLINED);
-                    out.extend_from_slice(&player.0.to_be_bytes());
-                }
-                EntityUse::Blasted {
-                    damage,
-                    push,
-                    blast,
-                } => {
-                    out.push(USE_BLASTED);
-                    out.extend_from_slice(&damage.0.to_be_bytes());
-                    put_doubles(out, push);
-                    put_blast(out, &blast);
-                }
-                EntityUse::BreedAsk { asker, number } => {
-                    out.push(USE_BREED_ASK);
-                    out.extend_from_slice(&asker.0.to_be_bytes());
-                    out.extend_from_slice(&number.to_be_bytes());
-                }
-                EntityUse::BreedAnswer {
-                    partner,
-                    number,
-                    accepted,
-                } => {
-                    out.push(USE_BREED_ANSWER);
-                    out.extend_from_slice(&partner.0.to_be_bytes());
-                    out.extend_from_slice(&number.to_be_bytes());
-                    out.push(u8::from(accepted));
-                }
-                EntityUse::MobHit {
-                    attacker,
-                    kind,
-                    from,
-                    damage,
-                    knockback,
-                    fling,
-                    sound,
-                    thorns,
-                } => {
-                    // A flung hit and a guardian's spikes are kinds of their own, so that
-                    // the hits the log keeps from before them are read as they were
-                    // written. The spikes push nothing and fling nothing.
-                    out.push(if thorns {
-                        USE_MOB_HIT_THORNS
-                    } else if fling.is_some() {
-                        USE_MOB_HIT_FLUNG
-                    } else {
-                        USE_MOB_HIT
-                    });
-                    out.extend_from_slice(&attacker.0.to_be_bytes());
-                    out.extend_from_slice(&kind.to_be_bytes());
-                    put_doubles(out, from);
-                    out.extend_from_slice(&damage.0.to_be_bytes());
-                    // Each optional part after a flag of its own.
-                    out.push(u8::from(knockback.is_some()));
-                    if let Some(knockback) = knockback {
-                        put_doubles(out, knockback);
-                    }
-                    out.push(u8::from(sound.is_some()));
-                    if let Some(sound) = sound {
-                        out.extend_from_slice(&sound.to_be_bytes());
-                    }
-                    if let Some(fling) = fling.filter(|_| !thorns) {
-                        out.extend_from_slice(&fling.0.to_be_bytes());
-                    }
-                }
-                EntityUse::Thrown {
-                    projectile,
-                    kind,
-                    at,
-                    motion,
-                    damage,
-                    owner,
-                } => {
-                    out.push(USE_THROWN);
-                    out.extend_from_slice(&projectile.0.to_be_bytes());
-                    out.extend_from_slice(&kind.to_be_bytes());
-                    put_doubles(out, at);
-                    put_doubles(out, motion);
-                    out.extend_from_slice(&damage.0.to_be_bytes());
-                    out.push(u8::from(owner.is_some()));
-                    if let Some(owner) = owner {
-                        out.extend_from_slice(&owner.key.0.to_be_bytes());
-                        out.extend_from_slice(&owner.kind.to_be_bytes());
-                        put_doubles(out, owner.from);
-                        out.push(u8::from(owner.player.is_some()));
-                        if let Some(player) = owner.player {
-                            out.extend_from_slice(&player.as_u128().to_be_bytes());
-                        }
-                    }
-                }
-            }
+            put_use(out, by);
+        }
+        Effected::OnPlayer {
+            player,
+            entity,
+            ref by,
+        } => {
+            out.push(ON_PLAYER);
+            out.extend_from_slice(&player.0.as_u128().to_be_bytes());
+            out.extend_from_slice(&entity.0.to_be_bytes());
+            put_use(out, by);
         }
         Effected::Exploded { expected, blast } => {
             out.push(EXPLODED);
@@ -299,6 +226,483 @@ pub(crate) fn put_effect(out: &mut Vec<u8>, effect: &Effect) {
             out.extend_from_slice(&chunk.x.to_be_bytes());
             out.extend_from_slice(&chunk.z.to_be_bytes());
         }
+    }
+}
+
+/// Appends a use of an entity: its kind, then what that kind carries. An effect on a
+/// chunk's entity and one addressed to a player write it alike.
+fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
+    match *by {
+        EntityUse::Attack {
+            attacker,
+            creative,
+            sprinting,
+            damage,
+            from,
+        } => {
+            out.push(USE_ATTACK);
+            out.extend_from_slice(&attacker.0.to_be_bytes());
+            out.push(u8::from(creative) | (u8::from(sprinting) << 1));
+            out.extend_from_slice(&damage.0.to_be_bytes());
+            put_doubles(out, from);
+        }
+        EntityUse::Interact {
+            player,
+            creative,
+            ref held,
+            location,
+            sneaking,
+            from,
+            edge,
+        } => {
+            out.push(if edge.is_some() {
+                USE_INTERACT_FROM_EDGE
+            } else {
+                USE_INTERACT
+            });
+            out.extend_from_slice(&player.0.to_be_bytes());
+            out.push(u8::from(creative) | (u8::from(sneaking) << 1));
+            put_optional_stack(out, held.as_ref());
+            put_doubles(out, location);
+            put_doubles(out, from);
+            if let Some(edge) = edge {
+                out.extend_from_slice(&edge.0.to_be_bytes());
+            }
+        }
+        EntityUse::SeatDeclined { player } => {
+            out.push(USE_SEAT_DECLINED);
+            out.extend_from_slice(&player.0.to_be_bytes());
+        }
+        EntityUse::Blasted {
+            damage,
+            push,
+            ref blast,
+        } => {
+            out.push(USE_BLASTED);
+            out.extend_from_slice(&damage.0.to_be_bytes());
+            put_doubles(out, push);
+            put_blast(out, blast);
+        }
+        EntityUse::BreedAsk { asker, number } => {
+            out.push(USE_BREED_ASK);
+            out.extend_from_slice(&asker.0.to_be_bytes());
+            out.extend_from_slice(&number.to_be_bytes());
+        }
+        EntityUse::BreedAnswer {
+            partner,
+            number,
+            accepted,
+        } => {
+            out.push(USE_BREED_ANSWER);
+            out.extend_from_slice(&partner.0.to_be_bytes());
+            out.extend_from_slice(&number.to_be_bytes());
+            out.push(u8::from(accepted));
+        }
+        EntityUse::MobHit {
+            attacker,
+            kind,
+            from,
+            damage,
+            knockback,
+            fling,
+            sound,
+            thorns,
+        } => {
+            // A flung hit and a guardian's spikes are kinds of their own, so that
+            // the hits the log keeps from before them are read as they were
+            // written. The spikes push nothing and fling nothing.
+            out.push(if thorns {
+                USE_MOB_HIT_THORNS
+            } else if fling.is_some() {
+                USE_MOB_HIT_FLUNG
+            } else {
+                USE_MOB_HIT
+            });
+            out.extend_from_slice(&attacker.0.to_be_bytes());
+            out.extend_from_slice(&kind.to_be_bytes());
+            put_doubles(out, from);
+            out.extend_from_slice(&damage.0.to_be_bytes());
+            // Each optional part after a flag of its own.
+            out.push(u8::from(knockback.is_some()));
+            if let Some(knockback) = knockback {
+                put_doubles(out, knockback);
+            }
+            out.push(u8::from(sound.is_some()));
+            if let Some(sound) = sound {
+                out.extend_from_slice(&sound.to_be_bytes());
+            }
+            if let Some(fling) = fling.filter(|_| !thorns) {
+                out.extend_from_slice(&fling.0.to_be_bytes());
+            }
+        }
+        EntityUse::Thrown {
+            projectile,
+            kind,
+            at,
+            motion,
+            damage,
+            owner,
+        } => {
+            out.push(USE_THROWN);
+            out.extend_from_slice(&projectile.0.to_be_bytes());
+            out.extend_from_slice(&kind.to_be_bytes());
+            put_doubles(out, at);
+            put_doubles(out, motion);
+            out.extend_from_slice(&damage.0.to_be_bytes());
+            out.push(u8::from(owner.is_some()));
+            if let Some(owner) = owner {
+                out.extend_from_slice(&owner.key.0.to_be_bytes());
+                out.extend_from_slice(&owner.kind.to_be_bytes());
+                put_doubles(out, owner.from);
+                out.push(u8::from(owner.player.is_some()));
+                if let Some(player) = owner.player {
+                    out.extend_from_slice(&player.as_u128().to_be_bytes());
+                }
+            }
+        }
+        EntityUse::Hurt(ref hurt) => {
+            out.push(USE_HURT);
+            put_string(out, &hurt.damage_type);
+            put_optional_causer(out, hurt.cause.as_ref());
+            put_optional_causer(out, hurt.direct.as_ref());
+            put_optional_doubles(out, hurt.position);
+            put_optional_doubles(out, hurt.projectile_motion);
+            out.extend_from_slice(&hurt.amount.0.to_be_bytes());
+            put_optional_doubles(out, hurt.knockback);
+            out.extend_from_slice(&hurt.fire_before.to_be_bytes());
+            out.extend_from_slice(&hurt.fire_after.to_be_bytes());
+            put_instances(out, &hurt.effects);
+            out.push(u8::from(hurt.arrow));
+            out.extend_from_slice(&count_u32(hurt.extras.len()).to_be_bytes());
+            for extra in &hurt.extras {
+                match *extra {
+                    HitExtra::ZombieFire => out.push(EXTRA_ZOMBIE_FIRE),
+                    HitExtra::HuskHunger => out.push(EXTRA_HUSK_HUNGER),
+                    HitExtra::Fling(strength) => {
+                        out.push(EXTRA_FLING);
+                        out.extend_from_slice(&strength.0.to_be_bytes());
+                    }
+                }
+            }
+            out.push(u8::from(hurt.sound.is_some()));
+            if let Some((sound, volume, pitch)) = hurt.sound {
+                out.extend_from_slice(&sound.to_be_bytes());
+                out.extend_from_slice(&volume.0.to_be_bytes());
+                out.extend_from_slice(&pitch.0.to_be_bytes());
+            }
+            out.push(u8::from(hurt.hit.is_some()));
+            if let Some((attacker, lived)) = hurt.hit {
+                out.extend_from_slice(&attacker.0.to_be_bytes());
+                out.extend_from_slice(&lived.to_be_bytes());
+            }
+        }
+        EntityUse::Alert {
+            attacker,
+            kind,
+            class,
+        } => {
+            out.push(USE_ALERT);
+            out.extend_from_slice(&attacker.0.to_be_bytes());
+            out.extend_from_slice(&kind.to_be_bytes());
+            out.extend_from_slice(&class.to_be_bytes());
+        }
+        EntityUse::Effects(ref given) => {
+            out.push(USE_EFFECTS);
+            put_instances(out, &given.instances);
+            out.extend_from_slice(&given.instant_factor.0.to_be_bytes());
+            put_optional_causer(out, given.source.as_ref());
+            put_optional_causer(out, given.owner.as_ref());
+            out.push(u8::from(given.water));
+        }
+        EntityUse::PearlLanded { at, endermite } => {
+            out.push(USE_PEARL_LANDED);
+            put_doubles(out, at);
+            out.push(u8::from(endermite));
+        }
+        EntityUse::PatrolTarget { pos } => {
+            out.push(USE_PATROL_TARGET);
+            out.extend_from_slice(&pos.x.to_be_bytes());
+            out.extend_from_slice(&pos.y.to_be_bytes());
+            out.extend_from_slice(&pos.z.to_be_bytes());
+        }
+    }
+}
+
+/// Reads what [`put_use`] wrote.
+fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
+    let use_kind = input.u8()?;
+    Ok(match use_kind {
+        USE_ATTACK => {
+            let attacker = EntityId(input.u64()?);
+            let (creative, sprinting) = take_two_flags(input)?;
+            EntityUse::Attack {
+                attacker,
+                creative,
+                sprinting,
+                damage: Float(input.f32()?),
+                from: take_doubles(input)?,
+            }
+        }
+        USE_INTERACT | USE_INTERACT_FROM_EDGE => {
+            let player = EntityId(input.u64()?);
+            let (creative, sneaking) = take_two_flags(input)?;
+            let held = take_optional_stack(input, "an entity use's held flag")?;
+            let location = take_doubles(input)?;
+            let from = take_doubles(input)?;
+            let edge = if use_kind == USE_INTERACT_FROM_EDGE {
+                Some(clustine_world::EdgeId(input.u64()?))
+            } else {
+                None
+            };
+            EntityUse::Interact {
+                player,
+                creative,
+                held,
+                location,
+                sneaking,
+                from,
+                edge,
+            }
+        }
+        USE_SEAT_DECLINED => EntityUse::SeatDeclined {
+            player: EntityId(input.u64()?),
+        },
+        USE_BLASTED => EntityUse::Blasted {
+            damage: Float(input.f32()?),
+            push: take_doubles(input)?,
+            blast: take_blast(input)?,
+        },
+        USE_BREED_ASK => EntityUse::BreedAsk {
+            asker: EntityId(input.u64()?),
+            number: input.u32()?,
+        },
+        USE_BREED_ANSWER => EntityUse::BreedAnswer {
+            partner: EntityId(input.u64()?),
+            number: input.u32()?,
+            accepted: take_flag(input, "a breeding answer's flag")?,
+        },
+        USE_MOB_HIT | USE_MOB_HIT_FLUNG | USE_MOB_HIT_THORNS => {
+            let attacker = EntityId(input.u64()?);
+            let kind = input.u16()?;
+            let from = take_doubles(input)?;
+            let damage = Float(input.f32()?);
+            let knockback = match input.u8()? {
+                0 => None,
+                1 => Some(take_doubles(input)?),
+                _ => return Err(FormatError::Corrupt("a mob's hit's knockback flag")),
+            };
+            let sound = match input.u8()? {
+                0 => None,
+                1 => Some(input.i32()?),
+                _ => return Err(FormatError::Corrupt("a mob's hit's sound flag")),
+            };
+            let fling = if use_kind == USE_MOB_HIT_FLUNG {
+                Some(Float(input.f32()?))
+            } else {
+                None
+            };
+            EntityUse::MobHit {
+                attacker,
+                kind,
+                from,
+                damage,
+                knockback,
+                fling,
+                sound,
+                thorns: use_kind == USE_MOB_HIT_THORNS,
+            }
+        }
+        USE_THROWN => EntityUse::Thrown {
+            projectile: EntityId(input.u64()?),
+            kind: input.u16()?,
+            at: take_doubles(input)?,
+            motion: take_doubles(input)?,
+            damage: Float(input.f32()?),
+            owner: match input.u8()? {
+                0 => None,
+                1 => Some(Thrower {
+                    key: EntityId(input.u64()?),
+                    kind: input.u16()?,
+                    from: take_doubles(input)?,
+                    player: match input.u8()? {
+                        0 => None,
+                        1 => Some(Uuid::from_u128(input.u128()?)),
+                        _ => {
+                            return Err(FormatError::Corrupt("a thrown item's hit's player flag"));
+                        }
+                    },
+                }),
+                _ => return Err(FormatError::Corrupt("a thrown item's hit's owner flag")),
+            },
+        },
+        USE_HURT => {
+            let damage_type = take_string(input)?;
+            let cause = take_optional_causer(input)?;
+            let direct = take_optional_causer(input)?;
+            let position = take_optional_doubles(input, "a hurt's position flag")?;
+            let projectile_motion = take_optional_doubles(input, "a hurt's motion flag")?;
+            let amount = Float(input.f32()?);
+            let knockback = take_optional_doubles(input, "a hurt's knockback flag")?;
+            let fire_before = input.i32()?;
+            let fire_after = input.i32()?;
+            let effects = take_instances(input)?;
+            let arrow = take_flag(input, "a hurt's arrow flag")?;
+            let count = take_count(input)?;
+            let mut extras = Vec::with_capacity(count);
+            for _ in 0..count {
+                extras.push(match input.u8()? {
+                    EXTRA_ZOMBIE_FIRE => HitExtra::ZombieFire,
+                    EXTRA_HUSK_HUNGER => HitExtra::HuskHunger,
+                    EXTRA_FLING => HitExtra::Fling(Float(input.f32()?)),
+                    _ => return Err(FormatError::Corrupt("a hit's extra")),
+                });
+            }
+            let sound = if take_flag(input, "a hurt's sound flag")? {
+                Some((input.i32()?, Float(input.f32()?), Float(input.f32()?)))
+            } else {
+                None
+            };
+            let hit = if take_flag(input, "a hurt's hit flag")? {
+                Some((EntityId(input.u64()?), input.u32()?))
+            } else {
+                None
+            };
+            EntityUse::Hurt(Box::new(HurtBy {
+                damage_type,
+                cause,
+                direct,
+                position,
+                projectile_motion,
+                amount,
+                knockback,
+                fire_before,
+                fire_after,
+                effects,
+                arrow,
+                extras,
+                sound,
+                hit,
+            }))
+        }
+        USE_ALERT => EntityUse::Alert {
+            attacker: EntityId(input.u64()?),
+            kind: input.u16()?,
+            class: input.u16()?,
+        },
+        USE_EFFECTS => EntityUse::Effects(Box::new(GivenEffects {
+            instances: take_instances(input)?,
+            instant_factor: Float(input.f32()?),
+            source: take_optional_causer(input)?,
+            owner: take_optional_causer(input)?,
+            water: take_flag(input, "given effects' water flag")?,
+        })),
+        USE_PEARL_LANDED => EntityUse::PearlLanded {
+            at: take_doubles(input)?,
+            endermite: take_flag(input, "a pearl's endermite flag")?,
+        },
+        USE_PATROL_TARGET => EntityUse::PatrolTarget {
+            pos: BlockPos::new(input.i32()?, input.i32()?, input.i32()?),
+        },
+        _ => return Err(FormatError::Corrupt("an entity use's kind")),
+    })
+}
+
+/// A causer is its key u64, its type u16, its feet 3 × f64, u8 0 or u8 1 and the player's
+/// UUID u128, and u8 0 or 1 whether it is living.
+fn put_causer(out: &mut Vec<u8>, causer: &Causer) {
+    out.extend_from_slice(&causer.key.0.to_be_bytes());
+    out.extend_from_slice(&causer.kind.to_be_bytes());
+    put_doubles(out, causer.position);
+    out.push(u8::from(causer.player.is_some()));
+    if let Some(player) = causer.player {
+        out.extend_from_slice(&player.as_u128().to_be_bytes());
+    }
+    out.push(u8::from(causer.living));
+}
+
+fn take_causer(input: &mut Input<'_>) -> Result<Causer, FormatError> {
+    Ok(Causer {
+        key: EntityId(input.u64()?),
+        kind: input.u16()?,
+        position: take_doubles(input)?,
+        player: if take_flag(input, "a causer's player flag")? {
+            Some(Uuid::from_u128(input.u128()?))
+        } else {
+            None
+        },
+        living: take_flag(input, "a causer's living flag")?,
+    })
+}
+
+fn put_optional_causer(out: &mut Vec<u8>, causer: Option<&Causer>) {
+    out.push(u8::from(causer.is_some()));
+    if let Some(causer) = causer {
+        put_causer(out, causer);
+    }
+}
+
+fn take_optional_causer(input: &mut Input<'_>) -> Result<Option<Causer>, FormatError> {
+    Ok(if take_flag(input, "a causer's flag")? {
+        Some(take_causer(input)?)
+    } else {
+        None
+    })
+}
+
+fn put_optional_doubles(out: &mut Vec<u8>, values: Option<[Double; 3]>) {
+    out.push(u8::from(values.is_some()));
+    if let Some(values) = values {
+        put_doubles(out, values);
+    }
+}
+
+fn take_optional_doubles(
+    input: &mut Input<'_>,
+    what: &'static str,
+) -> Result<Option<[Double; 3]>, FormatError> {
+    Ok(if take_flag(input, what)? {
+        Some(take_doubles(input)?)
+    } else {
+        None
+    })
+}
+
+/// A count u32, then each effect instance as a stack's `potion_contents` writes one.
+fn put_instances(out: &mut Vec<u8>, instances: &[EffectInstance]) {
+    out.extend_from_slice(&count_u32(instances.len()).to_be_bytes());
+    for instance in instances {
+        put_effect_instance(out, instance);
+    }
+}
+
+fn take_instances(input: &mut Input<'_>) -> Result<Vec<EffectInstance>, FormatError> {
+    let count = take_count(input)?;
+    let mut instances = Vec::with_capacity(count);
+    for _ in 0..count {
+        instances.push(take_effect_instance(input)?);
+    }
+    Ok(instances)
+}
+
+/// A list's count, refused where it is beyond the bytes left (each element takes one at
+/// the least), so that a forged count reserves nothing.
+fn take_count(input: &mut Input<'_>) -> Result<usize, FormatError> {
+    let count = usize::try_from(input.u32()?).map_err(|_| FormatError::Corrupt("a count"))?;
+    if count > input.0.len() {
+        return Err(FormatError::Corrupt("a list longer than its record"));
+    }
+    Ok(count)
+}
+
+fn count_u32(count: usize) -> u32 {
+    u32::try_from(count).expect("a hurt carries fewer than 2^32 effects or extras")
+}
+
+fn take_flag(input: &mut Input<'_>, what: &'static str) -> Result<bool, FormatError> {
+    match input.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(FormatError::Corrupt(what)),
     }
 }
 
@@ -415,123 +819,15 @@ pub(crate) fn take_effect(input: &mut Input<'_>) -> Result<Effect, FormatError> 
             state: take_block(input)?,
             flags: input.u32()?,
         },
-        ON_ENTITY => {
-            let key = EntityId(input.u64()?);
-            let use_kind = input.u8()?;
-            let by = match use_kind {
-                USE_ATTACK => {
-                    let attacker = EntityId(input.u64()?);
-                    let (creative, sprinting) = take_two_flags(input)?;
-                    EntityUse::Attack {
-                        attacker,
-                        creative,
-                        sprinting,
-                        damage: Float(input.f32()?),
-                        from: take_doubles(input)?,
-                    }
-                }
-                USE_INTERACT | USE_INTERACT_FROM_EDGE => {
-                    let player = EntityId(input.u64()?);
-                    let (creative, sneaking) = take_two_flags(input)?;
-                    let held = take_optional_stack(input, "an entity use's held flag")?;
-                    let location = take_doubles(input)?;
-                    let from = take_doubles(input)?;
-                    let edge = if use_kind == USE_INTERACT_FROM_EDGE {
-                        Some(clustine_world::EdgeId(input.u64()?))
-                    } else {
-                        None
-                    };
-                    EntityUse::Interact {
-                        player,
-                        creative,
-                        held,
-                        location,
-                        sneaking,
-                        from,
-                        edge,
-                    }
-                }
-                USE_SEAT_DECLINED => EntityUse::SeatDeclined {
-                    player: EntityId(input.u64()?),
-                },
-                USE_BLASTED => EntityUse::Blasted {
-                    damage: Float(input.f32()?),
-                    push: take_doubles(input)?,
-                    blast: take_blast(input)?,
-                },
-                USE_BREED_ASK => EntityUse::BreedAsk {
-                    asker: EntityId(input.u64()?),
-                    number: input.u32()?,
-                },
-                USE_BREED_ANSWER => EntityUse::BreedAnswer {
-                    partner: EntityId(input.u64()?),
-                    number: input.u32()?,
-                    accepted: match input.u8()? {
-                        0 => false,
-                        1 => true,
-                        _ => return Err(FormatError::Corrupt("a breeding answer's flag")),
-                    },
-                },
-                USE_MOB_HIT | USE_MOB_HIT_FLUNG | USE_MOB_HIT_THORNS => {
-                    let attacker = EntityId(input.u64()?);
-                    let kind = input.u16()?;
-                    let from = take_doubles(input)?;
-                    let damage = Float(input.f32()?);
-                    let knockback = match input.u8()? {
-                        0 => None,
-                        1 => Some(take_doubles(input)?),
-                        _ => return Err(FormatError::Corrupt("a mob's hit's knockback flag")),
-                    };
-                    let sound = match input.u8()? {
-                        0 => None,
-                        1 => Some(input.i32()?),
-                        _ => return Err(FormatError::Corrupt("a mob's hit's sound flag")),
-                    };
-                    let fling = if use_kind == USE_MOB_HIT_FLUNG {
-                        Some(Float(input.f32()?))
-                    } else {
-                        None
-                    };
-                    EntityUse::MobHit {
-                        attacker,
-                        kind,
-                        from,
-                        damage,
-                        knockback,
-                        fling,
-                        sound,
-                        thorns: use_kind == USE_MOB_HIT_THORNS,
-                    }
-                }
-                USE_THROWN => EntityUse::Thrown {
-                    projectile: EntityId(input.u64()?),
-                    kind: input.u16()?,
-                    at: take_doubles(input)?,
-                    motion: take_doubles(input)?,
-                    damage: Float(input.f32()?),
-                    owner: match input.u8()? {
-                        0 => None,
-                        1 => Some(Thrower {
-                            key: EntityId(input.u64()?),
-                            kind: input.u16()?,
-                            from: take_doubles(input)?,
-                            player: match input.u8()? {
-                                0 => None,
-                                1 => Some(Uuid::from_u128(input.u128()?)),
-                                _ => {
-                                    return Err(FormatError::Corrupt(
-                                        "a thrown item's hit's player flag",
-                                    ));
-                                }
-                            },
-                        }),
-                        _ => return Err(FormatError::Corrupt("a thrown item's hit's owner flag")),
-                    },
-                },
-                _ => return Err(FormatError::Corrupt("an entity use's kind")),
-            };
-            Effected::OnEntity { key, by }
-        }
+        ON_ENTITY => Effected::OnEntity {
+            key: EntityId(input.u64()?),
+            by: take_use(input)?,
+        },
+        ON_PLAYER => Effected::OnPlayer {
+            player: PlayerId(Uuid::from_u128(input.u128()?)),
+            entity: EntityId(input.u64()?),
+            by: take_use(input)?,
+        },
         EXPLODED => Effected::Exploded {
             expected: take_block(input)?,
             blast: take_blast(input)?,
@@ -707,7 +1003,7 @@ mod tests {
         assert_eq!(take_effect(&mut Input(&good)), Ok(effect()));
         // The kind is after the block, three i32; the direction after the kind.
         let mut kind = good.clone();
-        kind[12] = 11;
+        kind[12] = ON_PLAYER + 1;
         assert_eq!(
             take_effect(&mut Input(&kind)),
             Err(FormatError::Corrupt("an effect's kind"))
@@ -1147,6 +1443,309 @@ mod entity_uses {
                 max: [Double(15.8), Double(-58.2), Double(2.8)],
             },
         });
+    }
+
+    fn causer(player: Option<u128>, living: bool) -> Causer {
+        Causer {
+            key: EntityId(u64::MAX - 7),
+            kind: 1 << 15 | 3,
+            position: [Double(-0.0), Double(-63.5), Double(1e300)],
+            player: player.map(Uuid::from_u128),
+            living,
+        }
+    }
+
+    fn instance(effect: &str, amplifier: i32, duration: i32) -> EffectInstance {
+        EffectInstance {
+            effect: effect.to_owned(),
+            amplifier,
+            duration,
+            ambient: true,
+            visible: false,
+            show_icon: true,
+        }
+    }
+
+    /// A hurt with every part set: a cause and a direct entity, a projectile's motion,
+    /// knockback, fire before and after, two effects, an arrow, every extra, a sound and
+    /// the hit's key.
+    fn full_hurt() -> EntityUse {
+        EntityUse::Hurt(Box::new(HurtBy {
+            damage_type: "minecraft:arrow".to_owned(),
+            cause: Some(causer(
+                Some(0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210),
+                true,
+            )),
+            direct: Some(causer(None, false)),
+            position: Some([Double(3.5), Double(70.0), Double(-8.25)]),
+            projectile_motion: Some([Double(0.75), Double(-0.125), Double(f64::MIN_POSITIVE)]),
+            amount: Float(6.5),
+            knockback: Some([Double(0.4), Double(-1.0), Double(0.5)]),
+            fire_before: 100,
+            fire_after: -1,
+            effects: vec![
+                instance("minecraft:poison", 1, 100),
+                instance("minecraft:slowness", 0, -1),
+            ],
+            arrow: true,
+            extras: vec![
+                HitExtra::ZombieFire,
+                HitExtra::HuskHunger,
+                HitExtra::Fling(Float(0.4)),
+            ],
+            sound: Some((i32::MIN, Float(1.0), Float(0.875))),
+            hit: Some((EntityId(1 << 48 | 5), u32::MAX)),
+        }))
+    }
+
+    /// A hurt of nothing but its type and amount.
+    fn bare_hurt() -> EntityUse {
+        EntityUse::Hurt(Box::new(HurtBy {
+            damage_type: "minecraft:generic".to_owned(),
+            cause: None,
+            direct: None,
+            position: None,
+            projectile_motion: None,
+            amount: Float(1.0),
+            knockback: None,
+            fire_before: 0,
+            fire_after: 0,
+            effects: Vec::new(),
+            arrow: false,
+            extras: Vec::new(),
+            sound: None,
+            hit: None,
+        }))
+    }
+
+    fn full_effects() -> EntityUse {
+        EntityUse::Effects(Box::new(GivenEffects {
+            instances: vec![
+                instance("minecraft:instant_damage", 1, 1),
+                instance("minecraft:speed", 2, 3600),
+            ],
+            instant_factor: Float(0.625),
+            source: Some(causer(None, false)),
+            owner: Some(causer(Some(u128::MAX), true)),
+            water: true,
+        }))
+    }
+
+    fn bare_effects() -> EntityUse {
+        EntityUse::Effects(Box::new(GivenEffects {
+            instances: Vec::new(),
+            instant_factor: Float(1.0),
+            source: None,
+            owner: None,
+            water: false,
+        }))
+    }
+
+    /// One of each of N9's uses, with its parts set and without.
+    fn n9_uses() -> Vec<EntityUse> {
+        vec![
+            full_hurt(),
+            bare_hurt(),
+            EntityUse::Alert {
+                attacker: EntityId(1 << 40 | 2),
+                kind: 145,
+                class: u16::MAX,
+            },
+            full_effects(),
+            bare_effects(),
+            EntityUse::PearlLanded {
+                at: [Double(0.5), Double(-64.0), Double(-30_000_000.5)],
+                endermite: true,
+            },
+            EntityUse::PearlLanded {
+                at: [Double(0.0); 3],
+                endermite: false,
+            },
+            EntityUse::PatrolTarget {
+                pos: BlockPos::new(i32::MIN, -64, i32::MAX),
+            },
+        ]
+    }
+
+    fn n9_effects() -> Vec<Effect> {
+        let at = BlockPos::new(-17, 64, 3);
+        let mut effects: Vec<Effect> = n9_uses()
+            .into_iter()
+            .map(|by| Effect {
+                at,
+                what: Effected::OnEntity {
+                    key: EntityId(9 << 32 | 4),
+                    by,
+                },
+            })
+            .collect();
+        for by in [full_hurt(), bare_hurt(), full_effects(), bare_effects()] {
+            effects.push(Effect {
+                at,
+                what: Effected::OnPlayer {
+                    player: PlayerId(Uuid::from_u128(0xFEED_0000_0000_0000_0000_0000_0000_BEEF)),
+                    entity: EntityId(3 << 32 | 1),
+                    by,
+                },
+            });
+        }
+        effects.push(Effect {
+            at,
+            what: Effected::OnPlayer {
+                player: PlayerId(Uuid::from_u128(7)),
+                entity: EntityId(1),
+                by: EntityUse::PearlLanded {
+                    at: [Double(1.5), Double(2.0), Double(3.5)],
+                    endermite: false,
+                },
+            },
+        });
+        effects
+    }
+
+    #[test]
+    fn n9_s_uses_and_an_effect_on_a_player_are_read_back_as_written() {
+        for effect in n9_effects() {
+            round_trip(effect);
+        }
+    }
+
+    #[test]
+    fn every_cut_of_n9_s_uses_is_refused() {
+        for effect in n9_effects() {
+            let out = bytes_of(&effect);
+            for length in 0..out.len() {
+                assert!(
+                    take_effect(&mut Input(&out[..length])).is_err(),
+                    "{effect:?} cut to {length} of {} bytes",
+                    out.len()
+                );
+            }
+        }
+    }
+
+    fn bytes_of(effect: &Effect) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_effect(&mut out, effect);
+        out
+    }
+
+    #[test]
+    fn an_alert_is_written_byte_by_byte_as_the_format_says() {
+        let effect = Effect {
+            at: BlockPos::new(1, -2, 3),
+            what: Effected::OnEntity {
+                key: EntityId(0x0102_0304_0506_0708),
+                by: EntityUse::Alert {
+                    attacker: EntityId(0x1112_1314_1516_1718),
+                    kind: 0x2122,
+                    class: 0x3132,
+                },
+            },
+        };
+        let expected: Vec<u8> = [
+            &[0, 0, 0, 1][..],                                 // x i32
+            &[0xff, 0xff, 0xff, 0xfe],                         // y i32
+            &[0, 0, 0, 3],                                     // z i32
+            &[5],                                              // on an entity
+            &[1, 2, 3, 4, 5, 6, 7, 8],                         // its key u64
+            &[13],                                             // an alert
+            &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18], // the attacker u64
+            &[0x21, 0x22],                                     // its type u16
+            &[0x31, 0x32],                                     // the class u16
+        ]
+        .concat();
+        assert_eq!(bytes_of(&effect), expected);
+        round_trip(effect);
+    }
+
+    #[test]
+    fn a_pearl_s_landing_on_a_player_is_written_byte_by_byte_as_the_format_says() {
+        let effect = Effect {
+            at: BlockPos::new(0, 0, -1),
+            what: Effected::OnPlayer {
+                player: PlayerId(Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10)),
+                entity: EntityId(0x2122_2324_2526_2728),
+                by: EntityUse::PearlLanded {
+                    at: [Double(1.0), Double(-2.0), Double(0.5)],
+                    endermite: true,
+                },
+            },
+        };
+        let expected: Vec<u8> = [
+            &[0, 0, 0, 0][..],                                        // x i32
+            &[0, 0, 0, 0],                                            // y i32
+            &[0xff, 0xff, 0xff, 0xff],                                // z i32
+            &[11],                                                    // on a player
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], // their UUID u128
+            &[0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28],        // their entity's key u64
+            &[15],                                                    // a pearl landed
+            &[0x3f, 0xf0, 0, 0, 0, 0, 0, 0],                          // x 1.0 f64
+            &[0xc0, 0, 0, 0, 0, 0, 0, 0],                             // y -2.0 f64
+            &[0x3f, 0xe0, 0, 0, 0, 0, 0, 0],                          // z 0.5 f64
+            &[1],                                                     // an endermite comes
+        ]
+        .concat();
+        assert_eq!(bytes_of(&effect), expected);
+        round_trip(effect);
+    }
+
+    #[test]
+    fn a_hurt_s_flags_and_extras_out_of_range_are_refused() {
+        let at = BlockPos::new(0, 0, 0);
+        let on = |by| Effect {
+            at,
+            what: Effected::OnEntity {
+                key: EntityId(1),
+                by,
+            },
+        };
+        let hurt = |extras| {
+            EntityUse::Hurt(Box::new(HurtBy {
+                extras,
+                ..match bare_hurt() {
+                    EntityUse::Hurt(hurt) => *hurt,
+                    _ => unreachable!(),
+                }
+            }))
+        };
+        // The block (12), the kind (1), the key (8), the use's kind (1), then the damage
+        // type: its length (4) and "minecraft:generic" (17); then the cause's flag.
+        let cause_flag = 12 + 1 + 8 + 1 + 4 + 17;
+        let out = bytes_of(&on(hurt(vec![HitExtra::HuskHunger])));
+        assert_eq!(out[cause_flag], 0);
+        let mut bad = out.clone();
+        bad[cause_flag] = 2;
+        assert_eq!(
+            take_effect(&mut Input(&bad)),
+            Err(FormatError::Corrupt("a causer's flag"))
+        );
+        // The extra's tag is the byte before the sound's flag and the hit's.
+        let extra = out.len() - 3;
+        assert_eq!(out[extra], EXTRA_HUSK_HUNGER);
+        let mut bad = out.clone();
+        bad[extra] = 4;
+        assert_eq!(
+            take_effect(&mut Input(&bad)),
+            Err(FormatError::Corrupt("a hit's extra"))
+        );
+        // A forged count of extras is refused before anything is reserved for it.
+        let count = extra - 4;
+        let mut bad = out;
+        bad[count..count + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            take_effect(&mut Input(&bad)),
+            Err(FormatError::Corrupt("a list longer than its record"))
+        );
+        // A use's kind beyond the last is refused.
+        let mut out = bytes_of(&on(EntityUse::PatrolTarget {
+            pos: BlockPos::new(1, 2, 3),
+        }));
+        out[21] = USE_PATROL_TARGET + 1;
+        assert_eq!(
+            take_effect(&mut Input(&out)),
+            Err(FormatError::Corrupt("an entity use's kind"))
+        );
     }
 
     #[test]

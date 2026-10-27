@@ -623,6 +623,32 @@ pub(crate) fn instant(tick: &mut MobTick<'_>, harm: bool, amplifier: u8) {
     }
 }
 
+/// `HealOrHarmMobEffect.applyInstantenousEffect` of a splash or a cloud on the mob of
+/// `struck`, between its ticks: `(int) (factor · (4 << amplifier) + 0.5)` healed, or as
+/// much of `6 << amplifier` hurt by `source` (`indirectMagic(potion, owner)`), the other
+/// way round for an undead.
+pub(crate) fn instant_with(
+    struck: &mut super::hurt::Struck<'_>,
+    harm: bool,
+    amplifier: u8,
+    factor: f64,
+    source: &DamageSource,
+) {
+    let inverted = entity_in_tag(
+        i32::from(struck.kind),
+        "minecraft:inverted_healing_and_harm",
+    );
+    let shifted = |by: i32| f64::from(by.wrapping_shl(u32::from(amplifier)));
+    if harm == inverted {
+        let amount = (factor * shifted(4) + 0.5) as i32;
+        let kind = struck.kind;
+        crate::mobs::types::tamable::heal(struck.mob, kind, amount.max(0) as f32);
+    } else {
+        let amount = (factor * shifted(6) + 0.5) as i32;
+        super::hurt::hurt_server(struck, source, amount as f32);
+    }
+}
+
 /// Instant health of `amplifier` on the mob of `tick` at once: `4 << amplifier` back,
 /// or as much hurt to an undead ([`instant`]). A potion a mob drinks is added as an
 /// effect of one tick instead ([`add`]), healing at the next `tickEffects`.

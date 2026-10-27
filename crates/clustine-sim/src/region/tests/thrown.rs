@@ -32,7 +32,7 @@ const KNOCKBACK: f64 = 0.400_000_005_960_464_5;
 
 /// A cow resting on the floor at `feet`, of full health, with no AI, so that its own
 /// tick leaves its motion as it is: the resting motion of a mob on the ground.
-fn cow(key: EntityId, feet: [f64; 3]) -> Entity {
+pub(super) fn cow(key: EntityId, feet: [f64; 3]) -> Entity {
     let kind = entity_types::COW as u16;
     let mut mob = Mob::fresh();
     mob.body.vitals.health = crate::mobs::body::attributes::supplied(
@@ -62,7 +62,7 @@ fn cow(key: EntityId, feet: [f64; 3]) -> Entity {
 }
 
 /// Lays `entity` in the region's loaded chunk, as a load would have it.
-fn lay(region: &mut Region, entity: &Entity) {
+pub(super) fn lay(region: &mut Region, entity: &Entity) {
     let chunk = entity.chunk();
     region
         .chunks
@@ -72,12 +72,12 @@ fn lay(region: &mut Region, entity: &Entity) {
     region.entity_chunks.insert(entity.key, chunk);
 }
 
-fn mob(region: &Region, key: EntityId) -> Mob {
+pub(super) fn mob(region: &Region, key: EntityId) -> Mob {
     let (_, record) = region.find_entity(key).expect("the mob is here");
     Mob::decode(&record.data).expect("a mob's record")
 }
 
-fn health(region: &Region, key: EntityId) -> f32 {
+pub(super) fn health(region: &Region, key: EntityId) -> f32 {
     mob(region, key).body.vitals.health
 }
 

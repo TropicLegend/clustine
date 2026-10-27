@@ -187,13 +187,6 @@ impl Region {
     /// `addEffect` on the player `id` of `effect` at the level `layer` (its end in the
     /// region's ticks): whether anything changed. Their client is told, and the others
     /// where it changes what they see.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "potions, clouds and the effects across a line give them (S1, S3, N9e)"
-        )
-    )]
     pub(crate) fn add_player_effect(
         &mut self,
         id: PlayerId,

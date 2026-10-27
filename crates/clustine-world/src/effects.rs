@@ -88,6 +88,15 @@ pub enum Effected {
         vehicle: EntityId,
         chunk: crate::ChunkPos,
     },
+    /// A hurt, effects or a pearl's landing addressed to the player `player`, whose stay
+    /// is the entity `entity`: the store delivers it to the region that holds that stay,
+    /// whatever land they stand in (`docs/groundwork/n9-plan.md`, section 8.3); a stay
+    /// between regions at that moment misses it (named).
+    OnPlayer {
+        player: crate::PlayerId,
+        entity: EntityId,
+        by: EntityUse,
+    },
 }
 
 /// What an explosion's effects carry of the explosion, for the holder of a block or an
@@ -199,6 +208,100 @@ pub enum EntityUse {
         damage: Float,
         owner: Option<Thrower>,
     },
+    /// A hurt of the entity, and what follows it if it took (`docs/groundwork/n9-plan.md`,
+    /// sections 8.2 and 8.3): a mob's hit, an arrow's, a trident's, the fangs', a
+    /// rocket's, the guardian's beam and more, made where the hurt's maker sees the
+    /// entity only in a copy, or addressed to a player.
+    Hurt(Box<HurtBy>),
+    /// `alertOthers`: the mob is told of an attacker, which it targets if it has no
+    /// target and the tests of its target goal pass (section 8.1): the attacker, its
+    /// type, and the type a mob has to be of to come (`HurtByTargetGoal`'s class).
+    Alert {
+        attacker: EntityId,
+        kind: u16,
+        class: u16,
+    },
+    /// Effects given to the entity by a splash or a cloud (sections 4.4 and 4.5).
+    Effects(Box<GivenEffects>),
+    /// An ender pearl of the player's landed (section 4.4): where it landed, and whether
+    /// an endermite comes out of it.
+    PearlLanded { at: [Double; 3], endermite: bool },
+    /// A patrol's leader names its target to the mob (`LongDistancePatrolGoal`, section
+    /// 8.6), which a mob that can join the patrol takes.
+    PatrolTarget { pos: BlockPos },
+}
+
+/// An entity that caused or dealt a hurt, as its damage source names it: its key, its
+/// type, where its feet were, the player's UUID where it is a player, and whether it is
+/// a `LivingEntity`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Causer {
+    pub key: EntityId,
+    pub kind: u16,
+    pub position: [Double; 3],
+    pub player: Option<Uuid>,
+    pub living: bool,
+}
+
+/// A hurt as it crosses a line, and what its lander does by its outcome
+/// (`docs/groundwork/n9-plan.md`, sections 8.2 and 8.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HurtBy {
+    /// The damage type, by name (`minecraft:arrow`).
+    pub damage_type: String,
+    /// The entity it is caused by, and the entity that deals it (a projectile).
+    pub cause: Option<Causer>,
+    pub direct: Option<Causer>,
+    /// Where it comes from where neither has a place of its own, and a projectile's
+    /// motion, which way its knockback pushes.
+    pub position: Option<[Double; 3]>,
+    pub projectile_motion: Option<[Double; 3]>,
+    pub amount: Float,
+    /// The knockback after it took: its strength and the x and z it pushes away from.
+    pub knockback: Option<[Double; 3]>,
+    /// The ticks of fire set before the hurt and taken back if it is refused (a burning
+    /// arrow's), and those set only if it took.
+    pub fire_before: i32,
+    pub fire_after: i32,
+    /// The effects given if it took, their durations already scaled.
+    pub effects: Vec<crate::components::EffectInstance>,
+    /// Whether an arrow is counted in the target's body if it took.
+    pub arrow: bool,
+    /// What the attacker's type adds if it took.
+    pub extras: Vec<HitExtra>,
+    /// The sound the hit plays at the target if it took: the sound, its volume and the
+    /// pitch the maker drew.
+    pub sound: Option<(i32, Float, Float)>,
+    /// The attacker and its `lived` at the hit, which with the target key the hit's
+    /// stream (`Random::of_hit`) the extras draw from; none where no extra draws.
+    pub hit: Option<(EntityId, u32)>,
+}
+
+/// What an attacker's type adds to a hit that took (section 8.2): drawn, where they draw,
+/// from the hit's stream by the lander.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HitExtra {
+    /// A burning zombie's hand: fire for `2 · (int) eff` seconds at `nextFloat() < eff ·
+    /// 0.3`.
+    ZombieFire,
+    /// The husk's hunger, `140 · (int) eff` ticks.
+    HuskHunger,
+    /// The iron golem's fling: upwards by this times what the target's knockback
+    /// resistance leaves.
+    Fling(Float),
+}
+
+/// Effects given by a splash or a cloud: the instances (their durations scaled), the
+/// factor of the instant ones (a splash's by its distance, 1 for a cloud), the potion or
+/// cloud that gives them and its owner (`indirectMagic(source, owner)`), and whether it
+/// is water, which hurts a water-sensitive mob (the enderman).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GivenEffects {
+    pub instances: Vec<crate::components::EffectInstance>,
+    pub instant_factor: Float,
+    pub source: Option<Causer>,
+    pub owner: Option<Causer>,
+    pub water: bool,
 }
 
 /// Who threw a projectile, as a hurt by it names its cause: the entity, its type, where
@@ -229,7 +332,8 @@ impl Effect {
             | Effected::Burnt { .. }
             | Effected::PlayerInside { .. }
             | Effected::Given { .. }
-            | Effected::Seated { .. } => None,
+            | Effected::Seated { .. }
+            | Effected::OnPlayer { .. } => None,
         }
     }
 }

@@ -99,7 +99,10 @@ impl Region {
             .filter(|effect| {
                 matches!(
                     effect.what,
-                    Effected::OnEntity { .. } | Effected::Seated { .. } | Effected::Given { .. }
+                    Effected::OnEntity { .. }
+                        | Effected::OnPlayer { .. }
+                        | Effected::Seated { .. }
+                        | Effected::Given { .. }
                 )
             })
             .map(|effect| effect.at)

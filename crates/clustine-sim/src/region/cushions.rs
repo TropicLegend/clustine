@@ -195,6 +195,12 @@ impl Region {
     ) {
         let _ = position;
         match by {
+            // Taken before the dispatch by kind (`entity_effects.rs`).
+            EntityUse::Hurt(_)
+            | EntityUse::Alert { .. }
+            | EntityUse::Effects(_)
+            | EntityUse::PearlLanded { .. }
+            | EntityUse::PatrolTarget { .. } => {}
             EntityUse::Attack { creative, .. } => {
                 self.hurt_attached(entity.key, Breaker::Player { creative }, output);
             }
