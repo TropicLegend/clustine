@@ -1407,10 +1407,6 @@ impl Region {
 
     /// Takes a player out of the region and reports their entity as removed.
     fn remove_player(&mut self, id: PlayerId, output: &mut TickOutput) {
-        eprintln!(
-            "DEBUG remove_player {id:?} here {}",
-            self.players.contains_key(&id)
-        );
         // A sleeper gets up first (`ServerPlayer.disconnect`'s `stopSleepInBed(true,
         // false)`): the bed is freed and the place kept is beside it.
         self.stop_sleep(id, true, false, output);
