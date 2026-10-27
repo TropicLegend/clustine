@@ -24,6 +24,7 @@ mod play;
 #[cfg(test)]
 mod script;
 mod session;
+mod stack_wire;
 mod status;
 mod tracking;
 
