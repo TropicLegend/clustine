@@ -510,7 +510,7 @@ fn weaving_weaves_two_or_three_cobwebs_on_sturdy_ground_about_its_dead_bearer() 
 }
 
 #[test]
-fn oozing_counts_the_slimes_about_its_bearer_and_makes_none_while_the_slime_is_unbuilt() {
+fn oozing_counts_the_slimes_about_its_bearer_and_makes_two_of_size_two() {
     let mut region = world(SEED, nothing);
     let key = cow(&mut region, [4.5, -60.0, 4.5]);
     for n in 0..3 {
@@ -532,9 +532,27 @@ fn oozing_counts_the_slimes_about_its_bearer_and_makes_none_while_the_slime_is_u
     let before = records(&region).len();
     let mut output = TickOutput::default();
     region.effects_at_removal(key, record.position, &[(Effect::OOZING, 0)], &mut output);
-    assert!(!crate::mobs::types::is_built(entity_types::SLIME as u16));
-    assert_eq!(records(&region).len(), before, "the game's null: none made");
-    assert_eq!(drawn(&region, key), 0, "nor drawn");
+    // Two, as 24 less the three about it leaves room for, each of size 2 and its yaw
+    // one draw of the level's random (the bearer's stream aside).
+    let made: Vec<Entity> = records(&region)
+        .into_iter()
+        .filter(|entity| {
+            i32::from(entity.kind) == entity_types::SLIME
+                && entity.position
+                    == [
+                        record.position[0],
+                        record.position[1] + 0.5,
+                        record.position[2],
+                    ]
+        })
+        .collect();
+    assert_eq!(records(&region).len(), before + 2);
+    assert_eq!(made.len(), 2, "{made:?}");
+    for slime in &made {
+        let mob = crate::mobs::Mob::decode(&slime.data).expect("a mob");
+        assert_eq!(crate::mobs::types::cube_mob::size(&mob), 2);
+    }
+    assert_eq!(drawn(&region, key), 2);
 }
 
 #[test]
@@ -556,17 +574,24 @@ fn infested_draws_its_chance_at_each_hurt_and_its_count_where_the_chance_holds()
         );
         let mut replay = aside(&region, key, lived);
         let chance = replay.next_float();
-        let expected = if chance <= 0.1 { 2 } else { 1 };
-        if chance <= 0.1 {
+        // Where the chance holds, the count, then each silverfish's turn and yaw.
+        let count = if chance <= 0.1 {
             held += 1;
-        }
+            replay.next_int(2) + 1
+        } else {
+            0
+        };
+        let expected = if chance <= 0.1 {
+            2 + 2 * u64::from(count)
+        } else {
+            1
+        };
         assert_eq!(drawn(&region, key), expected, "chance {chance}");
-        assert!(
-            records(&region)
-                .iter()
-                .all(|entity| i32::from(entity.kind) != entity_types::SILVERFISH),
-            "none made while the silverfish is unbuilt"
-        );
+        let made = records(&region)
+            .iter()
+            .filter(|entity| i32::from(entity.kind) == entity_types::SILVERFISH)
+            .count();
+        assert_eq!(made, count as usize);
     }
     assert!(held > 0, "the chance held at least once in thirty");
 }

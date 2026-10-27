@@ -41,6 +41,7 @@ use super::Region;
 use super::random_ticks::Random;
 use super::updates::{UPDATE_ALL, UPDATE_LIMIT};
 use crate::api::{RegionEvent, TickOutput};
+use crate::mobs::Mob;
 use crate::mobs::body::effects::Effect;
 use crate::mobs::making::{construct, fresh_record};
 use crate::mobs::types;
@@ -243,7 +244,15 @@ impl Region {
             }
             let yaw = streams.level().next_float() * 360.0;
             let feet = [at[0], at[1] + 0.5, at[2]];
-            self.make_triggered(slime, feet, yaw, [0.0; 3], output);
+            // `slime.setSize(2, true)`, before it is placed.
+            self.make_triggered(
+                slime,
+                feet,
+                yaw,
+                [0.0; 3],
+                |mob| crate::mobs::types::cube_mob::set_size(slime, mob, 2, true),
+                output,
+            );
         }
     }
 
@@ -353,7 +362,7 @@ impl Region {
             let motion = [f64::from(x), f64::from(y), f64::from(z)];
             let yaw = streams.level().next_float() * 360.0;
             if self
-                .make_triggered(silverfish, feet, yaw, motion, output)
+                .make_triggered(silverfish, feet, yaw, motion, |_| {}, output)
                 .is_some()
             {
                 // `playSound(SILVERFISH_HURT)`: at it, of its source, to everyone near.
@@ -372,13 +381,15 @@ impl Region {
     /// `EntityType.create(level, TRIGGERED)` of a built type `kind` (its constructor's
     /// draws from its own new stream), `snapTo(at, yaw, 0)`, its motion, and
     /// `addFreshEntity`: into the region's ticking chunk, or sent where its chunk is
-    /// another's. Its key, where it made one.
+    /// another's; `shaped` what its maker sets on it between (the slime's size). Its key,
+    /// where it made one.
     fn make_triggered(
         &mut self,
         kind: u16,
         at: Vec3,
         yaw: f32,
         motion: Vec3,
+        shaped: impl FnOnce(&mut Mob),
         output: &mut TickOutput,
     ) -> Option<EntityId> {
         let chunk = ChunkPos::containing(at[0], at[2]);
@@ -393,7 +404,8 @@ impl Region {
         }?;
         let mut own = self.entity_stream(key).random;
         let start = own.clone();
-        let (uuid, mob) = construct(kind, &mut own, yaw);
+        let (uuid, mut mob) = construct(kind, &mut own, yaw);
+        shaped(&mut mob);
         self.entity_drew(key, own.draws_since(&start));
         let mut record = fresh_record(key, kind, uuid, at, yaw, &mob);
         record.motion = motion;
