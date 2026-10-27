@@ -262,6 +262,8 @@ impl Brainy {
             world: &*pen,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         of(self.kind).custom_server_ai_step(&mut tick);
         self.mob = tick.mob;
@@ -1237,6 +1239,8 @@ fn a_panicking_allay_stops_dancing() {
             world: &pen,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         of(ALLAY).after_tick(&mut tick);
         brainy.mob = tick.mob;

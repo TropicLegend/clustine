@@ -163,6 +163,8 @@ fn burnt(world: &Sunny, kind: u16, mob: Mob, in_water: bool, stream: &mut Random
         world,
         draws: stream,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     burn_undead(&mut tick);
     (tick.mob, tick.living.fire_ticks)
@@ -339,6 +341,8 @@ fn a_monster_s_idle_time_gains_two_in_the_light_and_an_animal_s_none() {
             world: &world,
             draws: &mut stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         monster_idles(&mut tick);
         tick.mob.body.no_action_time(100)

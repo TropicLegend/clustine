@@ -341,6 +341,22 @@ pub(crate) struct MobTick<'w> {
     /// record: none since it was taken in, until its brain senses them again
     /// (`mobs/brain.rs`).
     pub(crate) sensed: Option<crate::mobs::brain::Sensed>,
+    /// The vehicle it steers (`getControlledVehicle`, `docs/groundwork/n9-plan.md`,
+    /// section 6): a mob it rides first, whose navigation and move control its goals
+    /// drive (`getNavigation`, `getMoveControl`); written back into the vehicle's record
+    /// after its tick.
+    pub(crate) controlled: Option<Box<Controlled<'w>>>,
+    /// Whether a mob it carries first steers it (`getControllingPassenger`): its own
+    /// goals that move and look are held then (`updateControlFlags`).
+    pub(crate) controlled_by_mob: bool,
+}
+
+/// A vehicle its rider steers, as the rider's tick sees it: the vehicle's own tick (its
+/// record decoded, its body, its type) and the configuration its navigation is made
+/// with.
+pub(crate) struct Controlled<'w> {
+    pub(crate) tick: MobTick<'w>,
+    pub(crate) config: super::ai::Config,
 }
 
 /// How a player rides a mob, as its tick begins.

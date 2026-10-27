@@ -55,6 +55,8 @@ fn travel(ticked: &mut Ticked, plot: &Plot, speed: f32) -> MobOutput {
         world: plot,
         draws: &mut draws,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     body::travel(&mut tick);
     ticked.mob = tick.mob;

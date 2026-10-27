@@ -340,6 +340,8 @@ impl Run {
             world: &self.field,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         let mut setup = Setup::default();
         BEAST.register_goals(&mut setup);

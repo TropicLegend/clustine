@@ -420,6 +420,22 @@ pub(crate) struct Ai<'t, 'w> {
     pub(crate) navigation_ticked: bool,
 }
 
+impl<'w> Ai<'_, 'w> {
+    /// The vehicle it steers, as an `Ai` of the vehicle's own (`getControlledVehicle`):
+    /// what its goals' calls on the navigation and the move control act on
+    /// (`docs/groundwork/n9-plan.md`, section 6). None where they are its own.
+    pub(crate) fn steered(&mut self) -> Option<Ai<'_, 'w>> {
+        let navigation_ticked = self.navigation_ticked;
+        let vehicle = self.tick.controlled.as_deref_mut()?;
+        Some(Ai {
+            tick: &mut vehicle.tick,
+            config: &vehicle.config,
+            sensing: sensing::Sensing::default(),
+            navigation_ticked,
+        })
+    }
+}
+
 impl Ai<'_, '_> {
     /// Its feet.
     pub(crate) fn position(&self) -> Vec3 {
@@ -640,6 +656,12 @@ pub(crate) fn can_float(tick: &MobTick<'_>) -> bool {
 }
 
 /// The mob's two selectors in its tick, with their goals' states read from its mind.
+/// The configuration a mob's navigation and controls are made with
+/// (`createNavigation`, its constructor's maluses): a steered vehicle's, for its rider.
+pub(crate) fn config_of(tick: &MobTick<'_>) -> Config {
+    selectors(tick).2
+}
+
 fn selectors(tick: &MobTick<'_>) -> (Goals, Goals, Config) {
     let mut setup = Setup::default();
     tick.mob_type.register_goals_of(&tick.mob, &mut setup);
@@ -751,10 +773,9 @@ pub(crate) fn rotate_body(tick: &mut MobTick<'_>) {
         controls::rotate_body(tick);
     }
     if tick.tick_count.saturating_add(1).is_multiple_of(5) {
-        // `updateControlFlags`. **Named**: the region does not yet tell a mob's tick
-        // what it rides or carries, so no mob is taken as controlled by a mob it
-        // carries or as riding a boat, and every flag stays enabled.
-        update_control_flags(&mut tick.mob.mind.goals.0, false, false);
+        // `updateControlFlags`: a mob it carries steering it, or a boat it rides.
+        let in_boat = tick.vehicle.is_some_and(crate::physics::entities::is_boat);
+        update_control_flags(&mut tick.mob.mind.goals.0, tick.controlled_by_mob, in_boat);
     }
 }
 

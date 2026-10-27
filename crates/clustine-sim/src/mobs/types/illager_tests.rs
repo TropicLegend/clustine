@@ -474,6 +474,8 @@ fn ai_step(mob: Mob, fluid: BlockState, fire: i32, stream: &mut Random) -> (Mob,
         world: &world,
         draws: stream,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     of(WITCH).before_ai_step(&mut tick);
     (tick.mob, tick.out)
@@ -622,6 +624,8 @@ impl Run {
             world: &self.world,
             draws: &mut self.stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         tick::tick(&mut tick);
         self.mob = tick.mob;

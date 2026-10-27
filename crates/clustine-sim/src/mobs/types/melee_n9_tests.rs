@@ -321,6 +321,8 @@ impl Run {
             world: land,
             draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         }
     }
 

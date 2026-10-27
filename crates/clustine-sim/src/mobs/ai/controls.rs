@@ -22,7 +22,7 @@ const MIN_SPEED_SQR: f64 = 2.500_000_277_905_201e-7;
 const LOOK_EPSILON: f64 = 9.999_999_747_378_752e-6;
 
 /// `MoveControl.setWantedPosition(x, y, z, speed)`: a jump under way keeps going.
-pub(crate) fn set_wanted_position(ai: &mut Ai<'_, '_>, wanted: Vec3, speed: f64) {
+fn set_wanted_position_own(ai: &mut Ai<'_, '_>, wanted: Vec3, speed: f64) {
     let movement = &mut ai.tick.mob.body.controls.movement;
     movement.wanted = wanted;
     movement.speed = speed;
@@ -32,7 +32,7 @@ pub(crate) fn set_wanted_position(ai: &mut Ai<'_, '_>, wanted: Vec3, speed: f64)
 }
 
 /// `MoveControl.strafe(forwards, right)`.
-pub(crate) fn strafe(ai: &mut Ai<'_, '_>, forwards: f32, right: f32) {
+fn strafe_own(ai: &mut Ai<'_, '_>, forwards: f32, right: f32) {
     let movement = &mut ai.tick.mob.body.controls.movement;
     movement.operation = Operation::Strafe;
     movement.strafe_forwards = forwards;
@@ -41,13 +41,43 @@ pub(crate) fn strafe(ai: &mut Ai<'_, '_>, forwards: f32, right: f32) {
 }
 
 /// `MoveControl.setWait()`.
-pub(crate) fn set_wait(ai: &mut Ai<'_, '_>) {
+fn set_wait_own(ai: &mut Ai<'_, '_>) {
     ai.tick.mob.body.controls.movement.operation = Operation::Wait;
 }
 
-/// `MoveControl.hasWanted()`.
+/// `getMoveControl().hasWanted()`: the vehicle's where it steers one.
 pub(crate) fn has_wanted(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.mob.body.controls.movement.operation == Operation::MoveTo
+    let mob = ai
+        .tick
+        .controlled
+        .as_deref()
+        .map_or(&ai.tick.mob, |vehicle| &vehicle.tick.mob);
+    mob.body.controls.movement.operation == Operation::MoveTo
+}
+
+/// `getMoveControl().setWantedPosition(x, y, z, speed)`: the vehicle's where it steers
+/// one (`docs/groundwork/n9-plan.md`, section 6).
+pub(crate) fn set_wanted_position(ai: &mut Ai<'_, '_>, wanted: Vec3, speed: f64) {
+    match ai.steered() {
+        Some(mut vehicle) => set_wanted_position_own(&mut vehicle, wanted, speed),
+        None => set_wanted_position_own(ai, wanted, speed),
+    }
+}
+
+/// `getMoveControl().strafe(forwards, right)`.
+pub(crate) fn strafe(ai: &mut Ai<'_, '_>, forwards: f32, right: f32) {
+    match ai.steered() {
+        Some(mut vehicle) => strafe_own(&mut vehicle, forwards, right),
+        None => strafe_own(ai, forwards, right),
+    }
+}
+
+/// `getMoveControl().setWait()`.
+pub(crate) fn set_wait(ai: &mut Ai<'_, '_>) {
+    match ai.steered() {
+        Some(mut vehicle) => set_wait_own(&mut vehicle),
+        None => set_wait_own(ai),
+    }
 }
 
 /// `JumpControl.jump()`.

@@ -192,6 +192,8 @@ impl Ticking {
             world,
             draws: &mut self.stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         step(&mut tick);
         self.mob = tick.mob;

@@ -267,6 +267,8 @@ impl Ticked {
             world: plot,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         server_ai_step(&mut tick);
         super::rotate_body(&mut tick);
@@ -317,6 +319,8 @@ impl Ticked {
             world: plot,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         let mut setup = Setup::default();
         self.mob_type.register_goals(&mut setup);

@@ -182,6 +182,8 @@ impl Run {
             world,
             draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         }
     }
 

@@ -349,7 +349,10 @@ impl Goal for RandomStrollGoal {
     }
 
     fn can_use(&self, state: &mut Strolling, ai: &mut Ai<'_, '_>) -> bool {
-        // No mob of N7's goals carries a controlling passenger the region tells of.
+        // `hasControllingPassenger()`: a mob it carries steers it.
+        if ai.tick.controlled_by_mob {
+            return false;
+        }
         if !state.forced {
             if self.check_no_action_time && no_action_time(ai) >= 100 {
                 return false;
@@ -1568,7 +1571,26 @@ impl MeleeAttackGoal {
     /// by the default reach meets the target's.
     pub(crate) fn within_range(ai: &Ai<'_, '_>, target: &Looked) -> bool {
         let reach = f64::from(2.04_f32).sqrt() - f64::from(0.6_f32);
-        ai_bounds(ai)
+        let mut bounds = ai_bounds(ai);
+        // `getAttackBoundingBox`: a rider's own height, widened over its mount in x and
+        // z, so that a jockey reaches as its mount is wide. Named: only a mount it steers
+        // is read.
+        if let Some(vehicle) = ai.tick.controlled.as_deref() {
+            let mount = vehicle.tick.living.body.bounds();
+            bounds = crate::physics::aabb::Aabb::new(
+                [
+                    bounds.min[0].min(mount.min[0]),
+                    bounds.min[1],
+                    bounds.min[2].min(mount.min[2]),
+                ],
+                [
+                    bounds.max[0].max(mount.max[0]),
+                    bounds.max[1],
+                    bounds.max[2].max(mount.max[2]),
+                ],
+            );
+        }
+        bounds
             .inflate([reach, 0.0, reach])
             .intersects(target.bounds)
     }

@@ -158,6 +158,8 @@ fn with_tick<R>(
         world,
         draws: stream,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     f(&mut tick)
 }

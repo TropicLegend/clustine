@@ -220,6 +220,8 @@ fn in_tick(
         world,
         draws: stream,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     what(&mut tick);
     (tick.mob, tick.out)
@@ -1620,6 +1622,8 @@ impl Thinking {
             world: &self.world,
             draws: &mut stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         what(&mut tick);
         self.mob = tick.mob;

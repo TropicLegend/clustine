@@ -259,6 +259,14 @@ impl Region {
         );
         let mut stream = self.entity_stream(key).random;
         let start = stream.clone();
+        // The vehicle it steers, and the vehicle's stream for what its navigation
+        // draws in its rider's tick (`docs/groundwork/n9-plan.md`, section 6).
+        let steered = self.steered_vehicle(&entity);
+        let mut vehicle_stream = steered
+            .as_ref()
+            .map(|(_, vehicle, _)| self.entity_stream(vehicle.key).random);
+        let vehicle_start = vehicle_stream.clone();
+        let controlled_by_mob = self.controlling_rider(&entity, &mob).is_some();
         let view = View {
             region: self,
             home: position,
@@ -269,6 +277,13 @@ impl Region {
             .and_then(|vehicle| self.find_entity(vehicle))
             .map(|(_, vehicle)| vehicle.kind);
         let ridden = self.ridden(&entity, &mob);
+        let controlled =
+            match (&steered, vehicle_stream.as_mut()) {
+                (Some((chunk, vehicle, vehicle_mob)), Some(draws)) => Some(Box::new(
+                    self.controlled(*chunk, vehicle, vehicle_mob.clone(), &view, draws),
+                )),
+                _ => None,
+            };
         let mut ticking = MobTick {
             ridden,
             key,
@@ -288,6 +303,8 @@ impl Region {
             draws: &mut stream,
             out: MobOutput::default(),
             sensed: memory.and_then(|memory| memory.sensed.clone()),
+            controlled,
+            controlled_by_mob,
         };
         tick::tick(&mut ticking);
         let MobTick {
@@ -298,8 +315,18 @@ impl Region {
             mut out,
             mob_type,
             sensed,
+            controlled,
             ..
         } = ticking;
+        // The vehicle's navigation and move control as its rider's goals left them,
+        // written back before the rider is put in its seat.
+        if let (Some(controlled), Some((chunk, vehicle, _)), Some(from)) =
+            (controlled, &steered, &vehicle_start)
+        {
+            let drawn = controlled.tick.draws.draws_since(from);
+            let mob = controlled.tick.mob;
+            self.write_steered(*chunk, vehicle, &mob, drawn, output);
+        }
         if sensed.is_some() {
             self.entity_memory.entry(key).or_default().sensed = sensed;
         }
@@ -346,6 +373,124 @@ impl Region {
             self.write_mob(&entity, &mob, &living, shown, position, output);
         }
         self.apply_locals(key, locals, output);
+    }
+
+    /// The vehicle the mob `rider` steers, where it rides first a mob of the region that
+    /// it controls (`getControlledVehicle`): its chunk, its record and its mob.
+    fn steered_vehicle(&self, rider: &Entity) -> Option<(ChunkPos, Entity, Mob)> {
+        let (chunk, vehicle) = self.find_entity(rider.riding.vehicle?)?;
+        let vehicle_mob = Mob::decode(&vehicle.data).ok()?;
+        (self.controlling_rider(vehicle, &vehicle_mob) == Some(rider.key))
+            .then(|| (chunk, vehicle.clone(), vehicle_mob))
+    }
+
+    /// `Mob.getControllingPassenger()` of the mob `vehicle`: its first passenger, where
+    /// that is a mob of the region not of `#non_controlling_rider` and the vehicle has
+    /// AI. A player's steering is `ridden`'s.
+    pub(crate) fn controlling_rider(
+        &self,
+        vehicle: &Entity,
+        vehicle_mob: &Mob,
+    ) -> Option<EntityId> {
+        if vehicle_mob.body.flags.no_ai {
+            return None;
+        }
+        let seat = vehicle.riding.passengers.first()?;
+        if seat.player {
+            return None;
+        }
+        let (_, rider) = self.find_entity(seat.key)?;
+        let clustine_world::EntityData::Mob { .. } = rider.data else {
+            return None;
+        };
+        let leads = !clustine_blocks::data::entity_in_tag(
+            i32::from(rider.kind),
+            "minecraft:non_controlling_rider",
+        );
+        leads.then_some(seat.key)
+    }
+
+    /// The vehicle `vehicle` of the chunk `chunk` as its steering rider's tick sees it:
+    /// its own tick, reading `view`, drawing from `draws`, and its navigation's
+    /// configuration.
+    fn controlled<'w>(
+        &self,
+        chunk: ChunkPos,
+        vehicle: &Entity,
+        vehicle_mob: Mob,
+        view: &'w View<'_>,
+        draws: &'w mut super::Random,
+    ) -> tick::Controlled<'w> {
+        let info = EntityTypeInfo::of(i32::from(vehicle.kind));
+        let (width, height, eye_height) = types::own_size(vehicle)
+            .map_or((info.width, info.height, info.eye_height), |size| {
+                (size.width, size.height, size.eye_height)
+            });
+        let body = self.living_body(vehicle, width, height, chunk);
+        let kind = Kind::Mob {
+            kind: vehicle.kind,
+            hurts: Vec::new(),
+        };
+        let mut living = Living::new(body, kind, eye_height);
+        living.travels = !vehicle_mob.body.flags.no_ai;
+        living.fire_ticks = vehicle.fire_ticks;
+        let tick = MobTick {
+            ridden: Ridden::Not,
+            key: vehicle.key,
+            kind: vehicle.kind,
+            lived: vehicle.lived,
+            tick_count: vehicle.tick_count(),
+            yaw: vehicle.yaw,
+            pitch: vehicle.pitch,
+            vehicle: None,
+            carries: true,
+            leashed: vehicle.riding.leash.is_some(),
+            counted: false,
+            mob: vehicle_mob,
+            living,
+            mob_type: types::of(vehicle.kind),
+            world: view,
+            draws,
+            out: MobOutput::default(),
+            sensed: None,
+            controlled: None,
+            controlled_by_mob: true,
+        };
+        let config = crate::mobs::ai::config_of(&tick);
+        tick::Controlled { tick, config }
+    }
+
+    /// Writes the steered vehicle `before` of the chunk `chunk` back with its mob as its
+    /// rider's tick left it, `drawn` the draws its navigation made: what changed is
+    /// committed with the vehicle's `lived` as it stands.
+    fn write_steered(
+        &mut self,
+        chunk: ChunkPos,
+        before: &Entity,
+        mob: &Mob,
+        drawn: u64,
+        output: &mut TickOutput,
+    ) {
+        self.entity_drew(before.key, drawn);
+        let Some((now, current)) = self.find_entity(before.key) else {
+            return;
+        };
+        if now != chunk {
+            return;
+        }
+        let mut fields = mob.changes_from(&current.data);
+        if fields.is_empty() {
+            return;
+        }
+        let after = Entity {
+            data: mob.encode(),
+            ..current.clone()
+        };
+        fields.push(EntityField::Lived(after.lived));
+        self.commit_entity(chunk, before.key, fields, output);
+        if let Some(loaded) = self.chunks.get_mut(&chunk) {
+            loaded.apply_entity(&EntityChange::Whole(after));
+        }
     }
 
     /// What the tick leaves of the mob `before` of the chunk `position`: its record, its

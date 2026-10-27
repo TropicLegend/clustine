@@ -294,6 +294,8 @@ impl Pet {
             world: &self.pond,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         let answer = f(&mut tick);
         self.mob = tick.mob;

@@ -179,37 +179,37 @@ fn next_index(ai: &Ai<'_, '_>) -> usize {
 }
 
 /// `isDone()`: no path, or its index at its end.
-pub(crate) fn is_done(ai: &Ai<'_, '_>) -> bool {
+fn is_done_own(ai: &Ai<'_, '_>) -> bool {
     path(ai).is_none_or(|path| next_index(ai) >= path.nodes.len())
 }
 
 /// `isInProgress()`.
-pub(crate) fn in_progress(ai: &Ai<'_, '_>) -> bool {
-    !is_done(ai)
+fn in_progress_own(ai: &Ai<'_, '_>) -> bool {
+    !is_done_own(ai)
 }
 
-/// `stop()`: the path dropped, nothing else.
-pub(crate) fn stop(ai: &mut Ai<'_, '_>) {
+/// `stop_own()`: the path dropped, nothing else.
+fn stop_own(ai: &mut Ai<'_, '_>) {
     ai.tick.mob.body.path.followed = None;
 }
 
 /// `setSpeedModifier(speed)`.
-pub(crate) fn set_speed_modifier(ai: &mut Ai<'_, '_>, speed: f64) {
+fn set_speed_modifier_own(ai: &mut Ai<'_, '_>, speed: f64) {
     ai.tick.mob.body.progress.speed = speed;
 }
 
 /// `getTargetPos()`.
-pub(crate) fn target_pos(ai: &Ai<'_, '_>) -> Option<BlockPos> {
+fn target_pos_own(ai: &Ai<'_, '_>) -> Option<BlockPos> {
     ai.tick.mob.body.progress.target
 }
 
 /// `canFloat()`.
-pub(crate) fn can_float(ai: &Ai<'_, '_>) -> bool {
+fn can_float_own(ai: &Ai<'_, '_>) -> bool {
     ai.config.navigation.flags.can_float
 }
 
 /// `canNavigateGround()`.
-pub(crate) fn can_navigate_ground(ai: &Ai<'_, '_>) -> bool {
+fn can_navigate_ground_own(ai: &Ai<'_, '_>) -> bool {
     matches!(ai.config.navigation.kind, Kind::Ground | Kind::Amphibious)
 }
 
@@ -247,7 +247,7 @@ fn temp_mob_pos(ai: &Ai<'_, '_>) -> Vec3 {
 /// floats in (giving up after sixteen), else the middle of its feet rounded.
 fn surface_y(ai: &Ai<'_, '_>) -> i32 {
     let [x, y, z] = ai.position();
-    if !(ai.in_water() && can_float(ai)) {
+    if !(ai.in_water() && can_float_own(ai)) {
         return physics::floor(y + 0.5);
     }
     let block_y = ai.block_position().y;
@@ -302,7 +302,7 @@ impl Made {
 /// `createPath(BlockPos, reach)` as the mob's navigation has it: a walker's target moved
 /// to the surface in its chunk (no path where that chunk is neither loaded nor
 /// copied), then the common body.
-pub(crate) fn create_path(ai: &mut Ai<'_, '_>, mut target: BlockPos, reach: i32) -> Option<Made> {
+fn create_path_own(ai: &mut Ai<'_, '_>, mut target: BlockPos, reach: i32) -> Option<Made> {
     // `WallClimberNavigation.createPath` keeps where it was sent first.
     if ai.config.navigation.wall_climber {
         crate::mobs::types::spider::set_path_to(&mut ai.tick.mob, Some(target));
@@ -319,8 +319,8 @@ pub(crate) fn create_path(ai: &mut Ai<'_, '_>, mut target: BlockPos, reach: i32)
 }
 
 /// `createPath(x, y, z, reach)`.
-pub(crate) fn create_path_at(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32) -> Option<Made> {
-    create_path(ai, physics::containing(at), reach)
+fn create_path_at_own(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32) -> Option<Made> {
+    create_path_own(ai, physics::containing(at), reach)
 }
 
 /// `GroundPathNavigation.findSurfacePosition`: the first air above what is solid below
@@ -379,7 +379,7 @@ fn create_path_to(ai: &mut Ai<'_, '_>, target: BlockPos, reach: i32, range: f32)
     if !can_update_path(ai) {
         return None;
     }
-    if !is_done(ai) && ai.tick.mob.body.progress.target == Some(target) {
+    if !is_done_own(ai) && ai.tick.mob.body.progress.target == Some(target) {
         return Some(Made::Current);
     }
     let searcher = searcher(ai);
@@ -407,38 +407,38 @@ fn reset_stuck_timeout(ai: &mut Ai<'_, '_>) {
 }
 
 /// `moveTo(x, y, z, speed)`: reach 1.
-pub(crate) fn move_to(ai: &mut Ai<'_, '_>, at: Vec3, speed: f64) -> bool {
-    move_to_reach(ai, at, 1, speed)
+fn move_to_own(ai: &mut Ai<'_, '_>, at: Vec3, speed: f64) -> bool {
+    move_to_reach_own(ai, at, 1, speed)
 }
 
 /// `moveTo(x, y, z, reach, speed)`.
-pub(crate) fn move_to_reach(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32, speed: f64) -> bool {
-    let made = create_path_at(ai, at, reach);
-    move_to_path(ai, made, speed)
+fn move_to_reach_own(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32, speed: f64) -> bool {
+    let made = create_path_at_own(ai, at, reach);
+    move_to_path_own(ai, made, speed)
 }
 
 /// `moveTo(entity, speed)`: to the block it stands in, reach 1 (every navigation of
 /// N7's searches the box of a block for it, or one whose difference it does not read).
 /// A wall climber's reach is 0, and without a path it is sent there all the same.
-pub(crate) fn move_to_entity(ai: &mut Ai<'_, '_>, entity: BlockPos, speed: f64) -> bool {
+fn move_to_entity_own(ai: &mut Ai<'_, '_>, entity: BlockPos, speed: f64) -> bool {
     if ai.config.navigation.wall_climber {
-        let made = create_path(ai, entity, 0);
+        let made = create_path_own(ai, entity, 0);
         if made.is_some() {
-            return move_to_path(ai, made, speed);
+            return move_to_path_own(ai, made, speed);
         }
         crate::mobs::types::spider::set_path_to(&mut ai.tick.mob, Some(entity));
         ai.tick.mob.body.progress.speed = speed;
         return true;
     }
-    let made = create_path(ai, entity, 1);
-    move_to_path(ai, made, speed)
+    let made = create_path_own(ai, entity, 1);
+    move_to_path_own(ai, made, speed)
 }
 
 /// `moveTo(path, speed)`: a path equal node for node to the one followed keeps it and
 /// its progress.
-pub(crate) fn move_to_path(ai: &mut Ai<'_, '_>, made: Option<Made>, speed: f64) -> bool {
+fn move_to_path_own(ai: &mut Ai<'_, '_>, made: Option<Made>, speed: f64) -> bool {
     let Some(made) = made else {
-        stop(ai);
+        stop_own(ai);
         return false;
     };
     if let Made::New(found) = made {
@@ -448,7 +448,7 @@ pub(crate) fn move_to_path(ai: &mut Ai<'_, '_>, made: Option<Made>, speed: f64) 
             ai.tick.mob.body.progress.next = 0;
         }
     }
-    if is_done(ai) {
+    if is_done_own(ai) {
         return false;
     }
     trim_path(ai);
@@ -544,14 +544,14 @@ fn trim_cauldrons(ai: &mut Ai<'_, '_>) {
 /// `PathNavigation.tick()`; a wall climber's own once its path is done.
 pub(crate) fn tick(ai: &mut Ai<'_, '_>) {
     ai.navigation_ticked = true;
-    if ai.config.navigation.wall_climber && is_done(ai) {
+    if ai.config.navigation.wall_climber && is_done_own(ai) {
         wall_climber_tick(ai);
         return;
     }
     if ai.tick.mob.body.progress.delayed_recompute {
-        recompute_path(ai);
+        recompute_path_own(ai);
     }
-    if is_done(ai) {
+    if is_done_own(ai) {
         return;
     }
     if can_update_path(ai) {
@@ -575,7 +575,7 @@ pub(crate) fn tick(ai: &mut Ai<'_, '_>) {
             ai.tick.mob.body.progress.next += 1;
         }
     }
-    if is_done(ai) {
+    if is_done_own(ai) {
         return;
     }
     let Some(path) = path(ai) else {
@@ -765,7 +765,7 @@ fn stuck_detection(ai: &mut Ai<'_, '_>, at: Vec3) {
             physics::distance_sqr(at, progress.stuck_position) < f64::from(distance * distance);
         if stuck {
             ai.tick.mob.body.progress.stuck = true;
-            stop(ai);
+            stop_own(ai);
         } else {
             ai.tick.mob.body.progress.stuck = false;
         }
@@ -804,14 +804,14 @@ fn stuck_detection(ai: &mut Ai<'_, '_>, at: Vec3) {
     if progress.timeout_limit > 0.0 && timeout.timer as f64 > progress.timeout_limit * 3.0 {
         // `timeoutPath`.
         reset_stuck_timeout(ai);
-        stop(ai);
+        stop_own(ai);
     }
     ai.tick.mob.body.timeout.last_check = now;
 }
 
 /// `recomputePath()`: at most once in 20 ticks; a refusal is retried at the
 /// navigation's next ticks. No `moveTo`: no trim, the stuck check and speed kept.
-pub(crate) fn recompute_path(ai: &mut Ai<'_, '_>) {
+fn recompute_path_own(ai: &mut Ai<'_, '_>) {
     let now = ai.tick.lived;
     let due = ai
         .tick
@@ -822,9 +822,9 @@ pub(crate) fn recompute_path(ai: &mut Ai<'_, '_>) {
         .is_none_or(|last| i64::from(now) - i64::from(last) > 20);
     if due && can_update_path(ai) {
         if let Some(target) = ai.tick.mob.body.progress.target {
-            stop(ai);
+            stop_own(ai);
             let reach = ai.tick.mob.body.progress.reach;
-            let made = create_path(ai, target, reach);
+            let made = create_path_own(ai, target, reach);
             ai.tick.mob.body.path.followed = match made {
                 Some(Made::New(found)) => Some(found),
                 _ => None,
@@ -872,7 +872,7 @@ pub(crate) fn should_recompute_path(ai: &Ai<'_, '_>, changed: BlockPos) -> bool 
 /// `changed` changed: a path that passes near is made again.
 pub(crate) fn block_changed(ai: &mut Ai<'_, '_>, changed: BlockPos) {
     if should_recompute_path(ai, changed) {
-        recompute_path(ai);
+        recompute_path_own(ai);
     }
 }
 
@@ -895,4 +895,127 @@ pub(crate) fn is_stable_destination(ai: &Ai<'_, '_>, pos: BlockPos) -> bool {
             .props()
             .is_face_sturdy(clustine_data::Face::Up, clustine_data::SupportType::Full),
     }
+}
+
+// What a mob's goals ask of its navigation (`Mob.getNavigation()`): the vehicle's where it
+// steers one (`docs/groundwork/n9-plan.md`, section 6), its own otherwise. Its own
+// navigation's tick reads its own (`this.navigation.tick()`), as the functions above do.
+
+/// `getNavigation().createPath(target, reach)`.
+pub(crate) fn create_path(ai: &mut Ai<'_, '_>, target: BlockPos, reach: i32) -> Option<Made> {
+    match ai.steered() {
+        Some(mut vehicle) => create_path_own(&mut vehicle, target, reach),
+        None => create_path_own(ai, target, reach),
+    }
+}
+
+/// `getNavigation().createPath(x, y, z, reach)`.
+pub(crate) fn create_path_at(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32) -> Option<Made> {
+    match ai.steered() {
+        Some(mut vehicle) => create_path_at_own(&mut vehicle, at, reach),
+        None => create_path_at_own(ai, at, reach),
+    }
+}
+
+/// `getNavigation().moveTo(x, y, z, speed)`.
+pub(crate) fn move_to(ai: &mut Ai<'_, '_>, at: Vec3, speed: f64) -> bool {
+    match ai.steered() {
+        Some(mut vehicle) => move_to_own(&mut vehicle, at, speed),
+        None => move_to_own(ai, at, speed),
+    }
+}
+
+/// `getNavigation().moveTo(x, y, z, reach, speed)`.
+pub(crate) fn move_to_reach(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32, speed: f64) -> bool {
+    match ai.steered() {
+        Some(mut vehicle) => move_to_reach_own(&mut vehicle, at, reach, speed),
+        None => move_to_reach_own(ai, at, reach, speed),
+    }
+}
+
+/// `getNavigation().moveTo(entity, speed)`.
+pub(crate) fn move_to_entity(ai: &mut Ai<'_, '_>, entity: BlockPos, speed: f64) -> bool {
+    match ai.steered() {
+        Some(mut vehicle) => move_to_entity_own(&mut vehicle, entity, speed),
+        None => move_to_entity_own(ai, entity, speed),
+    }
+}
+
+/// `getNavigation().moveTo(path, speed)`.
+pub(crate) fn move_to_path(ai: &mut Ai<'_, '_>, made: Option<Made>, speed: f64) -> bool {
+    match ai.steered() {
+        Some(mut vehicle) => move_to_path_own(&mut vehicle, made, speed),
+        None => move_to_path_own(ai, made, speed),
+    }
+}
+
+/// `getNavigation().recomputePath()`.
+pub(crate) fn recompute_path(ai: &mut Ai<'_, '_>) {
+    match ai.steered() {
+        Some(mut vehicle) => recompute_path_own(&mut vehicle),
+        None => recompute_path_own(ai),
+    }
+}
+
+/// `getNavigation().stop()`.
+pub(crate) fn stop(ai: &mut Ai<'_, '_>) {
+    match ai.steered() {
+        Some(mut vehicle) => stop_own(&mut vehicle),
+        None => stop_own(ai),
+    }
+}
+
+/// `getNavigation().setSpeedModifier(speed)`.
+pub(crate) fn set_speed_modifier(ai: &mut Ai<'_, '_>, speed: f64) {
+    match ai.steered() {
+        Some(mut vehicle) => set_speed_modifier_own(&mut vehicle, speed),
+        None => set_speed_modifier_own(ai, speed),
+    }
+}
+
+/// The record and configuration of the navigation a mob's goals read: the vehicle's
+/// where it steers one.
+fn steered_parts<'a>(ai: &'a Ai<'_, '_>) -> (&'a crate::mobs::Mob, &'a super::Config) {
+    match ai.tick.controlled.as_deref() {
+        Some(vehicle) => (&vehicle.tick.mob, &vehicle.config),
+        None => (&ai.tick.mob, ai.config),
+    }
+}
+
+/// `getNavigation().isDone()`.
+pub(crate) fn is_done(ai: &Ai<'_, '_>) -> bool {
+    let (mob, _) = steered_parts(ai);
+    done_of(mob)
+}
+
+/// `getNavigation().isInProgress()`.
+pub(crate) fn in_progress(ai: &Ai<'_, '_>) -> bool {
+    !is_done(ai)
+}
+
+/// `getNavigation().getTargetPos()`.
+pub(crate) fn target_pos(ai: &Ai<'_, '_>) -> Option<BlockPos> {
+    steered_parts(ai).0.body.progress.target
+}
+
+/// `getNavigation().canFloat()`.
+pub(crate) fn can_float(ai: &Ai<'_, '_>) -> bool {
+    steered_parts(ai).1.navigation.flags.can_float
+}
+
+/// `getNavigation() instanceof GroundPathNavigation`.
+pub(crate) fn can_navigate_ground(ai: &Ai<'_, '_>) -> bool {
+    matches!(
+        steered_parts(ai).1.navigation.kind,
+        Kind::Ground | Kind::Amphibious
+    )
+}
+
+/// `isDone()` of the navigation kept in `mob`'s record.
+fn done_of(mob: &crate::mobs::Mob) -> bool {
+    mob.body
+        .path
+        .followed
+        .as_ref()
+        .is_none_or(|path| mob.body.progress.next as usize >= path.nodes.len())
 }

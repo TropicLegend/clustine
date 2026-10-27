@@ -340,6 +340,8 @@ impl Keeper {
             world: place,
             draws: &mut draws,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         of(self.kind).custom_server_ai_step(&mut tick);
         self.mob = tick.mob;

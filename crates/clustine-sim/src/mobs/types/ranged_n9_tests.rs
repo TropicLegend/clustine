@@ -251,6 +251,8 @@ impl Shooter {
             world,
             draws: &mut self.stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         let given = f(&mut tick);
         self.mob = tick.mob;

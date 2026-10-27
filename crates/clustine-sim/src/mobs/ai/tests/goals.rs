@@ -262,6 +262,8 @@ fn the_tempt_range_is_the_attribute_s() {
         world: &plot,
         draws: &mut draws,
         out: Default::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     assert_eq!(
         super::super::attribute_value(&tick, attributes::TEMPT_RANGE),

@@ -3756,6 +3756,7 @@ mod tests {
     mod horses;
     mod instruments;
     mod item_physics;
+    mod jockeys;
     mod k4;
     mod keepers;
     mod leashes;

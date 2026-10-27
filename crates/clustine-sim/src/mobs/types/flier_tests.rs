@@ -156,6 +156,8 @@ fn in_tick(
         world: &world,
         draws: &mut stream,
         out: MobOutput::default(),
+        controlled: None,
+        controlled_by_mob: false,
     };
     f(&mut tick);
     (tick.mob, tick.out)

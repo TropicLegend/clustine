@@ -188,6 +188,8 @@ impl Run {
             world: &self.world,
             draws: &mut self.stream,
             out: MobOutput::default(),
+            controlled: None,
+            controlled_by_mob: false,
         };
         let result = f(&mut tick);
         self.mob = tick.mob;
