@@ -257,9 +257,9 @@ not of what an edge is handed.
   and `remakes` (`services/worldstore/src/chunks.rs` 1203) keeps a remade chunk's claims only
   where they still match, as it keeps entities.
 - **Copies**: `StoreReply::CopyUpdate` gains `claims: Option<Vec<Claim>>`, the chunk's claims
-  whole where the commit changed them, and a commit that changes only claims (or only raids)
-  counts as the chunk's change for `previous` and the gap check, as ADR-0028 made entity
-  changes count. ADR-0025 section 3 is amended.
+  whole where the commit changed them, and a commit that changes only claims counts as the
+  chunk's change for `previous` and the gap check, as ADR-0028 made entity changes count (a
+  raids-only change does not: copies never read raids). ADR-0025 section 3 is amended.
 
 ### 3.3 The region's index (`region/pois.rs`, new; the lead's)
 
@@ -307,9 +307,10 @@ V 8.6), the golem's two strolls (`iron_golem.rs` 255–288), foxes (`fox.rs` 861
 zombies' `MoveThroughVillageGoal`, the bee's hive search (`bee.rs` 820–858 onto `#bee_home`
 records, its order the fixed one), and `VillageBoundRandomStroll` and `GoToClosestVillage`
 (`behaviours/villagers.rs`). **Not before V2**: until villagers claim (V2), no village has a
-claimed record, so N10b gives `is_village` and keeps the stand-ins as they are, and the commit
-that lands V2 moves them (the lead's, at V2's merge), so that `main` never has patrols spawning
-inside generated villages.
+claimed record. N10c routes every reader of "village" through one function of
+`region/pois.rs` that answers by the stand-in while a switch is off and by the tracker while it
+is on; the lead turns it on in the commit that lands V2, so that `main` never has patrols
+spawning inside generated villages and no part's files change under it.
 
 ### 3.5 The margin's publication (the lead's; the store, the runner and the region)
 
@@ -317,14 +318,16 @@ Not on the counts' messages: the counts are published only once every region has
 (`worldstore/src/spawn_counts.rs` 81–96) and the runner keeps only the last
 (`services/worker/src/lib.rs` 1715), both right for whole counts and wrong for a delta.
 
-- **Report**, `StoreRequest::Village { session, pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
+- **Report**, `StoreRequest::Village { pois: Vec<(ChunkPos, Vec<PoiSeen>)>,
   let_go: Vec<ChunkPos>, raids: Option<Vec<RaidSeen>> }`, `PoiSeen { at: BlockPos, kind:
   PoiType, occupied: bool }`, sent at the end of a tick that changed any of it: each chunk of
   the land whose records or occupancy changed, whole; the chunks the region stopped holding
   (`let_go`, by the region that held them, as the counts' `moved_away`); the raids (section
-  9.2). After every opening of the region (a start, a take-over, a merge, a split, a move) the
+  9.2). Every chunk that enters the land is reported, with no records if it has none, and
+  after every opening of the region (a start, a take-over, a merge, a split, a move) the
   first report lists every chunk of its land whole, so that the store learns a pinned
-  region's land (which its table does not list, ADR-0025 E3a) from the region itself.
+  region's land (which its table does not list, ADR-0025 E3a) from the region itself and
+  follows it as it grows.
 - **The store** keeps, per chunk, the last records and the region and session that reported
   them, and takes a region's word only for chunks it reported last as its own in its current
   session. A chunk let go keeps its records until another region reports it (the chunk
@@ -334,8 +337,10 @@ Not on the counts' messages: the counts are published only once every region has
   dropped: Vec<ChunkPos>, raids: Vec<RaidSeen> }`, once a game second with the clock, not
   gated on other regions' reports: to each region the chunks within five chunks of its land
   that it neither holds nor copies, as a delta since the last publication to that region's
-  current session; **whole** at the first publication to a session and after the region's
-  every opening. The raids are always whole.
+  current session (chunks whose records changed, chunks that came into that ring as the
+  region's land or copies changed, and `dropped` for chunks that left it); **whole** at the
+  first publication to a session and after the region's every opening. The raids are always
+  whole.
 - **The runner** folds publications in order into one input (a whole one replaces, a delta is
   applied over it); it keeps the folded input across a merge's or a split's new beginning
   only if whole, and the store sends whole after either anyway.
@@ -409,7 +414,12 @@ breaking a bed and claiming a new one at one position kept through the store's f
   part's rule is called from a file another part owns gets its call now, to an inert hook in
   the caller's part (section 13 names each): the profession change's brain rebuild, gossip, the
   reputation events and the witnesses on death, the opening of trading from `mobInteract`, the
-  cure, the hopper's composter, enchanted mob equipment.
+  cure, the hopper's composter, enchanted mob equipment; the bell's ring and its block
+  entity's tick (`region/block_entities.rs` 749–761, `region/instruments.rs` 140–173,
+  `region/projectile_hits.rs`) into V3's `region/bells.rs`; the select-trade input's dispatch
+  into T2; the clearing of a villager's trading player at a menu's close (`menus.rs`,
+  `region/menu_play.rs`) and at every take-in (`region/entities.rs`); the raid's tick from
+  `region.rs` into R1's `region/raid_tick.rs`; and the village switch above.
 - `STATE_FORMAT` 22.
 
 ---------------------------------------------------------------------------------------
@@ -523,8 +533,10 @@ union to every region in every `StoreReply::Village`, deduplicated by id (a spli
 under the parent until the part reports: the one reported later wins). A region drops its own
 raids from the table it reads and keeps the last table while none is published.
 
-`get_raid_at(pos)`: the nearest raid within 96 that is not stopped, of the region's own and the
-table's together (the game's nearest). A raid id is unique in the world (an entity key).
+`get_raid_at(pos)`: the nearest raid within 96 that is **active** (the game's `getNearbyRaid`
+tests `Raid.isActive()`, the field `active`, n7k Raids 357–365, Raid 2047–2051; in Clustine 9.1's
+`active`), of the region's own and the table's together (the game's nearest), so that a paused
+raid answers nobody. A raid id is unique in the world (an entity key).
 
 ### 9.3 Members elsewhere: the raid's region judges (the lead's)
 
@@ -546,7 +558,10 @@ raids; a raid it does not hold ignores the news):
 A member the raid's region cannot see (not in its land or copies) is **alive until `Died` or
 `Left`**: `updateRaiders`' "not found after 600 ticks" applies only to members the region could
 see in its land; a member handed over across a line is not gone, and the next wave waits for
-it as the game's would. X1 tests a member handed across a pinned line mid-wave, its death
+it as the game's would. A member in a chunk its region **returns to nobody** leaves as an
+unloaded raider leaves the game's raid: the returning region sends `Left` for it, and when the
+member is taken up again (it keeps its raid id, as the game's saved raider does) its region
+sends `Joined`, which the raid accepts or refuses by the rules above. X1 tests a member handed across a pinned line mid-wave, its death
 there, a late hurt and a refused join.
 
 ### 9.4 The bar and the horn (the lead's per-player events; E1's packets)
@@ -586,7 +601,7 @@ The store's side of decision 12: `StoreRequest::TraderChance { firing, chance }`
 record kind) and kept with the clock's state, the later firing winning, published with
 `StoreReply::Clock`; its format raise with N10e's.
 
-### 9.6 Raiders and the ravager (R1, R2)
+### 9.7 Raiders and the ravager (R1, R2)
 
 R1: the raid's tick on N10d's frame (V 7.2 with D10 C.2–C.6), waves and the spawn search,
 `spawnGroup`, `joinRaid` with `SpawnReason::Event`, `applyRaidBuffs`, `updateRaiders`, victory
@@ -650,10 +665,10 @@ Each step one verified commit to `main`, pushed. The lead's first, in order:
 | Step | What |
 |---|---|
 | N10a | The data: `PoiType` and its block table; the trades' compiler (`villager_trade`, `trade_set`, tags, `TradeCost`'s default count 1); the gift tables and `cat_morning_gift`; the enchantment, potion and structure tags trades need |
-| N10b | Points of interest (section 3): claims (store format 17, log kind 19, `CopyUpdate`'s claims), the index, queries, take and release, `Effected::Release`, the margin's request and reply, the village (the stand-ins kept until V2) |
-| N10c | The contracts and every cross-part hook (section 4), `STATE_FORMAT` 22, and the villager streams' tests changed by `SetRaidStatus`'s level draw (which N10c adds to the villager's core as an inert one-shot) |
-| N10d | Raids as world state (9.1–9.4): the record, its stream, log kind 20 and store format 18, the table, `Effected::Raid`, `EntityUse::Raider`, the bar's players |
-| N10e | The omens' ticks and `raid_omen_position` (9.5), the trader's chance (9.6), their formats |
+| N10b | Points of interest (section 3): claims (store format 17, log kind 19, `CopyUpdate`'s claims; `Effected::Release` in the log's effects), the index, queries, take and release, `Effected::Release`, the margin's request and reply, the village (the stand-ins kept until V2) |
+| N10c | The contracts and every cross-part hook (section 4), store format 18 (the log's effects gain `EntityUse::Villager` and `Raider`), `STATE_FORMAT` 22, and the villager streams' tests changed by `SetRaidStatus`'s level draw (which N10c adds to the villager's core as an inert one-shot) |
+| N10d | Raids as world state (9.1–9.4): the record, its stream, log kind 20 and store format 19, the table, `Effected::Raid`, `EntityUse::Raider`, the bar's players |
+| N10e | The omens' ticks and `raid_omen_position` (9.5), the trader's chance (9.6), store format 20 |
 
 The fresh load of V 16.14 is not built (decision 14).
 
@@ -670,7 +685,7 @@ file:
 | T1 | Trading's data and evaluation, enchanting (8.1) | `trading/offers.rs`, `trading/evaluate.rs`, `items/enchanting.rs` (new; `items/enchantments.rs` stays N9's), `mobs/making.rs`, the two new components in `clustine-world/src/components.rs`, `trading/trading_n10_tests.rs` |
 | T2 | Trading's rules and menu, the cure (8.2) | `trading/merchant.rs`, `menus/merchant.rs` (new module beside `menus.rs`, declared by N10c), `mobs/types/wandering_trader.rs`, `mobs/types/zombie_villager.rs`, `trading/merchant_n10_tests.rs` |
 | E1 | The edge: the merchant window, the boss bar per player, the horn | `services/edge/src/merchant.rs` (new), `services/edge/src/boss_bars.rs` (new) |
-| R1 | Raids' rules on N10d's frame (9.6) | `region/raid_tick.rs` (new; `region/raids.rs` is N10d's), `mobs/ai/raider_goals.rs` (new), `mobs/types/pillager.rs`, `vindicator.rs`, `witch.rs`, `illagers.rs`, `region/raids_n10_tests.rs` |
+| R1 | Raids' rules on N10d's frame (9.7) | `region/raid_tick.rs` (new; `region/raids.rs` is N10d's), `mobs/ai/raider_goals.rs` (new), `mobs/types/pillager.rs`, `vindicator.rs`, `witch.rs`, `illagers.rs`, `region/raids_n10_tests.rs` |
 | R2 | The ravager | `mobs/types/ravager.rs`, `mobs/types/ravager_n10_tests.rs` |
 | G1 | The golem's village goals, cats, the siege, the trader's spawner, zombies' and foxes' village goals (10) | `mobs/types/iron_golem.rs`, `region/custom_spawners.rs`, `mobs/ai/village_goals.rs` (new), `mobs/types/fox.rs`, `mobs/types/zombie_family.rs`, `mobs/types/trader_llama.rs`, `region/village_n10_tests.rs` |
 | X1 | Tests from the specification (the brief, D10, this plan) by someone who did not write the code: part A after N10b to N10e, part B after the parts | `region/tests/n10_*.rs`, `bin/clustine/tests/n10_*.rs` |
@@ -708,7 +723,7 @@ disk, as N7 measured mobs. Acted on if a tick exceeds 50 ms on the real disk.
 ## 16. Records and the roadmap
 
 ADR-0022 amended for claims and raids in the chunk; ADR-0028 for the villager's `Shown` and its
-effects; `docs/world-format.md` to formats 17–19; the roadmap's state and what to try after
+effects; `docs/world-format.md` to formats 17–20; the roadmap's state and what to try after
 each part.
 
 ---------------------------------------------------------------------------------------
@@ -748,4 +763,16 @@ groups of nits. Each, and where the plan now answers it:
 | 25 | `Random::aside` does not exist | decision 5 |
 | 26 | N10e changes the player's record without a raise | 9.5, section 13 |
 | 27 | The merge distance, copies against the margin, a bed across a line, the five chunks' reason, the villager record's version | decision 4, 3.3, named 17, decision 2, section 4 |
+
+### 17.1 The second reading
+
+The reviewer read the revision: findings 1–5, 7–12, 14–22 and 24–27 answered; 6, 13 and 23
+partly, and four new defects, now answered: `get_raid_at` tests `active`, not "not stopped"
+(9.2); a member in a chunk returned to nobody leaves and rejoins (9.3); every chunk entering
+the land is reported and the margin's delta follows the ring (3.5); the log's effects change
+in N10c, so the store's formats are 17 to 20 (section 13). Its risks, now answered: the
+stand-ins go through one switch in `region/pois.rs` (3.4); N10c's hooks include the bell, the
+select-trade input, the trading player's clearing and the raid's tick (section 4). Its nits:
+a raids-only change does not count for copies (3.2); the sections numbered; the request
+carries no session.
 
