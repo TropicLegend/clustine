@@ -104,6 +104,10 @@ impl MobWorld for View<'_> {
         crate::time::sky_darken(self.region.clock.day)
     }
 
+    fn sea_level(&self) -> i32 {
+        self.region.config.sea_level
+    }
+
     fn game_time(&self) -> i64 {
         i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
     }

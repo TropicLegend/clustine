@@ -22,9 +22,8 @@
 //! (named, rare).
 //!
 //! The sea level is the world's (`RegionConfig::sea_level`: 63 for the terrain, −63 for
-//! a flat world, as the game's generators have it). **Named**: the phantom's own rules
-//! (`mobs/types/phantom.rs`) take 63. A patrol's member faces south (yaw 0), where the
-//! game leaves the yaw its
+//! a flat world, as the game's generators have it), as the phantom's own rules read it.
+//! A patrol's member faces south (yaw 0), where the game leaves the yaw its
 //! constructor drew. Where a block or its light is not read, a phantom or a member is
 //! not made there.
 

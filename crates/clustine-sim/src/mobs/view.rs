@@ -106,6 +106,12 @@ pub(crate) trait MobWorld: Holds {
         )
     }
 
+    /// `Level.getSeaLevel()`: the world's (a region's configuration), the overworld's
+    /// 63 where a view knows no other.
+    fn sea_level(&self) -> i32 {
+        63
+    }
+
     /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
     /// a wolf's anger ends at (none where a view knows no clock).
     fn game_time(&self) -> i64 {

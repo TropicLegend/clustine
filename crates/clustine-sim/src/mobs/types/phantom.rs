@@ -53,9 +53,6 @@ const VERSION: u8 = 1;
 /// `ID_SIZE`'s index.
 const SIZE_INDEX: u8 = 16;
 
-/// The overworld's sea level, below which no anchor goes.
-const SEA_LEVEL: i32 = 63;
-
 /// `Phantom.AttackPhase`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum AttackPhase {
@@ -316,8 +313,10 @@ impl PhantomAttackStrategyGoal {
         };
         let at = target.block_position();
         let mut anchor = BlockPos::new(at.x, at.y + 20 + ai.tick.draws.next_int(20) as i32, at.z);
-        if anchor.y < SEA_LEVEL {
-            anchor = BlockPos::new(anchor.x, SEA_LEVEL + 1, anchor.z);
+        // Not below the world's sea level.
+        let sea = ai.tick.world.sea_level();
+        if anchor.y < sea {
+            anchor = BlockPos::new(anchor.x, sea + 1, anchor.z);
         }
         change(&mut ai.tick.mob, |own| own.anchor = Some(anchor));
     }
