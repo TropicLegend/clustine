@@ -33,6 +33,7 @@ mod physics;
 pub mod placement;
 mod region;
 pub mod shown;
+mod spawning;
 mod state;
 pub mod time;
 

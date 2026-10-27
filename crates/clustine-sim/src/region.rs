@@ -92,6 +92,7 @@ pub(crate) use drops::DEFAULT_PICK_UP_DELAY;
 pub(crate) use entities::insecure_uuid;
 pub(crate) use random_ticks::Random;
 pub(crate) use stands::{DEFAULT_POSE as STAND_POSE, MAX_HEALTH as STAND_HEALTH};
+mod natural_spawning;
 mod orbs;
 mod redstone;
 mod reshape;
@@ -452,6 +453,9 @@ pub struct Region {
     unnamed: bool,
     /// Its counts of mobs by chunk as last reported (`spawn_caps.rs`), in memory only.
     counts: spawn_caps::Counts,
+    /// What the store last published of the other regions' counts (`spawn_caps.rs`); none
+    /// until it has once, and nothing spawns until then. In memory only.
+    published: Option<crate::api::PublishedCounts>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
     mob_swings: BTreeMap<EntityId, (u64, u8)>,
@@ -688,6 +692,7 @@ impl Region {
             entering: state.entering,
             unnamed: true,
             counts: Default::default(),
+            published: None,
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
             lends_asked,
@@ -1141,6 +1146,12 @@ impl Region {
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         self.post_process(&mut output);
+        // Spawning, then the random ticks, as the game's chunk source ticks them
+        // (`spawn_caps.rs`).
+        if let Some(counts) = &inputs.counts {
+            self.published = Some(counts.clone());
+        }
+        self.spawn_naturally(&mut output);
         self.run_random_ticks(&mut output);
         let broadcast = output.events.len();
         self.run_block_events(&mut output);

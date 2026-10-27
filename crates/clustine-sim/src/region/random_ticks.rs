@@ -124,6 +124,22 @@ impl Random {
         random
     }
 
+    /// The stream of the chunk at `position` in a tick of a world for the rule
+    /// `purpose` (`docs/groundwork/n9-plan.md`, section 9.3: spawning draws from its
+    /// chunk's stream). Apart from the streams of sections, entities and blocks by a mark
+    /// of its own.
+    pub(crate) fn of_chunk(world: u64, position: ChunkPos, tick: u64, purpose: u64) -> Self {
+        /// Mixed in first, so that no chunk's stream is another's.
+        const CHUNKS: u64 = 0x6368_756e_6b73;
+        let mut random = Self(world);
+        random.mix(CHUNKS);
+        random.mix(purpose);
+        random.mix(position.x as u32 as u64);
+        random.mix(position.z as u32 as u64);
+        random.mix(tick);
+        random
+    }
+
     /// The stream of the block at `pos` in a tick of a world for the rule `purpose`
     /// (`docs/groundwork/n4-plan.md`, section 7, "Drops"): what a block broken by a
     /// rule drops, and where. Apart from the streams of sections and entities by a
