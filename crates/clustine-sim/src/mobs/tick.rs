@@ -122,6 +122,14 @@ pub(crate) enum Local {
         key: EntityId,
         hurt: Box<clustine_world::HurtBy>,
     },
+    /// `setTarget(target)` of the region's mob `key` by another mob's goal, and where
+    /// `aggressive` its `setAggressive(true)` (`Raider$HoldGroundAttackGoal`'s shout).
+    /// Named: a mob in a copy is not reached.
+    SetTarget {
+        key: EntityId,
+        target: Option<EntityId>,
+        aggressive: bool,
+    },
     /// `MeleeAttackGoal`'s `swingForAttack(MAIN_HAND)`: the mob's main arm swings with
     /// its main hand's attack animation, where its last swing lets it.
     Swing,

@@ -415,6 +415,26 @@ impl Region {
         });
     }
 
+    /// Another mob's `setTarget(target)` of the region's mob `key`, and where
+    /// `aggressive` its `setAggressive(true)` (`Local::SetTarget`).
+    pub(crate) fn target_set(
+        &mut self,
+        key: EntityId,
+        target: Option<EntityId>,
+        aggressive: bool,
+        output: &mut TickOutput,
+    ) {
+        if self.find_entity(key).is_none() {
+            return;
+        }
+        self.struck_between_ticks(key, output, |struck| {
+            struck.mob.body.combat.target = target;
+            if aggressive {
+                struck.mob.body.combat.aggressive = true;
+            }
+        });
+    }
+
     /// The holder's side of the uses of N9 on the region's entity `entity`: what
     /// `entities.rs` passes on.
     pub(crate) fn n9_entity_used(

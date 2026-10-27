@@ -16,19 +16,18 @@
 //! reads).
 
 use clustine_data::{BlockState, blocks, items, sounds};
-use clustine_world::{BlockPos, EntityId, ItemStack, TypeState};
+use clustine_world::{BlockPos, ItemStack, TypeState};
 use serde::{Deserialize, Serialize};
 
 use super::iron_golem::is_enemy;
 use super::{Did, Interaction, MobType, Used, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    LookAtPlayerGoal, NearestAttackableTargetGoal, RandomLookAroundGoal, RandomStrollGoal, Stroll,
-    look_at_thing,
+    LookAtPlayerGoal, NearestAttackableTargetGoal, RandomLookAroundGoal, RandomStrollGoal,
+    RangedAttackGoal, Stroll,
 };
-use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class};
-use crate::mobs::ai::{Ai, Setup, navigation};
+use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::{DamageSource, DamageType};
 use crate::mobs::body::{Event, loot};
 use crate::mobs::tick::{Local, MobTick};
@@ -118,108 +117,6 @@ pub(crate) fn trail_cells(feet: physics::Vec3) -> [BlockPos; 4] {
             physics::floor(feet[2] + dz),
         )
     })
-}
-
-/// `RangedAttackGoal`'s state: its target, the ticks to its next shot (`attackTime`,
-/// −1 between targets) and how long it has seen the target.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Ranging {
-    pub(crate) target: Option<EntityId>,
-    pub(crate) attack_time: i32,
-    pub(crate) see_time: i32,
-}
-
-impl Default for Ranging {
-    fn default() -> Self {
-        Self {
-            target: None,
-            attack_time: -1,
-            see_time: 0,
-        }
-    }
-}
-
-/// `RangedAttackGoal(mob, speed, intervalMin, intervalMax, radius)`: to a target it
-/// walks until within the radius and seen for five ticks, looking at it, and shoots
-/// whenever its interval is up and it sees it (`performRangedAttack`, here the snow
-/// golem's).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RangedAttackGoal {
-    pub(crate) speed: f64,
-    pub(crate) interval_min: i32,
-    pub(crate) interval_max: i32,
-    pub(crate) radius: f32,
-}
-
-impl Goal for RangedAttackGoal {
-    type State = Ranging;
-
-    fn flags(&self) -> u8 {
-        flags::MOVE | flags::LOOK
-    }
-
-    fn every_tick(&self) -> bool {
-        true
-    }
-
-    fn can_use(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
-        let Some(target) = sensing::target(ai).filter(|target| target.alive) else {
-            return false;
-        };
-        state.target = Some(target.key);
-        true
-    }
-
-    fn can_continue(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
-        if self.can_use(state, ai) {
-            return true;
-        }
-        let alive = state
-            .target
-            .and_then(|key| sensing::find(ai, key))
-            .is_some_and(|target| target.alive);
-        alive && !navigation::is_done(ai)
-    }
-
-    fn stop(&self, state: &mut Ranging, _: &mut Ai<'_, '_>) {
-        *state = Ranging::default();
-    }
-
-    fn tick(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) {
-        let Some(target) = state.target.and_then(|key| sensing::find(ai, key)) else {
-            return;
-        };
-        let distance = target.distance_sqr(ai.position());
-        let sees = sensing::has_line_of_sight(ai, &target);
-        if sees {
-            state.see_time += 1;
-        } else {
-            state.see_time = 0;
-        }
-        if distance <= f64::from(self.radius * self.radius) && state.see_time >= 5 {
-            navigation::stop(ai);
-        } else {
-            navigation::move_to_entity(ai, target.block_position(), self.speed);
-        }
-        look_at_thing(ai, &target, 30.0, 30.0);
-        state.attack_time -= 1;
-        if state.attack_time == 0 {
-            if !sees {
-                return;
-            }
-            let fraction = distance.sqrt() as f32 / self.radius;
-            let power = fraction.clamp(0.1, 1.0);
-            perform_ranged_attack(ai, &target, power);
-            state.attack_time = (fraction * (self.interval_max - self.interval_min) as f32
-                + self.interval_min as f32)
-                .floor() as i32;
-        } else if state.attack_time < 0 {
-            let t = distance.sqrt() / f64::from(self.radius);
-            let a = f64::from(self.interval_min);
-            let b = f64::from(self.interval_max);
-            state.attack_time = (a + t * (b - a)).floor() as i32;
-        }
-    }
 }
 
 /// `SnowGolem.performRangedAttack(target, power)`: a snowball from a tenth below its
@@ -330,6 +227,7 @@ impl MobType for SnowGolem {
                 interval_min: 20,
                 interval_max: 20,
                 radius: 10.0,
+                perform: perform_ranged_attack,
             },
         );
         setup.add_goal(

@@ -288,6 +288,11 @@ impl Region {
                 ),
                 Local::Strike { key: struck, hurt } => self.strike(struck, hurt, output),
                 Local::Swing => self.swing_mob(key, output),
+                Local::SetTarget {
+                    key: told,
+                    target,
+                    aggressive,
+                } => self.target_set(told, target, aggressive, output),
                 Local::Alert {
                     key: alerted,
                     attacker,

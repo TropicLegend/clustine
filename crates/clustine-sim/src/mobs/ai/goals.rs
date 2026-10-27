@@ -1852,3 +1852,239 @@ impl Goal for UseItemGoal {
         }
     }
 }
+
+/// `RangedAttackGoal`'s state: its target, the ticks to its next shot (`attackTime`,
+/// −1 between targets) and how long it has seen the target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Ranging {
+    pub(crate) target: Option<EntityId>,
+    pub(crate) attack_time: i32,
+    pub(crate) see_time: i32,
+}
+
+impl Default for Ranging {
+    fn default() -> Self {
+        Self {
+            target: None,
+            attack_time: -1,
+            see_time: 0,
+        }
+    }
+}
+
+/// `RangedAttackGoal(mob, speed, intervalMin, intervalMax, radius)`
+/// (`docs/groundwork/n9-plan.md`, section 8.4): to a target it walks until within the
+/// radius and seen for five ticks, looking at it, and shoots whenever its interval is
+/// up and it sees it, by `perform` (the type's `performRangedAttack` with the power of
+/// its distance): the snow golem's snowball, the llama's spit, the witch's potion.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RangedAttackGoal {
+    pub(crate) speed: f64,
+    pub(crate) interval_min: i32,
+    pub(crate) interval_max: i32,
+    pub(crate) radius: f32,
+    pub(crate) perform: fn(&mut Ai<'_, '_>, &Looked, f32),
+}
+
+impl Goal for RangedAttackGoal {
+    type State = Ranging;
+
+    fn flags(&self) -> u8 {
+        flags::MOVE | flags::LOOK
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn can_use(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
+        let Some(target) = sensing::target(ai).filter(|target| target.alive) else {
+            return false;
+        };
+        state.target = Some(target.key);
+        true
+    }
+
+    fn can_continue(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) -> bool {
+        if self.can_use(state, ai) {
+            return true;
+        }
+        let alive = state
+            .target
+            .and_then(|key| sensing::find(ai, key))
+            .is_some_and(|target| target.alive);
+        alive && !navigation::is_done(ai)
+    }
+
+    fn stop(&self, state: &mut Ranging, _: &mut Ai<'_, '_>) {
+        *state = Ranging::default();
+    }
+
+    fn tick(&self, state: &mut Ranging, ai: &mut Ai<'_, '_>) {
+        let Some(target) = state.target.and_then(|key| sensing::find(ai, key)) else {
+            return;
+        };
+        let distance = physics::distance_sqr(ai.position(), target.position);
+        let sees = sensing::has_line_of_sight(ai, &target);
+        if sees {
+            state.see_time += 1;
+        } else {
+            state.see_time = 0;
+        }
+        if distance <= f64::from(self.radius * self.radius) && state.see_time >= 5 {
+            navigation::stop(ai);
+        } else {
+            navigation::move_to_entity(ai, target.block_position(), self.speed);
+        }
+        controls::set_look_at(
+            ai,
+            [target.position[0], target.eye_y, target.position[2]],
+            30.0,
+            30.0,
+        );
+        state.attack_time -= 1;
+        if state.attack_time == 0 {
+            if !sees {
+                return;
+            }
+            let fraction = distance.sqrt() as f32 / self.radius;
+            let power = fraction.clamp(0.1, 1.0);
+            (self.perform)(ai, &target, power);
+            state.attack_time = (fraction * (self.interval_max - self.interval_min) as f32
+                + self.interval_min as f32)
+                .floor() as i32;
+        } else if state.attack_time < 0 {
+            // `Mth.lerp(sqrt(d) / radius, min, max)`, in doubles.
+            let t = distance.sqrt() / f64::from(self.radius);
+            let a = f64::from(self.interval_min);
+            let b = f64::from(self.interval_max);
+            state.attack_time = (a + t * (b - a)).floor() as i32;
+        }
+    }
+}
+
+/// The raiders' class (`Raider`): what `Raider$HoldGroundAttackGoal` shouts to.
+fn is_raider(kind: u16) -> bool {
+    use clustine_data::entity_types as types;
+    [
+        types::PILLAGER,
+        types::VINDICATOR,
+        types::EVOKER,
+        types::WITCH,
+        types::ILLUSIONER,
+        types::RAVAGER,
+    ]
+    .contains(&i32::from(kind))
+}
+
+/// `Raider$HoldGroundAttackGoal(mob, hostileRadius)` (n7 Raider$HoldGroundAttackGoal):
+/// a patrolling raider with a target, not yet aggressive and not hurt by a player,
+/// stands, and shouts its target to the raiders within 8 (`forNonCombat().range(8)`,
+/// through walls and invisibility); it looks at the target and now and then grumbles
+/// while it is beyond the radius, and is aggressive once within it; at its end every
+/// raider about takes its target and is aggressive. No raid exists before N10, so the
+/// raid's refusal is never met. Named: a raider in a copy is not shouted to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HoldGroundAttackGoal {
+    pub(crate) hostile_radius: f32,
+}
+
+impl HoldGroundAttackGoal {
+    /// The raiders the shout reaches: within 8 of the mob's feet, alive, the mob not
+    /// among them.
+    fn raiders_about(ai: &mut Ai<'_, '_>) -> Vec<EntityId> {
+        let at = ai.position();
+        let bounds = ai.tick.living.body.bounds().inflate([8.0, 8.0, 8.0]);
+        ai.tick
+            .world
+            .entities_in(&bounds)
+            .into_iter()
+            .filter(|seen| seen.entity.key != ai.tick.key && is_raider(seen.entity.kind))
+            .filter(|seen| physics::distance_sqr(at, seen.entity.position) <= 64.0)
+            .filter(|seen| {
+                crate::mobs::Mob::decode(&seen.entity.data)
+                    .is_ok_and(|mob| mob.body.vitals.health > 0.0)
+            })
+            .map(|seen| seen.entity.key)
+            .collect()
+    }
+}
+
+impl Goal for HoldGroundAttackGoal {
+    type State = ();
+
+    fn flags(&self) -> u8 {
+        flags::MOVE | flags::LOOK
+    }
+
+    fn every_tick(&self) -> bool {
+        true
+    }
+
+    fn can_use(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
+        let patrolling = crate::mobs::types::illagers::state_of(&ai.tick.mob).patrolling;
+        if !patrolling
+            || ai.tick.mob.body.combat.target.is_none()
+            || ai.tick.mob.body.combat.aggressive
+        {
+            return false;
+        }
+        // Not hurt last by a player (a player is seen with no kind).
+        let hurt_by_player = ai
+            .tick
+            .mob
+            .body
+            .combat
+            .last_hurt_by
+            .and_then(|(attacker, _)| sensing::find(ai, attacker))
+            .is_some_and(|attacker| attacker.kind.is_none());
+        !hurt_by_player
+    }
+
+    fn start(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
+        navigation::stop(ai);
+        let target = ai.tick.mob.body.combat.target;
+        for key in Self::raiders_about(ai) {
+            ai.tick.out.local.push(crate::mobs::tick::Local::SetTarget {
+                key,
+                target,
+                aggressive: false,
+            });
+        }
+    }
+
+    fn stop(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
+        let Some(target) = ai.tick.mob.body.combat.target else {
+            return;
+        };
+        for key in Self::raiders_about(ai) {
+            ai.tick.out.local.push(crate::mobs::tick::Local::SetTarget {
+                key,
+                target: Some(target),
+                aggressive: true,
+            });
+        }
+        ai.tick.mob.body.combat.aggressive = true;
+    }
+
+    fn tick(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
+        let Some(target) = sensing::target(ai) else {
+            return;
+        };
+        let radius = f64::from(self.hostile_radius * self.hostile_radius);
+        if physics::distance_sqr(ai.position(), target.position) > radius {
+            controls::set_look_at(
+                ai,
+                [target.position[0], target.eye_y, target.position[2]],
+                30.0,
+                30.0,
+            );
+            if ai.tick.draws.next_int(50) == 0 {
+                let mob_type = ai.tick.mob_type;
+                mob_type.play_ambient_sound(ai.tick);
+            }
+        } else {
+            ai.tick.mob.body.combat.aggressive = true;
+        }
+    }
+}

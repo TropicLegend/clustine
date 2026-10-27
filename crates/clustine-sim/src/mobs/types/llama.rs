@@ -33,12 +33,12 @@ use super::{
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     FloatGoal, HurtByTargetGoal, Items, LookAtPlayerGoal, PanicGoal, RandomLookAroundGoal,
-    RandomStrollGoal, Targeting, TemptGoal,
+    RandomStrollGoal, RangedAttackGoal, Targeting, TemptGoal,
 };
-use crate::mobs::ai::maths::{lerp, reduced_tick_delay};
+use crate::mobs::ai::maths::reduced_tick_delay;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class, Conditions, Looked};
-use crate::mobs::ai::{Ai, Setup, controls, navigation};
+use crate::mobs::ai::{Ai, Setup, navigation};
 use crate::mobs::body::Event;
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::tick::MobTick;
@@ -101,6 +101,7 @@ pub(crate) fn register_goals(
             interval_min: 40,
             interval_max: 40,
             radius: 20.0,
+            perform: spit,
         },
     );
     setup.add_goal(3, PanicGoal { speed: 1.2 });
@@ -522,113 +523,6 @@ impl Goal for LlamaFollowCaravanGoal {
         ];
         let speed = self.speed(state);
         navigation::move_to(ai, wanted, speed);
-    }
-}
-
-/// `RangedAttackGoal`'s state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Ranged {
-    pub(crate) target: Option<EntityId>,
-    pub(crate) attack_time: i32,
-    pub(crate) see_time: i32,
-}
-
-impl Default for Ranged {
-    fn default() -> Self {
-        Self {
-            target: None,
-            attack_time: -1,
-            see_time: 0,
-        }
-    }
-}
-
-/// `RangedAttackGoal(mob, speed, interval, radius)`: towards its target until it has
-/// seen it for five ticks within the radius, then it stands, and every interval it
-/// spits.
-pub(crate) struct RangedAttackGoal {
-    pub(crate) speed: f64,
-    pub(crate) interval_min: i32,
-    pub(crate) interval_max: i32,
-    pub(crate) radius: f32,
-}
-
-impl Goal for RangedAttackGoal {
-    type State = Ranged;
-
-    fn flags(&self) -> u8 {
-        flags::MOVE | flags::LOOK
-    }
-
-    fn every_tick(&self) -> bool {
-        true
-    }
-
-    fn can_use(&self, state: &mut Ranged, ai: &mut Ai<'_, '_>) -> bool {
-        let Some(target) = sensing::target(ai).filter(|target| target.alive) else {
-            return false;
-        };
-        state.target = Some(target.key);
-        true
-    }
-
-    fn can_continue(&self, state: &mut Ranged, ai: &mut Ai<'_, '_>) -> bool {
-        if self.can_use(state, ai) {
-            return true;
-        }
-        let alive = state
-            .target
-            .and_then(|key| sensing::find(ai, key))
-            .is_some_and(|target| target.alive);
-        alive && !navigation::is_done(ai)
-    }
-
-    fn stop(&self, state: &mut Ranged, _: &mut Ai<'_, '_>) {
-        *state = Ranged::default();
-    }
-
-    fn tick(&self, state: &mut Ranged, ai: &mut Ai<'_, '_>) {
-        let Some(target) = state.target.and_then(|key| sensing::find(ai, key)) else {
-            return;
-        };
-        let distance = physics::distance_sqr(ai.position(), target.position);
-        let sees = sensing::has_line_of_sight(ai, &target);
-        if sees {
-            state.see_time += 1;
-        } else {
-            state.see_time = 0;
-        }
-        let radius_sqr = self.radius * self.radius;
-        if distance <= f64::from(radius_sqr) && state.see_time >= 5 {
-            navigation::stop(ai);
-        } else {
-            navigation::move_to_entity(ai, target.block_position(), self.speed);
-        }
-        controls::set_look_at(
-            ai,
-            [target.position[0], target.eye_y, target.position[2]],
-            30.0,
-            30.0,
-        );
-        state.attack_time -= 1;
-        let span = (self.interval_max - self.interval_min) as f32;
-        if state.attack_time == 0 {
-            if !sees {
-                return;
-            }
-            let f = distance.sqrt() as f32 / self.radius;
-            let power = f.clamp(0.1, 1.0);
-            spit(ai, &target, power);
-            state.attack_time = (f * span + self.interval_min as f32).floor() as i32;
-        } else if state.attack_time < 0 {
-            let t = distance.sqrt() / f64::from(self.radius);
-            let lerped = lerp(
-                t,
-                f64::from(self.interval_min),
-                f64::from(self.interval_max),
-            );
-            state.attack_time = lerped.floor() as i32;
-        }
     }
 }
 
