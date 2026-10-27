@@ -33,63 +33,26 @@
 //!   `getOwner()` is null for an owner its level does not have loaded.
 //! - No blaze exists yet: every hit hurts by nothing.
 
-use clustine_data::{EntityTypeInfo, entity_types, items, sounds};
-use clustine_world::{
-    ChunkPos, Double, Entity, EntityChange, EntityData, EntityField, EntityId, EntityUse, Float,
-    ItemStack, PlayerId, Thrower,
-};
+use clustine_data::EntityTypeInfo;
+use clustine_world::{ChunkPos, Double, Entity, EntityData, EntityId, EntityUse, Float, Thrower};
 
 use super::Region;
 use super::attached::Breaker;
-use super::entities::insecure_uuid;
 use super::items::{CartMemory, Memory, View, tracked};
-use super::riding::Relocated;
+use super::projectiles::{Target, TargetKind};
 use super::vibrations::{Context, Source, Vibration};
 use crate::api::{RegionEvent, TickOutput, Tracked};
 use crate::mobs::body::hurt::{Causer, DamageSource};
 use crate::physics::aabb::Aabb;
 use crate::physics::collide::Context as Collision;
-use crate::physics::item::SOUND_SOURCE_NEUTRAL;
-use crate::physics::thrown::{self, Shot};
+use crate::physics::thrown;
 use crate::physics::{self, Vec3, fluids};
-use crate::placement::ItemUse;
 
 /// The entity event that shows a snowball's particles where it hit.
 const HIT_PARTICLES: u8 = 3;
 
-/// How far above a player's feet their eyes are, standing and crouching.
-const STANDING_EYES: f32 = 1.62;
-const CROUCHING_EYES: f32 = 1.27;
-
-/// The box a player is given in the hit test, standing.
-const PLAYER_WIDTH: f32 = 0.6;
-const PLAYER_HEIGHT: f32 = 1.8;
-
 /// How far below the world's floor an entity is gone (`checkBelowWorld`).
 const BELOW_THE_WORLD: f64 = 64.0;
-
-/// The draws of a projectile's birth: its UUID's two longs (`Entity.<init>`).
-const UUID_DRAWS: u64 = 2;
-
-/// The snowball's type, by id.
-fn snowball_kind() -> u16 {
-    u16::try_from(entity_types::SNOWBALL).expect("entity type ids fit 16 bits")
-}
-
-/// How a projectile is shot as it is made.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Aim {
-    /// `shootFromRotation` of a shooter looking along `yaw` and `pitch`, moving by
-    /// `known` and on the ground or not (a player's throw).
-    Rotation {
-        yaw: f32,
-        pitch: f32,
-        known: Vec3,
-        on_ground: bool,
-    },
-    /// `shoot` along `direction` (a mob's shot).
-    Direction(Vec3),
-}
 
 /// A projectile's hit on an entity, as the projectile's region works it out, and as an
 /// effect brings it to the entity's holder.
@@ -162,270 +125,7 @@ impl Hit {
     }
 }
 
-/// An entity a projectile may hit, as the hit test finds it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Target {
-    key: EntityId,
-    bounds: Aabb,
-    /// The root of its unit (`getRootVehicle`), which an owner's own unit is told by.
-    root: EntityId,
-    /// `isPickable`, and `isAlive` beside it.
-    pickable: bool,
-    alive: bool,
-}
-
-/// `isPickable` of a record, and `isAlive`: items, orbs and thrown items are never
-/// picked; a mob is alive while it has health, a marker stand is not picked; every other
-/// kind is picked and alive.
-fn pickable_and_alive(entity: &Entity) -> (bool, bool) {
-    match &entity.data {
-        EntityData::Item { .. } | EntityData::ExperienceOrb { .. } | EntityData::Thrown { .. } => {
-            (false, true)
-        }
-        EntityData::Mob { .. } => {
-            let alive = crate::mobs::Mob::decode(&entity.data)
-                .is_ok_and(|mob| mob.body.vitals.health > 0.0);
-            (true, alive)
-        }
-        EntityData::ArmorStand { flags, health, .. } => {
-            (flags & super::stands::MARKER == 0, health.0 > 0.0)
-        }
-        _ => (true, true),
-    }
-}
-
 impl Region {
-    /// `SnowballItem.use` of the player `player`'s held snowball in the air: the throw's
-    /// sound, then the snowball made at their eyes and shot along their look with their
-    /// movement (`spawnProjectileFromRotation`); a creative player keeps the stack, and
-    /// a snowball has no cooldown. Whether the held item was a snowball.
-    pub(crate) fn throw_snowball(
-        &mut self,
-        used: &ItemUse,
-        player: PlayerId,
-        output: &mut TickOutput,
-    ) -> bool {
-        if used.held != Some(items::SNOWBALL) {
-            return false;
-        }
-        let Some(thrower) = self.players.get(&player) else {
-            return false;
-        };
-        let feet = thrower.pose.position;
-        let on_ground = thrower.pose.on_ground;
-        let owner = thrower.entity_id;
-        let eyes = if used.sneaking && !thrower.flying {
-            CROUCHING_EYES
-        } else {
-            STANDING_EYES
-        };
-        // `level.playSound(null, x, y, z, SNOWBALL_THROW, NEUTRAL, 0.5, pitch)`, the
-        // pitch of the level's random, heard by everyone.
-        let mut random = self.next_draw();
-        let pitch = 0.4 / (random.next_float() * 0.4 + 0.8);
-        output.events.push(RegionEvent::Sound {
-            sound: sounds::ENTITY_SNOWBALL_THROW,
-            source: SOUND_SOURCE_NEUTRAL,
-            position: feet,
-            volume: 0.5,
-            pitch,
-            except: None,
-        });
-        let at = [
-            feet.x,
-            feet.y + f64::from(eyes) - thrown::BELOW_THE_EYES,
-            feet.z,
-        ];
-        let aim = Aim::Rotation {
-            yaw: used.yaw,
-            pitch: used.pitch,
-            known: self.player_movement(player),
-            on_ground,
-        };
-        let stack = ItemStack::new(items::SNOWBALL, 1);
-        self.make_thrown(
-            owner,
-            stack,
-            at,
-            aim,
-            thrown::PLAYER_POWER,
-            thrown::PLAYER_UNCERTAINTY,
-            output,
-        );
-        true
-    }
-
-    /// `new Snowball(level, owner, stack)`, shot by `aim` at `power` and `uncertainty`,
-    /// and `addFreshEntity` (`Projectile.spawnProjectile`): at `at`, under the region's
-    /// next key, its UUID and then its shot drawn from its own stream. Into a chunk the
-    /// region does not have loaded and ticking it is sent as an arrival, as a thrown item
-    /// is. False, and nothing made, where its chunk is full or no key is left.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the projectile's parts, as `spawnProjectile`'s callers give them"
-    )]
-    pub(crate) fn make_thrown(
-        &mut self,
-        owner: EntityId,
-        stack: ItemStack,
-        at: Vec3,
-        aim: Aim,
-        power: f32,
-        uncertainty: f32,
-        output: &mut TickOutput,
-    ) -> bool {
-        let chunk = ChunkPos::containing(at[0], at[2]);
-        let here = self.ticks_chunk(chunk);
-        let key = if here {
-            self.take_entity_key(chunk)
-        } else {
-            self.take_key()
-        };
-        let Some(key) = key else {
-            return false;
-        };
-        let mut own = self.entity_stream(key).random;
-        let start = own.clone();
-        let uuid = insecure_uuid(own.next_u64(), own.next_u64());
-        let Shot { motion, yaw, pitch } = match aim {
-            Aim::Rotation {
-                yaw,
-                pitch,
-                known,
-                on_ground,
-            } => thrown::shoot_from_rotation(
-                yaw,
-                pitch,
-                power,
-                uncertainty,
-                known,
-                on_ground,
-                &mut own,
-            ),
-            Aim::Direction(direction) => thrown::shoot(direction, power, uncertainty, &mut own),
-        };
-        let entity = Entity {
-            key,
-            kind: snowball_kind(),
-            uuid,
-            position: at,
-            motion,
-            yaw,
-            pitch,
-            on_ground: false,
-            hops: 0,
-            lived: 0,
-            fresh_at: 0,
-            fall_distance: 0.0,
-            fire_ticks: 0,
-            riding: Default::default(),
-            data: EntityData::Thrown {
-                // `setItem` keeps one of the stack.
-                stack: ItemStack { count: 1, ..stack },
-                owner: Some(owner),
-                left_owner: false,
-                has_been_shot: false,
-            },
-        };
-        debug_assert_eq!(own.draws_since(&start), UUID_DRAWS + 6);
-        if here {
-            self.entity_drew(key, own.draws_since(&start));
-            self.add_fresh_entity(entity, output);
-        } else {
-            self.send_made(entity, output);
-        }
-        true
-    }
-
-    /// The root of the unit of the entity or player `key`, where the region has it: a
-    /// player's is their vehicle's root, or their own entity.
-    fn unit_root(&self, key: EntityId) -> Option<EntityId> {
-        if let Some(id) = self.player_with_entity(key) {
-            let player = self.players.get(&id)?;
-            return Some(
-                player
-                    .riding
-                    .map_or(player.entity_id, |riding| self.root_of(riding.vehicle)),
-            );
-        }
-        self.find_entity(key).map(|_| self.root_of(key))
-    }
-
-    /// Who threw a projectile, as a hurt names its cause, where the region has them.
-    fn thrower(&self, owner: EntityId) -> Option<Thrower> {
-        if let Some(id) = self.player_with_entity(owner) {
-            let feet = self.players.get(&id)?.pose.position;
-            return Some(Thrower {
-                key: owner,
-                kind: super::mob_bodies::player_kind(),
-                from: [Double(feet.x), Double(feet.y), Double(feet.z)],
-                player: Some(id.0),
-            });
-        }
-        let (_, record) = self.find_entity(owner)?;
-        Some(Thrower {
-            key: owner,
-            kind: record.kind,
-            from: record.position.map(Double),
-            player: None,
-        })
-    }
-
-    /// The entities of the region's loaded and copied chunks and its players whose boxes
-    /// meet `bounds`, but `except`, in the order of the chunks and their sections, the
-    /// players last.
-    fn targets(&self, bounds: &Aabb, except: EntityId) -> Vec<Target> {
-        let low = ChunkPos::containing(bounds.min[0] - 2.0, bounds.min[2] - 2.0);
-        let high = ChunkPos::containing(bounds.max[0] + 2.0, bounds.max[2] + 2.0);
-        let mut found = Vec::new();
-        for x in low.x..=high.x {
-            for z in low.z..=high.z {
-                let Some(chunk) = self.readable_chunk(ChunkPos::new(x, z)) else {
-                    continue;
-                };
-                let records = chunk.entities();
-                let mut here: Vec<(i32, Target)> = records
-                    .iter()
-                    .filter(|entity| entity.key != except)
-                    .filter_map(|entity| {
-                        let own = self.entity_box(entity);
-                        own.intersects(*bounds).then(|| {
-                            let (pickable, alive) = pickable_and_alive(entity);
-                            let target = Target {
-                                key: entity.key,
-                                bounds: own,
-                                root: super::colliders::root_among(records, entity.key),
-                                pickable,
-                                alive,
-                            };
-                            (physics::floor(entity.position[1]) >> 4, target)
-                        })
-                    })
-                    .collect();
-                here.sort_by_key(|(section, target)| (*section, target.key));
-                found.extend(here.into_iter().map(|(_, target)| target));
-            }
-        }
-        for player in self.players.values() {
-            let feet = player.pose.position;
-            let own = Aabb::of_entity([feet.x, feet.y, feet.z], PLAYER_WIDTH, PLAYER_HEIGHT);
-            if !own.intersects(*bounds) {
-                continue;
-            }
-            let root = player
-                .riding
-                .map_or(player.entity_id, |riding| self.root_of(riding.vehicle));
-            found.push(Target {
-                key: player.entity_id,
-                bounds: own,
-                root,
-                pickable: true,
-                alive: true,
-            });
-        }
-        found
-    }
-
     /// The tick of the thrown item `entity` of the loaded chunk `position`
     /// (`ThrowableProjectile.tick`): gravity, then drag, then the hit test along its
     /// move, which puts it where it hit or where its move takes it; its turn towards
@@ -491,7 +191,7 @@ impl Region {
             .inflate([1.0; 3]);
         let margin = f64::from(thrown::margin(entity.tick_count().saturating_add(1)));
         let mut nearest = f64::MAX;
-        let mut struck: Option<(EntityId, Vec3)> = None;
+        let mut struck: Option<(EntityId, TargetKind, Vec3)> = None;
         for target in self.targets(&search, key) {
             if !can_hit(&target) {
                 continue;
@@ -502,11 +202,11 @@ impl Region {
             let distance = physics::distance_sqr(from, at);
             if distance < nearest {
                 nearest = distance;
-                struck = Some((target.key, at));
+                struck = Some((target.key, target.kind, at));
             }
         }
         let location = match (struck, block) {
-            (Some((_, at)), _) => at,
+            (Some((_, _, at)), _) => at,
             (None, Some(hit)) => hit.location,
             (None, None) => to,
         };
@@ -566,7 +266,7 @@ impl Region {
             // `hitTargetOrDeflectSelf`: no entity of Clustine's deflects, and a block hit
             // on air is none (a hit is never on air: the clip finds collision shapes).
             match struck {
-                Some((target, at)) => {
+                Some((target, target_kind, at)) => {
                     let hit = Hit {
                         projectile: key,
                         kind: entity.kind,
@@ -575,7 +275,11 @@ impl Region {
                         damage: 0.0,
                         owner: owner.and_then(|owner| self.thrower(owner)),
                     };
-                    self.thrown_hit(target, hit, output);
+                    // Another region's player, a face here, is creative and takes
+                    // nothing (`docs/groundwork/n9-plan.md`, section 4.1).
+                    if target_kind != TargetKind::Face {
+                        self.thrown_hit(target, hit, output);
+                    }
                     self.vibrate(
                         Vibration::PROJECTILE_LAND,
                         at,
@@ -585,6 +289,9 @@ impl Region {
                 None => {
                     if let Some(hit) = block {
                         let state = self.block(hit.pos);
+                        if let Some(state) = state {
+                            self.projectile_hit(&after, state, &hit, output);
+                        }
                         self.vibrate_at(
                             Vibration::PROJECTILE_LAND,
                             hit.pos,
@@ -612,58 +319,7 @@ impl Region {
                 ..Memory::default()
             },
         );
-        self.write_thrown(&entity, after, position, output);
-    }
-
-    /// What a thrown item's tick leaves: where it goes (`relocate`), its commit and the
-    /// edges' report. It moves every tick it flies, so every such tick commits.
-    fn write_thrown(
-        &mut self,
-        before: &Entity,
-        after: Entity,
-        position: ChunkPos,
-        output: &mut TickOutput,
-    ) {
-        let key = before.key;
-        let mut after = after;
-        let to = match self.relocate(position, before.position, &mut after, output) {
-            Relocated::Sent => return,
-            Relocated::Moved(to) => to,
-            Relocated::Stays => position,
-        };
-        if to == position {
-            let bits = |values: [f64; 3]| values.map(f64::to_bits);
-            let mut fields = Vec::new();
-            if bits(after.position) != bits(before.position) {
-                fields.push(EntityField::Position(after.position));
-            }
-            if bits(after.motion) != bits(before.motion) {
-                fields.push(EntityField::Motion(after.motion));
-            }
-            if after.yaw.to_bits() != before.yaw.to_bits()
-                || after.pitch.to_bits() != before.pitch.to_bits()
-            {
-                fields.push(EntityField::Rotation {
-                    yaw: after.yaw,
-                    pitch: after.pitch,
-                });
-            }
-            if after.data != before.data {
-                fields.push(EntityField::Data(after.data.clone()));
-            }
-            if !fields.is_empty() {
-                output
-                    .entity_changes
-                    .push((position, EntityChange::Set(key, fields)));
-            }
-            if let Some(chunk) = self.chunks.get_mut(&position) {
-                chunk.apply_entity(&EntityChange::Whole(after.clone()));
-            }
-        }
-        output.entities_ageing.push(to);
-        let mut report = tracked(&after, 0, true);
-        report.chunk = to;
-        output.events.push(RegionEvent::EntityTracked(report));
+        self.write_projectile(&entity, after, position, output);
     }
 
     /// `onHitEntity` of a projectile's hit `hit` on the entity or player `target`: done

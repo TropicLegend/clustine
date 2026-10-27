@@ -368,9 +368,10 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
     }
 }
 
-/// A mob's synced value as the protocol writes it.
-fn data_value(value: DataShown) -> EntityDataValue {
-    match value {
+/// A mob's synced value as the protocol writes it; `None` for those whose writing waits
+/// for part S12 (`docs/groundwork/n9-plan.md`, section 10), which no mob reports yet.
+fn data_value(value: DataShown) -> Option<EntityDataValue> {
+    Some(match value {
         DataShown::Byte(byte) => EntityDataValue::Byte(byte),
         DataShown::Int(int) => EntityDataValue::Int(int),
         DataShown::Float(float) => EntityDataValue::Float(float),
@@ -400,7 +401,16 @@ fn data_value(value: DataShown) -> EntityDataValue {
             profession,
             level,
         },
-    }
+        DataShown::Stack(stack) => {
+            EntityDataValue::ItemStack(stack.as_ref().map(crate::encode::wire_stack))
+        }
+        DataShown::OptionalBlockState(state) => {
+            EntityDataValue::OptionalBlockState(state.map_or(0, i32::from))
+        }
+        DataShown::Entity(_) | DataShown::Particles(_) | DataShown::OptionalUnsignedInt(_) => {
+            return None;
+        }
+    })
 }
 
 pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
@@ -408,7 +418,7 @@ pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityData
     if let EntityData::Mob { .. } = data {
         let values = clustine_sim::shown::mob_values(kind, data).into_iter();
         return values
-            .map(|(index, value, default)| (index, data_value(value), default))
+            .filter_map(|(index, value, default)| Some((index, data_value(value)?, default)))
             .collect();
     }
     let EntityData::ArmorStand {
@@ -1281,11 +1291,11 @@ mod tests {
                 profession: professions::LIBRARIAN,
                 level: 3,
             }),
-            EntityDataValue::VillagerData {
+            Some(EntityDataValue::VillagerData {
                 kind: 5,
                 profession: 9,
                 level: 3,
-            }
+            })
         );
     }
 

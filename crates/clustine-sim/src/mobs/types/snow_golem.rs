@@ -228,13 +228,20 @@ impl Goal for RangedAttackGoal {
 /// a pitch of its own draw.
 fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &sensing::Looked, _power: f32) {
     let [at, direction] = golem_aim(ai.position(), ai.eye_y(), target.position, target.eye_y);
-    ai.tick.out.local.push(Local::Shoot {
-        stack: ItemStack::new(items::SNOWBALL, 1),
-        at,
-        direction,
-        power: GOLEM_POWER,
-        uncertainty: GOLEM_UNCERTAINTY,
-    });
+    ai.tick
+        .out
+        .local
+        .push(Local::Shoot(crate::mobs::tick::Shot {
+            kind: u16::try_from(clustine_data::entity_types::SNOWBALL)
+                .expect("entity type ids fit 16 bits"),
+            stack: ItemStack::new(items::SNOWBALL, 1),
+            weapon: None,
+            at,
+            direction,
+            power: GOLEM_POWER,
+            uncertainty: GOLEM_UNCERTAINTY,
+            from_mob: None,
+        }));
     let pitch = 0.4 / (ai.tick.draws.next_float() * 0.4 + 0.8);
     ai.tick.out.events.push(Event::Sound {
         sound: sounds::ENTITY_SNOW_GOLEM_SHOOT,

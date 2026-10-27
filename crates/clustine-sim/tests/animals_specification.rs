@@ -855,13 +855,13 @@ fn a_child_takes_its_parents_variant_and_the_default_sound() {
         let child = birth.child.key;
         assert_eq!(
             shown_at(&scene, child, variant_at),
-            Some(variant),
+            Some(variant.clone()),
             "{}",
             kind.name
         );
         assert_eq!(
             shown_at(&scene, child, sound_at),
-            Some(sound),
+            Some(sound.clone()),
             "{}",
             kind.name
         );
@@ -871,13 +871,13 @@ fn a_child_takes_its_parents_variant_and_the_default_sound() {
         let baby = others_of(&scene, kind.kind, &before)[0].key;
         assert_eq!(
             shown_at(&scene, baby, variant_at),
-            Some(variant),
+            Some(variant.clone()),
             "{}'s egg baby",
             kind.name
         );
         assert_eq!(
             shown_at(&scene, baby, sound_at),
-            Some(sound),
+            Some(sound.clone()),
             "{}'s egg baby",
             kind.name
         );

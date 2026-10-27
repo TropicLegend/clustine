@@ -23,6 +23,7 @@
 
 pub mod api;
 pub mod generation;
+mod items;
 mod living;
 pub(crate) mod menus;
 mod mobs;

@@ -74,9 +74,13 @@ use crate::physics::aabb::Aabb;
 /// What a dispenser does with an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Behaviour {
-    /// `DefaultDispenseItemBehavior`: one dropped. Also the projectiles' until N9, a
-    /// chest's, and a block a sulfur cube would swallow.
+    /// `DefaultDispenseItemBehavior`: one dropped. Also a chest's, a trident's, an
+    /// ender pearl's, the fire and wind charges' (until blazes and breezes), and a
+    /// block a sulfur cube would swallow.
     Drop,
+    /// `ProjectileDispenseBehavior` of the entity type `kind` (`projectiles.rs`;
+    /// `docs/groundwork/n9-plan.md`, section 4.9).
+    Projectile(i32),
     /// `$1`: an armour stand placed in front.
     ArmourStand,
     /// `BoatDispenseItemBehavior` of the boat (or raft) type `kind`.
@@ -128,6 +132,7 @@ impl Behaviour {
                 | Behaviour::Tnt
                 | Behaviour::SpawnEgg
                 | Behaviour::Brush
+                | Behaviour::Projectile(_)
         )
     }
 }
@@ -161,6 +166,14 @@ pub(crate) fn behaviour_of(item: i32) -> Behaviour {
         items::BRUSH => Behaviour::Brush,
         items::HONEYCOMB => Behaviour::Honeycomb,
         items::POTION => Behaviour::Potion,
+        items::ARROW | items::TIPPED_ARROW => Behaviour::Projectile(entity_types::ARROW),
+        items::SPECTRAL_ARROW => Behaviour::Projectile(entity_types::SPECTRAL_ARROW),
+        items::EGG | items::BLUE_EGG | items::BROWN_EGG => Behaviour::Projectile(entity_types::EGG),
+        items::SNOWBALL => Behaviour::Projectile(entity_types::SNOWBALL),
+        items::SPLASH_POTION => Behaviour::Projectile(entity_types::SPLASH_POTION),
+        items::LINGERING_POTION => Behaviour::Projectile(entity_types::LINGERING_POTION),
+        items::EXPERIENCE_BOTTLE => Behaviour::Projectile(entity_types::EXPERIENCE_BOTTLE),
+        items::FIREWORK_ROCKET => Behaviour::Projectile(entity_types::FIREWORK_ROCKET),
         items::MINECART
         | items::CHEST_MINECART
         | items::FURNACE_MINECART
@@ -266,6 +279,7 @@ impl Region {
         }
         match behaviour {
             Behaviour::Drop => self.default_dispense(dispense, output),
+            Behaviour::Projectile(kind) => self.dispense_projectile(dispense, kind, output),
             Behaviour::ArmourStand => {
                 if self.dispense_armour_stand(dispense, output) {
                     self.post(Vibration::ENTITY_PLACE, dispense.front());

@@ -327,13 +327,11 @@ impl Region {
             EntityData::Mob { .. } => self.tick_mob(entity, position, output),
             EntityData::ExperienceOrb { .. } => self.tick_orb(entity, position, output),
             EntityData::Thrown { .. } => self.tick_thrown(entity, position, output),
-            // N9's projectiles, which nothing makes yet, tick with the step that makes
-            // them.
-            EntityData::Arrow(_)
-            | EntityData::Spit(_)
-            | EntityData::Firework(_)
-            | EntityData::Cloud(_)
-            | EntityData::Fangs(_) => {}
+            EntityData::Arrow(_) => self.tick_arrow(entity, position, output),
+            EntityData::Spit(_) => self.tick_spit(entity, position, output),
+            EntityData::Firework(_) => self.tick_firework(entity, position, output),
+            EntityData::Cloud(_) => self.tick_cloud(entity, position, output),
+            EntityData::Fangs(_) => self.tick_fangs(entity, position, output),
         }
         self.ticking = before;
     }

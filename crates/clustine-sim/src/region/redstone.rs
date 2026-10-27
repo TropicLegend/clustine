@@ -413,9 +413,9 @@ impl Region {
             return true;
         }
         if is_class(state, BlockClass::ButtonBlock) {
-            // `ButtonBlock.checkPressed`: nothing but an arrow keeps a button pressed,
-            // and there are no arrows before the phase of entities.
-            if flag(state, "powered") {
+            // `ButtonBlock.checkPressed`: nothing but an arrow keeps a button pressed
+            // (`projectile_hits.rs`).
+            if flag(state, "powered") && !self.arrow_on_button(pos, state) {
                 let released = set_flag(state, "powered", false);
                 self.set_block(pos, released, output);
                 self.update_attached(pos, released, output);

@@ -214,16 +214,19 @@ fn each_raider_shows_its_celebration_at_16_and_its_own_at_17() {
     let celebrating = (16, DataShown::Boolean(false), true);
     assert_eq!(
         of(WITCH).shown(&fresh),
-        [celebrating, (17, DataShown::Boolean(false), true)]
+        [celebrating.clone(), (17, DataShown::Boolean(false), true)]
     );
     assert_eq!(
         of(PILLAGER).shown(&fresh),
-        [celebrating, (17, DataShown::Boolean(false), true)]
+        [celebrating.clone(), (17, DataShown::Boolean(false), true)]
     );
-    assert_eq!(of(VINDICATOR).shown(&fresh), [celebrating]);
+    assert_eq!(
+        of(VINDICATOR).shown(&fresh),
+        std::slice::from_ref(&celebrating)
+    );
     assert_eq!(
         of(EVOKER).shown(&fresh),
-        [celebrating, (17, DataShown::Byte(0), true)]
+        [celebrating.clone(), (17, DataShown::Byte(0), true)]
     );
     let mut drinking = Mob::fresh();
     illagers::put_state(

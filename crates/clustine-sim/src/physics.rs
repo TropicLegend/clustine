@@ -10,6 +10,7 @@
 //! but the blocks a [`World`] gives, so that a move is a function of them.
 
 pub(crate) mod aabb;
+pub(crate) mod arrows;
 pub(crate) mod boat;
 pub(crate) mod body;
 pub(crate) mod collide;

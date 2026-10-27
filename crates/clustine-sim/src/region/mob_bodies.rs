@@ -325,16 +325,7 @@ impl Region {
                 Local::ContainerPut { chest, step } => {
                     self.golem_puts(key, chest, step, output);
                 }
-                Local::Shoot {
-                    stack,
-                    at,
-                    direction,
-                    power,
-                    uncertainty,
-                } => {
-                    let aim = super::thrown::Aim::Direction(direction);
-                    self.make_thrown(key, stack, at, aim, power, uncertainty, output);
-                }
+                Local::Shoot(shot) => self.mob_shoots(key, &shot, output),
                 Local::PlaceBlock { pos, state } => self.mob_places_block(key, pos, state, output),
                 Local::GiveFlower { key: given } => self.give_golem_flower(given, output),
             }

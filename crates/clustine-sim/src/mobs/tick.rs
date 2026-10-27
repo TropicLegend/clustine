@@ -207,19 +207,12 @@ pub(crate) enum Local {
         chest: BlockPos,
         step: crate::mobs::types::copper_golem::ChestStep,
     },
-    /// `Projectile.spawnProjectile(new Snowball(level, the mob, stack), level, stack,
-    /// s -> s.shoot(direction, power, uncertainty))`: a thrown item of `stack`, its owner
-    /// the mob, made at `at` and shot along `direction` (`region/thrown.rs`). A snow
-    /// golem's shot (`SnowGolem.performRangedAttack`) is
-    /// `crate::physics::thrown::golem_aim`'s, at `GOLEM_POWER` and `GOLEM_UNCERTAINTY`;
-    /// the shot's sound, of the golem's own random, is the golem's to make after.
-    Shoot {
-        stack: ItemStack,
-        at: crate::physics::Vec3,
-        direction: crate::physics::Vec3,
-        power: f32,
-        uncertainty: f32,
-    },
+    /// `Projectile.spawnProjectile` of the mob's shot (`region/projectiles.rs`): a
+    /// thrown item or an arrow, its owner the mob. A snow golem's shot
+    /// (`SnowGolem.performRangedAttack`) is `crate::physics::thrown::golem_aim`'s, at
+    /// `GOLEM_POWER` and `GOLEM_UNCERTAINTY`; the shot's sound, of the mob's own random,
+    /// is the mob's to make after.
+    Shoot(Shot),
     /// `setBlockAndUpdate(pos, state)` and `gameEvent(BLOCK_PLACE, pos, Context.of(the
     /// mob, state))` of a block the mob read as air and `state` can stand at (a snow
     /// golem's trail, `region/golems.rs`): set with every update in the region's own
@@ -230,6 +223,24 @@ pub(crate) enum Local {
     /// where that is empty, a sure drop (`region/golems.rs`). A mob in a copy is given
     /// nothing (named).
     GiveFlower { key: EntityId },
+}
+
+/// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and
+/// the stack it is made of (the arrow's pickup stack, the thrown item's), the weapon it
+/// is shot from, where it is made, the direction, power and uncertainty of `shoot`, and
+/// `from_mob`, the power of `setBaseDamageFromMob` for an arrow a mob shoots, whose
+/// triangle the arrow draws from its own stream after its UUID. The construction's
+/// position (the eyes less 0.1, a crossbow's rocket less 0.15) is the caller's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shot {
+    pub kind: u16,
+    pub stack: ItemStack,
+    pub weapon: Option<ItemStack>,
+    pub at: crate::physics::Vec3,
+    pub direction: crate::physics::Vec3,
+    pub power: f32,
+    pub uncertainty: f32,
+    pub from_mob: Option<f32>,
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

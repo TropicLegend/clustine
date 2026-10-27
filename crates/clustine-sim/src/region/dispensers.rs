@@ -47,6 +47,7 @@ use crate::api::{ItemStack, RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 use crate::physics::aabb::Aabb;
 
 mod behaviours;
+mod projectiles;
 #[cfg(test)]
 mod tests;
 

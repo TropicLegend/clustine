@@ -15,8 +15,8 @@ use super::*;
 use crate::mobs::Mob;
 use crate::mobs::tick::Local;
 use crate::physics::thrown::{self as flight, AIR_DRAG, GRAVITY};
+use crate::region::projectiles::{Aim, Making};
 use crate::region::random_ticks::Random;
-use crate::region::thrown::Aim;
 use crate::region::tnt::tests::{nothing, records, west_of_a_line, world};
 
 const SEED: u64 = 0x05E0_BA11;
@@ -99,16 +99,21 @@ fn the_snowball(region: &Region) -> Entity {
 /// A snowball of `owner` at `at`, shot along `direction` at `power` with no uncertainty,
 /// so that its motion is the direction made of length `power`: a test's own shot.
 fn shoot(region: &mut Region, owner: EntityId, at: [f64; 3], direction: [f64; 3], power: f32) {
-    let made = region.make_thrown(
-        owner,
-        SNOWBALL,
+    let making = Making {
+        kind: u16::try_from(entity_types::SNOWBALL).unwrap(),
         at,
-        Aim::Direction(direction),
+        data: EntityData::Thrown {
+            stack: SNOWBALL,
+            owner: Some(owner),
+            left_owner: false,
+            has_been_shot: false,
+        },
+        aim: Aim::Direction(direction),
         power,
-        0.0,
-        &mut TickOutput::default(),
-    );
-    assert!(made);
+        uncertainty: 0.0,
+    };
+    let made = region.make_projectile(making, |_, _| {}, &mut TickOutput::default());
+    assert!(made.is_some());
 }
 
 /// One tick of `ThrowableProjectile`'s motion by hand: gravity, `Vec3.add(0, -0.03, 0)`,
@@ -263,13 +268,16 @@ fn a_mobs_snowball_passes_its_thrower_in_its_first_tick_where_anyone_elses_hits(
     let mut region = world(SEED, nothing);
     let key = region.take_entity_key(ChunkPos::new(0, 0)).expect("a key");
     lay(&mut region, &cow(key, [3.5, -60.0, 0.5]));
-    let shot = Local::Shoot {
+    let shot = Local::Shoot(crate::mobs::tick::Shot {
+        kind: u16::try_from(entity_types::SNOWBALL).unwrap(),
         stack: SNOWBALL,
+        weapon: None,
         at: [2.5, -59.0, 0.5],
         direction: [1.0, 0.0, 0.0],
         power: flight::GOLEM_POWER,
         uncertainty: 0.0,
-    };
+        from_mob: None,
+    });
     region.apply_locals(key, vec![shot], &mut TickOutput::default());
     let made = the_snowball(&region);
     assert!(matches!(
@@ -502,4 +510,98 @@ fn a_snowball_crosses_a_line_in_flight_and_flies_on_there() {
             ..
         }
     ));
+}
+
+/// The face of a player of another region, standing or crouching with their feet at
+/// `feet`, as the store streams it.
+fn face_at(feet: [f64; 3], sneaking: bool) -> crate::api::FaceChange {
+    crate::api::FaceChange::Face {
+        player: PlayerId(uuid::Uuid::from_u128(9)),
+        entity: EntityId(500),
+        hops: 0,
+        seq: crate::api::FaceSeq(1, 0),
+        face: crate::api::PlayerFace::of(
+            &crate::api::Pose::at(clustine_world::Vec3::new(feet[0], feet[1], feet[2])),
+            sneaking,
+            false,
+            &clustine_world::Inventory::default(),
+            0,
+            None,
+        ),
+    }
+}
+
+/// Section 4.1 of the N9 plan: another region's player, whose face the region keeps in
+/// the copy east of the line, is a target the hit test finds after the region's own,
+/// 1.8 tall standing and 1.5 crouching.
+#[test]
+fn the_face_of_another_region_s_player_is_a_target_of_their_height() {
+    for (sneaking, height) in [(false, 1.8), (true, 1.5)] {
+        let mut region = west_of_a_line(SEED, nothing);
+        let inputs = TickInputs {
+            faces: vec![face_at([17.5, -60.0, 0.5], sneaking)],
+            ..TickInputs::default()
+        };
+        region.tick(&inputs);
+        let around = crate::physics::aabb::Aabb::of_entity([17.5, -60.0, 0.5], 2.0, 3.0);
+        let targets = region.targets(&around, NOBODY);
+        let [face] = &targets[..] else {
+            panic!("the face alone: {targets:?}");
+        };
+        assert_eq!(face.key, EntityId(500));
+        assert_eq!(face.kind, crate::region::projectiles::TargetKind::Face);
+        assert!((face.bounds.max[1] - face.bounds.min[1] - height).abs() < 1e-6);
+    }
+}
+
+/// Section 4.1: a snowball thrown past another region's player turns back from their
+/// face as from a creative player's: it is gone at them, and nothing is sent to anyone.
+#[test]
+fn a_snowball_that_hits_another_region_s_player_is_gone_and_sends_nothing() {
+    let mut region = west_of_a_line(SEED, nothing);
+    let inputs = TickInputs {
+        faces: vec![face_at([17.0, -60.0, 0.5], false)],
+        ..TickInputs::default()
+    };
+    region.tick(&inputs);
+    shoot(
+        &mut region,
+        NOBODY,
+        [14.0, -59.0, 0.5],
+        [1.0, 0.0, 0.0],
+        1.5,
+    );
+    let snowball = the_snowball(&region).key;
+    let output = idle(&mut region);
+    assert!(!gone(&output, snowball));
+    let output = idle(&mut region);
+    assert_eq!(events_of(&output, snowball), [3]);
+    assert!(gone(&output, snowball));
+    assert!(output.effects.is_empty(), "{:?}", output.effects);
+}
+
+/// Section 4.1's rule for a making: where the region can read nothing, a projectile is
+/// not made, and no key is taken.
+#[test]
+fn a_projectile_is_not_made_where_the_region_can_read_nothing() {
+    let mut region = west_of_a_line(SEED, nothing);
+    let making = Making {
+        kind: u16::try_from(entity_types::SNOWBALL).unwrap(),
+        at: [200.0, -59.0, 0.5],
+        data: EntityData::Thrown {
+            stack: SNOWBALL,
+            owner: None,
+            left_owner: false,
+            has_been_shot: false,
+        },
+        aim: Aim::Direction([1.0, 0.0, 0.0]),
+        power: 1.5,
+        uncertainty: 0.0,
+    };
+    let mut output = TickOutput::default();
+    assert_eq!(region.make_projectile(making, |_, _| {}, &mut output), None);
+    assert!(
+        output.events.is_empty() && output.effects.is_empty(),
+        "{output:?}"
+    );
 }

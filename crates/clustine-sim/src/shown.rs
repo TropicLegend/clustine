@@ -7,12 +7,12 @@
 //! Named difference: the pose `DYING` a dying mob has is not shown; the death's entity
 //! event shows its fall.
 
-use clustine_world::EntityData;
+use clustine_world::{EntityData, EntityId, ItemStack};
 
 use crate::mobs::{Mob, types};
 
 /// A synced value as the edge writes it, by the serializer the game's index has.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DataShown {
     Byte(u8),
     Int(i32),
@@ -40,6 +40,26 @@ pub enum DataShown {
         profession: i32,
         level: i32,
     },
+    /// An entity by its key, or none (`OPTIONAL_UNSIGNED_INT` of an entity's id, or
+    /// `INT` of one): the guardian's beam's target, a projectile's owner. The edge
+    /// writes the key's wire id (`docs/groundwork/n9-plan.md`, section 10).
+    Entity(Option<EntityId>),
+    /// A block state by id, or none (`OPTIONAL_BLOCK_STATE`): what an enderman carries.
+    OptionalBlockState(Option<u16>),
+    /// A list of particles (`PARTICLES`): a living entity's effect particles.
+    Particles(Vec<ShownParticle>),
+    /// A stack (`ITEM_STACK`): a rocket's.
+    Stack(Option<ItemStack>),
+    /// A number or none (`OPTIONAL_UNSIGNED_INT`).
+    OptionalUnsignedInt(Option<u32>),
+}
+
+/// A particle of a [`DataShown::Particles`] list: `entity_effect` with a colour, or a
+/// particle without options by its type's id (`docs/groundwork/n9-plan.md`, 5.2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShownParticle {
+    EntityEffect { colour: i32 },
+    Simple(i32),
 }
 
 /// The serializer of a [`DataShown::Serialised`] value: the enumerations the game syncs
