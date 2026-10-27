@@ -323,8 +323,9 @@ pub(crate) fn land_pos(ai: &mut Ai<'_, '_>, horizontal: i32, vertical: i32) -> O
     })
 }
 
-/// `LandRandomPos.getPos(mob, h, v, scorer)`: as [`land_pos`], the places liked by
-/// `scorer` (a villager's search for the nearest village, `GoToClosestVillage`).
+/// `LandRandomPos.getPos(mob, h, v, scorer)`: as [`land_pos`], each place scored by
+/// `scorer` in place of the mob's walk target value; a place scored no higher than
+/// negative infinity is never taken.
 pub(crate) fn land_pos_scored(
     ai: &mut Ai<'_, '_>,
     horizontal: i32,

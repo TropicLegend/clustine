@@ -3956,6 +3956,8 @@ mod tests {
     mod thrown;
     mod trees;
     mod using;
+    #[path = "../village_n10_tests.rs"]
+    mod village_n10;
     mod villagers;
     mod villagers_n10;
     mod water;

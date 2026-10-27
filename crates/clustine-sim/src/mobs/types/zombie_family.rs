@@ -13,8 +13,8 @@
 //! Named differences: `SpearUseGoal` is decided out of N9 for mobs (the plan's 8.6 and
 //! 18.5): its slot holds a goal that never starts, and a zombie holding a spear (one in
 //! 600 at easy) chases and hits with `ZombieAttackGoal` as one with a sword would;
-//! `MoveThroughVillageGoal` finds no village, which needs the
-//! points of interest of N10, and so never starts; `BreakDoorGoal` is never added, as
+//! `MoveThroughVillageGoal` (`crate::mobs::ai::village_goals`) paths with the zombie's
+//! own doors, which it never opens; `BreakDoorGoal` is never added, as
 //! no door is broken below hard and no zombie can break doors at easy; Halloween's
 //! pumpkin is never drawn (the plan's section 10); a group of zombies made together
 //! (N9's natural spawns) shares no `ZombieGroupData`, as an egg's has none; a chicken
@@ -42,6 +42,7 @@ use crate::mobs::ai::navigation;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::Class;
 use crate::mobs::ai::targets;
+use crate::mobs::ai::village_goals::MoveThroughVillageGoal;
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::attributes::{ADD_MULTIPLIED_BASE, ADD_MULTIPLIED_TOTAL, ADD_VALUE};
 use crate::mobs::body::{Modifier, attribute, ladder};
@@ -268,8 +269,9 @@ pub(crate) fn register_base_goals(setup: &mut Setup) {
 
 /// `Zombie.registerGoals` with its `addBehaviourGoals` (the zombie's, the husk's and the
 /// zombie villager's, Zombie.txt 124–169): the spear (2), decided out of N9 and never
-/// started; `ZombieAttackGoal(1.0, false)` (3); through a village at night (6), which
-/// finds none; the stroll avoiding water (7); and the targets.
+/// started; `ZombieAttackGoal(1.0, false)` (3); through a village at night (6,
+/// `MoveThroughVillageGoal(1.0, true, 4, canBreakDoors)`); the stroll avoiding water
+/// (7); and the targets.
 pub(crate) fn register_goals(setup: &mut Setup) {
     register_base_goals(setup);
     setup.add_goal(
@@ -279,7 +281,14 @@ pub(crate) fn register_goals(setup: &mut Setup) {
         },
     );
     setup.add_goal(3, ZombieAttackGoal::new(1.0, false));
-    setup.add_goal(6, MoveThroughVillageGoal);
+    setup.add_goal(
+        6,
+        MoveThroughVillageGoal {
+            speed: 1.0,
+            only_at_night: true,
+            distance_to_poi: 4,
+        },
+    );
     setup.add_goal(7, RandomStrollGoal::avoiding_water(1.0));
     targets::register(setup, targets::ZOMBIE);
 }
@@ -350,27 +359,6 @@ impl Goal for ZombieAttackGoal {
         let interval = self.melee.adjusted_tick_delay(20);
         ai.tick.mob.body.combat.aggressive =
             state.raise_arm_ticks >= 5 && state.attacking.attack_cooldown < interval / 2;
-    }
-}
-
-/// `MoveThroughVillageGoal(zombie, 1.0, true, 4, canBreakDoors)` (n7
-/// MoveThroughVillageGoal): by night, to a point of interest of a village within six
-/// sections. `canUse` asks whether its navigation is a ground one (a zombie's is), then
-/// whether it is day (`onlyAtNight`), then `isCloseToVillage(pos, 6)`, which finds no
-/// village until N10 brings points of interest: it never starts, and draws nothing
-/// before it gives up (its first draw, `LandRandomPos.getPos`, comes after).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MoveThroughVillageGoal;
-
-impl Goal for MoveThroughVillageGoal {
-    type State = ();
-
-    fn flags(&self) -> u8 {
-        flags::MOVE
-    }
-
-    fn can_use(&self, _: &mut (), _: &mut Ai<'_, '_>) -> bool {
-        false
     }
 }
 

@@ -1217,10 +1217,6 @@ pub(crate) enum SpawnReason {
     Patrol,
     /// A mob of an event (`EVENT`): a raid's raider, the siege's zombie, the wandering
     /// trader and its llamas (`docs/groundwork/n10-plan.md`, section 4).
-    #[expect(
-        dead_code,
-        reason = "parts R1 and G1 spawn raiders, the siege's zombies and the trader"
-    )]
     Event,
 }
 

@@ -50,6 +50,7 @@ pub(crate) mod sensing;
 pub(crate) mod spear;
 pub(crate) mod spells;
 pub(crate) mod targets;
+pub(crate) mod village_goals;
 
 use clustine_data::{ATTRIBUTES, DEFAULT_ATTRIBUTES, PathType};
 use clustine_world::{BlockPos, Entry};

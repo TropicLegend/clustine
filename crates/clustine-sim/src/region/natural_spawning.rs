@@ -523,13 +523,13 @@ impl Region {
     }
 
     /// What the rules read of the region (`spawning/rules.rs`).
-    fn spawn_world(&self) -> RegionWorld<'_> {
+    pub(super) fn spawn_world(&self) -> RegionWorld<'_> {
         RegionWorld(self)
     }
 }
 
 /// The region as the rules read it.
-struct RegionWorld<'r>(&'r Region);
+pub(super) struct RegionWorld<'r>(&'r Region);
 
 impl SpawnWorld for RegionWorld<'_> {
     fn sea_level(&self) -> i32 {

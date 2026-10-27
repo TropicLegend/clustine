@@ -13,8 +13,7 @@
 //! loaded again, which in Clustine is never (finding F1); no love cause is kept, so a
 //! bred cub trusts no one (`animal.rs`), and one an egg made trusts the egg's player; a
 //! trusted player's attacker is never known (no mob hurts a creative player), so the fox
-//! defends no one, only drawing its chance; no village is ever near (no points of
-//! interest), so its village stroll only draws; the weather is clear, so no thunder
+//! defends no one, only drawing its chance; the weather is clear, so no thunder
 //! wakes it or sends it to shelter; `canSeeSky` is the sky's light at full; its eating
 //! leaves a stew's bowl or a honey bottle's glass as the item's remainder and applies no
 //! effect (`Consumable` is not in the dump; **Inferred**); berries popped from a bush
@@ -42,6 +41,7 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::maths::{hotspot_cos, hotspot_sin, reduced_tick_delay, wrap_degrees};
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class, Conditions, Looked};
+use crate::mobs::ai::village_goals::{StrollThroughVillageGoal, StrollingThroughVillage};
 use crate::mobs::ai::{self as mind, Ai, Setup, controls, navigation, random_pos};
 use crate::mobs::body::hurt::{DamageSource, GameEvent};
 use crate::mobs::body::{Event, make_sound};
@@ -813,7 +813,8 @@ impl Default for Sheltering {
 }
 
 /// `SeekShelterGoal(fox, 1.25)` over `FleeSunGoal`: every hundred tries, by day under the
-/// open sky and away from villages, off to somewhere covered it does not mind.
+/// open sky and outside a village (`isVillage`), off to somewhere covered it does not
+/// mind.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SeekShelterGoal;
 
@@ -858,8 +859,7 @@ impl Goal for SeekShelterGoal {
         }
         state.interval = 100;
         let at = ai.block_position();
-        // No village is ever near (no points of interest yet).
-        if !(bright_outside(ai) && can_see_sky(ai, at)) {
+        if !(bright_outside(ai) && can_see_sky(ai, at) && !ai.tick.world.is_village(at)) {
             return false;
         }
         match Self::hide_pos(ai) {
@@ -1039,25 +1039,48 @@ impl Goal for FoxFollowParentGoal {
     }
 }
 
-/// `FoxStrollThroughVillageGoal(fox, 32, 200)`: by night it draws its chance and finds
-/// no village near (none is, without points of interest).
+/// `FoxStrollThroughVillageGoal(fox, 32, 200)`: `StrollThroughVillageGoal(fox, 200)`
+/// (`crate::mobs::ai::village_goals`) while the fox can move (`canFoxMove`: neither
+/// sleeping, sitting nor defending, and without a target), its states cleared as it
+/// starts.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FoxStrollThroughVillageGoal;
 
+impl FoxStrollThroughVillageGoal {
+    const STROLL: StrollThroughVillageGoal = StrollThroughVillageGoal { interval: 200 };
+
+    /// `canFoxMove()`.
+    fn can_fox_move(ai: &Ai<'_, '_>) -> bool {
+        use flag_bits::*;
+        !has_bit(ai, SLEEPING)
+            && !has_bit(ai, SITTING)
+            && !has_bit(ai, DEFENDING)
+            && sensing::target(ai).is_none()
+    }
+}
+
 impl Goal for FoxStrollThroughVillageGoal {
-    type State = ();
+    type State = StrollingThroughVillage;
 
     fn flags(&self) -> u8 {
-        flags::MOVE
+        Self::STROLL.flags()
     }
 
-    fn can_use(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
-        if ai.tick.carries || bright_outside(ai) {
-            return false;
-        }
-        // `nextInt(interval)`, the interval `reducedTickDelay(200)`.
-        let _ = ai.tick.draws.next_int(reduced_tick_delay(200) as u32);
-        false
+    fn can_use(&self, state: &mut StrollingThroughVillage, ai: &mut Ai<'_, '_>) -> bool {
+        Self::STROLL.can_use(state, ai) && Self::can_fox_move(ai)
+    }
+
+    fn can_continue(&self, state: &mut StrollingThroughVillage, ai: &mut Ai<'_, '_>) -> bool {
+        Self::STROLL.can_continue(state, ai) && Self::can_fox_move(ai)
+    }
+
+    fn start(&self, state: &mut StrollingThroughVillage, ai: &mut Ai<'_, '_>) {
+        clear_states(ai);
+        Self::STROLL.start(state, ai);
+    }
+
+    fn tick(&self, state: &mut StrollingThroughVillage, ai: &mut Ai<'_, '_>) {
+        Self::STROLL.tick(state, ai);
     }
 }
 

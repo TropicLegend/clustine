@@ -9,14 +9,21 @@
 //! which only clients read, are kept as the moments they end at (ADR-0028's derived
 //! counters): a restore in the middle of one goes on with it.
 //!
-//! Named differences: it does not defend a village (`DefendVillageTargetGoal` needs
-//! reputations, N10: an empty goal holds its slot), nor go back to one or stroll towards
-//! a villager who wants it (no points of interest, no villagers' brains: it strolls
-//! anywhere, B 8.15); the poppy is given only to a mob of the region's own (a copper
-//! golem across a line is named); a player is not hurt by it (`Local::Hurt`'s), and no
-//! player is ever its target, every player being creative; the advancement for building
-//! one is not kept; its leash's offset is the client's (`getLeashOffset`, which nothing
-//! on the server reads).
+//! Its village (`docs/groundwork/n10-plan.md`, section 10; the brief's 8.1): it defends
+//! the villagers near it against a player one of them thinks badly of
+//! (`DefendVillageTargetGoal`, reading each villager's reputations at or below -100,
+//! which its record carries also in a copy), goes back towards a village it has strayed
+//! from (`MoveBackToVillageGoal`) and strolls about it, towards a villager who wants a
+//! golem or an occupied point of interest of a village's section near
+//! (`GolemRandomStrollInVillageGoal`).
+//!
+//! Named differences: the player it would defend a village against is held by key, and
+//! one no longer seen is not taken (the game keeps the player itself, and asks it
+//! whether it is creative or a spectator, for as long as the golem lives); the poppy is
+//! given only to a mob of the region's own (a copper golem across a line is named); a
+//! player is not hurt by it (`Local::Hurt`'s); the advancement for building one is not
+//! kept; its leash's offset is the client's (`getLeashOffset`, which nothing on the
+//! server reads).
 
 use clustine_blocks::data::entity_in_tag;
 use clustine_data::{BlockState, attributes, blocks, entity_types, items, sounds};
@@ -25,20 +32,25 @@ use serde::{Deserialize, Serialize};
 
 use super::neutral::{self, Anger};
 use super::tamable::Idle;
+use super::villager::{self, Shown};
 use super::{Did, Interaction, MobType, Used, polar_bear, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
     HurtByTargetGoal, LookAtPlayerGoal, MeleeAttackGoal, NearestAttackableTargetGoal,
-    RandomLookAroundGoal, Strolling, ai_bounds, look_at_thing,
+    RandomLookAroundGoal, Strolling, TargetRules, Targeting, ai_bounds, look_at_thing,
 };
 use crate::mobs::ai::maths::reduced_tick_delay;
 use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class, Conditions, Looked};
+use crate::mobs::ai::village_goals::{
+    HALF_PI, bottom_centre, find_section_closest_to_village, section_centre, section_cube,
+};
 use crate::mobs::ai::{Ai, Setup, navigation, random_pos};
 use crate::mobs::body::hurt::{DamageSource, Struck};
 use crate::mobs::body::{Event, ladder};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::Vec3;
+use crate::region::pois::{Occupancy, section_of};
 use crate::shown::DataShown;
 
 /// The synced data's index of its flags (`DATA_FLAGS_ID`).
@@ -229,9 +241,8 @@ impl Goal for MoveTowardsTargetGoal {
     }
 }
 
-/// Where one of the golem's strolls goes: `MoveBackToVillageGoal`'s, which finds no
-/// section nearer a village than its own and goes nowhere, or
-/// `GolemRandomStrollInVillageGoal`'s.
+/// Where one of the golem's strolls goes: `MoveBackToVillageGoal`'s, towards a section
+/// nearer a village, or `GolemRandomStrollInVillageGoal`'s.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum GolemStroll {
     BackToVillage,
@@ -240,14 +251,27 @@ pub(crate) enum GolemStroll {
 
 /// `MoveBackToVillageGoal(mob, 0.6, false)` and `GolemRandomStrollInVillageGoal(mob,
 /// 0.6)`: `RandomStrollGoal`s of intervals 10 and 240 that do not ask the time without
-/// action (B 8.15). With no village anywhere the first draws its interval and finds
-/// nowhere; the second draws the level's `nextFloat()` once or twice and strolls
-/// anywhere (`LandRandomPos.getPos(mob, 10, 7)`), as no villager wants it and no point
-/// of interest is near.
+/// action (B 8.15). The first asks first whether it stands in a village, and draws
+/// nothing there.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GolemStrollGoal {
     pub(crate) speed: f64,
     pub(crate) kind: GolemStroll,
+}
+
+/// `Villager.wantsToSpawnGolem(gameTime)` of what a villager shows (its record's, also
+/// in a copy): it slept within the last 24 000 ticks and has seen no golem lately.
+pub(crate) fn wants_golem(shown: &Shown, now: i64) -> bool {
+    shown.last_slept.is_some_and(|slept| now - slept < 24_000) && !shown.golem_detected
+}
+
+/// What the villager `entity` shows, where it is a villager.
+fn shown_of(entity: &clustine_world::Entity) -> Option<Shown> {
+    if i32::from(entity.kind) != entity_types::VILLAGER {
+        return None;
+    }
+    let mob = Mob::decode(&entity.data).ok()?;
+    Some(villager::state_of(&mob).1.shown)
 }
 
 impl GolemStrollGoal {
@@ -261,19 +285,78 @@ impl GolemStrollGoal {
     /// `getPosition()`.
     fn position(&self, ai: &mut Ai<'_, '_>) -> Option<Vec3> {
         match self.kind {
-            // `findSectionClosestToVillage` keeps only sections nearer a village than
-            // its own: with none, its own, and so no position.
-            GolemStroll::BackToVillage => None,
+            GolemStroll::BackToVillage => {
+                let section = section_of(ai.block_position());
+                let closest = find_section_closest_to_village(ai.tick.world, section, 2);
+                if closest == section {
+                    return None;
+                }
+                let towards = bottom_centre(section_centre(closest));
+                random_pos::default_pos_towards(ai, 10, 7, towards, HALF_PI)
+            }
             GolemStroll::InVillage => {
                 // Of the level's random: anywhere three times in ten; else a villager
                 // who wants it or a point of interest, in an order the second float
-                // decides, neither of which there is, and so anywhere after all.
-                if ai.tick.draws.next_float() >= 0.3 {
-                    ai.tick.draws.next_float();
+                // decides, then the other; anywhere where neither gives a place.
+                if ai.tick.draws.next_float() < 0.3 {
+                    return random_pos::land_pos(ai, 10, 7);
                 }
-                random_pos::land_pos(ai, 10, 7)
+                let found = if ai.tick.draws.next_float() < 0.7 {
+                    Self::towards_villager(ai).or_else(|| Self::towards_poi(ai))
+                } else {
+                    Self::towards_poi(ai).or_else(|| Self::towards_villager(ai))
+                };
+                found.or_else(|| random_pos::land_pos(ai, 10, 7))
             }
         }
+    }
+
+    /// `getPositionTowardsVillagerWhoWantsGolem()`: of the villagers in its box grown by
+    /// 32 that want a golem, one by the level's `nextInt`, and a place on land towards
+    /// it.
+    fn towards_villager(ai: &mut Ai<'_, '_>) -> Option<Vec3> {
+        let bounds = ai_bounds(ai).inflate([32.0, 32.0, 32.0]);
+        let now = ai.tick.world.game_time();
+        let wanting: Vec<Vec3> = ai
+            .tick
+            .world
+            .entities_in(&bounds)
+            .iter()
+            .filter(|seen| shown_of(seen.entity).is_some_and(|shown| wants_golem(&shown, now)))
+            .map(|seen| seen.entity.position)
+            .collect();
+        if wanting.is_empty() {
+            return None;
+        }
+        let chosen = wanting[ai.tick.draws.next_int(wanting.len() as u32) as usize];
+        random_pos::land_pos_towards(ai, 10, 7, chosen)
+    }
+
+    /// `getPositionTowardsPoi()`: of the sections within two of its own that are in a
+    /// village, one by the level's `nextInt`; of the occupied points of interest within
+    /// 8 of that section's middle, one by the level's `nextInt`; and a place on land
+    /// towards it.
+    fn towards_poi(ai: &mut Ai<'_, '_>) -> Option<Vec3> {
+        let world = ai.tick.world;
+        let sections: Vec<[i32; 3]> = section_cube(section_of(ai.block_position()), 2)
+            .into_iter()
+            .filter(|section| world.sections_to_village(*section) == 0)
+            .collect();
+        if sections.is_empty() {
+            return None;
+        }
+        let section = sections[ai.tick.draws.next_int(sections.len() as u32) as usize];
+        let pois = ai.tick.world.pois_in_range(
+            section_centre(section),
+            8,
+            &|_| true,
+            Occupancy::IsOccupied,
+        );
+        if pois.is_empty() {
+            return None;
+        }
+        let poi = pois[ai.tick.draws.next_int(pois.len() as u32) as usize].pos;
+        random_pos::land_pos_towards(ai, 10, 7, bottom_centre(poi))
     }
 }
 
@@ -285,7 +368,10 @@ impl Goal for GolemStrollGoal {
     }
 
     fn can_use(&self, state: &mut Strolling, ai: &mut Ai<'_, '_>) -> bool {
-        // `MoveBackToVillageGoal.canUse` asks `isVillage` first, which nothing is.
+        if self.kind == GolemStroll::BackToVillage && ai.tick.world.is_village(ai.block_position())
+        {
+            return false;
+        }
         if !state.forced {
             let bound = reduced_tick_delay(self.interval()).max(1) as u32;
             if ai.tick.draws.next_int(bound) != 0 {
@@ -310,6 +396,101 @@ impl Goal for GolemStrollGoal {
 
     fn stop(&self, _: &mut Strolling, ai: &mut Ai<'_, '_>) {
         navigation::stop(ai);
+    }
+}
+
+/// `Villager`, the class the golem's defence looks for.
+const VILLAGER: &[u16] = &[entity_types::VILLAGER as u16];
+
+/// `DefendVillageTargetGoal`'s state: `TargetGoal`'s, and the player it found
+/// (`potentialTarget`), never let go.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Defending {
+    pub(crate) targeting: Targeting,
+    pub(crate) potential: Option<EntityId>,
+}
+
+/// `DefendVillageTargetGoal(golem)` (n7 DefendVillageTargetGoal 9–131; `TargetGoal(mob,
+/// false, true)`): of the villagers and the players in its box grown by 10, 8 and 10
+/// that pass combat conditions of range 64 (a player-built golem attacks no player), the
+/// last pair in which the villager's reputation of the player is -100 or less gives the
+/// player it would target; it takes that player, unless creative or a spectator. No
+/// draws.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DefendVillageTargetGoal;
+
+impl DefendVillageTargetGoal {
+    const RULES: TargetRules = TargetRules {
+        must_see: false,
+        must_reach: true,
+    };
+}
+
+impl Goal for DefendVillageTargetGoal {
+    type State = Defending;
+
+    fn flags(&self) -> u8 {
+        flags::TARGET
+    }
+
+    fn can_use(&self, state: &mut Defending, ai: &mut Ai<'_, '_>) -> bool {
+        let bounds = ai_bounds(ai).inflate([10.0, 8.0, 10.0]);
+        let conditions = Conditions::combat().range(64.0);
+        let villagers = sensing::nearby(ai, Class::Kinds(VILLAGER), &conditions, bounds);
+        // `IronGolem.canAttack`: one a player built attacks no player.
+        let players = if state_of(&ai.tick.mob).player_created {
+            Vec::new()
+        } else {
+            sensing::nearby(ai, Class::Player, &conditions, bounds)
+        };
+        let seen_players = ai.tick.world.players();
+        let uuid_of = |key: EntityId| {
+            seen_players
+                .iter()
+                .find(|player| player.key == key)
+                .map(|player| uuid::Uuid::from_u128(player.uuid))
+        };
+        for villager in &villagers {
+            let Some(shown) = ai
+                .tick
+                .world
+                .entity(villager.key)
+                .and_then(|seen| shown_of(seen.entity))
+            else {
+                continue;
+            };
+            for player in &players {
+                let Some(uuid) = uuid_of(player.key) else {
+                    continue;
+                };
+                // A reputation above -100 is not shown.
+                let bad = shown
+                    .bad_reputations
+                    .iter()
+                    .any(|&(whom, reputation)| whom == uuid && reputation <= -100);
+                if bad {
+                    state.potential = Some(player.key);
+                }
+            }
+        }
+        let Some(target) = state.potential.and_then(|key| sensing::find(ai, key)) else {
+            return false;
+        };
+        !(target.is_player() && (target.spectator || target.creative))
+    }
+
+    fn can_continue(&self, state: &mut Defending, ai: &mut Ai<'_, '_>) -> bool {
+        Self::RULES.can_continue(&mut state.targeting, ai)
+    }
+
+    fn start(&self, state: &mut Defending, ai: &mut Ai<'_, '_>) {
+        let target = state.potential.and_then(|key| sensing::find(ai, key));
+        sensing::set_target(ai, target.as_ref());
+        TargetRules::start(&mut state.targeting);
+    }
+
+    fn stop(&self, state: &mut Defending, ai: &mut Ai<'_, '_>) {
+        TargetRules::stop(&mut state.targeting, ai);
     }
 }
 
@@ -475,13 +656,7 @@ impl MobType for IronGolem {
         setup.add_goal(5, OfferFlowerGoal);
         setup.add_goal(7, LookAtPlayerGoal::new(Class::Player, 6.0));
         setup.add_goal(8, RandomLookAroundGoal);
-        // `DefendVillageTargetGoal`: no villager has a reputation with anyone (N10).
-        setup.add_target(
-            1,
-            Idle {
-                flags: flags::TARGET,
-            },
-        );
+        setup.add_target(1, DefendVillageTargetGoal);
         // `HurtByTargetGoal()`: a creeper that hurt it is refused by its `canAttack`,
         // before anything is drawn, as an ignored type is.
         setup.add_target(

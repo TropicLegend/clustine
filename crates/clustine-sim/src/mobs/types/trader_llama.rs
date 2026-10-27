@@ -4,25 +4,33 @@
 //! on it, the age lock, persistence). A foal of a trader llama is a persistent trader
 //! llama.
 //!
-//! Named differences: wandering traders are N10's, so no trader llama is leashed to one,
-//! defends one or takes its despawn delay; the goal of defending one is registered and
-//! never runs, so that its place among the goals stays the game's.
+//! Led by a wandering trader (the trader spawner leashes two to each trader it makes,
+//! `region/custom_spawners.rs`), it defends the trader against what last hurt it
+//! (`TraderLlamaDefendWanderingTraderGoal`) and leaves when the trader does, its delay the
+//! trader's less one.
+//!
+//! Named differences: a trader leading it across a line beyond its region's copies is not
+//! seen, and the llama counts as led by something else (it neither defends nor leaves);
+//! a player may mount one led by a trader (`doPlayerRide` refuses it in the game).
 
 use clustine_data::{entity_types, sounds};
-use clustine_world::{BlockPos, ItemStack};
+use clustine_world::{BlockPos, EntityId, ItemStack, LeashHolder};
 
 use super::equine::{self, Equine};
 use super::horse::common;
 use super::llama::{self, common_llama};
-use super::{Breeding, Dimensions, Interaction, Mate, MobType, Spawning, Used, animal};
+use super::{
+    Breeding, Dimensions, Interaction, Mate, MobType, Spawning, Used, animal, wandering_trader,
+};
 use crate::mobs::Mob;
-use crate::mobs::ai::goals::{NearestAttackableTargetGoal, PanicGoal, Targeting};
+use crate::mobs::ai::goals::{NearestAttackableTargetGoal, PanicGoal, TargetRules, Targeting};
 use crate::mobs::ai::selector::{Goal, flags};
-use crate::mobs::ai::sensing::{Class, Looked};
+use crate::mobs::ai::sensing::{self, Class, Conditions, Looked};
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::Removed;
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::tick::MobTick;
+use crate::mobs::view::MobWorld;
 use crate::region::Random;
 use crate::shown::DataShown;
 
@@ -62,9 +70,31 @@ fn trader_llama(kind: u16) -> bool {
     i32::from(kind) == entity_types::TRADER_LLAMA
 }
 
-/// `TraderLlama$TraderLlamaDefendWanderingTraderGoal`, which needs a wandering trader
-/// leashing it: none is (N10), so it never runs.
+/// The wandering trader whose leash holds the llama `key` (`getLeashHolder()` being a
+/// `WanderingTrader`), where the view has both: its key and its mob.
+pub(crate) fn trader_holding(world: &dyn MobWorld, key: EntityId) -> Option<(EntityId, Mob)> {
+    let me = world.entity(key)?;
+    let LeashHolder::Entity(holder) = me.entity.riding.leash.as_ref()?.holder else {
+        return None;
+    };
+    let trader = world.entity(holder)?;
+    if i32::from(trader.entity.kind) != entity_types::WANDERING_TRADER {
+        return None;
+    }
+    Some((holder, Mob::decode(&trader.entity.data).ok()?))
+}
+
+/// `TraderLlama$TraderLlamaDefendWanderingTraderGoal(llama)` (`TargetGoal(mob, false)`):
+/// a llama led by a wandering trader takes what last hurt the trader as its target, once
+/// for each hurt, where it may attack it. No draws.
 pub(crate) struct DefendWanderingTraderGoal;
+
+impl DefendWanderingTraderGoal {
+    const RULES: TargetRules = TargetRules {
+        must_see: false,
+        must_reach: false,
+    };
+}
 
 impl Goal for DefendWanderingTraderGoal {
     type State = Targeting;
@@ -73,8 +103,39 @@ impl Goal for DefendWanderingTraderGoal {
         flags::TARGET
     }
 
-    fn can_use(&self, _: &mut Targeting, _: &mut Ai<'_, '_>) -> bool {
-        false
+    fn can_use(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) -> bool {
+        if !ai.tick.leashed {
+            return false;
+        }
+        let Some((_, trader)) = trader_holding(ai.tick.world, ai.tick.key) else {
+            return false;
+        };
+        let last = trader.body.combat.last_hurt_by;
+        state.found = last.map(|(attacker, _)| attacker);
+        if last.map(|(_, at)| at) == state.timestamp {
+            return false;
+        }
+        let attacker = state.found.and_then(|key| sensing::find(ai, key));
+        Self::RULES.can_attack(state, ai, attacker.as_ref(), &Conditions::combat(), &|_| {
+            true
+        })
+    }
+
+    fn can_continue(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) -> bool {
+        Self::RULES.can_continue(state, ai)
+    }
+
+    fn start(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) {
+        let attacker = state.found.and_then(|key| sensing::find(ai, key));
+        sensing::set_target(ai, attacker.as_ref());
+        if let Some((_, trader)) = trader_holding(ai.tick.world, ai.tick.key) {
+            state.timestamp = trader.body.combat.last_hurt_by.map(|(_, at)| at);
+        }
+        TargetRules::start(state);
+    }
+
+    fn stop(&self, state: &mut Targeting, ai: &mut Ai<'_, '_>) {
+        TargetRules::stop(state, ai);
     }
 }
 
@@ -82,7 +143,8 @@ impl Goal for DefendWanderingTraderGoal {
 pub(crate) struct TraderLlama;
 
 /// `maybeDespawn()` after the llama's `aiStep`: while despawnable its delay runs down
-/// by one a tick, and at nothing it leaves the world.
+/// by one a tick, or is its trader's less one while a trader leads it, and at nothing
+/// it leaves the world.
 fn maybe_despawn(tick: &mut MobTick<'_>) {
     let now = tick.lived;
     let (shared, horse) = equine::read(&tick.mob);
@@ -90,14 +152,29 @@ fn maybe_despawn(tick: &mut MobTick<'_>) {
         .world
         .entity(tick.key)
         .is_some_and(|me| matches!(&me.entity.riding.passengers[..], [seat] if seat.player));
+    // `isLeashedToWanderingTrader()`: the trader's delay, which the llama's follows.
+    let trader_delay = if tick.leashed {
+        trader_holding(tick.world, tick.key)
+            .map(|(_, trader)| wandering_trader::state_of(&trader).1.despawn_delay)
+    } else {
+        None
+    };
+    let led_by_another = tick.leashed && trader_delay.is_none();
     let despawnable = !horse.tame
-        && !tick.leashed
+        && !led_by_another
         && !one_player
         && !shared.age_locked
         && !tick.mob.body.flags.persistent;
     let mut gone = false;
     equine::update(&mut tick.mob, |horse| {
-        if despawnable {
+        if let (true, Some(delay)) = (despawnable, trader_delay) {
+            // Kept as what is spent of its own delay, so that it counts on from there
+            // when the trader lets it go.
+            let left = delay - 1;
+            horse.despawn_since = None;
+            horse.despawn_spent = DESPAWN_DELAY.saturating_sub(left);
+            gone = left <= 0;
+        } else if despawnable {
             let since = *horse.despawn_since.get_or_insert(now);
             let counted = (i64::from(now) - i64::from(since) + 1).max(0);
             let spent = i64::from(horse.despawn_spent) + counted;

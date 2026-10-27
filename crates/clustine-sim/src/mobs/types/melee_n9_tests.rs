@@ -558,7 +558,13 @@ fn move_through_village_and_the_vindicator_s_door_goal_never_start_and_draw_noth
     for land in [Land::new(), Land::at_night()] {
         let run = Run::new(&land, types::ZOMBIE, [0.5, 0.0, 0.5]);
         let (drawn, used, _) = run.with_ai(&land, false, |ai| {
-            MoveThroughVillageGoal.can_use(&mut (), ai)
+            // Its land has no village (N10's goal draws nothing before it finds one).
+            let goal = MoveThroughVillageGoal {
+                speed: 1.0,
+                only_at_night: true,
+                distance_to_poi: 4,
+            };
+            goal.can_use(&mut Default::default(), ai)
         });
         assert_eq!((drawn, used), (0, false));
         let run = Run::new(&land, types::VINDICATOR, [0.5, 0.0, 0.5]);
