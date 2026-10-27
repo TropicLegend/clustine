@@ -337,6 +337,7 @@ fn an_item_s_data_is_its_stack_by_the_game_s_index_and_serializer() {
             health: 5,
             age_offset: 0,
         },
+        &mut |key| i32::try_from(key.0).unwrap(),
     );
     let bytes = packets::encode(&data);
     // The packet's id, the wire id, `ItemEntity.DATA_ITEM`'s index 8, the serializer

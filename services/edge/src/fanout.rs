@@ -3641,7 +3641,8 @@ impl Fanout {
                         tracker
                     }
                     None => {
-                        let mut tracker = Tracker::new(seen, data, start);
+                        let mut tracker =
+                            Tracker::new(seen, data, start, &mut |key| self.wire.of(key));
                         if spawned && *hops == 0 {
                             tracker.made();
                         }
@@ -3813,13 +3814,13 @@ impl Fanout {
                     continue;
                 }
                 tracker.ran = tick - 1;
-                tracker.catch_up(id, data, missed)
+                tracker.catch_up(id, data, missed, &mut |key| self.wire.of(key))
             } else {
                 if tracker.ran >= tick {
                     continue;
                 }
                 tracker.ran = tick;
-                tracker.send_changes(id, data)
+                tracker.send_changes(id, data, &mut |key| self.wire.of(key))
             };
             for packet in sent {
                 let packet = packet.encoded();
@@ -4341,7 +4342,12 @@ impl Fanout {
     ) {
         let values: Vec<(u8, EntityDataValue)> = values
             .into_iter()
-            .filter_map(|(index, value)| Some((index, crate::tracking::data_value(value)?)))
+            .filter_map(|(index, value)| {
+                Some((
+                    index,
+                    crate::tracking::data_value(value, &mut |key| self.wire.of(key))?,
+                ))
+            })
             .collect();
         if let Some(shown) = self.entities.get_mut(&entity) {
             for (index, value) in &values {
@@ -6250,11 +6256,13 @@ impl PlayerView {
                     // after its projectile is the one it names (`n9-plan.md`, section
                     // 10).
                     let owner = owner_of(state).map(|owner| wire.of(owner));
+                    let id = wire.of(state.entity);
                     let mut packets = spawn_packets(
                         state,
-                        wire.of(state.entity),
+                        id,
                         pairing.as_ref(),
                         owner.unwrap_or(0),
+                        &mut |key| wire.of(key),
                     );
                     packets.extend(living_packets(living, wire.of(state.entity)));
                     return packets;
@@ -6278,7 +6286,8 @@ impl PlayerView {
                     let addition = [(*player, name.clone())];
                     packets.push(encoded(&player_list_additions(&addition)));
                 }
-                packets.extend(spawn_packets(state, wire.of(state.entity), None, 0));
+                let id = wire.of(state.entity);
+                packets.extend(spawn_packets(state, id, None, 0, &mut |key| wire.of(key)));
                 packets
             }
             (true, true) if moved => move_packets(state, wire.of(state.entity)),
@@ -6447,6 +6456,7 @@ fn spawn_packets(
     id: i32,
     pairing: Option<&Pairing>,
     owner: i32,
+    ids: crate::tracking::WireIds<'_>,
 ) -> Vec<Bytes> {
     let position = state.pose.position;
     if let (
@@ -6565,7 +6575,7 @@ fn spawn_packets(
                 head_yaw: 0,
                 data: 0,
             }),
-            encoded(&entity_data_packet(id, *kind, data)),
+            encoded(&entity_data_packet(id, *kind, data, ids)),
         ],
     }
 }
@@ -6573,11 +6583,16 @@ fn spawn_packets(
 /// The data of an entity other than a player that a client is told with its spawn:
 /// for an item, its stack (`ItemEntity.DATA_ITEM`); for an armour stand, the values of
 /// its data that are not the defaults.
-fn entity_data_packet(id: i32, kind: u16, data: &EntityData) -> SetEntityData {
+fn entity_data_packet(
+    id: i32,
+    kind: u16,
+    data: &EntityData,
+    ids: crate::tracking::WireIds<'_>,
+) -> SetEntityData {
     match data {
         EntityData::ArmorStand { .. } | EntityData::Mob { .. } => SetEntityData {
             entity_id: id,
-            values: crate::tracking::living_values(kind, data)
+            values: crate::tracking::living_values(kind, data, ids)
                 .into_iter()
                 .filter(|(_, _, default)| !default)
                 .map(|(index, value, _)| (index, value))
@@ -21787,8 +21802,12 @@ mod scenarios {
             pitch: 0.0,
             on_ground: true,
         };
-        let pairing = Tracker::new(seen, &data, 0).pairing();
-        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing), 0)
+        let pairing =
+            Tracker::new(seen, &data, 0, &mut |key| i32::try_from(key.0).unwrap()).pairing();
+        let packets: Vec<ClientboundPlay> =
+            spawn_packets(&state, 4, Some(&pairing), 0, &mut |key| {
+                i32::try_from(key.0).unwrap()
+            })
             .iter()
             .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
             .collect();
@@ -21853,8 +21872,12 @@ mod scenarios {
             pitch: 22.0,
             on_ground: false,
         };
-        let pairing = Tracker::new(seen, &data, 0).pairing();
-        let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, Some(&pairing), 7)
+        let pairing =
+            Tracker::new(seen, &data, 0, &mut |key| i32::try_from(key.0).unwrap()).pairing();
+        let packets: Vec<ClientboundPlay> =
+            spawn_packets(&state, 4, Some(&pairing), 7, &mut |key| {
+                i32::try_from(key.0).unwrap()
+            })
             .iter()
             .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
             .collect();

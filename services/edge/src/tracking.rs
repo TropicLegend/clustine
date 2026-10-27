@@ -534,9 +534,14 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
     }
 }
 
-/// A mob's synced value as the protocol writes it; `None` for an entity, whose writing
-/// waits for the first value that shows one (`docs/groundwork/n9-plan.md`, section 10).
-pub(crate) fn data_value(value: DataShown) -> Option<EntityDataValue> {
+/// How the edge names an entity on the wire: [`crate::fanout`]'s `wire.of`, which gives
+/// an id to an entity not yet shown, so that a value naming one (the guardian's beam)
+/// does not stick at none when its target is shown after it
+/// (`docs/groundwork/n9-plan.md`, section 10).
+pub(crate) type WireIds<'a> = &'a mut dyn FnMut(clustine_world::EntityId) -> i32;
+
+/// A mob's synced value as the protocol writes it, an entity by its wire id from `ids`.
+pub(crate) fn data_value(value: DataShown, ids: WireIds<'_>) -> Option<EntityDataValue> {
     Some(match value {
         DataShown::Byte(byte) => EntityDataValue::Byte(byte),
         DataShown::Int(int) => EntityDataValue::Int(int),
@@ -586,18 +591,23 @@ pub(crate) fn data_value(value: DataShown) -> Option<EntityDataValue> {
                 .collect(),
         ),
         DataShown::OptionalUnsignedInt(value) => EntityDataValue::OptionalUnsignedInt(value),
-        // An entity is written as its wire id, which the tracker does not know: the
-        // guardian's beam (part S7), the first to show one, brings it.
-        DataShown::Entity(_) => return None,
+        // The guardian's beam: its target's wire id, 0 for none (`Guardian.DATA_ID_ATTACK_TARGET`).
+        DataShown::Entity(key) => EntityDataValue::Int(key.map_or(0, ids)),
     })
 }
 
-pub(crate) fn living_values(kind: u16, data: &EntityData) -> Vec<(u8, EntityDataValue, bool)> {
+pub(crate) fn living_values(
+    kind: u16,
+    data: &EntityData,
+    ids: WireIds<'_>,
+) -> Vec<(u8, EntityDataValue, bool)> {
     // A mob's are read from its record by the sim, which knows its parts.
     if let EntityData::Mob { .. } = data {
         let values = clustine_sim::shown::mob_values(kind, data).into_iter();
         return values
-            .filter_map(|(index, value, default)| Some((index, data_value(value)?, default)))
+            .filter_map(|(index, value, default)| {
+                Some((index, data_value(value, &mut *ids)?, default))
+            })
             .collect();
     }
     let EntityData::ArmorStand {
@@ -840,7 +850,7 @@ impl Tracker {
     /// Starts tracking an entity as it is now, with `ran` the region's tick whose update
     /// it is past: as the game's `ServerEntity` begins, with the base of its deltas, its
     /// motion and angles taken as sent.
-    pub(crate) fn new(seen: Seen, data: &EntityData, ran: u64) -> Self {
+    pub(crate) fn new(seen: Seen, data: &EntityData, ran: u64, ids: WireIds<'_>) -> Self {
         let info = ENTITY_TYPE_INFO.get(usize::from(seen.kind));
         let (interval, track_delta) =
             info.map_or((20, true), |info| (info.update_interval, info.track_deltas));
@@ -892,7 +902,7 @@ impl Tracker {
             dirty: 0,
             ran,
         };
-        tracker.pairing = tracker.values(data, true);
+        tracker.pairing = tracker.values(data, true, ids);
         tracker
     }
 
@@ -961,8 +971,10 @@ impl Tracker {
     /// Marks what a living entity's data `new` changed of `old` beyond the shared flags:
     /// each value whose index's value differs, and what it wears.
     fn data_changed(&mut self, old: &EntityData, new: &EntityData) {
-        let before = living_values(self.kind, old);
-        for (index, value, _) in living_values(self.kind, new) {
+        // Compared, not sent: an entity's key names it as well as its wire id would.
+        let mut keys = |key: clustine_world::EntityId| key.0 as i32;
+        let before = living_values(self.kind, old, &mut keys);
+        for (index, value, _) in living_values(self.kind, new, &mut keys) {
             let same = before
                 .iter()
                 .any(|(was, earlier, _)| *was == index && *earlier == value);
@@ -998,7 +1010,12 @@ impl Tracker {
     /// With `pairing`, the values of the entity's data that are not the type's defaults,
     /// as a newly shown client is sent them; without, the values the dirty marks name,
     /// defaults or not, as a change sends them.
-    fn values(&self, data: &EntityData, pairing: bool) -> Vec<(u8, EntityDataValue)> {
+    fn values(
+        &self,
+        data: &EntityData,
+        pairing: bool,
+        ids: WireIds<'_>,
+    ) -> Vec<(u8, EntityDataValue)> {
         let mut values = Vec::new();
         let burning = self.lasting & Tracked::ON_FIRE != 0;
         let invisible = matches!(
@@ -1014,7 +1031,7 @@ impl Tracker {
         if (pairing && shared != 0) || (!pairing && self.dirty & DIRTY_FLAGS != 0) {
             values.push((entity_data::SHARED_FLAGS, EntityDataValue::Byte(shared)));
         }
-        for (index, value, default) in living_values(self.kind, data) {
+        for (index, value, default) in living_values(self.kind, data, ids) {
             let changed = self.dirty & DIRTY_VALUES != 0 && self.dirty_values & (1 << index) != 0;
             if (pairing && !default) || (!pairing && changed) {
                 values.push((index, value));
@@ -1180,14 +1197,14 @@ impl Tracker {
 
     /// The changed data, if any, as `sendDirtyEntityData` sends it, the values sent
     /// becoming what a newly shown client is sent.
-    fn send_dirty(&mut self, id: i32, data: &EntityData, out: &mut Vec<Sent>) {
+    fn send_dirty(&mut self, id: i32, data: &EntityData, out: &mut Vec<Sent>, ids: WireIds<'_>) {
         if self.dirty == 0 {
             return;
         }
-        let mut values = self.values(data, false);
+        let mut values = self.values(data, false, &mut *ids);
         if self.dirty & DIRTY_MADE != 0 {
             // What it was made with is dirty still, besides what changed since.
-            for (index, value) in self.values(data, true) {
+            for (index, value) in self.values(data, true, &mut *ids) {
                 if !values.iter().any(|(at, _)| *at == index) {
                     values.push((index, value));
                 }
@@ -1197,7 +1214,7 @@ impl Tracker {
         let equipment = self.dirty & DIRTY_EQUIPMENT != 0;
         self.dirty = 0;
         self.dirty_values = 0;
-        self.pairing = self.values(data, true);
+        self.pairing = self.values(data, true, ids);
         self.projectile_sent = projectile_held(self.kind, data, self.age);
         if !values.is_empty() {
             out.push(Sent::Data(SetEntityData {
@@ -1234,7 +1251,12 @@ impl Tracker {
 
     /// One tick's update, the game's `ServerEntity.sendChanges` for an entity that is no
     /// passenger or minecart (an arrow among them), with `id` its wire id and `data` its data.
-    pub(crate) fn send_changes(&mut self, id: i32, data: &EntityData) -> Vec<Sent> {
+    pub(crate) fn send_changes(
+        &mut self,
+        id: i32,
+        data: &EntityData,
+        ids: WireIds<'_>,
+    ) -> Vec<Sent> {
         let mut out = Vec::new();
         if self.once & Tracked::SYNC_POSITION != 0 {
             // `UpdateInterval.nextInterval`: this tick becomes one of the updates.
@@ -1283,7 +1305,7 @@ impl Tracker {
                     self.sent_on_ground.set(*on_ground);
                 }
                 out.push(packet);
-                self.send_dirty(id, data, &mut out);
+                self.send_dirty(id, data, &mut out, &mut *ids);
                 if has_position {
                     self.codec.base = self.position;
                 }
@@ -1292,7 +1314,7 @@ impl Tracker {
                     self.last_pitch = pitch;
                 }
             } else {
-                self.send_dirty(id, data, &mut out);
+                self.send_dirty(id, data, &mut out, &mut *ids);
             }
             // A mob's head, where it turned by a step of the packed angle at least since
             // it was sent, at the end of the update (`ServerEntity.sendChanges`).
@@ -1324,7 +1346,13 @@ impl Tracker {
     /// tick, but a move that leaves a client where it was, which is all a still entity
     /// is sent at its intervals, is not sent late. The ticks between updates are
     /// counted, not run.
-    pub(crate) fn catch_up(&mut self, id: i32, data: &EntityData, mut ticks: u64) -> Vec<Sent> {
+    pub(crate) fn catch_up(
+        &mut self,
+        id: i32,
+        data: &EntityData,
+        mut ticks: u64,
+        ids: WireIds<'_>,
+    ) -> Vec<Sent> {
         let mut out = Vec::new();
         while ticks > 0 {
             let periodic = !self.never && self.tick_count % self.interval == 0;
@@ -1335,7 +1363,7 @@ impl Tracker {
                     on_ground: self.sent_on_ground.get(),
                     angles: (self.last_yaw, self.last_pitch),
                 };
-                for sent in self.send_changes(id, data) {
+                for sent in self.send_changes(id, data, &mut *ids) {
                     if !sent.changes_nothing(&held) {
                         out.push(sent);
                     }
@@ -1513,18 +1541,40 @@ mod tests {
 
     const ID: i32 = 1;
 
+    /// The wire ids of entities as a test names them: their keys.
+    pub(super) fn ids() -> impl FnMut(EntityId) -> i32 {
+        |key| i32::try_from(key.0).expect("a test's keys are small")
+    }
+
+    /// The guardian's beam names its target by the id it is shown with, 0 for none.
+    #[test]
+    fn an_entity_value_is_written_as_its_wire_id_and_none_as_zero() {
+        let mut wire = |key: EntityId| i32::try_from(key.0).expect("small") + 100;
+        assert_eq!(
+            data_value(DataShown::Entity(Some(EntityId(7))), &mut wire),
+            Some(EntityDataValue::Int(107))
+        );
+        assert_eq!(
+            data_value(DataShown::Entity(None), &mut wire),
+            Some(EntityDataValue::Int(0))
+        );
+    }
+
     /// A living entity's effect particles go out as the game's list: `entity_effect` with
     /// its colour, the others by their type alone; a number or none as the optional int.
     #[test]
     fn effect_particles_and_an_optional_int_are_written_as_the_game_s() {
         use clustine_sim::shown::ShownParticle;
         assert_eq!(
-            data_value(DataShown::Particles(vec![
-                ShownParticle::EntityEffect {
-                    colour: 0x26_33_EB_FF
-                },
-                ShownParticle::Simple(particle::ITEM_SLIME),
-            ])),
+            data_value(
+                DataShown::Particles(vec![
+                    ShownParticle::EntityEffect {
+                        colour: 0x26_33_EB_FF
+                    },
+                    ShownParticle::Simple(particle::ITEM_SLIME),
+                ]),
+                &mut ids()
+            ),
             Some(EntityDataValue::Particles(vec![
                 EffectParticle::Colour {
                     kind: particle::ENTITY_EFFECT,
@@ -1534,7 +1584,7 @@ mod tests {
             ]))
         );
         assert_eq!(
-            data_value(DataShown::OptionalUnsignedInt(Some(4))),
+            data_value(DataShown::OptionalUnsignedInt(Some(4)), &mut ids()),
             Some(EntityDataValue::OptionalUnsignedInt(Some(4)))
         );
     }
@@ -1543,11 +1593,14 @@ mod tests {
     fn a_villager_s_data_is_written_with_its_registry_ids_and_level_as_they_are() {
         use clustine_data::villagers::{professions, types};
         assert_eq!(
-            data_value(DataShown::VillagerData {
-                kind: types::SWAMP,
-                profession: professions::LIBRARIAN,
-                level: 3,
-            }),
+            data_value(
+                DataShown::VillagerData {
+                    kind: types::SWAMP,
+                    profession: professions::LIBRARIAN,
+                    level: 3,
+                },
+                &mut ids()
+            ),
             Some(EntityDataValue::VillagerData {
                 kind: 5,
                 profession: 9,
@@ -1610,7 +1663,7 @@ mod tests {
             on_ground: false,
         };
         let data = minecart(hurt(5, -1, 12.0), 100);
-        let tracker = Tracker::new(seen, &data, 0);
+        let tracker = Tracker::new(seen, &data, 0, &mut ids());
         assert_eq!(
             tracker.pairing().values,
             [
@@ -1621,7 +1674,7 @@ mod tests {
             ]
         );
         // A plain cart at rest has nothing of its own to send.
-        let plain = Tracker::new(seen, &minecart(hurt(0, 1, 0.0), 0), 0);
+        let plain = Tracker::new(seen, &minecart(hurt(0, 1, 0.0), 0), 0, &mut ids());
         assert!(plain.pairing().values.is_empty());
     }
 
@@ -1638,8 +1691,8 @@ mod tests {
             on_ground: false,
         };
         let whole = minecart(hurt(0, 1, 0.0), 0);
-        let mut tracker = Tracker::new(seen, &whole, 0);
-        tracker.send_changes(ID, &whole);
+        let mut tracker = Tracker::new(seen, &whole, 0, &mut ids());
+        tracker.send_changes(ID, &whole, &mut ids());
         let data_of = |sent: &[Sent]| -> Vec<(u8, EntityDataValue)> {
             sent.iter()
                 .filter_map(|sent| match sent {
@@ -1653,7 +1706,7 @@ mod tests {
             let mut tracked = tick([0.5, 64.0, 0.5], [0.0; 3], false, 0);
             tracked.data = Some(after.clone());
             tracker.report(&tracked, before);
-            data_of(&tracker.send_changes(ID, &after))
+            data_of(&tracker.send_changes(ID, &after, &mut ids()))
         };
         let hit = minecart(hurt(10, -1, 10.0), 0);
         assert_eq!(
@@ -1707,7 +1760,12 @@ mod tests {
             pitch: 0.0,
             on_ground: false,
         };
-        let tracker = Tracker::new(seen, &boat(hurt(4, -1, 30.0), [true, false], 59), 0);
+        let tracker = Tracker::new(
+            seen,
+            &boat(hurt(4, -1, 30.0), [true, false], 59),
+            0,
+            &mut ids(),
+        );
         assert_eq!(
             tracker.pairing().values,
             [
@@ -1718,7 +1776,7 @@ mod tests {
                 (13, EntityDataValue::Int(59)),
             ]
         );
-        let still = Tracker::new(seen, &boat(hurt(0, 1, 0.0), [false; 2], 0), 0);
+        let still = Tracker::new(seen, &boat(hurt(0, 1, 0.0), [false; 2], 0), 0, &mut ids());
         assert!(still.pairing().values.is_empty());
     }
 
@@ -1735,14 +1793,14 @@ mod tests {
             on_ground: false,
         };
         let rest = boat(hurt(0, 1, 0.0), [false; 2], 0);
-        let mut tracker = Tracker::new(seen, &rest, 0);
-        tracker.send_changes(ID, &rest);
+        let mut tracker = Tracker::new(seen, &rest, 0, &mut ids());
+        tracker.send_changes(ID, &rest, &mut ids());
         let report = |tracker: &mut Tracker, before: &EntityData, after: EntityData| {
             let mut tracked = tick([0.5, 64.0, 0.5], [0.0; 3], false, 0);
             tracked.data = Some(after.clone());
             tracker.report(&tracked, before);
             tracker
-                .send_changes(ID, &after)
+                .send_changes(ID, &after, &mut ids())
                 .iter()
                 .filter_map(|sent| match sent {
                     Sent::Data(data) => Some(data.values.clone()),
@@ -1783,7 +1841,7 @@ mod tests {
     fn a_new_item_s_first_update_sends_its_stack_again_and_a_seen_one_s_does_not() {
         let mut made = item_at([0.5, 64.0, 0.5], false);
         made.made();
-        let sent = made.send_changes(ID, &stack(1));
+        let sent = made.send_changes(ID, &stack(1), &mut ids());
         let values: Vec<Vec<u8>> = sent
             .iter()
             .filter_map(|sent| match sent {
@@ -1794,7 +1852,7 @@ mod tests {
         assert_eq!(values, [vec![entity_data::ITEM_STACK]]);
         assert!(
             !made
-                .send_changes(ID, &stack(1))
+                .send_changes(ID, &stack(1), &mut ids())
                 .iter()
                 .any(|sent| matches!(sent, Sent::Data(_))),
             "once"
@@ -1802,7 +1860,7 @@ mod tests {
         let mut seen = item_at([0.5, 64.0, 0.5], false);
         assert!(
             !seen
-                .send_changes(ID, &stack(1))
+                .send_changes(ID, &stack(1), &mut ids())
                 .iter()
                 .any(|sent| matches!(sent, Sent::Data(_)))
         );
@@ -1817,7 +1875,7 @@ mod tests {
             pitch: 0.0,
             on_ground,
         };
-        Tracker::new(seen, &stack(1), 0)
+        Tracker::new(seen, &stack(1), 0, &mut ids())
     }
 
     /// A report of the item at `position` with `motion`, `flags` and nothing else.
@@ -1894,7 +1952,7 @@ mod tests {
                 .filter(|sent| matches!(sent, Sent::Data(_) | Sent::Equipment(_)))
                 .collect()
         };
-        let mut tracker = Tracker::new(seen, &bare, 0);
+        let mut tracker = Tracker::new(seen, &bare, 0, &mut ids());
         let pairing = tracker.pairing();
         // Its health of 20 differs from the 1 a client starts with; its air, freezing,
         // flags and pose are the defaults.
@@ -1910,7 +1968,7 @@ mod tests {
         tracker.report(&report, &bare);
         let helmet = WireStack::new(HELMET.item, 1);
         assert_eq!(
-            worn_and_data(tracker.send_changes(ID, &worn)),
+            worn_and_data(tracker.send_changes(ID, &worn, &mut ids())),
             [Sent::Equipment(SetEquipment {
                 entity_id: ID,
                 slots: vec![(5, Some(helmet.clone()))],
@@ -1922,7 +1980,7 @@ mod tests {
         report.data = Some(wet.clone());
         tracker.report(&report, &worn);
         assert_eq!(
-            worn_and_data(tracker.send_changes(ID, &wet)),
+            worn_and_data(tracker.send_changes(ID, &wet, &mut ids())),
             [
                 Sent::Data(SetEntityData {
                     entity_id: ID,
@@ -1947,7 +2005,9 @@ mod tests {
     /// Runs `ticks` updates of `tracker` with nothing reported, each tick's packets in
     /// a list of their own.
     fn run(tracker: &mut Tracker, data: &EntityData, ticks: usize) -> Vec<Vec<Sent>> {
-        (0..ticks).map(|_| tracker.send_changes(ID, data)).collect()
+        (0..ticks)
+            .map(|_| tracker.send_changes(ID, data, &mut ids()))
+            .collect()
     }
 
     /// The ticks of `sent` in which something was sent, with what.
@@ -2003,14 +2063,17 @@ mod tests {
         let mut tracker = item_at([0.5, 70.0, 0.5], false);
         let data = stack(1);
         // Tick 0: the update of the spawn, before the item's first tick.
-        assert_eq!(tracker.send_changes(ID, &data), [pos([0; 3], false)]);
+        assert_eq!(
+            tracker.send_changes(ID, &data, &mut ids()),
+            [pos([0; 3], false)]
+        );
         let mut y = 70.0;
         let mut dy = 0.0;
         for tick in 1..=20 {
             dy = (dy - 0.04) * 0.98;
             y += dy;
             tracker.report(&tick_at(y, dy), &data);
-            let sent = tracker.send_changes(ID, &data);
+            let sent = tracker.send_changes(ID, &data, &mut ids());
             if tick < 20 {
                 assert_eq!(sent, [], "tick {tick}");
             } else {
@@ -2037,7 +2100,7 @@ mod tests {
     fn landing_is_sent_whole_at_the_next_update() {
         let mut tracker = item_at([0.5, 65.0, 0.5], false);
         let data = stack(1);
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         let landed = [0.5, 64.0, 0.5];
         tracker.report(
             &tick(landed, [0.0; 3], true, Tracked::VERTICAL_COLLISION),
@@ -2056,17 +2119,17 @@ mod tests {
     fn needs_sync_makes_the_tick_an_update_once() {
         let mut tracker = item_at([0.5, 64.0, 0.5], false);
         let data = stack(1);
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         run(&mut tracker, &data, 4);
         let moved = [0.5, 63.9, 0.5];
         let flowing = [0.01, -0.1, 0.0];
         tracker.report(&tick(moved, flowing, false, Tracked::NEEDS_SYNC), &data);
         // 64 is 262144 steps, 63.9 is 261734.4, rounded to 261734: 410 down.
         assert_eq!(
-            tracker.send_changes(ID, &data),
+            tracker.send_changes(ID, &data, &mut ids()),
             [motion(flowing), pos([0, -410, 0], false)]
         );
-        assert_eq!(tracker.send_changes(ID, &data), []);
+        assert_eq!(tracker.send_changes(ID, &data, &mut ids()), []);
         // In water every tick is an update: the 401st comes at tick 401 of it.
         let mut tracker = item_at([0.5, 64.0, 0.5], false);
         let mut whole = None;
@@ -2075,7 +2138,7 @@ mod tests {
                 &tick([0.5, 64.0, 0.5], [0.0; 3], false, Tracked::NEEDS_SYNC),
                 &data,
             );
-            let sent = tracker.send_changes(ID, &data);
+            let sent = tracker.send_changes(ID, &data, &mut ids());
             if matches!(sent[..], [Sent::Sync(_)]) && whole.is_none() {
                 whole = Some(tick_number);
             }
@@ -2145,9 +2208,12 @@ mod tests {
             ),
         ];
         let run = |pushes: bool| {
-            let mut tracker = Tracker::new(seen, &data, 0);
+            let mut tracker = Tracker::new(seen, &data, 0, &mut ids());
             // The spawn's tick: a move of nothing, as both servers sent.
-            assert_eq!(tracker.send_changes(ID, &data), [pos([0; 3], false)]);
+            assert_eq!(
+                tracker.send_changes(ID, &data, &mut ids()),
+                [pos([0; 3], false)]
+            );
             let mut sent = Vec::new();
             for (number, (position, motion, pushed)) in (1..).zip(rolled) {
                 let flags = if pushed && pushes {
@@ -2158,7 +2224,7 @@ mod tests {
                 let mut report = tick(position, motion, false, flags);
                 report.yaw = 0.0;
                 tracker.report(&report, &data);
-                let out = tracker.send_changes(ID, &data);
+                let out = tracker.send_changes(ID, &data, &mut ids());
                 if !out.is_empty() {
                     sent.push((number, out));
                 }
@@ -2199,7 +2265,7 @@ mod tests {
         );
         // 0.25 is 1024 steps; the count is 20, not a multiple of 60.
         assert_eq!(
-            tracker.send_changes(ID, &data),
+            tracker.send_changes(ID, &data, &mut ids()),
             [motion([0.0, 0.2, 0.0]), pos([0, 1024, 0], false)]
         );
         let sent = run(&mut tracker, &data, 40);
@@ -2214,13 +2280,13 @@ mod tests {
     fn sync_velocity_sends_the_motion_after_the_tick_s_update() {
         let mut tracker = item_at([0.5, 64.0, 0.5], true);
         let data = stack(1);
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         let hit = [0.2, 0.3, 0.0];
         tracker.report(
             &tick([0.5, 64.0, 0.5], hit, true, Tracked::SYNC_VELOCITY),
             &data,
         );
-        assert_eq!(tracker.send_changes(ID, &data), [motion(hit)]);
+        assert_eq!(tracker.send_changes(ID, &data, &mut ids()), [motion(hit)]);
         // At the update the motion is sent as changed from the one sent last.
         let sent = run(&mut tracker, &data, 19);
         assert_eq!(sent_in(&sent), [(18, vec![motion(hit)])]);
@@ -2234,7 +2300,7 @@ mod tests {
         let data = stack(1);
         let update = |tracker: &mut Tracker, moving: [f64; 3]| {
             tracker.report(&tick(at, moving, true, Tracked::NEEDS_SYNC), &data);
-            tracker.send_changes(ID, &data)
+            tracker.send_changes(ID, &data, &mut ids())
         };
         let mut tracker = item_at(at, true);
         // The spawn's update: a move of nothing (count 0).
@@ -2258,19 +2324,25 @@ mod tests {
     fn a_move_past_the_delta_s_range_is_sent_whole() {
         let mut tracker = item_at([0.5, 64.0, 0.5], false);
         let data = stack(1);
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         run(&mut tracker, &data, 19);
         let far = [8.5, 64.0, 0.5];
         tracker.report(&tick(far, [0.0; 3], false, 0), &data);
-        assert_eq!(tracker.send_changes(ID, &data), [sync(far, false)]);
+        assert_eq!(
+            tracker.send_changes(ID, &data, &mut ids()),
+            [sync(far, false)]
+        );
         let near = [8.5 - 1.0 / 4096.0, 64.0, 0.5];
         tracker.report(
             &tick([0.5, 64.0, 0.5], [0.0; 3], false, Tracked::NEEDS_SYNC),
             &data,
         );
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         tracker.report(&tick(near, [0.0; 3], false, Tracked::NEEDS_SYNC), &data);
-        assert_eq!(tracker.send_changes(ID, &data), [pos([32767, 0, 0], false)]);
+        assert_eq!(
+            tracker.send_changes(ID, &data, &mut ids()),
+            [pos([32767, 0, 0], false)]
+        );
     }
 
     /// `getRequiresPrecisePosition` (a falling block whose move collided) sends every
@@ -2286,8 +2358,8 @@ mod tests {
             on_ground: false,
         };
         let data = falling();
-        let mut tracker = Tracker::new(seen, &data, 0);
-        tracker.send_changes(ID, &data);
+        let mut tracker = Tracker::new(seen, &data, 0, &mut ids());
+        tracker.send_changes(ID, &data, &mut ids());
         let at = [0.5, 69.96, 0.5];
         tracker.report(
             &tick(
@@ -2298,7 +2370,7 @@ mod tests {
             ),
             &data,
         );
-        let sent = tracker.send_changes(ID, &data);
+        let sent = tracker.send_changes(ID, &data, &mut ids());
         let [Sent::Motion(_), Sent::Sync(whole)] = &sent[..] else {
             panic!("{sent:?}");
         };
@@ -2320,12 +2392,12 @@ mod tests {
         let data = stack(1);
         let update = |flags: u8, to: [f64; 3]| {
             let mut tracker = item_at([0.5, 64.0, 0.5], true);
-            tracker.send_changes(ID, &data);
+            tracker.send_changes(ID, &data, &mut ids());
             tracker.report(
                 &tick(to, [0.0; 3], true, flags | Tracked::NEEDS_SYNC),
                 &data,
             );
-            tracker.send_changes(ID, &data)
+            tracker.send_changes(ID, &data, &mut ids())
         };
         let off = 0.6;
         assert!(precision_loss(off) != 0.0);
@@ -2362,7 +2434,7 @@ mod tests {
     fn changed_data_is_sent_after_the_move_by_its_indices() {
         let mut tracker = item_at([0.5, 64.0, 0.5], true);
         let one = stack(1);
-        tracker.send_changes(ID, &one);
+        tracker.send_changes(ID, &one, &mut ids());
         let mut merged = tick([0.5, 64.0, 0.5], [0.0; 3], true, 0);
         merged.data = Some(stack(5));
         tracker.report(&merged, &one);
@@ -2381,7 +2453,7 @@ mod tests {
         };
         // A dirty change makes the tick an update with nothing else to send.
         assert_eq!(
-            tracker.send_changes(ID, &five),
+            tracker.send_changes(ID, &five, &mut ids()),
             [data(vec![stack_value(5)])]
         );
         assert_eq!(tracker.pairing().values, [stack_value(5)]);
@@ -2391,7 +2463,7 @@ mod tests {
         let four = stack(4);
         let fire = |flags| (entity_data::SHARED_FLAGS, EntityDataValue::Byte(flags));
         assert_eq!(
-            tracker.send_changes(ID, &four),
+            tracker.send_changes(ID, &four, &mut ids()),
             [data(vec![fire(1), stack_value(4)])]
         );
         assert_eq!(tracker.pairing().values, [fire(1), stack_value(4)]);
@@ -2401,9 +2473,12 @@ mod tests {
             &tick([0.5, 64.0, 0.5], [0.0; 3], true, Tracked::ON_FIRE),
             &four,
         );
-        assert_eq!(tracker.send_changes(ID, &four), []);
+        assert_eq!(tracker.send_changes(ID, &four, &mut ids()), []);
         tracker.report(&tick([0.5, 64.0, 0.5], [0.0; 3], true, 0), &four);
-        assert_eq!(tracker.send_changes(ID, &four), [data(vec![fire(0)])]);
+        assert_eq!(
+            tracker.send_changes(ID, &four, &mut ids()),
+            [data(vec![fire(0)])]
+        );
         assert_eq!(tracker.pairing().values, [stack_value(4)]);
     }
 
@@ -2413,12 +2488,12 @@ mod tests {
     fn a_turn_goes_with_the_move_or_alone() {
         let data = stack(1);
         let mut tracker = item_at([0.5, 64.0, 0.5], true);
-        tracker.send_changes(ID, &data);
+        tracker.send_changes(ID, &data, &mut ids());
         let mut turned = tick([0.75, 64.0, 0.5], [0.0; 3], true, Tracked::NEEDS_SYNC);
         turned.yaw = 90.0;
         tracker.report(&turned, &data);
         assert_eq!(
-            tracker.send_changes(ID, &data),
+            tracker.send_changes(ID, &data, &mut ids()),
             [Sent::PosRot(MoveEntityPosRot {
                 entity_id: ID,
                 delta: VecDelta::Linear([1024, 0, 0]),
@@ -2430,7 +2505,7 @@ mod tests {
         turned.yaw = 180.0;
         tracker.report(&turned, &data);
         assert_eq!(
-            tracker.send_changes(ID, &data),
+            tracker.send_changes(ID, &data, &mut ids()),
             [Sent::Rot(MoveEntityRot {
                 entity_id: ID,
                 yaw: -128,
@@ -2442,7 +2517,7 @@ mod tests {
         // Less than a 256th is no turn.
         turned.yaw = 181.0;
         tracker.report(&turned, &data);
-        assert_eq!(tracker.send_changes(ID, &data), []);
+        assert_eq!(tracker.send_changes(ID, &data, &mut ids()), []);
     }
 
     /// A falling block is shown with its start, the block it fell from, at index 8.
@@ -2456,7 +2531,7 @@ mod tests {
             pitch: 0.0,
             on_ground: false,
         };
-        let tracker = Tracker::new(seen, &falling(), 7);
+        let tracker = Tracker::new(seen, &falling(), 7, &mut ids());
         let pairing = tracker.pairing();
         assert_eq!(
             pairing.values,
@@ -2482,7 +2557,7 @@ mod tests {
         let mut every = caught.clone();
         // The clients were spawned with it, which tells them nothing of the ground: the
         // first update tells them it lies on it, and nothing is sent after that.
-        let told = caught.catch_up(ID, &data, 8100);
+        let told = caught.catch_up(ID, &data, 8100, &mut ids());
         assert_eq!(told.len(), 1, "{told:?}");
         assert!(
             matches!(&told[0], Sent::Pos(moved) if moved.on_ground)
@@ -2493,18 +2568,22 @@ mod tests {
         assert_eq!(caught, every);
         // A landing reported before the silence is sent at the first update in it.
         let mut caught = item_at([0.5, 65.0, 0.5], false);
-        caught.send_changes(ID, &data);
+        caught.send_changes(ID, &data, &mut ids());
         let landed = [0.5, 64.0, 0.5];
         caught.report(
             &tick(landed, [0.0; 3], true, Tracked::VERTICAL_COLLISION),
             &data,
         );
-        assert_eq!(caught.catch_up(ID, &data, 1000), [sync(landed, true)]);
+        assert_eq!(
+            caught.catch_up(ID, &data, 1000, &mut ids()),
+            [sync(landed, true)]
+        );
     }
 }
 
 #[cfg(test)]
 mod heads {
+    use super::tests::ids;
     use clustine_world::{EntityData, Entry, TypeState};
 
     use super::*;
@@ -2538,7 +2617,7 @@ mod heads {
             pitch: 0.0,
             on_ground: true,
         };
-        let mut tracker = Tracker::new(seen, &cow_looking(90.0), 0);
+        let mut tracker = Tracker::new(seen, &cow_looking(90.0), 0, &mut ids());
         assert_eq!(tracker.pairing().head_yaw, 64, "a quarter turn");
         let heads = |sent: &[Sent]| -> Vec<u8> {
             sent.iter()
@@ -2549,21 +2628,25 @@ mod heads {
                 .collect()
         };
         // The update of its count 0: the head as paired.
-        assert!(heads(&tracker.send_changes(7, &cow_looking(90.0))).is_empty());
+        assert!(heads(&tracker.send_changes(7, &cow_looking(90.0), &mut ids())).is_empty());
         // Turned at counts 1 and 2, which are no updates; sent at 3.
-        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0))).is_empty());
-        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0))).is_empty());
-        assert_eq!(heads(&tracker.send_changes(7, &cow_looking(180.0))), [128]);
+        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0), &mut ids())).is_empty());
+        assert!(heads(&tracker.send_changes(7, &cow_looking(180.0), &mut ids())).is_empty());
+        assert_eq!(
+            heads(&tracker.send_changes(7, &cow_looking(180.0), &mut ids())),
+            [128]
+        );
         assert_eq!(tracker.pairing().head_yaw, 128);
         // Half a degree is no step of the packed angle.
         for _ in 0..3 {
-            assert!(heads(&tracker.send_changes(7, &cow_looking(180.5))).is_empty());
+            assert!(heads(&tracker.send_changes(7, &cow_looking(180.5), &mut ids())).is_empty());
         }
     }
 }
 
 #[cfg(test)]
 mod orbs {
+    use super::tests::ids;
     use clustine_world::EntityData;
 
     use super::*;
@@ -2588,10 +2671,10 @@ mod orbs {
             age_offset: 0,
             following: None,
         };
-        let mut tracker = Tracker::new(seen, &orb, 0);
+        let mut tracker = Tracker::new(seen, &orb, 0, &mut ids());
         assert_eq!(tracker.pairing().values, [(8, EntityDataValue::Int(2))]);
         tracker.made();
-        let sent = tracker.send_changes(9, &orb);
+        let sent = tracker.send_changes(9, &orb, &mut ids());
         assert!(sent.iter().any(|sent| matches!(
             sent,
             Sent::Data(data) if data.values == [(8, EntityDataValue::Int(2))]
