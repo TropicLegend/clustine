@@ -3869,6 +3869,7 @@ mod tests {
     mod mob_bodies;
     mod mobs;
     mod mount_riding;
+    mod n10_pois_specification;
     mod n8_specification;
     mod n9_counts;
     mod n9_entity_effects;

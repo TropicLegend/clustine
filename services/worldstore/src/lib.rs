@@ -75,6 +75,8 @@ mod lends_tests;
 #[cfg(test)]
 mod logout_on_a_mount_specification;
 #[cfg(test)]
+mod n10_claims_specification;
+#[cfg(test)]
 mod n9_counts_specification;
 #[cfg(test)]
 mod r7_redstone_kill;
