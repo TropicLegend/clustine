@@ -186,6 +186,90 @@ impl Region {
         }
     }
 
+    /// `onReputationEvent(event, about, villager)` of the region's villager `key` about
+    /// the entity `about` (`Local::Reputation`), where the region can name its UUID: a
+    /// player of its own or whose face it keeps, or an entity of its land or copies.
+    pub(crate) fn villager_reputation(
+        &mut self,
+        key: EntityId,
+        event: crate::mobs::types::gossip::ReputationEvent,
+        about: EntityId,
+        output: &mut TickOutput,
+    ) {
+        let uuid = self
+            .uuid_of_player(about)
+            .map(uuid::Uuid::from_u128)
+            .or_else(|| {
+                self.find_entity(about)
+                    .map(|(_, entity)| entity.uuid)
+                    .or_else(|| self.copied_entity(about).map(|(_, entity)| entity.uuid))
+            });
+        let Some(uuid) = uuid else {
+            return;
+        };
+        self.update_villager(key, output, |_, own, _| {
+            // The trading player's prices again are part T2's (`updateSpecialPrices`).
+            let _ = social_villagers::reputation_event(own, event, uuid);
+        });
+    }
+
+    /// `Villager.die`'s `tellWitnessesThatIWasMurdered` and `releaseAllPois` of the
+    /// region's villager `key` (`Local::VillagerDied`): each villager its last sight
+    /// held that sees it now gossips about `murderer` (where it was an entity whose UUID
+    /// the region can name), then its points of interest are given back. A villager
+    /// whose sight the region has not kept since it was taken in has no witnesses (named).
+    pub(crate) fn villager_died(
+        &mut self,
+        key: EntityId,
+        murderer: Option<EntityId>,
+        output: &mut TickOutput,
+    ) {
+        let Some((chunk, dying)) = self.find_entity(key).map(|(at, found)| (at, found.clone()))
+        else {
+            return;
+        };
+        let murderer = murderer.and_then(|murderer| {
+            self.uuid_of_player(murderer)
+                .map(uuid::Uuid::from_u128)
+                .or_else(|| self.find_entity(murderer).map(|(_, entity)| entity.uuid))
+                .or_else(|| self.copied_entity(murderer).map(|(_, entity)| entity.uuid))
+        });
+        let visible: Vec<EntityId> = self
+            .entity_memory
+            .get(&key)
+            .and_then(|memory| memory.sensed.as_ref())
+            .and_then(|sensed| sensed.get(&MemoryKind::VisibleMobs))
+            .map_or_else(Vec::new, |slot| match slot {
+                brain::Slot::Kept {
+                    value: Value::Entities(list),
+                    ..
+                } => list.clone(),
+                _ => Vec::new(),
+            });
+        let (witnesses, releases) = {
+            let view = super::items::View {
+                region: self,
+                home: chunk,
+            };
+            let witnesses = match murderer {
+                Some(_) => social_villagers::witnesses(&view, &dying, &visible),
+                None => Vec::new(),
+            };
+            (
+                witnesses,
+                social_villagers::points_to_release(&view, &dying),
+            )
+        };
+        if let Some(murderer) = murderer {
+            for witness in witnesses {
+                self.villager_write(witness, VillagerUse::Witnessed { murderer }, output);
+            }
+        }
+        for (pos, kind) in releases {
+            self.release_poi(pos, kind, output);
+        }
+    }
+
     /// Changes the region's villager `key`: `change` is given its mob, its own state and
     /// its record's `lived`.
     fn update_villager(

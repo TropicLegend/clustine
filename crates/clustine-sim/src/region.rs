@@ -109,6 +109,7 @@ mod sleep;
 mod sniffer_eggs;
 mod spawn_caps;
 mod spawn_eggs;
+pub(crate) mod spawn_util;
 mod spit;
 mod splits;
 mod stack_nbt;
@@ -3948,6 +3949,7 @@ mod tests {
     mod scheduled_ticks;
     mod sculk;
     mod sleep;
+    mod social_villagers;
     mod stands;
     mod swings;
     mod tamed;

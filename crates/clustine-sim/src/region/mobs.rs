@@ -104,6 +104,25 @@ impl MobWorld for View<'_> {
         crate::time::sky_darken(self.region.clock.day)
     }
 
+    fn player_omens(&self, key: EntityId) -> crate::api::Omens {
+        if let Some(player) = self
+            .region
+            .players
+            .values()
+            .find(|player| player.entity_id == key)
+        {
+            return player.face().omens;
+        }
+        let region = self.region;
+        let holds = |chunk| region.land.holds(chunk) || region.copies.contains_key(&chunk);
+        region
+            .faces
+            .seen(holds)
+            .find(|(_, kept)| kept.entity == key)
+            .map(|(_, kept)| kept.face.omens)
+            .unwrap_or_default()
+    }
+
     fn sea_level(&self) -> i32 {
         self.region.config.sea_level
     }

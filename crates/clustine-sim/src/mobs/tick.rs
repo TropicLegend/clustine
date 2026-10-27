@@ -311,6 +311,23 @@ pub(crate) enum Local {
         key: EntityId,
         used: clustine_world::VillagerUse,
     },
+    /// `level.broadcastEntityEvent(other, event)` of the region's entity `key` (a
+    /// villager's partner's hearts and anger in love). **Named**: one only a copy shows
+    /// is not shown it.
+    EntityEvent { key: EntityId, event: u8 },
+    /// `BellBlock.attemptToRing(the mob, level, pos, null)`: a villager rings the bell at
+    /// `pos` (`RingBell`), where the region holds it.
+    RingBell { pos: BlockPos },
+    /// `onReputationEvent(event, about, the mob)` of a villager about the entity `about`,
+    /// whose UUID the region finds where it reads it (a hurt by a mob).
+    Reputation {
+        event: crate::mobs::types::gossip::ReputationEvent,
+        about: EntityId,
+    },
+    /// `Villager.die`: its witnesses told of what caused its death, `murderer`, and its
+    /// points of interest given back, by what the region keeps of its sight
+    /// (`region/villagers_across.rs`).
+    VillagerDied { murderer: Option<EntityId> },
 }
 
 /// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and

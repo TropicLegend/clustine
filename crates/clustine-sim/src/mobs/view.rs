@@ -186,6 +186,14 @@ pub(crate) trait MobWorld: Holds {
             .find(|player| player.uuid == uuid)
     }
 
+    /// The effects raids and villagers read of the player whose stay's entity is `key`
+    /// (bad omen, raid omen, Hero of the Village, `PlayerFace.omens`), where the view
+    /// knows them; none where it does not.
+    fn player_omens(&self, key: EntityId) -> crate::api::Omens {
+        let _ = key;
+        crate::api::Omens::default()
+    }
+
     /// `Level.getSkyDarken()`: how far the sky's light is below full by the time of day
     /// (none where a view knows no clock).
     fn sky_darken(&self) -> i32 {

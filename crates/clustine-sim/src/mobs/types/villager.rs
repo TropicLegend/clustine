@@ -154,6 +154,10 @@ pub(crate) struct VillagerState {
     /// What other villagers read of it across a line, written from its brain at the end
     /// of each of its ticks (decision 3): copies carry the type's state, not the mind.
     pub(crate) shown: Shown,
+    /// `lastTradedPlayer`: the player who traded with it since its last brain tick
+    /// (`rewardTradeXp`, part T2's), whose `TRADE` reputation event its next
+    /// `customServerAiStep` raises (part V3's `after_brain`). Not saved by the game.
+    pub(crate) last_traded: Option<clustine_world::PlayerId>,
 }
 
 /// What a villager's neighbours read of it, kept in its type's state so that a copy of it
@@ -192,6 +196,7 @@ impl Default for VillagerState {
             last_gossip_time: None,
             last_restock_check_day: 0,
             shown: Shown::default(),
+            last_traded: None,
         }
     }
 }
@@ -347,7 +352,7 @@ fn possible(activity: Activity) -> Activity {
 
 /// `brain.updateActivityFromSchedule(attributes, gameTime, position)`: more than 20 game
 /// ticks after the last, the schedule's activity asked for where it is not active.
-fn update_from_schedule(cx: &mut Cx<'_, '_, '_>) {
+pub(crate) fn update_from_schedule(cx: &mut Cx<'_, '_, '_>) {
     let time = cx.time;
     let day = cx.ai.tick.world.day();
     let mob = &mut cx.ai.tick.mob;
@@ -709,13 +714,15 @@ impl MobType for Villager {
         }
     }
 
-    /// `Villager.tick`'s after the entity's: the unhappy counter counted down.
+    /// `Villager.tick`'s after the entity's: the unhappy counter counted down, then
+    /// `maybeDecayGossip` (part V3).
     fn after_tick(&self, tick: &mut MobTick<'_>) {
         update(&mut tick.mob, |own| {
             if own.unhappy > 0 {
                 own.unhappy -= 1;
             }
         });
+        social_villagers::maybe_decay_gossip(tick);
     }
 
     /// `Villager.mobInteract` (279–337): with anything but its egg, alive (and neither

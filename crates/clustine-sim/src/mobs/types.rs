@@ -118,6 +118,8 @@ pub(crate) mod skeletons;
 pub(crate) mod slime;
 pub(crate) mod sniffer;
 pub(crate) mod snow_golem;
+#[cfg(test)]
+mod social_n10_tests;
 pub(crate) mod spider;
 pub(crate) mod squid;
 pub(crate) mod stray;

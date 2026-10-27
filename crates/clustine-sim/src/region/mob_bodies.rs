@@ -387,6 +387,22 @@ impl Region {
                 Local::ReleasePoi { pos, kind } => self.release_poi(pos, kind, output),
                 Local::Villager { key: other, used } => self.villager_write(other, used, output),
                 Local::Raid { chunk, news } => self.send_raid_news(chunk, news, output),
+                Local::EntityEvent { key: other, event } => {
+                    if let Some((chunk, _)) = self.find_entity(other) {
+                        output.events.push(RegionEvent::EntityEvent {
+                            entity: other,
+                            chunk,
+                            event,
+                        });
+                    }
+                }
+                Local::RingBell { pos } => {
+                    self.ring_bell(pos, None, output);
+                }
+                Local::Reputation { event, about } => {
+                    self.villager_reputation(key, event, about, output);
+                }
+                Local::VillagerDied { murderer } => self.villager_died(key, murderer, output),
             }
         }
     }

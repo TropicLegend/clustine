@@ -497,8 +497,7 @@ pub(super) fn skip_nbt(tag: u8, data: &[u8], depth: u32) -> Option<&[u8]> {
 }
 
 /// `BellBlockEntity`'s state on the server: which way it was last struck, whether it
-/// shakes and for how long it has, and its resonance with raiders, which waits for
-/// entities and so never begins.
+/// shakes and for how long it has, and its resonance with raiders (`bells.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Bell {
     pub(crate) click_direction: Option<Face>,
@@ -509,9 +508,9 @@ pub(crate) struct Bell {
 }
 
 impl Bell {
-    /// `BellBlockEntity.tick` on the server: a shaking bell counts its ticks and stops
-    /// at fifty. The search for raiders five ticks into a ring, and the resonance it
-    /// starts, need entities other than players and do nothing yet.
+    /// `BellBlockEntity.tick` on the server, its first part: a shaking bell counts its
+    /// ticks and stops at fifty. The resonance after it is `bells.rs`'s
+    /// (`Region::bell_ticked`), which reads the living the ring listed.
     fn tick(&mut self) {
         if self.shaking {
             self.ticks += 1;
@@ -519,13 +518,6 @@ impl Bell {
         if self.ticks >= BELL_SHAKING_TICKS {
             self.shaking = false;
             self.ticks = 0;
-        }
-        if self.resonating {
-            if self.resonation_ticks < 40 {
-                self.resonation_ticks += 1;
-            } else {
-                self.resonating = false;
-            }
         }
     }
 
@@ -757,6 +749,15 @@ impl Region {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The bell's block entity at `pos`, where there is one (its resonance is
+    /// `bells.rs`'s).
+    pub(super) fn bell_mut(&mut self, pos: BlockPos) -> Option<&mut Bell> {
+        match self.block_entities.typed.get_mut(&pos) {
+            Some(Typed::Bell(bell)) => Some(bell),
+            _ => None,
         }
     }
 
