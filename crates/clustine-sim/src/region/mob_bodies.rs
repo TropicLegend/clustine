@@ -363,6 +363,17 @@ impl Region {
                 Local::Shoot(shot) => self.mob_shoots(key, &shot, output),
                 Local::PlaceBlock { pos, state } => self.mob_places_block(key, pos, state, output),
                 Local::GiveFlower { key: given } => self.give_golem_flower(given, output),
+                Local::Fangs { at, yaw, warmup } => {
+                    self.make_fangs(at, yaw, warmup, Some(key), output);
+                }
+                Local::MakeMob { kind, mob, at } => {
+                    if let Some(made) = self.new_mob(kind, *mob, at, 0.0, 0.0) {
+                        self.add_made_mob(made, output);
+                    }
+                }
+                Local::SheepColour { key: sheep, colour } => {
+                    self.set_sheep_colour(sheep, colour, output);
+                }
             }
         }
     }

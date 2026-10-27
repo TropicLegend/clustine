@@ -1189,6 +1189,8 @@ pub(crate) enum SpawnReason {
     /// A mob made to carry or ride another as it is made (a zombie's chicken, a spider's
     /// skeleton).
     Jockey,
+    /// A mob another summons (an evoker's vex, `MOB_SUMMONED`).
+    MobSummoned,
 }
 
 /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far

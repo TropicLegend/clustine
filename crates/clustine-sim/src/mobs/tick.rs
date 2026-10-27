@@ -253,6 +253,27 @@ pub(crate) enum Local {
     /// where that is empty, a sure drop (`region/golems.rs`). A mob in a copy is given
     /// nothing (named).
     GiveFlower { key: EntityId },
+    /// `new EvokerFangs(level, x, y, z, yaw, warmup, the mob)` and `addFreshEntity` (an
+    /// evoker's spell, `mobs/ai/spells.rs`): fangs owned by the mob, at `at`, turned to
+    /// `yaw` in degrees, made by `Region::make_fangs` by section 4.1's rule.
+    Fangs {
+        at: crate::physics::Vec3,
+        yaw: f32,
+        warmup: i32,
+    },
+    /// A mob of the type `kind` the mob makes at `at` facing south, `mob` as its maker
+    /// finalised it with its draws (an evoker's vex): constructed by the region under a
+    /// key of its own (its UUID and constructor's draws of its own stream, `new_mob`) and
+    /// added by section 4.1's rule (sent where its chunk is another region's to tick,
+    /// not made where the region reads nothing).
+    MakeMob {
+        kind: u16,
+        mob: Box<Mob>,
+        at: crate::physics::Vec3,
+    },
+    /// `Sheep.setColor(colour)` of the sheep `key` (an evoker's wololo). **Named**: a
+    /// sheep in a copy keeps its colour.
+    SheepColour { key: EntityId, colour: u8 },
 }
 
 /// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and

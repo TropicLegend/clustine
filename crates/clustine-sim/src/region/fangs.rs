@@ -109,8 +109,9 @@ impl Region {
             }
             let hurt = match &owner {
                 None => bite_by("minecraft:magic", None, None),
-                Some((_, causer)) => {
-                    if allied(causer.kind, &living) {
+                Some((owner, causer)) => {
+                    if allied(causer.kind, &living) || self.allied_vex(*owner, causer.kind, &living)
+                    {
                         continue;
                     }
                     bite_by(
@@ -122,6 +123,25 @@ impl Region {
             };
             self.give_hurt(&living, hurt, output);
         }
+    }
+
+    /// `Evoker.considersEntityAsAlly(vex)` (n7 Evoker, part S8's): a vex whose owner is
+    /// the fangs' owner `owner` (of the type `kind`), or an illager's friend of an
+    /// illager owner.
+    fn allied_vex(&self, owner: EntityId, kind: u16, living: &Living) -> bool {
+        let key = living.target.key;
+        let record = self
+            .find_entity(key)
+            .map(|(_, record)| record.clone())
+            .or_else(|| self.copied_entity(key).map(|(_, record)| record));
+        let Some(vex_owner) = record.as_ref().and_then(crate::mobs::types::vex::owner_of) else {
+            return false;
+        };
+        vex_owner == owner
+            || self.causer_of(vex_owner).is_some_and(|root| {
+                entity_in_tag(i32::from(kind), "minecraft:illager")
+                    && entity_in_tag(i32::from(root.kind), "minecraft:illager_friends")
+            })
     }
 }
 

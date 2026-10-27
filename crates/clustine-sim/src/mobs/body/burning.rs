@@ -14,7 +14,7 @@ use crate::mobs::tick::MobTick;
 /// view has no light (`Entity`'s: 0 where the chunk is not loaded). The raw brightness is
 /// the sky's light less its darkening or the block's, the larger
 /// (`LevelLightEngine.getRawBrightness`), and the overworld's ambient light is 0.
-fn magic_value(tick: &MobTick<'_>) -> f32 {
+pub(crate) fn magic_value(tick: &MobTick<'_>) -> f32 {
     let Some(light) = tick.world.light(eye_block(tick)) else {
         return 0.0;
     };

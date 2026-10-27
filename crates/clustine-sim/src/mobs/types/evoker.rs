@@ -1,14 +1,12 @@
-//! The evoker (`Evoker` and `SpellcasterIllager`; `n7k-brief.md` 3.7), part K5: an
-//! illager that floats, strolls, keeps away from a creaking and from players (none of
-//! whom, all creative, it ever avoids) and looks.
-//!
-//! Named differences: its spells are N9's (the summoning and the fangs a target's) and
-//! the wololo, which turns a blue sheep within 16 red with no target, is not built (its
-//! goal holds its place and never starts): its spell's synced id stays at none and its
-//! `SpellTicks` at 0.
+//! The evoker (`Evoker` and `SpellcasterIllager`; `n7k-brief.md` 3.7, part K5;
+//! `docs/groundwork/n9-plan.md`, section 8.4, part S8): an illager that floats, strolls,
+//! keeps away from a creaking and from players (none of whom, all creative, it ever
+//! avoids) and looks, and casts its spells (`crate::mobs::ai::spells`): at a target, its
+//! vexes and its fangs; with none, the wololo that turns a blue sheep red. While it casts
+//! it stands still and watches its target, or the sheep, its spell shown (data 17).
 
 use clustine_data::{entity_types, sounds};
-use clustine_world::BlockPos;
+use clustine_world::{BlockPos, EntityId};
 use serde::{Deserialize, Serialize};
 
 use super::illagers;
@@ -16,14 +14,17 @@ use super::pillager::AVOID_CREAKING;
 use super::{MobType, Spawning};
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, RandomStrollGoal};
-use crate::mobs::ai::selector::flags;
 use crate::mobs::ai::sensing::Class;
+use crate::mobs::ai::spells::{CastingSpellGoal, Spell, UseSpellGoal};
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::hurt::DamageSource;
 use crate::mobs::tick::MobTick;
-use crate::mobs::types::tamable::Idle;
 use crate::region::Random;
 use crate::shown::DataShown;
+
+#[cfg(test)]
+#[path = "spells_n9_tests.rs"]
+mod spells_n9_tests;
 
 /// The synced data's index of `SpellcasterIllager.DATA_SPELL_CASTING_ID`.
 pub(crate) const SPELL_INDEX: u8 = 17;
@@ -36,20 +37,20 @@ pub(crate) struct Evoker;
 pub(crate) struct EvokerState {
     /// `spellCastingTickCount` (`SpellTicks`).
     pub(crate) spell_ticks: i32,
+    /// `currentSpell`, synced as `DATA_SPELL_CASTING_ID` (`IllagerSpell.id`, none 0).
+    /// The game does not save it; it is kept with the casting goal that clears it.
+    pub(crate) spell: u8,
+    /// `wololoTarget`: the sheep its wololo is cast at, from that goal's start to its
+    /// stop. The game does not save it either.
+    pub(crate) wololo_target: Option<EntityId>,
 }
 
 impl MobType for Evoker {
-    /// `Evoker.registerGoals`, after `Raider`'s.
+    /// `Evoker.registerGoals`, after `Raider`'s (Evoker.txt 16–297).
     fn register_goals(&self, setup: &mut Setup) {
         illagers::register_raider_goals(setup);
         setup.add_goal(0, FloatGoal);
-        // `EvokerCastingSpellGoal`: only while a spell is cast.
-        setup.add_goal(
-            1,
-            Idle {
-                flags: flags::MOVE | flags::LOOK,
-            },
-        );
+        setup.add_goal(1, CastingSpellGoal);
         setup.add_goal(
             2,
             AvoidEntityGoal {
@@ -67,10 +68,24 @@ impl MobType for Evoker {
                 ..AVOID_CREAKING
             },
         );
-        // The summoning and the fangs (a target's) and the wololo (not built).
-        setup.add_goal(4, Idle { flags: 0 });
-        setup.add_goal(5, Idle { flags: 0 });
-        setup.add_goal(6, Idle { flags: 0 });
+        setup.add_goal(
+            4,
+            UseSpellGoal {
+                spell: Spell::Summon,
+            },
+        );
+        setup.add_goal(
+            5,
+            UseSpellGoal {
+                spell: Spell::Fangs,
+            },
+        );
+        setup.add_goal(
+            6,
+            UseSpellGoal {
+                spell: Spell::Wololo,
+            },
+        );
         setup.add_goal(8, RandomStrollGoal::new(0.6));
         setup.add_goal(
             9,
@@ -105,8 +120,9 @@ impl MobType for Evoker {
         illagers::remove_when_far_away(mob, distance)
     }
 
+    /// Of the evoker's `xpReward`, 10 (Evoker.txt, its constructor).
     fn experience_reward(&self, _: u16, mob: &Mob, draws: &mut Random) -> i32 {
-        illagers::experience(5, mob, draws)
+        illagers::experience(10, mob, draws)
     }
 
     /// `readAdditionalSaveData`: the raider's, and `SpellTicks`.
@@ -129,11 +145,12 @@ impl MobType for Evoker {
         Some(sounds::ENTITY_EVOKER_DEATH)
     }
 
-    /// The raider's, and the spell being cast, none (`IllagerSpell.NONE`, 0): only a
-    /// spell's goal sets another.
+    /// The raider's, and the spell being cast (`IllagerSpell.id`, none 0), by which a
+    /// client raises its arms and colours its particles.
     fn shown(&self, mob: &Mob) -> Vec<(u8, DataShown, bool)> {
+        let spell = illagers::own_of::<EvokerState>(mob).spell;
         let mut values = illagers::shown(mob);
-        values.push((SPELL_INDEX, DataShown::Byte(0), true));
+        values.push((SPELL_INDEX, DataShown::Byte(spell), spell == 0));
         values
     }
 }

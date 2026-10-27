@@ -363,7 +363,6 @@ impl Region {
 
     /// `new EvokerFangs(level, x, y, z, yaw, warmup, owner)` and `addFreshEntity`
     /// (section 4.8).
-    #[expect(dead_code, reason = "the evoker (S8) makes it")]
     pub(crate) fn make_fangs(
         &mut self,
         at: Vec3,

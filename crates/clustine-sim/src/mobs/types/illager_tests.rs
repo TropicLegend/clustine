@@ -313,14 +313,18 @@ fn a_raider_s_experience_is_five_and_more_for_what_it_holds_and_may_not_keep() {
         of(PILLAGER).experience_reward(PILLAGER, &mob, &mut draws),
         5 + extra
     );
-    // A banner it always drops adds nothing.
+    // A banner it always drops adds nothing to the evoker's own 10 (its constructor's
+    // `xpReward`, Evoker.txt).
     let mut banner = Mob::fresh();
     banner.body.equipment.slots[usize::from(slots::HEAD)] =
         Some(ItemStack::new(items::WHITE_BANNER, 1));
     let mut chances = [0.085; 8];
     chances[usize::from(slots::HEAD)] = 2.0;
     banner.body.equipment.drop_chances = Some(chances);
-    assert_eq!(of(EVOKER).experience_reward(EVOKER, &banner, &mut draws), 5);
+    assert_eq!(
+        of(EVOKER).experience_reward(EVOKER, &banner, &mut draws),
+        10
+    );
 }
 
 // The witch's drinking, on a body of its own.
