@@ -341,11 +341,13 @@ fn a_click_on_a_villager_makes_it_shake_its_head_and_say_no_and_a_baby_too() {
     }
 }
 
+/// A click on a wandering trader draws its offers (part T2, `trading/merchant.rs`); its
+/// window opens only for the player whose input is being applied (`region/trading.rs`),
+/// which a use between ticks is not, so nothing opens and it trades with nobody.
 #[test]
-fn a_click_on_a_wandering_trader_opens_nothing_and_changes_nothing() {
+fn a_click_on_a_wandering_trader_between_inputs_draws_its_offers_and_opens_nothing() {
     let mut region = on_ticking_floor_with(&[]);
     lay(&mut region, &trader_at(ONE, [4.5, -60.0, 4.5]));
-    let before = record(&region, ONE).unwrap();
     let (_, output) = used_now(&mut region, ONE, None);
     assert!(
         output.player_events.is_empty(),
@@ -353,8 +355,10 @@ fn a_click_on_a_wandering_trader_opens_nothing_and_changes_nothing() {
         output.player_events
     );
     assert!(sounds_heard(&output).is_empty());
-    assert_eq!(swings(&output), 0, "consumed");
-    assert_eq!(record(&region, ONE).unwrap().data, before.data);
+    let mob = crate::mobs::Mob::decode(&record(&region, ONE).unwrap().data).unwrap();
+    let trading = wandering_trader::trading_of(&mob);
+    assert!(trading.offers.is_some_and(|offers| !offers.0.is_empty()));
+    assert_eq!(trading.trading_player, None);
 }
 
 /// A pen of stone three blocks high round x, z = 2 to 13 in the home chunk, the one

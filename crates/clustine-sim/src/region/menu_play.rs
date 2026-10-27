@@ -345,7 +345,13 @@ impl Region {
     /// player as an opener (`startOpen`, both halves of a double chest, the right one
     /// first), and the menu is reported whole. Its serial is the number of the input
     /// that opened it.
-    fn open_menu(&mut self, id: PlayerId, of: MenuOf, kind: MenuKind, output: &mut TickOutput) {
+    pub(super) fn open_menu(
+        &mut self,
+        id: PlayerId,
+        of: MenuOf,
+        kind: MenuKind,
+        output: &mut TickOutput,
+    ) {
         let Some((_, serial)) = self.applying else {
             return;
         };
@@ -370,7 +376,8 @@ impl Region {
             kind,
             carried: None,
             drag: None,
-            trade: None,
+            // A merchant's window has its payments and result of its own.
+            trade: matches!(of, MenuOf::Merchant(_)).then(Box::default),
         });
         self.journal.players.insert(id);
         self.report_whole(id, output);
@@ -548,6 +555,7 @@ impl Region {
             inventory: &mut inventory,
             selected: usize::from(player.selected_slot),
             mount: self.mount_facts(menu.of),
+            merchant: None,
         };
         let all = (0..menu.kind.slots())
             .map(|index| menus::menu_slot(&slots, index).flatten())
@@ -694,6 +702,8 @@ impl Region {
             return;
         };
         let mount = self.mount_facts(menu.of);
+        // A merchant's trades made by the click (`trading.rs`).
+        let mut trade = self.merchant_side(id, &menu);
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
@@ -706,6 +716,9 @@ impl Region {
                 inventory: &mut inventory,
                 selected: usize::from(player.selected_slot),
                 mount,
+                merchant: trade
+                    .as_mut()
+                    .map(|trade| trade as &mut dyn menus::MerchantSide),
             };
             // Every player of Clustine is creative until survival comes.
             menus::click(&mut slots, &mut menu, slot, button, kind, true)
@@ -716,6 +729,9 @@ impl Region {
             }
             player.menu = Some(menu.clone());
             self.journal.players.insert(id);
+            if let Some(trade) = trade {
+                self.merchant_traded(id, trade, output);
+            }
             self.write_container_slots(id, menu.of, &container, output);
             for stack in clicked.thrown {
                 let thrown = super::entities::Thrown {
@@ -778,13 +794,6 @@ impl Region {
         else {
             return;
         };
-        // A merchant's payments back to the player and its trading ended, whatever
-        // closed it (`trading.rs`).
-        if let MenuOf::Merchant(merchant) = menu.of
-            && let Some(trade) = menu.trade.as_deref_mut()
-        {
-            self.trading_closed(id, merchant, trade, output);
-        }
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
@@ -794,6 +803,16 @@ impl Region {
             usize::from(player.selected_slot),
             &mut menu,
         );
+        // A merchant's payments back to the player after the carried stack, and its
+        // trading ended, whatever closed it (`MerchantMenu.removed`, `trading.rs`).
+        if let MenuOf::Merchant(merchant) = menu.of
+            && let Some(trade) = menu.trade.as_deref_mut()
+        {
+            self.trading_closed(id, merchant, trade, output);
+        }
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
         let applied = player.last_input;
         let changed: Vec<(usize, Option<ItemStack>)> = player
             .inventory
@@ -843,13 +862,18 @@ impl Region {
             return;
         };
         self.reported.remove(&id);
-        if let Some(stack) = menu.carried.filter(|_| throw) {
+        if let Some(stack) = menu.carried.clone().filter(|_| throw) {
             let thrown = super::entities::Thrown {
                 player: id,
                 stack,
                 crouching: false,
             };
             self.throw(thrown, output);
+        }
+        // A merchant's trading ended, its payments thrown after the carried stack
+        // (`MerchantMenu.removed`, `trading.rs`).
+        if let MenuOf::Merchant(merchant) = menu.of {
+            self.trading_left(id, merchant, menu.trade.as_deref(), throw, output);
         }
         for pos in block_positions(menu.of) {
             self.stop_open(pos, output);

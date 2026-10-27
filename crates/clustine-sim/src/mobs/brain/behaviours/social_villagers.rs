@@ -458,7 +458,7 @@ pub(crate) fn born_as_partner(mob: &mut Mob, lived: u32) {
 pub(crate) fn after_brain(tick: &mut MobTick<'_>) {
     let mut traded = false;
     villager::update(&mut tick.mob, |own| {
-        if let Some(player) = own.last_traded.take() {
+        if let Some(player) = own.last_traded_player.take() {
             // The prices for the trading player are worked out again where it is they
             // (`updateSpecialPrices`, part T2's).
             let _ = reputation_event(own, ReputationEvent::Trade, player.0);

@@ -8,10 +8,14 @@
 //! `updatingUsingItem`, `completeUsingItem`), which shows it to clients by the living
 //! flags; the trader gives it the sound of its mouthfuls (`getConsumeSound`).
 //!
-//! Named differences: it trades nothing, so its trading goals never start, a click opens
-//! nothing (the game always has offers and opens their screen) and the statistic of a
-//! talk is not kept; a template's `wander_target` is not read (a block position's int
-//! array).
+//! It trades (part T2, `trading/merchant.rs` and `region/trading.rs`): a click opens its
+//! window, its offers drawn the first time; while a player trades it holds still for
+//! them within four blocks (`TradeWithPlayerGoal`), looks at them
+//! (`LookAtTradingPlayerGoal`), says so (`getAmbientSound`) and does not leave
+//! (`maybeDespawn`).
+//!
+//! Named differences: the statistic of a talk is not kept; a template's `wander_target`
+//! and `Offers` are not read (a block position's int array, a list of offers).
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::components::{Component, PotionContents};
@@ -24,7 +28,7 @@ use crate::api::Hand;
 use crate::living::slots;
 use crate::mobs::Mob;
 use crate::mobs::ai::goals::{
-    AvoidEntityGoal, FloatGoal, Items, LookAtPlayerGoal, MoveTowardsRestrictionGoal, PanicGoal,
+    AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, LookingAt, MoveTowardsRestrictionGoal, PanicGoal,
     RandomStrollGoal,
 };
 use crate::mobs::ai::selector::{Goal, flags};
@@ -60,18 +64,60 @@ pub(crate) struct TraderState {
 
 impl Own for TraderState {}
 
+/// What a trader keeps of its trading (part T2): its offers, drawn when first asked
+/// (`AbstractVillager.offers`, none before), and the player it trades with
+/// (`tradingPlayer`), whose window on it is open. Kept after [`TraderState`] in its
+/// type's record, as the pig keeps its boost, so that a record of before reads as
+/// trading with nobody and having drawn nothing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Trading {
+    pub(crate) offers: Option<clustine_world::trading::Offers>,
+    pub(crate) trading_player: Option<clustine_world::PlayerId>,
+}
+
 /// A trader's ageable part and its own state.
 pub(crate) fn state_of(mob: &Mob) -> (Animal, TraderState) {
     animal::read::<TraderState>(&mob.state)
 }
 
-/// Changes a trader's own state.
+/// A trader's trading, as its record has it.
+pub(crate) fn trading_of(mob: &Mob) -> Trading {
+    let rest = animal::own_bytes(&mob.state);
+    match postcard::take_from_bytes::<TraderState>(rest) {
+        Ok((_, after)) if !after.is_empty() => postcard::from_bytes(after).unwrap_or_default(),
+        _ => Trading::default(),
+    }
+}
+
+/// Writes a trader's ageable part, its own state and its trading.
+fn write_all(mob: &mut Mob, shared: &Animal, own: &TraderState, trading: &Trading) {
+    let tail = if *trading == Trading::default() {
+        Vec::new()
+    } else {
+        postcard::to_allocvec(trading).expect("a trader's trading is encoded into memory")
+    };
+    mob.state = animal::write_with_tail(shared, own, &tail);
+}
+
+/// Changes a trader's own state, its trading kept.
 pub(crate) fn update(mob: &mut Mob, change: impl FnOnce(&mut TraderState)) {
     let (shared, mut own) = state_of(mob);
     let before = own.clone();
     change(&mut own);
     if own != before {
-        mob.state = animal::write(&shared, &own);
+        let trading = trading_of(mob);
+        write_all(mob, &shared, &own, &trading);
+    }
+}
+
+/// Changes a trader's trading.
+pub(crate) fn update_trading(mob: &mut Mob, change: impl FnOnce(&mut Trading)) {
+    let mut trading = trading_of(mob);
+    let before = trading.clone();
+    change(&mut trading);
+    if trading != before {
+        let (shared, own) = state_of(mob);
+        write_all(mob, &shared, &own, &trading);
     }
 }
 
@@ -161,22 +207,96 @@ impl Goal for UseItemGoal {
     }
 }
 
-/// A goal of trading that never starts, as no player trades with a trader:
-/// `TradeWithPlayerGoal` (its flags jump and move) and `LookAtTradingPlayerGoal` (look).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Trading {
-    pub(crate) flags: u8,
+/// The player the trader trades with, as its tick sees them, if it sees them.
+fn trading_player(ai: &Ai<'_, '_>) -> Option<crate::mobs::view::SeenPlayer> {
+    let player = trading_of(&ai.tick.mob).trading_player?;
+    ai.tick.world.player_anywhere(player.0.as_u128())
 }
 
-impl Goal for Trading {
+/// `TradeWithPlayerGoal(trader)` (n7 TradeWithPlayerGoal.txt, flags jump and move):
+/// while it lives, out of water, on the ground and not hurt lately (`hurtTime`), it
+/// holds still for the player it trades with within four blocks; at its stop the trade
+/// ends (`setTradingPlayer(null)`), which closes the player's window.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TradeWithPlayerGoal;
+
+impl Goal for TradeWithPlayerGoal {
     type State = ();
 
     fn flags(&self) -> u8 {
-        self.flags
+        flags::JUMP | flags::MOVE
     }
 
-    fn can_use(&self, _: &mut (), _: &mut Ai<'_, '_>) -> bool {
-        false
+    fn can_use(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
+        let now = ai.tick.lived;
+        let vitals = &ai.tick.mob.body.vitals;
+        let hurt_lately = vitals
+            .hurt_from
+            .is_some_and(|from| i64::from(now) - i64::from(from) < 10);
+        if vitals.dying() || ai.in_water() || !ai.on_ground() || hurt_lately {
+            return false;
+        }
+        let Some(player) = trading_player(ai) else {
+            return false;
+        };
+        physics::distance_sqr(ai.position(), player.position) <= 16.0
+    }
+
+    fn start(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
+        navigation::stop(ai);
+    }
+
+    fn stop(&self, _: &mut (), ai: &mut Ai<'_, '_>) {
+        update_trading(&mut ai.tick.mob, |own| own.trading_player = None);
+    }
+}
+
+/// `LookAtTradingPlayerGoal(trader)` (n7 LookAtTradingPlayerGoal.txt): a
+/// `LookAtPlayerGoal` of players within 8 whose start is no draw of chance but the
+/// trader's trading, its look at the player it trades with.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LookAtTradingPlayerGoal;
+
+impl LookAtTradingPlayerGoal {
+    const LOOK: LookAtPlayerGoal = LookAtPlayerGoal {
+        class: Class::Player,
+        look_distance: 8.0,
+        probability: 0.02,
+        only_horizontal: false,
+        holds_still: false,
+    };
+}
+
+impl Goal for LookAtTradingPlayerGoal {
+    type State = LookingAt;
+
+    fn flags(&self) -> u8 {
+        Self::LOOK.flags()
+    }
+
+    fn can_use(&self, state: &mut LookingAt, ai: &mut Ai<'_, '_>) -> bool {
+        // A player it trades with whom its tick does not see is no one to look at.
+        let Some(player) = trading_player(ai) else {
+            return false;
+        };
+        state.look_at = Some(player.key);
+        true
+    }
+
+    fn can_continue(&self, state: &mut LookingAt, ai: &mut Ai<'_, '_>) -> bool {
+        Self::LOOK.can_continue(state, ai)
+    }
+
+    fn start(&self, state: &mut LookingAt, ai: &mut Ai<'_, '_>) {
+        Self::LOOK.start(state, ai);
+    }
+
+    fn stop(&self, state: &mut LookingAt, ai: &mut Ai<'_, '_>) {
+        Self::LOOK.stop(state, ai);
+    }
+
+    fn tick(&self, state: &mut LookingAt, ai: &mut Ai<'_, '_>) {
+        Self::LOOK.tick(state, ai);
     }
 }
 
@@ -283,12 +403,7 @@ impl MobType for WanderingTrader {
                 finish_sound: sounds::ENTITY_WANDERING_TRADER_REAPPEARED,
             },
         );
-        setup.add_goal(
-            1,
-            Trading {
-                flags: flags::JUMP | flags::MOVE,
-            },
-        );
+        setup.add_goal(1, TradeWithPlayerGoal);
         setup.add_goal(1, avoid(&ZOMBIES, 8.0));
         setup.add_goal(1, avoid(&[entity_types::EVOKER as u16], 12.0));
         setup.add_goal(1, avoid(&[entity_types::VINDICATOR as u16], 8.0));
@@ -297,7 +412,7 @@ impl MobType for WanderingTrader {
         setup.add_goal(1, avoid(&[entity_types::ILLUSIONER as u16], 12.0));
         setup.add_goal(1, avoid(&[entity_types::ZOGLIN as u16], 10.0));
         setup.add_goal(1, PanicGoal { speed: 0.5 });
-        setup.add_goal(1, Trading { flags: flags::LOOK });
+        setup.add_goal(1, LookAtTradingPlayerGoal);
         setup.add_goal(
             2,
             WanderToPositionGoal {
@@ -327,11 +442,11 @@ impl MobType for WanderingTrader {
     }
 
     /// `AgeableMob.aiStep`'s growing, then `maybeDespawn`: a delay above nothing counts
-    /// down (no player trades) and at nothing the trader is gone.
+    /// down while no player trades with it, and at nothing the trader is gone.
     fn after_ai_step(&self, tick: &mut MobTick<'_>) {
         animal::after_ai_step(tick);
         let (_, own) = state_of(&tick.mob);
-        if own.despawn_delay > 0 {
+        if own.despawn_delay > 0 && trading_of(&tick.mob).trading_player.is_none() {
             let left = own.despawn_delay - 1;
             update(&mut tick.mob, |own| own.despawn_delay = left);
             if left == 0 {
@@ -340,18 +455,9 @@ impl MobType for WanderingTrader {
         }
     }
 
-    /// `WanderingTrader.mobInteract` (230–281): with anything but a villager's egg, alive,
-    /// grown and not trading, it has no offers here, so the use is consumed and nothing
-    /// opens; otherwise `AgeableMob`'s (the golden dandelion on a baby).
+    /// `WanderingTrader.mobInteract` (230–281): trading's (`trading/merchant.rs`).
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
-        let egg = used
-            .held
-            .as_ref()
-            .is_some_and(|stack| stack.count > 0 && stack.item == items::VILLAGER_SPAWN_EGG);
-        if !egg && !used.mob.body.vitals.dying() && !animal::is_baby(used.mob) {
-            return Interaction::Consume;
-        }
-        animal::mob_interact(used, Items::Of(&[]), None)
+        crate::trading::merchant::trader_interact(used)
     }
 
     /// `WanderingTrader.readAdditionalSaveData` (322–349) of a template's tag, with
@@ -369,9 +475,13 @@ impl MobType for WanderingTrader {
         animal::dimensions(mob, BABY)
     }
 
-    /// `getAmbientSound()`: never trading, so its ambient.
-    fn ambient_sound(&self, _: &Mob) -> Option<i32> {
-        Some(sounds::ENTITY_WANDERING_TRADER_AMBIENT)
+    /// `getAmbientSound()`: its trading sound while it trades, else its ambient.
+    fn ambient_sound(&self, mob: &Mob) -> Option<i32> {
+        if trading_of(mob).trading_player.is_some() {
+            Some(sounds::ENTITY_WANDERING_TRADER_TRADE)
+        } else {
+            Some(sounds::ENTITY_WANDERING_TRADER_AMBIENT)
+        }
     }
 
     fn hurt_sound(&self, _: &Mob, _: &DamageSource) -> Option<i32> {

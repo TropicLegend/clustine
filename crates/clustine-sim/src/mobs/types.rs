@@ -1066,10 +1066,6 @@ pub(crate) enum Did {
     /// `startTrading(player)`: the merchant's window opens for the player who used it,
     /// where the player is the region's (`region/trading.rs`;
     /// `docs/groundwork/n10-plan.md`, section 8.2).
-    #[expect(
-        dead_code,
-        reason = "part T2 has the villager's and the trader's clicks start trading"
-    )]
     StartTrading,
     /// A tadpole fed to its end grows up (`Tadpole.ageUp()`): a frog of its biome made
     /// where it is, and itself gone (`region/frogspawn.rs`).

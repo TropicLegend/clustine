@@ -70,6 +70,8 @@ impl Region {
             types::of(into).set_baby(&mut new, true);
         }
         old_type.finalize_conversion(into, &mut new, &mut own);
+        // A zombie villager cured becomes the villager it was (`trading.rs`).
+        self.cure_finished(&old_record, &old, into, &mut new, &mut own);
         self.entity_drew(new_key, own.draws_since(&start));
         let mut record = fresh_record(
             new_key,

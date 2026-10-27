@@ -121,6 +121,9 @@ pub(crate) struct VillagerState {
     pub(crate) xp: i32,
     pub(crate) offers: Option<clustine_world::trading::Offers>,
     pub(crate) gossips: super::gossip::Gossips,
+    /// The player who began its cure (`conversionStarter`), whom the villager it becomes
+    /// thanks (part T2, `zombie_villager.rs`).
+    pub(crate) conversion_starter: Option<u128>,
 }
 
 /// What the zombie family keeps: the baby flag, `canBreakDoors`, the drowning tracker

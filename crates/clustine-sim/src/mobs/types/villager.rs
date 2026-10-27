@@ -154,10 +154,10 @@ pub(crate) struct VillagerState {
     /// What other villagers read of it across a line, written from its brain at the end
     /// of each of its ticks (decision 3): copies carry the type's state, not the mind.
     pub(crate) shown: Shown,
-    /// `lastTradedPlayer`: the player who traded with it since its last brain tick
-    /// (`rewardTradeXp`, part T2's), whose `TRADE` reputation event its next
-    /// `customServerAiStep` raises (part V3's `after_brain`). Not saved by the game.
-    pub(crate) last_traded: Option<clustine_world::PlayerId>,
+    /// The player of its last trade (`lastTradedPlayer`), set by the trade (part T2,
+    /// `region/trading.rs`) and let go after its next brain by the trade's reputation
+    /// event (part V3's `after_brain`).
+    pub(crate) last_traded_player: Option<clustine_world::PlayerId>,
 }
 
 /// What a villager's neighbours read of it, kept in its type's state so that a copy of it
@@ -196,7 +196,7 @@ impl Default for VillagerState {
             last_gossip_time: None,
             last_restock_check_day: 0,
             shown: Shown::default(),
-            last_traded: None,
+            last_traded_player: None,
         }
     }
 }

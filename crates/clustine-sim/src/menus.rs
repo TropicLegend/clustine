@@ -44,7 +44,26 @@ pub(crate) struct MenuSlots<'a> {
     /// What a horse's menu's saddle and body slots ask of the horse, for
     /// [`MenuKind::Mount`]: none for any other menu.
     pub(crate) mount: Option<MountFacts>,
+    /// What a merchant's window asks of its merchant, for [`MenuKind::Merchant`]: none
+    /// for any other menu (`region/trading.rs`).
+    pub(crate) merchant: Option<&'a mut dyn MerchantSide>,
 }
+
+/// What a merchant's window asks of the merchant behind it (`MerchantResultSlot`,
+/// `docs/groundwork/n10-dumps.md`, part B, section 6): whether its result may be taken,
+/// and the trade that a take makes, which changes the payments and the result. The
+/// container handed is the window's three slots, the payments then the result.
+pub(crate) trait MerchantSide {
+    /// `MerchantResultSlot.mayPickup`: an active offer that the payments satisfy, either
+    /// way round.
+    fn may_pickup(&self, container: &[Option<ItemStack>]) -> bool;
+    /// `MerchantResultSlot.onTake`: the active offer takes its price from the payments,
+    /// the merchant is told of the trade, and the result is worked out again.
+    fn on_take(&mut self, container: &mut [Option<ItemStack>]);
+}
+
+/// The slot of a merchant's window that shows what the trade gives.
+const MERCHANT_RESULT: usize = 2;
 
 /// What the two equipment slots of a horse's menu (`HorseInventoryMenu`'s `ArmorSlot`s)
 /// ask of the horse: its type, which the item's allowed entities name, and whether it
@@ -385,13 +404,17 @@ impl Clicker<'_, '_> {
     /// (`tryItemClickBehaviourOverride` is the bundle's).
     fn pickup(&mut self, slot: usize, primary: bool) {
         let carried = self.carried();
+        // A slot that holds something is touched only where it may be taken from
+        // (`mayPickup`, false only for a merchant's result without its price paid).
+        if self.get(slot).is_some() && !self.may_pickup(slot) {
+            return;
+        }
         match (self.get(slot), carried) {
             (None, None) => {}
             (None, Some(carried)) => {
                 let n = if primary { carried.count } else { 1 };
                 self.menu.carried = self.safe_insert(slot, carried, n);
             }
-            // `mayPickup` is true for every slot of N6's menus.
             (Some(here), None) => {
                 let n = if primary {
                     here.count
@@ -427,6 +450,9 @@ impl Clicker<'_, '_> {
     /// still holds the item it moved, until nothing more moves. Each round that goes
     /// on moved some of the slot's stack, so the loop ends.
     fn quick_move(&mut self, slot: usize) {
+        if !self.may_pickup(slot) {
+            return;
+        }
         let mut moved = self.quick_move_stack(slot);
         while let Some(stack) = moved
             && self.get(slot).is_some_and(|here| here.item == stack.item)
@@ -444,6 +470,9 @@ impl Clicker<'_, '_> {
     fn quick_move_stack(&mut self, slot: usize) -> Option<ItemStack> {
         if let MenuKind::Mount { .. } = self.slots.kind {
             return self.quick_move_mount(slot);
+        }
+        if let MenuKind::Merchant { .. } = self.slots.kind {
+            return self.quick_move_merchant(slot);
         }
         let mut stack = self.get(slot)?;
         let copy = stack.clone();
@@ -500,6 +529,68 @@ impl Clicker<'_, '_> {
         }
         self.set(slot, present(Some(stack)));
         Some(copy)
+    }
+
+    /// `MerchantMenu.quickMoveStack` (n10 MerchantMenu 199–304): the result to the
+    /// player's slots, last first, and the trade made for what moved (`onTake`, which
+    /// fills the result again where the payments pay once more, so that the click's loop
+    /// trades on); a payment to the player's slots, first first; the main inventory to
+    /// the hotbar and the hotbar to the main inventory. Nothing from the player's slots
+    /// goes into a payment.
+    fn quick_move_merchant(&mut self, slot: usize) -> Option<ItemStack> {
+        let mut stack = self.get(slot)?;
+        let copy = stack.clone();
+        let all = self.slots.kind.slots();
+        let inventory = self.slots.kind.container_slots();
+        let main_end = inventory + 27;
+        let moved = if slot == MERCHANT_RESULT {
+            self.move_to(&mut stack, inventory, all, true)
+        } else if slot < inventory {
+            self.move_to(&mut stack, inventory, all, false)
+        } else if slot < main_end {
+            self.move_to(&mut stack, main_end, all, false)
+        } else {
+            self.move_to(&mut stack, inventory, main_end, false)
+        };
+        if !moved {
+            return None;
+        }
+        self.set(slot, present(Some(stack.clone())));
+        if stack.count == copy.count {
+            return None;
+        }
+        if slot == MERCHANT_RESULT {
+            self.result_taken();
+        }
+        Some(copy)
+    }
+
+    /// Whether the menu is a merchant's.
+    fn is_merchant(&self) -> bool {
+        matches!(self.slots.kind, MenuKind::Merchant { .. })
+    }
+
+    /// `Slot.mayPickup`: true but for a merchant's result, which asks the merchant.
+    fn may_pickup(&self, index: usize) -> bool {
+        if !(self.is_merchant() && index == MERCHANT_RESULT) {
+            return true;
+        }
+        self.slots
+            .merchant
+            .as_deref()
+            .is_some_and(|merchant| merchant.may_pickup(self.slots.container))
+    }
+
+    /// `MerchantResultSlot.onTake`: the merchant's trade for the result taken.
+    fn result_taken(&mut self) {
+        let MenuSlots {
+            container,
+            merchant,
+            ..
+        } = &mut *self.slots;
+        if let Some(merchant) = merchant.as_deref_mut() {
+            merchant.on_take(container);
+        }
     }
 
     /// `moveItemStackTo(stack, start, end, reverse)` (AbstractContainerMenu.txt
@@ -564,8 +655,14 @@ impl Clicker<'_, '_> {
         match (held_stack, self.get(slot)) {
             (None, None) => {}
             (None, Some(here)) => {
+                if !self.may_pickup(slot) {
+                    return;
+                }
                 self.slots.inventory.set(held, Some(here));
                 self.set(slot, None);
+                if self.is_merchant() && slot == MERCHANT_RESULT {
+                    self.result_taken();
+                }
             }
             (Some(mut stack), None) => {
                 if self.may_place(slot, &stack) {
@@ -639,6 +736,10 @@ impl Clicker<'_, '_> {
     /// and from the last with any other, container and inventory alike, first from the
     /// stacks that are not full and then from the full ones, until the cursor is full.
     fn pickup_all(&mut self, slot: usize, button: i32) {
+        // A merchant's window gathers nothing (`MerchantMenu.canTakeItemForPickAll`).
+        if self.is_merchant() {
+            return;
+        }
         let Some(mut carried) = self.carried() else {
             return;
         };
@@ -720,6 +821,9 @@ impl Clicker<'_, '_> {
             return usable
                 && crate::mobs::types::equine::equippable_by(stack.item, slot, facts.kind);
         }
+        if self.is_merchant() && index == MERCHANT_RESULT {
+            return false;
+        }
         !(self.slots.kind == MenuKind::ShulkerBox
             && index < self.slots.kind.container_slots()
             && !fits_inside_containers(stack.item))
@@ -748,6 +852,13 @@ impl Clicker<'_, '_> {
     /// less than all of it.
     fn try_remove(&mut self, index: usize, count: i32, limit: i32) -> Option<ItemStack> {
         let mut here = self.get(index)?;
+        if !self.may_pickup(index) {
+            return None;
+        }
+        // A merchant's result is taken whole (`MerchantContainer.removeItem`), and the
+        // take is the trade (`safeTake`'s and the pickup's `onTake`).
+        let result = self.is_merchant() && index == MERCHANT_RESULT;
+        let count = if result { here.count } else { count };
         // `allowModification`: `mayPickup` (always) and `mayPlace` of what it holds.
         if !self.may_place(index, &here) && limit < here.count {
             return None;
@@ -759,6 +870,9 @@ impl Clicker<'_, '_> {
         }
         let removed = split(&mut here, count);
         self.set(index, present(Some(here)));
+        if result {
+            self.result_taken();
+        }
         present(Some(removed))
     }
 
@@ -954,6 +1068,7 @@ mod tests {
                 inventory: &mut self.inventory,
                 selected: self.selected,
                 mount: None,
+                merchant: None,
             };
             click(&mut slots, &mut self.menu, slot, button, kind, creative)
         }
@@ -971,6 +1086,7 @@ mod tests {
                 inventory: &mut self.inventory,
                 selected: self.selected,
                 mount: None,
+                merchant: None,
             };
             menu_slot(&slots, index).expect("the menu has the slot")
         }
@@ -1051,6 +1167,7 @@ mod tests {
             inventory: &mut fixture.inventory,
             selected: 0,
             mount: None,
+            merchant: None,
         };
         assert_eq!(menu_slot(&slots, 4), Some(stack(STONE, 3)));
         assert_eq!(menu_slot(&slots, 5), Some(stack(DIRT, 2)));
@@ -1240,6 +1357,7 @@ mod tests {
             inventory: &mut inventory,
             selected: 0,
             mount: None,
+            merchant: None,
         };
         assert!(click(&mut slots, &mut menu, 0, 0, ClickKind::Pickup, false).refused);
     }

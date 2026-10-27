@@ -3,21 +3,26 @@
 //! at its feet settles when it is made unless a template's data settled it, and which
 //! does not drown into anything.
 //!
-//! Named differences: its cure. A golden apple cures only a zombie villager that is
-//! weak, and nothing in Clustine gives weakness yet, so the apple does what it does on
-//! one that is not (nothing, the game's `CONSUME`); a template's conversion under way
-//! counts nothing down, and no zombie villager becomes a villager. Its offers and
-//! gossips are not kept (none is made with any before trades, N10).
+//! Its cure (part T2; `docs/groundwork/n10-brief.md`, section 6): a golden apple on one
+//! that is weak starts it, its countdown runs each tick (faster beside iron bars and
+//! beds), and at its end it becomes the villager it was, with its data, gossips, offers
+//! and experience (`region/trading.rs`'s `cure_finished`, in the conversion).
+//!
+//! Named differences: a template's `Offers`, `Gossips` and `ConversionPlayer` are not
+//! read; a villager never becomes a zombie villager (only on normal and hard, and
+//! Clustine is easy), so its offers and gossips are those a template gave, none.
 
 use clustine_data::villagers::{PROFESSION_NAMES, TYPE_NAMES, professions, types};
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::BlockPos;
 
 use super::zombie_family::{self as family, VillagerState};
-use super::{Breeding, Dimensions, Interaction, MobType, Spawning, Used, template};
+use super::{Breeding, Did, Dimensions, Interaction, MobType, Spawning, Used, template};
 use crate::mobs::Mob;
 use crate::mobs::ai::{Ai, Setup};
+use crate::mobs::body::effects::{self, Effect};
 use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::tick::{Local, MobTick};
 use crate::region::Random;
 use crate::shown::DataShown;
 
@@ -48,7 +53,70 @@ pub(crate) fn villager(mob: &Mob) -> VillagerState {
         xp: 0,
         offers: None,
         gossips: Default::default(),
+        conversion_starter: None,
     })
+}
+
+/// The entity event of a cure begun (the client's cure sound).
+const CURE_STARTED: u8 = 16;
+
+/// The level event of a cure's end (`ZOMBIE_VILLAGER_CONVERTED`).
+const CURED_EVENT: i32 = 1027;
+
+/// The most blocks of `#speeds_up_zombie_villager_curing` a countdown's look counts.
+const MOST_CURING_BLOCKS: i32 = 14;
+
+/// `startConverting(starter, time)` (n7 ZombieVillager 365–387) at the moment `now`: the
+/// player who began it kept, its countdown set, its weakness taken off and strength
+/// given for as long (at `min(difficulty − 1, 0)`, nought on easy).
+fn start_converting(mob: &mut Mob, starter: Option<u128>, time: i32, now: u32) {
+    update_villager(mob, |villager| {
+        villager.conversion_starter = starter;
+        villager.conversion = time;
+    });
+    effects::remove(mob, KIND, Effect::WEAKNESS);
+    effects::add(mob, KIND, Effect::STRENGTH, 0, time, now);
+}
+
+/// `getConversionProgress()` (n7 ZombieVillager 461–554): one, and where its own
+/// `nextFloat() < 0.01` a look at the cube of eight blocks a side below its truncated
+/// position for up to 14 blocks of `#speeds_up_zombie_villager_curing`, each adding one
+/// on its own `nextFloat() < 0.3`.
+fn conversion_progress(tick: &mut MobTick<'_>) -> i32 {
+    let mut progress = 1;
+    if tick.draws.next_float() >= 0.01 {
+        return progress;
+    }
+    let [x, y, z] = tick.living.body.position.map(|axis| axis as i32);
+    let mut found = 0;
+    let mut i = x - 4;
+    while i < x + 4 && found < MOST_CURING_BLOCKS {
+        let mut j = y - 4;
+        while j < y + 4 && found < MOST_CURING_BLOCKS {
+            let mut k = z - 4;
+            while k < z + 4 && found < MOST_CURING_BLOCKS {
+                let speeds = tick
+                    .world
+                    .block(BlockPos::new(i, j, k))
+                    .is_some_and(|state| {
+                        clustine_blocks::data::in_tag(
+                            state,
+                            "minecraft:speeds_up_zombie_villager_curing",
+                        )
+                    });
+                if speeds {
+                    if tick.draws.next_float() < 0.3 {
+                        progress += 1;
+                    }
+                    found += 1;
+                }
+                k += 1;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    progress
 }
 
 /// Changes the villager's state of a zombie villager.
@@ -145,18 +213,47 @@ impl MobType for ZombieVillager {
         family::offspring_from_egg(breeding)
     }
 
-    /// `ZombieVillager.mobInteract`: a golden apple on one that is weak would start its
-    /// cure (named, as nothing is weak); on one that is not it is taken for nothing
-    /// (`CONSUME`). Anything else is the zombie's: nothing.
+    /// `ZombieVillager.mobInteract` (277–364): a golden apple on one that is weak starts
+    /// its cure, `3600 + nextInt(2401)` ticks of its own random, the player who used it
+    /// kept, heard by the client as entity event 16 (the apple is kept: every player is
+    /// creative); on one that is not it is taken for nothing (`CONSUME`). Anything else is
+    /// the zombie's: nothing.
     fn mob_interact(&self, used: &mut Used<'_>) -> Interaction {
         if !used
             .held
             .as_ref()
-            .is_some_and(|stack| stack.item == items::GOLDEN_APPLE)
+            .is_some_and(|stack| stack.count > 0 && stack.item == items::GOLDEN_APPLE)
         {
             return Interaction::Pass;
         }
-        Interaction::Consume
+        if !used.mob.body.effects.has(Effect::WEAKNESS) {
+            return Interaction::Consume;
+        }
+        let time = 3600 + used.draws.next_int(2401) as i32;
+        start_converting(used.mob, used.player_uuid, time, used.moment);
+        used.did.push(Did::Event(CURE_STARTED));
+        Interaction::SuccessServer
+    }
+
+    /// `ZombieVillager.tick`'s before `Zombie.tick` (244–276): a living one that is
+    /// curing counts down by its progress, and at nothing or below becomes a villager
+    /// (`finishConversion`: `convertTo(VILLAGER, single(this, false, false))`, its
+    /// equipment not kept, heard as level event 1027).
+    fn before_tick(&self, tick: &mut MobTick<'_>) {
+        let own = villager(&tick.mob);
+        if tick.mob.body.vitals.dying() || own.conversion == -1 {
+            return;
+        }
+        let progress = conversion_progress(tick);
+        let left = own.conversion.wrapping_sub(progress);
+        update_villager(&mut tick.mob, |villager| villager.conversion = left);
+        if left <= 0 {
+            tick.out.local.push(Local::Convert {
+                into: entity_types::VILLAGER as u16,
+                keep_equipment: false,
+                sound: Some(CURED_EVENT),
+            });
+        }
     }
 
     /// `removeWhenFarAway`: only one that is not curing and has no experience.

@@ -207,7 +207,7 @@ fn a_trade_is_gossiped_about_after_the_villager_s_brain_with_entity_event_14() {
     let mut region = on_ticking_floor_with(&[]);
     region.clock.day = 6000;
     let traded = VillagerState {
-        last_traded: Some(player(1)),
+        last_traded_player: Some(player(1)),
         ..VillagerState::default()
     };
     lay(
@@ -220,7 +220,7 @@ fn a_trade_is_gossiped_about_after_the_villager_s_brain_with_entity_event_14() {
         own.gossips.entries,
         [(player_uuid(1), GossipType::Trading, 2)]
     );
-    assert_eq!(own.last_traded, None);
+    assert_eq!(own.last_traded_player, None);
     assert!(output.events.iter().any(|event| matches!(
         event,
         RegionEvent::EntityEvent {
