@@ -935,7 +935,8 @@ fn a_patrolling_vindicator_holds_its_ground_then_attacks() {
     let (lived, out) = hit.expect("the vindicator hits the player");
     assert!(full(lived));
     assert!(swung(&out));
-    let damage = supplied(types::VINDICATOR, attributes::ATTACK_DAMAGE) as f32;
+    // Its own 5 and its iron axe's 8, which it holds in its main hand.
+    let damage = supplied(types::VINDICATOR, attributes::ATTACK_DAMAGE) as f32 + 8.0;
     assert_eq!(strikes(&out)[0].2, damage);
 }
 

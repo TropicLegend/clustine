@@ -202,10 +202,11 @@ impl Struck<'_> {
     }
 
     pub(crate) fn attribute(&self, attribute: i32) -> f64 {
-        self.mob
-            .body
-            .attributes
-            .value(self.kind, super::attribute(attribute))
+        self.mob.body.attributes.value_worn(
+            self.kind,
+            super::attribute(attribute),
+            &self.mob.body.equipment,
+        )
     }
 
     /// `makeSound(sound)`: at its volume and voice's pitch, two draws of its own random

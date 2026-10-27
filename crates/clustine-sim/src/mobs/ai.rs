@@ -547,6 +547,11 @@ pub(crate) fn attribute_value(tick: &MobTick<'_>, attribute: i32) -> f64 {
     else {
         return 0.0;
     };
+    // What it wears and holds counts too.
+    let id = crate::mobs::body::attribute(attribute);
+    if !crate::mobs::body::attributes::worn_modifiers(&tick.mob.body.equipment, id).is_empty() {
+        return (tick.mob.body.attributes).value_worn(tick.kind, id, &tick.mob.body.equipment);
+    }
     let instance = tick
         .mob
         .body

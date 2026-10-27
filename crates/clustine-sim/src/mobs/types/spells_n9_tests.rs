@@ -1374,9 +1374,17 @@ mod in_a_region {
 
     #[test]
     fn an_evoker_at_a_villager_summons_three_vexes_of_its_own_and_then_raises_fangs() {
+        // The villager resists every hurt, so that the vexes' swords leave the evoker a
+        // target for its fangs.
+        let mut villager = healthy(VILLAGER);
+        villager.body.effects.add(
+            crate::mobs::body::effects::Effect::RESISTANCE,
+            crate::mobs::body::effects::Layer::new(4, -1, 0),
+            0,
+        );
         let mut region = region_with(&[
             record(10, EVOKER, [0.5, FEET, 0.5], &healthy(EVOKER)),
-            still(11, VILLAGER, [7.5, FEET, 0.5], healthy(VILLAGER)),
+            still(11, VILLAGER, [7.5, FEET, 0.5], villager),
         ]);
         let mut vexes = Vec::new();
         for _ in 0..200 {
