@@ -665,12 +665,21 @@ pub(crate) fn construct(
 /// `then` after it with the brain (the type's activity update, `XAi.updateActivity`):
 /// read from the mob's record and the region's sensed memories, ticked, and written
 /// back to both. Nothing for a type without a brain.
+///
+/// Where a behaviour asked for the brain to be made again ([`Memories::refresh`],
+/// `refreshBrain`), the brain is then the new one: every behaviour still running stopped
+/// (`stopAll`), and of the old one only the memories the game saves (`Brain.pack`),
+/// beside the new brain's state drawn as the behaviour asked. Whether it was so made
+/// again, so that the type does what its `refreshBrain` does after (a villager's
+/// schedule). **Named**: the game stops what runs at the moment it asks and drops what
+/// the rest of that tick writes into the old brain; here what runs at the end of the
+/// tick is stopped, and what the rest of the tick wrote into the saved memories is kept.
 pub(crate) fn run(
     tick: &mut super::tick::MobTick<'_>,
     then: impl FnOnce(&mut Brain, &mut Ai<'_, '_>),
-) {
+) -> bool {
     let Some(provider) = tick.mob_type.brain() else {
-        return;
+        return false;
     };
     let now = tick.lived;
     let time = tick.world.game_time();
@@ -687,10 +696,35 @@ pub(crate) fn run(
         };
         brain.tick(&mut ai, now, time);
         then(&mut brain, &mut ai);
+        if brain.memories.refresh.is_some() {
+            brain.stop_all(&mut ai, time);
+        }
         brain.write()
     };
-    tick.mob.mind.brain = entries;
-    tick.sensed = Some(sensed);
+    match brain.memories.refresh.take() {
+        Some(state) => {
+            let mut kept: Vec<Entry> = entries
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .id
+                        .checked_sub(ids::FIRST_MEMORY)
+                        .filter(|_| entry.id < ids::FIRST_BEHAVIOUR)
+                        .and_then(MemoryKind::of_id)
+                        .is_some_and(MemoryKind::saved_by_game)
+                })
+                .collect();
+            part::put(&mut kept, &state);
+            tick.mob.mind.brain = kept;
+            tick.sensed = Some(sensed);
+            true
+        }
+        None => {
+            tick.mob.mind.brain = entries;
+            tick.sensed = Some(sensed);
+            false
+        }
+    }
 }
 
 /// `refreshBrain` of a mob in its tick (a villager grown up, `ageBoundaryReached`): every
@@ -881,6 +915,7 @@ impl Brain {
                 changed: BTreeSet::new(),
                 active: BTreeSet::new(),
                 requested: Vec::new(),
+                refresh: None,
             },
             state,
             activities,

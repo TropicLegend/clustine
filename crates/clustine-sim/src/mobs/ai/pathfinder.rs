@@ -1425,11 +1425,45 @@ pub(crate) fn find_path_counted<W: World + ?Sized>(
     max_visited: i32,
     draws: &mut Random,
 ) -> (Option<FoundPath>, Counts) {
+    find_path_to_any_counted(world, mob, &[target], range, reach, max_visited, draws)
+}
+
+/// `PathFinder.findPath` for a set of targets (a villager's search for a job site, a
+/// bed or the bell among up to five): the search stops at the first node within
+/// `reach` of any target; of the targets so reached the path with the fewest nodes, else
+/// of all of them the path whose end is nearest its target, then the fewest nodes, the
+/// first of equals in `targets`' order (the game's is a hash set's, named). For one
+/// target it is [`find_path`].
+pub(crate) fn find_path_to_any<W: World + ?Sized>(
+    world: &W,
+    mob: &Searcher,
+    targets: &[BlockPos],
+    range: f32,
+    reach: i32,
+    max_visited: i32,
+    draws: &mut Random,
+) -> Option<FoundPath> {
+    find_path_to_any_counted(world, mob, targets, range, reach, max_visited, draws).0
+}
+
+/// [`find_path_to_any`], with what it counted.
+fn find_path_to_any_counted<W: World + ?Sized>(
+    world: &W,
+    mob: &Searcher,
+    positions: &[BlockPos],
+    range: f32,
+    reach: i32,
+    max_visited: i32,
+    draws: &mut Random,
+) -> (Option<FoundPath>, Counts) {
+    if positions.is_empty() {
+        return (None, Counts::default());
+    }
     let mut search = Search::new(world, mob);
     let Some(start) = search.start(draws) else {
         return (None, search.counts);
     };
-    let mut targets = [search.target(target)];
+    let mut targets: Vec<Target> = positions.iter().map(|pos| search.target(*pos)).collect();
     let start_cell = search.cell(start);
     search.nodes[start].g = 0.0;
     let h = search.best_h(start, &mut targets);
@@ -1437,7 +1471,7 @@ pub(crate) fn find_path_counted<W: World + ?Sized>(
     search.nodes[start].f = h;
     let mut heap = Heap::default();
     heap.insert(&mut search.nodes, start);
-    let mut reached = false;
+    let mut reached = vec![false; targets.len()];
     let mut count = 0;
     while !heap.items.is_empty() {
         count += 1;
@@ -1448,10 +1482,12 @@ pub(crate) fn find_path_counted<W: World + ?Sized>(
         search.counts.pops += 1;
         search.nodes[current].closed = true;
         let cell = search.cell(current);
-        if manhattan(cell, targets[0].cell) <= reach as f32 {
-            reached = true;
+        for (index, target) in targets.iter().enumerate() {
+            if manhattan(cell, target.cell) <= reach as f32 {
+                reached[index] = true;
+            }
         }
-        if reached {
+        if reached.contains(&true) {
             break;
         }
         if distance(cell, start_cell) >= range {
@@ -1479,11 +1515,31 @@ pub(crate) fn find_path_counted<W: World + ?Sized>(
             }
         }
     }
-    let best = targets[0]
-        .best_node
-        .expect("the start's distance is noted for the target");
-    let path = search.reconstruct(best, target, reached);
-    (Some(path), search.counts)
+    let any_reached = reached.contains(&true);
+    let mut best: Option<FoundPath> = None;
+    for (index, target) in targets.iter().enumerate() {
+        if any_reached && !reached[index] {
+            continue;
+        }
+        let node = target
+            .best_node
+            .expect("the start's distance is noted for every target");
+        let path = search.reconstruct(node, positions[index], reached[index]);
+        // `Stream.min` keeps the first of equals.
+        let better = best.as_ref().is_none_or(|kept| {
+            if any_reached {
+                path.nodes.len() < kept.nodes.len()
+            } else {
+                path.dist_to_target < kept.dist_to_target
+                    || (path.dist_to_target == kept.dist_to_target
+                        && path.nodes.len() < kept.nodes.len())
+            }
+        });
+        if better {
+            best = Some(path);
+        }
+    }
+    (best, search.counts)
 }
 
 /// Whether the block at `pos` is a cauldron of any kind (`trimPath`).

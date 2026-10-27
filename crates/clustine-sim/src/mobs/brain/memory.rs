@@ -611,6 +611,10 @@ pub(crate) struct Memories {
     /// soon as that behaviour returns, before it asks the next: a villager's panic and
     /// its schedule, which change what the rest of the tick's passes visit.
     pub(crate) requested: Vec<super::Activity>,
+    /// Inside the brain's tick: the brain a behaviour asked to be made again
+    /// (`refreshBrain`, a villager's profession taken or lost), its sensors' delays drawn
+    /// as it asked, which the brain becomes once its tick is done.
+    pub(crate) refresh: Option<super::BrainState>,
 }
 
 impl Memories {

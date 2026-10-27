@@ -537,6 +537,8 @@ impl Region {
         if self.frogspawn_tick(pos, state, output)
             || self.sniffer_egg_tick(pos, state, output)
             || self.dried_ghast_tick(pos, state, output)
+            // A full composter becomes ready (`composting.rs`).
+            || self.composter_tick(pos, state, output)
         {
             return;
         }

@@ -34,6 +34,7 @@ mod breeding;
 mod changes;
 pub(crate) mod clouds;
 mod colliders;
+pub(crate) mod composting;
 mod containers;
 mod conversions;
 mod copper_golems;
@@ -3881,6 +3882,7 @@ mod tests {
     mod bone_meal;
     mod brain_locals;
     mod clock;
+    mod composting_n10;
     mod containers;
     mod conversions;
     mod daylight_detector;

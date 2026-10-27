@@ -397,6 +397,107 @@ fn create_path_to(ai: &mut Ai<'_, '_>, target: BlockPos, reach: i32, range: f32)
     Some(Made::New(found))
 }
 
+/// `createPath(targets, reach)` of a set (`PathNavigation.createPath(Set, 8, false,
+/// reach)`, `AcquirePoi.findPathToPois`): no target moved to the surface, as the set's
+/// form never is; the path under way where it goes to one of them, else one search to
+/// whichever is reached first; its target and reach kept as the navigation's, as any
+/// path made is, though nothing follows it.
+fn create_path_to_any_own(ai: &mut Ai<'_, '_>, targets: &[BlockPos], reach: i32) -> Option<Made> {
+    if targets.is_empty() || ai.position()[1] < f64::from(ai.tick.world.min_y()) {
+        return None;
+    }
+    if !can_update_path(ai) {
+        return None;
+    }
+    let under_way = ai.tick.mob.body.progress.target;
+    if !is_done_own(ai) && under_way.is_some_and(|target| targets.contains(&target)) {
+        return Some(Made::Current);
+    }
+    let searcher = searcher(ai);
+    let limit = max_visited_nodes(ai);
+    let range = max_path_length(ai);
+    let world = ai.tick.world;
+    let found = pathfinder::find_path_to_any(
+        world,
+        &searcher,
+        targets,
+        range,
+        reach,
+        limit,
+        ai.tick.draws,
+    )?;
+    if let Evaluator::Amphibious { .. } = searcher.evaluator {
+        ai.set_malus(PathType::Water, 0.0);
+    }
+    let progress = &mut ai.tick.mob.body.progress;
+    progress.target = Some(found.target);
+    progress.reach = reach;
+    reset_stuck_timeout(ai);
+    Some(Made::New(found))
+}
+
+/// `getNavigation().createPath(targets, reach)`.
+pub(crate) fn create_path_to_any(
+    ai: &mut Ai<'_, '_>,
+    targets: &[BlockPos],
+    reach: i32,
+) -> Option<Made> {
+    match ai.steered() {
+        Some(mut vehicle) => create_path_to_any_own(&mut vehicle, targets, reach),
+        None => create_path_to_any_own(ai, targets, reach),
+    }
+}
+
+/// Whether another mob of this one's navigation and maluses, standing at `from`, could
+/// make a path to `target` that reaches it within `reach` (`createPath(target,
+/// reach).canReach()` of the other's navigation: `YieldJobSite.canReachPos`, which asks
+/// a neighbour's). Drawn from this mob's stream. **Named**: the other's path under way is
+/// not looked at, and what the game's search leaves in the other's navigation (its
+/// target and its stuck timer) is not written.
+pub(crate) fn other_can_reach(
+    ai: &mut Ai<'_, '_>,
+    from: Vec3,
+    on_ground: bool,
+    in_water: bool,
+    target: BlockPos,
+    reach: i32,
+) -> bool {
+    let world = ai.tick.world;
+    let settings = ai.config.navigation;
+    let mut target = target;
+    if settings.kind == Kind::Ground {
+        if !world.has_chunk(target.chunk()) {
+            return false;
+        }
+        if !settings.below_surface {
+            target = surface_position(world, target);
+        }
+    }
+    if from[1] < f64::from(world.min_y()) {
+        return false;
+    }
+    let can_update = match settings.kind {
+        Kind::Ground => on_ground || in_water,
+        Kind::Amphibious | Kind::Flying => true,
+        Kind::WaterBound { breach } => breach || in_water,
+    };
+    if !can_update {
+        return false;
+    }
+    let searcher = pathfinder::Searcher {
+        position: from,
+        on_ground,
+        in_floatable: in_water,
+        in_water,
+        fall_distance: 0.0,
+        ..searcher(ai)
+    };
+    let limit = max_visited_nodes(ai);
+    let range = max_path_length(ai);
+    pathfinder::find_path(world, &searcher, target, range, reach, limit, ai.tick.draws)
+        .is_some_and(|path| path.reached)
+}
+
 /// `resetStuckTimeout()`.
 fn reset_stuck_timeout(ai: &mut Ai<'_, '_>) {
     let progress = &mut ai.tick.mob.body.progress;

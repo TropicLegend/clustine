@@ -233,6 +233,9 @@ impl Region {
         // A sniffer egg, placed or cracked, waits for its next stage
         // (`SnifferEggBlock.onPlace`, `sniffer_eggs.rs`).
         self.sniffer_egg_on_place(pos, state, output);
+        // A composter come to level 7 is ready 20 ticks on (`ComposterBlock.onPlace`,
+        // `composting.rs`).
+        self.composter_on_place(pos, state);
         // `onPlace`, inside the chunk's set in the game: a block that falls looks two
         // ticks on whether it is held up, a dragon egg five (`FallingBlock.onPlace`,
         // `BrushableBlock`'s), and scaffolding one on how far it is held
