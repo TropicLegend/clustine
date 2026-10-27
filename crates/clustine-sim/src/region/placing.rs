@@ -29,6 +29,10 @@ impl Region {
         if self.light_tnt(click, player, output) || self.fire_item_used_on(click, player, output) {
             return true;
         }
+        // A rocket used on a block flies from it (`FireworkRocketItem.useOn`, `throws.rs`).
+        if self.rocket_used_on(click, player, output) {
+            return true;
+        }
         // Bone meal on what takes it (`BoneMealItem.useOn`).
         if self.bone_meal_used_on(click, player, output) {
             return true;

@@ -24,11 +24,12 @@ const STANDING_EYES: f32 = 1.62;
 const CROUCHING_EYES: f32 = 1.27;
 
 impl Region {
-    /// `SnowballItem.use` of the player `player`'s held snowball in the air: the throw's
+    /// The throw of what the player `player` holds, used in the air: today the snowball
+    /// (`SnowballItem.use`): the throw's
     /// sound, then the snowball made at their eyes and shot along their look with their
     /// movement (`spawnProjectileFromRotation`); a creative player keeps the stack, and
     /// a snowball has no cooldown. Whether the held item was a snowball.
-    pub(crate) fn throw_snowball(
+    pub(crate) fn throw_held(
         &mut self,
         used: &ItemUse,
         player: PlayerId,
@@ -86,6 +87,23 @@ impl Region {
         };
         self.make_projectile(making, |_, _| {}, output);
         true
+    }
+
+    /// `FireworkRocketItem.useOn` of the rocket in the player's hand: a rocket made at the
+    /// clicked point moved 0.15 along the face (`Region::make_firework`), one of the
+    /// stack used but by a creative player. Whether the held item was a rocket (part
+    /// S4's; nothing until then).
+    #[expect(
+        clippy::unused_self,
+        reason = "part S4 fills it (docs/groundwork/n9-plan.md, section 4.7)"
+    )]
+    pub(crate) fn rocket_used_on(
+        &mut self,
+        _click: &crate::placement::Click,
+        _player: PlayerId,
+        _output: &mut TickOutput,
+    ) -> bool {
+        false
     }
 
     /// `CrossbowItem.use` of a charged crossbow in the player `id`'s hand `hand`: its

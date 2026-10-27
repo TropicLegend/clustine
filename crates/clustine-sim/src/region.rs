@@ -2416,7 +2416,7 @@ impl Region {
                 };
                 if self.steered_boost(id, item_use.held, output)
                     || self.start_item_use(id, hand, output)
-                    || self.throw_snowball(&item_use, id, output)
+                    || self.throw_held(&item_use, id, output)
                     || self.entity_item_used(&item_use, id, output)
                 {
                     if let Some(player) = self.players.get_mut(&id) {
