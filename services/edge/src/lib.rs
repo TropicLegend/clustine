@@ -5,6 +5,7 @@
 //! regions look like one to a client: it gathers what a player sees from the regions the
 //! chunks in view belong to, and moves a player from region to region as they walk.
 
+mod component_hash;
 mod configuration;
 mod connection;
 mod encode;

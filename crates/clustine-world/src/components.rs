@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Float, ItemStack};
 
+mod structure;
+pub use structure::{
+    StackTemplate, StructureError, Value, component_from, json, stack_from, stack_structure,
+    structure,
+};
+
 /// The kinds of component Clustine knows, in the order a patch keeps them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Kind {
