@@ -147,6 +147,18 @@ impl PoiType {
         Self::from_id(u8::try_from(index).ok()?)
     }
 
+    /// Whether a villager of `profession`, by its registry id, may take a job site of
+    /// this type (`VillagerProfession.acquirableJobSite`): none takes any job site
+    /// (`ALL_ACQUIRABLE_JOBS`), the nitwit none (`PoiType.NONE`), and every other its
+    /// own.
+    pub fn acquirable_by(self, profession: i32) -> bool {
+        if profession == clustine_data::villagers::professions::NONE {
+            self.is_job_site()
+        } else {
+            Self::held_by(profession) == Some(self)
+        }
+    }
+
     /// Of `#bee_home`.
     pub fn is_bee_home(self) -> bool {
         matches!(self, PoiType::Beehive | PoiType::BeeNest)

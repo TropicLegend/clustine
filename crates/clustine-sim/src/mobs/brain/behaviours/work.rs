@@ -300,7 +300,8 @@ pub(crate) struct Acquiring {
 /// a retry's wait left out, makes one path to up to five of them, and where it reaches
 /// one takes its ticket and remembers it; else each is put on a retry.
 pub(crate) struct AcquirePoi {
-    pub(crate) wanted: fn(PoiType) -> bool,
+    /// The types it takes, of the villager's profession by its registry id.
+    pub(crate) wanted: fn(i32, PoiType) -> bool,
     pub(crate) acquire: MemoryKind,
     /// The memory that must be absent beside the one acquired (the job site, for the
     /// potential job site), if another.
@@ -314,7 +315,7 @@ pub(crate) struct AcquirePoi {
 
 impl AcquirePoi {
     fn new(
-        wanted: fn(PoiType) -> bool,
+        wanted: fn(i32, PoiType) -> bool,
         acquire: MemoryKind,
         validate: Option<MemoryKind>,
         only_adult: bool,
@@ -377,10 +378,11 @@ impl KeptShot for AcquirePoi {
         state.retries.retain(|_, retry| retry.still_valid(time));
         let at = cx.ai.block_position();
         let wanted = self.wanted;
+        let of = profession(cx);
         let found = cx.ai.tick.world.pois_in_range(
             at,
             SCAN_RANGE,
-            &|kind| wanted(kind),
+            &|kind| wanted(of, kind),
             Occupancy::HasSpace,
         );
         // The retries' test runs on every match in the query's order, before the sort
@@ -446,7 +448,7 @@ impl KeptShot for AcquirePoi {
 /// (core 6): an adult without a job site reserves one.
 pub(crate) fn acquire_job_site() -> Box<dyn Behaviour> {
     Box::new(HeldKept::new(AcquirePoi::new(
-        PoiType::is_job_site,
+        |profession, kind| kind.acquirable_by(profession),
         MemoryKind::PotentialJobSite,
         Some(MemoryKind::JobSite),
         true,
@@ -458,7 +460,7 @@ pub(crate) fn acquire_job_site() -> Box<dyn Behaviour> {
 /// `AcquirePoi.create(HOME, home, false, Optional.of(14), validateBedPoi)` (core 10).
 pub(crate) fn acquire_home() -> Box<dyn Behaviour> {
     Box::new(HeldKept::new(AcquirePoi::new(
-        |kind| kind == PoiType::Home,
+        |_, kind| kind == PoiType::Home,
         MemoryKind::Home,
         None,
         false,
@@ -470,7 +472,7 @@ pub(crate) fn acquire_home() -> Box<dyn Behaviour> {
 /// `AcquirePoi.create(MEETING, meeting_point, true, Optional.of(14))` (core 10).
 pub(crate) fn acquire_meeting_point() -> Box<dyn Behaviour> {
     Box::new(HeldKept::new(AcquirePoi::new(
-        |kind| kind == PoiType::Meeting,
+        |_, kind| kind == PoiType::Meeting,
         MemoryKind::MeetingPoint,
         None,
         true,
@@ -488,8 +490,8 @@ enum Holds {
     /// `profession.heldJobSite`, of the profession by its registry id, or the villager's
     /// as it is now ([`PROFESSION_NOW`]).
     JobOf(u8),
-    /// `acquirableJobSite`.
-    AnyJob,
+    /// `acquirableJobSite`, of the villager's profession as it is now.
+    Acquirable,
     Home,
     Meeting,
 }
@@ -499,7 +501,7 @@ impl Holds {
         match self {
             Holds::JobOf(PROFESSION_NOW) => PoiType::held_by(profession(cx)) == Some(kind),
             Holds::JobOf(profession) => PoiType::held_by(i32::from(profession)) == Some(kind),
-            Holds::AnyJob => kind.is_job_site(),
+            Holds::Acquirable => kind.acquirable_by(profession(cx)),
             Holds::Home => kind == PoiType::Home,
             Holds::Meeting => kind == PoiType::Meeting,
         }
@@ -585,7 +587,7 @@ pub(crate) fn validate_job_site(profession: u8) -> Box<dyn Behaviour> {
 
 /// `ValidateNearbyPoi.create(acquirableJobSite, potential_job_site)` (core 0).
 pub(crate) fn validate_potential_job_site() -> Box<dyn Behaviour> {
-    validate(Holds::AnyJob, MemoryKind::PotentialJobSite)
+    validate(Holds::Acquirable, MemoryKind::PotentialJobSite)
 }
 
 /// `ValidateNearbyPoi.create(HOME, home)` (rest 3).

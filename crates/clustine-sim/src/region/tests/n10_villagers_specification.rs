@@ -459,9 +459,6 @@ fn each_job_site_gives_an_unemployed_villager_its_own_profession() {
 }
 
 #[test]
-#[ignore = "finding: a nitwit's acquirableJobSite is PoiType.NONE (VillagerProfession 572-574) \
-            but it reserves the lectern, makes it its job site, forgets it the next tick \
-            and never gives its ticket back: the lectern is lost to the village"]
 fn a_nitwit_never_takes_a_job_site() {
     let site = at(9, 7);
     let mut region = ground(&[(site, blocks::LECTERN)]);
@@ -545,9 +542,6 @@ fn a_new_librarian_whose_lectern_is_broken_loses_its_offers_and_takes_the_next_s
 }
 
 #[test]
-#[ignore = "finding: an employed villager's AcquirePoi reserves any job site, not its \
-            profession's acquirableJobSite (VillagerGoalPackages-v 795, VillagerProfession \
-            register); the composter's ticket is taken and never given back"]
 fn a_librarian_with_experience_that_lost_its_lectern_takes_only_another_lectern() {
     // An employed villager's `acquirableJobSite` is its own profession's site
     // (VillagerProfession's `register(name, poi, sound)`): a librarian that keeps its

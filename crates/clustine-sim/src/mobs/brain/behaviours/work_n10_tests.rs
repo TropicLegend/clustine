@@ -912,7 +912,7 @@ fn a_site_no_path_reaches_is_tried_again_later_and_later() {
     village.set(high, blocks::LECTERN);
     let mut placed = Placed::new(1, &PROFESSIONAL, [0.5, 0.0, 0.5], professions::NONE);
     let behaviour = AcquirePoi::new(
-        PoiType::is_job_site,
+        |_, kind: PoiType| kind.is_job_site(),
         MemoryKind::PotentialJobSite,
         Some(MemoryKind::JobSite),
         true,
@@ -972,7 +972,7 @@ fn a_baby_takes_no_job_site_and_draws_nothing_for_it() {
     let mut placed = Placed::new(1, &PROFESSIONAL, [2.5, 0.0, 0.5], professions::NONE);
     animal::made_baby(&mut placed.mob);
     let behaviour = AcquirePoi::new(
-        PoiType::is_job_site,
+        |_, kind: PoiType| kind.is_job_site(),
         MemoryKind::PotentialJobSite,
         Some(MemoryKind::JobSite),
         true,
