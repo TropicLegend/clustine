@@ -100,6 +100,8 @@ fn with_every_component(item: i32) -> ItemStack {
         Component::SuspiciousStewEffects(vec![("minecraft:night_vision".to_owned(), 100)]),
         Component::OminousBottleAmplifier(3),
         Component::ChickenVariant("minecraft:cold".to_owned()),
+        Component::StoredEnchantments(vec![("minecraft:mending".to_owned(), 1)]),
+        Component::DyedColor(0x00B0_2E26),
     ];
     assert_eq!(components.len(), Kind::ALL.len(), "one of each kind");
     for component in components {

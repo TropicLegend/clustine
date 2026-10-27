@@ -155,12 +155,10 @@ fn convert_to_wire(component: &Component) -> Option<WireComponent> {
                 })
                 .collect(),
         ),
-        Component::Enchantments(levels) => WireComponent::Enchantments(
-            levels
-                .iter()
-                .map(|(name, level)| Some((enchantments().id_of(name)?, *level)))
-                .collect::<Option<_>>()?,
-        ),
+        Component::Enchantments(levels) => WireComponent::Enchantments(wire_levels(levels)?),
+        Component::StoredEnchantments(levels) => {
+            WireComponent::StoredEnchantments(wire_levels(levels)?)
+        }
         Component::UseCooldown(cooldown) => WireComponent::UseCooldown(wire::UseCooldown {
             seconds: cooldown.seconds.0,
             group: cooldown.group.clone(),
@@ -223,7 +221,16 @@ fn convert_to_wire(component: &Component) -> Option<WireComponent> {
         Component::ChickenVariant(name) => {
             WireComponent::ChickenVariant(chicken_variants().id_of(name)?)
         }
+        Component::DyedColor(rgb) => WireComponent::DyedColor(*rgb),
     })
+}
+
+/// Enchantments by name as the wire numbers them.
+fn wire_levels(levels: &[(String, i32)]) -> Option<Vec<(i32, i32)>> {
+    levels
+        .iter()
+        .map(|(name, level)| Some((enchantments().id_of(name)?, *level)))
+        .collect()
 }
 
 /// The wire's patch as the world keeps it, checked as the game's codecs and registries
@@ -282,27 +289,10 @@ fn convert_to_world(component: &WireComponent) -> Checked<Component> {
         WireComponent::ChargedProjectiles(stacks) => {
             Component::ChargedProjectiles(stacks.iter().map(world_stack).collect::<Checked<_>>()?)
         }
-        WireComponent::Enchantments(levels) => {
-            // The game's map keeps an enchantment once, at the level given last
-            // (n9 ItemEnchantments, `ByteBufCodecs.map`).
-            let mut kept: Vec<(String, i32)> = Vec::with_capacity(levels.len());
-            for (id, level) in levels {
-                let name = registry_name(enchantments(), *id, "enchantment")?;
-                // `LEVEL_CODEC`, `Codec.intRange(1, 255)` (n9 ItemEnchantments). The
-                // stream codec's own check (its constructor) lets a level of 0 through,
-                // which the persistent codec, and so the world, would not read back.
-                if !(1..=wire::MAX_ENCHANTMENT_LEVEL).contains(level) {
-                    return refused(format!(
-                        "{name} at level {level}, outside 1 to {}",
-                        wire::MAX_ENCHANTMENT_LEVEL
-                    ));
-                }
-                match kept.iter_mut().find(|(known, _)| *known == name) {
-                    Some(entry) => entry.1 = *level,
-                    None => kept.push((name, *level)),
-                }
-            }
-            Component::Enchantments(clustine_world::components::in_registry_order(kept))
+        WireComponent::Enchantments(levels) => Component::Enchantments(world_levels(levels)?),
+        // The same codecs as `enchantments` (n9 DataComponents, `lambda$static$45`).
+        WireComponent::StoredEnchantments(levels) => {
+            Component::StoredEnchantments(world_levels(levels)?)
         }
         WireComponent::UseCooldown(cooldown) => {
             // `ExtraCodecs.POSITIVE_FLOAT` (n9 UseCooldown); the group's form is the
@@ -421,7 +411,34 @@ fn convert_to_world(component: &WireComponent) -> Checked<Component> {
         WireComponent::ChickenVariant(id) => {
             Component::ChickenVariant(registry_name(chicken_variants(), *id, "chicken variant")?)
         }
+        // Any `int` (n10 DyedItemColor: `ByteBufCodecs.INT`, and `RGB_COLOR_CODEC`'s
+        // `Codec.INT` writes any back).
+        WireComponent::DyedColor(rgb) => Component::DyedColor(*rgb),
     })
+}
+
+/// `ItemEnchantments` as the world keeps it, checked.
+fn world_levels(levels: &[(i32, i32)]) -> Checked<Vec<(String, i32)>> {
+    // The game's map keeps an enchantment once, at the level given last
+    // (n9 ItemEnchantments, `ByteBufCodecs.map`).
+    let mut kept: Vec<(String, i32)> = Vec::with_capacity(levels.len());
+    for (id, level) in levels {
+        let name = registry_name(enchantments(), *id, "enchantment")?;
+        // `LEVEL_CODEC`, `Codec.intRange(1, 255)` (n9 ItemEnchantments). The
+        // stream codec's own check (its constructor) lets a level of 0 through,
+        // which the persistent codec, and so the world, would not read back.
+        if !(1..=wire::MAX_ENCHANTMENT_LEVEL).contains(level) {
+            return refused(format!(
+                "{name} at level {level}, outside 1 to {}",
+                wire::MAX_ENCHANTMENT_LEVEL
+            ));
+        }
+        match kept.iter_mut().find(|(known, _)| *known == name) {
+            Some(entry) => entry.1 = *level,
+            None => kept.push((name, *level)),
+        }
+    }
+    Ok(clustine_world::components::in_registry_order(kept))
 }
 
 /// `MobEffectInstance` as the world keeps it.
@@ -784,6 +801,11 @@ mod tests {
             ]),
             Component::OminousBottleAmplifier(4),
             Component::ChickenVariant("minecraft:warm".into()),
+            Component::StoredEnchantments(vec![
+                ("minecraft:efficiency".into(), 5),
+                ("minecraft:mending".into(), 1),
+            ]),
+            Component::DyedColor(-6_265_536),
         ]
     }
 
@@ -913,6 +935,44 @@ mod tests {
         // The edge sends the registry's entries in this order, and a client numbers them
         // so.
         assert_eq!(enchantments().entries[33], "minecraft:sharpness");
+    }
+
+    #[test]
+    fn a_book_s_stored_mending_goes_by_its_place_as_an_enchantment_does() {
+        let components = of(&[Component::StoredEnchantments(vec![(
+            "minecraft:mending".into(),
+            1,
+        )])]);
+        let added = wire_components(&components).added;
+        let mending = enchantments()
+            .id_of("minecraft:mending")
+            .expect("mending is an enchantment");
+        assert_eq!(
+            added,
+            vec![WireComponent::StoredEnchantments(vec![(mending, 1)])]
+        );
+        assert_eq!(
+            world_components(&adding(added[0].clone())).map(|world| world == components),
+            Ok(true)
+        );
+        refusal(WireComponent::StoredEnchantments(vec![(mending, 0)]));
+        refusal(WireComponent::StoredEnchantments(vec![(
+            enchantments().entries.len() as i32,
+            1,
+        )]));
+    }
+
+    #[test]
+    fn a_dyed_colour_crosses_as_its_int() {
+        let components = of(&[Component::DyedColor(-6_265_536)]);
+        assert_eq!(
+            wire_components(&components).added,
+            vec![WireComponent::DyedColor(-6_265_536)]
+        );
+        assert_eq!(
+            world_components(&adding(WireComponent::DyedColor(-6_265_536))),
+            Ok(components)
+        );
     }
 
     #[test]

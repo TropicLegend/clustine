@@ -41,6 +41,8 @@
 //! | `suspicious_stew_effects` | list of (effect string, duration i32) |
 //! | `ominous_bottle_amplifier` | i32 |
 //! | `chicken/variant` | string |
+//! | `stored_enchantments` | list of (enchantment string, level i32) |
+//! | `dyed_color` | i32, the RGB colour |
 //!
 //! A plain stack, which nearly every stack is, is its item and count and two counts of
 //! 0: twelve bytes.
@@ -201,6 +203,8 @@ fn put_value(out: &mut Vec<u8>, component: &Component) {
             out.extend_from_slice(&amplifier.to_be_bytes());
         }
         Component::ChickenVariant(variant) => put_string(out, variant),
+        Component::StoredEnchantments(levels) => put_list(out, levels, put_named_number),
+        Component::DyedColor(rgb) => out.extend_from_slice(&rgb.to_be_bytes()),
     }
 }
 
@@ -250,6 +254,10 @@ fn take_value(input: &mut Input<'_>, kind: Kind, depth: u8) -> Result<Component,
         }
         Kind::OminousBottleAmplifier => Component::OminousBottleAmplifier(input.i32()?),
         Kind::ChickenVariant => Component::ChickenVariant(take_string(input)?),
+        Kind::StoredEnchantments => {
+            Component::StoredEnchantments(take_list(input, take_named_number)?)
+        }
+        Kind::DyedColor => Component::DyedColor(input.i32()?),
     })
 }
 
@@ -494,6 +502,11 @@ pub(crate) mod tests {
             Component::SuspiciousStewEffects(vec![("minecraft:night_vision".into(), 100)]),
             Component::OminousBottleAmplifier(4),
             Component::ChickenVariant("minecraft:cold".into()),
+            Component::StoredEnchantments(vec![
+                ("minecraft:efficiency".into(), 4),
+                ("minecraft:mending".into(), 1),
+            ]),
+            Component::DyedColor(-6_265_536),
         ];
         assert_eq!(every.len(), Kind::ALL.len(), "one component of every kind");
         for component in every {

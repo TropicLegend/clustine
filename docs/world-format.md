@@ -436,6 +436,8 @@ kind, each name in the `minecraft` namespace:
 | `suspicious_stew_effects` | a list of (effect string, duration i32) |
 | `ominous_bottle_amplifier` | i32 |
 | `chicken/variant` | a string |
+| `stored_enchantments` | a list of (enchantment string, level i32) |
+| `dyed_color` | i32, the RGB colour |
 
 The stacks in a container block's entity in a chunk file are the game's NBT
 (`ItemStackWithSlot`), and keep no components yet.

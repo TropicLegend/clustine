@@ -513,6 +513,26 @@ mod tests {
         );
     }
 
+    /// The two kinds N10 adds have no answers of the game's own in `answers.tsv`; their
+    /// codecs are ones it has: `stored_enchantments` is `enchantments`' codec, and
+    /// `dyed_color` writes a bare int, as `ominous_bottle_amplifier` does.
+    #[test]
+    fn stored_enchantments_and_a_dyed_colour_hash_as_the_answers_of_their_codecs() {
+        assert_eq!(
+            hash(&Component::StoredEnchantments(vec![
+                ("minecraft:sharpness".into(), 3),
+                ("minecraft:unbreaking".into(), 1),
+            ])),
+            -973988117
+        );
+        assert_eq!(hash(&Component::StoredEnchantments(Vec::new())), -982207288);
+        assert_eq!(hash(&Component::DyedColor(2)), 1064459813);
+        assert_eq!(
+            hash(&Component::DyedColor(-6_265_536)),
+            hash_value(&Value::Int(-6_265_536)) as i32
+        );
+    }
+
     #[test]
     fn a_maps_hash_does_not_depend_on_the_order_of_its_entries() {
         let one = Value::Map(vec![
@@ -594,6 +614,8 @@ mod tests {
                 Kind::SuspiciousStewEffects => Component::SuspiciousStewEffects(Vec::new()),
                 Kind::OminousBottleAmplifier => Component::OminousBottleAmplifier(0),
                 Kind::ChickenVariant => Component::ChickenVariant("minecraft:temperate".into()),
+                Kind::StoredEnchantments => Component::StoredEnchantments(Vec::new()),
+                Kind::DyedColor => Component::DyedColor(-6_265_536),
             };
             assert_eq!(component.kind(), kind);
             hash(&component);

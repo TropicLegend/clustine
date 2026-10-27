@@ -38,11 +38,13 @@ pub enum Kind {
     SuspiciousStewEffects,
     OminousBottleAmplifier,
     ChickenVariant,
+    StoredEnchantments,
+    DyedColor,
 }
 
 impl Kind {
     /// Every kind, in the patch's order.
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 17] = [
         Kind::PotionContents,
         Kind::PotionDurationScale,
         Kind::ChargedProjectiles,
@@ -58,6 +60,8 @@ impl Kind {
         Kind::SuspiciousStewEffects,
         Kind::OminousBottleAmplifier,
         Kind::ChickenVariant,
+        Kind::StoredEnchantments,
+        Kind::DyedColor,
     ];
 
     /// The game's name of the kind in the `data_component_type` registry, which is also
@@ -79,6 +83,8 @@ impl Kind {
             Kind::SuspiciousStewEffects => "minecraft:suspicious_stew_effects",
             Kind::OminousBottleAmplifier => "minecraft:ominous_bottle_amplifier",
             Kind::ChickenVariant => "minecraft:chicken/variant",
+            Kind::StoredEnchantments => "minecraft:stored_enchantments",
+            Kind::DyedColor => "minecraft:dyed_color",
         }
     }
 
@@ -134,6 +140,14 @@ pub enum Component {
     OminousBottleAmplifier(i32),
     /// The chicken variant an egg's chicks are, by name.
     ChickenVariant(String),
+    /// The enchantments an enchanted book holds for an anvil to give, kept as
+    /// [`Component::Enchantments`] is: by name with their levels, in the registry's order.
+    /// The game's codecs of the two are one (`ItemEnchantments`).
+    StoredEnchantments(Vec<(String, i32)>),
+    /// A dyed leather item's colour (`DyedItemColor`): an RGB `int`, whose top byte the
+    /// game's dyeing leaves 0. 26.3 keeps no tooltip flag in it (`tooltip_display` hides
+    /// its line).
+    DyedColor(i32),
 }
 
 impl Component {
@@ -155,6 +169,8 @@ impl Component {
             Component::SuspiciousStewEffects(_) => Kind::SuspiciousStewEffects,
             Component::OminousBottleAmplifier(_) => Kind::OminousBottleAmplifier,
             Component::ChickenVariant(_) => Kind::ChickenVariant,
+            Component::StoredEnchantments(_) => Kind::StoredEnchantments,
+            Component::DyedColor(_) => Kind::DyedColor,
         }
     }
 }

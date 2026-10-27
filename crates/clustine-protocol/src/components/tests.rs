@@ -103,6 +103,8 @@ fn every_component() -> Vec<WireComponent> {
         WireComponent::SuspiciousStewEffects(vec![(15, 160), (3, 100)]),
         WireComponent::OminousBottleAmplifier(4),
         WireComponent::ChickenVariant(2),
+        WireComponent::StoredEnchantments(vec![(26, 1), (12, 5)]),
+        WireComponent::DyedColor(-6_265_536),
     ]
 }
 
@@ -116,6 +118,8 @@ fn every_kind_of_the_set_is_one_of_the_values_and_none_twice() {
         .collect();
     assert_eq!(names[0], "minecraft:potion_contents");
     assert_eq!(names[14], "minecraft:chicken/variant");
+    assert_eq!(names[15], "minecraft:stored_enchantments");
+    assert_eq!(names[16], "minecraft:dyed_color");
     assert_eq!(potion::NAMES[0], "minecraft:water");
     assert_eq!(mob_effect::NAMES[0], "minecraft:speed");
 }
@@ -211,6 +215,34 @@ fn two_enchantments_known_answer() {
     decodes_and_encodes_back(
         &bytes,
         &WireComponent::Enchantments(vec![(10, 3), (200, 1)]),
+    );
+}
+
+#[test]
+fn stored_enchantments_known_answer() {
+    // The same bytes as `enchantments`: a book of enchantment 26 at level 1.
+    decodes_and_encodes_back(
+        &[1, 26, 1],
+        &WireComponent::StoredEnchantments(vec![(26, 1)]),
+    );
+    // A level outside 0 to 255 is refused as `ItemEnchantments` refuses it.
+    assert!(
+        Reader::new(&[1, 26, 0x80, 0x02])
+            .component(data_component_type::STORED_ENCHANTMENTS, 0)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_dyed_colour_is_a_plain_four_byte_int_known_answer() {
+    // `ByteBufCodecs.INT`: big-endian, not a var-int; leather's colour is negative.
+    decodes_and_encodes_back(
+        &[0xFF, 0xA0, 0x65, 0x40],
+        &WireComponent::DyedColor(-6_265_536),
+    );
+    decodes_and_encodes_back(
+        &[0, 0xB0, 0x2E, 0x26],
+        &WireComponent::DyedColor(0x00B0_2E26),
     );
 }
 

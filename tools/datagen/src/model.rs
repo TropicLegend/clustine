@@ -99,6 +99,8 @@ pub struct GameData {
     pub loot: loot::Compiled,
     /// The villagers' and the wandering trader's trades and trade sets, compiled.
     pub trades: trades::Compiled,
+    /// What enchanting reads of the enchantments and of the items' enchantability.
+    pub enchantments: crate::enchantments::Compiled,
 }
 
 /// What the default components of an item say that Clustine reads
@@ -614,6 +616,17 @@ impl GameData {
             },
         )?;
 
+        let enchantments = crate::enchantments::load(
+            &data,
+            &reports.join("minecraft/components/item"),
+            &crate::enchantments::Names {
+                items: &item_names,
+                enchantments,
+                item_tags: &tag_names("item"),
+                enchantment_tags: &tag_names("enchantment"),
+            },
+        )?;
+
         let fluids = static_registry(&registries, "fluid")?;
         let block_entity_types = static_registry(&registries, "block_entity_type")?;
         let extract = Extract::load(extract)?;
@@ -659,6 +672,7 @@ impl GameData {
             item_components,
             loot,
             trades,
+            enchantments,
         })
     }
 

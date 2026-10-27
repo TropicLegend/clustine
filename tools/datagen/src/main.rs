@@ -11,6 +11,7 @@ mod carver;
 mod density;
 mod dump;
 mod emit;
+mod enchantments;
 mod extract;
 mod feature;
 mod item_defaults;

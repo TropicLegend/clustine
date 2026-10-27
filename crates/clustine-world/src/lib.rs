@@ -17,6 +17,7 @@ mod position;
 pub mod projectiles;
 mod section;
 pub mod spawn;
+pub mod trading;
 
 pub use change::Change;
 pub use chunk::{

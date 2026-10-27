@@ -151,6 +151,7 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
             "block_properties",
             "blocks",
             "dimension_types",
+            "enchantments",
             "entity_types",
             "item_components",
             "items",
@@ -184,6 +185,11 @@ fn generated(data: &GameData) -> Result<Vec<Output>> {
     add(DATA_DIR, "dimension_types.rs", dimension_types(data));
     add(DATA_DIR, "tags.rs", tags(data));
     add(DATA_DIR, "trades.rs", crate::trades::emit(&data.trades)?);
+    add(
+        DATA_DIR,
+        "enchantments.rs",
+        crate::enchantments::emit(&data.enchantments)?,
+    );
     let biomes = data
         .synced_registries
         .iter()
@@ -1654,7 +1660,7 @@ fn packet_ids(data: &GameData) -> Result<String> {
 /// The kinds of item component Clustine reads (`docs/groundwork/n9-plan.md`, section
 /// 3.1), in the order of the world's `components::Kind`, each given a constant with its
 /// id.
-const COMPONENT_KINDS: [&str; 15] = [
+const COMPONENT_KINDS: [&str; 17] = [
     "minecraft:potion_contents",
     "minecraft:potion_duration_scale",
     "minecraft:charged_projectiles",
@@ -1670,6 +1676,8 @@ const COMPONENT_KINDS: [&str; 15] = [
     "minecraft:suspicious_stew_effects",
     "minecraft:ominous_bottle_amplifier",
     "minecraft:chicken/variant",
+    "minecraft:stored_enchantments",
+    "minecraft:dyed_color",
 ];
 
 /// The numbers the wire gives item components and the registry values in them: the
@@ -1766,11 +1774,12 @@ mod tests {
         )
         .unwrap();
         assert!(out.starts_with(
-            "pub mod data_component_type {\n    pub const POTION_CONTENTS: i32 = 16;\n"
+            "pub mod data_component_type {\n    pub const POTION_CONTENTS: i32 = 18;\n"
         ));
-        assert!(out.contains("    pub const CHICKEN_VARIANT: i32 = 2;\n"));
+        assert!(out.contains("    pub const CHICKEN_VARIANT: i32 = 4;\n"));
+        assert!(out.contains("    pub const DYED_COLOR: i32 = 2;\n"));
         assert!(out.contains(
-            "    pub static NAMES: [&str; 17] = [\n        \"minecraft:custom_data\",\n"
+            "    pub static NAMES: [&str; 19] = [\n        \"minecraft:custom_data\",\n"
         ));
         assert!(out.contains("pub mod potion {\n    pub static NAMES: [&str; 1] = [\n"));
         assert!(out.ends_with(

@@ -13,6 +13,7 @@ The files, of which the packed tables (*.bin) can carry no such line themselves:
   blocks.rs
   collisions.bin
   dimension_types.rs
+  enchantments.rs
   entity_types.rs
   item_components.rs
   items.rs

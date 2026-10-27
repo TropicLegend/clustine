@@ -16,6 +16,8 @@ pub mod data_component_type {
     pub const SUSPICIOUS_STEW_EFFECTS: i32 = 55;
     pub const OMINOUS_BOTTLE_AMPLIFIER: i32 = 65;
     pub const CHICKEN_VARIANT: i32 = 104;
+    pub const STORED_ENCHANTMENTS: i32 = 45;
+    pub const DYED_COLOR: i32 = 47;
 
     pub static NAMES: [&str; 122] = [
         "minecraft:custom_data",

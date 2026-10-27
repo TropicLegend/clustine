@@ -14,6 +14,7 @@ pub mod biome_parameters;
 pub mod block_physics;
 pub mod block_states;
 pub mod collisions;
+pub mod enchanting;
 pub mod faces;
 pub mod loot;
 pub mod packed;

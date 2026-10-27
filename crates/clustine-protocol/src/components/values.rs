@@ -4,7 +4,8 @@
 //! `ChargedProjectiles` (with `ItemStackTemplate`), `ItemEnchantments`, `UseCooldown`,
 //! `Fireworks`, `FireworkExplosion`, `BannerPatternLayers`, `Rarity`, `TooltipDisplay`,
 //! `SuspiciousStewEffects`, `OminousBottleAmplifier`, the text component of
-//! `item_name`, and `chicken/variant`'s holder. Lists the game bounds are bounded here
+//! `item_name`, `chicken/variant`'s holder, `stored_enchantments` (`ItemEnchantments`
+//! again) and `DyedItemColor` (n10). Lists the game bounds are bounded here
 //! by the same maxima, and the writers write what they are given: the edge keeps a
 //! value within the game's limits before it is written.
 //!
@@ -55,11 +56,17 @@ pub enum WireComponent {
     /// A variant by its number in the `chicken_variant` registry the edge sends
     /// (`ChickenVariant.STREAM_CODEC`, `ByteBufCodecs.holderRegistry`).
     ChickenVariant(i32),
+    /// An enchanted book's enchantments, as [`WireComponent::Enchantments`] (the same
+    /// `ItemEnchantments.STREAM_CODEC`, n9 DataComponents `lambda$static$45`).
+    StoredEnchantments(Vec<(i32, i32)>),
+    /// A dyed item's colour, a plain 4-byte `int` (`DyedItemColor.STREAM_CODEC`,
+    /// `ByteBufCodecs.INT`, n10 DyedItemColor).
+    DyedColor(i32),
 }
 
 impl WireComponent {
     /// The ids of the set's kinds, in the order of the world's `components::Kind`.
-    pub const IDS: [i32; 15] = [
+    pub const IDS: [i32; 17] = [
         data_component_type::POTION_CONTENTS,
         data_component_type::POTION_DURATION_SCALE,
         data_component_type::CHARGED_PROJECTILES,
@@ -75,6 +82,8 @@ impl WireComponent {
         data_component_type::SUSPICIOUS_STEW_EFFECTS,
         data_component_type::OMINOUS_BOTTLE_AMPLIFIER,
         data_component_type::CHICKEN_VARIANT,
+        data_component_type::STORED_ENCHANTMENTS,
+        data_component_type::DYED_COLOR,
     ];
 
     /// The id of its kind in the `data_component_type` registry.
@@ -95,6 +104,8 @@ impl WireComponent {
             Self::SuspiciousStewEffects(_) => data_component_type::SUSPICIOUS_STEW_EFFECTS,
             Self::OminousBottleAmplifier(_) => data_component_type::OMINOUS_BOTTLE_AMPLIFIER,
             Self::ChickenVariant(_) => data_component_type::CHICKEN_VARIANT,
+            Self::StoredEnchantments(_) => data_component_type::STORED_ENCHANTMENTS,
+            Self::DyedColor(_) => data_component_type::DYED_COLOR,
         }
     }
 }
@@ -268,7 +279,7 @@ impl Writer {
             WireComponent::ChargedProjectiles(stacks) => {
                 self.put_array(stacks, Writer::put_wire_stack);
             }
-            WireComponent::Enchantments(levels) => {
+            WireComponent::Enchantments(levels) | WireComponent::StoredEnchantments(levels) => {
                 self.put_array(levels, |w, (enchantment, level)| {
                     w.put_var_int(*enchantment);
                     w.put_var_int(*level);
@@ -298,6 +309,7 @@ impl Writer {
             }
             WireComponent::OminousBottleAmplifier(amplifier) => self.put_var_int(*amplifier),
             WireComponent::ChickenVariant(variant) => self.put_var_int(*variant),
+            WireComponent::DyedColor(rgb) => self.put_i32(*rgb),
         }
     }
 
@@ -440,6 +452,8 @@ impl Reader<'_> {
                 WireComponent::OminousBottleAmplifier(self.var_int()?)
             }
             kind::CHICKEN_VARIANT => WireComponent::ChickenVariant(self.var_int()?),
+            kind::STORED_ENCHANTMENTS => WireComponent::StoredEnchantments(self.enchantments()?),
+            kind::DYED_COLOR => WireComponent::DyedColor(self.i32()?),
             _ => {
                 return Err(DecodeError::InvalidValue {
                     what: OUTSIDE_THE_SET,

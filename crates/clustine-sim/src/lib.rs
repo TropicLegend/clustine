@@ -36,6 +36,7 @@ pub mod shown;
 mod spawning;
 mod state;
 pub mod time;
+mod trading;
 
 pub use api::{
     CountsReport, PoiSeen, PublishedCounts, PublishedVillage, SPAWN_CATEGORIES, SpawnCounts,

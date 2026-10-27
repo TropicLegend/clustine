@@ -65,7 +65,7 @@ pub fn structure(component: &Component) -> Value {
         Component::ChargedProjectiles(stacks) => {
             Value::List(stacks.iter().map(stack_structure).collect())
         }
-        Component::Enchantments(levels) => Value::Map(
+        Component::Enchantments(levels) | Component::StoredEnchantments(levels) => Value::Map(
             levels
                 .iter()
                 .map(|(name, level)| (name.clone(), Value::Int(*level)))
@@ -146,6 +146,8 @@ pub fn structure(component: &Component) -> Value {
         Component::OminousBottleAmplifier(amplifier) => Value::Int(*amplifier),
         // A holder by name (`RegistryCodecs.holder`).
         Component::ChickenVariant(name) => string(name),
+        // `ExtraCodecs.RGB_COLOR_CODEC` writes the int (n10 DyedItemColor's `CODEC`).
+        Component::DyedColor(rgb) => Value::Int(*rgb),
     }
 }
 
@@ -172,19 +174,12 @@ pub fn component_from(kind: Kind, value: &Value) -> Read<Component> {
             }
             Component::ChargedProjectiles(stacks.iter().map(stack_from).collect::<Read<_>>()?)
         }
-        Kind::Enchantments => {
-            // `unboundedMap(Enchantment.CODEC, intRange(1, 255))`.
-            let mut levels: Vec<(String, i32)> = Vec::new();
-            for (name, level) in map(value, what)? {
-                let name = identifier(name, what)?;
-                let level = int_in(level, 1, 255, what)?;
-                if levels.iter().any(|(known, _)| *known == name) {
-                    return refused(format!("{what} names {name} twice"));
-                }
-                levels.push((name, level));
-            }
-            Component::Enchantments(super::in_registry_order(levels))
-        }
+        Kind::Enchantments => Component::Enchantments(enchantment_levels(value, what)?),
+        // The same codec as `enchantments` (n9 DataComponents, `lambda$static$45`).
+        Kind::StoredEnchantments => Component::StoredEnchantments(enchantment_levels(value, what)?),
+        // `RGB_COLOR_CODEC` reads an int, or three floats as its alternative, which is
+        // not read here, as a potion's colour is not.
+        Kind::DyedColor => Component::DyedColor(int(value, what)?),
         Kind::UseCooldown => {
             let fields = map(value, what)?;
             // `POSITIVE_FLOAT`.
@@ -302,6 +297,21 @@ pub fn component_from(kind: Kind, value: &Value) -> Read<Component> {
             }
         },
     })
+}
+
+/// `ItemEnchantments.CODEC`'s levels, `unboundedMap(Enchantment.CODEC, intRange(1,
+/// 255))`, in the registry's order.
+fn enchantment_levels(value: &Value, what: &str) -> Read<Vec<(String, i32)>> {
+    let mut levels: Vec<(String, i32)> = Vec::new();
+    for (name, level) in map(value, what)? {
+        let name = identifier(name, what)?;
+        let level = int_in(level, 1, 255, what)?;
+        if levels.iter().any(|(known, _)| *known == name) {
+            return refused(format!("{what} names {name} twice"));
+        }
+        levels.push((name, level));
+    }
+    Ok(super::in_registry_order(levels))
 }
 
 /// The game's `ItemStackTemplate.CODEC` encoding of `stack`: its item by name, its count
@@ -1243,6 +1253,13 @@ mod tests {
             ]),
             Component::OminousBottleAmplifier(4),
             Component::ChickenVariant("minecraft:cold".into()),
+            Component::StoredEnchantments(Vec::new()),
+            Component::StoredEnchantments(vec![
+                ("minecraft:efficiency".into(), 5),
+                ("minecraft:mending".into(), 1),
+            ]),
+            Component::DyedColor(-6_265_536),
+            Component::DyedColor(0x00B0_2E26),
         ]
     }
 
@@ -1519,6 +1536,13 @@ mod tests {
             ),
             (Kind::PotionContents, s("Minecraft:Swiftness")),
             (Kind::ChickenVariant, m(&[])),
+            (
+                Kind::StoredEnchantments,
+                m(&[("minecraft:mending", Value::Int(256))]),
+            ),
+            (Kind::StoredEnchantments, Value::List(Vec::new())),
+            (Kind::DyedColor, s("red")),
+            (Kind::DyedColor, m(&[("rgb", Value::Int(1))])),
             // Text it does not read.
             (Kind::ItemName, Value::Int(3)),
             (Kind::ItemName, Value::List(Vec::new())),
