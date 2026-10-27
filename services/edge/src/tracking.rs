@@ -20,6 +20,7 @@ use clustine_data::{ENTITY_TYPE_INFO, entity_types};
 use clustine_protocol::codec::Position;
 use clustine_protocol::delta::{VecDeltaCodec, precision_loss};
 use clustine_protocol::item::ItemStack as WireStack;
+use clustine_protocol::packets::play::{EffectParticle, particle};
 use clustine_protocol::packets::{
     self, Packet,
     play::{
@@ -29,7 +30,7 @@ use clustine_protocol::packets::{
     },
 };
 use clustine_sim::api::Tracked;
-use clustine_sim::shown::{DataShown, Holder, Serialiser};
+use clustine_sim::shown::{DataShown, Holder, Serialiser, ShownParticle};
 use clustine_world::EntityData;
 
 use crate::encode::wire_stack;
@@ -368,8 +369,8 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
     }
 }
 
-/// A mob's synced value as the protocol writes it; `None` for those whose writing waits
-/// for part S12 (`docs/groundwork/n9-plan.md`, section 10), which no mob reports yet.
+/// A mob's synced value as the protocol writes it; `None` for an entity, whose writing
+/// waits for the first value that shows one (`docs/groundwork/n9-plan.md`, section 10).
 pub(crate) fn data_value(value: DataShown) -> Option<EntityDataValue> {
     Some(match value {
         DataShown::Byte(byte) => EntityDataValue::Byte(byte),
@@ -407,9 +408,22 @@ pub(crate) fn data_value(value: DataShown) -> Option<EntityDataValue> {
         DataShown::OptionalBlockState(state) => {
             EntityDataValue::OptionalBlockState(state.map_or(0, i32::from))
         }
-        DataShown::Entity(_) | DataShown::Particles(_) | DataShown::OptionalUnsignedInt(_) => {
-            return None;
-        }
+        DataShown::Particles(particles) => EntityDataValue::Particles(
+            particles
+                .into_iter()
+                .map(|particle| match particle {
+                    ShownParticle::EntityEffect { colour } => EffectParticle::Colour {
+                        kind: particle::ENTITY_EFFECT,
+                        argb: colour,
+                    },
+                    ShownParticle::Simple(kind) => EffectParticle::Simple(kind),
+                })
+                .collect(),
+        ),
+        DataShown::OptionalUnsignedInt(value) => EntityDataValue::OptionalUnsignedInt(value),
+        // An entity is written as its wire id, which the tracker does not know: the
+        // guardian's beam (part S7), the first to show one, brings it.
+        DataShown::Entity(_) => return None,
     })
 }
 
@@ -1281,6 +1295,32 @@ mod tests {
     use super::*;
 
     const ID: i32 = 1;
+
+    /// A living entity's effect particles go out as the game's list: `entity_effect` with
+    /// its colour, the others by their type alone; a number or none as the optional int.
+    #[test]
+    fn effect_particles_and_an_optional_int_are_written_as_the_game_s() {
+        use clustine_sim::shown::ShownParticle;
+        assert_eq!(
+            data_value(DataShown::Particles(vec![
+                ShownParticle::EntityEffect {
+                    colour: 0x26_33_EB_FF
+                },
+                ShownParticle::Simple(particle::ITEM_SLIME),
+            ])),
+            Some(EntityDataValue::Particles(vec![
+                EffectParticle::Colour {
+                    kind: particle::ENTITY_EFFECT,
+                    argb: 0x26_33_EB_FF
+                },
+                EffectParticle::Simple(particle::ITEM_SLIME),
+            ]))
+        );
+        assert_eq!(
+            data_value(DataShown::OptionalUnsignedInt(Some(4))),
+            Some(EntityDataValue::OptionalUnsignedInt(Some(4)))
+        );
+    }
 
     #[test]
     fn a_villager_s_data_is_written_with_its_registry_ids_and_level_as_they_are() {
