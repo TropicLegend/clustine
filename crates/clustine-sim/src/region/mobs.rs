@@ -326,6 +326,13 @@ impl Region {
             controlled,
             ..
         } = ticking;
+        // `rideTick` of a skeleton or a drowned that steers its mount: its body turned as
+        // its mount's (`AbstractSkeleton.rideTick`, `Drowned.rideTick`).
+        if let Some(steered) = &controlled
+            && turns_with_mount(entity.kind)
+        {
+            mob.body.head.body_yaw = steered.tick.mob.body.head.body_yaw;
+        }
         // The vehicle's navigation and move control as its rider's goals left them,
         // written back before the rider is put in its seat.
         if let (Some(controlled), Some((chunk, vehicle, _)), Some(from)) =
@@ -703,4 +710,19 @@ struct Shown {
     yaw: f32,
     pitch: f32,
     flags: u8,
+}
+
+/// Whether a rider of the type `kind` turns its body as the mount it steers
+/// (`AbstractSkeleton.rideTick`, `Drowned.rideTick`): the skeletons and the drowned.
+fn turns_with_mount(kind: u16) -> bool {
+    use clustine_data::entity_types as types;
+    [
+        types::SKELETON,
+        types::STRAY,
+        types::BOGGED,
+        types::PARCHED,
+        types::WITHER_SKELETON,
+        types::DROWNED,
+    ]
+    .contains(&i32::from(kind))
 }

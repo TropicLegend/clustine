@@ -128,3 +128,32 @@ fn a_mount_steered_by_its_rider_takes_no_stroll_of_its_own_and_its_rider_has_no_
     }
     assert!(chicken_paths > 0, "the zombie's stroll drove the chicken");
 }
+
+#[test]
+fn a_skeleton_steering_its_spider_turns_its_body_as_the_spider_s() {
+    let mut region = world(SEED, nothing);
+    let feet = [4.5, -60.0, 4.5];
+    let mut spider = mob_of(CHICKEN, entity_types::SPIDER, feet, |mob| {
+        mob.body.head.body_yaw = 120.0;
+        mob.body.head.head_yaw = 120.0;
+    });
+    spider.yaw = 120.0;
+    let mut skeleton = mob_of(ZOMBIE, entity_types::SKELETON, feet, |_| {});
+    spider.riding.passengers = vec![Seat {
+        key: skeleton.key,
+        player: false,
+        pending: None,
+    }];
+    skeleton.riding.vehicle = Some(spider.key);
+    lay(&mut region, &spider);
+    lay(&mut region, &skeleton);
+    for _ in 0..3 {
+        region.tick(&TickInputs::default());
+        let (_, spider) = mob_at(&region, CHICKEN);
+        let (_, skeleton) = mob_at(&region, ZOMBIE);
+        assert_eq!(
+            skeleton.body.head.body_yaw.to_bits(),
+            spider.body.head.body_yaw.to_bits()
+        );
+    }
+}
