@@ -17,7 +17,7 @@ use crate::mobs::ai::goals::{AvoidEntityGoal, FloatGoal, LookAtPlayerGoal, Rando
 use crate::mobs::ai::sensing::Class;
 use crate::mobs::ai::spells::{CastingSpellGoal, Spell, UseSpellGoal};
 use crate::mobs::ai::{Ai, Setup};
-use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::body::hurt::{DamageSource, Struck};
 use crate::mobs::tick::MobTick;
 use crate::region::Random;
 use crate::shown::DataShown;
@@ -118,6 +118,25 @@ impl MobType for Evoker {
 
     fn remove_when_far_away(&self, _: u16, mob: &Mob, _: u32, distance: f64) -> bool {
         illagers::remove_when_far_away(mob, distance)
+    }
+
+    /// `Raider.aiStep`'s own part (`crate::mobs::ai::raider_goals`).
+    fn before_ai_step(&self, tick: &mut MobTick<'_>) {
+        illagers::ai_step(tick);
+    }
+
+    /// `Raider.hurtServer`'s word to its raid, before the hurt lands.
+    fn before_hurt_server(&self, struck: &mut Struck<'_>, _: &DamageSource, _: f32) {
+        illagers::hurt(struck);
+    }
+
+    /// `Raider.die`'s word to its raid.
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        illagers::died(struck, source);
+    }
+
+    fn requires_custom_persistence(&self, mob: &Mob) -> bool {
+        illagers::requires_custom_persistence(mob)
     }
 
     /// Of the evoker's `xpReward`, 10 (Evoker.txt, its constructor).

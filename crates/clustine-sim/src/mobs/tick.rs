@@ -306,6 +306,14 @@ pub(crate) enum Local {
         chunk: clustine_world::ChunkPos,
         news: clustine_world::RaidNews,
     },
+    /// A raider's word of its raid (`crate::mobs::ai::raider_goals`): of itself where
+    /// `key` is `None`, else of the raider `key` it recruits. The region finds the
+    /// raid's record, the region's own or the table's, and tells it
+    /// (`region/raid_tick.rs`).
+    Raider {
+        key: Option<EntityId>,
+        news: crate::mobs::ai::raider_goals::RaiderNews,
+    },
     #[allow(dead_code, reason = "parts V2 and V3 write into other villagers")]
     Villager {
         key: EntityId,

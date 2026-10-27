@@ -170,6 +170,18 @@ pub(crate) trait MobWorld: Holds {
         None
     }
 
+    /// The raid `id` as the view knows it, with its wave `wave`'s leader where it is the
+    /// region's own (part R1's `crate::mobs::ai::raider_goals::RaidKnown`). None where a
+    /// view knows none.
+    fn raid_known(
+        &self,
+        id: clustine_world::EntityId,
+        wave: i32,
+    ) -> Option<crate::mobs::ai::raider_goals::RaidKnown> {
+        let _ = (id, wave);
+        None
+    }
+
     /// The world's game time as the region's clock has it (`Level.getGameTime()`): what
     /// a wolf's anger ends at (none where a view knows no clock).
     fn game_time(&self) -> i64 {

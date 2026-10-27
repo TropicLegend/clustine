@@ -3,11 +3,14 @@
 //! creaking and looks; on patrol it holds its ground (`HoldGroundAttackGoal(10)`), and to
 //! a target it charges its crossbow over 25 ticks of its use, showing it
 //! (`IS_CHARGING_CROSSBOW`, data 17, which its arms are drawn by), and shoots it at 1.6
-//! (`RangedCrossbowAttackGoal(1.0, 8)`, `crate::mobs::ai::ranged_weapons`).
+//! (`RangedCrossbowAttackGoal(1.0, 8)`, `crate::mobs::ai::ranged_weapons`). A raid's
+//! pillager after wave 3 may carry the raid's crossbow of Quick Charge
+//! (`illagers::apply_raid_buffs`).
 //!
 //! Named differences: its crossbow is never enchanted at easy (the one time in 300 that
 //! would give it Piercing I on hard is drawn and lost); its inventory of five, which it
-//! fills only once read from a save (`canPickUpLoot`), is not kept.
+//! fills only once read from a save (`canPickUpLoot`) and with a white banner in a raid,
+//! is not kept.
 
 use clustine_data::{entity_types, items, sounds};
 use clustine_world::{BlockPos, ItemStack};
@@ -23,8 +26,9 @@ use crate::mobs::ai::goals::{
 use crate::mobs::ai::ranged_weapons::{self, RangedCrossbowAttackGoal};
 use crate::mobs::ai::sensing::{Class, Looked};
 use crate::mobs::ai::{Ai, Setup};
-use crate::mobs::body::hurt::DamageSource;
+use crate::mobs::body::hurt::{DamageSource, Struck};
 use crate::mobs::making::enchant_spawned_equipment;
+use crate::mobs::tick::MobTick;
 use crate::region::Random;
 use crate::shown::DataShown;
 
@@ -129,6 +133,25 @@ impl MobType for Pillager {
 
     fn remove_when_far_away(&self, _: u16, mob: &Mob, _: u32, distance: f64) -> bool {
         illagers::remove_when_far_away(mob, distance)
+    }
+
+    /// `Raider.aiStep`'s own part (`crate::mobs::ai::raider_goals`).
+    fn before_ai_step(&self, tick: &mut MobTick<'_>) {
+        illagers::ai_step(tick);
+    }
+
+    /// `Raider.hurtServer`'s word to its raid, before the hurt lands.
+    fn before_hurt_server(&self, struck: &mut Struck<'_>, _: &DamageSource, _: f32) {
+        illagers::hurt(struck);
+    }
+
+    /// `Raider.die`'s word to its raid.
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        illagers::died(struck, source);
+    }
+
+    fn requires_custom_persistence(&self, mob: &Mob) -> bool {
+        illagers::requires_custom_persistence(mob)
     }
 
     fn experience_reward(&self, _: u16, mob: &Mob, draws: &mut Random) -> i32 {

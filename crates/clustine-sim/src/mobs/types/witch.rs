@@ -3,7 +3,8 @@
 //! potion where it needs one (water breathing under water, fire resistance while it
 //! burns, healing when hurt, swiftness after a target beyond 11 blocks), with the game's
 //! draws in the game's order; to a target it throws splash potions every three seconds
-//! (`RangedAttackGoal(1.0, 60, 10)`, [`perform_ranged_attack`]).
+//! (`RangedAttackGoal(1.0, 60, 10)`, [`perform_ranged_attack`]). In a raid it heals the
+//! raiders about it (`crate::mobs::ai::raider_goals`).
 //!
 //! Named differences: the potion in its hand is a plain potion (`n7k-plan.md`, section
 //! 10): the client draws an empty bottle, and the potion it drinks is kept in its type
@@ -27,7 +28,7 @@ use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::{Ai, Setup};
 use crate::mobs::body::attributes::ADD_VALUE;
 use crate::mobs::body::effects::{self, Effect};
-use crate::mobs::body::hurt::{DamageSource, DamageType};
+use crate::mobs::body::hurt::{DamageSource, DamageType, Struck};
 use crate::mobs::body::{Event, Modifier, attribute};
 use crate::mobs::tick::{Local, MobTick, Shot};
 use crate::region::Random;
@@ -321,7 +322,15 @@ impl MobType for Witch {
         setup.add_goal(2, RandomStrollGoal::avoiding_water(1.0));
         setup.add_goal(3, LookAtPlayerGoal::new(Class::Player, 8.0));
         setup.add_goal(3, RandomLookAroundGoal);
-        crate::mobs::ai::targets::register(setup, crate::mobs::ai::targets::WITCH);
+        // `targets::WITCH`, with the healer of raiders of the raid's rules
+        // (`crate::mobs::ai::raider_goals`) in its place.
+        let targets = crate::mobs::ai::targets::WITCH;
+        crate::mobs::ai::targets::register(setup, &targets[..1]);
+        setup.add_target(
+            2,
+            crate::mobs::ai::raider_goals::NearestHealableRaiderTargetGoal,
+        );
+        crate::mobs::ai::targets::register(setup, &targets[2..]);
     }
 
     /// `Raider.finalizeSpawn`: the leader's draw, which a witch never passes for.
@@ -334,6 +343,7 @@ impl MobType for Witch {
     /// draw.
     fn before_ai_step(&self, tick: &mut MobTick<'_>) {
         if tick.mob.body.vitals.dying() {
+            illagers::ai_step(tick);
             return;
         }
         let mut own = illagers::own_of::<WitchState>(&tick.mob);
@@ -353,6 +363,8 @@ impl MobType for Witch {
             tick.out.events.push(Event::Entity(PARTICLES_EVENT));
         }
         illagers::update_own(&mut tick.mob, |state: &mut WitchState| *state = own);
+        // `Raider.aiStep`'s own part, after the witch's.
+        illagers::ai_step(tick);
     }
 
     /// `Witch.getDamageAfterMagicAbsorb`: what `#witch_resistant_to` hurts it is cut to
@@ -373,6 +385,20 @@ impl MobType for Witch {
 
     fn remove_when_far_away(&self, _: u16, mob: &Mob, _: u32, distance: f64) -> bool {
         illagers::remove_when_far_away(mob, distance)
+    }
+
+    /// `Raider.hurtServer`'s word to its raid, before the hurt lands.
+    fn before_hurt_server(&self, struck: &mut Struck<'_>, _: &DamageSource, _: f32) {
+        illagers::hurt(struck);
+    }
+
+    /// `Raider.die`'s word to its raid.
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        illagers::died(struck, source);
+    }
+
+    fn requires_custom_persistence(&self, mob: &Mob) -> bool {
+        illagers::requires_custom_persistence(mob)
     }
 
     fn experience_reward(&self, _: u16, mob: &Mob, draws: &mut Random) -> i32 {

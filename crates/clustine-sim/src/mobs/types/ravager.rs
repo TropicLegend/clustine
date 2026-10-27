@@ -42,7 +42,7 @@ use crate::mobs::ai::selector::{Goal, flags};
 use crate::mobs::ai::sensing::{self, Class, Looked};
 use crate::mobs::ai::targets::{self, NearestTarget, Target};
 use crate::mobs::ai::{Ai, HeadLimits, Setup, navigation};
-use crate::mobs::body::hurt::{DamageSource, GameEvent};
+use crate::mobs::body::hurt::{DamageSource, GameEvent, Struck};
 use crate::mobs::body::{self, Event, attribute};
 use crate::mobs::tick::{Local, MobTick};
 use crate::physics::Vec3;
@@ -432,6 +432,8 @@ impl MobType for Ravager {
     /// their flags, where `Mob`'s would take its moves and looks; only a boat it rides
     /// takes its jumps. Undone here before its goals run, as the game never does it.
     fn before_ai_step(&self, tick: &mut MobTick<'_>) {
+        // `Raider.aiStep`'s own part, first (`crate::mobs::ai::raider_goals`).
+        illagers::ai_step(tick);
         if !tick.controlled_by_mob {
             return;
         }
@@ -506,6 +508,20 @@ impl MobType for Ravager {
 
     fn remove_when_far_away(&self, _: u16, mob: &Mob, _: u32, distance: f64) -> bool {
         illagers::remove_when_far_away(mob, distance)
+    }
+
+    /// `Raider.hurtServer`'s word to its raid, before the hurt lands.
+    fn before_hurt_server(&self, struck: &mut Struck<'_>, _: &DamageSource, _: f32) {
+        illagers::hurt(struck);
+    }
+
+    /// `Raider.die`'s word to its raid.
+    fn on_die(&self, struck: &mut Struck<'_>, source: &DamageSource) {
+        illagers::died(struck, source);
+    }
+
+    fn requires_custom_persistence(&self, mob: &Mob) -> bool {
+        illagers::requires_custom_persistence(mob)
     }
 
     /// Of its `xpReward`, 20.

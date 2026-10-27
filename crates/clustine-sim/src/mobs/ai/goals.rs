@@ -2004,8 +2004,8 @@ fn is_raider(kind: u16) -> bool {
 /// stands, and shouts its target to the raiders within 8 (`forNonCombat().range(8)`,
 /// through walls and invisibility); it looks at the target and now and then grumbles
 /// while it is beyond the radius, and is aggressive once within it; at its end every
-/// raider about takes its target and is aggressive. No raid exists before N10, so the
-/// raid's refusal is never met. Named: a raider in a copy is not shouted to.
+/// raider about takes its target and is aggressive; a raider of a raid never does.
+/// Named: a raider in a copy is not shouted to.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HoldGroundAttackGoal {
     pub(crate) hostile_radius: f32,
@@ -2044,8 +2044,10 @@ impl Goal for HoldGroundAttackGoal {
     }
 
     fn can_use(&self, _: &mut (), ai: &mut Ai<'_, '_>) -> bool {
-        let patrolling = crate::mobs::types::illagers::state_of(&ai.tick.mob).patrolling;
-        if !patrolling
+        let raider = crate::mobs::types::illagers::state_of(&ai.tick.mob);
+        // `getCurrentRaid() == null`: a raid's raider holds no ground.
+        if raider.raid.is_some()
+            || !raider.patrolling
             || ai.tick.mob.body.combat.target.is_none()
             || ai.tick.mob.body.combat.aggressive
         {

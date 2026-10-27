@@ -3942,6 +3942,8 @@ mod tests {
     mod r7;
     mod raiders_and_guardians;
     mod raids_frame;
+    #[path = "../raids_n10_tests.rs"]
+    mod raids_n10_tests;
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;

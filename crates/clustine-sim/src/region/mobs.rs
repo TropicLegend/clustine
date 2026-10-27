@@ -165,6 +165,14 @@ impl MobWorld for View<'_> {
         }
     }
 
+    fn raid_known(
+        &self,
+        id: EntityId,
+        wave: i32,
+    ) -> Option<crate::mobs::ai::raider_goals::RaidKnown> {
+        self.region.raid_known(id, wave)
+    }
+
     fn game_time(&self) -> i64 {
         i64::try_from(self.region.clock.game_time).unwrap_or(i64::MAX)
     }

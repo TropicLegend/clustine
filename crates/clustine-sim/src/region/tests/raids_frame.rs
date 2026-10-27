@@ -208,6 +208,28 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
     // At the player's feet, wherever they entered.
     let feet = region.players[&player].pose.position;
     let centre = crate::physics::containing([feet.x, feet.y, feet.z]);
+    // A village at the raid, which a raid's tick needs or stops it (part R1's rules).
+    region
+        .chunks
+        .get_mut(&centre.chunk())
+        .unwrap()
+        .set_structures(vec![clustine_world::KeptStructure {
+            kind: clustine_world::KeptKind::VillagePlains,
+            source: centre.chunk(),
+            bounds: clustine_world::KeptBox {
+                min: centre,
+                max: centre,
+            },
+            pieces: vec![clustine_world::KeptBox {
+                min: centre,
+                max: centre,
+            }],
+        }]);
+    // Its bell, its meeting point taken: villages are where villagers claim.
+    let chunk = region.chunks.get_mut(&centre.chunk()).unwrap();
+    let (x, z) = centre.in_chunk();
+    chunk.set(x, centre.y, z, clustine_data::blocks::BELL);
+    assert!(chunk.acquire_ticket(clustine_world::InChunk::new(x, centre.y, z)));
     let mut output = TickOutput::default();
     region.create_or_extend_raid(centre, 1, &mut output);
     let id = region.own_raids()[0].1.id;
@@ -225,16 +247,17 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
         bars,
         [RaidBarChange::Add {
             name: RaidBarName::Raid,
-            progress: 0.0
-        }]
+            progress: 1.0 / 300.0
+        }],
+        "its countdown's first tick"
     );
     let mut output = TickOutput::default();
-    region.change_raid(id, &mut output, |raid| raid.bar_progress = Float(0.5));
     region.clock.game_time = 21;
     region.tick_raids(&mut output);
     assert!(output.player_events.iter().any(|(_, event)| matches!(
         event,
-        PlayerEvent::RaidBar { change: RaidBarChange::Progress(progress), .. } if *progress == 0.5
+        PlayerEvent::RaidBar { change: RaidBarChange::Progress(progress), .. }
+            if *progress == 2.0 / 300.0
     )));
     let mut output = TickOutput::default();
     region.change_raid(id, &mut output, |raid| raid.status = RaidStatus::Stopped);

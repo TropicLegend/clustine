@@ -2,17 +2,18 @@
 //! `PatrollingMonster`, `Raider`, `AbstractIllager` and `SpellcasterIllager` add to a
 //! monster, and the one type state the four types keep, each its own part of it.
 //!
-//! Named differences: no raid exists before N10, so the raid's goals hold their places
-//! as goals that never start, a raider never joins a raid nor celebrates, and its
-//! `Wave` and `CanJoinRaid` are kept and never read; a patrol's target from a structure
-//! template is not read (no template holds one). Patrols, their goal and the leader's
-//! ominous banner are `crate::mobs::ai::patrol`'s (N9's S11). The targets of each type,
-//! with `AbstractIllager`'s refusal of
-//! a baby villager, are `crate::mobs::ai::targets`'; its allies of `#illager_friends`
-//! are never asked of a target any of them takes.
+//! What a raider does of its raid (its goals, its joining, its word to the raid) is
+//! `crate::mobs::ai::raider_goals`', which the hooks here call for every type; the raid's
+//! buffs of each type (`applyRaidBuffs`) are here.
+//!
+//! Named differences: a patrol's target from a structure template is not read (no
+//! template holds one). Patrols, their goal and the leader's ominous banner are
+//! `crate::mobs::ai::patrol`'s (N9's S11). The targets of each type, with
+//! `AbstractIllager`'s refusal of a baby villager, are `crate::mobs::ai::targets`'; its
+//! allies of `#illager_friends` are never asked of a target any of them takes.
 
-use clustine_data::{entity_types, items};
-use clustine_world::{BlockPos, TypeState};
+use clustine_data::{entity_types, items, sounds};
+use clustine_world::{BlockPos, ItemStack, TypeState};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -22,9 +23,10 @@ use super::template;
 use super::{SpawnReason, Spawning};
 use crate::living::slots;
 use crate::mobs::Mob;
-use crate::mobs::ai::selector::flags;
+use crate::mobs::ai::raider_goals::{self, RaiderNews};
 use crate::mobs::ai::{Setup, patrol};
-use crate::mobs::types::tamable::Idle;
+use crate::mobs::body::hurt::{DamageSource, Struck};
+use crate::mobs::tick::{Local, MobTick};
 use crate::region::Random;
 use crate::shown::DataShown;
 
@@ -232,20 +234,138 @@ pub(crate) fn finalize_spawn(kind: u16, spawn: &mut Spawning<'_>, can_be_leader:
 /// The goals `PatrollingMonster.registerGoals` and `Raider.registerGoals` add before
 /// the type's own: `LongDistancePatrolGoal` (4, `crate::mobs::ai::patrol`), and the
 /// raid's `ObtainRaidLeaderBannerGoal` (1), `PathfindToRaidGoal` (3),
-/// `RaiderMoveThroughVillageGoal` (4) and `RaiderCelebration` (5), each holding its
-/// place without starting, as only a raid's would.
+/// `RaiderMoveThroughVillageGoal` (4) and `RaiderCelebration` (5)
+/// (`crate::mobs::ai::raider_goals`).
 pub(crate) fn register_raider_goals(setup: &mut Setup) {
     setup.add_goal(4, patrol::PATROL_GOAL);
-    setup.add_goal(1, Idle { flags: flags::MOVE });
-    setup.add_goal(3, Idle { flags: flags::MOVE });
-    setup.add_goal(4, Idle { flags: flags::MOVE });
-    setup.add_goal(5, Idle { flags: flags::MOVE });
+    setup.add_goal(1, raider_goals::ObtainRaidLeaderBannerGoal);
+    setup.add_goal(3, raider_goals::PathfindToRaidGoal);
+    setup.add_goal(4, raider_goals::RaiderMoveThroughVillageGoal);
+    setup.add_goal(5, raider_goals::RaiderCelebration);
 }
 
-/// `Raider.removeWhenFarAway(distance)`: with no raid, `PatrollingMonster`'s: a mob not
-/// patrolling may go, a patrolling one only beyond 128 blocks.
+/// `Raider.removeWhenFarAway(distance)`: never of a raid's; with no raid,
+/// `PatrollingMonster`'s: a mob not patrolling may go, a patrolling one only beyond 128
+/// blocks.
 pub(crate) fn remove_when_far_away(mob: &Mob, distance: f64) -> bool {
-    !state_of(mob).patrolling || distance > 16_384.0
+    let state = state_of(mob);
+    state.raid.is_none() && (!state.patrolling || distance > 16_384.0)
+}
+
+/// `Raider.requiresCustomPersistence()`: of a raid (what it rides is the body's).
+pub(crate) fn requires_custom_persistence(mob: &Mob) -> bool {
+    state_of(mob).raid.is_some()
+}
+
+/// `canBeLeader()`: a patrolling monster's, but the witch's and the ravager's.
+pub(crate) fn can_be_leader(kind: u16) -> bool {
+    !matches!(i32::from(kind), entity_types::WITCH | entity_types::RAVAGER)
+}
+
+/// `getCelebrateSound()` of each raider type.
+pub(crate) fn celebrate_sound(kind: u16) -> Option<i32> {
+    Some(match i32::from(kind) {
+        entity_types::PILLAGER => sounds::ENTITY_PILLAGER_CELEBRATE,
+        entity_types::VINDICATOR => sounds::ENTITY_VINDICATOR_CELEBRATE,
+        entity_types::EVOKER => sounds::ENTITY_EVOKER_CELEBRATE,
+        entity_types::WITCH => sounds::ENTITY_WITCH_CELEBRATE,
+        entity_types::RAVAGER => sounds::ENTITY_RAVAGER_CELEBRATE,
+        _ => return None,
+    })
+}
+
+/// `Raider.aiStep`'s own part, before the rest of its `aiStep`
+/// (`raider_goals::ai_step`).
+pub(crate) fn ai_step(tick: &mut MobTick<'_>) {
+    raider_goals::ai_step(tick);
+}
+
+/// `Raider.hurtServer`'s word to its raid before the hurt lands (`updateBossbar`): its
+/// health as it was. Named: sent of a raid whether or not it is active, which the raid
+/// reads the same.
+pub(crate) fn hurt(struck: &mut Struck<'_>) {
+    let Some(raid) = state_of(struck.mob).raid else {
+        return;
+    };
+    struck.out.local.push(Local::Raider {
+        key: None,
+        news: RaiderNews::Hurt {
+            raid,
+            health: struck.mob.body.vitals.health,
+        },
+    });
+}
+
+/// `Raider.die(source)`'s word to its raid: it died, by a player's hand where the hurt's
+/// cause is a player, who is then a hero (the raid takes its leader away with it).
+pub(crate) fn died(struck: &mut Struck<'_>, source: &DamageSource) {
+    let Some(raid) = state_of(struck.mob).raid else {
+        return;
+    };
+    let killer = source
+        .cause
+        .as_ref()
+        .and_then(|cause| cause.player)
+        .map(uuid::Uuid::from_u128);
+    struck.out.local.push(Local::Raider {
+        key: None,
+        news: RaiderNews::Died { raid, killer },
+    });
+}
+
+/// `Raid.getEnchantOdds()` of a raid of the omen `omen`: none below 2.
+fn enchant_odds(omen: i32) -> f32 {
+    match omen {
+        2 => 0.1,
+        3 => 0.25,
+        4 => 0.5,
+        5 => 0.75,
+        _ => 0.0,
+    }
+}
+
+/// `Raid.getNumGroups(NORMAL)` and `(EASY)`, which the buffs compare the wave with.
+const NORMAL_GROUPS: i32 = 5;
+const EASY_GROUPS: i32 = 3;
+
+/// `applyRaidBuffs(level, wave, unused)` of a raider of the type `kind` made for the wave
+/// `wave` of a raid of the omen `omen`, of its own stream: the pillager's crossbow and
+/// the vindicator's axe, each enchanted one time in its odds by the raid's providers
+/// (`enchantment_provider/raid/*`, each a single enchantment at a fixed level, which
+/// draws nothing); the witch, the evoker and the ravager have none.
+pub(crate) fn apply_raid_buffs(kind: u16, mob: &mut Mob, own: &mut Random, wave: i32, omen: i32) {
+    let hand = usize::from(slots::MAIN_HAND);
+    match i32::from(kind) {
+        entity_types::PILLAGER => {
+            if own.next_float() <= enchant_odds(omen) {
+                let level = if wave > NORMAL_GROUPS {
+                    Some(2)
+                } else if wave > EASY_GROUPS {
+                    Some(1)
+                } else {
+                    None
+                };
+                if let Some(level) = level {
+                    let mut crossbow = ItemStack::new(items::CROSSBOW, 1);
+                    crate::items::enchanting::enchant(
+                        &mut crossbow,
+                        "minecraft:quick_charge",
+                        level,
+                    );
+                    mob.body.equipment.slots[hand] = Some(crossbow);
+                }
+            }
+        }
+        entity_types::VINDICATOR => {
+            let mut axe = ItemStack::new(items::IRON_AXE, 1);
+            if own.next_float() <= enchant_odds(omen) {
+                let level = if wave > NORMAL_GROUPS { 2 } else { 1 };
+                crate::items::enchanting::enchant(&mut axe, "minecraft:sharpness", level);
+            }
+            mob.body.equipment.slots[hand] = Some(axe);
+        }
+        _ => {}
+    }
 }
 
 /// What the raider layers read of a structure template's tag
@@ -341,5 +461,66 @@ pub(crate) fn arm_pose(kind: u16, mob: &Mob, aggressive: bool) -> ArmPose {
             ArmPose::Celebrating
         }
         _ => ArmPose::Crossed,
+    }
+}
+
+#[cfg(test)]
+mod raid_buff_tests {
+    use super::*;
+
+    /// A raider of the type `kind` given the raid's buffs for `wave` at `omen`, of the
+    /// stream `seed`: its main hand, and how many numbers it drew.
+    fn buffed(kind: i32, wave: i32, omen: i32, seed: u64) -> (Option<ItemStack>, u64) {
+        let mut mob = Mob::fresh();
+        let start = Random::of_entity(seed, clustine_world::EntityId(1), 0);
+        let mut own = start.clone();
+        apply_raid_buffs(kind as u16, &mut mob, &mut own, wave, omen);
+        (
+            mob.body.equipment.slots[usize::from(slots::MAIN_HAND)].clone(),
+            own.draws_since(&start),
+        )
+    }
+
+    #[test]
+    fn a_raid_s_vindicator_is_given_its_axe_and_draws_its_odds_once() {
+        for seed in 0..20 {
+            let (hand, draws) = buffed(entity_types::VINDICATOR, 1, 1, seed);
+            assert_eq!(draws, 1);
+            assert_eq!(
+                hand,
+                Some(ItemStack::new(items::IRON_AXE, 1)),
+                "no odds at 1"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pillager_s_crossbow_is_enchanted_only_after_wave_3_by_the_odds_of_the_omen() {
+        for seed in 0..20 {
+            assert_eq!(buffed(entity_types::PILLAGER, 3, 5, seed), (None, 1));
+            assert_eq!(buffed(entity_types::PILLAGER, 4, 1, seed), (None, 1));
+        }
+        let enchanted = (0..200)
+            .filter_map(|seed| buffed(entity_types::PILLAGER, 4, 5, seed).0)
+            .collect::<Vec<_>>();
+        assert!(!enchanted.is_empty());
+        for stack in enchanted {
+            assert_eq!(stack.item, items::CROSSBOW);
+            assert_eq!(
+                crate::items::enchanting::enchantments_of(&stack),
+                [("minecraft:quick_charge".to_owned(), 1)]
+            );
+        }
+    }
+
+    #[test]
+    fn the_witch_the_evoker_and_the_ravager_have_no_buffs_and_draw_nothing() {
+        for kind in [
+            entity_types::WITCH,
+            entity_types::EVOKER,
+            entity_types::RAVAGER,
+        ] {
+            assert_eq!(buffed(kind, 7, 5, 0), (None, 0));
+        }
     }
 }
