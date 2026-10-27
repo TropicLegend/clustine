@@ -292,7 +292,9 @@ impl Scene {
         self.idle(Duration::from_millis(50 * ticks)).await
     }
 
-    async fn send<P: Packet>(&mut self, packet: &P) -> Result<()> {
+    /// Sends `packet` as it is: for what a scene has no step of its own for (N10's
+    /// interaction with a villager and its choice of a trade, `common/n10_village.rs`).
+    pub async fn send<P: Packet>(&mut self, packet: &P) -> Result<()> {
         self.connection.write(packet).await
     }
 
