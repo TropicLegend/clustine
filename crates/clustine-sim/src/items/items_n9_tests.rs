@@ -1275,9 +1275,8 @@ fn an_off_hand_throw_throws_what_the_off_hand_holds() {
 }
 
 #[test]
-fn a_rocket_used_on_a_block_takes_nothing_while_none_is_made() {
-    // `make_firework` makes nothing until the rockets' part: the use is the rocket's,
-    // and the stack is kept, as a creative player keeps it anyway.
+fn a_rocket_used_on_a_block_is_made_on_its_face_and_a_creative_player_keeps_the_stack() {
+    // `FireworkRocketItem.useOn`: the clicked point moved 0.15 along the face.
     let rocket = ItemStack::new(items::FIREWORK_ROCKET, 3);
     let mut world = World::holding(rocket.clone(), &[]);
     let output = world.tick(vec![PlayerInput::UseItemOn {
@@ -1287,6 +1286,11 @@ fn a_rocket_used_on_a_block_takes_nothing_while_none_is_made() {
         sneaking: false,
         sequence: 1,
     }]);
-    assert!(made_in(&output).is_empty());
+    let made = made_in(&output);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert_eq!(made[0].0, entity_types::FIREWORK_ROCKET);
+    let at = made[0].1.pose.position;
+    assert_eq!((at.x, at.z), (9.5, 8.5));
+    assert!((at.y - 64.15).abs() < 1e-9, "{at:?}");
     assert_eq!(world.slot(0), Some(rocket));
 }

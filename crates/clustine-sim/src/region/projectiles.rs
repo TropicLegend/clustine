@@ -123,7 +123,7 @@ pub(crate) fn pickable_and_alive(entity: &Entity) -> (bool, bool) {
 }
 
 /// The record a mob's or a dispenser's shot `shot` is made with: a thrown item for the
-/// throwables, an arrow for the arrows and the trident; `None` for a kind no shot
+/// throwables, an arrow for the arrows and the trident, a llama's spit; `None` for a kind no shot
 /// makes. Owned by `owner`.
 pub(crate) fn shot_record(shot: &Shot, owner: Option<EntityId>) -> Option<EntityData> {
     let kind = i32::from(shot.kind);
@@ -177,6 +177,13 @@ pub(crate) fn shot_record(shot: &Shot, owner: Option<EntityId>) -> Option<Entity
             shake_until: 0,
             of_kind,
         })));
+    }
+    if kind == entity_types::LLAMA_SPIT {
+        return Some(EntityData::Spit(clustine_world::projectiles::Spit {
+            owner,
+            left_owner: false,
+            has_been_shot: false,
+        }));
     }
     let throwable = [
         entity_types::SNOWBALL,

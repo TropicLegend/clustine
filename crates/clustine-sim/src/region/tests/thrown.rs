@@ -632,3 +632,38 @@ fn an_arrow_of_intangible_ammunition_is_for_creative_players_only() {
     let record = crate::region::projectiles::shot_record(&shot(stack), None);
     assert_eq!(pickup(record), clustine_world::Pickup::CreativeOnly);
 }
+
+/// A llama's shot is its spit, owned by the llama (`Llama.spit`); a trident's record has
+/// the trident's own hit sound (`ThrownTrident.getDefaultHitGroundSoundEvent`).
+#[test]
+fn a_llama_s_shot_makes_its_spit_and_a_trident_s_its_own_hit_sound() {
+    let shot = |kind: i32, item| crate::mobs::tick::Shot {
+        kind: u16::try_from(kind).unwrap(),
+        stack: ItemStack::new(item, 1),
+        weapon: None,
+        at: [0.0; 3],
+        direction: [1.0, 0.0, 0.0],
+        power: 1.5,
+        uncertainty: 10.0,
+        from_mob: Some(1.0),
+    };
+    let llama = EntityId(17);
+    let record = crate::region::projectiles::shot_record(
+        &shot(entity_types::LLAMA_SPIT, items::AIR),
+        Some(llama),
+    );
+    assert_eq!(
+        record,
+        Some(EntityData::Spit(clustine_world::projectiles::Spit {
+            owner: Some(llama),
+            left_owner: false,
+            has_been_shot: false,
+        }))
+    );
+    let trident =
+        crate::region::projectiles::shot_record(&shot(entity_types::TRIDENT, items::TRIDENT), None);
+    let Some(EntityData::Arrow(arrow)) = trident else {
+        panic!("{trident:?} is no trident");
+    };
+    assert_eq!(arrow.hit_sound, "minecraft:item.trident.hit_ground");
+}
