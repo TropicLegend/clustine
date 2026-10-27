@@ -17,7 +17,10 @@
 //! the game's. Cooldowns are kept on the region's ticks, and a hand-over carries what
 //! each has run, as it carries the attack's reset.
 //!
-//! Named differences: the equipment the game sends at a use's start
+//! Named differences: the living flags after a use of the off hand are 0, where the
+//! game's `stopUsingItem` takes down only the flag of using and leaves that of the off
+//! hand, which shows nothing while the other is down; the equipment the game sends at a
+//! use's start
 //! (`updatePlayersWithNewEquipment`) is not sent again, since the others are shown the
 //! hand already; a goat horn's and a brush's uses wait for their items' rules.
 
