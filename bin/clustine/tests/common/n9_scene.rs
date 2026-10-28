@@ -79,6 +79,9 @@ pub struct Scene {
     /// The entities shown before the scene began keeping packets, by id and kind.
     pub known: Vec<(i32, i32)>,
     pub log: Vec<Seen>,
+    /// The time packets of the join, before the scene began keeping packets: the first
+    /// has the clocks, which later ones leave out.
+    pub times: Vec<clustine_protocol::packets::play::SetTime>,
     /// Blocks the server changed since the join, by place.
     pub blocks: BTreeMap<(i32, i32, i32), i32>,
     pub window: Option<Window>,
@@ -114,6 +117,7 @@ impl Scene {
             registries: bot.info.registries.clone(),
             hashed_seed: bot.info.login.hashed_seed,
             log: Vec::new(),
+            times: bot.times.clone(),
             blocks: BTreeMap::new(),
             window: None,
             sequence: bot.acknowledged_sequence.max(0) + 1_000,

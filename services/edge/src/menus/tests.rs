@@ -298,7 +298,15 @@ fn a_horse_s_menu_opens_by_mount_screen_open_naming_the_horse_then_its_window_wh
         entity: clustine_world::EntityId(40),
     };
     let slots = vec![None; kind.slots()];
-    let packets = read(&menus.opened_with(3, 3, kind, "container.chest", slots, None, Some(17)));
+    let packets = read(&menus.opened_with(
+        3,
+        3,
+        kind,
+        &Text::translatable("container.chest").to_nbt(),
+        slots,
+        None,
+        Some(17),
+    ));
     assert!(matches!(
         &packets[..],
         [
@@ -346,4 +354,44 @@ fn a_hashed_potion_matches_by_the_game_s_hash_of_its_contents() {
     let plain = ItemStack::new(clustine_data::items::POTION, 1);
     assert!(said(Vec::new(), Vec::new()).shows(Some(&plain)));
     assert!(!said(vec![(contents, -1_164_789_092)], Vec::new()).shows(Some(&plain)));
+}
+
+#[test]
+fn an_entity_s_menu_is_titled_with_its_name_as_the_official_server_titles_a_cleric_s() {
+    // What the official server sent for a cleric's window (`merchant_oracle.rs`).
+    let uuid = uuid::Uuid::parse_str("749cb204-b68f-4b9c-95df-37464cee1bc2")
+        .unwrap()
+        .as_u128();
+    let kind = clustine_data::entity_types::VILLAGER as u16;
+    let key = "entity.minecraft.villager.cleric";
+    let translate = || ("translate".to_owned(), Nbt::String(key.to_owned()));
+    assert_eq!(
+        menu_title(key, Some((uuid, kind))),
+        Nbt::Compound(vec![
+            (
+                "insertion".to_owned(),
+                Nbt::String("749cb204-b68f-4b9c-95df-37464cee1bc2".to_owned())
+            ),
+            (
+                "hover_event".to_owned(),
+                Nbt::Compound(vec![
+                    ("name".to_owned(), Nbt::Compound(vec![translate()])),
+                    ("action".to_owned(), Nbt::String("show_entity".to_owned())),
+                    (
+                        "id".to_owned(),
+                        Nbt::String("minecraft:villager".to_owned())
+                    ),
+                    (
+                        "uuid".to_owned(),
+                        Nbt::IntArray(vec![1956426244, -1232122980, -1780533434, 1290673090])
+                    ),
+                ]),
+            ),
+            translate(),
+        ])
+    );
+    assert_eq!(
+        menu_title("container.chest", None),
+        Text::translatable("container.chest").to_nbt()
+    );
 }

@@ -20,6 +20,7 @@ fn opened_as_of(serial: u64, applied: u64) -> PlayerEvent {
         applied,
         kind: MenuKind::Rows3,
         title: "container.chest".to_owned(),
+        owner: None,
         slots,
         carried: None,
     }

@@ -33,7 +33,7 @@ use clustine_format::TableFile;
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids::play::clientbound;
 use clustine_protocol::packets::play::{
-    ClientboundPlay, EntityDataValue, Interact, SelectTrade, face,
+    ClientboundPlay, EntityDataValue, Interact, SelectTrade, SetTime, face,
 };
 use tokio::time::Instant;
 
@@ -109,21 +109,33 @@ async fn start_clustine_at(directory: &Path, day: u64) -> Result<clustine::Serve
 /// the latest time packet before then and the ticks since it came.
 pub fn day_time(scene: &Scene, at: Instant) -> Result<i64> {
     let clock = scene.registered("minecraft:world_clock", "minecraft:overworld")?;
-    scene
+    let times: Vec<(Instant, &SetTime)> = scene
         .log
         .iter()
         .take_while(|seen| seen.at <= at)
         .filter_map(|seen| match &seen.packet {
-            Some(ClientboundPlay::SetTime(time)) => time
-                .clocks
-                .iter()
-                .find(|state| state.clock == clock)
-                .map(|state| (seen.at, state.total_ticks)),
+            Some(ClientboundPlay::SetTime(time)) => Some((seen.at, time)),
             _ => None,
         })
-        .last()
-        .map(|(came, total)| (total + ticks(came, at)).rem_euclid(24_000))
-        .context("no time packet before")
+        .collect();
+    // Only a time packet with the clocks says where the overworld's clock stands (the
+    // join's first, or one after the clock was set); the rest say the game time, which
+    // moves with it.
+    let clocked = |time: &SetTime| {
+        time.clocks
+            .iter()
+            .find(|state| state.clock == clock)
+            .map(|state| (time.game_time, state.total_ticks))
+    };
+    let (base_game, base_total) = times
+        .iter()
+        .rev()
+        .find_map(|(_, time)| clocked(time))
+        .or_else(|| scene.times.iter().rev().find_map(clocked))
+        .context("no time packet with the clocks")?;
+    let (came, latest) = times.last().context("no time packet before")?;
+    let total = base_total + (latest.game_time - base_game) + ticks(*came, at);
+    Ok(total.rem_euclid(24_000))
 }
 
 /// A row of `length` cells along z, two east of where the player stood, dug

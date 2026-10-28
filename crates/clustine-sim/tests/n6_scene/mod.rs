@@ -685,6 +685,7 @@ pub fn opened(output: &TickOutput, who: PlayerId) -> Vec<Opened> {
                 title,
                 slots,
                 carried,
+                ..
             } => Some(Opened {
                 serial,
                 applied,

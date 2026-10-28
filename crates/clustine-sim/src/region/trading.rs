@@ -321,6 +321,41 @@ impl Region {
         }
     }
 
+    /// `updateSpecialPrices(tradingPlayer)` of the merchant `merchant` (Villager
+    /// 417–440): its prices for the player it trades with worked out again; where their
+    /// window is open on it, the payments' result worked out again (`updateSellItem`)
+    /// and the offers sent them as they stand.
+    pub(super) fn prices_again(&mut self, merchant: EntityId, output: &mut TickOutput) {
+        let Some((chunk, entity, mut mob)) = self.merchant_at(merchant) else {
+            return;
+        };
+        let kind = entity.kind;
+        let Some(player) = merchant::trading_player(&mob, kind) else {
+            return;
+        };
+        let (reputation, hero) = self.trading_facts(player, &mob, kind);
+        let mut offers = merchant::offers(&mob, kind).unwrap_or_default();
+        if offers.0.is_empty() {
+            return;
+        }
+        merchant::update_special_prices(&mut offers, reputation, hero);
+        merchant::set_offers(&mut mob, kind, Some(offers));
+        self.commit_mob(&entity, chunk, &mob, output);
+        let serial = self
+            .players
+            .get(&player)
+            .and_then(|own| own.menu.as_ref())
+            .filter(|menu| menu.of == MenuOf::Merchant(merchant))
+            .map(|menu| menu.serial);
+        let Some(serial) = serial else {
+            return;
+        };
+        self.merchant_payments_changed(player, merchant, output);
+        if let Some((_, entity, mob)) = self.merchant_at(merchant) {
+            self.send_offers(player, serial, &mob, entity.kind, output);
+        }
+    }
+
     /// `handleSelectTrade` (n6 ServerGamePacketListenerImpl 2568–2610): in the player's
     /// merchant window of the serial `serial`, while it is valid, the trade `index`
     /// becomes the selection hint (the result worked out again), and the payments are

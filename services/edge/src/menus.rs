@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use clustine_protocol::components::data_component_type;
 use clustine_protocol::item::ItemStack as WireStack;
+use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets;
 use clustine_protocol::packets::play::{
     ClientboundContainerClose, ContainerClick, ContainerSetSlot, HashedStack, MountScreenOpen,
@@ -269,7 +270,8 @@ impl Menus {
         slots: Vec<Option<ItemStack>>,
         carried: Option<ItemStack>,
     ) -> Vec<Bytes> {
-        self.opened_with(serial, applied, kind, title, slots, carried, None)
+        let title = Text::translatable(title).to_nbt();
+        self.opened_with(serial, applied, kind, &title, slots, carried, None)
     }
 
     /// [`Menus::opened`] where the menu may be a horse's: `mount` is the id the client
@@ -284,7 +286,7 @@ impl Menus {
         serial: u64,
         applied: u64,
         kind: MenuKind,
-        title: &str,
+        title: &Nbt,
         slots: Vec<Option<ItemStack>>,
         carried: Option<ItemStack>,
         mount: Option<i32>,
@@ -323,7 +325,7 @@ impl Menus {
             _ => packets.push(encoded(&OpenScreen {
                 window_id: open.window,
                 menu: menu_id(kind),
-                title: Text::translatable(title).to_nbt(),
+                title: title.clone(),
             })),
         }
         packets.push(open.whole());
@@ -487,6 +489,40 @@ fn wire(stack: &ItemStack) -> WireStack {
 
 fn encoded<P: packets::Packet>(packet: &P) -> Bytes {
     packets::encode(packet).into()
+}
+
+/// A menu's title as `open_screen` carries it: the sentence `key`, and where the menu is
+/// an entity's, by its UUID and type, that entity's name as `Entity.getDisplayName` makes
+/// it: its UUID to insert on a shift-click and the entity shown on hovering.
+pub(crate) fn menu_title(key: &str, owner: Option<(u128, u16)>) -> Nbt {
+    let Some((uuid, kind)) = owner else {
+        return Text::translatable(key).to_nbt();
+    };
+    let translate = || ("translate".to_owned(), Nbt::String(key.to_owned()));
+    let id = clustine_data::ENTITY_TYPES
+        .get(usize::from(kind))
+        .copied()
+        .unwrap_or("minecraft:pig");
+    // `UUIDUtil.uuidToIntArray`: the most significant 32 bits first.
+    let words = (0..4)
+        .map(|at| (uuid >> (96 - 32 * at)) as u32 as i32)
+        .collect();
+    Nbt::Compound(vec![
+        (
+            "insertion".to_owned(),
+            Nbt::String(uuid::Uuid::from_u128(uuid).to_string()),
+        ),
+        (
+            "hover_event".to_owned(),
+            Nbt::Compound(vec![
+                ("name".to_owned(), Nbt::Compound(vec![translate()])),
+                ("action".to_owned(), Nbt::String("show_entity".to_owned())),
+                ("id".to_owned(), Nbt::String(id.to_owned())),
+                ("uuid".to_owned(), Nbt::IntArray(words)),
+            ]),
+        ),
+        translate(),
+    ])
 }
 
 #[cfg(test)]

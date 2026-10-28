@@ -248,12 +248,17 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
             _ => None,
         })
         .collect();
+    // Added as the official server adds it: as it stood when its players were gathered,
+    // before the countdown's first step (`raids_oracle.rs`).
     assert_eq!(
         bars,
-        [RaidBarChange::Add {
-            name: RaidBarName::Raid,
-            progress: 1.0 / 300.0
-        }],
+        [
+            RaidBarChange::Add {
+                name: RaidBarName::Raid,
+                progress: 0.0
+            },
+            RaidBarChange::Progress(1.0 / 300.0)
+        ],
         "its countdown's first tick"
     );
     let mut output = TickOutput::default();

@@ -207,10 +207,14 @@ impl Region {
         let Some(uuid) = uuid else {
             return;
         };
+        let mut prices = false;
         self.update_villager(key, output, |_, own, _| {
-            // The trading player's prices again are part T2's (`updateSpecialPrices`).
-            let _ = social_villagers::reputation_event(own, event, uuid);
+            prices = social_villagers::reputation_event(own, event, uuid);
         });
+        // The trading player's prices again (`updateSpecialPrices`).
+        if prices {
+            self.prices_again(key, output);
+        }
     }
 
     /// `Villager.die`'s `tellWitnessesThatIWasMurdered` and `releaseAllPois` of the

@@ -1137,7 +1137,17 @@ fn work_sound(profession: i32) -> Option<i32> {
 /// (`trading/merchant.rs`); it draws nothing.
 pub(crate) fn restock_if_due(cx: &mut Cx<'_, '_, '_>) {
     let day_ticks = cx.ai.tick.world.day();
-    crate::trading::merchant::restock_if_due(&mut cx.ai.tick.mob, cx.time, day_ticks);
+    let restocked =
+        crate::trading::merchant::restock_if_due(&mut cx.ai.tick.mob, cx.time, day_ticks);
+    // `restock`'s `updateSpecialPrices` for the player it trades with.
+    if restocked
+        && villager::state_of(&cx.ai.tick.mob)
+            .1
+            .trading_player
+            .is_some()
+    {
+        cx.ai.tick.out.local.push(Local::PricesAgain);
+    }
 }
 
 /// `WorkAtPoi` (Behavior 60/60; WorkAtPoi.txt 20–133) and the farmer's `WorkAtComposter`,

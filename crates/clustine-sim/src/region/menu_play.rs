@@ -577,6 +577,12 @@ impl Region {
         };
         let (serial, kind, applied) = (menu.serial, menu.kind, player.last_input);
         let title = title_of(menu.of, menu.kind, self);
+        let owner = match menu.of {
+            MenuOf::Merchant(key) | MenuOf::Entity(key) => self
+                .find_entity(key)
+                .map(|(_, entity)| (entity.uuid.as_u128(), entity.kind)),
+            MenuOf::Ender { .. } | MenuOf::Block { .. } => None,
+        };
         self.reported.insert(
             id,
             Reported {
@@ -592,6 +598,7 @@ impl Region {
                 applied,
                 kind,
                 title,
+                owner,
                 slots,
                 carried,
             },

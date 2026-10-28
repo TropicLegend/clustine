@@ -93,6 +93,7 @@ fn a_click_on_a_chest_opens_its_menu_named_by_the_number_of_the_input() {
             applied,
             kind,
             title,
+            owner: None,
             slots,
             carried,
         },

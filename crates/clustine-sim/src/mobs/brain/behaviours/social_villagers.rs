@@ -293,8 +293,9 @@ fn gossip(cx: &mut Cx<'_, '_, '_>, partner: &Entity, time: i64) {
         return;
     }
     let draws = &mut *cx.ai.tick.draws;
+    let mut picked = 0;
     villager::update(&mut cx.ai.tick.mob, |own| {
-        let _picked = own.gossips.transfer_from(&theirs.gossips, draws, 10);
+        picked = own.gossips.transfer_from(&theirs.gossips, draws, 10);
         own.last_gossip_time = Some(time);
     });
     cx.ai.tick.out.local.push(Local::Villager {
@@ -305,12 +306,21 @@ fn gossip(cx: &mut Cx<'_, '_, '_>, partner: &Entity, time: i64) {
     });
     spawn_golem_if_needed(cx, time, 5);
     // A gossip that passed something on works out the trading player's prices again
-    // (`updateSpecialPrices`): part T2's.
+    // (`updateSpecialPrices`).
+    if picked > 0
+        && villager::state_of(&cx.ai.tick.mob)
+            .1
+            .trading_player
+            .is_some()
+    {
+        cx.ai.tick.out.local.push(Local::PricesAgain);
+    }
 }
 
 /// `Villager.onReputationEventFrom(event, entity)` of the villager `own` about the
 /// entity of UUID `about`: its gossips, and whether `about` is the player it trades with,
-/// whose prices the caller works out again (`updateSpecialPrices`, part T2's).
+/// whose prices the caller has worked out again (`updateSpecialPrices`,
+/// [`Local::PricesAgain`]).
 pub(crate) fn reputation_event(
     own: &mut VillagerState,
     event: ReputationEvent,
@@ -457,14 +467,18 @@ pub(crate) fn born_as_partner(mob: &mut Mob, lived: u32) {
 /// about the last player who traded, entity event 14, and the last trader forgotten.
 pub(crate) fn after_brain(tick: &mut MobTick<'_>) {
     let mut traded = false;
+    let mut prices = false;
     villager::update(&mut tick.mob, |own| {
         if let Some(player) = own.last_traded_player.take() {
             // The prices for the trading player are worked out again where it is they
-            // (`updateSpecialPrices`, part T2's).
-            let _ = reputation_event(own, ReputationEvent::Trade, player.0);
+            // (`updateSpecialPrices`), which sends them the offers as the trade left them.
+            prices = reputation_event(own, ReputationEvent::Trade, player.0);
             traded = true;
         }
     });
+    if prices {
+        tick.out.local.push(Local::PricesAgain);
+    }
     if traded {
         tick.out.events.push(Event::Entity(14));
     }
@@ -490,9 +504,16 @@ pub(crate) fn hurt(struck: &mut Struck<'_>, source: &DamageSource, took: bool) {
         return;
     }
     match cause.player {
-        Some(player) => villager::update(struck.mob, |own| {
-            let _ = reputation_event(own, ReputationEvent::VillagerHurt, Uuid::from_u128(player));
-        }),
+        Some(player) => {
+            let mut prices = false;
+            villager::update(struck.mob, |own| {
+                prices =
+                    reputation_event(own, ReputationEvent::VillagerHurt, Uuid::from_u128(player));
+            });
+            if prices {
+                struck.out.local.push(Local::PricesAgain);
+            }
+        }
         None => struck.out.local.push(Local::Reputation {
             event: ReputationEvent::VillagerHurt,
             about: cause.key,

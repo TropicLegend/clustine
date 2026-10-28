@@ -336,6 +336,10 @@ pub(crate) enum Local {
     /// points of interest given back, by what the region keeps of its sight
     /// (`region/villagers_across.rs`).
     VillagerDied { murderer: Option<EntityId> },
+    /// `updateSpecialPrices(tradingPlayer)` of the merchant: its prices for the player
+    /// it trades with worked out again, and, with their merchant window open on it, its
+    /// payments' result too and its offers sent them (`sendMerchantOffers`).
+    PricesAgain,
 }
 
 /// A mob's shot (`docs/groundwork/n9-plan.md`, section 4.1): the projectile's type and

@@ -968,25 +968,43 @@ fn players_coming_near_a_raid_are_shown_its_bar_at_the_next_gathering_and_those_
     while region.clock.game_time % 20 != 19 {
         region.clock.game_time += 1;
     }
+    // The countdown's first tick gathers the bar's players (`raidCooldownTicks == 300`)
+    // and adds it as it stood before the tick's progress, which follows.
     let output = step(&mut region);
     assert!(matches!(
         bars(&output, player(1))[..],
-        [RaidBarChange::Add {
-            name: RaidBarName::Raid,
-            ..
-        }]
+        [
+            RaidBarChange::Add {
+                name: RaidBarName::Raid,
+                ..
+            },
+            RaidBarChange::Progress(_)
+        ]
     ));
     assert!(bars(&output, player(2)).is_empty(), "141 from the centre");
     move_player(&mut region, 2, [0.5, -60.0, 4.5]);
-    for _ in 0..19 {
+    // The next gathering, within twenty ticks: the countdown's at a multiple of 20, or
+    // every twentieth active tick, whichever comes first.
+    let mut shown = None;
+    for at in 1..=20 {
         let output = step(&mut region);
-        assert!(bars(&output, player(2)).is_empty(), "until the gathering");
+        let told = bars(&output, player(2));
+        if !told.is_empty() {
+            // Added as it stood at the gathering, and moved on after where the countdown
+            // stepped later in that tick.
+            assert!(
+                matches!(
+                    told[..],
+                    [RaidBarChange::Add { .. }]
+                        | [RaidBarChange::Add { .. }, RaidBarChange::Progress(_)]
+                ),
+                "{told:?}"
+            );
+            shown = Some(at);
+            break;
+        }
     }
-    let output = step(&mut region);
-    assert!(matches!(
-        bars(&output, player(2))[..],
-        [RaidBarChange::Add { .. }]
-    ));
+    assert!(shown.is_some(), "shown at the next gathering");
     move_player(&mut region, 1, FAR);
     let mut told = Vec::new();
     for _ in 0..20 {

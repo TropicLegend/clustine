@@ -300,8 +300,17 @@ impl Region {
                     Some(super::raids::RaidAt::Seen(raid)) if raid.omen >= 5
                 );
                 if !peaceful && self.close_to_village(pos, 1) && !at_most {
-                    let layer = crate::mobs::body::effects::Layer::new(amplifier, 600, now);
-                    self.add_player_effect(id, Effect::RAID_OMEN, layer, output);
+                    // The raid omen added in the tick before was not counted down in it
+                    // (the game's loop abandoned), so a second of the same level finds
+                    // it unchanged: nothing is added or sent (`raids_oracle.rs`).
+                    let unchanged = had_raid_omen
+                        && player.effects.amplifier(Effect::RAID_OMEN) == Some(amplifier)
+                        && instance(&player.effects, Effect::RAID_OMEN, now)
+                            .is_some_and(|raid_omen| raid_omen.duration == 599);
+                    if !unchanged {
+                        let layer = crate::mobs::body::effects::Layer::new(amplifier, 600, now);
+                        self.add_player_effect(id, Effect::RAID_OMEN, layer, output);
+                    }
                     if let Some(player) = self.players.get_mut(&id) {
                         player.raid_omen_position = Some(pos);
                     }

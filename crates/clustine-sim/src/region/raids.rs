@@ -38,22 +38,24 @@ pub(crate) enum RaidAt {
 }
 
 /// What the region keeps of raids in memory: the world's table as last published, what
-/// it last reported of its own, the draws of each raid's stream in this tick, and the bar
-/// each of its players is shown.
+/// it last reported of its own, the draws of each raid's stream in this tick, the bar
+/// each of its players is shown, and the bars of its own raids whose players their tick
+/// gathered, each as it stood then.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct RaidMemory {
     pub(crate) table: Vec<RaidSeen>,
     reported: Option<Vec<RaidSeen>>,
     draws: BTreeMap<EntityId, u64>,
     bars: BTreeMap<PlayerId, Shown>,
+    pub(super) gathered: BTreeMap<Uuid, Shown>,
 }
 
 /// The bar a player is shown: its UUID, progress and name.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Shown {
-    bar: Uuid,
-    progress: f32,
-    name: RaidBarName,
+pub(super) struct Shown {
+    pub(super) bar: Uuid,
+    pub(super) progress: f32,
+    pub(super) name: RaidBarName,
 }
 
 fn dist_sqr(a: BlockPos, b: BlockPos) -> f64 {
@@ -411,10 +413,20 @@ impl Region {
     /// Each of the region's players is shown the bar of the raid that `getRaidAt` finds
     /// where they stand, while it is shown (`Raid.updatePlayers`' set, the players whose
     /// raid it is): added where it begins, changed where its progress or name changed,
-    /// taken away where it ends. The set is worked out every twentieth game tick, as the
-    /// game's every twenty ticks of a raid, the bar's changes every tick.
+    /// taken away where it ends. The set of a bar is worked out where its raid's tick
+    /// gathered it ([`RaidMemory::gathered`]), a bar added as it stood then and changed
+    /// after as it stands now; that of another region's raid, every twentieth game tick
+    /// (named). The bar's changes are sent every tick.
     fn show_raid_bars(&mut self, output: &mut TickOutput) {
-        let regather = self.clock.game_time.is_multiple_of(20);
+        let gathered = std::mem::take(&mut self.raid_memory.gathered);
+        let own: Vec<Uuid> = self
+            .own_raids()
+            .into_iter()
+            .map(|(_, raid)| raid.bar)
+            .collect();
+        let every_twenty = self.clock.game_time.is_multiple_of(20);
+        let regathers =
+            |bar: Uuid| gathered.contains_key(&bar) || (every_twenty && !own.contains(&bar));
         // Every player is alive and none a spectator while everyone is in creative mode.
         let players: Vec<(PlayerId, BlockPos, bool)> = self
             .players
@@ -426,39 +438,44 @@ impl Region {
             .collect();
         for (id, at, alive) in players {
             let kept = self.raid_memory.bars.get(&id).copied();
-            let wanted = if regather || kept.is_some() {
-                let now = if alive { self.raid_bar_at(at) } else { None };
-                if regather {
-                    now
+            let now = if alive { self.raid_bar_at(at) } else { None };
+            // A gathering of the bar it is shown takes it away where its raid is not
+            // theirs any more; one of the bar of their raid adds it.
+            let kept_now = kept.and_then(|kept| {
+                if regathers(kept.bar) {
+                    now.filter(|now| now.bar == kept.bar)
                 } else {
-                    // Between gatherings a bar stays its raid's, as its progress and name
-                    // change.
-                    now.filter(|shown| kept.is_some_and(|kept| kept.bar == shown.bar))
-                        .or_else(|| kept.and_then(|kept| self.raid_bar_of(kept.bar)))
+                    self.raid_bar_of(kept.bar)
                 }
-            } else {
-                None
+            });
+            let wanted = kept_now.or_else(|| now.filter(|now| regathers(now.bar)));
+            // A bar is added as it stood when its raid gathered its players.
+            let added = |now: Shown| {
+                let then = gathered.get(&now.bar).copied().unwrap_or(now);
+                let mut changes = vec![(
+                    Some(now.bar),
+                    RaidBarChange::Add {
+                        name: then.name,
+                        progress: then.progress,
+                    },
+                )];
+                if then.progress != now.progress {
+                    changes.push((Some(now.bar), RaidBarChange::Progress(now.progress)));
+                }
+                if then.name != now.name {
+                    changes.push((Some(now.bar), RaidBarChange::Name(now.name)));
+                }
+                changes
             };
             let change = match (kept, wanted) {
                 (None, None) => continue,
                 (Some(_), None) => vec![(kept.map(|k| k.bar), RaidBarChange::Remove)],
-                (None, Some(now)) => vec![(
-                    Some(now.bar),
-                    RaidBarChange::Add {
-                        name: now.name,
-                        progress: now.progress,
-                    },
-                )],
-                (Some(was), Some(now)) if was.bar != now.bar => vec![
-                    (Some(was.bar), RaidBarChange::Remove),
-                    (
-                        Some(now.bar),
-                        RaidBarChange::Add {
-                            name: now.name,
-                            progress: now.progress,
-                        },
-                    ),
-                ],
+                (None, Some(now)) => added(now),
+                (Some(was), Some(now)) if was.bar != now.bar => {
+                    let mut changes = vec![(Some(was.bar), RaidBarChange::Remove)];
+                    changes.extend(added(now));
+                    changes
+                }
                 (Some(was), Some(now)) => {
                     let mut changes = Vec::new();
                     if was.progress != now.progress {

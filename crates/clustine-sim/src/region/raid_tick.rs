@@ -137,6 +137,19 @@ fn stop(raid: &mut Raid) {
     raid.status = RaidStatus::Stopped;
 }
 
+/// `updatePlayers(level)`: the players of the raid's bar gathered now, which the frame
+/// shows it, as it stands now, at the end of the tick (`raids.rs`).
+fn gather_players(memory: &mut super::raids::RaidMemory, raid: &Raid) {
+    memory.gathered.insert(
+        raid.bar,
+        super::raids::Shown {
+            bar: raid.bar,
+            progress: raid.bar_progress.0,
+            name: raid.bar_name,
+        },
+    );
+}
+
 /// `updateBossbar()`: the bar's progress, the health of the members as they last told
 /// it against the raid's total, kept within 0 and 1; kept as it is where no health was
 /// counted.
@@ -282,6 +295,7 @@ impl Region {
                     return;
                 }
                 if raid.celebration_ticks % 20 == 0 {
+                    gather_players(&mut self.raid_memory, raid);
                     raid.bar_shown = true;
                     if raid.status == RaidStatus::Victory {
                         raid.bar_progress = Float(0.0);
@@ -340,6 +354,9 @@ impl Region {
                 if search {
                     raid.spawn_pos = self.find_random_spawn_pos(raid, stream, 8);
                 }
+                if raid.cooldown_ticks == COUNTDOWN || raid.cooldown_ticks % 20 == 0 {
+                    gather_players(&mut self.raid_memory, raid);
+                }
                 raid.cooldown_ticks -= 1;
                 let progress = (COUNTDOWN - raid.cooldown_ticks) as f32 / 300.0;
                 raid.bar_progress = Float(progress.clamp(0.0, 1.0));
@@ -350,6 +367,7 @@ impl Region {
             }
         }
         if raid.ticks_active.is_multiple_of(20) {
+            gather_players(&mut self.raid_memory, raid);
             self.update_raiders(raid, output);
             raid.bar_name = if alive > 0 && alive <= 2 {
                 RaidBarName::RaidersRemaining(alive)

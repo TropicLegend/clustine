@@ -162,7 +162,7 @@ async fn employ(address: &str) -> Result<Employed> {
     let worked = until_seen(
         &mut scene,
         from,
-        until_after(employed_at, WORK),
+        until_after(employed_at, WORK) + TICK * u32::try_from(TRIES * WORK_TRY).unwrap_or(0),
         "the librarian's work sound",
         |seen| is_sound(seen, sounds::ENTITY_VILLAGER_WORK_LIBRARIAN),
     )
@@ -196,13 +196,29 @@ async fn a_librarian_is_made_at_a_lectern_and_works_from_two_thousand_as_on_the_
         (&ours.events, &ours.data),
         "the events and the villager data from the lectern to the profession"
     );
-    hold_to_the_hour(
-        "the first work sound",
-        WORK,
-        theirs.worked_at,
-        ours.worked_at,
+    // `WorkAtPoi` tries every 300 ticks from its first, which the hour allows, and works
+    // on a coin's flip: the first work sound is on one of its tries, which on each
+    // server comes of its own draws.
+    println!(
+        "the first work sound: official at {}, Clustine at {}",
+        theirs.worked_at, ours.worked_at
     );
+    for (name, seen) in [
+        ("the official server", theirs.worked_at),
+        ("Clustine", ours.worked_at),
+    ] {
+        let since = seen - WORK;
+        assert!(
+            (0..TRIES * WORK_TRY).contains(&since) && since % WORK_TRY < WINDOW,
+            "{name}: the first work sound at {seen}, on none of the tries from {WORK}"
+        );
+    }
 }
+
+/// How far apart `WorkAtPoi`'s tries are, and how many of them the test waits for (one
+/// in two works: none in eight is one in 256).
+const WORK_TRY: i64 = 300;
+const TRIES: i64 = 8;
 
 // --- A bed, and the rest that begins at 12000 --------------------------------------
 

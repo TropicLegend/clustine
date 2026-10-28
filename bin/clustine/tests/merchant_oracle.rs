@@ -66,6 +66,7 @@ use anyhow::{Context, Result};
 use clustine_data::villagers::professions;
 use clustine_data::{entity_types, items, sounds};
 use clustine_protocol::item::ItemStack;
+use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     ClientboundPlay, HashedStack, MerchantOffers, click, face, inventory,
 };
@@ -121,7 +122,26 @@ fn sorted(mut offers: MerchantOffers) -> MerchantOffers {
     offers
 }
 
-/// The window's packets from `from` on, the offers sorted.
+/// A window's title with the merchant's UUID, which each server draws, left out: its
+/// insertion and the hover's.
+fn without_uuid(title: Nbt) -> Nbt {
+    match title {
+        Nbt::Compound(entries) => Nbt::Compound(
+            entries
+                .into_iter()
+                .map(|(name, value)| match name.as_str() {
+                    "insertion" => (name, Nbt::String("the UUID".to_owned())),
+                    "uuid" => (name, Nbt::IntArray(vec![0; 4])),
+                    _ => (name, without_uuid(value)),
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// The window's packets from `from` on, the offers sorted and the merchant's UUID left
+/// out of the title.
 fn window_since(scene: &Scene, from: usize) -> Vec<ClientboundPlay> {
     scene
         .of(from, |packet| of_the_window(packet).then(|| packet.clone()))
@@ -129,6 +149,10 @@ fn window_since(scene: &Scene, from: usize) -> Vec<ClientboundPlay> {
         .map(|(_, packet)| match packet {
             ClientboundPlay::MerchantOffers(offers) => {
                 ClientboundPlay::MerchantOffers(sorted(offers))
+            }
+            ClientboundPlay::OpenScreen(mut open) => {
+                open.title = without_uuid(open.title);
+                ClientboundPlay::OpenScreen(open)
             }
             packet => packet,
         })

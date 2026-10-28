@@ -3037,11 +3037,18 @@ impl Fanout {
                 applied,
                 kind,
                 title,
+                owner,
                 slots,
                 carried,
-            } => view
-                .menus
-                .opened_with(serial, applied, kind, &title, slots, carried, mount),
+            } => view.menus.opened_with(
+                serial,
+                applied,
+                kind,
+                &crate::menus::menu_title(&title, owner),
+                slots,
+                carried,
+                mount,
+            ),
             PlayerEvent::MenuChanged {
                 serial,
                 applied,

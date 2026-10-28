@@ -403,6 +403,7 @@ impl Region {
                     self.villager_reputation(key, event, about, output);
                 }
                 Local::VillagerDied { murderer } => self.villager_died(key, murderer, output),
+                Local::PricesAgain => self.prices_again(key, output),
                 Local::Raider { key: about, news } => {
                     self.raider_news(key, about, news, output);
                 }

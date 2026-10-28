@@ -86,19 +86,22 @@ impl Region {
         record.on_ground = old_record.on_ground;
         record.fall_distance = old_record.fall_distance;
         let block = crate::physics::containing(record.position);
-        self.add_fresh_entity(record, output);
-        if let Some(vehicle) = vehicle {
-            self.start_riding(new_key, vehicle, true, output);
-        }
-        if let Some(passenger) = passenger {
-            self.start_riding(passenger, new_key, true, output);
-        }
+        // The game plays the conversion's level event after `convertTo` added the new
+        // mob, but it reaches clients at once, and the new mob only when the tracker
+        // next runs: clients hear it first (`villagers_oracle.rs`).
         if let Some(kind) = sound {
             output.events.push(RegionEvent::LevelEvent {
                 kind,
                 position: block,
                 data: 0,
             });
+        }
+        self.add_fresh_entity(record, output);
+        if let Some(vehicle) = vehicle {
+            self.start_riding(new_key, vehicle, true, output);
+        }
+        if let Some(passenger) = passenger {
+            self.start_riding(passenger, new_key, true, output);
         }
         let hops = old_record.hops;
         self.unride_removed(key, true, output);

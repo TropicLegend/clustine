@@ -1516,12 +1516,15 @@ pub enum PlayerEvent {
     /// `container_set_content`. `applied` is the number of the last input of the player
     /// applied when it was reported; `title` the translation key of its name; `slots`
     /// every slot of the menu, [`MenuKind::slots`] of them; `carried` the stack on the
-    /// cursor (`docs/groundwork/n6-plan.md`, sections 7 to 9).
+    /// cursor (`docs/groundwork/n6-plan.md`, sections 7 to 9). `owner` is the entity whose
+    /// menu it is, by its UUID and type, where it is an entity's (a merchant's, a chest
+    /// boat's): its name then shows it on hovering, as `getDisplayName` makes it.
     MenuOpened {
         serial: u64,
         applied: u64,
         kind: MenuKind,
         title: String,
+        owner: Option<(u128, u16)>,
         slots: Vec<Option<ItemStack>>,
         carried: Option<ItemStack>,
     },
