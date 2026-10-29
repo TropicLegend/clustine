@@ -894,3 +894,332 @@ fn a_raider_of_another_region_s_raid_rejoins_it_when_loaded_and_leaves_it_when_l
     };
     assert!(told(&output, left), "it leaves the raid's record");
 }
+
+// Tests written from the rules of a raider let go with its chunk and taken up again
+// (`Raid.updateRaiders` removing a raider that `isRemoved()`,
+// `Raider.readAdditionalSaveData` rejoining its wave), by someone who did not write them.
+
+/// Where a second member of the tests below stands: in a chunk at the land's north edge,
+/// 58 from the centre.
+const OTHER_CORNER: At = [40.5, -60.0, -40.5];
+
+/// The chunk of [`OTHER_CORNER`].
+const OTHER_CORNER_CHUNK: ChunkPos = ChunkPos::new(2, -3);
+
+/// The raid `id` after its first wave, of which only the members `standing` (each a key
+/// and where it stands) are left, all of the wave 1, waiting for them.
+fn first_wave_left_to_all(standing: &[(EntityId, At)]) -> (Region, EntityId) {
+    let (mut region, id) = village_with_raid(1);
+    until_next_wave(&mut region, id);
+    for (key, at) in standing {
+        lay_member(&mut region, *key, *at, id, 1);
+    }
+    let mut keys: Vec<EntityId> = standing.iter().map(|(key, _)| *key).collect();
+    keys.sort();
+    let mut output = TickOutput::default();
+    for member in raid(&region, id).members {
+        if !keys.contains(&member.key) {
+            region.raid_news(
+                RaidNews::Died {
+                    raid: id,
+                    member: member.key,
+                    killer: None,
+                },
+                &mut output,
+            );
+        }
+    }
+    for _ in 0..40 {
+        tick_raids(&mut region);
+    }
+    let kept = raid(&region, id);
+    let mut left: Vec<EntityId> = kept.members.iter().map(|member| member.key).collect();
+    left.sort();
+    assert_eq!(left, keys);
+    assert_eq!(kept.cooldown_ticks, 0, "no countdown while they are alive");
+    (region, id)
+}
+
+/// The raid's members as keys and waves.
+fn members_of(raid: &Raid) -> Vec<(EntityId, i32)> {
+    raid.members
+        .iter()
+        .map(|member| (member.key, member.wave))
+        .collect()
+}
+
+/// The health the raid counts for its member `key`.
+fn health_of(raid: &Raid, key: EntityId) -> f32 {
+    raid.members
+        .iter()
+        .find(|member| member.key == key)
+        .expect("a member")
+        .health
+        .0
+}
+
+/// The chunk `position` asked for and loaded as `saved`.
+fn load(region: &mut Region, position: ChunkPos, saved: &Chunk) {
+    region.tick(&tickets(vec![position], vec![]));
+    region.tick(&TickInputs {
+        chunks_loaded: vec![(position, saved.clone())],
+        ..TickInputs::default()
+    });
+    assert!(region.chunks.contains_key(&position), "the chunk is back");
+}
+
+#[test]
+fn a_member_let_go_while_another_of_its_wave_lives_leaves_and_the_countdown_waits_for_the_other() {
+    let gone = EntityId(0x7000);
+    let staying = EntityId(0x7001);
+    let (mut region, id) = first_wave_left_to_all(&[(gone, CORNER), (staying, OTHER_CORNER)]);
+    let before = raid(&region, id);
+    let health = health_of(&before, gone);
+    region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+    assert!(!region.chunks.contains_key(&CORNER_CHUNK));
+    assert!(region.chunks.contains_key(&OTHER_CORNER_CHUNK));
+    let kept = raid(&region, id);
+    assert_eq!(
+        members_of(&kept),
+        [(staying, 1)],
+        "only the one let go left"
+    );
+    assert_eq!(kept.total_health, Float(before.total_health.0 - health));
+    for _ in 0..40 {
+        tick_raids(&mut region);
+        assert_eq!(
+            raid(&region, id).cooldown_ticks,
+            0,
+            "no countdown while one of the wave lives"
+        );
+    }
+    region.raid_news(
+        RaidNews::Died {
+            raid: id,
+            member: staying,
+            killer: None,
+        },
+        &mut TickOutput::default(),
+    );
+    tick_raids(&mut region);
+    if raid(&region, id).cooldown_ticks == 0 {
+        tick_raids(&mut region);
+    }
+    assert!(
+        raid(&region, id).cooldown_ticks > 0,
+        "the countdown begins once the last is dead"
+    );
+}
+
+#[test]
+fn a_member_whose_chunk_goes_in_the_same_tick_as_its_raid_s_record_leaves_the_raid_first() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    // The record kept in a chunk other than the home chunk, which never goes: as where a
+    // centre moved (section 9.1). The centre stays in the home chunk, so the raid stays
+    // active.
+    let record = ChunkPos::new(1, 1);
+    let (home, kept) = region.find_raid(id).expect("kept");
+    let kept = kept.clone();
+    region.chunks.get_mut(&home).unwrap().set_raids(Vec::new());
+    region
+        .chunks
+        .get_mut(&record)
+        .unwrap()
+        .set_raids(vec![kept]);
+    assert_eq!(region.find_raid(id).map(|(chunk, _)| chunk), Some(record));
+    let output = region.tick(&tickets(vec![], vec![CORNER_CHUNK, record]));
+    assert!(!region.chunks.contains_key(&CORNER_CHUNK));
+    assert!(!region.chunks.contains_key(&record));
+    assert!(
+        output.raids_changed.contains(&record),
+        "the record heard its member leave before it went"
+    );
+    let told_left = output.effects.iter().any(|effect| {
+        effect.what
+            == Effected::Raid(RaidNews::Left {
+                raid: id,
+                member: key,
+            })
+    });
+    assert!(
+        !told_left,
+        "a raider of the region's own raid leaves at once, not by word"
+    );
+}
+
+#[test]
+fn a_member_whose_ticket_is_removed_and_taken_again_in_one_tick_stays_in_the_raid() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    let before = raid(&region, id);
+    region.tick(&tickets(vec![CORNER_CHUNK], vec![CORNER_CHUNK]));
+    assert!(region.chunks.contains_key(&CORNER_CHUNK), "never let go");
+    let kept = raid(&region, id);
+    assert_eq!(members_of(&kept), [(key, 1)]);
+    assert_eq!(kept.total_health, before.total_health);
+    for _ in 0..5 {
+        tick_raids(&mut region);
+    }
+    assert_eq!(raid(&region, id).cooldown_ticks, 0, "no countdown");
+}
+
+#[test]
+fn a_member_let_go_and_loaded_again_takes_off_its_health_once_and_does_not_give_it_back() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    let before = raid(&region, id);
+    let health = health_of(&before, key);
+    let saved = region.chunks[&CORNER_CHUNK].clone();
+    region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+    assert!(!region.chunks.contains_key(&CORNER_CHUNK), "let go");
+    load(&mut region, CORNER_CHUNK, &saved);
+    let kept = raid(&region, id);
+    assert_eq!(members_of(&kept), [(key, 1)], "it rejoined its wave");
+    assert_eq!(
+        kept.total_health,
+        Float(before.total_health.0 - health),
+        "less the leaver's health, not grown back on its rejoin"
+    );
+}
+
+#[test]
+fn a_leading_member_let_go_and_loaded_twice_leaves_and_rejoins_once_each_time() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    let mut record = region.find_entity(key).expect("here").1.clone();
+    let mut mob = Mob::decode(&record.data).expect("a mob");
+    illagers::update(&mut mob, |raider| raider.patrol_leader = true);
+    record.data = mob.encode();
+    region
+        .chunks
+        .get_mut(&CORNER_CHUNK)
+        .unwrap()
+        .apply_entity(&EntityChange::Whole(record));
+    let saved = region.chunks[&CORNER_CHUNK].clone();
+    let before = raid(&region, id);
+    let health = health_of(&before, key);
+    for time in 1..=2 {
+        region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+        assert!(!region.chunks.contains_key(&CORNER_CHUNK), "let go");
+        let left = raid(&region, id);
+        assert!(left.members.is_empty(), "it left, time {time}");
+        // Each leave is a `removeFromRaid(…, true)`, which takes its health off.
+        assert_eq!(
+            left.total_health,
+            Float(before.total_health.0 - health * time as f32),
+            "its health came off once more, time {time}"
+        );
+        load(&mut region, CORNER_CHUNK, &saved);
+        let back = raid(&region, id);
+        assert_eq!(
+            members_of(&back),
+            [(key, 1)],
+            "it rejoined once, time {time}"
+        );
+        assert_eq!(back.total_health, left.total_health, "not counted again");
+        assert_eq!(back.leaders, [(1, key)], "it leads once, time {time}");
+    }
+}
+
+#[test]
+fn a_member_s_chunk_loaded_and_let_go_in_one_tick_leaves_it_out_of_the_raid() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    let saved = region.chunks[&CORNER_CHUNK].clone();
+    region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+    assert!(raid(&region, id).members.is_empty());
+    region.tick(&tickets(vec![CORNER_CHUNK], vec![]));
+    region.tick(&TickInputs {
+        chunks_loaded: vec![(CORNER_CHUNK, saved)],
+        tickets_removed: viewers(vec![CORNER_CHUNK]),
+        ..TickInputs::default()
+    });
+    assert!(!region.chunks.contains_key(&CORNER_CHUNK), "let go");
+    let kept = raid(&region, id);
+    assert!(
+        kept.members.iter().all(|member| member.key != key),
+        "it is not counted while its chunk is gone"
+    );
+    assert!(kept.leaders.iter().all(|(_, leader)| *leader != key));
+}
+
+#[test]
+fn a_raider_of_another_region_s_raid_loaded_and_let_go_twice_tells_one_join_and_one_leave_each_time()
+ {
+    let mut region = joined_in(
+        ChunkArea {
+            min_x: None,
+            max_x: Some(5),
+        },
+        &[1],
+    );
+    let far = BlockPos::new(500, -60, 8);
+    let id = EntityId(0x8_0000_0002);
+    region.take_raid_table(&[RaidSeen {
+        id,
+        chunk: far.chunk(),
+        centre: far,
+        active: true,
+        status: RaidStatus::Ongoing,
+        groups_spawned: 1,
+        between_waves: false,
+        omen: 1,
+        bar: uuid::Uuid::from_u128(7),
+        shown: true,
+        progress: 1.0,
+        name: RaidBarName::Raid,
+    }]);
+    let key = EntityId(0x7000);
+    let kind = entity_types::PILLAGER as u16;
+    let mut own = Random::of_entity(region.config.seed, key, 0);
+    let (uuid, mut mob) = crate::mobs::making::construct(kind, &mut own, 0.0);
+    illagers::update(&mut mob, |raider| {
+        raider.raid = Some(id);
+        raider.wave = 1;
+        raider.can_join_raid = true;
+    });
+    let record = crate::mobs::making::fresh_record(key, kind, uuid, [20.5, -60.0, 4.5], 0.0, &mob);
+    let place = ChunkPos::new(1, 0);
+    let mut chunk = floor();
+    chunk.apply_entity(&EntityChange::Whole(record));
+    let joins = |output: &TickOutput| {
+        output
+            .effects
+            .iter()
+            .filter(|effect| {
+                effect.at.chunk() == far.chunk()
+                    && matches!(
+                        effect.what,
+                        Effected::Raid(RaidNews::Joined { raid, member, .. })
+                            if raid == id && member == key
+                    )
+            })
+            .count()
+    };
+    let left = Effected::Raid(RaidNews::Left {
+        raid: id,
+        member: key,
+    });
+    let leaves = |output: &TickOutput| {
+        output
+            .effects
+            .iter()
+            .filter(|effect| effect.at.chunk() == far.chunk() && effect.what == left)
+            .count()
+    };
+    for time in 1..=2 {
+        let asked = region.tick(&tickets(vec![place], vec![]));
+        let loaded = region.tick(&TickInputs {
+            chunks_loaded: vec![(place, chunk.clone())],
+            ..TickInputs::default()
+        });
+        assert!(region.chunks.contains_key(&place), "loaded, time {time}");
+        assert_eq!(joins(&asked) + joins(&loaded), 1, "one join, time {time}");
+        assert_eq!(leaves(&asked) + leaves(&loaded), 0, "no leave, time {time}");
+        let let_go = region.tick(&tickets(vec![], vec![place]));
+        assert!(!region.chunks.contains_key(&place), "let go, time {time}");
+        assert_eq!(leaves(&let_go), 1, "one leave, time {time}");
+        assert_eq!(joins(&let_go), 0, "no join, time {time}");
+    }
+}
