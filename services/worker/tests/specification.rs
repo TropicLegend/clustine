@@ -6217,5 +6217,6 @@ fn of_the_stream(reply: &StoreReply) -> bool {
             | StoreReply::Uncoupled { .. }
             | StoreReply::Progress { .. }
             | StoreReply::Mark { .. }
+            | StoreReply::Counts(_)
     )
 }

@@ -2246,11 +2246,15 @@ impl Lanes {
     fn publish(&mut self) {
         // The world's clock, once it has moved on a second since it was last told: every
         // region that has an owner takes the later of it and its own
-        // (`docs/groundwork/n7-plan.md`, section 8.4).
+        // (`docs/groundwork/n7-plan.md`, section 8.4). Where only a region's whole report
+        // wants a publication, only the counts go: the clock's word keeps its pace.
         let clock = self.table.clock;
         let wanted = mem::take(&mut self.publication_wanted);
-        if wanted || clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
-            self.clock_published = clock.game_time;
+        let due = clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY);
+        if due || wanted {
+            if due {
+                self.clock_published = clock.game_time;
+            }
             let committed = &self.committed_time;
             let players = self
                 .faces
@@ -2266,6 +2270,12 @@ impl Lanes {
                 let Some(owner) = lane.owner.as_ref() else {
                     continue;
                 };
+                if !due {
+                    if let Some(counts) = self.counts.published(*region, &owners, &players) {
+                        owner.peer.answer(StoreReply::Counts(counts));
+                    }
+                    continue;
+                }
                 owner.peer.answer(StoreReply::Clock {
                     clock,
                     players: players.clone(),

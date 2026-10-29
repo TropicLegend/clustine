@@ -9369,6 +9369,8 @@ mod tests {
                 // replaced (ADR-0020, section 5). A test that plays a region through
                 // its handle has nobody, and passes the word over.
                 Some(StoreReply::Dead { .. }) => {}
+                // Nor the counts of mobs it publishes behind a whole report.
+                Some(StoreReply::Counts(_)) => {}
                 Some(other) => panic!("the store answered a claim with {other:?}"),
                 None => thread::sleep(Duration::from_millis(1)),
             }
