@@ -679,8 +679,52 @@ pub(crate) fn client_stack(
     clustine_world::ItemStack {
         item: stack.item,
         count: stack.count,
-        components,
+        components: without_defaults(stack.item, components),
     }
+}
+
+/// `components` of a stack of `item` without what only repeats the item's defaults. The
+/// game makes a stack's map from its patch over the item's prototype
+/// (`PatchedDataComponentMap.applyPatch`), which keeps in the patch only a value that
+/// differs from the prototype's: a rocket a creative client sets with the default flight
+/// of 1 is a plain rocket to the game, and is shown so again (a rocket entity's item,
+/// the comparison with the official server found). Done for the kinds whose default the
+/// generated table holds; any other kind is kept as the client gave it.
+fn without_defaults(item: i32, mut components: Components) -> Components {
+    let defaults = ItemComponents::of(item);
+    let mut same = Vec::new();
+    if let Some(patch) = &components.0 {
+        for component in &patch.added {
+            let default = match component {
+                Component::Fireworks(fireworks) => {
+                    defaults.fireworks_flight_duration.is_some_and(|flight| {
+                        fireworks.flight_duration == flight && fireworks.explosions.is_empty()
+                    })
+                }
+                Component::Damage(damage) => defaults.damage == Some(*damage),
+                Component::PotionDurationScale(Float(scale)) => {
+                    defaults.potion_duration_scale == Some(*scale)
+                }
+                Component::OminousBottleAmplifier(amplifier) => {
+                    defaults.ominous_bottle_amplifier == Some(*amplifier)
+                }
+                Component::UseCooldown(cooldown) => defaults.use_cooldown.is_some_and(|own| {
+                    own.seconds == cooldown.seconds.0 && own.group == cooldown.group.as_deref()
+                }),
+                Component::ChargedProjectiles(charged) => {
+                    defaults.charged_projectiles && charged.is_empty()
+                }
+                _ => false,
+            };
+            if default {
+                same.push(component.kind());
+            }
+        }
+    }
+    for kind in same {
+        components.reset(kind);
+    }
+    components
 }
 
 #[cfg(test)]
@@ -1093,6 +1137,56 @@ mod tests {
                 explosions: Vec::new(),
             }));
         }
+    }
+
+    fn client_rocket(flight_duration: i32, explosions: usize) -> clustine_world::ItemStack {
+        let explosion = wire::FireworkExplosion {
+            shape: wire::FireworkShape::Star,
+            colours: vec![0xFF_0000],
+            fade_colours: Vec::new(),
+            trail: false,
+            twinkle: false,
+        };
+        client_stack(&clustine_protocol::item::ItemStack {
+            item: item("minecraft:firework_rocket"),
+            count: 1,
+            components: adding(WireComponent::Fireworks(wire::Fireworks {
+                flight_duration,
+                explosions: vec![explosion; explosions],
+            })),
+        })
+    }
+
+    /// `PatchedDataComponentMap.applyPatch` keeps in a stack's patch only what differs
+    /// from its item's prototype: a rocket a creative client sets with the default flight
+    /// of 1 and no explosions is a plain rocket, as the official server then shows its
+    /// rocket entity's item; a longer flight or an explosion is kept.
+    #[test]
+    fn a_client_s_rocket_with_the_default_flight_is_a_plain_rocket() {
+        assert!(client_rocket(1, 0).components.is_empty());
+        assert_eq!(
+            client_rocket(2, 0).components.get(Kind::Fireworks),
+            Some(&Component::Fireworks(Fireworks {
+                flight_duration: 2,
+                explosions: Vec::new(),
+            }))
+        );
+        assert!(
+            client_rocket(1, 1)
+                .components
+                .get(Kind::Fireworks)
+                .is_some()
+        );
+        // Of an item with no default of the kind, the same value is the client's own.
+        let stick = client_stack(&clustine_protocol::item::ItemStack {
+            item: item("minecraft:stick"),
+            count: 1,
+            components: adding(WireComponent::Fireworks(wire::Fireworks {
+                flight_duration: 1,
+                explosions: Vec::new(),
+            })),
+        });
+        assert!(stick.components.get(Kind::Fireworks).is_some());
     }
 
     #[test]

@@ -119,6 +119,8 @@ struct Flight {
     /// `wasTouchingWater`, as its last base tick left it.
     in_water: bool,
     removed: bool,
+    /// Whether a hit in this tick asks for it to be sent at once (`needsSync`).
+    needs_sync: bool,
 }
 
 impl Flight {
@@ -309,6 +311,7 @@ impl Region {
                 .get(&key)
                 .is_some_and(|memory| memory.cart.in_water),
             removed: false,
+            needs_sync: false,
         };
         self.arrow_tick(&entity, &mut flight, output);
         self.entity_drew(key, flight.own.draws_since(&start));
@@ -337,7 +340,7 @@ impl Region {
                 EntityChange::Set(key, vec![EntityField::FireTicks(after.fire_ticks)]),
             ));
         }
-        self.write_projectile(&entity, after, position, output);
+        self.write_projectile_synced(&entity, after, position, flight.needs_sync, output);
     }
 
     /// `AbstractArrow.tick`, with `ThrownTrident.tick`'s part first.
@@ -541,7 +544,8 @@ impl Region {
 
     /// `stepMoveAndHit(blockHit)`: the entities along the step from where the arrow is
     /// to `block`'s place (or `to` for none), hit in order of their distance, then, with
-    /// none, the block.
+    /// none, the block. Either hit asks for the arrow to be sent at once (`needsSync`),
+    /// so that clients see a refused arrow turn back, or one land, when it does.
     fn step_move_and_hit(
         &mut self,
         flight: &mut Flight,
@@ -564,6 +568,7 @@ impl Region {
                     && let Some(hit) = block
                 {
                     self.arrow_hit_block(flight, hit, output);
+                    flight.needs_sync = true;
                 }
                 return;
             }
@@ -578,6 +583,7 @@ impl Region {
                     break;
                 }
             }
+            flight.needs_sync = true;
             if flight.arrow.pierce_level == 0 {
                 return;
             }

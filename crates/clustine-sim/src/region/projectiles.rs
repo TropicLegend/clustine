@@ -561,6 +561,20 @@ impl Region {
         position: ChunkPos,
         output: &mut TickOutput,
     ) {
+        self.write_projectile_synced(before, after, position, false, output);
+    }
+
+    /// [`Region::write_projectile`], with the report asking the edges to send the
+    /// projectile this tick whatever its interval says where `needs_sync` (`needsSync`:
+    /// an arrow's or a rocket's hit, a deflection).
+    pub(crate) fn write_projectile_synced(
+        &mut self,
+        before: &Entity,
+        after: Entity,
+        position: ChunkPos,
+        needs_sync: bool,
+        output: &mut TickOutput,
+    ) {
         let key = before.key;
         let mut after = after;
         let to = match self.relocate(position, before.position, &mut after, output) {
@@ -598,7 +612,12 @@ impl Region {
             }
         }
         output.entities_ageing.push(to);
-        let mut report = tracked(&after, 0, true);
+        let flags = if needs_sync {
+            crate::api::Tracked::NEEDS_SYNC
+        } else {
+            0
+        };
+        let mut report = tracked(&after, flags, true);
         report.chunk = to;
         output.events.push(RegionEvent::EntityTracked(report));
     }

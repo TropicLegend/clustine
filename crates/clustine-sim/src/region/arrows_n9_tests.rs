@@ -655,6 +655,63 @@ fn an_arrow_turns_back_from_a_creative_player_of_the_region() {
     turned_back(&region, &shot);
 }
 
+/// Whether the report of the projectile `key` in `output` asks for it to be sent at once
+/// (`needsSync`); none where it was not reported.
+fn synced(output: &TickOutput, key: EntityId) -> Option<bool> {
+    output.events.iter().find_map(|event| match event {
+        RegionEvent::EntityTracked(report) if report.entity == key => {
+            Some(report.flags & crate::api::Tracked::NEEDS_SYNC != 0)
+        }
+        _ => None,
+    })
+}
+
+/// `stepMoveAndHit` sets `needsSync` after the entities' hits (n9 AbstractArrow 169-171):
+/// the turn back from a creative player is sent in the tick it happens, not at the
+/// arrow's next update twenty ticks on, which a client sees fly on through the player.
+/// The comparison with the official server found Clustine's turn never shown.
+#[test]
+fn an_arrow_turned_back_by_a_creative_player_is_sent_at_once() {
+    let mut region = world(SEED, nothing);
+    add_player(&mut region, 1, [3.5, -60.0, 0.5], false);
+    let key = shoot(
+        &mut region,
+        [1.5, -59.5, 0.5],
+        [1.0, 0.0, 0.0],
+        2.0,
+        record(NOBODY),
+    );
+    let shot = the(&region, key);
+    let output = idle(&mut region);
+    turned_back(&region, &shot);
+    assert_eq!(synced(&output, key), Some(true));
+    // Flying back, it hits nothing and waits for its updates again.
+    let output = idle(&mut region);
+    assert_eq!(synced(&output, key), Some(false));
+}
+
+/// `stepMoveAndHit` sets `needsSync` after a block's hit too (n9 AbstractArrow 134-142):
+/// an arrow is sent where it sticks in the tick it sticks, and not in the ticks of its
+/// flight before.
+#[test]
+fn an_arrow_sticking_in_a_wall_is_sent_at_once_and_one_in_flight_is_not() {
+    let mut region = world(SEED, wall);
+    let key = shoot(
+        &mut region,
+        [0.5, -50.0, 0.5],
+        [0.0, 0.0, 1.0],
+        1.5,
+        record(NOBODY),
+    );
+    for _ in 0..3 {
+        let output = idle(&mut region);
+        assert_eq!(synced(&output, key), Some(false));
+    }
+    let output = idle(&mut region);
+    assert!(arrow_of(&the(&region, key)).in_ground.is_some());
+    assert_eq!(synced(&output, key), Some(true));
+}
+
 #[test]
 fn an_arrow_turns_back_from_another_region_s_player_s_face() {
     let mut region = world(SEED, nothing);

@@ -996,6 +996,56 @@ fn a_rocket_draws_its_motion_and_lifetime_and_speeds_up_as_it_rises() {
     );
 }
 
+/// Whether the report of the projectile `key` in `output` asks for it to be sent at once
+/// (`needsSync`); none where it was not reported.
+fn synced(output: &TickOutput, key: EntityId) -> Option<bool> {
+    output.events.iter().find_map(|event| match event {
+        RegionEvent::EntityTracked(report) if report.entity == key => {
+            Some(report.flags & crate::api::Tracked::NEEDS_SYNC != 0)
+        }
+        _ => None,
+    })
+}
+
+/// `FireworkRocketEntity.tick` sets `needsSync` after a hit (n9 361-369). A rocket used
+/// on a block's top with the click's cursor at the block's middle (as the comparisons'
+/// bot clicks) starts 0.15 above that middle, inside the block: each tick it begins
+/// inside, its clip hits the block it is in and it is sent at once; risen out of it, it
+/// waits for its updates. The comparison with the official server saw its first places
+/// sent tick after tick, Clustine's ten apart.
+#[test]
+fn a_rocket_rising_out_of_the_block_it_was_used_in_is_sent_each_tick_it_starts_inside() {
+    let mut region = world(SEED, nothing);
+    let mut output = TickOutput::default();
+    let stack = ItemStack::new(items::FIREWORK_ROCKET, 1);
+    // The floor's top is -60: the middle of its top block is at -60.5.
+    let key = region
+        .make_firework(
+            &stack,
+            [0.5, -60.5 + 0.15, 0.5],
+            None,
+            false,
+            None,
+            &mut output,
+        )
+        .expect("made");
+    let mut inside_ticks = 0;
+    for tick in 1..=6 {
+        let before = the_one(&region, entity_types::FIREWORK_ROCKET).position[1];
+        let output = idle(&mut region);
+        let inside = before < -60.0;
+        if inside {
+            inside_ticks += 1;
+        }
+        assert_eq!(
+            synced(&output, key),
+            Some(inside),
+            "tick {tick}, from y = {before}"
+        );
+    }
+    assert!(inside_ticks >= 2, "{inside_ticks}");
+}
+
 /// `dealExplosionDamage`: `(5 + 2n) · sqrt((5 - d) / 5)` to each living entity within
 /// five with a clear line to it, of `distanceTo` in floats; nothing without explosions.
 #[test]

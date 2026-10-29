@@ -240,6 +240,10 @@ impl Region {
             ..entity.clone()
         };
         let mut exploded = false;
+        // A hit, a block's one from inside it too (a rocket used with the click's cursor
+        // at a block's middle starts inside it), asks for it to be sent at once
+        // (`needsSync`).
+        let needs_sync = struck.is_some();
         if let Some(struck) = struck {
             exploded = self.rocket_struck(&moved, struck, output);
         }
@@ -285,7 +289,7 @@ impl Region {
             data: EntityData::Firework(Box::new(rocket)),
             ..moved
         };
-        self.write_projectile(&entity, after, position, output);
+        self.write_projectile_synced(&entity, after, position, needs_sync, output);
     }
 
     /// `hitTargetOrDeflectSelf` of the rocket `rocket`, where it moved to, at what it
