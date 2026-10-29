@@ -873,7 +873,9 @@ async fn run_stage(
 ) -> Result<Vec<Counted>> {
     let mut all: Vec<&Case> = cases.iter().collect();
     all.extend(bone_meal);
+    eprintln!("{}: building {} cases", side.name(), all.len());
     build(builder, &all).await?;
+    eprintln!("{}: built; reading", side.name());
     let places: Vec<Pos> = cases
         .iter()
         .flat_map(|case| case.units.iter().map(|unit| unit.at))
@@ -933,6 +935,7 @@ async fn run_stage(
             0
         }
     };
+    eprintln!("{}: the window is over; reading", side.name());
     let (after, ended) = read(address, &reader(readers), &places).await?;
     let ticks = match side {
         Side::Official(_) => ticks,
@@ -976,6 +979,7 @@ async fn run_stage(
     }
 
     if let Some(case) = bone_meal {
+        eprintln!("{}: bone meal", side.name());
         counted.extend(feed_bone_meal(address, builder, case, readers, &mut reader).await?);
     }
     Ok(counted)

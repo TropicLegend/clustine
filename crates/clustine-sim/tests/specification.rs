@@ -64,6 +64,7 @@ fn config_a() -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -94,6 +95,7 @@ fn config_b() -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -1165,7 +1167,8 @@ fn remote_done_goes_to_the_edge_the_action_came_from() {
             Durable::RemoteDone {
                 player: player(1),
                 entity: elsewhere(player(1)),
-                sequence: 6
+                sequence: 6,
+                shown: Vec::new(),
             }
         )]
     );
@@ -1588,7 +1591,8 @@ fn a_remote_action_on_a_chunk_that_is_not_loaded_is_still_answered() {
             Durable::RemoteDone {
                 player: player(1),
                 entity: elsewhere(player(1)),
-                sequence: 6
+                sequence: 6,
+                shown: Vec::new(),
             }
         )]
     );

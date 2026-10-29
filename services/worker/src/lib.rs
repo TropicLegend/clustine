@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 23;
+pub const STATE_FORMAT: u8 = 24;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1074,6 +1074,7 @@ impl RegionSettings {
                 ..clustine_sim::LightSettings::SERVER
             },
             features: features_of(seed),
+            random_tick_speed: random_tick_speed(),
         }
     }
 }
@@ -1097,6 +1098,28 @@ fn spawn_mobs() -> bool {
         Some("1" | "true") => true,
         _ => SPAWN_MOBS.load(std::sync::atomic::Ordering::Relaxed),
     }
+}
+
+/// The game rule `random_tick_speed` of the regions this process opens, unless the
+/// environment says ([`set_random_tick_speed`]).
+static RANDOM_TICK_SPEED: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(clustine_sim::RANDOM_TICK_SPEED);
+
+/// Has the regions this process opens from now on draw this many positions of each
+/// section a tick (the game rule `random_tick_speed`), where `CLUSTINE_RANDOM_TICK_SPEED`
+/// does not say otherwise: for the comparisons with an official server, which turn it
+/// off on both servers so that nothing grows while they are read.
+pub fn set_random_tick_speed(speed: u32) {
+    RANDOM_TICK_SPEED.store(speed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The regions' random tick speed: as `CLUSTINE_RANDOM_TICK_SPEED` says, else as
+/// [`set_random_tick_speed`] last said, else the game's 3.
+fn random_tick_speed() -> u32 {
+    std::env::var("CLUSTINE_RANDOM_TICK_SPEED")
+        .ok()
+        .and_then(|speed| speed.parse().ok())
+        .unwrap_or_else(|| RANDOM_TICK_SPEED.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// How many chunks a step the regions of this process check their light in, unless the
@@ -6958,6 +6981,7 @@ mod tests {
                         // That of the action it answers.
                         entity: EntityId(4040),
                         sequence: 3,
+                        shown: Vec::new(),
                     },
                 }
             );
@@ -8439,17 +8463,20 @@ mod tests {
     /// only the number differs. Format 22 keeps a merchant's payments and result with a
     /// player's menu (`docs/groundwork/n10-plan.md`, section 4.1); no menu is open here,
     /// so only the number differs. Format 23 keeps where a player's raid omen began
-    /// (section 9.5 of the same plan): one byte more a player, none set here.
+    /// (section 9.5 of the same plan): one byte more a player, none set here. Format 24
+    /// has the entry that says a remote action is done carry the blocks its player is
+    /// shown after a click, a byte more such an entry; none is in an outbox here, so
+    /// only the number differs.
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 23);
+        assert_eq!(STATE_FORMAT, 24);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "001702018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "001802018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
@@ -8470,7 +8497,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00170200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "00180200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",
@@ -10651,6 +10678,7 @@ mod tests {
             player: player(),
             entity: EntityId(4040),
             sequence: 4,
+            shown: Vec::new(),
         };
         assert_eq!(entries, [&done]);
     }

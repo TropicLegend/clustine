@@ -1931,6 +1931,10 @@ async fn compare(cases: &[Case]) {
         cases.len()
     );
     let oracle = Oracle::start(false).await.unwrap();
+    // The official server's random ticks are off (`Oracle::start`), so Clustine's are
+    // too: a sugar cane that aged a stage while the cases waited to be read made one
+    // differ.
+    clustine_worker::set_random_tick_speed(0);
     let (server, address) = start().await;
 
     let theirs = run(oracle.address(), cases).await;

@@ -98,6 +98,7 @@ fn config(return_after: u64) -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -3463,6 +3464,7 @@ fn a_remote_action_about_a_held_chunk_is_taken() {
                 player: player(9),
                 entity: elsewhere(player(9)),
                 sequence: 4,
+                shown: Vec::new(),
             }
         )]
     );
@@ -3477,6 +3479,7 @@ fn a_remote_action_about_a_held_chunk_is_taken() {
             player: player(9),
             entity: elsewhere(player(9)),
             sequence: 5,
+            shown: Vec::new(),
         }]
     );
     assert_eq!(world.block(spot), Some(blocks::STONE));
@@ -3552,6 +3555,7 @@ fn a_remote_placement_against_a_held_block_into_a_held_spot_is_placed_and_done()
                 player: player(9),
                 entity: elsewhere(player(9)),
                 sequence: 4,
+                shown: Vec::new(),
             }
         )]
     );
@@ -3600,6 +3604,7 @@ fn a_remote_placement_against_no_block_of_a_held_chunk_is_done_and_goes_nowhere(
             player: player(9),
             entity: elsewhere(player(9)),
             sequence: 4,
+            shown: Vec::new(),
         }]
     );
     assert!(output.events.is_empty());
@@ -3784,6 +3789,7 @@ fn the_outbox_entries_of_a_tick_are_in_the_order_of_the_steps_that_make_them() {
                     player: player(20),
                     entity: elsewhere(player(20)),
                     sequence: 1,
+                    shown: Vec::new(),
                 }
             ),
             (
@@ -5037,6 +5043,7 @@ fn check_made_up_tick(
                 player: action.player,
                 entity: action.entity,
                 sequence: action.sequence,
+                shown: Vec::new(),
             },
             Knowledge::Foreign(holder) => Durable::NotMine {
                 what: Misdirected::Remote(action.clone()),

@@ -26,8 +26,9 @@ use clustine_world::{BlockPos, ChunkPos, EntityId};
 use super::Region;
 use crate::api::TickOutput;
 
-/// The game rule `randomTickSpeed`: how many positions of a section are drawn a tick.
-const RANDOM_TICK_SPEED: usize = 3;
+/// The game rule `randomTickSpeed` as a game has it unless told otherwise: how many
+/// positions of a section are drawn a tick.
+pub const RANDOM_TICK_SPEED: u32 = 3;
 
 /// The step SplitMix64 takes at each draw, odd.
 const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -294,7 +295,7 @@ impl Region {
                 let bottom = min_y + 16 * index as i32;
                 let section = bottom.div_euclid(16);
                 let mut random = Random::of_section(self.config.seed, chunk, section, self.tick);
-                for _ in 0..RANDOM_TICK_SPEED {
+                for _ in 0..self.config.random_tick_speed {
                     // `Level.getBlockRandomPos`: x, y and z within the section.
                     let drawn = random.next_int(1 << 12);
                     let pos = BlockPos::new(

@@ -978,6 +978,7 @@ impl Witness {
                 }
                 PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
                 PlayerEvent::InventorySlot { .. }
+                | PlayerEvent::BlockShown { .. }
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::Experience(_)
                 | PlayerEvent::Message { .. }
@@ -1393,7 +1394,8 @@ fn everything_an_edge_was_told_survives_the_owner(mut world: World) {
         Some(&Durable::RemoteDone {
             player: player(9),
             entity: elsewhere(player(9)),
-            sequence: 5
+            sequence: 5,
+            shown: Vec::new(),
         })
     );
 
@@ -2301,7 +2303,8 @@ fn what_was_held_when_a_link_ended_is_applied_once_when_it_is_sent_again_in(mut 
             &Durable::RemoteDone {
                 player: stranger,
                 entity: elsewhere(stranger),
-                sequence: 4
+                sequence: 4,
+                shown: Vec::new(),
             }
         )
     );
@@ -5425,6 +5428,7 @@ fn done(sequence: i32) -> Durable {
         player: player(9),
         entity: elsewhere(player(9)),
         sequence,
+        shown: Vec::new(),
     }
 }
 

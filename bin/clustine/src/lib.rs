@@ -84,7 +84,7 @@ impl Land {
     pub fn flat() -> Self {
         Self {
             generator: generator(),
-            login: LoginWorld::FLAT,
+            login: login_of(None),
         }
     }
 
@@ -137,7 +137,12 @@ pub fn login_of(seed: Option<i64>) -> LoginWorld {
             flat: false,
             sea_level: TerrainGenerator::sea_level(),
         },
-        None => LoginWorld::FLAT,
+        // The flat world's seed is 0 (the worker's), whose hash the official server
+        // sends as it sends any seed's.
+        None => LoginWorld {
+            hashed_seed: TerrainGenerator::hashed_seed(0),
+            ..LoginWorld::FLAT
+        },
     }
 }
 
@@ -537,4 +542,17 @@ impl Server {
 /// The processors of this machine, which the generation pool takes two thirds of.
 fn processors() -> usize {
     std::thread::available_parallelism().map_or(1, usize::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flat_world_is_announced_with_the_hash_the_official_server_sends_for_seed_zero() {
+        // What the official server of 26.3 sent a client for `level-seed=0`
+        // (`spawning_oracle.rs`, 2026-10-29).
+        assert_eq!(login_of(None).hashed_seed, 8_794_265_229_978_523_055);
+        assert_eq!(Land::flat().login(), login_of(None));
+    }
 }

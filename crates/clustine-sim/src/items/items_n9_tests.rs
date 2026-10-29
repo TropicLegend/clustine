@@ -611,6 +611,7 @@ impl World {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         };
         let holdings = Holdings {
             held: around.clone(),

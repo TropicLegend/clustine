@@ -51,8 +51,8 @@ pub use api::{
 /// What the edge needs to show a cloud's radius and a potion's colour (part S12b).
 pub use region::clouds::{arrow_colour, potion_colour, radius_at as cloud_radius_at};
 pub use region::{
-    Features, Holdings, KeptLight, Knowledge, LightChecks, LightSettings, NoSplit, Part, Region,
-    RegionConfig, Sides, Splitting,
+    Features, Holdings, KeptLight, Knowledge, LightChecks, LightSettings, NoSplit, Part,
+    RANDOM_TICK_SPEED, Region, RegionConfig, Sides, Splitting,
 };
 pub use state::{
     Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf, PlayerRiding, PlayerState,

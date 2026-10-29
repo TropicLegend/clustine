@@ -1847,6 +1847,20 @@ impl Fanout {
             } => self.inventory_slot(player, slot, stack).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event: PlayerEvent::BlockShown { position, state },
+            } => {
+                let packet = encoded(&BlockUpdate {
+                    position: Position {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z,
+                    },
+                    state: i32::from(state.0),
+                });
+                self.send_to_player(player, [packet]).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::HeldSlot { slot },
             } => self.held_slot(player, slot).await,
             WorkerToEdge::ToPlayer {
@@ -2182,8 +2196,27 @@ impl Fanout {
                 player,
                 entity,
                 sequence,
+                shown,
             } => {
                 if self.has_stay(player, entity) {
+                    // The blocks of a click first, as the game sends them before it
+                    // acknowledges the click (`handleUseItemOn`).
+                    let packets: Vec<_> = shown
+                        .iter()
+                        .map(|(position, state)| {
+                            encoded(&BlockUpdate {
+                                position: Position {
+                                    x: position.x,
+                                    y: position.y,
+                                    z: position.z,
+                                },
+                                state: i32::from(state.0),
+                            })
+                        })
+                        .collect();
+                    if !packets.is_empty() {
+                        self.send_to_player(player, packets).await;
+                    }
                     self.arrived(player, sequence).await;
                 }
             }
@@ -7076,6 +7109,7 @@ mod tests {
                 player: player(u128::MAX),
                 entity: EntityId(0),
                 sequence: 0,
+                shown: Vec::new(),
             };
             let number = self.say(region, nobody);
             loop {
@@ -8122,6 +8156,7 @@ mod tests {
             player: player(u128::MAX),
             entity: EntityId(0),
             sequence,
+            shown: Vec::new(),
         };
         // The first entry is confirmed, and nothing that was kept has been sent.
         let first = edge.say(WEST, done(1));
@@ -9298,6 +9333,7 @@ mod scenarios {
                 player: player(u128::MAX),
                 entity: EntityId(0),
                 sequence: 0,
+                shown: Vec::new(),
             };
             let number = self.say(region, nobody);
             loop {
@@ -12130,6 +12166,7 @@ mod scenarios {
             player: player(1),
             entity: action.entity,
             sequence: action.sequence,
+            shown: Vec::new(),
         };
         edge.say(NORTH, done);
         edge.tell(NORTH, snapshot(COMMON, 0));
@@ -12337,6 +12374,7 @@ mod scenarios {
             player: player(u128::MAX),
             entity: EntityId(0),
             sequence: 0,
+            shown: Vec::new(),
         };
         let again = WorkerToEdge::Outbox {
             number: seen,
@@ -16317,6 +16355,7 @@ mod scenarios {
             player,
             entity,
             sequence,
+            shown: Vec::new(),
         }
     }
 

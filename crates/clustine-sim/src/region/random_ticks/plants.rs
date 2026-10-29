@@ -604,7 +604,7 @@ mod tests {
 
     use super::*;
     use crate::api::Inventory;
-    use crate::region::{Holdings, RegionConfig};
+    use crate::region::{Holdings, RANDOM_TICK_SPEED, RegionConfig};
 
     const FLOOR: i32 = -61;
 
@@ -645,6 +645,7 @@ mod tests {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         };
         let ids = EntityIds::block(0).expect("the first block of entity ids");
         let mut region = Region::new(config, ids, Holdings::default());
@@ -834,6 +835,44 @@ mod tests {
             }
             assert_eq!(read(&region, pos), leaf);
         }
+    }
+
+    /// The states of the cane field of [`cane_field_after`] after `ticks` ticks of the
+    /// region's random ticks at `speed`.
+    fn cane_field_after(speed: u32, ticks: u64) -> Vec<BlockState> {
+        // Eight rows of cane on sand, each beside a row of water: 128 canes in the
+        // chunk's lowest section.
+        let mut placed = Vec::new();
+        for x in (0..16).step_by(2) {
+            for z in 0..16 {
+                placed.push((at(x, FLOOR, z), blocks::SAND));
+                placed.push((at(x + 1, FLOOR, z), blocks::WATER));
+                placed.push((at(x, FLOOR + 1, z), blocks::SUGAR_CANE));
+            }
+        }
+        let mut region = region_with(&placed);
+        region.config.random_tick_speed = speed;
+        region.start_ticking(ChunkPos::new(0, 0));
+        for _ in 0..ticks {
+            region.tick += 1;
+            region.run_random_ticks(&mut TickOutput::default());
+        }
+        let mut states = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                for y in FLOOR + 1..=FLOOR + 3 {
+                    states.push(read(&region, at(x, y, z)));
+                }
+            }
+        }
+        states
+    }
+
+    #[test]
+    fn a_random_tick_speed_of_zero_grows_nothing_where_the_games_three_does() {
+        let untouched = cane_field_after(0, 0);
+        assert_eq!(cane_field_after(0, 400), untouched);
+        assert_ne!(cane_field_after(RANDOM_TICK_SPEED, 400), untouched);
     }
 
     #[test]

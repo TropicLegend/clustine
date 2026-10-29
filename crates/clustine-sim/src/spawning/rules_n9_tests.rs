@@ -1006,6 +1006,7 @@ fn field_region(biome: Biome, floor: BlockState, structures: Vec<KeptStructure>)
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: crate::region::RANDOM_TICK_SPEED,
     };
     let state = RegionState::new(EntityIds::block(0).expect("a block of ids"));
     let mut region = Region::restore_loaded(config, state, holdings, &tickets, chunks, Vec::new());

@@ -69,6 +69,7 @@ fn config(spawn: Vec3) -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -965,6 +966,7 @@ fn a_click_on_the_other_regions_block_goes_there_whole_and_is_placed_and_answere
                 player: actor.id,
                 entity: actor.entity,
                 sequence: 5,
+                shown: Vec::new(),
             }
         )]
     );

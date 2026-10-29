@@ -1043,6 +1043,11 @@ pub enum Durable {
         player: PlayerId,
         entity: EntityId,
         sequence: i32,
+        /// For a click, the clicked block and the one beside it on the clicked face as
+        /// this region reads them after it (those it can read), which the player is
+        /// shown before they are told it is done, as [`PlayerEvent::BlockShown`] shows
+        /// them where the player's own region finished the click.
+        shown: Vec<(BlockPos, BlockState)>,
     },
     /// An arrival or a remote action reached this region for a chunk it believes
     /// `holder` to hold, and goes there. For an arrival the player is on their way as
@@ -1451,6 +1456,13 @@ pub enum PlayerEvent {
     /// handled, whether it took effect or not. The client then stops showing its own
     /// guess of the outcome and shows what the region reported.
     Acknowledged { sequence: i32 },
+    /// What a block is now, sent to the player alone: after each use of an item on a
+    /// block, the clicked block and the one beside it on the clicked face, whatever the
+    /// use did, as the game's `handleUseItemOn` ends.
+    BlockShown {
+        position: BlockPos,
+        state: BlockState,
+    },
     /// The player has been let go to another region. A region does not emit this
     /// itself: it makes a [`Durable::Departed`], which a worker passes on as this.
     Departed(PlayerTransfer),
@@ -1962,8 +1974,9 @@ pub struct TickOutput {
     pub clock_jumped: bool,
     /// [`PlayerEvent::Spawned`], in the order the players joined, or, where the world
     /// store says where a player enters, in the order of its answers
-    /// ([`TickInputs::entered`]); then [`PlayerEvent::InventorySlot`], in the order of
-    /// the inputs that made them; and then [`PlayerEvent::Acknowledged`], in the order
+    /// ([`TickInputs::entered`]); then [`PlayerEvent::InventorySlot`] and
+    /// [`PlayerEvent::BlockShown`], in the order of the inputs that made them; and then
+    /// [`PlayerEvent::Acknowledged`], in the order
     /// of the players. What else concerns a single player is among `durable`.
     pub player_events: Vec<(PlayerId, PlayerEvent)>,
     pub events: Vec<RegionEvent>,

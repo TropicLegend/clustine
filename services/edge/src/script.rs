@@ -992,6 +992,7 @@ impl Script {
             player: player(u128::MAX),
             entity: EntityId(0),
             sequence: 0,
+            shown: Vec::new(),
         };
         let number = self.say(region, nobody);
         loop {

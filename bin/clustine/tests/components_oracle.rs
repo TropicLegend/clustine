@@ -341,6 +341,11 @@ async fn wire(address: &str) -> Result<Shown> {
     giver.empty_hotbar().await?;
     looker.empty_hotbar().await?;
     giver.round_trip().await?;
+    // The official server puts a joining player anywhere within its spawn radius, so
+    // the looker may stand out of reach of the giver's chests: it goes to the giver.
+    looker
+        .stand_at(giver.feet.0, giver.feet.1, giver.feet.2)
+        .await?;
     looker.round_trip().await?;
     let all = cases(&giver)?;
     let (x, z) = giver.column();

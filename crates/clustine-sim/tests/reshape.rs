@@ -116,6 +116,7 @@ fn config(return_after: u64) -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -2490,6 +2491,7 @@ fn done(n: u128, sequence: i32) -> Durable {
         player: player(n),
         entity: elsewhere(player(n)),
         sequence,
+        shown: Vec::new(),
     }
 }
 
@@ -4972,6 +4974,7 @@ fn run_config() -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 

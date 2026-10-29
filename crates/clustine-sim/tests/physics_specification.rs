@@ -105,6 +105,7 @@ fn config_holding(inventory: Inventory) -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 

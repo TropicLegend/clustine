@@ -49,6 +49,7 @@ fn config() -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: clustine_sim::RANDOM_TICK_SPEED,
     }
 }
 
@@ -766,6 +767,7 @@ fn what_concerns_an_edge_goes_to_its_outbox_numbered_on_from_what_it_was_sent() 
                     player: player(8),
                     entity: EntityId(8008),
                     sequence: 5,
+                    shown: Vec::new(),
                 },
             ),
             // Each names the region the store has said holds the chunk concerned: the

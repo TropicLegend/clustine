@@ -66,6 +66,7 @@ fn config(seed: u64) -> RegionConfig {
         spawn_mobs: true,
         light: Default::default(),
         features: Default::default(),
+        random_tick_speed: crate::region::RANDOM_TICK_SPEED,
     }
 }
 

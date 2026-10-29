@@ -496,6 +496,7 @@ mod tests {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         }
     }
 
@@ -596,6 +597,7 @@ mod tests {
             player: player(900),
             entity: EntityId(900),
             sequence: number,
+            shown: Vec::new(),
         }
     }
 

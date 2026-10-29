@@ -793,6 +793,7 @@ mod tests {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         };
         let ids = EntityIds::block(0).expect("the first block of ids");
         let mut region = Region::new(config, ids, Holdings::default());

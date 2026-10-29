@@ -1311,6 +1311,7 @@ mod in_a_region {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         };
         let state = RegionState::new(EntityIds::block(2).expect("a block"));
         let holdings = Holdings {

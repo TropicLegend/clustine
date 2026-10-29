@@ -89,6 +89,7 @@ mod tests {
                 spawn_mobs: true,
                 light: LightSettings::default(),
                 features: Default::default(),
+                random_tick_speed: crate::region::RANDOM_TICK_SPEED,
             },
             EntityIds::block(0).unwrap(),
             Holdings::default(),

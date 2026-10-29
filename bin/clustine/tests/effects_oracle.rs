@@ -127,6 +127,9 @@ async fn stand_in_a_cloud(address: &str) -> Result<Bathed> {
             scene.track(id).removed.is_some()
         })
         .await?;
+    // The tick the cloud ends in also gives its last effect. The official server sends
+    // that before the removal, Clustine after it, so both are read a little further.
+    scene.round_trip().await?;
     let me = scene.me;
     let effects = scene.of(from, |packet| match packet {
         ClientboundPlay::UpdateMobEffect(effect) if effect.entity_id == me => Some((
@@ -229,15 +232,27 @@ async fn cast_fangs(address: &str) -> Result<Fanged> {
     let mut scene = Scene::join(address, "Penner").await?;
     let (x, z) = scene.column();
     let feet = scene.feet;
-    // The villager in a pit two blocks deep four blocks east, from which it cannot
-    // walk out; the evoker two blocks west, six from it: far enough for a line of
-    // fangs (the circle is for a target within three).
-    scene.dig_pit(&[(x + 4, z)], 2).await?;
+    // The villager in a pen of fences four blocks east, which it cannot jump; the
+    // evoker two blocks west, six from it: far enough for a line of fangs (the circle
+    // is for a target within three). The evoker sees it over the fences, as it does
+    // not out of a pit two blocks deep, where neither server's evoker took it for its
+    // target.
+    scene.hover_at((feet.0 + 2.0, feet.1, feet.2)).await?;
+    for dx in 3..=5 {
+        for dz in -1..=1 {
+            if (dx, dz) != (4, 0) {
+                let at = (x + dx, GROUND + 1, z + dz);
+                scene
+                    .place(items::OAK_FENCE, (at.0, GROUND, at.2), face::TOP, at)
+                    .await?;
+            }
+        }
+    }
     let villager = egg(
         &mut scene,
         items::VILLAGER_SPAWN_EGG,
         entity_types::VILLAGER,
-        (x + 4, GROUND - 2, z),
+        (x + 4, GROUND, z),
     )
     .await?;
     scene.hover_at(feet).await?;

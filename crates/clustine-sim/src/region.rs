@@ -95,6 +95,7 @@ mod rails;
 mod random_ticks;
 pub(crate) use drops::{DEFAULT_PICK_UP_DELAY, item_of_block};
 pub(crate) use entities::insecure_uuid;
+pub use random_ticks::RANDOM_TICK_SPEED;
 pub(crate) use random_ticks::Random;
 pub(crate) use stands::{DEFAULT_POSE as STAND_POSE, MAX_HEALTH as STAND_HEALTH};
 mod natural_spawning;
@@ -168,6 +169,9 @@ pub struct RegionConfig {
     /// The game rule `spawn_mobs`: whether mobs spawn naturally and by the custom
     /// spawners (on in a game; the end-to-end tests that count entities turn it off).
     pub spawn_mobs: bool,
+    /// The game rule `random_tick_speed`: how many positions of each section are drawn
+    /// a tick (3 in a game; the comparisons with an official server turn it off on both).
+    pub random_tick_speed: u32,
     /// How much of what it comes to have the region lights a tick (ADR-0029): a
     /// server's budget, or none, as the tests have it, so that a chunk ticks in the tick
     /// it comes.
@@ -1148,7 +1152,10 @@ impl Region {
             if !self.edges.contains_key(edge) {
                 continue;
             }
-            let answer = self.apply_remote(action, &mut output);
+            let mut answer = self.apply_remote(action, &mut output);
+            if let Durable::RemoteDone { shown, .. } = &mut answer {
+                *shown = self.shown_after(&action.step);
+            }
             self.send(*edge, answer, &mut output);
         }
         for (edge, id, entity, number, input) in &inputs.inputs {
@@ -2250,11 +2257,21 @@ impl Region {
                         | PlayerInput::Interact { .. }
                 ))
         {
-            // An empty off hand does nothing, and nothing but a use is made with a hand.
+            // An empty off hand does nothing, and nothing but a use is made with a hand;
+            // a use on a block within reach still shows the player its blocks.
+            let shown = match input {
+                PlayerInput::UseItemOn { position, face, .. } if player.can_reach(*position) => {
+                    Some((*position, *face))
+                }
+                _ => None,
+            };
             if let PlayerInput::UseItemOn { sequence, .. } | PlayerInput::UseItem { sequence, .. } =
                 input
             {
                 player.acknowledge(*sequence);
+            }
+            if let Some((position, face)) = shown {
+                self.show_used_on(id, position, face, output);
             }
             return;
         }
@@ -2618,12 +2635,63 @@ impl Region {
                 match passed_on {
                     Some(entry) => self.send(edge, entry, output),
                     None => {
+                        self.show_used_on(id, *position, *face, output);
                         if let Some(player) = self.players.get_mut(&id) {
                             player.acknowledge(sequence);
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// Shows the player `id` the block they used an item on at `position` and the one
+    /// beside it across `face`, as they are after the use: the game sends both after
+    /// every use on a block (`handleUseItemOn`), whatever it did, so a client's guess of a
+    /// block the use left alone is put right at once. A block the region cannot read (in
+    /// a chunk it neither holds nor has a copy of) is not shown. A use the region passes
+    /// on to the region that holds the clicked chunk, or what is placed beside it, shows
+    /// nothing: named in `docs/roadmap.md`.
+    fn show_used_on(
+        &self,
+        id: PlayerId,
+        position: BlockPos,
+        face: crate::api::Face,
+        output: &mut TickOutput,
+    ) {
+        for (position, state) in self.readable_after_use(position, face) {
+            output
+                .player_events
+                .push((id, PlayerEvent::BlockShown { position, state }));
+        }
+    }
+
+    /// The clicked block at `position` and the one beside it across `face`, those of
+    /// them the region can read: what a player is shown after a use on a block.
+    fn readable_after_use(
+        &self,
+        position: BlockPos,
+        face: crate::api::Face,
+    ) -> Vec<(BlockPos, BlockState)> {
+        [position, face.neighbour(position)]
+            .into_iter()
+            .filter_map(|at| Some((at, self.block(at)?)))
+            .collect()
+    }
+
+    /// What the player of a remote action is shown when the region has finished it: for
+    /// a click, as [`Self::show_used_on`] shows a click the player's own region
+    /// finished; nothing for a break.
+    fn shown_after(&self, step: &RemoteStep) -> Vec<(BlockPos, BlockState)> {
+        match step {
+            RemoteStep::UseOn { click }
+            | RemoteStep::OffHandOn { click }
+            | RemoteStep::PlaceAt { click, .. } => {
+                self.readable_after_use(click.position, click.face)
+            }
+            RemoteStep::Break { .. }
+            | RemoteStep::PlaceAgainst { .. }
+            | RemoteStep::Place { .. } => Vec::new(),
         }
     }
 
@@ -3058,6 +3126,7 @@ impl Region {
             player: action.player,
             entity: action.entity,
             sequence: action.sequence,
+            shown: Vec::new(),
         };
         // A step about a chunk this region does not hold is not taken here. It goes to
         // the region the store has said holds the chunk, or, if the region has no such
@@ -4009,6 +4078,7 @@ mod tests {
             spawn_mobs: true,
             light: Default::default(),
             features: Default::default(),
+            random_tick_speed: crate::region::RANDOM_TICK_SPEED,
         }
     }
 
@@ -4391,12 +4461,15 @@ mod tests {
 
     /// What the players are told as a worker tells them, which is as a region told them
     /// before it had an outbox: whether they entered the world or were refused, then
-    /// what was acknowledged, then who was let go.
+    /// what was acknowledged, then who was let go. The blocks a click shows its player
+    /// are left out: [`shown`] has them, and their own tests judge them.
     fn told(output: &TickOutput) -> Vec<(PlayerId, PlayerEvent)> {
-        let TickOutput {
-            player_events: events,
-            ..
-        } = output;
+        let events: Vec<(PlayerId, PlayerEvent)> = output
+            .player_events
+            .iter()
+            .filter(|(_, event)| !matches!(event, PlayerEvent::BlockShown { .. }))
+            .cloned()
+            .collect();
         let spawned = events
             .iter()
             .position(|(_, event)| matches!(event, PlayerEvent::Acknowledged { .. }))
@@ -5729,6 +5802,57 @@ mod tests {
         let chunk = region.chunk(ChunkPos::new(0, 0)).unwrap();
         assert_eq!(chunk.get(2, -60, 0), Some(blocks::STONE));
         assert_eq!(chunk.get(2, -60, 1), Some(blocks::DIRT));
+    }
+
+    /// The blocks the region showed each player alone in `output`, in order.
+    fn shown(output: &TickOutput) -> Vec<(PlayerId, BlockPos, BlockState)> {
+        output
+            .player_events
+            .iter()
+            .filter_map(|(id, event)| match event {
+                PlayerEvent::BlockShown { position, state } => Some((*id, *position, *state)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_use_on_a_block_shows_the_player_the_clicked_block_and_the_one_beside_it() {
+        let mut region = on_floor(&[1, 2]);
+        let floor = region.block(BlockPos::new(2, -61, 0)).unwrap();
+        let output = region.tick(&moves(vec![place(1, 2, -61, 0, Face::Top)]));
+        assert_eq!(
+            shown(&output),
+            [
+                (player(1), BlockPos::new(2, -61, 0), floor),
+                (player(1), BlockPos::new(2, -60, 0), blocks::STONE),
+            ]
+        );
+        // Before the acknowledgement, as the game sends them before it.
+        let shown_last = output
+            .player_events
+            .iter()
+            .rposition(|(_, event)| matches!(event, PlayerEvent::BlockShown { .. }));
+        let acknowledged_first = output
+            .player_events
+            .iter()
+            .position(|(_, event)| matches!(event, PlayerEvent::Acknowledged { .. }));
+        assert!(
+            shown_last < acknowledged_first,
+            "{:?}",
+            output.player_events
+        );
+
+        // A placing that cannot be made, where the other player stands, still shows both.
+        region.tick(&moves(vec![walk(2, 3.5, 3.5)]));
+        let output = region.tick(&moves(vec![place(1, 3, -61, 3, Face::Top)]));
+        assert_eq!(
+            shown(&output),
+            [
+                (player(1), BlockPos::new(3, -61, 3), floor),
+                (player(1), BlockPos::new(3, -60, 3), blocks::AIR),
+            ]
+        );
     }
 
     #[test]
@@ -7616,6 +7740,37 @@ mod tests {
     }
 
     #[test]
+    fn a_click_another_region_finishes_carries_the_blocks_its_player_is_shown() {
+        let mut west = west_with_floor();
+        let floor = west.block(BlockPos::new(-2, -61, 2)).unwrap();
+        let shown_with = |output: &TickOutput| -> Vec<Vec<(BlockPos, BlockState)>> {
+            output
+                .durable
+                .iter()
+                .filter_map(|(_, _, entry)| match entry {
+                    Durable::RemoteDone { shown, .. } => Some(shown.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let output = west.tick(&remotely(vec![remote(
+            1,
+            1,
+            use_on(-2, -61, 2, Face::Top, FEET),
+        )]));
+        assert_eq!(
+            shown_with(&output),
+            [vec![
+                (BlockPos::new(-2, -61, 2), floor),
+                (BlockPos::new(-2, -60, 2), blocks::STONE),
+            ]]
+        );
+        // A dig is no click: the game shows nothing after it.
+        let output = west.tick(&remotely(vec![remote(1, 2, break_at(-1, -61, 2))]));
+        assert_eq!(shown_with(&output), [Vec::new()]);
+    }
+
+    #[test]
     fn digging_beyond_the_area_within_reach_is_asked_of_the_region_that_has_the_block() {
         let mut region = east_with_player();
         let beyond = [
@@ -8188,6 +8343,7 @@ mod tests {
             player: player(1),
             entity: EntityId(4711),
             sequence: 7,
+            shown: Vec::new(),
         };
         assert_eq!(entries(&output), [done]);
 

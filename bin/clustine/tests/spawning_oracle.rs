@@ -11,13 +11,10 @@
 //! peaks of monsters; both peaks are within the monsters' cap of 70 about a player
 //! (the cap scales with the chunks spawning reaches, 289 at a view distance of 8).
 //!
-//! **It does not run yet**: Clustine spawns nothing naturally until N9h (spawning's
-//! frame and the game seed of a flat world) and S10 (spawning's rules) land, and the
-//! flat world has no seed of its own before N9h. When they land, set [`SEED`] to the
-//! default seed N9h gives a flat world (a constant of `bin/clustine`), take the
-//! `#[ignore]`'s second reason away, and run it alone; it takes some forty minutes, a
-//! day on each server. The test checks that the two logins name the same seed (their
-//! hashed seeds), so a wrong [`SEED`] fails at once rather than after the day.
+//! Clustine's flat world has the seed 0 (N9h) and spawns by the game's rules (S10). It
+//! takes some forty minutes, a day on each server; run it alone. The test checks that
+//! the two logins name the same seed (their hashed seeds), so a wrong [`SEED`] fails at
+//! once rather than after the day.
 //!
 //! The official server is started by `common/n9_oracle.rs`, since the harness's oracle
 //! serves no flat world with a seed and turns spawning off by a command.
@@ -44,8 +41,8 @@ use clustine_protocol::packets::play::ClientboundPlay;
 use n9_oracle::FlatSeeded;
 use n9_scene::Scene;
 
-/// The flat world's seed on both servers. **N9h's to set**: the default seed Clustine
-/// gives a flat world it is told none for.
+/// The flat world's seed on both servers: the one Clustine gives a flat world it is told
+/// none for.
 const SEED: i64 = 0;
 
 /// The view and simulation distance of both: the game's 289 spawning chunks about a
@@ -143,7 +140,7 @@ fn counts_agree(theirs: usize, ours: usize) -> bool {
 }
 
 #[tokio::test]
-#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA; and waits for N9h and S10: Clustine spawns nothing naturally yet"]
+#[ignore = "needs Java, the server jar and agreement to the Minecraft EULA"]
 async fn a_day_of_spawning_is_like_on_the_official_server() {
     let oracle = FlatSeeded::start(SEED, VIEW_DISTANCE)
         .await

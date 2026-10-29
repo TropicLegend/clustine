@@ -519,6 +519,7 @@ mod tests {
                     player: player(),
                     entity: EntityId(5),
                     sequence: 9,
+                    shown: Vec::new(),
                 },
             },
             WorkerToEdge::Outbox {

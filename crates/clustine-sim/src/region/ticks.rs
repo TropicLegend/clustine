@@ -315,7 +315,7 @@ impl Region {
         }
     }
 
-    fn start_ticking(&mut self, chunk: ChunkPos) {
+    pub(crate) fn start_ticking(&mut self, chunk: ChunkPos) {
         self.ticks.ticking.insert(chunk);
         self.ticks.started.insert(chunk);
         let Some(loaded) = self.chunks.get_mut(&chunk) else {
