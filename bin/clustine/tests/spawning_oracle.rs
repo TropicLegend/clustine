@@ -8,8 +8,10 @@
 //! mob it is shown is counted once, when first added, by its type and by whether it
 //! stands on the grass, and the most monsters shown at once are counted at night. The counts of each
 //! type are held to each other within their noise (`counts_agree`), and so are the
-//! peaks of monsters; both peaks are within the monsters' cap of 70 about a player
-//! (the cap scales with the chunks spawning reaches, 289 at a view distance of 8).
+//! peaks of monsters. A peak passes the monsters' cap of 70 about a player (the cap
+//! scales with the chunks spawning reaches, 289 at a view distance of 8) by what one
+//! tick's groups add, since the game checks the cap once a tick before it spawns: the
+//! official server's were 74 and 75 (2026-10-29).
 //!
 //! Clustine's flat world has the seed 0 (N9h) and spawns by the game's rules (S10). It
 //! takes some forty minutes, a day on each server; run it alone. The test checks that
@@ -234,13 +236,6 @@ async fn a_day_of_spawning_is_like_on_the_official_server() {
         }
     }
     assert!(differ.is_empty(), "these differ: {differ:#?}");
-    for (name, day) in [("the official server", &theirs), ("Clustine", &ours)] {
-        assert!(
-            day.peak_monsters <= 70,
-            "{name}: {} monsters at once",
-            day.peak_monsters
-        );
-    }
     assert!(
         counts_agree(theirs.peak_monsters, ours.peak_monsters),
         "the most monsters at once: {} against {}",

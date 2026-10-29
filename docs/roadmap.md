@@ -513,13 +513,16 @@ after 20 returns. It found **a flat world that spawned no mob in a whole day**: 
 published the counts a region waits for with the world's clock, which moves with
 commits, and a world in which nothing lives commits nothing; it now publishes behind a
 region's whole report too, with two tests from the rule by someone else. Run again, each failure alone:
-every comparison passes but two. The structures' entities wait for S3. A day of
-spawning, each mob counted once, gives Clustine as many zombies as the official server
-but about half its skeletons, spiders and creepers, at the same peak (2026-10-29: creeper
-95 against 67, skeleton 118 against 61, spider 102 against 66, zombie 102 against 82,
-slime 719 against 617); the spawner draws each group as the game does (a test holds the
-plains' monsters to their weights), and the turnover under a full cap through a night is
-being looked into. The trident's motion beyond its tracking range is left out of its
+every comparison passes but the structures' entities, which wait for S3. A day of
+spawning first gave Clustine about two thirds of the official server's monsters: the
+comparison watched each server for 1,200 seconds, and Clustine's debug build ticks a full
+cap at about 16.5 a second, so its night was cut short. It now watches a day of each
+server's own clock and counts each mob once: creeper 110 against 80, skeleton 117 against
+78, spider 128 against 89, zombie 111 against 113, slime 777 against 672, peaks 74 and 76,
+each within its noise; a day of the simulation run to 24,000 ticks gives the official
+server's counts (creeper 108, skeleton 103, spider 105, zombie 103), and a test holds the
+plains' monsters to the shares of their weights. The peaks pass the cap of 70 on both
+servers, the game checking it once a tick. The trident's motion beyond its tracking range is left out of its
 comparison, the difference named above. The dispensed arrow and a cure each failed once
 on the official server's side beside other work and passed alone.
 
