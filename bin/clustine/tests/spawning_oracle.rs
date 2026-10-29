@@ -5,8 +5,8 @@
 //! 18: the slime chunks are the seed's), grant and simulate the same view distance,
 //! and are given no command. One creative player stands in the open at the world's
 //! spawn for a whole day, 24 000 ticks, from the morning a new world begins in; every
-//! mob it is shown being added is counted by its type and by whether it stands on the
-//! grass, and the most monsters shown at once are counted at night. The counts of each
+//! mob it is shown is counted once, when first added, by its type and by whether it
+//! stands on the grass, and the most monsters shown at once are counted at night. The counts of each
 //! type are held to each other within their noise (`counts_agree`), and so are the
 //! peaks of monsters; both peaks are within the monsters' cap of 70 about a player
 //! (the cap scales with the chunks spawning reaches, 289 at a view distance of 8).
@@ -102,15 +102,22 @@ async fn a_day(address: &str) -> Result<Day> {
         .filter(|(_, kind)| MONSTERS.contains(kind))
         .map(|(id, _)| *id)
         .collect();
+    // Each entity counted once, when it is first shown: one that walks out of view and
+    // back is added again, and the two servers' views differ in that (the edge shows an
+    // entity as far as its chunk is in view, the game as far as its type's tracking
+    // range), which is not spawning.
+    let mut counted_ids: BTreeSet<i32> = BTreeSet::new();
     let minutes = DAY.as_secs().div_ceil(60);
     for _ in 0..minutes {
         scene.idle(Duration::from_secs(60)).await?;
         for seen in &scene.log {
             match &seen.packet {
                 Some(ClientboundPlay::SpawnEntity(spawn)) if counted(spawn.kind) => {
-                    *day.added.entry(spawn.kind).or_default() += 1;
-                    if (spawn.y - -60.0).abs() < 1e-6 {
-                        *day.on_the_grass.entry(spawn.kind).or_default() += 1;
+                    if counted_ids.insert(spawn.entity_id) {
+                        *day.added.entry(spawn.kind).or_default() += 1;
+                        if (spawn.y - -60.0).abs() < 1e-6 {
+                            *day.on_the_grass.entry(spawn.kind).or_default() += 1;
+                        }
                     }
                     if MONSTERS.contains(&spawn.kind) {
                         shown.insert(spawn.entity_id);
