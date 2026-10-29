@@ -566,14 +566,24 @@ struct Beamed {
 async fn beam(address: &str) -> Result<Beamed> {
     let mut scene = Scene::join(address, "Aquarist").await?;
     let (x, z) = scene.column();
-    // A trench five long, two deep, its floor under water: the guardian at one end,
-    // the squid at the other, four blocks apart (a guardian targets a squid farther
-    // than three).
-    let cells: Vec<(i32, i32)> = (z - 2..=z + 2).map(|zz| (x + 3, zz)).collect();
-    scene.dig_pit(&cells, 2).await?;
+    // A trench nine long, two deep, its floor under water: the guardian at one end,
+    // the squid at the other, eight blocks apart. A guardian targets a squid farther
+    // than three, and its beam breaks off when the squid swims within three
+    // (`GuardianAttackGoal.canContinueToUse`): in a trench five long the squid's own
+    // swim brought it that near before the strike on one server and not the other.
+    let cells: Vec<(i32, i32)> = (z - 2..=z + 6).map(|zz| (x + 3, zz)).collect();
+    // Dug half at a time, each from above its middle, within reach.
+    scene.dig_pit(&cells[..5], 2).await?;
+    scene.dig_pit(&cells[5..], 2).await?;
     // Poured straight down into the middle, from above it (the ends are out of a
     // bucket's reach), it flows along the floor to both ends.
-    scene.pour((x + 3, GROUND - 2, z)).await?;
+    let middle = (
+        f64::from(x + 3) + 0.5,
+        f64::from(GROUND) + 2.0,
+        f64::from(z + 2) + 0.5,
+    );
+    scene.hover_at(middle).await?;
+    scene.pour((x + 3, GROUND - 2, z + 2)).await?;
     scene
         .until(PATIENCE, "the water along the trench", |scene| {
             cells.iter().all(|(cx, cz)| {
@@ -583,6 +593,10 @@ async fn beam(address: &str) -> Result<Beamed> {
             })
         })
         .await?;
+    // Each made from above its end.
+    scene
+        .hover_at((middle.0, middle.1, f64::from(z - 2) + 0.5))
+        .await?;
     let guardian = egg(
         &mut scene,
         items::GUARDIAN_SPAWN_EGG,
@@ -590,13 +604,17 @@ async fn beam(address: &str) -> Result<Beamed> {
         (x + 3, GROUND - 2, z - 2),
     )
     .await?;
+    scene
+        .hover_at((middle.0, middle.1, f64::from(z + 6) + 0.5))
+        .await?;
     let squid = egg(
         &mut scene,
         items::SQUID_SPAWN_EGG,
         entity_types::SQUID,
-        (x + 3, GROUND - 2, z + 2),
+        (x + 3, GROUND - 2, z + 6),
     )
     .await?;
+    scene.hover_at(middle).await?;
     let aiming = |value: &EntityDataValue| matches!(value, EntityDataValue::Int(id) if *id != 0);
     scene
         .until(Duration::from_secs(60), "the guardian's beam", |scene| {

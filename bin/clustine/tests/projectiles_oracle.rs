@@ -1003,18 +1003,36 @@ async fn each_projectile_is_sent_like_on_the_official_server() {
 async fn spit(address: &str) -> Result<Shown> {
     let mut scene = Scene::join(address, "Herder").await?;
     let (x, z) = scene.column();
-    let from = scene.mark();
+    let feet = scene.feet;
     // A llama attacks a wolf that is not tamed (`Llama.LlamaAttackWolfGoal`) by
-    // spitting at it.
+    // spitting at it, but only one within a quarter of its follow range of 16, and a
+    // wolf runs from llamas. So both are held in a corridor of fences three cells long
+    // east of the player, the llama at one end and the wolf two blocks from it at the
+    // other, in sight of each other down the corridor. The player builds it from above
+    // its middle.
+    scene.hover_at((feet.0 + 3.0, feet.1 + 2.0, feet.2)).await?;
+    for dx in 1..=5 {
+        for dz in -1..=1 {
+            if dz == 0 && (2..=4).contains(&dx) {
+                continue;
+            }
+            let at = (x + dx, GROUND + 1, z + dz);
+            scene
+                .place(items::OAK_FENCE, (at.0, GROUND, at.2), face::TOP, at)
+                .await?;
+        }
+    }
+    let from = scene.mark();
     scene
         .take(ItemStack::new(items::LLAMA_SPAWN_EGG, 1))
         .await?;
-    scene.use_on(x + 3, GROUND, z, face::TOP).await?;
+    scene.use_on(x + 2, GROUND, z, face::TOP).await?;
     scene
         .wait_added(from, entity_types::LLAMA, 1, PATIENCE)
         .await?;
     scene.take(ItemStack::new(items::WOLF_SPAWN_EGG, 1)).await?;
-    scene.use_on(x - 3, GROUND, z, face::TOP).await?;
+    scene.use_on(x + 4, GROUND, z, face::TOP).await?;
+    scene.hover_at(feet).await?;
     let spat = scene
         .wait_added(from, entity_types::LLAMA_SPIT, 1, Duration::from_secs(60))
         .await?;
@@ -1201,9 +1219,15 @@ async fn a_dispensed_arrow_flies_by_the_rules_like_on_the_official_server() {
     let theirs = theirs.expect("the official server's arrows");
     let ours = ours.expect("Clustine's arrows");
     for (name, flights) in [("the official server", &theirs), ("Clustine", &ours)] {
-        for flown in flights {
+        for (flown, upward) in flights.iter().zip([true, false]) {
             assert!(flown.landed, "{name}: {flown:?}");
-            assert!(flown.places >= 1, "{name}: no place in the air: {flown:?}");
+            // The arrow shot west from a dispenser on the ground lands within some four
+            // ticks, before the game sends an arrow's first place in the air (every 20
+            // ticks): only the one shot up is shown in flight.
+            assert!(
+                !upward || flown.places >= 1,
+                "{name}: no place in the air: {flown:?}"
+            );
             assert!(flown.worst_off_the_path <= 0.05, "{name}: {flown:?}");
         }
         let upward = &flights[0];
