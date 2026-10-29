@@ -34,9 +34,10 @@ mod n9_scene;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clustine_data::entity_types;
 use clustine_protocol::packets::play::ClientboundPlay;
+use tokio::time::Instant;
 
 use n9_oracle::FlatSeeded;
 use n9_scene::Scene;
@@ -49,8 +50,12 @@ const SEED: i64 = 0;
 /// player at 8, which the monsters' cap of 70 is reckoned for.
 const VIEW_DISTANCE: u32 = 8;
 
-/// A day of the game.
-const DAY: Duration = Duration::from_secs(24_000 / 20);
+/// A day of the game, in ticks.
+const DAY: i64 = 24_000;
+
+/// The longest a day may take: a server at half the game's pace still finishes. Clustine's
+/// debug build ticks a full cap of monsters at about 16 a second.
+const DAY_AT_MOST: Duration = Duration::from_secs(2 * 24_000 / 20);
 
 /// The monsters of a flat plains world, by type: what the cap of 70 counts.
 const MONSTERS: [i32; 9] = [
@@ -74,6 +79,8 @@ struct Day {
     on_the_grass: BTreeMap<i32, usize>,
     /// The most monsters shown at once.
     peak_monsters: usize,
+    /// The game time the day began and ended at, as the server said it.
+    game_time: (i64, i64),
 }
 
 /// Whether the kind is a mob a spawner makes, rather than a projectile, an item or a
@@ -95,7 +102,7 @@ async fn a_day(address: &str) -> Result<Day> {
         hashed_seed: scene.hashed_seed,
         ..Day::default()
     };
-    // The day in minutes, so that the shown monsters are counted as they come and go.
+    // The shown monsters, counted as they come and go.
     let mut shown: BTreeSet<i32> = scene
         .known
         .iter()
@@ -107,9 +114,28 @@ async fn a_day(address: &str) -> Result<Day> {
     // entity as far as its chunk is in view, the game as far as its type's tracking
     // range), which is not spawning.
     let mut counted_ids: BTreeSet<i32> = BTreeSet::new();
-    let minutes = DAY.as_secs().div_ceil(60);
-    for _ in 0..minutes {
-        scene.idle(Duration::from_secs(60)).await?;
+    // A day of the server's own clock, not of the wall's: a server that ticks slower
+    // than 20 a second would otherwise be watched for less of a night (a run that
+    // stopped at 19 800 found two thirds of the game's monsters).
+    let began = scene
+        .times
+        .last()
+        .map(|time| time.game_time)
+        .context("the join's time")?;
+    let mut now = began;
+    let given_up = Instant::now() + DAY_AT_MOST;
+    while now < began + DAY {
+        anyhow::ensure!(
+            Instant::now() < given_up,
+            "the server's day had only reached {} of {DAY} ticks after {DAY_AT_MOST:?}",
+            now - began
+        );
+        scene.idle(Duration::from_secs(10)).await?;
+        for seen in &scene.log {
+            if let Some(ClientboundPlay::SetTime(time)) = &seen.packet {
+                now = now.max(time.game_time);
+            }
+        }
         for seen in &scene.log {
             match &seen.packet {
                 Some(ClientboundPlay::SpawnEntity(spawn)) if counted(spawn.kind) => {
@@ -135,6 +161,7 @@ async fn a_day(address: &str) -> Result<Day> {
         // What was read is not needed again; a day's packets would fill memory.
         scene.log.clear();
     }
+    day.game_time = (began, now);
     Ok(day)
 }
 
