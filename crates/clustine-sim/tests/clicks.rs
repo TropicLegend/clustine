@@ -966,7 +966,11 @@ fn a_click_on_the_other_regions_block_goes_there_whole_and_is_placed_and_answere
                 player: actor.id,
                 entity: actor.entity,
                 sequence: 5,
-                shown: Vec::new(),
+                // The clicked block and the one placed on it, as the game shows both.
+                shown: vec![
+                    (clicked, blocks::STONE),
+                    (BlockPos::new(16, 64, 8), blocks::STONE),
+                ],
             }
         )]
     );

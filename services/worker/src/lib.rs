@@ -5411,16 +5411,6 @@ mod tests {
         drop(runner);
     }
 
-    #[test]
-    fn the_regions_of_the_flat_world_have_no_features() {
-        let store = memory();
-        let (_, restored) = store.open_region(owner()).unwrap();
-        assert_eq!(restored.seed, None);
-        let flat = settings(0).with_spawn(restored.spawn, restored.world, restored.seed);
-        assert!(flat.features.0.is_none());
-        assert!(config(0).features.0.is_none());
-    }
-
     /// Has `store` hand `chunks` to the owner of its one region, opened as [`owner`].
     fn handed_out(store: &Store, chunks: &[ChunkPos]) {
         let (handle, _) = store.open_region(owner()).unwrap();

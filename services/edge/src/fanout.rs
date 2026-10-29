@@ -1849,14 +1849,7 @@ impl Fanout {
                 player,
                 event: PlayerEvent::BlockShown { position, state },
             } => {
-                let packet = encoded(&BlockUpdate {
-                    position: Position {
-                        x: position.x,
-                        y: position.y,
-                        z: position.z,
-                    },
-                    state: i32::from(state.0),
-                });
+                let packet = self.shown_block(position, state);
                 self.send_to_player(player, [packet]).await;
             }
             WorkerToEdge::ToPlayer {
@@ -2203,16 +2196,7 @@ impl Fanout {
                     // acknowledges the click (`handleUseItemOn`).
                     let packets: Vec<_> = shown
                         .iter()
-                        .map(|(position, state)| {
-                            encoded(&BlockUpdate {
-                                position: Position {
-                                    x: position.x,
-                                    y: position.y,
-                                    z: position.z,
-                                },
-                                state: i32::from(state.0),
-                            })
-                        })
+                        .map(|(position, state)| self.shown_block(*position, *state))
                         .collect();
                     if !packets.is_empty() {
                         self.send_to_player(player, packets).await;
@@ -5659,6 +5643,31 @@ impl Fanout {
         if Arc::make_mut(chunk).set_block_entity_data(at, data).is_ok() {
             entry.packet = None;
         }
+    }
+
+    /// The update that shows a player the block at `position` after their use of an
+    /// item on a block, which the region read as `state` right after the use. The game
+    /// sends it while it handles the use, before the changes of the tick go out at its
+    /// end; the edge hears it after them, and a later action of the same tick may have
+    /// changed the block again. So it is shown as the edge has it, which is what every
+    /// client of the chunk is told, and as the region read it only where the edge does
+    /// not have the chunk.
+    fn shown_block(&self, position: BlockPos, state: BlockState) -> Bytes {
+        let (x, z) = position.in_chunk();
+        let state = self
+            .replica
+            .get(&position.chunk())
+            .and_then(|entry| entry.chunk.as_ref())
+            .and_then(|chunk| chunk.get(x, position.y, z))
+            .unwrap_or(state);
+        encoded(&BlockUpdate {
+            position: Position {
+                x: position.x,
+                y: position.y,
+                z: position.z,
+            },
+            state: i32::from(state.0),
+        })
     }
 
     fn change_block(&mut self, position: BlockPos, state: BlockState) -> bool {
@@ -21288,6 +21297,36 @@ mod scenarios {
             [OfChunk::Unloaded(HOME), OfChunk::Sent(HOME)]
         );
         assert_eq!(client.state(HOME), Some(STONE));
+        edge.end().await;
+    }
+
+    /// A tick in which a player places a block and digs it again ends with the block
+    /// gone, and the region shows the player the block it read after the placing only
+    /// after the changes of that tick. The player is shown the block as the tick left
+    /// it, not as it was between the two.
+    #[tokio::test]
+    async fn a_block_shown_after_a_use_is_shown_as_the_tick_left_it() {
+        let mut edge = Harness::start().await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        let ask = edge.ask(WEST, HOME);
+        edge.tell(WEST, snapshot(HOME, ask));
+        assert!(edge.shows(&mut client, WEST, HOME).await);
+
+        edge.tell(WEST, changed(HOME, AIR));
+        let shown = PlayerEvent::BlockShown {
+            position: block_of(HOME),
+            state: STONE,
+        };
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event: shown,
+            },
+        );
+        edge.settle(WEST).await;
+        client.drain();
+        assert_eq!(client.state(HOME), Some(AIR));
         edge.end().await;
     }
 
