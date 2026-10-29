@@ -1155,15 +1155,15 @@ fn light_checks() -> clustine_sim::LightChecks {
 /// opens worlds of other seeds in one process has them built again.
 static FEATURES: Mutex<Option<(i64, Arc<FeatureSettings>)>> = Mutex::new(None);
 
-/// The overworld's features of `seed`, or none without one, as in the flat world.
+/// The overworld's features of `seed`, or of the flat world's seed 0 without one: in a
+/// flat world too a sapling grows into the game's tree and bone meal on grass places
+/// the plains' plants, as a game's superflat world has them.
 ///
 /// They are without the blocks of the structure templates, which a worker does not
 /// read from the game's jar: the trees saplings grow and what bone meal places need
 /// none, and a region places no other feature.
 fn features_of(seed: Option<i64>) -> Features {
-    let Some(seed) = seed else {
-        return Features::default();
-    };
+    let seed = seed.unwrap_or(0);
     // Built while the lock is held, so that regions opened at once wait for the one
     // build rather than each making their own.
     let mut kept = FEATURES.lock().unwrap_or_else(PoisonError::into_inner);
@@ -5344,6 +5344,14 @@ mod tests {
         assert_eq!((flat.game_seed, flat.sea_level), (0, -63));
         let seeded = settings(0).with_spawn(BlockPos::new(0, 64, 0), 7, Some(3));
         assert_eq!((seeded.game_seed, seeded.sea_level), (3, 63));
+    }
+
+    /// A flat world's saplings grow into the game's trees and its grass takes bone meal,
+    /// as a game's superflat world's do: its regions have the features of its seed 0.
+    #[test]
+    fn a_flat_world_s_regions_have_the_features_of_its_seed() {
+        let flat = settings(0).with_spawn(BlockPos::new(0, -60, 0), flat_world(), None);
+        assert!(flat.features.0.is_some());
     }
 
     /// The number the store gives the classic flat world.
