@@ -23,12 +23,12 @@ use clustine_protocol::packets::login::{
 };
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundMoveVehicle, ClientboundPlay,
-    ConfirmTeleportation, Interact, LevelChunkWithLight, LightUpdate, Login, PaddleBoat,
-    PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive, ServerboundMoveVehicle,
-    ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
-    SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
-    SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
-    movement_flags, player_action, player_input, relative,
+    ConfirmTeleportation, EntityDataValue, Interact, LevelChunkWithLight, LightUpdate, Login,
+    PaddleBoat, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
+    ServerboundMoveVehicle, ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem,
+    SetCreativeModeSlot, SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition,
+    SetPlayerPositionAndRotation, SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta,
+    face, inventory, movement_flags, player_action, player_input, relative,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -243,6 +243,9 @@ pub struct SeenEntity {
     pub motion: [f64; 3],
     /// Whether the latest move had it on the ground.
     pub on_ground: bool,
+    /// Its pose (`play::pose`) as its data last said, where it said one: a villager
+    /// asleep is told by it, not by its height, which is that of one standing on a bed.
+    pub pose: Option<i32>,
 }
 
 impl Bot {
@@ -1738,6 +1741,7 @@ impl Bot {
                         relative_moves: 0,
                         motion: packet.velocity,
                         on_ground: false,
+                        pose: None,
                     },
                 );
             }
@@ -2026,9 +2030,17 @@ impl Bot {
                     data: packet.data,
                 });
             }
+            ClientboundPlay::SetEntityData(packet) => {
+                if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    for (index, value) in packet.values {
+                        if let (6, EntityDataValue::Pose(pose)) = (index, value) {
+                            entity.pose = Some(pose);
+                        }
+                    }
+                }
+            }
             ClientboundPlay::ChunkBatchStart(_)
             | ClientboundPlay::GameEvent(_)
-            | ClientboundPlay::SetEntityData(_)
             // What an armour stand wears is nothing a bot keeps.
             | ClientboundPlay::SetEquipment(_)
             | ClientboundPlay::Animate(_)

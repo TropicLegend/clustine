@@ -535,9 +535,26 @@ dimension has a home region made with the world; a traveller is committed when i
 portal fires and placed once by the destination, which finds the portal through an
 index kept from every commit or makes one; old worlds are refused; **the Nether first**
 (portals and travel, its land, its rules and its mobs), **then the End** (its portal,
-platform, gateways, mobs and the dragon's first fight, and the void that kills). Before
-it, the cost of a village of 30 at dusk and of a raid's waves, measured in memory and on
-the real disk.
+platform, gateways, mobs and the dragon's first fight, and the void that kills).
+
+**N10's cost, measured** (2026-10-29, `bin/clustine/tests/n10_measured.rs`, release, two
+workers on two regions pinned at block x = 64, a village of 30 villagers, a bell and 30
+beds built across the line; a subagent's build ran beside some of them, niced, and the
+session's processes were themselves niced from the evening on). **A village at dusk:**
+the beds claimed from day time 9300 to 11800 with no tick over 50 ms, the world growing by
+8.6 MB in memory and 8.4 MB on the real disk (three quarters of the store's answers by
+bytes the copies across the line); from 11800 for 90 s, 25 of 30 villagers shown lying
+down at once in memory and 28 on the real disk, no tick over 50 ms, 2.8 and 2.7 MB. **A
+raid of three waves** on easy, hunted with a sword: waves of 4, 5 and 4 raiders (4, 6
+and 5 on the real disk), the raid over 187 to 194 s after the drink, no tick over 50 ms,
+the world growing by 11 to 12 MB. The measurements found two faults: **a raid could wait
+for good between its waves** where a raider's chunk was let go (the raid counted it
+alive; the game's raider leaves its raid when unloaded and rejoins when loaded, which
+plan 9.3 asked for and is now built, with three tests); and the measurement's own count
+of sleepers, which read a height that a sleeper holds for one tick (the bots now keep
+each entity's pose). Named, from the raid's fix: a raid whose record's chunk was let go
+before a member's does not hear that member leave; a raider loaded after its wave has
+passed forgets another region's raid (the game's `addWaveMob(…, false)` takes any wave).
 
 **What to try with a real client, phase N10** (`cargo run --release -p clustine`, a
 flat world; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64). Clustine
