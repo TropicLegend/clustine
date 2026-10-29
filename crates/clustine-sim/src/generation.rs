@@ -30,8 +30,9 @@ pub use spawning::SpawnRandom;
 /// any of them is made with (section 4): a world made while fewer were made is refused
 /// rather than continued with a seam. 0 while none was made; 1 since a chunk is made
 /// with the overworld's creatures (N7l); 2 since the structures make theirs, by every
-/// type built (N7l's D3).
-pub const ENTITIES_GENERATION: u16 = 2;
+/// type built (N7l's D3); 3 since a chunk's wolves are made with the most health their
+/// load from the chunk gives them (2026-10-29).
+pub const ENTITIES_GENERATION: u16 = 3;
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
 /// motion height maps and its light, and the biomes of the nine around it, which the
@@ -151,6 +152,7 @@ pub(crate) fn made_mob(
             companions: None,
         },
     );
+    loaded_from_its_chunk(kind, &mut mob);
     Some(Entity {
         key: EntityId(0),
         kind,
@@ -168,6 +170,20 @@ pub(crate) fn made_mob(
         riding: Default::default(),
         data: mob.encode(),
     })
+}
+
+/// What a mob a chunk is made with keeps of its round trip through the chunk: the game's
+/// `WorldGenRegion.addFreshEntity` saves it into the proto chunk (`ProtoChunk.addEntity`
+/// writes its tag) and the chunk loads it from that tag as it is promoted to a full one,
+/// so its `readAdditionalSaveData` runs after its `finalizeSpawn`. Of the creatures a
+/// chunk is made with, only the wolf's load changes what a client is shown:
+/// `TamableAnimal`'s, finding no owner, calls `setTame(false, true)`, whose
+/// `applyTamingSideEffects` makes the wolf's `max_health` instance (base 8), which is
+/// sent with the wolf's spawn. The other types' loads set again what their tags hold.
+fn loaded_from_its_chunk(kind: u16, mob: &mut crate::mobs::Mob) {
+    if i32::from(kind) == clustine_data::entity_types::WOLF {
+        crate::mobs::types::wolf::taming_side_effects(mob, false);
+    }
 }
 
 /// An entity of a template from its tag (a compound with its `id`, in the binary form

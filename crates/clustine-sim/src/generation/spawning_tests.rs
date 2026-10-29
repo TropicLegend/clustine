@@ -706,3 +706,42 @@ fn every_creature_of_an_overworld_list_has_its_rule_and_its_type() {
         "minecraft:polar_bears_spawn_on_alternate_blocks"
     ));
 }
+
+/// A wolf a chunk is made with is saved into its chunk and loaded from it, as the game's
+/// is, and the load (`setTame(false, true)` of a wolf without an owner) makes its
+/// `max_health` instance at 8: its spawn shows that attribute, and only that, before it
+/// has ticked, as the official server's frozen wolves showed it.
+#[test]
+fn a_wolf_a_chunk_is_made_with_shows_the_most_health_its_load_made() {
+    let making = Generated {
+        dimension: 0,
+        chunk: CENTRE,
+        structure: false,
+        index: 0,
+    };
+    let mut r = Random::of_entity(5, EntityId(1), 0);
+    let wolf = kind(entity_types::WOLF);
+    let made = made_mob(
+        7,
+        making,
+        wolf,
+        SpawnReason::ChunkGeneration,
+        &mut None,
+        None,
+        Some("minecraft:taiga"),
+        [40.0, 65.0, 50.0],
+        90.0,
+        &mut r,
+    )
+    .expect("a wolf is built");
+    let mob = crate::mobs::Mob::decode(&made.data).expect("a mob's record");
+    let shown: Vec<(u16, f64)> = mob
+        .body
+        .attributes
+        .syncable(wolf, false)
+        .into_iter()
+        .map(|instance| (instance.attribute, instance.base))
+        .collect();
+    let max_health = u16::try_from(clustine_data::attributes::MAX_HEALTH).expect("ids fit");
+    assert_eq!(shown, [(max_health, 8.0)]);
+}
