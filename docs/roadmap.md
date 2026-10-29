@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-27)
+## Where the work stands (2026-10-29)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -466,13 +466,75 @@ point read from the margin wrongly, mended, and named a release into an unloaded
 lost; part B (55 tests of villagers, trading and raids) found that a nitwit, or a
 villager with experience whose site was broken, took another profession's job site and
 held it for ever, mended. The comparisons with the official server (trades, a librarian
-made and at work, a bed at dusk, a cure, a raid's bar) are written and wait for a quiet
-machine. Named, each in the plan's section 12: offers drawn from the villager's own
-stream; the margin up to 1.5 s old; the horn heard by every player near a wave of another
-player's raid; a raid's spawn places only in its region's land; a trade with a villager
-across a pinned line opens nothing. Next: the comparisons, the cost of a village of 30
-at dusk and of a raid's waves, measured in memory and on the real disk; then the Nether
+made and at work, a bed at dusk, a cure, a raid's bar) pass, on 2026-10-28, after they
+found the merchant's offers not sent again when prices changed, the window's title
+without the villager's name and hover, the raid's bar gathering its players at the
+game's ticks, the raid omen given again each tick, and a cure's level event after the
+villager rather than before. Named, each in the plan's section 12: offers drawn from the
+villager's own stream; the margin up to 1.5 s old; the horn heard by every player near a
+wave of another player's raid; a raid's spawn places only in its region's land; a trade
+with a villager across a pinned line opens nothing. Next: the cost of a village of 30 at
+dusk and of a raid's waves, measured in memory and on the real disk; then the Nether
 and the End.
+
+**The comparisons of N7n and N9, first run** (2026-10-29). Written with their phases
+and never run until a quiet machine ran every comparison: 52 passed and 15 failed, each
+also on the commit before N10. What was Clustine's, mended, each with a test: after a
+use on a block a player is now shown the clicked block and the one beside it, as the
+game's `handleUseItemOn` ends (also where another region finishes the click, with its
+answer; `STATE_FORMAT` 24); a projectile is sent at once after its hits (the game's
+`needsSync`), so an arrow a creative player refuses is seen turning back; a client's
+rocket with the default flight is a plain rocket; a player's effect ambience and
+particles are sent only where they changed; a chunk's wolves have the most health their
+load gives them (`ENTITIES_GENERATION` 3); the flat world is announced with the hash of
+its seed 0; and, found by the growth comparison once it could finish, **a flat world's
+saplings grew no trees and bone meal on its grass placed nothing**: its regions had no
+features. The rest were the scenes': the official server scatters joining players in its
+spawn radius, a llama spits only at a wolf within four blocks, a guardian's beam breaks
+off when the squid swims within three, an evoker does not see a villager in a pit, an
+arrow from a dispenser on the ground lands before its first update, the official
+server's random ticks are off and now Clustine's are too (`set_random_tick_speed`), and
+the growth comparison waited 22 hours on a builder flying into a tree the official server
+would not let it through (a flight now fails after 20 such returns). Named, a player
+noticing none: an entity is shown as far as its chunk is in view, where the game stops
+at each type's tracking range (an arrow's 64 blocks: the trident's comparison); a block
+of a click in a chunk the finishing region neither holds nor copies is not shown again
+(the client's correction at the acknowledgement shows it); a chunk's animals have
+ticked before they are shown, where the comparison's official server is frozen, and a
+few groups stand elsewhere where the land under them differs (podzol for grass), which
+is the features' order and not the spawning; the structures' entities wait for S3.
+
+**A second run, with each comparison under a limit** (2026-10-29). A run of every
+comparison waited 22 hours on one scene and the next nearly six on another, each a
+flight the official server kept putting back (the growth comparison's builder in a tree,
+the llama's herder down through its corridor's fence); `tools/oracles.sh` now runs each
+test target under a limit of its own and says where a scene stopped, and a flight fails
+after 20 returns. It found **a flat world that spawned no mob in a whole day**: the store
+published the counts a region waits for with the world's clock, which moves with
+commits, and a world in which nothing lives commits nothing; it now publishes behind a
+region's whole report too, with two tests from the rule by someone else. Run again, each failure alone:
+every comparison passes but two. The structures' entities wait for S3. A day of
+spawning, each mob counted once, gives Clustine as many zombies as the official server
+but about half its skeletons, spiders and creepers, at the same peak (2026-10-29: creeper
+95 against 67, skeleton 118 against 61, spider 102 against 66, zombie 102 against 82,
+slime 719 against 617); the spawner draws each group as the game does (a test holds the
+plains' monsters to their weights), and the turnover under a full cap through a night is
+being looked into. The trident's motion beyond its tracking range is left out of its
+comparison, the difference named above. The dispensed arrow and a cure each failed once
+on the official server's side beside other work and passed alone.
+
+**Next: the Nether and the End, phase P**, planned in
+[p-plan.md](groundwork/p-plan.md) from the game's rules ([p-brief.md](groundwork/p-brief.md))
+and a survey of where Clustine assumes one dimension
+([p-survey.md](groundwork/p-survey.md)), reviewed twice ([p-review.md](groundwork/p-review.md))
+and agreed with the owner's answers on 2026-10-29: a region holds one dimension and each
+dimension has a home region made with the world; a traveller is committed when its
+portal fires and placed once by the destination, which finds the portal through an
+index kept from every commit or makes one; old worlds are refused; **the Nether first**
+(portals and travel, its land, its rules and its mobs), **then the End** (its portal,
+platform, gateways, mobs and the dragon's first fight, and the void that kills). Before
+it, the cost of a village of 30 at dusk and of a raid's waves, measured in memory and on
+the real disk.
 
 **What to try with a real client, phase N10** (`cargo run --release -p clustine`, a
 flat world; for a line, `--pin 4 --reshape by-hand`, a line at block x = 64). Clustine
