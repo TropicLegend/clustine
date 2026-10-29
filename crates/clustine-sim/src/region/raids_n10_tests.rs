@@ -689,3 +689,208 @@ fn a_raider_of_a_raid_outside_the_village_walks_to_its_centre_and_celebrates_its
     }
     assert!(celebrated, "it celebrates the raid's loss");
 }
+
+/// A pillager of the region at `at`, a member of the raid `id`'s wave `wave` as its
+/// `aiStep` told the raid.
+fn lay_member(region: &mut Region, key: EntityId, at: At, id: EntityId, wave: i32) {
+    lay_pillager(region, key, at, Some(id));
+    let chunk = region.entity_chunks[&key];
+    let mut record = region.find_entity(key).expect("laid").1.clone();
+    let mut mob = Mob::decode(&record.data).expect("a mob");
+    illagers::update(&mut mob, |raider| raider.wave = wave);
+    let health = mob.body.vitals.health;
+    record.data = mob.encode();
+    region
+        .chunks
+        .get_mut(&chunk)
+        .unwrap()
+        .apply_entity(&EntityChange::Whole(record));
+    region.raider_news(
+        key,
+        None,
+        RaiderNews::Joined {
+            raid: id,
+            wave,
+            health,
+        },
+        &mut TickOutput::default(),
+    );
+}
+
+/// Where the last member of the tests below stands: in the land's corner chunk, 68 from
+/// the centre.
+const CORNER: At = [-40.5, -60.0, -40.5];
+
+/// The land's corner chunk, where [`CORNER`] is.
+const CORNER_CHUNK: ChunkPos = ChunkPos::new(-3, -3);
+
+/// The raid `id` after its first wave, of which only the member `key` at [`CORNER`] is
+/// left, waiting for it.
+fn first_wave_left_to(key: EntityId) -> (Region, EntityId) {
+    let (mut region, id) = village_with_raid(1);
+    until_next_wave(&mut region, id);
+    lay_member(&mut region, key, CORNER, id, 1);
+    let mut output = TickOutput::default();
+    for member in raid(&region, id).members {
+        if member.key != key {
+            region.raid_news(
+                RaidNews::Died {
+                    raid: id,
+                    member: member.key,
+                    killer: None,
+                },
+                &mut output,
+            );
+        }
+    }
+    for _ in 0..40 {
+        tick_raids(&mut region);
+    }
+    let kept = raid(&region, id);
+    let keys: Vec<EntityId> = kept.members.iter().map(|member| member.key).collect();
+    assert_eq!(keys, [key]);
+    assert_eq!(kept.cooldown_ticks, 0, "no countdown while it is alive");
+    (region, id)
+}
+
+#[test]
+fn a_member_let_go_with_its_chunk_leaves_the_raid_and_the_next_wave_s_countdown_begins() {
+    // The game's `updateRaiders` removes a raider unloaded with its chunk (`isRemoved()`);
+    // a raid that kept counting it waited for it for good, between its waves.
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    let kept = raid(&region, id);
+    let total = kept.total_health.0;
+    let health = kept.members[0].health.0;
+    region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+    assert!(
+        !region.chunks.contains_key(&CORNER_CHUNK),
+        "the chunk is let go"
+    );
+    let kept = raid(&region, id);
+    assert!(kept.members.is_empty(), "it left the raid");
+    assert_eq!(
+        kept.total_health,
+        Float(total - health),
+        "`removeFromRaid(…, true)`"
+    );
+    // The countdown begins in the raids' next tick, which may be the region's own.
+    if kept.cooldown_ticks == 0 {
+        tick_raids(&mut region);
+    }
+    let before = raid(&region, id).cooldown_ticks;
+    assert!(before > 0, "the countdown began");
+    tick_raids(&mut region);
+    assert_eq!(raid(&region, id).cooldown_ticks, before - 1);
+}
+
+#[test]
+fn a_member_let_go_rejoins_its_wave_still_leading_when_its_chunk_is_loaded_again() {
+    let key = EntityId(0x7000);
+    let (mut region, id) = first_wave_left_to(key);
+    // It leads its wave, as the banner's bearer.
+    let mut record = region.find_entity(key).expect("here").1.clone();
+    let mut mob = Mob::decode(&record.data).expect("a mob");
+    illagers::update(&mut mob, |raider| raider.patrol_leader = true);
+    record.data = mob.encode();
+    region
+        .chunks
+        .get_mut(&CORNER_CHUNK)
+        .unwrap()
+        .apply_entity(&EntityChange::Whole(record));
+    let saved = region.chunks[&CORNER_CHUNK].clone();
+    region.tick(&tickets(vec![], vec![CORNER_CHUNK]));
+    let left = raid(&region, id);
+    assert!(left.members.is_empty());
+    region.tick(&tickets(vec![CORNER_CHUNK], vec![]));
+    region.tick(&TickInputs {
+        chunks_loaded: vec![(CORNER_CHUNK, saved)],
+        ..TickInputs::default()
+    });
+    assert!(
+        region.chunks.contains_key(&CORNER_CHUNK),
+        "the chunk is back"
+    );
+    let kept = raid(&region, id);
+    let members: Vec<(EntityId, i32)> = kept
+        .members
+        .iter()
+        .map(|member| (member.key, member.wave))
+        .collect();
+    assert_eq!(
+        members,
+        [(key, 1)],
+        "`addWaveMob(level, wave, raider, false)`"
+    );
+    assert_eq!(kept.total_health, left.total_health, "its total unchanged");
+    assert_eq!(kept.leaders, [(1, key)], "`setLeader(wave, raider)`");
+}
+
+#[test]
+fn a_raider_of_another_region_s_raid_rejoins_it_when_loaded_and_leaves_it_when_let_go() {
+    // A region pinned west of chunk x 5; the raid's record is kept far east of it.
+    let mut region = joined_in(
+        ChunkArea {
+            min_x: None,
+            max_x: Some(5),
+        },
+        &[1],
+    );
+    let far = BlockPos::new(500, -60, 8);
+    let id = EntityId(0x8_0000_0002);
+    region.take_raid_table(&[RaidSeen {
+        id,
+        chunk: far.chunk(),
+        centre: far,
+        active: true,
+        status: RaidStatus::Ongoing,
+        groups_spawned: 1,
+        between_waves: false,
+        omen: 1,
+        bar: uuid::Uuid::from_u128(7),
+        shown: true,
+        progress: 1.0,
+        name: RaidBarName::Raid,
+    }]);
+    let key = EntityId(0x7000);
+    let kind = entity_types::PILLAGER as u16;
+    let mut own = Random::of_entity(region.config.seed, key, 0);
+    let (uuid, mut mob) = crate::mobs::making::construct(kind, &mut own, 0.0);
+    illagers::update(&mut mob, |raider| {
+        raider.raid = Some(id);
+        raider.wave = 1;
+        raider.can_join_raid = true;
+    });
+    let health = mob.body.vitals.health;
+    let record = crate::mobs::making::fresh_record(key, kind, uuid, [20.5, -60.0, 4.5], 0.0, &mob);
+    let place = ChunkPos::new(1, 0);
+    let mut chunk = floor();
+    chunk.apply_entity(&EntityChange::Whole(record));
+    region.tick(&tickets(vec![place], vec![]));
+    let output = region.tick(&TickInputs {
+        chunks_loaded: vec![(place, chunk)],
+        ..TickInputs::default()
+    });
+    assert!(region.chunks.contains_key(&place), "the chunk is loaded");
+    let told = |output: &TickOutput, news: RaidNews| {
+        output
+            .effects
+            .iter()
+            .any(|effect| effect.at.chunk() == far.chunk() && effect.what == Effected::Raid(news))
+    };
+    let joined = RaidNews::Joined {
+        raid: id,
+        member: key,
+        wave: 1,
+        health: Float(health),
+        from: place,
+    };
+    assert!(told(&output, joined), "it rejoins the raid's record");
+    let output = region.tick(&tickets(vec![], vec![place]));
+    assert!(!region.chunks.contains_key(&place), "the chunk is let go");
+    let left = RaidNews::Left {
+        raid: id,
+        member: key,
+    };
+    assert!(told(&output, left), "it leaves the raid's record");
+}

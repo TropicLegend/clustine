@@ -994,7 +994,7 @@ impl Region {
 
     /// `news` to the raid `raid`, at the chunk its record is kept in: the region's own,
     /// or the table's.
-    fn tell_raid(&mut self, raid: EntityId, news: RaidNews, output: &mut TickOutput) {
+    pub(super) fn tell_raid(&mut self, raid: EntityId, news: RaidNews, output: &mut TickOutput) {
         let chunk = self.find_raid(raid).map(|(chunk, _)| chunk).or_else(|| {
             self.raid_memory
                 .table

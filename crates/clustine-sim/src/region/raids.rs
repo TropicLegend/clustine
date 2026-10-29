@@ -58,6 +58,15 @@ pub(super) struct Shown {
     pub(super) name: RaidBarName,
 }
 
+/// A raider of a raid in a chunk the region lets go of or takes up.
+struct RaiderOf {
+    key: EntityId,
+    raid: EntityId,
+    wave: i32,
+    health: f32,
+    leads: bool,
+}
+
 fn dist_sqr(a: BlockPos, b: BlockPos) -> f64 {
     super::pois::dist_sqr(a, b)
 }
@@ -298,6 +307,93 @@ impl Region {
                 }
                 kept.leaders.retain(|(_, leader)| *leader != member);
             }),
+        }
+    }
+
+    /// The living raiders of a raid in the chunk at `position`, in the chunk's order:
+    /// each one's key, raid, wave and health, and whether it leads.
+    fn raid_raiders_in(&self, position: ChunkPos) -> Vec<RaiderOf> {
+        let Some(chunk) = self.chunks.get(&position) else {
+            return Vec::new();
+        };
+        chunk
+            .entities()
+            .iter()
+            .filter(|entity| crate::mobs::ai::patrol::PATROLLING.contains(&entity.kind))
+            .filter_map(|entity| {
+                let mob = crate::mobs::Mob::decode(&entity.data).ok()?;
+                if mob.body.vitals.dying() {
+                    return None;
+                }
+                let state = crate::mobs::types::illagers::state_of(&mob);
+                Some(RaiderOf {
+                    key: entity.key,
+                    raid: state.raid?,
+                    wave: state.wave,
+                    health: mob.body.vitals.health,
+                    leads: state.patrol_leader,
+                })
+            })
+            .collect()
+    }
+
+    /// The raiders of a raid in the chunk at `position`, which the region lets go of,
+    /// leave their raids: the game's `updateRaiders` removes a raider that `isRemoved()`,
+    /// as one unloaded with its chunk is (`removeFromRaid(…, true)`, n7k Raid 991–1102),
+    /// so that the next wave does not wait for it. The region's own raid hears it at
+    /// once, another region's by its news (`docs/groundwork/n10-plan.md`, section 9.3).
+    /// Each keeps the raid's id, as the game's saved raider keeps `RaidId`, and rejoins
+    /// when its chunk is taken up again ([`Region::raiders_taken_up`]).
+    pub(super) fn raiders_let_go(&mut self, position: ChunkPos, output: &mut TickOutput) {
+        for raider in self.raid_raiders_in(position) {
+            let news = RaidNews::Left {
+                raid: raider.raid,
+                member: raider.key,
+            };
+            self.tell_raid(raider.raid, news, output);
+        }
+    }
+
+    /// The raiders of a raid in the chunk at `position`, which the region has just
+    /// loaded, rejoin it as the game's `Raider.readAdditionalSaveData` does
+    /// (`addWaveMob(level, wave, raider, false)` of the raid its `RaidId` names, and
+    /// `setLeader` where it leads, n7 Raider): the region's own raid takes it on its wave
+    /// with its health, its total unchanged; another region's by `Joined`, which judges
+    /// it on its current wave and counts its health (named). A raid the region does not
+    /// know hears nothing.
+    pub(super) fn raiders_taken_up(&mut self, position: ChunkPos, output: &mut TickOutput) {
+        for raider in self.raid_raiders_in(position) {
+            if self.find_raid(raider.raid).is_some() {
+                self.change_raid(raider.raid, output, |kept| {
+                    kept.members.retain(|member| member.key != raider.key);
+                    kept.members.push(clustine_world::raid::RaidMember {
+                        wave: raider.wave,
+                        key: raider.key,
+                        health: Float(raider.health),
+                    });
+                    kept.members.sort_by_key(|member| (member.wave, member.key));
+                    if raider.leads {
+                        kept.leaders.retain(|(wave, _)| *wave != raider.wave);
+                        kept.leaders.push((raider.wave, raider.key));
+                        kept.leaders.sort_unstable();
+                    }
+                    super::raid_tick::update_bossbar(kept);
+                });
+            } else if self
+                .raid_memory
+                .table
+                .iter()
+                .any(|seen| seen.id == raider.raid)
+            {
+                let news = RaidNews::Joined {
+                    raid: raider.raid,
+                    member: raider.key,
+                    wave: raider.wave,
+                    health: Float(raider.health),
+                    from: position,
+                };
+                self.tell_raid(raider.raid, news, output);
+            }
         }
     }
 

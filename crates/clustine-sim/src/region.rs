@@ -3394,6 +3394,7 @@ impl Region {
         for (position, kind) in &inputs.tickets_added {
             *self.tickets.entry(*position).or_default().of(*kind) += 1;
         }
+        let mut unloading = Vec::new();
         for (position, kind) in &inputs.tickets_removed {
             let Some(tickets) = self.tickets.get_mut(position) else {
                 continue;
@@ -3411,13 +3412,21 @@ impl Region {
                     && !self.lend_ticketed(*position)
                     && !self.arrival_ticketed(*position)
                 {
-                    self.chunks.remove(position);
-                    self.let_go_events(*position);
-                    self.let_go_block_entities(*position);
-                    self.let_go_entities(*position);
-                    self.requested.remove(position);
+                    unloading.push(*position);
                 }
             }
+        }
+        // Every raider let go leaves its raid before any chunk goes, so that a raid whose
+        // record goes in the same tick hears of its members first.
+        for position in &unloading {
+            self.raiders_let_go(*position, output);
+        }
+        for position in unloading {
+            self.chunks.remove(&position);
+            self.let_go_events(position);
+            self.let_go_block_entities(position);
+            self.let_go_entities(position);
+            self.requested.remove(&position);
         }
         let home = self.land.home;
         let mut loaded = BTreeSet::new();
@@ -3438,13 +3447,18 @@ impl Region {
             }
         }
         // The kept block events of the chunks loaded join the queue's end, by chunk.
-        for position in loaded {
+        for position in loaded.iter().copied() {
             self.take_up_events(position);
             self.take_up_block_entities(position);
             // A shulker box has no recheck: its openers are counted again as it loads
             // (`shulker_boxes.rs`).
             self.recount_shulker_boxes(position, output);
             self.take_up_entities(position, false, Some(&mut *output));
+        }
+        // After every chunk loaded is taken up, so that a raid whose record came with
+        // them hears its raiders rejoin.
+        for position in &loaded {
+            self.raiders_taken_up(*position, output);
         }
         // Border copies, with the chunks and before the region works out which chunks
         // tick, so that a chunk beside them ticks in this very tick
