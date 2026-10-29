@@ -58,10 +58,13 @@ The tests that start clusters of processes run several at a time
 (`CLUSTINE_TEST_CLUSTERS`, by default one for every two processors).
 
 - **Comparisons with the official server** (`#[ignore]` tests): need Java and the jar that
-  `cargo datagen` downloads. `CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace
-  --locked -- --ignored official_server`. Not in CI. Run them after anything that touches
-  the protocol. (Without the name, `--ignored` also runs tests that are ignored for their
-  length or as findings.)
+  `cargo datagen` downloads. `CLUSTINE_ACCEPT_MINECRAFT_EULA=true tools/oracles.sh` runs
+  them one test target at a time, each under a limit of its own (`CLUSTINE_ORACLE_LIMIT`,
+  30 minutes), and prints each target's result as it ends; a target that runs out of
+  time has the official server's threads and the scene's last steps in its log. Not in
+  CI. Run them after anything that touches the protocol. One hung scene once held a
+  whole run for 22 hours and another for six: never run them under one long limit, and
+  watch the output for a failure or a stall rather than wait for the end.
 - **Cluster test**: `deploy/kind/test.sh` needs Docker, kubectl and kind
   (`deploy/kind/get-kind.sh`). The `Cluster` workflow runs it on GitHub for every push
   that touches code or `deploy/`, so it is checked there even where Docker is missing.

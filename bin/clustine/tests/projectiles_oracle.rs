@@ -1032,6 +1032,9 @@ async fn spit(address: &str) -> Result<Shown> {
         .await?;
     scene.take(ItemStack::new(items::WOLF_SPAWN_EGG, 1)).await?;
     scene.use_on(x + 4, GROUND, z, face::TOP).await?;
+    // Back over the corridor's west end first: straight down to the feet runs through
+    // its fence, and the official server puts a player who flies into one back.
+    scene.hover_at((feet.0, feet.1 + 2.0, feet.2)).await?;
     scene.hover_at(feet).await?;
     let spat = scene
         .wait_added(from, entity_types::LLAMA_SPIT, 1, Duration::from_secs(60))

@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clustine_botswarm::{Bot, Connection};
 use clustine_protocol::codec::{Position, Reader};
 use clustine_protocol::delta::VecDeltaCodec;
@@ -87,6 +87,8 @@ pub struct Scene {
     pub window: Option<Window>,
     sequence: i32,
     pub acknowledged: i32,
+    /// How often the server has put the player somewhere since the join.
+    put_back: u32,
 }
 
 impl Scene {
@@ -122,6 +124,7 @@ impl Scene {
             window: None,
             sequence: bot.acknowledged_sequence.max(0) + 1_000,
             acknowledged: 0,
+            put_back: 0,
             connection: bot.into_connection(),
         };
         Ok(scene)
@@ -147,8 +150,13 @@ impl Scene {
     }
 
     /// Reads and keeps the next packet, answering it where a client must. False if
-    /// `deadline` passed first.
+    /// `deadline` passed first. The deadline is looked at before the read: a timeout
+    /// still hands over a packet that is ready, and a server that sends faster than the
+    /// scene reads would otherwise keep a wait going for good.
     async fn pump(&mut self, deadline: Instant) -> Result<bool> {
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
         let Ok(frame) = timeout_at(deadline, self.connection.read_frame()).await else {
             return Ok(false);
         };
@@ -177,6 +185,7 @@ impl Scene {
                         given
                     }
                 };
+                self.put_back += 1;
                 self.feet = (
                     pick(relative::X, self.feet.0, teleport.x),
                     pick(relative::Y, self.feet.1, teleport.y),
@@ -275,6 +284,9 @@ impl Scene {
         mut done: impl FnMut(&Scene) -> bool,
     ) -> Result<()> {
         let deadline = Instant::now() + patience;
+        // Seen with `--nocapture` (`tools/oracles.sh`): the step a scene that ran out of
+        // time was at.
+        eprintln!("{}: waiting up to {patience:?} for {what}", self.name);
         while !done(self) {
             if !self.pump(deadline).await? {
                 bail!("{}: no {what} within {patience:?}", self.name);
@@ -388,9 +400,20 @@ impl Scene {
 
     /// Flies to `to` through the air, half a block a tick, as a creative client does:
     /// for work above a pit that is out of reach from the ground.
+    /// A flight the server keeps putting back fails, as `Bot::fly_to` does: one into a
+    /// fence held a whole run of the comparisons for hours.
     pub async fn hover_at(&mut self, to: (f64, f64, f64)) -> Result<()> {
         self.send(&ServerboundPlayerAbilities::flying(true)).await?;
+        eprintln!("{}: flying to {to:?}", self.name);
+        let put_back = self.put_back;
         loop {
+            ensure!(
+                self.put_back - put_back <= clustine_botswarm::bot::PUT_BACK_AT_MOST,
+                "{}: the server put the player back {} times on its flight to {to:?}, now at {:?}",
+                self.name,
+                self.put_back - put_back,
+                self.feet
+            );
             let (dx, dy, dz) = (to.0 - self.feet.0, to.1 - self.feet.1, to.2 - self.feet.2);
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
             let arrives = distance <= 0.5;

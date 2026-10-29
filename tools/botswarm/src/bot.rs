@@ -1595,6 +1595,11 @@ impl Bot {
     }
 
     async fn handle_next(&mut self, deadline: Instant) -> Result<bool> {
+        // A timeout still hands over a packet that is ready, so a server that keeps
+        // sending would keep a wait going past its deadline.
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
         let Ok(frame) = timeout_at(deadline, self.connection.read_frame()).await else {
             return Ok(false);
         };
