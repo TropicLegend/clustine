@@ -322,3 +322,73 @@ fn nothing_is_published_after_a_store_restart_until_every_region_has_reported() 
     east.request(report(true, &[(20, 0, 5)]));
     assert_eq!(totals(&clock.publish(&home, &[&home])[0]), Some(9));
 }
+
+/// The next publication of the others' counts to `handle`'s region, whatever clock it
+/// comes behind: unlike `published_behind`, this needs no commit to have moved the clock.
+fn next_published(handle: &StoreHandle) -> PublishedCounts {
+    loop {
+        if let StoreReply::Counts(counts) = any_reply(handle) {
+            return counts;
+        }
+    }
+}
+
+/// The publications to `handle`'s region among the answers before the one to a flush it
+/// asks for now, which come behind everything it asked before.
+fn published_before_a_flush(handle: &StoreHandle) -> Vec<PublishedCounts> {
+    handle.request(StoreRequest::Flush);
+    let mut published = Vec::new();
+    loop {
+        match any_reply(handle) {
+            StoreReply::Flushed => return published,
+            StoreReply::Counts(counts) => published.push(counts),
+            _ => {}
+        }
+    }
+}
+
+/// Section 9.2, as the store does it since a world in which nothing changed spawned
+/// nothing: a world that commits nothing never moves its clock, and its regions must
+/// still be published the others' counts once every one has reported whole, or none of
+/// them ever spawns.
+#[test]
+fn regions_that_report_whole_and_never_commit_are_each_published_the_others_totals() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let [west, east, home] = three(&store, 1);
+    west.request(report(true, &[(-3, 0, 4)]));
+    east.request(report(true, &[(20, 0, 5)]));
+    home.request(report(true, &[(0, 0, 1)]));
+    assert_eq!(next_published(&west).totals[0], 6);
+    assert_eq!(next_published(&east).totals[0], 5);
+    assert_eq!(next_published(&home).totals[0], 9);
+}
+
+/// Section 9.2: what has the store publish where no commit moves the clock is a whole
+/// report. A partial one is kept, but publishes nothing; the next whole report, of any
+/// region, publishes it with the rest.
+#[test]
+fn a_partial_report_where_the_clock_has_not_moved_is_published_only_with_the_next_whole_one() {
+    let disk = Arc::new(MemoryDisk::default());
+    let store = store_on(&disk, &gap()).unwrap();
+    let [west, east, home] = three(&store, 1);
+    west.request(report(true, &[(-3, 0, 4)]));
+    east.request(report(true, &[(20, 0, 5)]));
+    home.request(report(true, &[(0, 0, 1)]));
+    assert_eq!(next_published(&west).totals[0], 6);
+    assert_eq!(next_published(&east).totals[0], 5);
+    assert_eq!(next_published(&home).totals[0], 9);
+    home.request(report(false, &[(0, 0, 9)]));
+    assert_eq!(
+        published_before_a_flush(&home),
+        [],
+        "a partial report publishes nothing"
+    );
+    east.request(report(true, &[(20, 0, 6)]));
+    assert_eq!(
+        next_published(&west).totals[0],
+        15,
+        "the home region's partial report and the eastern region's whole one, together"
+    );
+    assert_eq!(next_published(&east).totals[0], 13);
+}
