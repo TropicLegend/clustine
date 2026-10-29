@@ -34,8 +34,10 @@
 //! the window is `tick sprint` with them at 3; its game time is asked before and after.
 //! Clustine has no commands and ticks at its own pace: its world is started, stopped,
 //! its clock written into the world store's table file (the region takes the later of
-//! it and its own), and started again, at 13,680 for the night and 1,000 for the day;
-//! the window is waited out in game time, which the time packets say, and has to end
+//! it and its own), and started again, 10,000 ticks before 13,680 for the night and
+//! 1,000 for the day, since its clock cannot be paused and the builder builds in that
+//! lead; the reading that begins the window waits for the hour, the window is waited
+//! out in game time, which the time packets say, and has to end
 //! before the hour does (a setup that takes too long fails, saying so). On both, the
 //! things are read by a reader that joins for each reading: a sapling's stage is set
 //! without telling clients (flags 4), so only a fresh view of the chunk shows it.
@@ -113,6 +115,10 @@ const SECTION: f64 = 4_096.0;
 /// The day times Clustine's worlds are started at.
 const CLUSTINE_NIGHT: u64 = 13_680;
 const CLUSTINE_DAY: u64 = 1_000;
+/// How long before its hour Clustine's clock is started, in game ticks, for the builder
+/// to build in: Clustine's clock cannot be paused, and a night's sixteen cases took
+/// some 8 000 ticks to build.
+const CLUSTINE_LEAD: u64 = 10_000;
 /// The day times the official server is paused at.
 const OFFICIAL_NIGHT: u64 = 18_000;
 const OFFICIAL_DAY: u64 = 6_000;
@@ -868,13 +874,27 @@ async fn run_stage(
     builder: &mut Bot,
     cases: &[Case],
     bone_meal: Option<&Case>,
-    hour_ends: u64,
+    (hour_begins, hour_ends): (u64, u64),
     readers: &mut u32,
 ) -> Result<Vec<Counted>> {
     let mut all: Vec<&Case> = cases.iter().collect();
     all.extend(bone_meal);
     eprintln!("{}: building {} cases", side.name(), all.len());
     build(builder, &all).await?;
+    if let Side::Clustine { .. } = side {
+        // Built in the lead before the hour: the counting begins with it.
+        let offset = day_offset(builder)?;
+        let in_hour = |bot: &Bot| {
+            latest_game_time(bot).is_some_and(|time| {
+                let day = u64::try_from((time + offset).rem_euclid(24_000)).unwrap_or(0);
+                (hour_begins..hour_ends).contains(&day)
+            })
+        };
+        builder
+            .wait_until(Duration::from_secs(CLUSTINE_LEAD / 20 * 3 + 60), in_hour)
+            .await
+            .context("the hour's beginning")?;
+    }
     eprintln!("{}: built; reading", side.name());
     let places: Vec<Pos> = cases
         .iter()
@@ -1004,7 +1024,22 @@ async fn feed_bone_meal(
         for (index, unit) in case.units.iter().enumerate() {
             if let Seen::Stage(_) = now[index] {
                 let feed = [put(items::BONE_MEAL, unit.at)];
-                go_above(builder, unit.at, &feed).await?;
+                // Bone meal grows trees, which the official server does not let a
+                // player fly through. So the builder feeds each sapling from three
+                // blocks east of it, outside the leaves of any tree of the saplings,
+                // which are six apart, and goes from one to the next high above them.
+                let from = builder.location;
+                let beside = (
+                    f64::from(unit.at.0) + 3.5,
+                    HIGH_FEET,
+                    f64::from(unit.at.2) + 0.5,
+                );
+                let look = (0.0, 90.0);
+                builder.fly_to((from.0, HOVER.1, from.2), look, 1.0).await?;
+                builder
+                    .fly_to((beside.0, HOVER.1, beside.2), look, 1.0)
+                    .await?;
+                builder.fly_to(beside, look, 1.0).await?;
                 do_steps(builder, &feed).await?;
                 used.push(index);
             }
@@ -1074,7 +1109,7 @@ async fn run_side(side: &Side, address: &str) -> Result<Vec<(String, Counted)>> 
         &mut builder,
         &cases,
         Some(&bone_meal),
-        NIGHT_ENDS,
+        (OFFICIAL_NIGHT, NIGHT_ENDS),
         &mut readers,
     )
     .await?
@@ -1089,7 +1124,7 @@ async fn run_side(side: &Side, address: &str) -> Result<Vec<(String, Counted)>> 
             &mut builder,
             &day(),
             None,
-            DAY_ENDS,
+            (OFFICIAL_DAY, DAY_ENDS),
             &mut readers,
         )
         .await?
@@ -1115,7 +1150,8 @@ async fn run_clustine() -> Result<Vec<(String, Counted)>> {
     let mut counted = Vec::new();
     for (hour, label) in [(CLUSTINE_NIGHT, "at midnight"), (CLUSTINE_DAY, "by day")] {
         let world = tempfile::tempdir()?;
-        let server = start_clustine_at(world.path(), 100_000, 24_000 + hour).await?;
+        let started = 24_000 + hour - CLUSTINE_LEAD;
+        let server = start_clustine_at(world.path(), 100_000, started).await?;
         let address = server.address().to_string();
         let side = Side::Clustine { server, world };
         let ran = async {
@@ -1125,7 +1161,7 @@ async fn run_clustine() -> Result<Vec<(String, Counted)>> {
             let offset = day_offset(&builder)?;
             let joined = latest_game_time(&builder).context("no time packet")?;
             ensure!(
-                offset == 24_000 + hour as i64 - 100_000 && joined >= 100_000,
+                offset == started as i64 - 100_000 && joined >= 100_000,
                 "Clustine's clock did not take: the join said game time {joined} and a day \
                  {offset} ahead of it"
             );
@@ -1138,7 +1174,7 @@ async fn run_clustine() -> Result<Vec<(String, Counted)>> {
                     &mut builder,
                     &cases,
                     Some(&bone_meal),
-                    NIGHT_ENDS,
+                    (CLUSTINE_NIGHT, NIGHT_ENDS),
                     &mut readers,
                 )
                 .await
@@ -1149,7 +1185,7 @@ async fn run_clustine() -> Result<Vec<(String, Counted)>> {
                     &mut builder,
                     &day(),
                     None,
-                    DAY_ENDS,
+                    (CLUSTINE_DAY, DAY_ENDS),
                     &mut readers,
                 )
                 .await

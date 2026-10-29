@@ -256,6 +256,9 @@ impl Bot {
     }
 }
 
+/// How many times [`Bot::fly_to`] lets the server put the bot back before it fails.
+pub const PUT_BACK_AT_MOST: u32 = 20;
+
 /// A bot in the play state.
 pub struct Bot {
     connection: Connection,
@@ -801,6 +804,10 @@ impl Bot {
     ///
     /// A bot has no gravity and stays wherever it says it is. What keeps a real client
     /// up there is that it flies: see [`Bot::set_flying`].
+    ///
+    /// A server that puts the bot back again and again, as the official server does a
+    /// player who flies into a block, would keep it from ever arriving: after
+    /// [`PUT_BACK_AT_MOST`] times the flight fails.
     pub async fn fly_to(
         &mut self,
         to: (f64, f64, f64),
@@ -808,7 +815,9 @@ impl Bot {
         blocks_per_tick: f64,
     ) -> Result<()> {
         self.look = look;
+        let mut put_back = 0;
         loop {
+            let synced = self.position.as_ref().map(|sync| sync.teleport_id);
             let (dx, dy, dz) = (
                 to.0 - self.location.0,
                 to.1 - self.location.1,
@@ -838,6 +847,16 @@ impl Bot {
             self.connection.write(&ClientTickEnd).await?;
             let next_tick = Instant::now() + TICK;
             while self.step(next_tick).await? {}
+            if self.position.as_ref().map(|sync| sync.teleport_id) != synced {
+                put_back += 1;
+                ensure!(
+                    put_back <= PUT_BACK_AT_MOST,
+                    "the server put the bot back {put_back} times on its flight to {to:?}, \
+                     now at {:?}",
+                    self.location
+                );
+                continue;
+            }
             if arrives {
                 return Ok(());
             }
