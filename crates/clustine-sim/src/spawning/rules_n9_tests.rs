@@ -1480,3 +1480,74 @@ fn a_spawned_mob_is_counted_for_the_players_near_it_at_once() {
     }
     assert!(!state.can_spawn_local(0, chunk));
 }
+
+#[test]
+fn the_monsters_of_the_plains_spawn_in_the_shares_their_weights_give() {
+    // The spawning oracle (`bin/clustine/tests/spawning_oracle.rs`) showed Clustine more
+    // zombies and fewer of the other monsters than the official server. The type is the
+    // weighted pick of the plains' list, once a group, and the zombie, the skeleton, the
+    // creeper and the spider pass the same rule on a dark floor of grass, so each
+    // position's first type comes in the share of its weight among the types that can
+    // spawn there (the slime's rule fails out of a slime chunk, and none of these is
+    // one). Fresh fields keep the crowd of what was made from obstructing the wide
+    // spider more than the game would.
+    let plains = biome("minecraft:plains");
+    let list = clustine_data::BIOME_SPAWNS[usize::from(plains.0)]
+        .of("monster")
+        .expect("the plains have monsters");
+    let weight = |id: i32| -> i32 {
+        list.iter()
+            .filter(|entry| entry.kind == usize::try_from(id).expect("an id"))
+            .map(|entry| entry.weight)
+            .sum()
+    };
+    let total = list.iter().map(|entry| entry.weight).sum::<i32>() - weight(entity_types::SLIME);
+    let mut positions: BTreeMap<u16, u32> = BTreeMap::new();
+    let mut mobs: BTreeMap<u16, u32> = BTreeMap::new();
+    let mut output = TickOutput::default();
+    for round in 0..80_u64 {
+        let mut region = field_region(plains, blocks::GRASS_BLOCK, Vec::new());
+        set_clock(&mut region, 1_001, 18_000);
+        for tick in 0..50 {
+            region.tick = 60_000 + round * 1_000 + tick;
+            for chunk in (-1..=1).flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z))) {
+                assert!(!rules::is_slime_chunk(chunk.x, chunk.z, 0));
+                let mut state = spawning_state(&[(1, PLAYER_AT)]);
+                let mut draws = Random::of_chunk(region.config.seed, chunk, region.tick, SPAWNING);
+                let spawned =
+                    region.spawn_category_for_chunk(0, chunk, &mut state, &mut draws, &mut output);
+                if let Some((kind, _)) = spawned.made.first() {
+                    *positions.entry(*kind).or_default() += 1;
+                }
+                for (kind, _) in &spawned.made {
+                    *mobs.entry(*kind).or_default() += 1;
+                }
+            }
+        }
+    }
+    let all_positions: u32 = positions.values().sum();
+    let all_mobs: u32 = mobs.values().sum();
+    assert!(all_positions > 1_000, "{all_positions} positions made mobs");
+    assert_eq!(mobs.get(&kind(entity_types::SLIME)), None);
+    for id in [
+        entity_types::ZOMBIE,
+        entity_types::SKELETON,
+        entity_types::CREEPER,
+        entity_types::SPIDER,
+    ] {
+        let expected = f64::from(weight(id)) / f64::from(total);
+        let of_positions =
+            f64::from(positions.get(&kind(id)).copied().unwrap_or(0)) / f64::from(all_positions);
+        let of_mobs = f64::from(mobs.get(&kind(id)).copied().unwrap_or(0)) / f64::from(all_mobs);
+        let name = clustine_data::ENTITY_TYPES[usize::try_from(id).expect("an id")];
+        assert!(
+            (of_positions - expected).abs() < 0.03,
+            "{name}: {of_positions:.3} of the positions, {expected:.3} by its weight \
+             ({positions:?})"
+        );
+        assert!(
+            (of_mobs - expected).abs() < 0.04,
+            "{name}: {of_mobs:.3} of the mobs, {expected:.3} by its weight ({mobs:?})"
+        );
+    }
+}
