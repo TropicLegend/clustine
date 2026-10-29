@@ -131,6 +131,10 @@ pub(crate) struct Lanes {
     regions: BTreeMap<RegionId, Lane>,
     /// The game time of the world's clock as it was last put on the regions' streams.
     clock_published: u64,
+    /// Whether a region has reported all its counts since the last publication, and
+    /// so waits for one: a region spawns nothing before its first, and a world in which
+    /// nothing changes commits nothing to move the clock that publications follow.
+    publication_wanted: bool,
     /// The latest face of every player in the world (`faces.rs`).
     faces: Faces,
     /// The game time of each region's latest commit, which the world's players' sleep
@@ -791,6 +795,7 @@ impl Lanes {
             seed: None,
             regions,
             clock_published: 0,
+            publication_wanted: false,
             faces: Faces::default(),
             committed_time: BTreeMap::new(),
             table_last,
@@ -1243,6 +1248,7 @@ impl Lanes {
         let job = match request {
             // Kept as it comes, behind the commit it goes with: in memory only.
             StoreRequest::Counts(report) => {
+                self.publication_wanted |= report.full;
                 self.counts.report(session.region, session.number, report);
                 return;
             }
@@ -2034,6 +2040,7 @@ impl Lanes {
     /// for that.
     fn end_group(&mut self) {
         if self.group.is_empty() && !self.log.unsynced() {
+            self.publish();
             return;
         }
         if let Err(error) = self.log.sync() {
@@ -2225,11 +2232,24 @@ impl Lanes {
                 });
             }
         }
+        self.publish();
+        for peer in group.flushes {
+            peer.answer(StoreReply::Flushed);
+        }
+    }
+
+    /// What every region with an owner is told of the world now and then: its clock,
+    /// the others' counts of mobs, the village's margin and the trader's chance. After a
+    /// group's answers where there was one, and also where there was nothing to make
+    /// durable: a world kept in memory has no log to sync, and was told none of it
+    /// (its regions spawned no mob).
+    fn publish(&mut self) {
         // The world's clock, once it has moved on a second since it was last told: every
         // region that has an owner takes the later of it and its own
         // (`docs/groundwork/n7-plan.md`, section 8.4).
         let clock = self.table.clock;
-        if clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
+        let wanted = mem::take(&mut self.publication_wanted);
+        if wanted || clock.game_time >= self.clock_published.saturating_add(CLOCK_EVERY) {
             self.clock_published = clock.game_time;
             let committed = &self.committed_time;
             let players = self
@@ -2268,9 +2288,6 @@ impl Lanes {
                         .answer(StoreReply::TraderChance { firing, chance });
                 }
             }
-        }
-        for peer in group.flushes {
-            peer.answer(StoreReply::Flushed);
         }
     }
 
