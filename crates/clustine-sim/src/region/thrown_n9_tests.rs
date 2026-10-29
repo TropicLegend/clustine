@@ -563,13 +563,17 @@ fn a_lingering_potion_s_cloud_waits_applies_keeps_its_victims_shrinks_and_ends()
         let age = lived + 1;
         let before = effects_of(&region, target);
         let output = idle(&mut region);
-        if gone(&output, cloud_key) {
-            ended_at = Some(age);
-            break;
-        }
         let after = effects_of(&region, target);
         let fresh = after.first().is_some_and(|speed| speed.duration == 900)
             && before.first().is_none_or(|speed| speed.duration != 900);
+        if gone(&output, cloud_key) {
+            // The use that takes it below half a block still gives its effects.
+            if fresh {
+                applied_at.push(age);
+            }
+            ended_at = Some(age);
+            break;
+        }
         if fresh {
             applied_at.push(age);
             let EntityData::Cloud(cloud) = &region.find_entity(cloud_key).expect("here").1.data
@@ -588,8 +592,9 @@ fn a_lingering_potion_s_cloud_waits_applies_keeps_its_victims_shrinks_and_ends()
             );
         }
     }
-    // Used at 10 and every twenty after; its fifth use, at 90, ends it.
-    assert_eq!(applied_at, [10, 30, 50, 70]);
+    // Used at 10 and every twenty after; its fifth use, at 90, gives its effects and
+    // ends it.
+    assert_eq!(applied_at, [10, 30, 50, 70, 90]);
     // Its radius by the game's floats: 3, less 0.005 a tick from the tenth, less 0.5 a
     // use; at 90 it is 0.595 before its fifth use, which takes it below half a block.
     let mut radius = 3.0_f32;
@@ -609,6 +614,45 @@ fn a_lingering_potion_s_cloud_waits_applies_keeps_its_victims_shrinks_and_ends()
         }
     }
     assert_eq!(ended_at, end);
+    assert_eq!(ended_at, Some(90));
+}
+
+/// The cloud's last use, the one that takes it below half a block, gives the player
+/// standing in it its effect in the very tick it ends (`serverTick` gives the effects
+/// before it takes the radius on use off): five uses at 10, 30, 50, 70 and 90.
+#[test]
+fn a_cloud_s_last_use_gives_a_player_its_effect_in_the_tick_it_ends() {
+    let mut region = world(SEED, nothing);
+    let (id, _) = add_player(&mut region, 1, [1.0, -60.0, 0.5], false);
+    let key = throw(
+        &mut region,
+        entity_types::LINGERING_POTION,
+        potion(items::LINGERING_POTION, "minecraft:swiftness"),
+        None,
+        [0.5, -59.0, 0.5],
+        [0.0, -1.0, 0.0],
+        0.5,
+    );
+    until_gone(&mut region, key, 5);
+    let cloud_key = the_one(&region, entity_types::AREA_EFFECT_CLOUD).key;
+    let mut applied_at = Vec::new();
+    let mut ended_at = None;
+    for _ in 0..200 {
+        let age = region.find_entity(cloud_key).expect("the cloud").1.lived + 1;
+        let output = idle(&mut region);
+        if output.player_events.iter().any(|(to, event)| {
+            *to == id
+                && matches!(event, PlayerEvent::EffectAdded { instance, .. }
+                    if instance.effect == "minecraft:speed" && instance.duration == 900)
+        }) {
+            applied_at.push(age);
+        }
+        if gone(&output, cloud_key) {
+            ended_at = Some(age);
+            break;
+        }
+    }
+    assert_eq!(applied_at, [10, 30, 50, 70, 90]);
     assert_eq!(ended_at, Some(90));
 }
 

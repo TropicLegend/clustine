@@ -202,12 +202,14 @@ impl Region {
         let Some(player) = self.players.get_mut(&id) else {
             return false;
         };
+        let before = effects::particles(&player.effects);
         let added = player.effects.add(effect, layer, now);
         if added == Added::Nothing {
             return false;
         }
         self.journal.players.insert(id);
         self.effect_changed(id, effect, added == Added::New, output);
+        self.show_particles(id, before, output);
         true
     }
 
@@ -221,11 +223,13 @@ impl Region {
         let Some(player) = self.players.get_mut(&id) else {
             return false;
         };
+        let before = effects::particles(&player.effects);
         if !player.effects.remove(effect) {
             return false;
         }
         self.journal.players.insert(id);
         self.effect_changed(id, effect, false, output);
+        self.show_particles(id, before, output);
         true
     }
 
@@ -245,6 +249,7 @@ impl Region {
             let Some(player) = self.players.get_mut(&id) else {
                 continue;
             };
+            let before = effects::particles(&player.effects);
             let counted = player.effects.count_down(now);
             if counted.is_empty() {
                 continue;
@@ -254,6 +259,7 @@ impl Region {
                 let (Counted::Downgraded(effect) | Counted::Ended(effect)) = counted;
                 self.effect_changed(id, effect, false, output);
             }
+            self.show_particles(id, before, output);
         }
     }
 
@@ -402,24 +408,38 @@ impl Region {
         if effect == Effect::INVISIBILITY || effect == Effect::GLOWING {
             self.show_shared_flags(id, output);
         }
-        self.show_particles(id, output);
     }
 
     /// The player `id`'s effect particles as the others are shown them
     /// (`updateSynchronizedMobEffectParticles`: `DATA_EFFECT_PARTICLES`, 10, and
-    /// `DATA_EFFECT_AMBIENCE_ID`, 11), whenever an effect is added, changed or ends.
-    pub(crate) fn show_particles(&self, id: PlayerId, output: &mut TickOutput) {
+    /// `DATA_EFFECT_AMBIENCE_ID`, 11) after their effects changed from showing `before`.
+    /// Only a value that changed is sent, as `SynchedEntityData.set` marks a value dirty
+    /// only where it differs: the official server never sends a player's ambience while
+    /// it stays false, its default.
+    fn show_particles(
+        &self,
+        id: PlayerId,
+        before: (Vec<crate::shown::ShownParticle>, bool),
+        output: &mut TickOutput,
+    ) {
         let Some(player) = self.players.get(&id) else {
             return;
         };
         let (particles, ambient) = effects::particles(&player.effects);
+        let mut values = Vec::new();
+        if particles != before.0 {
+            values.push((EFFECT_PARTICLES, DataShown::Particles(particles)));
+        }
+        if ambient != before.1 {
+            values.push((EFFECT_AMBIENCE, DataShown::Boolean(ambient)));
+        }
+        if values.is_empty() {
+            return;
+        }
         output.events.push(RegionEvent::PlayerData {
             entity: player.entity_id,
             chunk: player.chunk(),
-            values: vec![
-                (EFFECT_PARTICLES, DataShown::Particles(particles)),
-                (EFFECT_AMBIENCE, DataShown::Boolean(ambient)),
-            ],
+            values,
         });
     }
 
