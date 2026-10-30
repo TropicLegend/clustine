@@ -76,7 +76,7 @@ impl Region {
     /// The players spawning reads (section 9.3): the region's own where they are now,
     /// the faces it keeps, and the world's players beyond them where the store last
     /// published them; in that order, each once.
-    fn spawning_players(&self) -> Vec<NearPlayer> {
+    pub(super) fn spawning_players(&self) -> Vec<NearPlayer> {
         let mut players: Vec<NearPlayer> = self
             .players
             .iter()
@@ -451,7 +451,7 @@ impl SpawnState {
     /// Whether some non-spectator's chunk centre is within 128 blocks of `chunk`'s
     /// (`anyPlayerCloseEnoughForSpawning`), and some player's chunk, spectators'
     /// too, within 8 of it.
-    fn may_spawn_in(&self, chunk: ChunkPos) -> bool {
+    pub(super) fn may_spawn_in(&self, chunk: ChunkPos) -> bool {
         let close = self
             .players
             .iter()

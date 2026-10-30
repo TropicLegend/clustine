@@ -317,10 +317,11 @@ pub(crate) fn of_class(class: u16, kind: u16) -> bool {
 
 /// The classes an alert of the class `class` passes over (`toIgnoreAlert`, by exact
 /// class, finding 28): the zombie's and the drowned's `ZombifiedPiglin`, inherited by
-/// the husk and the zombie villager; none for the raiders.
+/// the husk and the zombie villager; none for the raiders, nor for the zombified piglin,
+/// whose own `setAlertOthers()` names none.
 pub(crate) fn alert_ignores(class: u16) -> &'static [u16] {
     const PIGLINS: &[u16] = &[kind(types::ZOMBIFIED_PIGLIN)];
-    if ZOMBIES.contains(&class) {
+    if ZOMBIES.contains(&class) && class != kind(types::ZOMBIFIED_PIGLIN) {
         PIGLINS
     } else {
         &[]

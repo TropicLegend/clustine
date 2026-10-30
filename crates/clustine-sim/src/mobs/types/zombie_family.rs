@@ -59,8 +59,9 @@ pub(crate) const BABY_INDEX: u8 = 16;
 pub(crate) const SPECIAL_TYPE_INDEX: u8 = 17;
 pub(crate) const DROWNED_CONVERSION_INDEX: u8 = 18;
 
-/// The version of [`ZombieState`]'s encoding.
-const VERSION: u8 = 1;
+/// The version of [`ZombieState`]'s encoding (which the zombified piglin's own part
+/// follows).
+pub(crate) const VERSION: u8 = 1;
 
 /// The ticks a zombie's eyes are under water before it starts to turn
 /// (`InWaterTime`'s total) and the ticks it then takes (`DrownedConversionTime`'s).
@@ -478,7 +479,13 @@ pub(crate) fn handle_attributes(
     reason: SpawnReason,
 ) {
     let attributes = &mut mob.body.attributes;
-    let chance = own.next_double() * 0.100_000_001_490_116_12;
+    // `randomizeReinforcementsChance()`: the zombified piglin's sets none and draws
+    // nothing (ZombifiedPiglin.txt 426–434).
+    let chance = if i32::from(kind) == entity_types::ZOMBIFIED_PIGLIN {
+        0.0
+    } else {
+        own.next_double() * 0.100_000_001_490_116_12
+    };
     if let Some(reinforcements) = attributes.instance(kind, attribute(ids::SPAWN_REINFORCEMENTS)) {
         reinforcements.base = chance;
     }

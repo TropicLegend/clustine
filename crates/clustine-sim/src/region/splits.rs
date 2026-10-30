@@ -80,7 +80,10 @@ impl Region {
         at: Vec3,
         output: &mut TickOutput,
     ) {
-        if i32::from(before.kind) != entity_types::SLIME {
+        if !matches!(
+            i32::from(before.kind),
+            entity_types::SLIME | entity_types::MAGMA_CUBE
+        ) {
             return;
         }
         let Ok(parent) = Mob::decode(&before.data) else {

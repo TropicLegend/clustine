@@ -21,6 +21,8 @@
 //! (`push`'s `dealDamage`), as the region does not tell a mob what it is pushed by.
 
 use clustine_data::{EntityTypeInfo, attributes as ids};
+
+use super::magma_cube;
 use clustine_world::TypeState;
 use serde::{Deserialize, Serialize};
 
@@ -119,6 +121,8 @@ pub(crate) fn set_size(kind: u16, mob: &mut Mob, size: i32, reset_health: bool) 
     if let Some(attack) = attributes.instance(kind, attribute(ids::ATTACK_DAMAGE)) {
         attack.base = f64::from(size);
     }
+    // The magma cube's own `setSize`, after its parent's: its armour.
+    magma_cube::set_armour(kind, mob, size);
 }
 
 /// `getDefaultDimensions(pose)`: its type's scaled by its size.
@@ -183,9 +187,9 @@ fn set_speed(ai: &mut Ai<'_, '_>, speed: f32) {
     inputs.zza = speed;
 }
 
-/// `canDealDamage()`: not tiny, and its AI its own.
+/// `canDealDamage()`: not tiny (a magma cube of any size), and its AI its own.
 fn can_deal_damage(ai: &Ai<'_, '_>) -> bool {
-    !is_tiny(&ai.tick.mob) && ai.tick.effective_ai()
+    (!is_tiny(&ai.tick.mob) || magma_cube::is_magma_cube(ai.tick.kind)) && ai.tick.effective_ai()
 }
 
 /// `CubeMobMoveControl.tick()`: turned towards its way by at most 90 (head and body with
@@ -220,8 +224,10 @@ pub(crate) fn tick_move_control(ai: &mut Ai<'_, '_>) {
         set_speed(ai, 0.0);
         return;
     }
-    // `getJumpDelay()`: `10 + nextInt(20)`, a third of that when it means harm.
-    let mut delay = ai.tick.draws.next_int(20) as i32 + 10;
+    // `getJumpDelay()`: `10 + nextInt(20)` (four times that for a magma cube), a third
+    // of that when it means harm.
+    let mut delay =
+        (ai.tick.draws.next_int(20) as i32 + 10) * magma_cube::jump_delay_factor(ai.tick.kind);
     if own.aggressive {
         delay /= 3;
     }
@@ -520,9 +526,12 @@ impl CubeSounds {
     }
 }
 
-/// The sounds of the cube type `kind`: the slime's, the only cube built (the sulfur cube
-/// is out of N9, and the magma cube of the Nether).
+/// The sounds of the cube type `kind`: the magma cube's or the slime's (the sulfur cube
+/// is out of N9).
 fn sounds(kind: u16) -> CubeSounds {
-    let _ = kind;
-    super::slime::SOUNDS
+    if magma_cube::is_magma_cube(kind) {
+        magma_cube::SOUNDS
+    } else {
+        super::slime::SOUNDS
+    }
 }
