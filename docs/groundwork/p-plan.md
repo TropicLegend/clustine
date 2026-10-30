@@ -1143,3 +1143,56 @@ Each family's rules, tested in both kinds of level, from the brief and the game'
 by the family; and from the specification by someone else (X), as for every step. The
 comparisons with the official server: the Nether's lava's spread and timing (B), and the
 anchor's charge and explosion (C), written by a subagent and run by the lead.
+
+### 17.5 The review of section 17 (2026-10-30), and what P11 builds instead
+
+An independent reviewer read 17.1 to 17.4 against the code at `e2179b7` and the dumps.
+They found the sea levels, the spawn light by dimension, the infiniburn tags, the raid
+gate, the snow golem's attribute, the bucket's order and the bed's sequence right, and
+ten defects. What P11 builds instead:
+
+- **Day and night by the game's two tests** (their 1, 2). The game asks
+  `isBrightOutside` (`!hasFixedTime && skyDarken < 4`) and `isDarkOutside` (never in a
+  level with a fixed time), not the darkening alone; Clustine compares `sky_darken`
+  bare in about ten places (endermen, undead burning, drowned, foxes, golems, the
+  trader, the villagers' goals, sleep), which in the End (darkening 0) would be day for
+  ever and in the Nether (darkening 11) night. The lead's contract commit adds
+  `Region::sky_darken()` (`15 − sky_light_level`, by the dimension's clock where it has
+  one), `is_bright_outside()` and `is_dark_outside()` to the region and to `MobWorld`
+  and the spawning's view, and replaces every bare comparison and every
+  `time::sky_darken(self.clock.day)` call with them, in one commit.
+- **Fast lava everywhere lava runs** (their 3): `fast_lava()` on `clustine_blocks`'
+  `BlockView` and on the physics' `World`, false by default, which `new_liquid`,
+  `spread`, `spread_to_sides`, `shape::fluid_delay` (the shape update's tick), the wind
+  burst's call and the lava push read; the lead's commit makes the region's views answer
+  their dimension's, so that a spread received across a line runs as fast. The values are
+  the dump's (`LavaFluid.txt` 317–388: 10, 1, 4), not inferred. Generation keeps the
+  overworld's ticks for the structures' fluids (named).
+- **Explosions without an entity, with fire and a resistance kept** (their 4): the
+  lead's contract gives `Explosion` and the wire's `Blast` an optional source, `fire`,
+  `hurts` (false until survival), `decay` and one position whose resistance is
+  overridden, before families C and P12's ghast use them.
+- **The anchor's and the bed's seams** (their 5): the lead adds the click's arms
+  (`placement::click_with`, `redstone::use_by_rule`) to stub functions in
+  `region/anchors.rs`, and moves the dispenser's charging there, before family C starts.
+- **Sleep by level** (their 6): the night is skipped by the sleepers of the region's own
+  dimension only (`WorldPlayer::dimension`): family C.
+- **Heights by dimension** (their 7): `lowest_y` is set by the dimension beside
+  `sea_level` in the lead's commit; chorus fruit's clamp (`minY + logical_height − 1`),
+  `random_pos`'s height and the pistons' top go to D2.
+- **Light without a sky kept through reshaping** (their 8): `RegionLight` keeps its
+  `sky` through `Clone`, and drops kept sky arrays where there is none: D1.
+- **Water** (their 9): dripstone's only dimension rule is mud that does not dry to clay
+  where water evaporates (`PointedDripstoneBlock`, 519–545); ice broken by a player turns
+  to water only where a player's break makes drops, never in creative, which every
+  player is now; the wet sponge is named with the sponge.
+- **Contract details** (their 10): `dimension()` on the views has a default (the
+  overworld), as `sea_level` has, so that tests' views need no change; a bed's respawn
+  record in another dimension is checked again at a respawn, later, not trusted; soul
+  fire already holds by `survive.rs` and needs nothing.
+- **Tests** (their tests): every rule in all three dimensions, and besides: an enderman
+  under the End's sky stays; the night is skipped with a player in the Nether; lava in
+  the Nether spreads fast across a region line; a Nether region split or merged has no
+  sky light; ice broken in creative leaves air; chorus fruit in the Nether at y 120 stays
+  under 128. The comparisons need an oracle scene in the Nether, which a subagent of X
+  builds explicitly.
