@@ -31,8 +31,10 @@ pub use spawning::SpawnRandom;
 /// rather than continued with a seam. 0 while none was made; 1 since a chunk is made
 /// with the overworld's creatures (N7l); 2 since the structures make theirs, by every
 /// type built (N7l's D3); 3 since a chunk's wolves are made with the most health their
-/// load from the chunk gives them (2026-10-29).
-pub const ENTITIES_GENERATION: u16 = 3;
+/// load from the chunk gives them (2026-10-29); 4 since the Nether's chunks are made
+/// with their striders and a bastion's templates with their piglins, brutes and
+/// hoglins (P12).
+pub const ENTITIES_GENERATION: u16 = 4;
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
 /// motion height maps and its light, and the biomes of the nine around it, which the
