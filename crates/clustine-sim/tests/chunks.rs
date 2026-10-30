@@ -3181,6 +3181,7 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// (docs/groundwork/w6-plan.md, section 4.6).
 fn click_with_stone(position: BlockPos, face: Face, feet: Vec3) -> Click {
     Click {
+        other_hand: None,
         position,
         face,
         cursor: [0.5; 3],

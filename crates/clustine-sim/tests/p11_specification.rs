@@ -795,7 +795,6 @@ fn an_enderman_flees_the_noon_sky_in_the_overworld_and_never_in_the_end_or_the_n
 /// within 400 ticks (0.04 a tick); one under the End's open sky, as light, and one in
 /// the Nether never do.
 #[test]
-#[ignore = "departs from the specification: a zombie under the End's open sky at noon catches fire (plan 17.5, their 1: `isBrightOutside` is never true where the time is fixed)"]
 fn a_zombie_burns_at_noon_in_the_overworld_and_never_in_the_end_or_the_nether() {
     for dimension in Dimension::ALL {
         let options = Options::in_(dimension)
@@ -1361,7 +1360,6 @@ fn glowstone_charges_an_anchor_in_every_dimension() {
 /// passes (an empty hand does not set the spawn or explode the anchor) and the off hand
 /// charges it.
 #[test]
-#[ignore = "departs from the specification: an empty main hand with glowstone in the off hand explodes a charged anchor outside the Nether instead of passing (brief 5.4; RespawnAnchorBlock.useItemOn's PASS)"]
 fn glowstone_in_the_off_hand_charges_and_the_empty_main_hand_passes() {
     for dimension in Dimension::ALL {
         let inventory = holding(None, None, Some(stack(items::GLOWSTONE, 4)));

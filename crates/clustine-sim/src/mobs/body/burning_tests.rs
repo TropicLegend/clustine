@@ -4,7 +4,7 @@
 use clustine_data::{BlockState, EntityTypeInfo, blocks, entity_types, items};
 use clustine_world::{BlockPos, ChunkPos, EntityId, ItemStack};
 
-use super::burning::{burn_undead, monster_idles, monsters_burn};
+use super::burning::{burn_undead, monster_idles, monsters_burn, monsters_burn_in};
 use super::ladder;
 use crate::living::{Kind, Living, MAX_AIR, slots};
 use crate::mobs::Mob;
@@ -191,6 +191,12 @@ fn monsters_burn_from_tick_23460_of_the_day_to_12542_of_the_next() {
     assert!(!monsters_burn(23_459));
     assert!(monsters_burn(23_460));
     assert!(monsters_burn(24_000 + 6_000));
+    // Only a level with the day timeline: never in the Nether or the End.
+    for day in [0, 6_000, 23_460] {
+        assert!(monsters_burn_in(clustine_world::Dimension::Overworld, day));
+        assert!(!monsters_burn_in(clustine_world::Dimension::Nether, day));
+        assert!(!monsters_burn_in(clustine_world::Dimension::End, day));
+    }
 }
 
 #[test]

@@ -245,6 +245,7 @@ fn on_water(item_use: &ItemUse, blocks: &dyn Blocks, bodies: &[[f64; 6]]) -> Opt
         (hit.location[2] - f64::from(position.z)) as f32,
     ];
     let click = Click {
+        other_hand: None,
         position,
         face: geometry::to_api(hit.face),
         cursor,

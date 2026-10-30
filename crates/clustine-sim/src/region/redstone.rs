@@ -470,7 +470,7 @@ impl Region {
             return;
         }
         if is_class(state, BlockClass::RespawnAnchorBlock) {
-            self.use_anchor(pos, face, player, output);
+            self.use_anchor(pos, face, player, crate::api::Hand::Main, output);
             return;
         }
         if Region::opens_menu(state) {

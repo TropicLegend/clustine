@@ -61,6 +61,7 @@ pub(in crate::region) fn portal(axis: &str) -> BlockState {
 /// A click with `held` on the face `face` of `pos`, the player facing south (yaw 0).
 fn click_on(pos: BlockPos, face: ClickFace, held: i32) -> Click {
     Click {
+        other_hand: None,
         position: pos,
         face,
         cursor: [0.5; 3],

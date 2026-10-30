@@ -2845,7 +2845,14 @@ impl Region {
                     return;
                 }
                 // Also with an empty hand: the click may open a door.
+                // The hand that does not click, which an anchor reads.
+                let other = if off_hand {
+                    player.held()
+                } else {
+                    player.inventory.0[OFF_HAND].clone()
+                };
                 let click = Click {
+                    other_hand: other.as_ref().map(|stack| stack.item),
                     position: *position,
                     face: *face,
                     cursor: *cursor,
@@ -2969,6 +2976,16 @@ impl Region {
                     }
                     Clicked::Used { changes, flags } => {
                         self.use_block(&changes, flags, action.player, output);
+                        self.swung_using(action, click.position, output);
+                        return None;
+                    }
+                    // The off hand uses a block by rule only to charge an anchor
+                    // (`placement::click_with`).
+                    Clicked::ByRule { position, face }
+                        if matches!(action.step, RemoteStep::OffHandOn { .. }) =>
+                    {
+                        let hand = crate::api::Hand::Off;
+                        self.use_anchor(position, face, action.player, hand, output);
                         self.swung_using(action, click.position, output);
                         return None;
                     }
@@ -7920,6 +7937,7 @@ mod tests {
     /// ahead, as [`place`] has them.
     fn click_of(x: i32, y: i32, z: i32, face: Face, held: Option<i32>, feet: Vec3) -> Click {
         Click {
+            other_hand: None,
             position: BlockPos::new(x, y, z),
             face,
             cursor: [0.5; 3],

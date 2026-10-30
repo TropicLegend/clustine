@@ -75,8 +75,11 @@ pub struct Click {
     pub cursor: [f32; 3],
     /// Whether the player held the sneak key.
     pub sneaking: bool,
-    /// The id of the item in the main hand, `None` for an empty hand.
+    /// The id of the item in the hand that clicks, `None` for an empty hand.
     pub held: Option<i32>,
+    /// The id of the item in the other hand, which a respawn anchor reads: glowstone
+    /// there makes the main hand pass (`RespawnAnchorBlock.useItemOn`).
+    pub other_hand: Option<i32>,
     /// Where the player's feet are.
     pub feet: Vec3,
     /// The player's rotation, in degrees as the protocol has it.
@@ -124,8 +127,18 @@ pub fn click_with(click: &Click, off_hand: bool, blocks: &dyn Blocks) -> Clicked
     let Some(clicked) = blocks.block(click.position) else {
         return Clicked::Nothing;
     };
+    // An anchor is charged by glowstone in the off hand (`placement/anchor.rs`).
+    if off_hand
+        && data::is(clicked, BlockClass::RespawnAnchorBlock)
+        && anchor::takes(click, clicked, true)
+    {
+        return Clicked::ByRule {
+            position: click.position,
+            face: geometry::from_api(click.face),
+        };
+    }
     // Sneaking with something in hand passes the block by and places against it, and a
-    // click with the off hand does not use the block (`RemoteStep::OffHandOn`).
+    // click with the off hand uses no other block (`RemoteStep::OffHandOn`).
     if !off_hand && !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
         let used = use_block(click, clicked, blocks);
         // Wire that is neither a dot nor a cross, or would not change, a bell hit
@@ -263,7 +276,7 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     // A respawn anchor is charged or used by the region's rule, or passes the click on
     // (`placement/anchor.rs`, `region/anchors.rs`).
     if data::is(state, BlockClass::RespawnAnchorBlock) {
-        if anchor::takes(click, state) {
+        if anchor::takes(click, state, false) {
             return Clicked::ByRule { position, face };
         }
         return Clicked::Nothing;

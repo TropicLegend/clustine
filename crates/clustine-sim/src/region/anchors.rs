@@ -87,6 +87,7 @@ impl Region {
         pos: BlockPos,
         face: Face,
         player: PlayerId,
+        hand: Hand,
         output: &mut TickOutput,
     ) {
         let _ = face;
@@ -100,7 +101,7 @@ impl Region {
             return;
         }
         let charges = number(state, "charges").unwrap_or(0);
-        let held = self.in_hand(player, Hand::Main);
+        let held = self.in_hand(player, hand);
         if let Some(stack) = held.filter(|stack| stack.item == items::GLOWSTONE)
             && charges < MAX_CHARGES
         {
@@ -108,7 +109,7 @@ impl Region {
             // `stack.consume(1, player)`.
             if !has_infinite_materials(player) {
                 let left = (stack.count > 1).then(|| stack.with_count(stack.count - 1));
-                self.set_selected_stack(player, left, output);
+                self.set_hand_stack(player, hand, left, output);
             }
             return;
         }
@@ -191,18 +192,22 @@ impl Region {
         self.bad_respawn_point_explosion(centre, resistance_at, output);
     }
 
-    /// The stack in `player`'s selected hotbar slot set to `stack`, and their client
-    /// told.
-    fn set_selected_stack(
+    /// The stack in `player`'s `hand` (the selected hotbar slot, or the off hand's) set
+    /// to `stack`, and their client told.
+    fn set_hand_stack(
         &mut self,
         player: PlayerId,
+        hand: Hand,
         stack: Option<clustine_world::ItemStack>,
         output: &mut TickOutput,
     ) {
         let Some(state) = self.players.get_mut(&player) else {
             return;
         };
-        let slot = usize::from(state.selected_slot);
+        let slot = match hand {
+            Hand::Main => usize::from(state.selected_slot),
+            Hand::Off => clustine_world::OFF_HAND,
+        };
         if !state.inventory.set(slot, stack.clone()) {
             return;
         }

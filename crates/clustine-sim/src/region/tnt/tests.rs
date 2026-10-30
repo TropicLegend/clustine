@@ -315,6 +315,7 @@ fn heard(output: &TickOutput, sound: i32) -> Vec<(Vec3, Option<PlayerId>)> {
 
 fn click_on(pos: BlockPos, face: Face, held: i32, sneaking: bool) -> Click {
     Click {
+        other_hand: None,
         position: pos,
         face,
         cursor: [0.5; 3],

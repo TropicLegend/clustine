@@ -912,6 +912,7 @@ fn a_target_or_a_clicked_block_in_a_held_chunk_not_loaded_places_nothing() {
 /// The click a player at A's spawn point, looking ahead, makes with `held`.
 fn click_at_spawn(position: BlockPos, face: Face, sneaking: bool, held: Option<i32>) -> Click {
     Click {
+        other_hand: None,
         position,
         face,
         cursor: cursor_on(face),

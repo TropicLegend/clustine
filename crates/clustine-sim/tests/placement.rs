@@ -116,6 +116,7 @@ fn centre_of(face: Face) -> [f32; 3] {
 /// judge with the struct update syntax.
 fn click_on(position: BlockPos, face: Face, held: Option<i32>) -> Click {
     Click {
+        other_hand: None,
         position,
         face,
         cursor: centre_of(face),

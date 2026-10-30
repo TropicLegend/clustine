@@ -48,6 +48,15 @@ pub(crate) fn monsters_burn(day: u64) -> bool {
     !(12_542..23_460).contains(&(day % crate::time::DAY))
 }
 
+/// `gameplay/monsters_burn` in a level of `dimension`: the day timeline's where the
+/// level has it, which only a level without a fixed time does (the Nether's and the
+/// End's timeline tags hold `#universal` alone); elsewhere the attribute's default,
+/// false, so that no undead burns under the End's open sky
+/// (`docs/groundwork/p-plan.md`, 17.5).
+pub(crate) fn monsters_burn_in(dimension: clustine_world::Dimension, day: u64) -> bool {
+    !dimension.rules().has_fixed_time && monsters_burn(day)
+}
+
 /// `Mob.sunProtectionSlot()`: the head, but the body for the zombie horse and the zombie
 /// nautilus (`ZombieHorse.txt` 314–317, `ZombieNautilus.txt` 28–31).
 fn sun_protection_slot(kind: u16) -> u8 {
@@ -66,7 +75,7 @@ fn sun_protection_slot(kind: u16) -> u8 {
 pub(crate) fn burn_undead(tick: &mut MobTick<'_>) {
     if tick.mob.body.vitals.dying()
         || !entity_in_tag(i32::from(tick.kind), "minecraft:burn_in_daylight")
-        || !monsters_burn(tick.world.day())
+        || !monsters_burn_in(tick.world.dimension(), tick.world.day())
     {
         return;
     }

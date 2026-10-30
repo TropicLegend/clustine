@@ -55,6 +55,7 @@ fn at(x: i32, y: i32, z: i32) -> BlockPos {
 /// north looking south and down at it.
 fn click_top(pos: BlockPos, held: i32) -> Click {
     Click {
+        other_hand: None,
         position: pos,
         face: Face::Top,
         cursor: [0.5, 1.0, 0.5],
