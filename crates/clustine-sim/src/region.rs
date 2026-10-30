@@ -727,6 +727,8 @@ impl Region {
     /// [`TickInputs::copy_bases`] of the first tick, as it hands in the warm chunks
     /// after a merge or a split (`docs/adr/0025-effects-between-regions.md`, section 3).
     pub fn restore(config: RegionConfig, state: RegionState, holdings: Holdings) -> Self {
+        // The level's light has a sky or none from the start (`light.rs`).
+        let sky = config.dimension.rules().has_skylight;
         let players = state
             .players
             .into_iter()
@@ -816,7 +818,7 @@ impl Region {
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
             forwarded: BTreeMap::new(),
-            light: light::RegionLight::default(),
+            light: light::RegionLight::new(sky),
             using_across: None,
             dismounted: Vec::new(),
             took: Vec::new(),
