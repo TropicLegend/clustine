@@ -4315,6 +4315,8 @@ mod tests {
     mod nether_e3;
     #[path = "../p11_spec_tests.rs"]
     mod p11_spec_tests;
+    #[path = "../p12_spec_tests.rs"]
+    mod p12_spec_tests;
     mod piglins_e5;
     mod pigs;
     mod pistons;
