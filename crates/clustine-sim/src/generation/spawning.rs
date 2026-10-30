@@ -265,8 +265,10 @@ fn info(kind: u16) -> &'static clustine_data::EntityTypeInfo {
     &ENTITY_TYPE_INFO[usize::from(kind)]
 }
 
-/// `getTopNonCollidingPos`: the top of the type's height map at the column, moved by
-/// its placement. The overworld has no ceiling.
+/// `getTopNonCollidingPos`: the top of the type's height map at the column; in a level
+/// with a ceiling (the Nether), down from there through what is not air, then through
+/// the air to what stands under it, no lower than the level's bottom; moved by its
+/// placement.
 pub(crate) fn top_non_colliding_pos(view: &dyn SpawnView, kind: u16, x: i32, z: i32) -> BlockPos {
     let (placement, heightmap) = spawning::placement(kind);
     let map = match heightmap {
@@ -275,7 +277,22 @@ pub(crate) fn top_non_colliding_pos(view: &dyn SpawnView, kind: u16, x: i32, z: 
         Heightmap::WorldSurface => FinalHeightmap::WorldSurface,
         Heightmap::OceanFloor => FinalHeightmap::OceanFloor,
     };
-    let pos = BlockPos::new(x, view.height(map, x, z), z);
+    let mut pos = BlockPos::new(x, view.height(map, x, z), z);
+    let rules = view.dimension().rules();
+    if rules.has_ceiling {
+        loop {
+            pos = pos.offset(0, -1, 0);
+            if view.block(pos).props().is_air() {
+                break;
+            }
+        }
+        loop {
+            pos = pos.offset(0, -1, 0);
+            if !(view.block(pos).props().is_air() && pos.y > rules.min_y) {
+                break;
+            }
+        }
+    }
     adjust_spawn_position(view, placement, pos)
 }
 
@@ -415,6 +432,8 @@ pub(crate) fn check_spawn_rules(view: &dyn SpawnView, kind: u16, pos: BlockPos) 
         TURTLE => {
             pos.y < view.sea_level() + 4 && in_tag(below, "minecraft:sand") && bright(view, pos)
         }
+        // `Strider.checkStriderSpawnRules`: up through lava to air.
+        STRIDER => crate::mobs::types::strider::climbs_to_air(|at| Some(view.block(at)), pos),
         // `Mob.checkMobSpawnRules`: not a spawner's reason, so the block below.
         IRON_GOLEM | SNOW_GOLEM | VILLAGER | WANDERING_TRADER => {
             spawning::is_valid_spawn(u32::from(below.0), kind)
@@ -443,14 +462,23 @@ pub(crate) fn own_rules(
     pos: BlockPos,
     position: [f64; 3],
 ) -> bool {
+    // The strider asks only that its box be free of what collides (`Strider.
+    // checkSpawnObstruction`), so that it spawns in lava.
     walk_target_value(view, kind, pos) >= 0.0
-        && !contains_any_liquid(view, &spawn_box(kind, position))
+        && (i32::from(kind) == entity_types::STRIDER
+            || !contains_any_liquid(view, &spawn_box(kind, position)))
 }
 
 /// `getWalkTargetValue(pos)` of a fresh creature: 10 on what it prefers (grass for an
 /// animal, mycelium for a mooshroom; water or sand for a turtle not going home), else
 /// the light's worth.
 pub(crate) fn walk_target_value(view: &dyn SpawnView, kind: u16, pos: BlockPos) -> f32 {
+    // `Strider.getWalkTargetValue` of a fresh strider: 10 in lava, else 0.
+    if i32::from(kind) == entity_types::STRIDER {
+        let lava = clustine_blocks::fluid::FluidState::of(view.block(pos)).kind()
+            == Some(clustine_blocks::fluid::Kind::Lava);
+        return if lava { 10.0 } else { 0.0 };
+    }
     let below = view.block(pos.offset(0, -1, 0));
     let preferred = match i32::from(kind) {
         entity_types::MOOSHROOM => is_block(below, blocks::MYCELIUM),

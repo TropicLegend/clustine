@@ -85,6 +85,8 @@ struct View {
     sky_at: BTreeMap<BlockPos, u8>,
     zoomed: Biome,
     noise: Biome,
+    /// The level's dimension, the overworld's but where a test says.
+    dimension: Dimension,
 }
 
 impl View {
@@ -107,6 +109,7 @@ impl View {
             sky_at: BTreeMap::new(),
             zoomed: biome(zoomed),
             noise: biome(noise),
+            dimension: Dimension::Overworld,
         }
     }
 
@@ -166,6 +169,10 @@ impl SpawnView for View {
 
     fn noise_biome(&self, _at: BlockPos) -> Biome {
         self.noise
+    }
+
+    fn dimension(&self) -> Dimension {
+        self.dimension
     }
 }
 
@@ -750,4 +757,34 @@ fn a_wolf_a_chunk_is_made_with_shows_the_most_health_its_load_made() {
         .collect();
     let max_health = u16::try_from(clustine_data::attributes::MAX_HEALTH).expect("ids fit");
     assert_eq!(shown, [(max_health, 8.0)]);
+}
+
+/// `getTopNonCollidingPos` in a level with a ceiling (the Nether's): from the top of the
+/// height map, which a bedrock roof holds up, down through the roof to the air, then
+/// down through the air to the lava sea's top, where a strider's spawn rule climbs to
+/// air; with no ceiling the roof's top.
+#[test]
+fn under_a_roof_the_spawn_column_is_the_lava_sea_s_top_and_a_strider_may_stand_there() {
+    let mut view = View::new(
+        blocks::NETHERRACK,
+        "minecraft:nether_wastes",
+        "minecraft:nether_wastes",
+    );
+    for x in MIN_X..MIN_X + 16 {
+        for z in MIN_Z..MIN_Z + 16 {
+            for y in 65..=70 {
+                view.set(BlockPos::new(x, y, z), blocks::LAVA);
+            }
+            view.set(BlockPos::new(x, 120, z), blocks::BEDROCK);
+        }
+    }
+    let strider = kind(entity_types::STRIDER);
+    let (x, z) = (MIN_X + 3, MIN_Z + 5);
+    let open = top_non_colliding_pos(&view, strider, x, z);
+    assert_eq!(open.y, 121, "no ceiling: above the roof");
+    view.dimension = Dimension::Nether;
+    let roofed = top_non_colliding_pos(&view, strider, x, z);
+    assert_eq!(roofed, BlockPos::new(x, 70, z));
+    assert!(check_spawn_rules(&view, strider, roofed));
+    assert_eq!(walk_target_value(&view, strider, roofed), 10.0);
 }
