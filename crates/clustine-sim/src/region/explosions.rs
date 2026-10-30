@@ -690,7 +690,9 @@ impl Region {
             // the fangs (their `hurtServer` hurts nothing).
             EntityData::PrimedTnt { .. } | EntityData::Cloud(_) | EntityData::Fangs(_) => {}
             // A fireball's own (`fireballs.rs`).
-            EntityData::Fireball(_) => flags |= self.fireball_blasted(record, output),
+            EntityData::Fireball(_) => {
+                flags |= self.fireball_blasted(record, explosion.owner, output)
+            }
             // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),
             // which pushes nothing of itself (`#no_knockback`).
             EntityData::Mob { .. } => {

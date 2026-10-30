@@ -926,6 +926,14 @@ pub(crate) trait MobType: Sync {
         amount
     }
 
+    /// The amount the type takes a hurt of `source` at, whatever was dealt and whatever
+    /// it is otherwise invulnerable to, where its own `hurtServer` and `isInvulnerableTo`
+    /// say so (a ghast's 1000 from a large fireball a player sent back): none by default.
+    fn hurt_overriding(&self, source: &DamageSource) -> Option<f32> {
+        let _ = source;
+        None
+    }
+
     /// `getDamageAfterMagicAbsorb(source, amount)` beyond `LivingEntity`'s, after the
     /// armour's share is taken (a witch's resistance to magic): the amount as it is by
     /// default.

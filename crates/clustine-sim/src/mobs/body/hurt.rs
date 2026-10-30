@@ -255,6 +255,9 @@ pub(crate) fn mob_voice_pitch(mob_type: &dyn MobType, mob: &Mob, draws: &mut Ran
 /// entity's own invulnerable time a portal gives, nor wears an enchantment that makes it
 /// immune.
 fn invulnerable_to(struck: &Struck<'_>, source: &DamageSource) -> bool {
+    if struck.mob_type.hurt_overriding(source).is_some() {
+        return false;
+    }
     let kind = i32::from(struck.kind);
     (source.kind.is("minecraft:is_fire") && EntityTypeInfo::of(kind).fire_immune)
         || (source.kind.is("minecraft:is_fall")
@@ -271,6 +274,7 @@ pub(crate) fn hurt_server(struck: &mut Struck<'_>, source: &DamageSource, amount
     struck.mob_type.before_hurt_server(struck, source, amount);
     // The type's own `hurtServer` first changes the amount (a rolled-up armadillo's).
     let amount = struck.mob_type.hurt_amount(struck.mob, amount);
+    let amount = struck.mob_type.hurt_overriding(source).unwrap_or(amount);
     let took = living_hurt_server(struck, source, amount);
     if took {
         // The type's own `hurtServer` after `LivingEntity`'s (a horse rearing).

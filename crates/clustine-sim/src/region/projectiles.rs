@@ -118,6 +118,7 @@ pub(crate) fn pickable_and_alive(entity: &Entity) -> (bool, bool) {
         EntityData::ArmorStand { flags, health, .. } => {
             (flags & super::stands::MARKER == 0, health.0 > 0.0)
         }
+        EntityData::Fireball(_) => (super::fireballs::redirectable(entity.kind), true),
         _ => (true, true),
     }
 }

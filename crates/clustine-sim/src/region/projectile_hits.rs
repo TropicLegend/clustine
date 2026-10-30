@@ -69,6 +69,7 @@ fn owner_of(projectile: &Entity) -> Option<EntityId> {
         EntityData::Thrown { owner, .. } => *owner,
         EntityData::Spit(spit) => spit.owner,
         EntityData::Firework(firework) => firework.owner,
+        EntityData::Fireball(fireball) => fireball.owner.map(|owner| owner.key),
         _ => None,
     }
 }

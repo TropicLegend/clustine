@@ -258,10 +258,6 @@ pub(crate) enum Local {
     /// at `at`, along `direction` (made one long, at the acceleration power 0.1), with
     /// the large one's `explosion_power`; made by `Region::shoot_fireball`
     /// (`region/fireballs.rs`, family E2 of `docs/groundwork/p-plan.md`, section 18).
-    #[expect(
-        dead_code,
-        reason = "the ghast's and the blaze's goals make it (families E2 and E3 of P12)"
-    )]
     ShootFireball {
         kind: u16,
         at: crate::physics::Vec3,
