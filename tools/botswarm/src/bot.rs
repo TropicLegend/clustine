@@ -1682,6 +1682,9 @@ impl Bot {
             // for the new level's chunks (`docs/groundwork/p-plan.md`, section 4.2).
             ClientboundPlay::Respawn(packet) => {
                 self.info.login.spawn = packet.spawn;
+                // A new player in the new level, who is somewhere only once the server
+                // says where.
+                self.position = None;
                 self.chunks.clear();
                 self.chunks_came.clear();
                 self.light_since.clear();
