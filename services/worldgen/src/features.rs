@@ -1,4 +1,4 @@
-//! The game's overworld with its features, as the stages of the scheduler
+//! A dimension of the game's world with its features, as the stages of the scheduler
 //! (`docs/groundwork/f-plan.md`, section 3): the land of [`TerrainGenerator`] for each
 //! chunk by itself, then the runs of `clustine-features` in the order of ADR-0021.
 //!
@@ -38,7 +38,7 @@ use crate::stages::{PieceMade, Stages, Start, Starts, StartsNear, Terrain, World
 /// the markers in the centre chunk, as the game's `filterBlocks` does.
 pub const FEATURES_VERSION: u16 = 4;
 
-/// A seed's overworld with its features, as stages.
+/// A dimension of a seed's world with its features, as stages.
 #[derive(Debug, Clone)]
 pub struct FeatureStages {
     terrain: Arc<TerrainGenerator>,
@@ -75,7 +75,7 @@ impl FeatureStages {
     }
 
     fn of(terrain: Arc<TerrainGenerator>, templates: Option<Arc<TemplateLibrary>>) -> Self {
-        let mut features = FeatureSettings::new(terrain.seed(), Dimension::Overworld)
+        let mut features = FeatureSettings::new(terrain.seed(), terrain.level())
             .expect("the features of the pinned jar's data are read whole by every build");
         if let Some(templates) = templates {
             features = features.with_templates(templates);
@@ -233,7 +233,7 @@ impl Stages for FeatureStages {
     /// seeded for the chunk's decoration, R the region random the chunk's run began
     /// with, made anew.
     fn spawn(&self, position: ChunkPos, lit: &Chunk, nine: [&Chunk; 9]) -> Vec<Entity> {
-        if !makes_mobs(Dimension::Overworld) {
+        if !makes_mobs(self.terrain.level()) {
             return Vec::new();
         }
         let view = ChunkSpawnView {
@@ -241,7 +241,7 @@ impl Stages for FeatureStages {
             lit,
             nine,
             zoom: self.features.zoom(),
-            sea_level: TerrainGenerator::sea_level(),
+            sea_level: TerrainGenerator::sea_level_of(self.terrain.level()),
         };
         let seed = self.terrain.seed();
         let mut spawn = clustine_sim::generation::SpawnRandom::new(seed, position);

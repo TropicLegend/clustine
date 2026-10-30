@@ -1,4 +1,5 @@
-//! A preview of the game's land: the bare terrain of a seed, chunk by chunk.
+//! A preview of the game's land: the bare terrain of a seed, chunk by chunk, in any of
+//! the world's three dimensions.
 //!
 //! **This is a preview, and the generation service of
 //! `docs/adr/0021-generation-is-a-function.md` replaces it.** It exists so that the
@@ -81,11 +82,13 @@ struct KeptStarts {
 /// Biome cells by cell (x, y, z), four blocks across.
 pub type BiomeAnswers = BTreeMap<(i32, i32, i32), Biome>;
 
-/// Generates the overworld of a seed as the game's fill, surface and carvers leave
-/// it, with the game's biomes, lit. See the head of this module for what that leaves
-/// out and for what replaces it.
+/// Generates one dimension of a seed's world as the game's fill, surface and carvers
+/// leave it, with the game's biomes, lit. See the head of this module for what that
+/// leaves out and for what replaces it.
 pub struct TerrainGenerator {
     seed: i64,
+    /// Which of the world's dimensions this makes, and its type.
+    level: Dimension,
     dimension: &'static DimensionType,
     /// Where structures start, and the ground and biomes they and the chunks are
     /// made of.
@@ -120,12 +123,11 @@ impl std::fmt::Debug for TerrainGenerator {
 
 impl TerrainGenerator {
     /// The generator of `dimension` of the world with this seed. Making one seeds the
-    /// dimension's noises, which takes a moment; make it once. The overworld's is
-    /// served; the Nether's and the End's land is served from step P5 of
-    /// `docs/groundwork/p-plan.md`, which fixed this constructor in P2.
+    /// dimension's noises, which takes a moment; make it once.
     pub fn new(seed: i64, dimension: Dimension) -> Self {
         Self {
             seed,
+            level: dimension,
             dimension: dimension.rules(),
             structures: Structures::new(seed, dimension),
             with_structures: true,
@@ -142,9 +144,15 @@ impl TerrainGenerator {
     /// `generate-structures=false`, against which features are judged until phase S
     /// places structures' blocks.
     pub fn without_structures(seed: i64) -> Self {
+        Self::without_structures_in(seed, Dimension::Overworld)
+    }
+
+    /// [`Self::without_structures`] in `dimension`: the Nether's features are judged
+    /// so as well.
+    pub fn without_structures_in(seed: i64, dimension: Dimension) -> Self {
         Self {
             with_structures: false,
-            ..Self::new(seed, Dimension::Overworld)
+            ..Self::new(seed, dimension)
         }
     }
 
@@ -177,6 +185,11 @@ impl TerrainGenerator {
         self.dimension
     }
 
+    /// Which of the world's dimensions this makes.
+    pub fn level(&self) -> Dimension {
+        self.level
+    }
+
     /// The seed of the world.
     pub fn seed(&self) -> i64 {
         self.seed
@@ -192,7 +205,13 @@ impl TerrainGenerator {
     /// [`Self::hashed_seed`] it needs no generator, so that whoever only tells clients
     /// of the world makes none.
     pub fn sea_level() -> i32 {
-        clustine_terrain::biome::noise_settings(Dimension::Overworld).sea_level
+        Self::sea_level_of(Dimension::Overworld)
+    }
+
+    /// The height of the sea of `dimension`, from its noise settings: 63 in the
+    /// overworld, 32 in the Nether, whose sea is of lava, and 0 in the End.
+    pub fn sea_level_of(dimension: Dimension) -> i32 {
+        clustine_terrain::biome::noise_settings(dimension).sea_level
     }
 
     fn terrain(&self) -> &Terrain {
@@ -327,8 +346,14 @@ impl clustine_features::structures::StartsOf for TerrainGenerator {
 }
 
 impl ChunkGenerator for TerrainGenerator {
-    /// The chunk the game's search of the climate ends in (`clustine_terrain::spawn`).
+    /// The chunk the game's search of the climate ends in (`clustine_terrain::spawn`),
+    /// in the overworld. The game searches only the overworld's climate for a spawn;
+    /// the other dimensions' chunk is (0, 0), as their home region's is
+    /// (`docs/groundwork/p-plan.md`, section 15.6).
     fn origin(&self) -> ChunkPos {
+        if self.level != Dimension::Overworld {
+            return ChunkPos::new(0, 0);
+        }
         let [x, z] = clustine_terrain::spawn::search_origin(self.seed);
         ChunkPos::new(x >> 4, z >> 4)
     }
@@ -352,9 +377,9 @@ impl ChunkGenerator for TerrainGenerator {
         let around = Around {
             centre: &centre,
             neighbours,
-            // The overworld has a sky; a dimension type does not say yet whether it
-            // has one.
-            sky: true,
+            // The dimension's own: the Nether has no sky, and no sky light under its
+            // roof.
+            sky: self.dimension.has_skylight,
         };
         let mut light = match self.scratch.try_lock() {
             Ok(mut scratch) => {

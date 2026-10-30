@@ -34,6 +34,17 @@
 //! is judged. The area has to lie well away from the spawn, whose search makes the
 //! chunks it looks at whole before the program has the server; the program fails if
 //! it finds one decorated before it asked.
+//!
+//! `CLUSTINE_GAME_FEATURES_DIMENSION` (`overworld` unless said; `the_nether` or
+//! `nether`, `the_end` or `end`, with or without `minecraft:`) chooses the dimension
+//! whose features are judged: the program places them in the game's level of that
+//! dimension, and Clustine makes the same dimension's chunks. For the Nether:
+//!
+//! ```text
+//! CLUSTINE_ACCEPT_MINECRAFT_EULA=true CLUSTINE_GAME_FEATURES_DIMENSION=the_nether \
+//!     cargo test --release -p clustine-worldgen --test game_features -- --ignored \
+//!     --nocapture features_are_placed_as_the_games_own_server_places_them
+//! ```
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -61,6 +72,34 @@ fn rank(chunk: ChunkPos) -> u8 {
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The dimension judged: `CLUSTINE_GAME_FEATURES_DIMENSION`, the overworld unless said.
+fn dimension() -> clustine_world::Dimension {
+    let Ok(name) = std::env::var("CLUSTINE_GAME_FEATURES_DIMENSION") else {
+        return clustine_world::Dimension::Overworld;
+    };
+    let name = name.strip_prefix("minecraft:").unwrap_or(&name);
+    match name {
+        "overworld" => clustine_world::Dimension::Overworld,
+        "the_nether" | "nether" => clustine_world::Dimension::Nether,
+        "the_end" | "end" => clustine_world::Dimension::End,
+        other => panic!("{other} is not a dimension: overworld, the_nether or the_end"),
+    }
+}
+
+/// The lowest block of the dimension judged, where both sides' chunks start.
+fn min_y() -> i32 {
+    dimension().rules().min_y
+}
+
+/// The name the data's order of features goes by for the dimension judged.
+fn order_name() -> &'static str {
+    match dimension() {
+        clustine_world::Dimension::Overworld => "overworld",
+        clustine_world::Dimension::Nether => "nether",
+        clustine_world::Dimension::End => "end",
+    }
 }
 
 /// The area whose runs the program makes.
@@ -217,13 +256,12 @@ fn without_biomes(text: &str) -> String {
     format!("{}[]{}", &text[..from], &text[from + length..])
 }
 
-/// The structures turned off on both sides: those of every set the overworld can have
-/// none of whose structures is built. A set that is on may not keep its distance from
-/// one that is off (`exclusion_zone`), or turning it off would move it.
+/// The structures turned off on both sides: those of every set the dimension judged
+/// can have none of whose structures is built. A set that is on may not keep its
+/// distance from one that is off (`exclusion_zone`), or turning it off would move it.
 fn structures_off() -> Vec<usize> {
     use clustine_worldgen_data::structures::STRUCTURE_SETS;
-    let structures =
-        clustine_structures::Structures::new(0, clustine_terrain::biome::Dimension::Overworld);
+    let structures = clustine_structures::Structures::new(0, dimension());
     let sets_off: Vec<usize> = structures
         .possible_sets()
         .iter()
@@ -312,6 +350,7 @@ fn game(seed: i64, area: Area, ascending: bool, classes: &Path, pack: &Path) -> 
         .arg("area")
         .arg(if ascending { "ascending" } else { "descending" })
         .arg(&output)
+        .arg(dimension().type_name())
         .current_dir(directory)
         // The server is found through the thread that reads its console, which ends
         // when the input closes: it is kept open until the program has ended.
@@ -525,10 +564,11 @@ fn answers(cells: &Cells) -> BTreeMap<(i32, i32, i32), clustine_world::Biome> {
         .expect("the biomes are a synchronised registry")
         .entries;
     let mut answers = BTreeMap::new();
+    let lowest = min_y() >> 2;
     for (at, column) in cells {
         for (cell, name) in column.iter().enumerate() {
             let (section, inside) = (cell / 64, cell % 64);
-            let y = -16 + (section as i32) * 4 + (inside >> 4) as i32;
+            let y = lowest + (section as i32) * 4 + (inside >> 4) as i32;
             let (z, x) = ((inside >> 2) & 3, inside & 3);
             let biome = names
                 .iter()
@@ -631,7 +671,11 @@ fn differing_blocks(at: ChunkPos, game: &Written, ours: &Written) -> Vec<At> {
         .filter(|index| game.blocks.get(*index) != ours.blocks.get(*index))
         .map(|index| {
             let (y, z, x) = (index / 256, index / 16 % 16, index % 16);
-            (at.x * 16 + x as i32, -64 + y as i32, at.z * 16 + z as i32)
+            (
+                at.x * 16 + x as i32,
+                min_y() + y as i32,
+                at.z * 16 + z as i32,
+            )
         })
         .collect()
 }
@@ -652,7 +696,7 @@ fn zoom_reads_a_tie(source: &clustine_terrain::biome::BiomeSource, (x, y, z): At
 /// What differs between the game's chunk and Clustine's, in words.
 fn differences(at: ChunkPos, game: &Written, ours: &Written) -> Vec<String> {
     let mut found = Vec::new();
-    let min_y = -64;
+    let min_y = min_y();
     let differing: Vec<usize> = (0..game.blocks.len().max(ours.blocks.len()))
         .filter(|index| game.blocks.get(*index) != ours.blocks.get(*index))
         .collect();
@@ -843,16 +887,13 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
         clustine_worldgen::templates::read_jar(&root().join("target/datagen/26.3/server.jar"))
             .expect("the templates of the jar are read");
     let off_names: Vec<&str> = off.iter().map(String::as_str).collect();
-    let features = clustine_features::FeatureSettings::new(
-        seed,
-        clustine_terrain::biome::Dimension::Overworld,
-    )
-    .expect("the features of the data are read")
-    .with_templates(Arc::new(templates))
-    .with_placed_off(&off_names)
-    .expect("the placed features turned off are the data's");
+    let features = clustine_features::FeatureSettings::new(seed, dimension())
+        .expect("the features of the data are read")
+        .with_templates(Arc::new(templates))
+        .with_placed_off(&off_names)
+        .expect("the placed features turned off are the data's");
     let terrain = Arc::new(
-        TerrainGenerator::new(seed, clustine_world::Dimension::Overworld)
+        TerrainGenerator::new(seed, dimension())
             .with_biome_answers(answers(&cells))
             .with_structures_off(structures_off.clone()),
     );
@@ -868,10 +909,7 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     let mut found = Vec::new();
     let mut failed = Vec::new();
     let mut beside_ties = Vec::new();
-    let source = clustine_terrain::biome::BiomeSource::new(
-        seed,
-        clustine_terrain::biome::Dimension::Overworld,
-    );
+    let source = clustine_terrain::biome::BiomeSource::new(seed, dimension());
     for at in &compared {
         let chunk = scheduler.finished(*at).expect("Clustine makes the chunk");
         if chunk.with_failure() {
@@ -910,7 +948,8 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     let mut report = String::new();
     writeln!(
         report,
-        "seed {seed}, area {:?} to {:?}: {} configured features turned off as not built, {} chunks compared; the game's two runs differ in {unsettled:?}, answering a tie otherwise",
+        "{}, seed {seed}, area {:?} to {:?}: {} configured features turned off as not built, {} chunks compared; the game's two runs differ in {unsettled:?}, answering a tie otherwise",
+        dimension().type_name(),
         area.min,
         area.max,
         turned_off,
@@ -1033,7 +1072,7 @@ fn around_block(
                         }))
                     };
                     let index =
-                        ((y + 64) * 256 + z.rem_euclid(16) * 16 + x.rem_euclid(16)) as usize;
+                        ((y - min_y()) * 256 + z.rem_euclid(16) * 16 + x.rem_euclid(16)) as usize;
                     let cell = written.and_then(|written| written.blocks.get(index).copied());
                     let marked = if (x, y, z) == (at[0], at[1], at[2]) {
                         "*"
@@ -1072,8 +1111,8 @@ fn state(id: Option<&u16>) -> String {
 
 /// The placed features to turn off on both sides, to find which one a difference comes
 /// from: those named in `CLUSTINE_GAME_FEATURES_OFF` (comma separated), and with
-/// `CLUSTINE_GAME_FEATURES_FROM` (`step` or `step:place`) every overworld feature from
-/// that step on, or from that place of that step on.
+/// `CLUSTINE_GAME_FEATURES_FROM` (`step` or `step:place`) every feature of the dimension
+/// judged from that step on, or from that place of that step on.
 fn placed_off() -> Vec<String> {
     let mut off: Vec<String> = std::env::var("CLUSTINE_GAME_FEATURES_OFF")
         .map(|names| {
@@ -1092,7 +1131,8 @@ fn placed_off() -> Vec<String> {
             ),
             None => (from.parse::<usize>().unwrap(), 0),
         };
-        let order = clustine_worldgen_data::feature::order("overworld").expect("the overworld");
+        let order = clustine_worldgen_data::feature::order(order_name())
+            .expect("the data orders every dimension's features");
         let placed = clustine_worldgen_data::feature::placed_features();
         for (at, features) in order.steps.iter().enumerate() {
             for (index, feature) in features.iter().enumerate() {

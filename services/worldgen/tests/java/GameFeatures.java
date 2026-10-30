@@ -17,6 +17,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ServerChunkCache;
@@ -24,6 +25,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.Ticket;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -44,7 +46,9 @@ import net.minecraft.world.ticks.SavedTick;
 /// built into no_op), with its standard input kept open, since the thread that reads the
 /// console and through which the server is found ends when it closes. Arguments: the
 /// file of the area (one line, `x0 z0 x1 z1`, the chunks whose features run, both corners
-/// included), `ascending` or `descending` (the order within a rank), the output file.
+/// included), `ascending` or `descending` (the order within a rank), the output file, and
+/// optionally the dimension whose level the features are placed in (`minecraft:overworld`
+/// unless given; `minecraft:the_nether`, `minecraft:the_end`).
 ///
 /// What it checks as it goes, and fails on:
 /// - every chunk within two of the area is held by a ticket of this program's own,
@@ -72,9 +76,9 @@ public class GameFeatures {
     };
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 3) {
+        if (args.length != 3 && args.length != 4) {
             throw new IllegalArgumentException(
-                "usage: java GameFeatures <area> <ascending|descending> <output>");
+                "usage: java GameFeatures <area> <ascending|descending> <output> [dimension]");
         }
         String[] area = Files.readString(Path.of(args[0])).trim().split("\\s+");
         int x0 = Integer.parseInt(area[0]);
@@ -87,13 +91,22 @@ public class GameFeatures {
             default -> throw new IllegalArgumentException("an order is ascending or descending");
         };
         Path output = Path.of(args[2]);
+        ResourceKey<Level> dimension = switch (args.length == 4 ? args[3] : "minecraft:overworld") {
+            case "minecraft:overworld" -> Level.OVERWORLD;
+            case "minecraft:the_nether" -> Level.NETHER;
+            case "minecraft:the_end" -> Level.END;
+            default -> throw new IllegalArgumentException("no dimension is called " + args[3]);
+        };
 
         net.minecraft.server.Main.main(new String[] {"nogui"});
         MinecraftServer server = find();
         while (!server.isReady()) {
             Thread.sleep(100);
         }
-        ServerLevel level = server.overworld();
+        ServerLevel level = server.getLevel(dimension);
+        if (level == null) {
+            fail("the server has no level " + dimension);
+        }
         ServerChunkCache cache = level.getChunkSource();
 
         // Held: the area and two chunks around it.
