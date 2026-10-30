@@ -20,7 +20,7 @@
 //!   says so, and its holder removes and primes it, without the fire the burn may leave
 //!   on this side (named);
 //! - fire in a frame of obsidian makes a nether portal (`BaseFireBlock.onPlace`):
-//!   there are no portals yet.
+//!   `portals.rs`.
 
 use clustine_blocks::data::{has_lava, in_tag, is_block, is_class, number, relative, set, tick_id};
 use clustine_blocks::shape::{
@@ -141,10 +141,16 @@ impl Region {
         output: &mut TickOutput,
     ) {
         use BlockClass as C;
-        // `BaseFireBlock.onPlace`: fire that cannot stay where it is set goes, unless
-        // it was fire there before (an age set anew).
+        // `BaseFireBlock.onPlace`: fire set where that fire was not lights the empty
+        // frame about it, in the overworld or the Nether (`portals.rs`); else fire that
+        // cannot stay where it is set goes. Fire there before (an age set anew) does
+        // neither.
         let fire = is_class(state, C::BaseFireBlock);
-        if fire && !is_block(old, state) && !can_survive(state, pos, &mut RegionView(self)) {
+        if fire
+            && !is_block(old, state)
+            && !self.fire_lights_portal(pos, output)
+            && !can_survive(state, pos, &mut RegionView(self))
+        {
             self.remove_block(pos, output);
         }
         if is_class(state, C::FireBlock) {

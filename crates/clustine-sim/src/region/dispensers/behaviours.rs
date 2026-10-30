@@ -774,9 +774,9 @@ impl Region {
     }
 
     /// `FlintAndSteelDispenseItemBehavior.execute`: fire in an empty block in front where
-    /// it can stay; else an unlit campfire, candle or candle cake lit; else TNT primed and
-    /// taken away; else nothing, which still counts as lit. Whether it succeeded: only TNT
-    /// that could not be primed fails.
+    /// it can stay or would light a portal; else an unlit campfire, candle or candle cake
+    /// lit; else TNT primed and taken away; else nothing, which still counts as lit.
+    /// Whether it succeeded: only TNT that could not be primed fails.
     fn dispense_flint_and_steel(
         &mut self,
         dispense: &mut Dispense,
@@ -788,7 +788,12 @@ impl Region {
         };
         if state.props().is_air() {
             let fire = clustine_blocks::shape::fire_state(&mut RegionView(self), front);
-            if can_survive(fire, front, &mut RegionView(self)) {
+            // `canBePlacedAt(level, front, facing)`: where it can stay, or where it would
+            // light a frame (`portals.rs`), an upward or downward dispenser drawing the
+            // axis tried first from its stream.
+            if can_survive(fire, front, &mut RegionView(self))
+                || self.fire_would_light_portal(front, dispense.facing, Some(&mut dispense.random))
+            {
                 self.set_block(front, fire, output);
                 self.post(Vibration::BLOCK_PLACE, front);
                 return true;

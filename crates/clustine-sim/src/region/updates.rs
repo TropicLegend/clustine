@@ -691,7 +691,11 @@ impl Region {
         let Some(old) = self.own_block(pos) else {
             return;
         };
-        let new = update_shape(&mut RegionView(self), old, pos, direction, neighbour);
+        // A portal block judges its frame, as far as it reaches (`portals.rs`).
+        let new = match self.nether_portal_shape(pos, old, direction, neighbour) {
+            Some(new) => new,
+            None => update_shape(&mut RegionView(self), old, pos, direction, neighbour),
+        };
         // A chest does not join a chest across a line (`containers.rs`).
         if new == old || self.keeps_chest_single(pos, direction, old, new) {
             return;

@@ -427,6 +427,8 @@ impl Region {
                 }
                 self.stop_riding(key, output);
             }
+            // `baseTick`'s `handlePortal`, as its tick begins (`portals.rs`).
+            self.entity_portal_tick(key, output);
             // Getting off may have moved it.
             let Some((position, entity)) = self
                 .find_entity(key)
@@ -440,6 +442,9 @@ impl Region {
             let start = entity.position;
             self.tick_entity(entity, position, output);
             if self.entity_chunks.contains_key(&key) {
+                // `entityInside` of the portal blocks its tick took it through
+                // (`portals.rs`).
+                self.entity_portal_inside(key, start, output);
                 self.tick_passengers(key, output);
                 self.settle_unit(key, start, output);
             }

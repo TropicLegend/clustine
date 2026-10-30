@@ -377,8 +377,14 @@ impl Region {
         if !there.props().is_air() {
             return false;
         }
+        // Fire may be set where it could not stay if it would light a frame there
+        // (`isPortal`, `portals.rs`), towards where the player faces
+        // (`getHorizontalDirection`).
         let fire = fire_state(&mut RegionView(self), target);
-        if !can_survive(fire, target, &mut RegionView(self)) {
+        let facing = super::riding::direction_from_yaw(click.yaw);
+        if !can_survive(fire, target, &mut RegionView(self))
+            && !self.fire_would_light_portal(target, facing, None)
+        {
             return false;
         }
         self.fire_item_sound(target, flint, player, output);

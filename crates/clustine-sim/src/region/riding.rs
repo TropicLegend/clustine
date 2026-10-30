@@ -839,6 +839,9 @@ impl Region {
                     output,
                 );
             }
+            // Its `handlePortal`: a passenger may use no portal, but its cooldown counts
+            // down and its clock runs out (`portals.rs`).
+            self.entity_portal_tick(passenger, output);
             let Some(record) = self.entity_record(passenger, chunk).cloned() else {
                 continue;
             };

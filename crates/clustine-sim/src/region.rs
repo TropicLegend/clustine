@@ -85,6 +85,7 @@ mod pistons;
 mod placing;
 mod player_effects;
 pub(crate) mod pois;
+mod portals;
 mod pressed;
 mod projectile_hits;
 mod projectiles;
@@ -1250,10 +1251,11 @@ impl Region {
         let broadcast = output.events.len();
         self.run_block_events(&mut output);
         self.handling_tick = false;
-        // The entities: players press and step on blocks (`pressed.rs`), and the others
-        // tick in ascending key (`entities.rs`); then the block entities tick
-        // (`docs/adr/0026-redstone.md`, sections 3 and 5). Then the chunks keep the
-        // events still queued.
+        // The entities: players count their portal clocks (`portals.rs`) and press and
+        // step on blocks (`pressed.rs`), and the others tick in ascending key
+        // (`entities.rs`); then the block entities tick (`docs/adr/0026-redstone.md`,
+        // sections 3 and 5). Then the chunks keep the events still queued.
+        self.players_portal_tick(&mut output);
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
         self.run_block_entities(&mut output);
