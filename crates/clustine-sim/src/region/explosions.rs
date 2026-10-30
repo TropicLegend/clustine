@@ -24,11 +24,19 @@
 //! experience, as when a rule breaks them (`drops.rs`), and an infested block's
 //! silverfish (`spawnAfterBreak`) is `infested.rs`'; the block entity a loot table copies from is not read
 //! (`clustine_blocks::loot`); a shulker box spills what it holds as a chest does
-//! (`docs/groundwork/n6-plan.md`, section 6 item 5); fire (`createFire`) is never asked
-//! for, since nothing that explodes in N6 sets it; the entities are hurt in the order of
+//! (`docs/groundwork/n6-plan.md`, section 6 item 5); the fire of a bed's or an anchor's
+//! explosion (`createFire`) is lit only in the region's own chunks, a block across a
+//! line drawing its chance and lighting nothing; the entities are hurt in the order of
 //! their chunks, sections and keys, then the region's players, where the game's order
 //! mixes the players in by their sections; a primed TNT's `isInWater`, which a hanging
 //! thing reads, is the one its last fluid update found.
+//!
+//! An explosion without a source entity (a bed's, an anchor's: `Level.explode` with a
+//! null entity) has a key all the same, drawn from the region's entity ids
+//! (`docs/groundwork/p-plan.md`, section 17.6), whose stream it draws from and by which
+//! its drops across a line are merged; that key is no entity's, so the entities' query
+//! leaves nothing out for it, its game event names no source and its loot sees no
+//! `this_entity`.
 
 use std::collections::BTreeSet;
 
@@ -46,7 +54,7 @@ use super::attached::Breaker;
 use super::items::{View, tracked};
 use super::random_ticks::Random;
 use super::stands::{INVISIBLE, MARKER, stand_size};
-use super::updates::{UPDATE_ALL, UPDATE_LIMIT};
+use super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT};
 use super::uses::block_in;
 use crate::api::{ExplosionKind, RegionEvent, TickOutput, Tracked};
 use crate::physics::aabb::{Aabb, lerp};
@@ -205,8 +213,57 @@ impl Region {
         random: &mut Random,
         output: &mut TickOutput,
     ) {
-        // `explode` first, of the entity that explodes (`vibrations.rs`).
-        let source = Some(super::vibrations::Source::of(explosion.source));
+        self.explode_from(explosion, true, random, output);
+    }
+
+    /// The explosion that a bed or an anchor makes where it does not work
+    /// (`BedBlock.destroyOnUse`, n7d BedBlock.txt 32–75; `RespawnAnchorBlock.explode`,
+    /// d RespawnAnchorBlock.txt 215–270): `Level.explode` with no entity, power 5, fire,
+    /// and `ExplosionInteraction.BLOCK`, whose drops decay (`block_explosion_drop_decay`
+    /// is on: d ServerLevel.txt 2566–2620), centred on `centre`, with the anchor's water
+    /// rule as `resistance_at`. Its damage source, `bad_respawn_point`, hurts nobody until
+    /// survival (the owner's answer, `docs/groundwork/p-plan.md`, section 17.6). Its key
+    /// is drawn from the region's entity ids; where none is left, nothing explodes
+    /// (named).
+    pub(super) fn bad_respawn_point_explosion(
+        &mut self,
+        centre: [f64; 3],
+        resistance_at: Option<(BlockPos, f32)>,
+        output: &mut TickOutput,
+    ) {
+        let Some(key) = self.take_key() else {
+            return;
+        };
+        let explosion = Explosion {
+            source: key,
+            centre,
+            radius: 5.0,
+            owner: None,
+            indirect: None,
+            decay: true,
+            rails_pass: false,
+            source_in_water: false,
+            fire: true,
+            hurts: false,
+            resistance_at,
+        };
+        // The game draws from the level's random; the new key's own stream stands for
+        // it, as that key is no other explosion's or entity's.
+        let mut random = self.entity_stream(key).random;
+        self.explode_from(&explosion, false, &mut random, output);
+    }
+
+    /// `ServerExplosion.explode()` (n6 ServerExplosion.txt 849–876), of the entity
+    /// `explosion.source` where `entity`, else of no entity, whose key is no entity's.
+    fn explode_from(
+        &mut self,
+        explosion: &Explosion,
+        entity: bool,
+        random: &mut Random,
+        output: &mut TickOutput,
+    ) {
+        // `explode` first, of the entity that explodes (`vibrations.rs`), if one does.
+        let source = entity.then(|| super::vibrations::Source::of(explosion.source));
         let context = super::vibrations::Context::of(source, None);
         self.vibrate(
             super::vibrations::Vibration::EXPLODE,
@@ -214,9 +271,21 @@ impl Region {
             context,
         );
         let positions = self.exploded_positions(explosion, random);
-        let knockback = self.hurt_entities(explosion, output);
-        // TNT always breaks blocks (`interactsWithBlocks`: its interaction is not `KEEP`).
-        self.interact_with_blocks(explosion, positions.clone(), random, output);
+        // An explosion that hurts nobody (a bed's, an anchor's, until survival) neither
+        // hurts nor pushes an entity or a player.
+        let knockback = if explosion.hurts {
+            self.hurt_entities(explosion, entity, output)
+        } else {
+            Vec::new()
+        };
+        // Every explosion here breaks blocks (`interactsWithBlocks`: its interaction is
+        // not `KEEP`). The positions come back in the shuffled order the game's list is
+        // left in, which `createFire` walks.
+        let shuffled =
+            self.interact_with_blocks(explosion, entity, positions.clone(), random, output);
+        if explosion.fire {
+            self.create_fire(&shuffled, random, output);
+        }
         output.events.push(RegionEvent::Explosion {
             centre: explosion.centre,
             radius: explosion.radius,
@@ -230,8 +299,9 @@ impl Region {
         });
     }
 
-    /// What the explosion's effects across a line carry of it.
-    fn blast_of(&self, explosion: &Explosion) -> Blast {
+    /// What the explosion's effects across a line carry of it: `direct` where its source
+    /// is an entity, which the holder's loot then sees as `this_entity`.
+    fn blast_of(&self, explosion: &Explosion, direct: bool) -> Blast {
         Blast {
             fire: explosion.fire,
             hurts: explosion.hurts,
@@ -240,7 +310,7 @@ impl Region {
             centre: explosion.centre.map(Double),
             radius: Float(explosion.radius),
             decay: explosion.decay,
-            direct: true,
+            direct,
             owner: explosion.owner,
             owner_creative: owner_is_creative(explosion.owner),
         }
@@ -259,14 +329,21 @@ impl Region {
         )
     }
 
-    /// The calculator's resistance of the block `state` at `pos`: the plain one, or a
-    /// primed TNT cart's, which gives rails and what is under them none.
+    /// The calculator's resistance of the block `state` at `pos`: the plain one, a
+    /// primed TNT cart's, which gives rails and what is under them none, or an anchor's,
+    /// which gives its own position the resistance kept, whatever is there now
+    /// (`RespawnAnchorBlock$1.getBlockExplosionResistance`).
     fn blast_resistance(
         &self,
         explosion: &Explosion,
         pos: BlockPos,
         state: BlockState,
     ) -> Option<f32> {
+        if let Some((at, kept)) = explosion.resistance_at
+            && at == pos
+        {
+            return Some(kept);
+        }
         let plain = resistance(state)?;
         if explosion.rails_pass && self.rails_at_or_above(pos, state) {
             return Some(0.0);
@@ -379,6 +456,7 @@ impl Region {
     fn hurt_entities(
         &mut self,
         explosion: &Explosion,
+        entity: bool,
         output: &mut TickOutput,
     ) -> Vec<(EntityId, [f64; 3])> {
         if explosion.radius < 1.0e-5 {
@@ -399,6 +477,7 @@ impl Region {
                 corner(cz, reach + 1.0),
             ],
         );
+        // The key of an explosion of no entity is no entity's, and leaves nothing out.
         for found in self.blast_targets(&bounds, explosion.source) {
             // An earlier hit may have moved or removed it (a vehicle that broke and let
             // its riders off).
@@ -421,7 +500,7 @@ impl Region {
                     let by = EntityUse::Blasted {
                         damage: Float(hit.damage),
                         push: hit.push.map(Double),
-                        blast: self.blast_of(explosion),
+                        blast: self.blast_of(explosion, entity),
                     };
                     self.made.push(Effect {
                         at: block_in(found.chunk, &record),
@@ -738,14 +817,15 @@ impl Region {
     /// air broken in that order (`BlockBehaviour.onExplosionHit`), its loot collected
     /// and merged, a container spilled and a TNT primed as it goes, and then the merged
     /// drops laid, each at the first block of its stack. A block in a copy is an effect
-    /// to its holder.
+    /// to its holder. The positions are returned in their shuffled order.
     fn interact_with_blocks(
         &mut self,
         explosion: &Explosion,
+        entity: bool,
         positions: Vec<BlockPos>,
         random: &mut Random,
         output: &mut TickOutput,
-    ) {
+    ) -> Vec<BlockPos> {
         let mut positions = positions;
         // `Util.shuffle(list, random)`.
         let mut left = positions.len();
@@ -756,11 +836,11 @@ impl Region {
             left -= 1;
         }
         let broken = Broken {
-            this_entity: true,
+            this_entity: entity,
             explosion_radius: explosion.decay.then_some(explosion.radius),
         };
         let mut collectors: Vec<(BlockPos, ItemStack)> = Vec::new();
-        for pos in positions {
+        for &pos in &positions {
             let Some(state) = self.block(pos) else {
                 continue;
             };
@@ -773,7 +853,7 @@ impl Region {
                         at: pos,
                         what: Effected::Exploded {
                             expected: state,
-                            blast: self.blast_of(explosion),
+                            blast: self.blast_of(explosion, entity),
                         },
                     });
                 }
@@ -802,6 +882,32 @@ impl Region {
         }
         for (pos, stack) in collectors {
             self.pop_resource(pos, stack, random, output);
+        }
+        positions
+    }
+
+    /// `createFire(positions)` (n6 ServerExplosion.txt 806–847): of the positions in
+    /// their shuffled order, one in three by a draw from the explosion's stream (made
+    /// for every position, before anything is read) that is air over a block of solid
+    /// render becomes fire as `BaseFireBlock.getState` makes it, with every update. A
+    /// position in a copy draws and lights nothing (named).
+    fn create_fire(
+        &mut self,
+        positions: &[BlockPos],
+        random: &mut Random,
+        output: &mut TickOutput,
+    ) {
+        for &pos in positions {
+            if random.next_int(3) != 0 || !self.chunks.contains_key(&pos.chunk()) {
+                continue;
+            }
+            let air = self.block(pos).is_some_and(|state| state.props().is_air());
+            let below = self.block(pos.offset(0, -1, 0)).unwrap_or(blocks::AIR);
+            if !air || !below.props().is_solid_render() {
+                continue;
+            }
+            let fire = clustine_blocks::shape::fire_state(&mut RegionView(self), pos);
+            self.set_block_updated(pos, fire, UPDATE_ALL, UPDATE_LIMIT, output);
         }
     }
 }
@@ -951,6 +1057,10 @@ impl Region {
         blast: Blast,
         output: &mut TickOutput,
     ) {
+        // A blast that hurts nobody files no hit; one that says so is taken as nothing.
+        if !blast.hurts {
+            return;
+        }
         let Some((_, record)) = self.find_entity(key) else {
             return;
         };

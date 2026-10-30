@@ -4,9 +4,18 @@
 //! skipped when enough of the world's players sleep deeply, which a region decides for
 //! the world by the store's list of the world's players and moves the world's clock for.
 //!
-//! The overworld's bed rules are constant (B 1.3): a bed sleeps when dark and always sets
-//! the spawn; a straw bed sleeps when dark, never sets the spawn and breaks when its
-//! sleeper leaves it. Dark is the day timeline's (`crate::time`).
+//! A bed's rule is its dimension's (`bed_rule`, and `straw_bed_rule` for a straw bed;
+//! `AbstractBedBlock.getBedRule`, `docs/groundwork/p-brief.md`, section 1.2). In the
+//! overworld a bed sleeps when dark and always sets the spawn, and a straw bed sleeps when
+//! dark, never sets the spawn and breaks when its sleeper leaves it; in the Nether and
+//! the End both are destroyed when used, a bed with an explosion of power 5 and fire
+//! that hurts nobody until survival, a straw bed by breaking. Dark is the level's
+//! (`Level.isDarkOutside`, never in a level with a fixed time). A rule's error message
+//! is not kept: the rules that carry one are the overworld's, whose message is the one
+//! said when a bed does not sleep.
+//!
+//! The night is skipped by the players of the region's own dimension alone: each level
+//! has its own `SleepStatus`, and another dimension's players are not counted.
 //!
 //! A villager sleeps in beds too (`mobs/brain/behaviours/rest.rs`); a player's use of a
 //! bed a villager sleeps in gets it up and lays nobody down (`kickVillagerOutOfBed`,
@@ -22,8 +31,8 @@
 //! same tick, as the players' inputs come before the mobs), and only a villager of the
 //! region's own land is woken.
 
-use clustine_blocks::data::{facing, flag, is_class, set_flag};
-use clustine_data::{BlockClass, BlockState, Face, blocks, entity_types, sounds};
+use clustine_blocks::data::{facing, flag, is_class, same_block, set_flag};
+use clustine_data::{BedRule, BedWhen, BlockClass, BlockState, Face, blocks, entity_types, sounds};
 use clustine_world::{BlockPos, ChunkPos, PlayerId, Vec3};
 
 use super::Region;
@@ -65,6 +74,27 @@ impl Region {
     /// two ticks reads (B 1.4: `skyDarken` is the last level tick's).
     fn last_day(&self) -> u64 {
         self.sleep.last_day
+    }
+
+    /// `AbstractBedBlock.getBedRule` of the bed `state`: the dimension's `straw_bed_rule`
+    /// for a straw bed (`StrawBedBlock`), its `bed_rule` for any other.
+    fn bed_rule(&self, state: BlockState) -> BedRule {
+        let rules = self.config.dimension.rules();
+        if is_class(state, BlockClass::StrawBedBlock) {
+            rules.straw_bed_rule
+        } else {
+            rules.bed_rule
+        }
+    }
+
+    /// `BedRule.Rule.test(level)` (n7d BedRule$Rule.txt 41–70) at the overworld clock's
+    /// `day`: always, when the level is dark outside, or never.
+    fn bed_allows(&self, when: BedWhen, day: u64) -> bool {
+        match when {
+            BedWhen::Always => true,
+            BedWhen::WhenDark => self.dark_outside(day),
+            BedWhen::Never => false,
+        }
     }
 
     /// A message to the region's player `id`, on their action bar or in their chat.
@@ -113,6 +143,12 @@ impl Region {
         } else {
             (pos, state)
         };
+        // The rule at the head is asked before whether the bed is taken (n7d
+        // AbstractBedBlock.txt 93–163): a bed its level destroys goes whoever lies in it.
+        if self.bed_rule(head_state).destroy_on_use {
+            self.destroy_bed_on_use(head, head_state, toward, output);
+            return;
+        }
         if flag(head_state, "occupied") {
             if !self.kick_villager_out_of_bed(head, output) {
                 self.say(id, "block.minecraft.bed.occupied", Vec::new(), true, output);
@@ -120,6 +156,49 @@ impl Region {
             return;
         }
         self.start_sleep(id, head, head_state, toward, output);
+    }
+
+    /// `destroyOnUse` of the bed whose head is `head`, used where its rule destroys it.
+    /// A bed (`BedBlock.destroyOnUse`, n7d BedBlock.txt 32–75) has its head removed, then
+    /// its foot where the foot is still of the same block, and explodes at the head's
+    /// centre with no entity, power 5 and fire, hurting nobody until survival. A straw
+    /// bed (`StrawBedBlock.destroyBed`, n7d StrawBedBlock.txt 18–34 and 113–120) breaks
+    /// with its sound, as when its sleeper leaves it, and does not explode.
+    fn destroy_bed_on_use(
+        &mut self,
+        head: BlockPos,
+        head_state: BlockState,
+        toward: (i32, i32),
+        output: &mut TickOutput,
+    ) {
+        if is_class(head_state, BlockClass::StrawBedBlock) {
+            super::redstone::play(
+                head,
+                sounds::BLOCK_STRAW_BED_BREAK_LEAVE,
+                1.0,
+                1.0,
+                None,
+                output,
+            );
+            self.set_block(head, blocks::AIR, output);
+            return;
+        }
+        // `removeBlock(pos, false)`: a bed holds no fluid, so it leaves air, with every
+        // update.
+        self.set_block(head, blocks::AIR, output);
+        let foot = offset(head, toward, -1);
+        if self
+            .own_block(foot)
+            .is_some_and(|state| same_block(state, head_state))
+        {
+            self.set_block(foot, blocks::AIR, output);
+        }
+        let centre = [
+            f64::from(head.x) + 0.5,
+            f64::from(head.y) + 0.5,
+            f64::from(head.z) + 0.5,
+        ];
+        self.bad_respawn_point_explosion(centre, None, output);
     }
 
     /// `ServerPlayer.startSleepInBed` (B 1.5) on the bed whose head is `head`.
@@ -132,7 +211,11 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let straw = is_class(head_state, BlockClass::StrawBedBlock);
-        let dark = self.dark_outside(self.last_day());
+        // `canSleep` and `canSetSpawn` of the bed's rule, asked first (n7d
+        // ServerPlayer.txt 2727–2760).
+        let rule = self.bed_rule(head_state);
+        let can_sleep = self.bed_allows(rule.can_sleep, self.last_day());
+        let can_set_spawn = self.bed_allows(rule.can_set_spawn, self.last_day());
         let Some(player) = self.players.get(&id) else {
             return;
         };
@@ -169,7 +252,7 @@ impl Region {
             return;
         }
         // The spawn first, before the darkness is asked (B 1.5 step 6).
-        if !straw {
+        if can_set_spawn {
             let (yaw, pitch) = (player.pose.yaw, player.pose.pitch);
             let respawn = Respawn {
                 pos: head,
@@ -177,7 +260,10 @@ impl Region {
                 pitch: pitch.clamp(-90.0, 90.0),
                 dimension: self.config.dimension,
             };
-            let moved = player.respawn.is_none_or(|old| old.pos != head);
+            // `RespawnConfig.isSamePosition`: the same `GlobalPos`, dimension and block.
+            let moved = player
+                .respawn
+                .is_none_or(|old| old.pos != head || old.dimension != self.config.dimension);
             if let Some(player) = self.players.get_mut(&id) {
                 player.respawn = Some(respawn);
             }
@@ -186,7 +272,7 @@ impl Region {
                 self.say(id, "block.minecraft.set_spawn", Vec::new(), false, output);
             }
         }
-        if !dark {
+        if !can_sleep {
             self.say(id, "block.minecraft.bed.no_sleep", Vec::new(), true, output);
             return;
         }
@@ -263,7 +349,9 @@ impl Region {
         {
             let toward = facing(state).map_or((0, 1), step_of);
             self.set_block(sleep.head, set_flag(state, "occupied", false), output);
-            if is_class(state, BlockClass::StrawBedBlock) {
+            // `onStopSleeping`: `destroyOnLeave` where the rule says so, which only a
+            // straw bed does anything of (n7d AbstractBedBlock.txt 194–209).
+            if self.bed_rule(state).destroy_on_leave && is_class(state, BlockClass::StrawBedBlock) {
                 super::redstone::play(
                     sleep.head,
                     sounds::BLOCK_STRAW_BED_BREAK_LEAVE,
@@ -351,8 +439,9 @@ impl Region {
     }
 
     /// The region's view of the level's players for the night (B 4.1): the world's players
-    /// the store last published, with its own in place of their entries and added where
-    /// missing. The counts of the active, the sleeping and the deep.
+    /// the store last published who are in the region's own dimension, with its own in
+    /// place of their entries and added where missing. The counts of the active, the
+    /// sleeping and the deep.
     fn sleep_counts(&self) -> (u32, u32, u32) {
         let now = self.clock.game_time;
         let mut active = 0;
@@ -369,6 +458,10 @@ impl Region {
         }
         for other in self.faces.world.iter().flatten() {
             if self.players.contains_key(&other.player) {
+                continue;
+            }
+            // Another level's players are in its own sleep status, not this one's.
+            if other.dimension != self.config.dimension {
                 continue;
             }
             // Spectators count for nobody; there are none until survival.
@@ -455,11 +548,15 @@ impl Region {
         for (id, head) in sleepers {
             let bed = self
                 .block(head)
-                .is_some_and(|state| is_class(state, BlockClass::AbstractBedBlock));
-            if !bed {
-                self.stop_sleep(id, true, true, output);
-            } else if !self.dark_outside(day) {
-                self.stop_sleep(id, false, true, output);
+                .filter(|state| is_class(*state, BlockClass::AbstractBedBlock));
+            match bed {
+                None => self.stop_sleep(id, true, true, output),
+                // `Player.tick`: the rule of the bed at the head, asked of the level
+                // (n7d Player.txt 312–354).
+                Some(state) if !self.bed_allows(self.bed_rule(state).can_sleep, day) => {
+                    self.stop_sleep(id, false, true, output);
+                }
+                Some(_) => {}
             }
         }
         // The world's players change by the publication too: their sleepers are
