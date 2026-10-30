@@ -91,18 +91,24 @@ public class GameFeatures {
             default -> throw new IllegalArgumentException("an order is ascending or descending");
         };
         Path output = Path.of(args[2]);
-        ResourceKey<Level> dimension = switch (args.length == 4 ? args[3] : "minecraft:overworld") {
-            case "minecraft:overworld" -> Level.OVERWORLD;
-            case "minecraft:the_nether" -> Level.NETHER;
-            case "minecraft:the_end" -> Level.END;
-            default -> throw new IllegalArgumentException("no dimension is called " + args[3]);
-        };
+        String named = args.length == 4 ? args[3] : "minecraft:overworld";
+        if (!List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end")
+                .contains(named)) {
+            throw new IllegalArgumentException("no dimension is called " + named);
+        }
 
         net.minecraft.server.Main.main(new String[] {"nogui"});
         MinecraftServer server = find();
         while (!server.isReady()) {
             Thread.sleep(100);
         }
+        // Only now: `Level`'s keys may be touched only once the server has bootstrapped
+        // the game's registries.
+        ResourceKey<Level> dimension = switch (named) {
+            case "minecraft:the_nether" -> Level.NETHER;
+            case "minecraft:the_end" -> Level.END;
+            default -> Level.OVERWORLD;
+        };
         ServerLevel level = server.getLevel(dimension);
         if (level == null) {
             fail("the server has no level " + dimension);
