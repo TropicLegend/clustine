@@ -18,6 +18,7 @@ pub mod note;
 pub mod piston;
 pub mod plants;
 pub mod portal;
+pub mod portal_forcer;
 pub mod shape;
 pub mod signal;
 pub mod support;
