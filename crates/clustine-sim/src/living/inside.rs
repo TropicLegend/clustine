@@ -17,7 +17,7 @@ use crate::physics::{Vec3, World};
 /// The effects of blocks a body is in, in the game's order of applying them
 /// (`InsideBlockEffectType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Effect {
+pub(super) enum Effect {
     Freeze = 0,
     ClearFreeze = 1,
     FireIgnite = 2,
@@ -35,7 +35,7 @@ const APPLY_ORDER: [Effect; 5] = [
 
 /// What a block queues to run around one of the effects.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Action {
+pub(super) enum Action {
     Effect(Effect),
     Hurt(Damage, f32),
     LavaHurt,
@@ -248,13 +248,16 @@ impl Living {
     }
 
     /// One queued action of the effects of blocks.
-    fn run(&mut self, action: Action) {
+    pub(super) fn run(&mut self, action: Action) {
         match action {
             // **Inferred** (`InsideBlockEffectType` is not in the dump): `FREEZE` puts
             // the body in powder snow, whose freezing `aiStep` counts, and
             // `CLEAR_FREEZE` thaws it at once.
             Action::Effect(Effect::Freeze) => self.in_powder_snow = true,
             Action::Effect(Effect::ClearFreeze) => self.frozen = 0,
+            // `fireIgnite` and `lavaIgnite` do nothing to a type that is immune to
+            // fire (a zombified piglin, a magma cube, the Nether's others).
+            Action::Effect(Effect::FireIgnite | Effect::LavaIgnite) if self.fire_immune() => {}
             Action::Effect(Effect::FireIgnite) => {
                 // `BaseFireBlock.fireIgnite`.
                 if self.fire_ticks < 0 {

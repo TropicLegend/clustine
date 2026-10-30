@@ -55,6 +55,27 @@ fn health(living: &Living) -> f32 {
     health
 }
 
+/// `fireIgnite` and `lavaIgnite` do nothing to a type immune to fire (a zombified
+/// piglin), and light any other.
+#[test]
+fn fire_and_lava_light_no_body_of_a_type_immune_to_fire() {
+    use super::inside::{Action, Effect};
+    for (kind, immune) in [
+        (clustine_data::entity_types::ZOMBIFIED_PIGLIN, true),
+        (clustine_data::entity_types::ZOMBIE, false),
+    ] {
+        let mut living = stand_body();
+        living.kind = Kind::Mob {
+            kind: u16::try_from(kind).expect("a type id"),
+            hurts: Vec::new(),
+        };
+        assert_eq!(living.fire_immune(), immune);
+        living.run(Action::Effect(Effect::LavaIgnite));
+        living.run(Action::Effect(Effect::FireIgnite));
+        assert_eq!(living.fire_ticks > 0, !immune, "{kind}");
+    }
+}
+
 #[test]
 fn fire_lights_a_stand_and_then_burns_it_a_little_at_a_time_until_half_a_heart() {
     let mut living = stand_body();

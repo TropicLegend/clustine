@@ -99,7 +99,11 @@ impl Region {
                 });
             }
         }
-        for other in self.faces.world.iter().flatten() {
+        // The world's other players count where they stand in the region's own level:
+        // each level spawns for its own players (`ServerLevel.players()`).
+        let dimension = self.config.dimension;
+        let here = self.faces.world.iter().flatten();
+        for other in here.filter(|other| other.dimension == dimension) {
             if !players.iter().any(|near| near.player == other.player) {
                 players.push(NearPlayer {
                     player: other.player,

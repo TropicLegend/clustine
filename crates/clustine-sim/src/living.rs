@@ -364,6 +364,16 @@ impl Living {
         self.frozen = 0;
     }
 
+    /// `fireImmune()`: its type's (`EntityType.fireImmune`); an armour stand's is not.
+    pub(crate) fn fire_immune(&self) -> bool {
+        match self.kind {
+            Kind::Mob { kind, .. } => {
+                clustine_data::EntityTypeInfo::of(i32::from(kind)).fire_immune
+            }
+            Kind::ArmorStand { .. } => false,
+        }
+    }
+
     /// `clearFire`.
     fn clear_fire(&mut self) {
         self.fire_ticks = self.fire_ticks.min(0);
