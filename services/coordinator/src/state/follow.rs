@@ -21,11 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use clustine_rpc::{Crowds, Decline, Off, PlayersOf, RegionList};
-use clustine_world::{ChunkPos, RegionId};
+use clustine_world::{ChunkPos, Dimension, RegionId};
 use tracing::{info, warn};
 
 use super::{Coordinator, LOG, Order, ReshapeOrder, ReshapeRefusal, Split, Undone};
-use crate::policy::{self, Policy, Sighted, Wanted, Why};
+use crate::policy::{self, Home, Policy, Sighted, Wanted, Why};
 
 /// How old a sighting may be and still be fresh; and what is wanted has to be wanted
 /// for longer than this before it is begun (section 3).
@@ -688,6 +688,36 @@ impl Coordinator {
         since.is_some_and(|since| longer_than_fresh(now, since))
     }
 
+    /// Each dimension's home with the chunk it keeps as a place: the overworld's the
+    /// chunk players enter in, the others' chunk (0, 0). A list read before the store
+    /// named every home names the overworld's alone (`home`).
+    fn homes_entered(&self, home: RegionId, enter: ChunkPos) -> Vec<Home> {
+        let mut homes: Vec<Home> = self
+            .homes
+            .iter()
+            .map(|(dimension, region)| Home {
+                dimension: *dimension,
+                region: *region,
+                enter: if *dimension == Dimension::Overworld {
+                    enter
+                } else {
+                    ChunkPos::new(0, 0)
+                },
+            })
+            .collect();
+        if !homes
+            .iter()
+            .any(|known| known.dimension == Dimension::Overworld)
+        {
+            homes.push(Home {
+                dimension: Dimension::Overworld,
+                region: home,
+                enter,
+            });
+        }
+        homes
+    }
+
     /// What a tick of a coordinator that decides by itself does between settling
     /// and evening out (section 5): works out what is wanted, notes since when, and
     /// begins what may be begun.
@@ -698,7 +728,7 @@ impl Coordinator {
         else {
             return;
         };
-        let enter = spawn.chunk();
+        let homes = self.homes_entered(home, spawn.chunk());
         let fresh: BTreeSet<RegionId> = self
             .regions
             .keys()
@@ -717,15 +747,16 @@ impl Coordinator {
                     let sighting = state.kept.sighting.as_ref()?;
                     Some(Sighted {
                         region: *region,
+                        dimension: state.dimension,
                         fresh: fresh.contains(region),
                         crowds: &sighting.crowds,
                         redstone: if pins { &[] } else { &sighting.redstone },
                     })
                 })
                 .collect();
-            policy::decide(&policy, enter, home, &sighted)
+            policy::decide(&policy, &homes, &sighted)
         };
-        let wanted = self.keep_splits_off_circuits(wanted, enter, home);
+        let wanted = self.keep_splits_off_circuits(wanted, &homes);
         // Whether or not anything may be begun: what is wanted stands while its
         // regions rest, and while the world is not known.
         self.note_wanted(now, &policy, &wanted, &fresh);
@@ -733,7 +764,7 @@ impl Coordinator {
         if self.the_world_is_known(now) {
             self.begin_a_split(now, &policy, &wanted);
             self.begin_merges(now, &wanted);
-            self.begin_absorptions(now, &policy, home, &wanted);
+            self.begin_absorptions(now, &policy, &homes, &wanted);
             self.say_prepare(now);
         }
         // A `Prepare` that no split followed is forgotten when it is more than a
@@ -755,12 +786,7 @@ impl Coordinator {
     /// the one the region draws (`Sides::goes`): a chunk goes where it is nearer one of
     /// the players who go than any who stay, or the chunk players enter in for the home
     /// region.
-    fn keep_splits_off_circuits(
-        &self,
-        wanted: Vec<Wanted>,
-        enter: ChunkPos,
-        home: RegionId,
-    ) -> Vec<Wanted> {
+    fn keep_splits_off_circuits(&self, wanted: Vec<Wanted>, homes: &[Home]) -> Vec<Wanted> {
         wanted
             .into_iter()
             .filter(|want| {
@@ -782,8 +808,8 @@ impl Coordinator {
                     .map(|(chunk, _)| *chunk)
                     .filter(|chunk| !going.contains(chunk))
                     .collect();
-                if *region == home {
-                    staying.push(enter);
+                if let Some(home) = homes.iter().find(|home| home.region == *region) {
+                    staying.push(home.enter);
                 }
                 let nearest = |chunks: &mut dyn Iterator<Item = &ChunkPos>, to: ChunkPos| {
                     chunks.map(|chunk| policy::distance(*chunk, to)).min()
@@ -1027,7 +1053,7 @@ impl Coordinator {
         &mut self,
         now: Instant,
         policy: &Policy,
-        home: RegionId,
+        homes: &[Home],
         wanted: &[Wanted],
     ) {
         // A region that a merge is wanted of is no survivor, whether that merge has
@@ -1047,24 +1073,37 @@ impl Coordinator {
             if !self.one_more_may_begin() {
                 break;
             }
-            // Never the home region, and never a region that is pinned to an area:
-            // it holds its areas whether anybody is there or not.
+            // Never a home, and never a region that is pinned to an area: it holds its
+            // areas whether anybody is there or not.
             let pinned = self.regions[&region].kept.pinned;
-            if region == home || pinned || !self.free(region, now) {
+            let is_home = |region: RegionId| homes.iter().any(|home| home.region == region);
+            if is_home(region) || pinned || !self.free(region, now) {
                 continue;
             }
             let empty = self.without_players_since(region, now);
             if !empty.is_some_and(|since| now.saturating_duration_since(since) >= empty_for) {
                 continue;
             }
-            // The home region, then the regions with a lower id, the lowest first.
-            // A survivor's rest is not looked at: nobody stands still for this.
+            // The home of its dimension, then the regions of its dimension with a lower
+            // id, the lowest first: never a region of another dimension
+            // (`docs/groundwork/p-plan.md`, section 3.4). A survivor's rest is not
+            // looked at: nobody stands still for this.
+            let dimension = self.regions[&region].dimension;
+            let of_dimension = |other: &RegionId| {
+                self.regions
+                    .get(other)
+                    .is_some_and(|state| state.dimension == dimension)
+            };
+            let home = homes
+                .iter()
+                .find(|home| home.dimension == dimension)
+                .map(|home| home.region);
             let lower = regions
                 .iter()
                 .rev()
                 .copied()
-                .filter(|other| *other != home && *other < region);
-            let survivor = [home].into_iter().chain(lower).find(|other| {
+                .filter(|other| !is_home(*other) && *other < region && of_dimension(other));
+            let survivor = home.into_iter().chain(lower).find(|other| {
                 let empty = self.without_players_since(*other, now);
                 empty.is_some_and(|since| longer_than_fresh(now, since))
                     && self.free_but_for_its_rest(*other, now)

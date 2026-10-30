@@ -360,12 +360,21 @@ impl Judge {
                 .iter()
                 .map(|(region, crowds)| Sighted {
                     region: *region,
+                    dimension: clustine_world::Dimension::Overworld,
                     fresh: true,
                     crowds,
                     redstone: &[],
                 })
                 .collect();
-            decide(&policy(), ORIGIN, HOME, &sighted)
+            decide(
+                &policy(),
+                &[clustine_coordinator::Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: HOME,
+                    enter: ORIGIN,
+                }],
+                &sighted,
+            )
         } else {
             Vec::new()
         };

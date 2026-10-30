@@ -2892,8 +2892,20 @@ impl Coordinator {
             return;
         }
         // A region the coordinator does not know is one on the worker's word: it was
-        // split off another, and whoever was told so is no more.
+        // split off another, and whoever was told so is no more. A split under way
+        // whose new region this is gives it the dimension of the region split, which
+        // the next list says too: a region never changes dimension.
+        let parent_dimension = self
+            .splits
+            .iter()
+            .find(|(_, split)| split.as_epoch == holding.epoch)
+            .and_then(|(parent, _)| self.regions.get(parent))
+            .map(|parent| parent.dimension);
+        let known = self.regions.contains_key(&holding.region);
         let region = self.regions.entry(holding.region).or_default();
+        if !known && let Some(dimension) = parent_dimension {
+            region.dimension = dimension;
+        }
         region.epoch = holding.epoch;
         region.let_go = false;
         match &mut region.owner {

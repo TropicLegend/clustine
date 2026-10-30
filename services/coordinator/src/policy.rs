@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use clustine_rpc::Crowds;
-use clustine_world::{ChunkPos, RegionId};
+use clustine_world::{ChunkPos, Dimension, RegionId};
 
 /// The distances by which regions are merged and split, and how long a region is left
 /// alone after either.
@@ -94,6 +94,9 @@ impl Policy {
 #[derive(Debug, Clone, Copy)]
 pub struct Sighted<'a> {
     pub region: RegionId,
+    /// The dimension whose chunks the region holds: players of two dimensions never
+    /// hold together (`docs/groundwork/p-plan.md`, section 3.4).
+    pub dimension: Dimension,
     /// Whether the sighting is fresh. Only a region whose sighting is fresh is merged
     /// or split; the players of any other still hold back what they may be part of.
     pub fresh: bool,
@@ -141,10 +144,22 @@ pub enum Why {
     Redstone,
 }
 
-/// A region and a chunk in which its sighting has players; or the chunk players enter
-/// the world in, which is a place of the home region whoever is there.
+/// A dimension's home region and the chunk it keeps as a place whoever is there: the
+/// chunk players enter the world in for the overworld's, chunk (0, 0) for the others'
+/// (`docs/groundwork/p-plan.md`, sections 3.4 and 15.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Home {
+    pub dimension: Dimension,
+    pub region: RegionId,
+    pub enter: ChunkPos,
+}
+
+/// A region and a chunk in which its sighting has players; or a home's chunk, which is
+/// a place of the home whoever is there.
 struct Place {
     region: RegionId,
+    /// The region's dimension, which the chunk is of.
+    dimension: Dimension,
     chunk: ChunkPos,
     /// How many players the sighting has there.
     players: u64,
@@ -166,6 +181,10 @@ pub(crate) fn distance(from: ChunkPos, to: ChunkPos) -> u64 {
 /// Whether two places hold together: players of one region up to the split distance,
 /// and players of two regions up to the merge distance.
 fn linked(policy: &Policy, one: &Place, other: &Place) -> bool {
+    // However near their coordinates, players of two dimensions are worlds apart.
+    if one.dimension != other.dimension {
+        return false;
+    }
     let reach = if one.region == other.region {
         policy.split_distance
     } else {
@@ -177,13 +196,20 @@ fn linked(policy: &Policy, one: &Place, other: &Place) -> bool {
 /// The places of what was sighted, in the order of their regions and, within a
 /// region, of their chunks: so that nothing that is made of them depends on the order
 /// in which they were given.
-fn places(enter: ChunkPos, home: RegionId, regions: &[Sighted<'_>]) -> Vec<Place> {
+fn places(homes: &[Home], regions: &[Sighted<'_>]) -> Vec<Place> {
     let mut fresh: BTreeMap<RegionId, bool> = BTreeMap::new();
+    let mut dimensions: BTreeMap<RegionId, Dimension> = homes
+        .iter()
+        .map(|home| (home.region, home.dimension))
+        .collect();
     let mut crowds: BTreeMap<(RegionId, ChunkPos), u64> = BTreeMap::new();
     for sighted in regions {
         // A region that is given twice is fresh only if every word of it is: what is
         // not known for sure holds back.
         *fresh.entry(sighted.region).or_insert(true) &= sighted.fresh;
+        dimensions
+            .entry(sighted.region)
+            .or_insert(sighted.dimension);
         for &(chunk, players) in sighted.crowds {
             // A sighting leaves out a chunk without players, and so does this.
             if players > 0 {
@@ -192,19 +218,30 @@ fn places(enter: ChunkPos, home: RegionId, regions: &[Sighted<'_>]) -> Vec<Place
             }
         }
     }
-    // The home region's one place more, whatever its sighting says and whether or not
-    // it has one.
-    crowds.entry((home, enter)).or_insert(0);
+    // Each home's one place more, whatever its sighting says and whether or not it has
+    // one.
+    for home in homes {
+        crowds.entry((home.region, home.enter)).or_insert(0);
+    }
+    let is_home_place = |region, chunk| {
+        homes
+            .iter()
+            .any(|home| (home.region, home.enter) == (region, chunk))
+    };
     crowds
         .into_iter()
         .map(|((region, chunk), players)| {
             let fresh = fresh.get(&region).copied().unwrap_or(false);
             Place {
                 region,
+                dimension: dimensions
+                    .get(&region)
+                    .copied()
+                    .unwrap_or(Dimension::Overworld),
                 chunk,
                 players,
                 fresh,
-                known: fresh || (region, chunk) == (home, enter),
+                known: fresh || is_home_place(region, chunk),
             }
         })
         .collect()
@@ -266,13 +303,9 @@ fn clusters(
 /// fresh only if both are; a chunk that is given twice has the players of both; a
 /// chunk with no players is not a place. Nothing is asked of the policy: distances
 /// that were not [`Policy::checked`] are gone by as they are.
-pub fn decide(
-    policy: &Policy,
-    enter: ChunkPos,
-    home: RegionId,
-    regions: &[Sighted<'_>],
-) -> Vec<Wanted> {
-    let places = places(enter, home, regions);
+pub fn decide(policy: &Policy, homes: &[Home], regions: &[Sighted<'_>]) -> Vec<Wanted> {
+    let places = places(homes, regions);
+    let home_of = |region: RegionId| homes.iter().find(|home| home.region == region);
     // The clusters by all that was heard, and those by what is known.
     let heard = clusters(policy, &places, |_| true);
     let known = clusters(policy, &places, |place| place.known);
@@ -307,8 +340,9 @@ pub fn decide(
             // in stays, and in any other the one with the most players; of several
             // such the first, which has the lowest chunk.
             let weight = |group: &[usize]| {
-                let enters =
-                    region == home && group.iter().any(|&place| places[place].chunk == enter);
+                let enters = home_of(region).is_some_and(|home| {
+                    group.iter().any(|&place| places[place].chunk == home.enter)
+                });
                 let players = group.iter().fold(0_u64, |sum, &place| {
                     sum.saturating_add(places[place].players)
                 });
@@ -343,7 +377,7 @@ pub fn decide(
     for (at, &one) in counting.iter().enumerate() {
         for &other in &counting[at + 1..] {
             let (one, other) = (&places[one], &places[other]);
-            if one.region == other.region {
+            if one.region == other.region || one.dimension != other.dimension {
                 continue;
             }
             // A distance that does not fit 32 bits is more than any merge distance.
@@ -369,10 +403,15 @@ pub fn decide(
         .filter(|sighted| sighted.fresh)
         .map(|sighted| sighted.region)
         .collect();
+    let dimension_of: BTreeMap<RegionId, Dimension> = regions
+        .iter()
+        .map(|sighted| (sighted.region, sighted.dimension))
+        .collect();
     let mut at_work: BTreeSet<(RegionId, RegionId)> = BTreeSet::new();
     for sighted in regions.iter().filter(|sighted| sighted.fresh) {
         for (_, other) in sighted.redstone {
-            if *other != sighted.region && fresh.contains(other) {
+            let same_dimension = dimension_of.get(other) == Some(&sighted.dimension);
+            if *other != sighted.region && fresh.contains(other) && same_dimension {
                 let one = sighted.region;
                 at_work.insert((one.min(*other), one.max(*other)));
             }
@@ -391,8 +430,11 @@ pub fn decide(
     merges.sort_unstable_by_key(|(gap, lower, higher, _)| (*gap, *lower, *higher));
     let players = |region: RegionId| players.get(&region).copied().unwrap_or(0);
     for (gap, lower, higher, why) in merges {
-        // The home region survives; else the one with more players; else the lower.
-        let higher_survives = higher == home || (lower != home && players(higher) > players(lower));
+        // A home survives, and is never absorbed: two homes are of two dimensions,
+        // which never merge. Else the one with more players; else the lower.
+        let is_home = |region: RegionId| home_of(region).is_some();
+        let higher_survives =
+            is_home(higher) || (!is_home(lower) && players(higher) > players(lower));
         let (survivor, absorbed) = if higher_survives {
             (higher, lower)
         } else {
@@ -616,6 +658,7 @@ mod tests {
         said.iter()
             .map(|said| Sighted {
                 region: said.region,
+                dimension: clustine_world::Dimension::Overworld,
                 fresh: said.fresh,
                 crowds: &said.crowds,
                 redstone: &said.redstone,
@@ -624,7 +667,15 @@ mod tests {
     }
 
     fn wanted_by(policy: Policy, said: &[Said]) -> Vec<Wanted> {
-        decide(&policy, ORIGIN, HOME, &sighted(said))
+        decide(
+            &policy,
+            &[Home {
+                dimension: clustine_world::Dimension::Overworld,
+                region: HOME,
+                enter: ORIGIN,
+            }],
+            &sighted(said),
+        )
     }
 
     fn wanted(said: &[Said]) -> Vec<Wanted> {
@@ -646,6 +697,107 @@ mod tests {
 
     fn chunks(chunks: &[(i32, i32)]) -> Vec<ChunkPos> {
         chunks.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect()
+    }
+
+    // Dimensions (`docs/groundwork/p-plan.md`, section 3.4): with the overworld's home
+    // at the origin, the Nether's home N and the End's E, each at chunk (0, 0).
+
+    const N: RegionId = RegionId(10);
+    const E: RegionId = RegionId(11);
+
+    fn homes() -> [Home; 3] {
+        [
+            Home {
+                dimension: Dimension::Overworld,
+                region: HOME,
+                enter: ORIGIN,
+            },
+            Home {
+                dimension: Dimension::Nether,
+                region: N,
+                enter: ORIGIN,
+            },
+            Home {
+                dimension: Dimension::End,
+                region: E,
+                enter: ORIGIN,
+            },
+        ]
+    }
+
+    /// What is wanted of these regions, each of the dimension named.
+    fn wanted_in(said: &[(Dimension, Said)]) -> Vec<Wanted> {
+        let sighted: Vec<Sighted<'_>> = said
+            .iter()
+            .map(|(dimension, said)| Sighted {
+                region: said.region,
+                dimension: *dimension,
+                fresh: said.fresh,
+                crowds: &said.crowds,
+                redstone: &said.redstone,
+            })
+            .collect();
+        decide(&small(), &homes(), &sighted)
+    }
+
+    #[test]
+    fn players_of_two_dimensions_at_the_same_chunk_never_merge_their_regions() {
+        let wanted = wanted_in(&[
+            (Dimension::Overworld, fresh(A, &[(30, 30, 1)])),
+            (Dimension::Nether, fresh(B, &[(30, 30, 1)])),
+        ]);
+        assert_eq!(wanted, nothing());
+        // Nor with the overworld's home at its own chunk, where B's players stand; the
+        // Nether's home, of which nothing is heard, is wanted nothing of.
+        let wanted = wanted_in(&[
+            (Dimension::Overworld, fresh(HOME, &[])),
+            (Dimension::Nether, fresh(B, &[(0, 0, 3)])),
+        ]);
+        assert_eq!(wanted, nothing());
+    }
+
+    #[test]
+    fn a_dimensions_home_survives_a_merge_in_its_dimension_and_is_never_absorbed() {
+        // B has more players than the Nether's home, which survives all the same.
+        let wanted = wanted_in(&[
+            (Dimension::Nether, fresh(N, &[(1, 0, 1)])),
+            (Dimension::Nether, fresh(B, &[(2, 0, 5)])),
+        ]);
+        assert_eq!(wanted, [merge(N, B, 1)]);
+        // A region of the End near chunk (0, 0) merges into the End's home, though the
+        // home's sighting has nobody.
+        let wanted = wanted_in(&[
+            (Dimension::End, fresh(E, &[])),
+            (Dimension::End, fresh(C, &[(1, 1, 2)])),
+        ]);
+        assert_eq!(wanted, [merge(E, C, 1)]);
+    }
+
+    #[test]
+    fn a_home_of_another_dimension_split_keeps_the_group_at_chunk_zero() {
+        // The Nether's home has one player far away and two near (0, 0): the far one
+        // goes, as in the overworld's home the group with the chunk players enter in
+        // stays.
+        let wanted = wanted_in(&[(Dimension::Nether, fresh(N, &[(1, 1, 1), (40, 40, 5)]))]);
+        assert_eq!(
+            wanted,
+            [Wanted::Split {
+                region: N,
+                groups: vec![chunks(&[(40, 40)])],
+                why: Why::Apart,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_circuit_at_a_line_merges_no_regions_of_two_dimensions() {
+        let mut overworld = fresh(A, &[(100, 100, 1)]);
+        overworld.redstone = vec![(ChunkPos::new(100, 101), B)];
+        let wanted = wanted_in(&[
+            (Dimension::Overworld, overworld),
+            (Dimension::Nether, fresh(B, &[(-100, -100, 1)])),
+        ]);
+        assert_eq!(wanted, nothing());
     }
 
     fn split(region: RegionId, groups: &[&[(i32, i32)]]) -> Wanted {
@@ -741,7 +893,15 @@ mod tests {
         assert_eq!(home, [merge(HOME, A, 2)]);
         // Also when it is the higher of the two, and has nobody.
         let regions = [fresh(A, &[(2, 0, 5)]), fresh(C, &[])];
-        let higher = decide(&small(), ORIGIN, C, &sighted(&regions));
+        let higher = decide(
+            &small(),
+            &[Home {
+                dimension: clustine_world::Dimension::Overworld,
+                region: C,
+                enter: ORIGIN,
+            }],
+            &sighted(&regions),
+        );
         assert_eq!(higher, [merge(C, A, 2)]);
 
         // Of two others the one with more players, in however many chunks.
@@ -801,11 +961,30 @@ mod tests {
         let regions = [fresh(HOME, &[]), fresh(A, &[(2, 0, 1)])];
         let enter = ChunkPos::new(4, -2);
         assert_eq!(
-            decide(&small(), enter, HOME, &sighted(&regions)),
+            decide(
+                &small(),
+                &[Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: HOME,
+                    enter
+                }],
+                &sighted(&regions)
+            ),
             [merge(HOME, A, 2)]
         );
         let enter = ChunkPos::new(5, 0);
-        assert_eq!(decide(&small(), enter, HOME, &sighted(&regions)), nothing());
+        assert_eq!(
+            decide(
+                &small(),
+                &[Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: HOME,
+                    enter
+                }],
+                &sighted(&regions)
+            ),
+            nothing()
+        );
     }
 
     // D4.
@@ -934,7 +1113,15 @@ mod tests {
         let regions = [fresh(HOME, &[(0, 0, 1), (9, 9, 1), (20, 20, 7)])];
         let enter = ChunkPos::new(9, 9);
         assert_eq!(
-            decide(&small(), enter, HOME, &sighted(&regions)),
+            decide(
+                &small(),
+                &[Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: HOME,
+                    enter
+                }],
+                &sighted(&regions)
+            ),
             [split(HOME, &[&[(0, 0)], &[(20, 20)]])]
         );
         // A home region that is not fresh is not split.
@@ -1511,7 +1698,15 @@ mod tests {
         }
 
         fn wanted(&self) -> Vec<Wanted> {
-            decide(&self.policy, self.enter, self.home, &sighted(&self.said))
+            decide(
+                &self.policy,
+                &[Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: self.home,
+                    enter: self.enter,
+                }],
+                &sighted(&self.said),
+            )
         }
 
         /// The same world, told in another order.
@@ -1742,7 +1937,14 @@ mod tests {
             // Whether a region is neither surely whole nor surely apart: fresh, with
             // two places that are in one cluster by all that was heard and in two by
             // what is known.
-            let places = places(case.enter, case.home, &sighted(&case.said));
+            let places = places(
+                &[Home {
+                    dimension: Dimension::Overworld,
+                    region: case.home,
+                    enter: case.enter,
+                }],
+                &sighted(&case.said),
+            );
             let heard = clusters(&case.policy, &places, |_| true);
             let known = clusters(&case.policy, &places, |place| place.known);
             let neither = places.iter().enumerate().any(|(at, place)| {
@@ -1877,7 +2079,15 @@ mod tests {
             let occupied: usize = said.iter().map(|said| said.crowds.len()).sum();
             let sighted = sighted(&said);
             let began = std::time::Instant::now();
-            let wanted = decide(&usual, ORIGIN, HOME, &sighted);
+            let wanted = decide(
+                &usual,
+                &[Home {
+                    dimension: clustine_world::Dimension::Overworld,
+                    region: HOME,
+                    enter: ORIGIN,
+                }],
+                &sighted,
+            );
             let took = began.elapsed();
             println!(
                 "decide, {name}: {occupied} occupied chunks, {} wanted, {took:?}",

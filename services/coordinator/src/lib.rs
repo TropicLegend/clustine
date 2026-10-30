@@ -21,7 +21,7 @@ pub use client::{
     Asker, ClientError, HEARTBEAT_INTERVAL, LocalCoordinator, MoveAnswer, Mover, Orders, Reach,
     RoutingWatch, WorkerClient, WorkerEvent,
 };
-pub use policy::{Policy, Sighted, Wanted, Why, decide, named};
+pub use policy::{Home, Policy, Sighted, Wanted, Why, decide, named};
 #[doc(hidden)]
 pub use service::serve_with;
 pub use service::{serve, serve_local};
