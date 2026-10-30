@@ -720,3 +720,18 @@ fn a_bed_s_explosion_at_a_line_files_blocks_beyond_it_with_fire_hurting_nobody_a
         .count();
     assert_eq!(hits, 0, "the stand beyond the line is not hit");
 }
+
+/// `RespawnAnchorBlock.useWithoutItem` passes for an empty anchor, so a block in hand
+/// is placed against it, as against any block.
+#[test]
+fn a_block_in_hand_is_placed_against_an_empty_anchor() {
+    for dimension in Dimension::ALL {
+        let world = World::of(&[(ANCHOR, anchor(0))]);
+        let held = inventory(&[(0, stack(items::STONE, 1))]);
+        let mut scene = scene_in(dimension, &world, held, NIGHT, FEET);
+        scene.click(ANCHOR, Face::Top);
+        let above = BlockPos::new(ANCHOR.x, ANCHOR.y + 1, ANCHOR.z);
+        assert_eq!(scene.block(above), blocks::STONE, "{dimension:?}");
+        assert_eq!(scene.block(ANCHOR), anchor(0));
+    }
+}

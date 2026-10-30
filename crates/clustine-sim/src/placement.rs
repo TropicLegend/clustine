@@ -129,12 +129,14 @@ pub fn click_with(click: &Click, off_hand: bool, blocks: &dyn Blocks) -> Clicked
     if !off_hand && !(click.sneaking && click.held.is_some()) && is_used(clicked, click.held) {
         let used = use_block(click, clicked, blocks);
         // Wire that is neither a dot nor a cross, or would not change, a bell hit
-        // where it does not ring, and a note block clicked on top with a head pass the
-        // click on to the item in hand (`InteractionResult.PASS`).
+        // where it does not ring, a note block clicked on top with a head and an anchor
+        // that neither charges nor is charged pass the click on to the item in hand
+        // (`InteractionResult.PASS`).
         let passes = [
             BlockClass::RedstoneWireBlock,
             BlockClass::BellBlock,
             BlockClass::NoteBlock,
+            BlockClass::RespawnAnchorBlock,
         ]
         .into_iter()
         .any(|class| data::is(clicked, class));
