@@ -4339,6 +4339,7 @@ mod tests {
     mod sleep;
     mod social_villagers;
     mod stands;
+    mod striders;
     mod swings;
     mod tamed;
     mod thrown;

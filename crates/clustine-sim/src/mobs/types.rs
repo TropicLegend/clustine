@@ -138,6 +138,8 @@ pub(crate) mod spider;
 pub(crate) mod squid;
 pub(crate) mod stray;
 pub(crate) mod strider;
+#[cfg(test)]
+mod strider_tests;
 pub(crate) mod tadpole;
 pub(crate) mod tadpole_ai;
 pub(crate) mod tamable;
