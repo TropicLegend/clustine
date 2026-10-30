@@ -112,10 +112,11 @@ pub(crate) fn of(kind: u16) -> Family {
 /// `Monster.getSoundSource()`'s `HOSTILE` for a monster's own sounds; `NEUTRAL`, `Mob`'s,
 /// for every other mob's.
 pub(crate) fn sound_source(kind: u16) -> i32 {
-    // The cubes', the phantom's and the ghast's own `getSoundSource()` is hostile too.
+    // The cubes', the phantom's, the ghast's and the hoglin's own `getSoundSource()` is
+    // hostile too.
     match (of(kind), i32::from(kind)) {
         (Family::Monster, _)
-        | (_, types::SLIME | types::PHANTOM | types::MAGMA_CUBE | types::GHAST) => {
+        | (_, types::SLIME | types::PHANTOM | types::MAGMA_CUBE | types::GHAST | types::HOGLIN) => {
             SOUND_SOURCE_HOSTILE
         }
         _ => crate::physics::item::SOUND_SOURCE_NEUTRAL,
@@ -132,7 +133,9 @@ pub(crate) fn is_enemy(kind: u16) -> bool {
     match of(kind) {
         Family::Monster => true,
         Family::Other => EntityTypeInfo::of(i32::from(kind)).category == MobCategory::Monster,
-        Family::Animal | Family::WaterAnimal | Family::Kept | Family::Ambient => false,
+        // The hoglin is an `Animal` that implements `Enemy` (d Hoglin.txt 2).
+        Family::Animal => i32::from(kind) == types::HOGLIN,
+        Family::WaterAnimal | Family::Kept | Family::Ambient => false,
     }
 }
 

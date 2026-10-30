@@ -331,6 +331,10 @@ impl Region {
                     self.spawn_item_as(at, stack, pick_up_delay, Some(motion), output);
                 }
                 Local::EjectPassengers => self.eject_passengers(key, output),
+                Local::Tell {
+                    key: told,
+                    told: what,
+                } => self.tell_mob(told, &what, output),
                 Local::Pop { pos, stack } => self.pop_resource_at(pos, stack, output),
                 Local::EnterHive { hive } => self.enter_hive(key, hive, output),
                 Local::Sting {

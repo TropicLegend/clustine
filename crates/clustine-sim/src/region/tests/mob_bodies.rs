@@ -48,10 +48,10 @@ fn cow(position: [f64; 3], on_ground: bool) -> Entity {
     mob_of(COW_KEY, entity_types::COW, position, on_ground)
 }
 
-/// A mob of a type no part has built yet (a hoglin, until N9), which is a body of the
-/// game's defaults: what the body's own rules are seen on, without a mind's moves.
+/// A mob of a type no part builds (the giant), which is a body of the game's defaults:
+/// what the body's own rules are seen on, without a mind's moves.
 fn plain(position: [f64; 3], on_ground: bool) -> Entity {
-    mob_of(COW_KEY, entity_types::HOGLIN, position, on_ground)
+    mob_of(COW_KEY, entity_types::GIANT, position, on_ground)
 }
 
 /// Lays `entity` in its loaded chunk, as a load would have it.
@@ -216,8 +216,8 @@ fn a_fall_of_five_blocks_hurts_by_two_with_the_small_sound_and_one_of_eight_by_f
                 matches!(event, RegionEvent::DamageEvent { entity, .. } if *entity == COW_KEY)
             });
         }
-        let most = crate::mobs::body::attributes::supplied(entity_types::HOGLIN as u16, 23).unwrap()
-            as f32;
+        let most =
+            crate::mobs::body::attributes::supplied(entity_types::GIANT as u16, 23).unwrap() as f32;
         assert_eq!(mob(&region, COW_KEY).body.vitals.health, most - damage);
         assert!(heard.contains(&sound), "{height}: {heard:?}");
         assert!(heard.contains(&sounds::ENTITY_GENERIC_HURT));
@@ -438,9 +438,9 @@ fn a_spawn_egg_of_a_type_not_built_yet_makes_nothing() {
     // The plan's named difference of the first half (`docs/groundwork/n7-plan.md`,
     // section 11.6): a mob of a type without its AI would stand like a statue.
     let mut region = on_ticking_floor_with(&[(BlockPos::new(3, -60, 0), blocks::WATER)]);
-    holding(&mut region, ItemStack::new(items::HOGLIN_SPAWN_EGG, 1));
+    holding(&mut region, ItemStack::new(items::SHULKER_SPAWN_EGG, 1));
     checked(&mut region, &moves(vec![place(1, 1, -61, 1, Face::Top)]));
-    assert!(mobs_of(&region, entity_types::HOGLIN).is_empty());
+    assert!(mobs_of(&region, entity_types::SHULKER).is_empty());
 }
 
 #[test]

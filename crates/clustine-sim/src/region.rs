@@ -4276,6 +4276,7 @@ mod tests {
     mod growth;
     mod hanging;
     mod highland;
+    mod hoglins;
     mod hoppers;
     mod horse_riding;
     mod horses;

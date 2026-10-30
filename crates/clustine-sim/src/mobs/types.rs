@@ -79,6 +79,9 @@ pub(crate) mod happy_ghast;
 #[cfg(test)]
 mod highland_tests;
 pub(crate) mod hoglin;
+pub(crate) mod hoglin_ai;
+#[cfg(test)]
+mod hoglin_tests;
 pub(crate) mod horse;
 pub(crate) mod husk;
 #[cfg(test)]
