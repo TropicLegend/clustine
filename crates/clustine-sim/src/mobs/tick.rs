@@ -171,7 +171,8 @@ pub(crate) enum Local {
     /// `ejectPassengers()` of the mob itself (a wild horse throwing its rider).
     EjectPassengers,
     /// What the mob `key` is told by this one's kind (`EntityUse::Told`; a hoglin's word
-    /// of its attack target to the adult hoglins it sees, `HoglinAi.broadcastAttackTarget`):
+    /// of its attack target to the adult hoglins it sees, `HoglinAi.broadcastAttackTarget`,
+    /// and a piglin's of its anger, `PiglinAi.broadcastAngerTarget`):
     /// the region's own told at once, one in a copy through its holder
     /// (`Region::tell_mob`, `region/telling.rs`).
     Tell {

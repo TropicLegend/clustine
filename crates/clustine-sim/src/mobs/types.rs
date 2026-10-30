@@ -110,7 +110,12 @@ pub(crate) mod parrot;
 pub(crate) mod phantom;
 pub(crate) mod pig;
 pub(crate) mod piglin;
+pub(crate) mod piglin_ai;
+pub(crate) mod piglin_barter;
+pub(crate) mod piglin_behaviours;
 pub(crate) mod piglin_brute;
+#[cfg(test)]
+mod piglin_tests;
 pub(crate) mod pillager;
 pub(crate) mod polar_bear;
 pub(crate) mod pufferfish;
@@ -681,7 +686,6 @@ pub(crate) trait MobType: Sync {
     /// `Hoglin.canBeHunted()`'s negation, `CannotBeHunted`: what the piglins' sensor
     /// reads of a hoglin it sees (`docs/groundwork/p-plan.md`, section 18.5); false for
     /// every other type, which no piglin hunts anyway.
-    #[expect(dead_code, reason = "the piglins' sensor reads it (family E5 of P12)")]
     fn cannot_be_hunted(&self, mob: &Mob) -> bool {
         let _ = mob;
         false

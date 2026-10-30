@@ -7,10 +7,11 @@
 //!
 //! The scan for those to tell (`Region::anger_nearby_piglins`) is E5's to fill too.
 
-use clustine_world::{Effect, Effected, EntityId, EntityUse, Told, ToldWhat};
+use clustine_world::{ChunkPos, Double, Effect, Effected, EntityId, EntityUse, Told, ToldWhat};
 
 use super::Region;
 use crate::api::TickOutput;
+use crate::physics::aabb::Aabb;
 use crate::physics::collide::{Context, collision_shape};
 use crate::physics::{self, walk};
 
@@ -98,15 +99,65 @@ impl Region {
         })
     }
 
-    /// `PiglinAi.angerNearbyPiglins(level, player, only_if_seen)`: the idle piglins about
-    /// the player (seen by them where `only_if_seen`) angered at them. Family E5 fills
-    /// it; until then nobody is angered.
+    /// `PiglinAi.angerNearbyPiglins(level, player, only_if_seen)` (PiglinAi.txt
+    /// 1005–1027, 1886–1916): each piglin (not a brute) whose box meets the player's grown
+    /// by 16, of the region's land and its copies in the order of a box's lookup, is told
+    /// to be angry at them. Whether it is idle and, where `only_if_seen`, sees them is
+    /// judged where it is (`tell_mob`, `MobType::told`), so that a piglin across a line
+    /// is angered by the region that holds it.
     pub(crate) fn anger_nearby_piglins(
         &mut self,
         player: clustine_world::PlayerId,
         only_if_seen: bool,
         output: &mut TickOutput,
     ) {
-        let _ = (player, only_if_seen, output);
+        let Some(state) = self.players.get(&player) else {
+            return;
+        };
+        let face = state.face();
+        let height = if face.sneaking { 1.5 } else { 1.8 };
+        let bounds = Aabb::of_entity(face.position, 0.6, height).inflate([16.0; 3]);
+        let [x, y, z] = face.position;
+        let told = Told {
+            what: ToldWhat::AngerAt { only_if_seen },
+            of: state.entity_id,
+            kind: clustine_data::entity_types::PLAYER as u16,
+            player: Some(player.0),
+            eyes: [Double(x), Double(y + f64::from(face.eye_height)), Double(z)],
+        };
+        let low = ChunkPos::containing(bounds.min[0] - 2.0, bounds.min[2] - 2.0);
+        let high = ChunkPos::containing(bounds.max[0] + 2.0, bounds.max[2] + 2.0);
+        // `getEntitiesOfClass(Piglin.class, box)`: by chunk, then by section and key, as
+        // a mob's view gathers them, the land first and then the copies.
+        let mut found = Vec::new();
+        for copied in [false, true] {
+            for x in low.x..=high.x {
+                for z in low.z..=high.z {
+                    let position = ChunkPos::new(x, z);
+                    let chunk = if copied {
+                        self.copies.get(&position)
+                    } else {
+                        self.chunks.get(&position)
+                    };
+                    let Some(chunk) = chunk else {
+                        continue;
+                    };
+                    let mut here: Vec<(i32, EntityId)> = chunk
+                        .entities()
+                        .iter()
+                        .filter(|entity| {
+                            crate::mobs::types::piglin_ai::angered_by_player(entity.kind)
+                        })
+                        .filter(|entity| self.entity_box(entity).intersects(bounds))
+                        .map(|entity| (physics::floor(entity.position[1]) >> 4, entity.key))
+                        .collect();
+                    here.sort();
+                    found.extend(here.into_iter().map(|(_, key)| key));
+                }
+            }
+        }
+        for key in found {
+            self.tell_mob(key, &told, output);
+        }
     }
 }

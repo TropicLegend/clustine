@@ -435,17 +435,17 @@ fn the_swamp_hut_s_cat_is_black_kept_and_drawn_for_as_the_hut_draws() {
 
 #[test]
 fn a_type_not_built_makes_nothing_draws_nothing_and_takes_no_making() {
-    // The piglin is the Nether's, which no part of N7 builds.
+    // The shulker is the End's, which no part before the End's milestone builds.
     let mut makings = makings();
     let mut level = Counting::default();
     let made = mob(
         WORLD,
-        entity_types::PIGLIN as u16,
+        entity_types::SHULKER as u16,
         true,
         placed(&mut makings, &mut level, 0.0, None),
     );
     assert!(made.is_empty());
-    let tag = template_tag("minecraft:piglin", true, Vec::new());
+    let tag = template_tag("minecraft:shulker", true, Vec::new());
     let made = template_entity(
         WORLD,
         &tag,
