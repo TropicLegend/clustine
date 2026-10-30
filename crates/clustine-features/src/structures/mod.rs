@@ -10,10 +10,12 @@
 mod buried_treasure;
 mod code_piece;
 mod desert_pyramid;
+mod fortress;
 mod igloo;
 mod jigsaw;
 mod jungle_temple;
 mod mineshaft;
+mod nether_fossil;
 mod ocean_monument;
 mod ocean_ruin;
 mod ruined_portal;
@@ -85,6 +87,8 @@ pub fn built(structure: usize) -> bool {
             | Kind::JungleTemple
             | Kind::SwampHut
             | Kind::WoodlandMansion
+            | Kind::Fortress
+            | Kind::NetherFossil { .. }
     )
 }
 
@@ -116,6 +120,9 @@ pub(crate) fn place_piece(
             (_, TemplatePostProcess::RuinedPortal) => {
                 return ruined_portal::place(placing, data, state);
             }
+            (_, TemplatePostProcess::NetherFossil) => {
+                return nether_fossil::place(placing, data, state);
+            }
             _ => {}
         },
         StructurePiecePayload::Procedural(ProceduralPieceData::BuriedTreasure) => {
@@ -126,6 +133,9 @@ pub(crate) fn place_piece(
         }
         StructurePiecePayload::Procedural(ProceduralPieceData::Stronghold(data)) => {
             return stronghold::place(placing, piece, data, state);
+        }
+        StructurePiecePayload::Procedural(ProceduralPieceData::NetherFortress(data)) => {
+            return fortress::place(placing, piece, data, state);
         }
         StructurePiecePayload::Procedural(ProceduralPieceData::OceanMonument(data)) => {
             ocean_monument::place(placing, piece, data);

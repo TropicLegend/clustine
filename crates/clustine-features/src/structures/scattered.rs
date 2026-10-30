@@ -344,7 +344,7 @@ pub(super) fn inside(chunk_box: BoundingBox, pos: BlockPos) -> bool {
 }
 
 /// `isReplaceableByStructures`: air, a liquid's own block, glow lichen and seagrass.
-fn replaceable_by_structures(state: BlockState) -> bool {
+pub(super) fn replaceable_by_structures(state: BlockState) -> bool {
     state.props().is_air()
         || state.props().is_liquid()
         || same_block(state, blocks::GLOW_LICHEN)
