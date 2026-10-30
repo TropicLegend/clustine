@@ -82,6 +82,9 @@ pub(crate) struct Searcher {
     pub(crate) in_water: bool,
     /// Its fall, which its collision context reads.
     pub(crate) fall_distance: f64,
+    /// Whether it stands on lava (`canStandOnFluid`, the strider's), which its start and
+    /// its collision context read.
+    pub(crate) stands_on_lava: bool,
     /// `maxUpStep`: the step height attribute.
     pub(crate) step_height: f32,
     /// `getMaxFallDistance`.
@@ -653,6 +656,7 @@ impl<'a, W: World + ?Sized> Search<'a, W> {
             return *hit;
         }
         let context = Context {
+            stands_on_lava: self.mob.stands_on_lava,
             bottom: self.mob.position[1],
             fall_distance: self.mob.fall_distance,
             falling_block: false,
@@ -714,8 +718,18 @@ impl<'a, W: World + ?Sized> Search<'a, W> {
         let block = self.mob.block_position();
         let mut y = block.y;
         let at = |y: i32| BlockPos::new(physics::floor(x), y, physics::floor(z));
-        // No mob of these can stand on a fluid (`canStandOnFluid`, the strider's).
-        if self.can_float() && self.mob.in_floatable {
+        // A mob that stands on the fluid it is in climbs it to its top
+        // (`WalkNodeEvaluator.getStart`, n7 87–112).
+        let lava = |state| {
+            clustine_blocks::fluid::FluidState::of(state).kind()
+                == Some(clustine_blocks::fluid::Kind::Lava)
+        };
+        if self.mob.stands_on_lava && lava(self.world.state(at(y))) {
+            while lava(self.world.state(at(y))) {
+                y += 1;
+            }
+            y -= 1;
+        } else if self.can_float() && self.mob.in_floatable {
             let mut state = self.world.state(at(y));
             while fluid_in_tag(state, "minecraft:entity_floatable") {
                 y += 1;
@@ -1372,6 +1386,7 @@ pub(crate) fn static_path_type<W: World + ?Sized>(
     pos: BlockPos,
 ) -> PathType {
     let mob = Searcher {
+        stands_on_lava: false,
         position: [0.0; 3],
         width: 0.0,
         height: 0.0,

@@ -344,7 +344,13 @@ impl Region {
                     into,
                     keep_equipment,
                     sound,
-                } => self.convert_mob_to(key, into, keep_equipment, sound, output),
+                    after,
+                } => {
+                    let made = self.convert_mob_to(key, into, keep_equipment, sound, output);
+                    if let (Some(made), Some(effect)) = (made, after) {
+                        self.give_mob_effect(made, &effect, output);
+                    }
+                }
                 Local::Explode {
                     at,
                     radius,
@@ -365,6 +371,12 @@ impl Region {
                     self.golem_puts(key, chest, step, output);
                 }
                 Local::Shoot(shot) => self.mob_shoots(key, &shot, output),
+                Local::ShootFireball {
+                    kind,
+                    at,
+                    direction,
+                    explosion_power,
+                } => self.shoot_fireball(key, kind, at, direction, explosion_power, output),
                 Local::PlaceBlock { pos, state } => self.mob_places_block(key, pos, state, output),
                 Local::GiveFlower { key: given } => self.give_golem_flower(given, output),
                 Local::Fangs { at, yaw, warmup } => {
@@ -565,7 +577,8 @@ impl Region {
             | EntityUse::PearlLanded { .. }
             | EntityUse::PatrolTarget { .. }
             | EntityUse::Villager(_)
-            | EntityUse::Raider(_) => {}
+            | EntityUse::Raider(_)
+            | EntityUse::Told(_) => {}
             EntityUse::Attack {
                 attacker,
                 damage,
@@ -745,6 +758,40 @@ impl Region {
         self.struck_between_ticks(key, output, |struck| {
             let resistance = struck.attribute(clustine_data::attributes::KNOCKBACK_RESISTANCE);
             struck.motion[1] += f64::from(up) * (1.0 - resistance).max(0.0);
+        });
+    }
+
+    /// `HoglinBase.throwTarget` of the region's mob `key` by an attacker at `from` with
+    /// the attack knockback `knockback` (d HoglinBase.txt 62–161): the knockback less
+    /// the target's resistance, nothing where that is none; else a turn of `nextInt(21)
+    /// − 10` taken as radians (the game passes it to `Vec3.yRot` so), a horizontal push
+    /// away from the attacker of that times `nextFloat() · 0.5 + 0.2`, turned, and one
+    /// up of that times `nextFloat() · 0.5`, its velocity sent. The draws are the hit's
+    /// stream's, as the level's are the game's.
+    pub(crate) fn throw_mob(
+        &mut self,
+        key: EntityId,
+        from: Vec3,
+        knockback: f32,
+        stream: &mut super::Random,
+        output: &mut TickOutput,
+    ) {
+        self.struck_between_ticks(key, output, |struck| {
+            let resistance = struck.attribute(clustine_data::attributes::KNOCKBACK_RESISTANCE);
+            let f = f64::from(knockback) - resistance;
+            if f <= 0.0 {
+                return;
+            }
+            let g = struck.position[0] - from[0];
+            let h = struck.position[2] - from[2];
+            let turn = (stream.next_int(21) as i32 - 10) as f32;
+            let j = f * f64::from(stream.next_float() * 0.5 + 0.2);
+            let away = crate::physics::scale(crate::physics::normalize([g, 0.0, h]), j);
+            let away = super::riding::y_rot(away, turn);
+            let up = f * f64::from(stream.next_float()) * 0.5;
+            struck.motion[0] += away[0];
+            struck.motion[1] += up;
+            struck.motion[2] += away[2];
         });
     }
 

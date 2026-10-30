@@ -357,6 +357,7 @@ impl Region {
         let info = EntityTypeInfo::of(i32::from(entity.kind));
         let memory = self.entity_memory.get(&entity.key);
         let mut body = Body {
+            stands_on_lava: false,
             position: entity.position,
             motion: entity.motion,
             on_ground: entity.on_ground,
@@ -1418,7 +1419,8 @@ impl Region {
             | EntityUse::PearlLanded { .. }
             | EntityUse::PatrolTarget { .. }
             | EntityUse::Villager(_)
-            | EntityUse::Raider(_) => {}
+            | EntityUse::Raider(_)
+            | EntityUse::Told(_) => {}
             EntityUse::Attack {
                 creative, damage, ..
             } => {

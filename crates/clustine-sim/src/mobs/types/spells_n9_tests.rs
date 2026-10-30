@@ -204,6 +204,7 @@ fn vex_at(key: u64, feet: Vec3, owner: Option<EntityId>, alive: bool) -> Entity 
 fn body(kind: u16, position: Vec3, on_ground: bool) -> Living {
     let info = EntityTypeInfo::of(i32::from(kind));
     let moving = Moving {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground,

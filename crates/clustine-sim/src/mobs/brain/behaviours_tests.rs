@@ -203,6 +203,7 @@ pub(super) fn record(key: EntityId, kind: u16, position: Vec3, mob: &Mob) -> Ent
 fn body_at(field: &Field, position: Vec3) -> Living {
     let info = EntityTypeInfo::of(entity_types::COW);
     let body = Body {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: true,

@@ -24,6 +24,7 @@ use crate::physics::{self, World};
 
 /// `CollisionContext.empty()`: a region's `noCollision(box)` asks for no entity.
 const NO_ENTITY: Context = Context {
+    stands_on_lava: false,
     bottom: -f64::MAX,
     fall_distance: 0.0,
     falling_block: false,

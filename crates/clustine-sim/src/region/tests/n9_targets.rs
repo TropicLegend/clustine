@@ -70,6 +70,7 @@ const STEPPED: EntityId = EntityId(42);
 fn body(kind: u16, feet: [f64; 3]) -> Living {
     let info = EntityTypeInfo::of(i32::from(kind));
     let body = Moving {
+        stands_on_lava: false,
         position: feet,
         motion: [0.0; 3],
         on_ground: true,

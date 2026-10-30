@@ -249,6 +249,7 @@ impl MobType for ZombieVillager {
         update_villager(&mut tick.mob, |villager| villager.conversion = left);
         if left <= 0 {
             tick.out.local.push(Local::Convert {
+                after: None,
                 into: entity_types::VILLAGER as u16,
                 keep_equipment: false,
                 sound: Some(CURED_EVENT),

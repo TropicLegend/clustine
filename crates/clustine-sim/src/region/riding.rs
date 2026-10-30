@@ -935,6 +935,7 @@ impl Region {
             return self.free_dismount(Some(vehicle), chunk, passenger);
         }
         let context = Context {
+            stands_on_lava: false,
             bottom: passenger.position[1],
             fall_distance: passenger.fall_distance,
             falling_block: false,
@@ -1145,6 +1146,7 @@ impl Region {
             home: chunk,
         };
         let context = Context {
+            stands_on_lava: false,
             bottom: passenger.position[1],
             fall_distance: passenger.fall_distance,
             falling_block: false,

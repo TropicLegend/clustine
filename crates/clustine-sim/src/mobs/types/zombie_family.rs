@@ -555,6 +555,7 @@ pub(crate) fn tick_drowning(tick: &mut MobTick<'_>, into: i32, sound: i32) {
     write(&mut tick.mob, &own);
     if converts {
         tick.out.local.push(Local::Convert {
+            after: None,
             into: into as u16,
             keep_equipment: true,
             sound: Some(sound),

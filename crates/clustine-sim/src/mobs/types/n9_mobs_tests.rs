@@ -184,6 +184,7 @@ fn living(kind: u16, mob: &Mob, feet: Vec3, on_ground: bool) -> Living {
         (own.width, own.height, own.eye_height)
     });
     let body = Moving {
+        stands_on_lava: false,
         position: feet,
         motion: [0.0; 3],
         on_ground,

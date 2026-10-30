@@ -85,9 +85,9 @@
 
 use clustine_world::{
     Arrow, ArrowKind, Attached, BlockPos, ChunkPos, Cloud, Contents, Double, EdgeId, Entity,
-    EntityChange, EntityData, EntityField, EntityId, Entry, Fangs, Firework, Float, Hurt, InGround,
-    Leash, LeashHolder, Pending, Pickup, PortalClock, PortalKind, PortalState, Riding, Seat, Spit,
-    TypeState,
+    EntityChange, EntityData, EntityField, EntityId, Entry, Fangs, Fireball, Firework, Float, Hurt,
+    InGround, Leash, LeashHolder, Pending, Pickup, PortalClock, PortalKind, PortalState,
+    ProjectileOwner, Riding, Seat, Spit, TypeState,
 };
 use uuid::Uuid;
 
@@ -127,6 +127,7 @@ const DATA_SPIT: u8 = 15;
 const DATA_FIREWORK: u8 = 16;
 const DATA_CLOUD: u8 = 17;
 const DATA_FANGS: u8 = 18;
+const DATA_FIREBALL: u8 = 19;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -634,7 +635,65 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             put_owner(out, fangs.owner);
             out.extend_from_slice(&fangs.warmup.to_be_bytes());
         }
+        EntityData::Fireball(fireball) => {
+            out.push(DATA_FIREBALL);
+            put_fireball(out, fireball);
+        }
     }
+}
+
+/// A fireball: the item it shows, its owner (u8 0, or u8 1 followed by the key u64,
+/// the type u16 and the player, u8 0 or u8 1 followed by the UUID u128), flags u8
+/// (bit 0 it has left its owner, bit 1 it has been shot), its acceleration power f64
+/// and its explosion power u8.
+fn put_fireball(out: &mut Vec<u8>, fireball: &Fireball) {
+    put_stack(out, &fireball.item);
+    match fireball.owner {
+        None => out.push(0),
+        Some(owner) => {
+            out.push(1);
+            out.extend_from_slice(&owner.key.0.to_be_bytes());
+            out.extend_from_slice(&owner.kind.to_be_bytes());
+            match owner.player {
+                None => out.push(0),
+                Some(player) => {
+                    out.push(1);
+                    out.extend_from_slice(&player.as_u128().to_be_bytes());
+                }
+            }
+        }
+    }
+    out.push(shot_flags(fireball.left_owner, fireball.has_been_shot));
+    out.extend_from_slice(&fireball.acceleration_power.0.to_be_bytes());
+    out.push(fireball.explosion_power);
+}
+
+fn take_fireball(input: &mut Input<'_>) -> Result<Fireball, FormatError> {
+    let item = take_stack(input)?;
+    let owner = if take_flag(input, "a fireball's owner flag")? {
+        let key = EntityId(input.u64()?);
+        let kind = input.u16()?;
+        let player = if take_flag(input, "a fireball's player flag")? {
+            Some(Uuid::from_u128(input.u128()?))
+        } else {
+            None
+        };
+        Some(ProjectileOwner { key, kind, player })
+    } else {
+        None
+    };
+    let flags = input.u8()?;
+    if flags & !(LEFT_OWNER | HAS_BEEN_SHOT) != 0 {
+        return Err(FormatError::Corrupt("a fireball's flags"));
+    }
+    Ok(Fireball {
+        item,
+        owner,
+        left_owner: flags & LEFT_OWNER != 0,
+        has_been_shot: flags & HAS_BEEN_SHOT != 0,
+        acceleration_power: Double(input.f64()?),
+        explosion_power: input.u8()?,
+    })
 }
 
 /// A projectile's owner: u8 1 followed by its key u64, or u8 0 where it has none.
@@ -1132,6 +1191,7 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
             owner: take_owner(input, "the fangs' owner flag")?,
             warmup: input.i32()?,
         })),
+        DATA_FIREBALL => Ok(EntityData::Fireball(Box::new(take_fireball(input)?))),
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -1979,6 +2039,53 @@ pub(crate) mod tests {
             owner: None,
             warmup: -3,
         }));
+    }
+
+    /// A fireball, with an owner who is a player, one who is a mob and none, and its
+    /// flags out of range refused.
+    #[test]
+    fn a_fireball_reads_as_it_was_written() {
+        let player = ProjectileOwner {
+            key: EntityId(0x0102),
+            kind: 0x0304,
+            player: Some(Uuid::from_u128(0x0506_0708_090A_0B0C_0D0E_0F10_1112_1314)),
+        };
+        for owner in [
+            Some(player),
+            Some(ProjectileOwner {
+                player: None,
+                ..player
+            }),
+            None,
+        ] {
+            round_trip(&EntityData::Fireball(Box::new(Fireball {
+                item: ItemStack::new(0x0203, 1),
+                owner,
+                left_owner: true,
+                has_been_shot: false,
+                acceleration_power: Double(0.05),
+                explosion_power: 3,
+            })));
+        }
+        let mut out = Vec::new();
+        put_data(
+            &mut out,
+            &EntityData::Fireball(Box::new(Fireball {
+                item: ItemStack::new(0x0203, 1),
+                owner: None,
+                left_owner: false,
+                has_been_shot: false,
+                acceleration_power: Double(0.1),
+                explosion_power: 1,
+            })),
+        );
+        // The flags come before the acceleration power (8) and the explosion power (1).
+        let flags = out.len() - 10;
+        out[flags] |= 4;
+        assert_eq!(
+            take_data(&mut Input(&out)),
+            Err(FormatError::Corrupt("a fireball's flags"))
+        );
     }
 
     /// An arrow's data, byte by byte, and what is refused of one: flags beyond its three,

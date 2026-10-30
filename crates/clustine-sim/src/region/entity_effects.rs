@@ -298,6 +298,12 @@ impl Region {
                     self.give_mob_effect(key, &hunger, output);
                 }
                 HitExtra::Fling(up) => self.fling_mob(key, up.0, output),
+                HitExtra::Throw(knockback) => {
+                    let Some(stream) = stream.as_mut() else {
+                        continue;
+                    };
+                    self.throw_mob(key, from, knockback.0, stream, output);
+                }
             }
         }
     }
@@ -463,6 +469,8 @@ impl Region {
             // A villager's, a raid's or a bell's write (`villagers_across.rs`).
             EntityUse::Villager(used) => self.villager_used(entity.key, *used, output),
             EntityUse::Raider(used) => self.raider_used(entity.key, *used, output),
+            // A mob told of another, from across a line (`telling.rs`).
+            EntityUse::Told(told) => self.tell_mob(entity.key, told, output),
             // Only ever addressed to a player.
             EntityUse::PearlLanded { .. } => {}
             _ => return false,

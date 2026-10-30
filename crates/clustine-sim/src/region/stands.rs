@@ -218,6 +218,7 @@ fn beside(pos: BlockPos, face: Face) -> BlockPos {
 
 /// `CollisionContext.empty()`: what a block's shape is to no entity at all.
 const NO_ENTITY: Context = Context {
+    stands_on_lava: false,
     bottom: -f64::MAX,
     fall_distance: 0.0,
     falling_block: false,
@@ -401,6 +402,8 @@ impl Region {
     ) -> Body {
         let memory = self.entity_memory.get(&entity.key);
         let mut body = Body {
+            // A strider's (`MobType::stands_on_lava`).
+            stands_on_lava: crate::mobs::types::of(entity.kind).stands_on_lava(),
             position: entity.position,
             motion: entity.motion,
             on_ground: entity.on_ground,
@@ -766,7 +769,8 @@ impl Region {
             | EntityUse::PearlLanded { .. }
             | EntityUse::PatrolTarget { .. }
             | EntityUse::Villager(_)
-            | EntityUse::Raider(_) => {}
+            | EntityUse::Raider(_)
+            | EntityUse::Told(_) => {}
             EntityUse::Attack { creative, .. } => {
                 self.hit_armor_stand(entity.key, creative, output);
             }

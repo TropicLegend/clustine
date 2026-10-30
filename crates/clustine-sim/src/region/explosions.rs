@@ -550,6 +550,7 @@ impl Region {
             let eyes = [feet[0], feet[1] + PLAYER_EYES, feet[2]];
             let towards = physics::normalize(physics::sub(eyes, centre));
             let context = Context {
+                stands_on_lava: false,
                 bottom: feet[1],
                 fall_distance: 0.0,
                 falling_block: false,
@@ -599,6 +600,7 @@ impl Region {
         };
         let towards = physics::normalize(physics::sub(at, explosion.centre));
         let context = Context {
+            stands_on_lava: false,
             bottom: record.position[1],
             fall_distance: record.fall_distance,
             falling_block: matches!(record.data, EntityData::FallingBlock { .. }),
@@ -687,6 +689,8 @@ impl Region {
             // It cannot be hurt, and is pushed from its feet. Neither can a cloud nor
             // the fangs (their `hurtServer` hurts nothing).
             EntityData::PrimedTnt { .. } | EntityData::Cloud(_) | EntityData::Fangs(_) => {}
+            // A fireball's own (`fireballs.rs`).
+            EntityData::Fireball(_) => flags |= self.fireball_blasted(record, output),
             // `LivingEntity.hurtServer` of the explosion's source (`mob_bodies.rs`),
             // which pushes nothing of itself (`#no_knockback`).
             EntityData::Mob { .. } => {

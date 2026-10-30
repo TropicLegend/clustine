@@ -211,6 +211,8 @@ fn hit_from_afar(target: &Entity, sequence: u64, creative: bool) -> TickInputs {
                 what: Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        look: [Float(0.0); 2],
+                        player: None,
                         attacker: EntityId(1),
                         creative,
                         sprinting: false,

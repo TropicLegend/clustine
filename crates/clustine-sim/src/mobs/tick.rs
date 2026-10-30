@@ -212,11 +212,14 @@ pub(crate) enum Local {
     /// `Mob.convertTo(into, single, after)`: the mob made a mob of the type `into` where
     /// it is, with what the game copies, and gone (`region/conversions.rs`); the level
     /// event `sound` at the new mob unless it is silent; its equipment moved where
-    /// `keep_equipment`.
+    /// `keep_equipment`; and `after`, the conversion's own step, given to the new mob
+    /// (a piglin's and a hoglin's nausea for 200 ticks, `docs/groundwork/p-plan.md`,
+    /// section 18.5), whose converted sound the old mob plays before.
     Convert {
         into: u16,
         keep_equipment: bool,
         sound: Option<i32>,
+        after: Option<Box<clustine_world::components::EffectInstance>>,
     },
     /// `level.explode(the mob, at, radius, ExplosionInteraction.MOB)` and then
     /// `discard()`, with no death and no loot (a creeper's `explodeCreeper`, `at` its
@@ -249,6 +252,22 @@ pub(crate) enum Local {
     /// `GOLEM_POWER` and `GOLEM_UNCERTAINTY`; the shot's sound, of the mob's own random,
     /// is the mob's to make after.
     Shoot(Shot),
+    /// A fireball the mob shoots (`new LargeFireball(level, mob, direction, power)` or
+    /// `new SmallFireball(level, mob, direction)`, `setPos(at)` and `addFreshEntity`;
+    /// the ghast's and the blaze's goals): of the entity type `kind`, owned by the mob,
+    /// at `at`, along `direction` (made one long, at the acceleration power 0.1), with
+    /// the large one's `explosion_power`; made by `Region::shoot_fireball`
+    /// (`region/fireballs.rs`, family E2 of `docs/groundwork/p-plan.md`, section 18).
+    #[expect(
+        dead_code,
+        reason = "the ghast's and the blaze's goals make it (families E2 and E3 of P12)"
+    )]
+    ShootFireball {
+        kind: u16,
+        at: crate::physics::Vec3,
+        direction: crate::physics::Vec3,
+        explosion_power: u8,
+    },
     /// `setBlockAndUpdate(pos, state)` and `gameEvent(BLOCK_PLACE, pos, Context.of(the
     /// mob, state))` of a block the mob read as air and `state` can stand at (a snow
     /// golem's trail, `region/golems.rs`): set with every update in the region's own

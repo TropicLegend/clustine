@@ -91,6 +91,7 @@ fn check_position<W: Holds + ?Sized>(
     }
     let bounds = Aabb::of_entity(at, who.width, who.height);
     let context = Context {
+        stands_on_lava: false,
         bottom: at[1],
         fall_distance: 0.0,
         falling_block: false,

@@ -197,6 +197,14 @@ fn equip_saddle(used: &mut Used<'_>) -> Interaction {
 }
 
 impl MobType for Pig {
+    fn steered_by_stick(&self) -> Option<i32> {
+        Some(clustine_data::items::CARROT_ON_A_STICK)
+    }
+
+    fn stick_boost(&self, mob: &mut Mob, draws: &mut crate::region::Random) -> bool {
+        boost(mob, draws)
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::animal_maluses(setup);
         setup.add_goal(0, FloatGoal);

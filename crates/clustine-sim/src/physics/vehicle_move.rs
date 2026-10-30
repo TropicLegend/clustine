@@ -415,6 +415,7 @@ mod tests {
     fn root_at(position: Vec3) -> Root {
         Root {
             body: Body {
+                stands_on_lava: false,
                 position,
                 motion: [0.0; 3],
                 on_ground: true,

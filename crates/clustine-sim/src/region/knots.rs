@@ -91,7 +91,8 @@ impl Region {
             | EntityUse::PearlLanded { .. }
             | EntityUse::PatrolTarget { .. }
             | EntityUse::Villager(_)
-            | EntityUse::Raider(_) => {}
+            | EntityUse::Raider(_)
+            | EntityUse::Told(_) => {}
             EntityUse::Attack { creative, .. } => {
                 self.hurt_attached(entity.key, Breaker::Player { creative }, output);
             }

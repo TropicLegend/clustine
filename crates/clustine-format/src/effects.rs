@@ -58,7 +58,7 @@ use clustine_world::components::EffectInstance;
 use clustine_world::{
     Blast, BlockPos, Causer, Double, Due, Effect, EffectId, Effected, EntityId, EntityUse,
     FiledEffect, Float, GivenEffects, HitExtra, HurtBy, PlayerId, RaidNews, RaiderUse, SeamKind,
-    Thrower, Ticked, VillagerUse,
+    Thrower, Ticked, Told, ToldWhat, VillagerUse,
 };
 use uuid::Uuid;
 
@@ -127,6 +127,13 @@ const USE_PATROL_TARGET: u8 = 16;
 const USE_VILLAGER: u8 = 17;
 /// A raid's or a bell's write into a raider (`clustine_world::RaiderUse`), then its kind.
 const USE_RAIDER: u8 = 18;
+/// An attack with the attacker's look and UUID (`docs/groundwork/p-plan.md`, 18.6); one
+/// written before reads with neither.
+const USE_ATTACK_SEEN: u8 = 19;
+/// A mob told of another (`EntityUse::Told`): what (0 anger at, followed by u8 1 or 0
+/// whether only if seen; 1 the target of another), the entity u64, its type u16, the
+/// player's UUID (u8 0, or u8 1 and u128) and its eyes.
+const USE_TOLD: u8 = 20;
 
 const VILLAGER_GOSSIPED: u8 = 1;
 const VILLAGER_GAZE: u8 = 2;
@@ -144,6 +151,7 @@ const RAIDER_REJECTED: u8 = 2;
 const EXTRA_ZOMBIE_FIRE: u8 = 1;
 const EXTRA_HUSK_HUNGER: u8 = 2;
 const EXTRA_FLING: u8 = 3;
+const EXTRA_THROW: u8 = 4;
 
 const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
@@ -339,12 +347,23 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
             sprinting,
             damage,
             from,
+            look,
+            player,
         } => {
-            out.push(USE_ATTACK);
+            out.push(USE_ATTACK_SEEN);
             out.extend_from_slice(&attacker.0.to_be_bytes());
             out.push(u8::from(creative) | (u8::from(sprinting) << 1));
             out.extend_from_slice(&damage.0.to_be_bytes());
             put_doubles(out, from);
+            out.extend_from_slice(&look[0].0.to_be_bytes());
+            out.extend_from_slice(&look[1].0.to_be_bytes());
+            match player {
+                None => out.push(0),
+                Some(player) => {
+                    out.push(1);
+                    out.extend_from_slice(&player.as_u128().to_be_bytes());
+                }
+            }
         }
         EntityUse::Interact {
             player,
@@ -460,6 +479,26 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
                 }
             }
         }
+        EntityUse::Told(ref told) => {
+            out.push(USE_TOLD);
+            match told.what {
+                ToldWhat::AngerAt { only_if_seen } => {
+                    out.push(0);
+                    out.push(u8::from(only_if_seen));
+                }
+                ToldWhat::TargetOf => out.push(1),
+            }
+            out.extend_from_slice(&told.of.0.to_be_bytes());
+            out.extend_from_slice(&told.kind.to_be_bytes());
+            match told.player {
+                None => out.push(0),
+                Some(player) => {
+                    out.push(1);
+                    out.extend_from_slice(&player.as_u128().to_be_bytes());
+                }
+            }
+            put_doubles(out, told.eyes);
+        }
         EntityUse::Hurt(ref hurt) => {
             out.push(USE_HURT);
             put_string(out, &hurt.damage_type);
@@ -481,6 +520,10 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
                     HitExtra::Fling(strength) => {
                         out.push(EXTRA_FLING);
                         out.extend_from_slice(&strength.0.to_be_bytes());
+                    }
+                    HitExtra::Throw(knockback) => {
+                        out.push(EXTRA_THROW);
+                        out.extend_from_slice(&knockback.0.to_be_bytes());
                     }
                 }
             }
@@ -581,15 +624,30 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
 fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
     let use_kind = input.u8()?;
     Ok(match use_kind {
-        USE_ATTACK => {
+        USE_ATTACK | USE_ATTACK_SEEN => {
             let attacker = EntityId(input.u64()?);
             let (creative, sprinting) = take_two_flags(input)?;
+            let damage = Float(input.f32()?);
+            let from = take_doubles(input)?;
+            let (look, player) = if use_kind == USE_ATTACK_SEEN {
+                let look = [Float(input.f32()?), Float(input.f32()?)];
+                let player = match input.u8()? {
+                    0 => None,
+                    1 => Some(Uuid::from_u128(input.u128()?)),
+                    _ => return Err(FormatError::Corrupt("an attack's player flag")),
+                };
+                (look, player)
+            } else {
+                ([Float(0.0); 2], None)
+            };
             EntityUse::Attack {
                 attacker,
                 creative,
                 sprinting,
-                damage: Float(input.f32()?),
-                from: take_doubles(input)?,
+                damage,
+                from,
+                look,
+                player,
             }
         }
         USE_INTERACT | USE_INTERACT_FROM_EDGE => {
@@ -684,6 +742,29 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                 _ => return Err(FormatError::Corrupt("a thrown item's hit's owner flag")),
             },
         },
+        USE_TOLD => {
+            let what = match input.u8()? {
+                0 => ToldWhat::AngerAt {
+                    only_if_seen: take_flag(input, "a telling's sight flag")?,
+                },
+                1 => ToldWhat::TargetOf,
+                _ => return Err(FormatError::Corrupt("what a mob is told")),
+            };
+            let of = EntityId(input.u64()?);
+            let kind = input.u16()?;
+            let player = match input.u8()? {
+                0 => None,
+                1 => Some(Uuid::from_u128(input.u128()?)),
+                _ => return Err(FormatError::Corrupt("a telling's player flag")),
+            };
+            EntityUse::Told(Told {
+                what,
+                of,
+                kind,
+                player,
+                eyes: take_doubles(input)?,
+            })
+        }
         USE_HURT => {
             let damage_type = take_string(input)?;
             let cause = take_optional_causer(input)?;
@@ -703,6 +784,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                     EXTRA_ZOMBIE_FIRE => HitExtra::ZombieFire,
                     EXTRA_HUSK_HUNGER => HitExtra::HuskHunger,
                     EXTRA_FLING => HitExtra::Fling(Float(input.f32()?)),
+                    EXTRA_THROW => HitExtra::Throw(Float(input.f32()?)),
                     _ => return Err(FormatError::Corrupt("a hit's extra")),
                 });
             }
@@ -1354,6 +1436,8 @@ mod entity_uses {
             what: Effected::OnEntity {
                 key: EntityId(9 << 32 | 4),
                 by: EntityUse::Attack {
+                    look: [Float(-45.5), Float(12.0)],
+                    player: Some(Uuid::from_u128(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10)),
                     attacker: EntityId(2 << 32),
                     creative: true,
                     sprinting: false,
@@ -1362,6 +1446,61 @@ mod entity_uses {
                 },
             },
         });
+        // A mob told of a player, and of another's target.
+        for what in [
+            ToldWhat::AngerAt { only_if_seen: true },
+            ToldWhat::AngerAt {
+                only_if_seen: false,
+            },
+            ToldWhat::TargetOf,
+        ] {
+            for player in [None, Some(Uuid::from_u128(7))] {
+                round_trip(Effect {
+                    at,
+                    what: Effected::OnEntity {
+                        key: EntityId(9 << 32 | 4),
+                        by: EntityUse::Told(Told {
+                            what,
+                            of: EntityId(2 << 32),
+                            kind: 0x0102,
+                            player,
+                            eyes: [Double(-16.5), Double(65.62), Double(2.25)],
+                        }),
+                    },
+                });
+            }
+        }
+        // An attack written before the look and the UUID were (kind 1) reads with
+        // neither (`docs/groundwork/p-plan.md`, 18.6).
+        let mut out = Vec::new();
+        put_use(
+            &mut out,
+            &EntityUse::Attack {
+                look: [Float(0.0); 2],
+                player: None,
+                attacker: EntityId(2 << 32),
+                creative: true,
+                sprinting: false,
+                damage: Float(1.5),
+                from: [Double(-16.5), Double(64.0), Double(2.25)],
+            },
+        );
+        let mut old = out.clone();
+        old[0] = USE_ATTACK;
+        old.truncate(old.len() - 9);
+        let read = take_use(&mut Input(&old)).expect("an old attack reads");
+        assert_eq!(
+            read,
+            EntityUse::Attack {
+                look: [Float(0.0); 2],
+                player: None,
+                attacker: EntityId(2 << 32),
+                creative: true,
+                sprinting: false,
+                damage: Float(1.5),
+                from: [Double(-16.5), Double(64.0), Double(2.25)],
+            }
+        );
         for held in [
             None,
             Some(ItemStack::new(7, 3)),
@@ -1395,6 +1534,8 @@ mod entity_uses {
                 what: Effected::OnEntity {
                     key: EntityId(1),
                     by: EntityUse::Attack {
+                        look: [Float(0.0); 2],
+                        player: None,
                         attacker: EntityId(2),
                         creative: false,
                         sprinting: false,
@@ -1770,6 +1911,7 @@ mod entity_uses {
                 HitExtra::ZombieFire,
                 HitExtra::HuskHunger,
                 HitExtra::Fling(Float(0.4)),
+                HitExtra::Throw(Float(1.0)),
             ],
             sound: Some((i32::MIN, Float(1.0), Float(0.875))),
             hit: Some((EntityId(1 << 48 | 5), u32::MAX)),
@@ -2002,7 +2144,7 @@ mod entity_uses {
         let extra = out.len() - 3;
         assert_eq!(out[extra], EXTRA_HUSK_HUNGER);
         let mut bad = out.clone();
-        bad[extra] = 4;
+        bad[extra] = 5;
         assert_eq!(
             take_effect(&mut Input(&bad)),
             Err(FormatError::Corrupt("a hit's extra"))
@@ -2019,7 +2161,7 @@ mod entity_uses {
         let mut out = bytes_of(&on(EntityUse::PatrolTarget {
             pos: BlockPos::new(1, 2, 3),
         }));
-        out[21] = USE_RAIDER + 1;
+        out[21] = USE_TOLD + 1;
         assert_eq!(
             take_effect(&mut Input(&out)),
             Err(FormatError::Corrupt("an entity use's kind"))

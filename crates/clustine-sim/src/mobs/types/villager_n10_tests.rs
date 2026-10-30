@@ -143,6 +143,7 @@ impl MobWorld for Field {
 fn body(position: Vec3) -> Living {
     let info = EntityTypeInfo::of(entity_types::VILLAGER);
     let body = Body {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: true,

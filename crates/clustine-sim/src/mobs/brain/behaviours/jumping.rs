@@ -237,6 +237,7 @@ fn clear_transition(cx: &Cx<'_, '_, '_>, width: f32, height: f32, from: Vec3, to
     let count = (physics::length_sqr(way).sqrt() / step).ceil() as i32;
     let unit = physics::normalize(way);
     let context = Context {
+        stands_on_lava: false,
         bottom: cx.ai.position()[1],
         fall_distance: cx.ai.tick.living.body.fall_distance,
         falling_block: false,

@@ -141,6 +141,7 @@ impl MobWorld for Flat {
 fn living(kind: u16, position: Vec3) -> Living {
     let info = EntityTypeInfo::of(i32::from(kind));
     let body = Body {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: true,

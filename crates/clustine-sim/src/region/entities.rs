@@ -310,6 +310,7 @@ impl Region {
             }
             EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
             EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
+            EntityData::Fireball(_) => self.fireball_used(&entity, chunk, by, output),
             // A mob's uses and hits are its body's (`mob_bodies.rs`).
             EntityData::Mob { .. } => self.mob_used(&entity, chunk, by, output),
             EntityData::Item { .. }
@@ -357,6 +358,7 @@ impl Region {
             EntityData::Firework(_) => self.tick_firework(entity, position, output),
             EntityData::Cloud(_) => self.tick_cloud(entity, position, output),
             EntityData::Fangs(_) => self.tick_fangs(entity, position, output),
+            EntityData::Fireball(_) => self.tick_fireball(entity, position, output),
         }
         self.ticking = before;
     }

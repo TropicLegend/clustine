@@ -335,6 +335,14 @@ pub(crate) trait MobType: Sync {
         Vec::new()
     }
 
+    /// The effects the type's `doHurtTarget` gives the target where the hurt took (the
+    /// wither skeleton's wither for 200 ticks; `docs/groundwork/p-plan.md`, section
+    /// 18.5): none by default.
+    fn hit_effects(&self, ai: &Ai<'_, '_>) -> Vec<clustine_world::components::EffectInstance> {
+        let _ = ai;
+        Vec::new()
+    }
+
     /// `Mob.setBaby(baby)`, which a conversion calls on the new mob where the old one was
     /// a baby: nothing for a type that is never one.
     fn set_baby(&self, mob: &mut Mob, baby: bool) {
@@ -633,6 +641,45 @@ pub(crate) trait MobType: Sync {
 
     /// `isBaby()`: false but for an ageable mob of a negative age (N7e's).
     fn is_baby(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
+    /// What the mob takes of being told of another (`EntityUse::Told`, judged `seen`
+    /// where the telling asks it; `region/telling.rs`), at the region's `tick`: nothing
+    /// by default; a piglin's anger, a hoglin's target (families E5 and E6 of P12).
+    /// Whether it changed the mob.
+    fn told(&self, mob: &mut Mob, told: &clustine_world::Told, seen: bool, tick: u64) -> bool {
+        let _ = (mob, told, seen, tick);
+        false
+    }
+
+    /// The stick that boosts the mob its player drives (`ItemSteerable`'s item, the
+    /// `FoodOnAStickItem` whose `itemToSteer` is the type): none by default; the pig's
+    /// carrot on a stick, the strider's warped fungus on a stick (family E4 of P12).
+    fn steered_by_stick(&self) -> Option<i32> {
+        None
+    }
+
+    /// `ItemSteerable.boost()` of the mob, by its own draws: whether it began a boost
+    /// (none where it boosts already). Nothing by default.
+    fn stick_boost(&self, mob: &mut Mob, draws: &mut crate::region::Random) -> bool {
+        let _ = (mob, draws);
+        false
+    }
+
+    /// `LivingEntity.canStandOnFluid(lava)`: whether a lava source holds the mob up as a
+    /// half block, and its travel is not a fluid's there (the strider's; family E4 of
+    /// P12 sets it with the strider whole).
+    fn stands_on_lava(&self) -> bool {
+        false
+    }
+
+    /// `Hoglin.canBeHunted()`'s negation, `CannotBeHunted`: what the piglins' sensor
+    /// reads of a hoglin it sees (`docs/groundwork/p-plan.md`, section 18.5); false for
+    /// every other type, which no piglin hunts anyway.
+    #[expect(dead_code, reason = "the piglins' sensor reads it (family E5 of P12)")]
+    fn cannot_be_hunted(&self, mob: &Mob) -> bool {
         let _ = mob;
         false
     }

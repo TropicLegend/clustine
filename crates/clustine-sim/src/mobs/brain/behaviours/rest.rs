@@ -264,6 +264,7 @@ impl Shot for InsideBrownianWalk {
         let body = &cx.ai.tick.living.body;
         let bounds = Aabb::of_entity(body.position, body.width, body.height);
         let context = Context {
+            stands_on_lava: false,
             bottom: body.position[1],
             fall_distance: body.fall_distance,
             falling_block: false,
@@ -675,6 +676,7 @@ fn safe_dismount<W: World + ?Sized>(
     );
     let bounds = Aabb::of_entity([at.x, at.y, at.z], width, height);
     let context = Context {
+        stands_on_lava: false,
         bottom: at.y,
         fall_distance: 0.0,
         falling_block: false,

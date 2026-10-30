@@ -77,6 +77,7 @@ pub fn find(layout: &Layout, case: &Case) -> Option<Found> {
         malus[*kind as usize] = *value;
     }
     let searcher = Searcher {
+        stands_on_lava: false,
         position: case.position,
         width: case.width,
         height: case.height,

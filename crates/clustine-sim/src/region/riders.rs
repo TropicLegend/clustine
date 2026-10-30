@@ -145,19 +145,21 @@ impl Region {
         });
     }
 
-    /// `FoodOnAStickItem.use` of the carrot on a stick `held` by the player `id`: the pig
-    /// they drive boosts, unless it boosts already (`Pig.boost`, one draw of its own
-    /// random); the stick takes no wear of a creative player, which every player is.
-    /// Whether the use was this.
+    /// `FoodOnAStickItem.use` of the stick `held` by the player `id`: the vehicle they
+    /// drive boosts where it is steered by that stick (`MobType::steered_by_stick`: a
+    /// pig by the carrot on a stick, a strider by the warped fungus on a stick), unless
+    /// it boosts already (`ItemBasedSteering.boost`, one draw of its own random); the
+    /// stick takes no wear of a creative player, which every player is. Whether the use
+    /// was this.
     pub(crate) fn steered_boost(
         &mut self,
         id: PlayerId,
         held: Option<i32>,
         output: &mut TickOutput,
     ) -> bool {
-        if held != Some(clustine_data::items::CARROT_ON_A_STICK) {
+        let Some(held) = held else {
             return false;
-        }
+        };
         let Some(player) = self.players.get(&id) else {
             return false;
         };
@@ -170,9 +172,8 @@ impl Region {
             return false;
         };
         let vehicle = vehicle.clone();
-        if i32::from(vehicle.kind) != clustine_data::entity_types::PIG
-            || !self.drives_root(&vehicle, rider)
-        {
+        let vehicle_type = crate::mobs::types::of(vehicle.kind);
+        if vehicle_type.steered_by_stick() != Some(held) || !self.drives_root(&vehicle, rider) {
             return false;
         }
         let Ok(mut mob) = crate::mobs::Mob::decode(&vehicle.data) else {
@@ -180,7 +181,7 @@ impl Region {
         };
         let mut stream = self.entity_stream(vehicle.key).random;
         let start = stream.clone();
-        let boosted = crate::mobs::types::pig::boost(&mut mob, &mut stream);
+        let boosted = vehicle_type.stick_boost(&mut mob, &mut stream);
         self.entity_drew(vehicle.key, stream.draws_since(&start));
         if boosted {
             self.commit_mob(&vehicle, chunk, &mob, output);

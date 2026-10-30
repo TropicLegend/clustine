@@ -217,6 +217,8 @@ fn hit(target: &Entity, sequence: u64, damage: f32, creative: bool) -> TickInput
                 what: Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        look: [Float(0.0); 2],
+                        player: None,
                         attacker: EntityId(1),
                         creative,
                         sprinting: false,
@@ -771,6 +773,8 @@ fn five_full_hits_break_a_cart_which_drops_itself_and_the_fourth_does_not() {
     lay(&mut region, &target);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        look: [Float(0.0); 2],
+        player: None,
         attacker: EntityId(1),
         creative: false,
         sprinting: false,
@@ -920,6 +924,8 @@ fn a_chest_carts_contents_spill_by_the_games_draws_in_creative_too() {
     lay(&mut region, &chest);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        look: [Float(0.0); 2],
+        player: None,
         attacker: EntityId(1),
         creative: true,
         sprinting: false,
@@ -967,6 +973,8 @@ fn a_chest_cart_broken_in_survival_spills_then_drops_itself_then_draws_its_empty
     lay(&mut region, &chest);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        look: [Float(0.0); 2],
+        player: None,
         attacker: EntityId(1),
         creative: false,
         sprinting: false,

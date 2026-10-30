@@ -1655,6 +1655,7 @@ impl MeleeAttackGoal {
 /// the attacker slowed by its knockback, which it would only know after the hurt landed.
 pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
     let extras = ai.tick.mob_type.hit_extras(ai);
+    let effects = ai.tick.mob_type.hit_effects(ai);
     let amount = ai.attribute(attributes::ATTACK_DAMAGE) as f32;
     let knockback = ai.attribute(attributes::ATTACK_KNOCKBACK) as f32;
     let yaw = ai.tick.living.yaw * maths::RADIANS;
@@ -1684,7 +1685,7 @@ pub(crate) fn melee_hit(ai: &mut Ai<'_, '_>, target: &Looked) {
         knockback,
         fire_before: 0,
         fire_after: 0,
-        effects: Vec::new(),
+        effects,
         arrow: false,
         extras,
         sound: None,

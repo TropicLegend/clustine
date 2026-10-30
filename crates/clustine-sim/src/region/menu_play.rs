@@ -149,6 +149,17 @@ impl Region {
             return;
         };
         self.open_menu(player, of, kind, output);
+        // A chest's, an ender chest's, a barrel's and a shulker box's use angers the
+        // piglins near that see the player (`PiglinAi.angerNearbyPiglins(.., true)`).
+        let guarded = [
+            BlockClass::ChestBlock,
+            BlockClass::EnderChestBlock,
+            BlockClass::BarrelBlock,
+            BlockClass::ShulkerBoxBlock,
+        ];
+        if guarded.into_iter().any(|class| is_class(state, class)) {
+            self.anger_nearby_piglins(player, true, output);
+        }
     }
 
     /// A player's use of the container vehicle `vehicle` (a chest cart, a hopper cart,
@@ -170,6 +181,8 @@ impl Region {
             return;
         };
         self.open_menu(player, MenuOf::Entity(vehicle), kind, output);
+        // `ContainerEntity.interactWithContainerVehicle`: so does a container vehicle's.
+        self.anger_nearby_piglins(player, true, output);
     }
 
     /// `PlayerInput::OpenVehicleInventory`: the menu of the container vehicle the player

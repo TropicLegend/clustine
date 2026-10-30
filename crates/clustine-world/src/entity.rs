@@ -432,6 +432,8 @@ pub enum EntityData {
     Cloud(Box<Cloud>),
     /// The evoker's fangs (4.8).
     Fangs(Fangs),
+    /// A fireball, large or small (`docs/groundwork/p-plan.md`, section 18).
+    Fireball(Box<crate::Fireball>),
 }
 
 /// A part of a mob's body or mind: an id that the code of that part gives it and keeps

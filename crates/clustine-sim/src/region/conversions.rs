@@ -29,13 +29,12 @@ impl Region {
         keep_equipment: bool,
         sound: Option<i32>,
         output: &mut TickOutput,
-    ) {
-        let Some((_, old_record)) = self.find_entity(key).map(|(at, found)| (at, found.clone()))
-        else {
-            return;
-        };
+    ) -> Option<EntityId> {
+        let (_, old_record) = self
+            .find_entity(key)
+            .map(|(at, found)| (at, found.clone()))?;
         let Ok(mut old) = Mob::decode(&old_record.data) else {
-            return;
+            return None;
         };
         let vehicle = old_record.riding.vehicle;
         let passenger = old_record
@@ -52,14 +51,10 @@ impl Region {
         if vehicle.is_some() {
             self.stop_riding(key, output);
         }
-        let Some((chunk, old_record)) =
-            self.find_entity(key).map(|(at, found)| (at, found.clone()))
-        else {
-            return;
-        };
-        let Some(new_key) = self.take_entity_key(old_record.chunk()) else {
-            return;
-        };
+        let (chunk, old_record) = self
+            .find_entity(key)
+            .map(|(at, found)| (at, found.clone()))?;
+        let new_key = self.take_entity_key(old_record.chunk())?;
         let mut own = self.entity_stream(new_key).random;
         let start = own.clone();
         let (uuid, mut new) = construct(into, &mut own, old_record.yaw);
@@ -106,6 +101,7 @@ impl Region {
         let hops = old_record.hops;
         self.unride_removed(key, true, output);
         self.remove_entity(key, hops, chunk, output);
+        Some(new_key)
     }
 }
 

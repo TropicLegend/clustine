@@ -182,6 +182,7 @@ fn other(key: EntityId, id: i32, feet: Vec3, health: f32) -> (Entity, Aabb) {
 fn body_of(land: &Land, feet: Vec3) -> Living {
     let info = EntityTypeInfo::of(types::RAVAGER);
     let body = Body {
+        stands_on_lava: false,
         position: feet,
         motion: [0.0; 3],
         on_ground: true,

@@ -91,6 +91,7 @@ fn living(kind: u16, y: f64) -> Living {
     let info = EntityTypeInfo::of(i32::from(kind));
     let position = [0.5, y, 0.5];
     let body = Moving {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: y == 0.0,

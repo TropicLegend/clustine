@@ -726,6 +726,7 @@ fn traversal_possible(
 
 /// `CollisionContext.empty()`, which `getCollisionShape(level, pos)` uses.
 const NO_ENTITY: Context = Context {
+    stands_on_lava: false,
     bottom: -f64::MAX,
     fall_distance: 0.0,
     falling_block: false,

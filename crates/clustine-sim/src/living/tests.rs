@@ -9,6 +9,7 @@ use crate::physics::entities::Mover;
 
 fn stand_body() -> Living {
     let body = Body {
+        stands_on_lava: false,
         position: [0.5, 0.0, 0.5],
         motion: [0.0; 3],
         on_ground: true,

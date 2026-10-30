@@ -254,6 +254,7 @@ impl Region {
         let info = EntityTypeInfo::of(i32::from(entity.kind));
         let memory = self.entity_memory.get(&entity.key);
         let mut body = Body {
+            stands_on_lava: false,
             position: entity.position,
             motion: entity.motion,
             on_ground: entity.on_ground,

@@ -264,6 +264,7 @@ impl Placed {
     fn new(key: u64, kind: &'static Shaped, at: Vec3, profession: i32) -> Self {
         let info = EntityTypeInfo::of(entity_types::VILLAGER);
         let body = Body {
+            stands_on_lava: false,
             position: at,
             motion: [0.0; 3],
             on_ground: true,

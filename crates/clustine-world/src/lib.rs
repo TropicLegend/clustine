@@ -34,7 +34,7 @@ pub use difficulty::Difficulty;
 pub use dimension::Dimension;
 pub use effects::{
     Arrival, Blast, Causer, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
-    GivenEffects, HitExtra, HurtBy, RaidNews, RaiderUse, Thrower, VillagerUse,
+    GivenEffects, HitExtra, HurtBy, RaidNews, RaiderUse, Thrower, Told, ToldWhat, VillagerUse,
 };
 pub use entity::{
     ARMOUR_START, Attached, Contents, Double, ENDER_SLOTS, EnderChest, Entity, EntityChange,
@@ -46,7 +46,9 @@ pub use light::{LIGHT_ARRAY_LENGTH, Light, SectionLight, sky_light};
 pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, Generated, PlayerId, RegionId, Vec3,
 };
-pub use projectiles::{Arrow, ArrowKind, Cloud, Fangs, Firework, InGround, Pickup, Spit};
+pub use projectiles::{
+    Arrow, ArrowKind, Cloud, Fangs, Fireball, Firework, InGround, Pickup, ProjectileOwner, Spit,
+};
 pub use section::{BIOME_CELLS, Biome, Section};
 pub use travel::{
     LevelChunk, PortalAxis, PortalClock, PortalKind, PortalState, Travel, Traveller, Way,

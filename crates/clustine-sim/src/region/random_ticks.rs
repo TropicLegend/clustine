@@ -328,7 +328,8 @@ impl Region {
             || self.mineral_random_tick(pos, state, random, output)
             || self.fire_random_tick(pos, state, random, output)
             || self.growth_random_tick(pos, state, random, output)
-            || self.melting_random_tick(pos, state, random, output);
+            || self.melting_random_tick(pos, state, random, output)
+            || self.portal_random_tick(pos, state, random, output);
     }
 
     /// A stream for a rule that draws outside a random tick (a coral's time to die),

@@ -105,6 +105,34 @@ pub struct Firework {
     pub shot_at_angle: bool,
 }
 
+/// Who shot a projectile whose owner is read beyond the region it was shot in: the
+/// entity's key and type, and the player's UUID where a player shot it, so that a
+/// region that cannot see the shooter still knows the owner is one (the hurt's cause, a
+/// kill by a player).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectileOwner {
+    pub key: EntityId,
+    pub kind: u16,
+    pub player: Option<uuid::Uuid>,
+}
+
+/// A fireball, large (the ghast's) or small (the blaze's), by its entity type
+/// (`AbstractHurtingProjectile`, `Fireball`; `docs/groundwork/p-plan.md`, sections 18.5
+/// and 18.6): what `Projectile` keeps, the item it shows (`DATA_ITEM_STACK`, a fire
+/// charge by default), its `accelerationPower` (0.1 at first; the motion grows by its
+/// direction times it every tick), and the large one's `ExplosionPower`. A deflection
+/// keeps no flag: the owner it gives the fireball says who deflected it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fireball {
+    pub item: ItemStack,
+    pub owner: Option<ProjectileOwner>,
+    pub left_owner: bool,
+    pub has_been_shot: bool,
+    pub acceleration_power: Double,
+    /// `ExplosionPower`, the large fireball's (1 by default); none of the small one's.
+    pub explosion_power: u8,
+}
+
 /// An area effect cloud (`AreaEffectCloud`, D9 2.5). Its age is `lived`. Its radius
 /// shrinks by `radius_per_tick` every tick and by `radius_on_use` at every application;
 /// the record holds it as of `radius_at`, the `lived` of the last application or of

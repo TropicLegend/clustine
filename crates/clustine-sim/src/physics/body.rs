@@ -85,6 +85,9 @@ pub(crate) struct Body {
     pub(crate) sync_position: bool,
     /// Whether it is a falling block, which powder snow holds up.
     pub(crate) falling_block: bool,
+    /// Whether it stands on lava (`canStandOnFluid`, the strider's), which a lava
+    /// source holds up as a half block (`collide.rs`).
+    pub(crate) stands_on_lava: bool,
     /// Whether it is an item, whose friction and speed come from the block a whole
     /// block below it (`ItemEntity.getBlockPosBelowThatAffectsMyMovement`).
     pub(crate) item: bool,
@@ -158,6 +161,7 @@ impl Body {
     /// `CollisionContext.of(entity)`.
     pub(crate) fn context(&self) -> Context {
         Context {
+            stands_on_lava: self.stands_on_lava,
             bottom: self.position[1],
             fall_distance: self.fall_distance,
             falling_block: self.falling_block,

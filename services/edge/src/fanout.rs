@@ -6994,6 +6994,7 @@ fn owner_of(state: &EntityState) -> Option<EntityId> {
             EntityData::Arrow(arrow) => arrow.owner,
             EntityData::Spit(spit) => spit.owner,
             EntityData::Firework(rocket) => rocket.owner,
+            EntityData::Fireball(fireball) => fireball.owner.map(|owner| owner.key),
             _ => None,
         },
         _ => None,
@@ -7045,7 +7046,8 @@ fn spawn_packets(
             EntityData::Thrown { .. }
             | EntityData::Arrow(_)
             | EntityData::Spit(_)
-            | EntityData::Firework(_) => owner,
+            | EntityData::Firework(_)
+            | EntityData::Fireball(_) => owner,
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
@@ -7156,6 +7158,20 @@ fn entity_data_packet(
                 entity_data::ITEM_STACK,
                 EntityDataValue::ItemStack(Some(protocol_stack(&stack.clone()))),
             )],
+        },
+        // `Fireball.DATA_ITEM_STACK`, sent where it is not the fire charge it starts
+        // with.
+        EntityData::Fireball(fireball) => SetEntityData {
+            entity_id: id,
+            values: (fireball.item.item != clustine_data::items::FIRE_CHARGE)
+                .then(|| {
+                    (
+                        entity_data::ITEM_STACK,
+                        EntityDataValue::ItemStack(Some(protocol_stack(&fireball.item))),
+                    )
+                })
+                .into_iter()
+                .collect(),
         },
         EntityData::Minecart { .. } => SetEntityData {
             entity_id: id,

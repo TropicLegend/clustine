@@ -389,6 +389,7 @@ fn living(fluid: BlockState) -> Living {
     let info = EntityTypeInfo::of(entity_types::WITCH);
     let position = [0.5, 0.0, 0.5];
     let body = Moving {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: true,

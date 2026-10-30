@@ -376,6 +376,7 @@ impl Region {
                     living.position[2],
                 ];
                 let collision = Collision {
+                    stands_on_lava: false,
                     bottom: rocket.position[1],
                     fall_distance: rocket.fall_distance,
                     falling_block: false,

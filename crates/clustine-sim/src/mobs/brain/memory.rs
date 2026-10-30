@@ -405,6 +405,20 @@ impl MemoryKind {
                 | Self::NearestVisibleWantedItem
                 | Self::TemptingPlayer
                 | Self::IsInWater
+                // The piglins' and the hoglins' own sensors' (`PiglinSpecificSensor`,
+                // `HoglinSpecificSensor`; `docs/groundwork/p-plan.md`, section 18.5).
+                | Self::NearestVisibleHuntableHoglin
+                | Self::NearestVisibleBabyHoglin
+                | Self::NearestTargetablePlayerNotWearingGold
+                | Self::NearbyAdultPiglins
+                | Self::NearestVisibleAdultPiglins
+                | Self::NearestVisibleAdultHoglins
+                | Self::NearestVisibleAdultPiglin
+                | Self::NearestVisibleZombified
+                | Self::VisibleAdultPiglinCount
+                | Self::VisibleAdultHoglinCount
+                | Self::NearestPlayerHoldingWantedItem
+                | Self::NearestRepellent
         )
     }
 

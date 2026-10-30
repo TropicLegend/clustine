@@ -206,6 +206,7 @@ fn record_of(key: EntityId, feet: Vec3, mob: &Mob) -> Entity {
 fn living(feet: Vec3) -> Living {
     let info = EntityTypeInfo::of(entity_types::VILLAGER);
     let body = Moving {
+        stands_on_lava: false,
         position: feet,
         motion: [0.0; 3],
         on_ground: true,

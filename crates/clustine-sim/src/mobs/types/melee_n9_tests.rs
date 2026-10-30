@@ -212,6 +212,7 @@ fn other(key: EntityId, id: i32, feet: Vec3) -> (Entity, Aabb) {
 fn body_of(land: &Land, id: i32, feet: Vec3) -> Living {
     let info = EntityTypeInfo::of(id);
     let body = Body {
+        stands_on_lava: false,
         position: feet,
         motion: [0.0; 3],
         on_ground: true,

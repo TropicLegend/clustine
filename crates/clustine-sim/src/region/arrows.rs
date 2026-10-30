@@ -363,6 +363,7 @@ impl Region {
         // The stuck test: inside its block's collision shape, it is in the ground.
         if !no_physics && !state.props().is_air() {
             let context = Collision {
+                stands_on_lava: false,
                 bottom: flight.position[1],
                 fall_distance: entity.fall_distance,
                 falling_block: false,
@@ -487,6 +488,7 @@ impl Region {
             self.arrow_effects_from_blocks(flight, from, to, output);
         } else {
             let collision = Collision {
+                stands_on_lava: false,
                 bottom: from[1],
                 fall_distance: entity.fall_distance,
                 falling_block: false,
@@ -653,6 +655,7 @@ impl Region {
                     .and_then(|entry| {
                         let middle = target.bounds.center();
                         let context = Collision {
+                            stands_on_lava: false,
                             bottom: entry[1],
                             fall_distance: 0.0,
                             falling_block: false,
@@ -735,6 +738,7 @@ impl Region {
             home: flight.chunk,
         };
         let context = Collision {
+            stands_on_lava: false,
             bottom: bounds.min[1],
             fall_distance: 0.0,
             falling_block: false,
@@ -765,6 +769,7 @@ impl Region {
         }
         let info = EntityTypeInfo::of(i32::from(flight.kind));
         let body = Body {
+            stands_on_lava: false,
             position: to,
             motion: flight.motion,
             on_ground: false,

@@ -563,6 +563,7 @@ impl Region {
         // `hasLevelCollision(getPopBox())`: any block's collision shape in the box. The
         // world border is not checked: Clustine has none.
         let context = Context {
+            stands_on_lava: false,
             bottom: entity.position[1],
             fall_distance: 0.0,
             falling_block: false,

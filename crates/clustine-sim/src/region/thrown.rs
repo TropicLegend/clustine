@@ -591,6 +591,7 @@ impl Region {
         };
         let to = physics::add(from, motion);
         let collision = Collision {
+            stands_on_lava: false,
             bottom: from[1],
             fall_distance: flying.fall_distance,
             falling_block: false,
@@ -757,6 +758,7 @@ impl Region {
                 let player = hit.owner.and_then(|owner| owner.player);
                 self.hurt_attached(target, Breaker::of_owner(player), output);
             }
+            EntityData::Fireball(_) => self.fireball_hit(&record, hit, output),
             EntityData::FallingBlock { .. } => {
                 // `markHurt`: its motion is sent.
                 let mut report = tracked(&record, Tracked::SYNC_VELOCITY, false);
@@ -960,6 +962,7 @@ impl Region {
             home: ChunkPos::containing(at[0], at[2]),
         };
         let context = Collision {
+            stands_on_lava: false,
             bottom: at[1],
             fall_distance: 0.0,
             falling_block: false,

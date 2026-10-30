@@ -784,6 +784,8 @@ fn a_detector_rail_signals_a_cart_and_a_comparator_reads_its_chest() {
                 what: Effected::OnEntity {
                     key: chest.key,
                     by: EntityUse::Attack {
+                        look: [Float(0.0); 2],
+                        player: None,
                         attacker: EntityId(9),
                         creative: true,
                         sprinting: false,
@@ -831,6 +833,8 @@ fn a_hard_hit_breaks_a_cart_into_its_item() {
     lay(&mut region, &furnace);
     let mut output = TickOutput::default();
     let hit = |damage: f32| EntityUse::Attack {
+        look: [Float(0.0); 2],
+        player: None,
         attacker: EntityId(9),
         creative: false,
         sprinting: false,

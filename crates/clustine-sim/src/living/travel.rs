@@ -33,11 +33,25 @@ impl Living {
             self.travel_flying(world, water, lava, air);
             return;
         }
-        if self.body.in_water || self.in_lava() {
+        // `shouldTravelInFluid`: not for a body that stands on the fluid at its feet
+        // (`canStandOnFluid`, a strider on lava).
+        if (self.body.in_water || self.in_lava()) && !self.stands_on_fluid_at_feet(world) {
             self.travel_in_fluid(world);
         } else {
             self.travel_in_air(world);
         }
+    }
+
+    /// `canStandOnFluid(level.getFluidState(blockPosition()))`: the body stands on lava
+    /// and its feet are in lava.
+    fn stands_on_fluid_at_feet<R: Holds + ?Sized>(&self, world: &R) -> bool {
+        self.body.stands_on_lava
+            && world
+                .block(self.body.block_position())
+                .is_some_and(|state| {
+                    clustine_blocks::fluid::FluidState::of(state).kind()
+                        == Some(clustine_blocks::fluid::Kind::Lava)
+                })
     }
 
     /// `travelFlying(input, water, lava, air)`: in water (looked at first), in lava,

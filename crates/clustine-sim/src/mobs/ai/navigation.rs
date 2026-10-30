@@ -121,6 +121,7 @@ fn max_fall_distance(ai: &Ai<'_, '_>) -> i32 {
 pub(crate) fn searcher(ai: &Ai<'_, '_>) -> Searcher {
     let settings = &ai.config.navigation;
     Searcher {
+        stands_on_lava: ai.tick.living.body.stands_on_lava,
         position: ai.position(),
         width: ai.width(),
         height: ai.height(),
@@ -828,6 +829,7 @@ fn can_move_directly(ai: &Ai<'_, '_>, from: Vec3, to: Vec3) -> bool {
 fn clear_between(ai: &Ai<'_, '_>, from: Vec3, to: Vec3, fluids: bool) -> bool {
     let end = [to[0], to[1] + f64::from(ai.height()) * 0.5, to[2]];
     let context = crate::physics::collide::Context {
+        stands_on_lava: ai.tick.living.body.stands_on_lava,
         bottom: ai.position()[1],
         fall_distance: ai.tick.living.body.fall_distance,
         falling_block: false,

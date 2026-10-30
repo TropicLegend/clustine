@@ -317,6 +317,7 @@ fn line_of_sight(ai: &Ai<'_, '_>, target: &Looked) -> bool {
         return false;
     }
     let context = Context {
+        stands_on_lava: false,
         bottom: position[1],
         fall_distance: ai.tick.living.body.fall_distance,
         falling_block: false,

@@ -159,6 +159,7 @@ impl MobType for Built {
 pub(super) fn cow_body<W: World + ?Sized>(world: &W, position: Vec3) -> Living {
     let info = EntityTypeInfo::of(entity_types::COW);
     let body = Body {
+        stands_on_lava: false,
         position,
         motion: [0.0; 3],
         on_ground: true,

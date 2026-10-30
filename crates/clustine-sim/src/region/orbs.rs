@@ -186,6 +186,7 @@ impl Region {
             home: ChunkPos::containing(position[0], position[2]),
         };
         let context = collide::Context {
+            stands_on_lava: false,
             bottom: position[1],
             fall_distance: 0.0,
             falling_block: false,

@@ -1158,6 +1158,16 @@ impl Tracker {
                     EntityDataValue::ItemStack(Some(stack)),
                 ));
             }
+            // `Fireball.DATA_ITEM_STACK`: a fire charge by default, which is not sent.
+            EntityData::Fireball(fireball)
+                if pairing && fireball.item.item != clustine_data::items::FIRE_CHARGE =>
+            {
+                let stack = wire_stack(&fireball.item);
+                values.push((
+                    entity_data::ITEM_STACK,
+                    EntityDataValue::ItemStack(Some(stack)),
+                ));
+            }
             EntityData::Arrow(_) | EntityData::Firework(_) | EntityData::Cloud(_) => {
                 for (index, value, default) in projectile_values(self.kind, data, self.age) {
                     let held = self

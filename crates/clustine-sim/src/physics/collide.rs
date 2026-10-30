@@ -42,6 +42,42 @@ pub(crate) struct Context {
     /// The way a piston is moving the entity, if one is (the game's `NOCLIP`): a
     /// moving block going that way does not stop it.
     pub(crate) noclip: Option<Face>,
+    /// Whether the entity stands on lava (`LivingEntity.canStandOnFluid(lava)`, the
+    /// strider's; `docs/groundwork/p-plan.md`, sections 18.5 and 18.6), which makes a
+    /// lava source a half block under it.
+    pub(crate) stands_on_lava: bool,
+}
+
+/// `LiquidBlock.STABLE_SHAPE`: what a fluid's source is to an entity that stands on it.
+const STABLE_FLUID: [f64; 6] = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+
+/// `LiquidBlock.getCollisionShape` of the lava `state` at `pos` for the entity of
+/// `context`, whose block above holds `above`: the stable half block where the entity
+/// stands on lava, is above it, the lava is a source and the block above holds no lava
+/// (`EntityCollisionContext.canStandOnFluid`); else none.
+fn stood_on_fluid(
+    state: BlockState,
+    pos: BlockPos,
+    context: Context,
+    above: Option<BlockState>,
+) -> Option<Placed> {
+    if !context.stands_on_lava || !is_class(state, BlockClass::LiquidBlock) {
+        return None;
+    }
+    let held = clustine_blocks::fluid::FluidState::of(state);
+    let source = held.kind() == Some(clustine_blocks::fluid::Kind::Lava) && held.is_source();
+    let lava_above = above.is_some_and(|above| {
+        clustine_blocks::fluid::FluidState::of(above).kind()
+            == Some(clustine_blocks::fluid::Kind::Lava)
+    });
+    if !source || lava_above || !context.is_above(pos, STABLE_FLUID[4]) {
+        return None;
+    }
+    Some(Placed {
+        cells: Cells::Box(STABLE_FLUID),
+        shift: None,
+        offset: [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)],
+    })
 }
 
 impl Context {
@@ -177,7 +213,10 @@ pub(crate) fn block_collisions<W: World + ?Sized>(
                     }
                     continue;
                 }
-                let Some((shape, is_block)) = collision_shape(state, pos, context) else {
+                let Some((shape, is_block)) = collision_shape(state, pos, context).or_else(|| {
+                    let above = world.block(BlockPos::new(x, y + 1, z));
+                    stood_on_fluid(state, pos, context, above).map(|shape| (shape, false))
+                }) else {
                     continue;
                 };
                 let kept = if is_block {

@@ -151,6 +151,7 @@ impl Field {
 fn body(id: i32, at: Vec3) -> Living {
     let info = EntityTypeInfo::of(id);
     let body = Moving {
+        stands_on_lava: false,
         position: at,
         motion: [0.0; 3],
         on_ground: true,

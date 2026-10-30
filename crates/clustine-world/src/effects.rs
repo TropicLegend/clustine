@@ -152,6 +152,13 @@ pub enum EntityUse {
         sprinting: bool,
         damage: Float,
         from: [Double; 3],
+        /// Where the attacker looks, yaw and pitch, which a fireball they deflect flies
+        /// along (`Player.attack`'s `deflect(AIM_DEFLECT)`); none in an attack stored
+        /// before (`docs/groundwork/p-plan.md`, sections 18.5 and 18.6).
+        look: [Float; 2],
+        /// The attacking player's UUID, whom a fireball they deflect names as its owner
+        /// and its kill as the killer; none in an attack stored before.
+        player: Option<uuid::Uuid>,
     },
     /// `interact`: the player, whether creative, what they hold in the hand used, where
     /// on the entity the click landed, whether they sneak, and where they stand; and
@@ -170,6 +177,12 @@ pub enum EntityUse {
     /// granted them across a line (`docs/groundwork/n7j-mount-across-a-line.md`,
     /// section 8 item 3): that seat goes, and no other.
     SeatDeclined { player: EntityId },
+    /// What a mob is told of another entity by the rules of its kind, here or across a
+    /// line (`docs/groundwork/p-plan.md`, sections 18.5 and 18.6): a piglin angered at
+    /// a player who opens a container or breaks a block piglins guard
+    /// (`PiglinAi.angerNearbyPiglins`), or told another's target
+    /// (`broadcastAngerTarget`, `HoglinAi.broadcastAttackTarget`).
+    Told(Told),
     /// An explosion's hit (`hurtEntities`), as the exploding region worked it out from
     /// its copy: the damage, the push, and of the explosion what the entity reads of
     /// its source (`docs/groundwork/n6-plan.md`, decision 10).
@@ -393,6 +406,32 @@ pub enum HitExtra {
     /// The iron golem's fling: upwards by this times what the target's knockback
     /// resistance leaves.
     Fling(Float),
+    /// The hoglin's and the zoglin's throw (`HoglinBase.throwTarget`): the attacker's
+    /// attack knockback, less the target's resistance, sends the target away from the
+    /// attacker and up, by three draws (`docs/groundwork/p-plan.md`, section 18.5).
+    Throw(Float),
+}
+
+/// What a mob is told (`EntityUse::Told`), and of whom: the entity, its type, the
+/// player's UUID where it is a player, and its eyes, from which the mob's sight of it is
+/// judged where it asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Told {
+    pub what: ToldWhat,
+    pub of: EntityId,
+    pub kind: u16,
+    pub player: Option<Uuid>,
+    pub eyes: [Double; 3],
+}
+
+/// What a [`Told`] tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToldWhat {
+    /// Be angry at it: a player who opened a container (`only_if_seen`, where the mob
+    /// must see them) or broke a block piglins guard.
+    AngerAt { only_if_seen: bool },
+    /// Take it as the target another of the kind took (its anger's, or its attack's).
+    TargetOf,
 }
 
 /// Effects given by a splash or a cloud: the instances (their durations scaled), the

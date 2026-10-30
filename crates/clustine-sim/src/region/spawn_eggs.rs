@@ -370,6 +370,7 @@ impl Region {
 
 /// `CollisionContext.empty()`: what a block's shape is to no entity at all.
 const NO_ENTITY: collide::Context = collide::Context {
+    stands_on_lava: false,
     bottom: -f64::MAX,
     fall_distance: 0.0,
     falling_block: false,

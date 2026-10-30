@@ -18,6 +18,7 @@ fn cow(position: Vec3) -> Searcher {
     malus[PathType::Fire as usize] = -1.0;
     malus[PathType::FireInNeighbor as usize] = 16.0;
     Searcher {
+        stands_on_lava: false,
         position,
         width: 0.9,
         height: 1.4,

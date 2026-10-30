@@ -65,6 +65,7 @@ fn tick_tracker(tick: &mut MobTick<'_>) {
         // `doConversion`: `convertTo(STRAY, single(mob, true, true))`, no step after, the
         // level event at the stray's block. The skeleton's tick goes on, as the game's.
         tick.out.local.push(Local::Convert {
+            after: None,
             into: entity_types::STRAY as u16,
             keep_equipment: true,
             sound: Some(TO_STRAY),

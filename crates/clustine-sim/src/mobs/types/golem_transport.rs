@@ -395,6 +395,7 @@ impl TransportItemsBetweenContainers {
     /// The golem's collision context.
     fn context(cx: &Cx<'_, '_, '_>) -> Context {
         Context {
+            stands_on_lava: false,
             bottom: cx.ai.position()[1],
             fall_distance: cx.ai.tick.living.body.fall_distance,
             falling_block: false,

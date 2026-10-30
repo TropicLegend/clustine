@@ -566,6 +566,7 @@ fn line_of_sight(world: &dyn MobWorld, from: &Entity, eyes: Vec3, target: &Looke
         return false;
     }
     let context = Context {
+        stands_on_lava: false,
         bottom: from.position[1],
         fall_distance: from.fall_distance,
         falling_block: false,

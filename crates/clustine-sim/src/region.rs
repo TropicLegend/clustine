@@ -58,6 +58,7 @@ mod faces;
 mod falling;
 mod fangs;
 mod feature_view;
+mod fireballs;
 mod fireworks;
 mod fluids;
 mod frogspawn;
@@ -88,6 +89,7 @@ mod pistons;
 mod placing;
 mod player_effects;
 pub(crate) mod pois;
+mod portal_spawns;
 mod portals;
 mod pressed;
 mod projectile_hits;
@@ -121,6 +123,7 @@ mod stack_nbt;
 mod stands;
 mod structures;
 pub(crate) mod teleports;
+mod telling;
 mod thrown;
 mod throws;
 mod ticks;
@@ -2645,6 +2648,7 @@ impl Region {
                 // (`mob_attacks.rs`), at the attack strength taken as full until the
                 // player's ticker is kept.
                 let attacker = player.entity_id;
+                let look = [Float(player.pose.yaw), Float(player.pose.pitch)];
                 let damage = self.attack_of(id).map_or(1.0, |attack| attack.amount);
                 let by = EntityUse::Attack {
                     attacker,
@@ -2652,6 +2656,8 @@ impl Region {
                     sprinting: false,
                     damage: Float(damage),
                     from: user.from(),
+                    look,
+                    player: Some(id.0),
                 };
                 self.player_used_entity(user, *entity, by, output);
             }

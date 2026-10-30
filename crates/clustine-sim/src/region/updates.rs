@@ -398,6 +398,13 @@ impl Region {
             state,
             breaker: player,
         });
+        // `Block.playerWillDestroy`: a block piglins guard angers those near the player
+        // (`telling.rs`), before its `block_destroy`.
+        if let Some(player) = player
+            && clustine_blocks::data::in_tag(state, "minecraft:guarded_by_piglins")
+        {
+            self.anger_nearby_piglins(player, false, output);
+        }
         // `Block.playerWillDestroy`'s `block_destroy`, of the player and the block
         // (`vibrations.rs`).
         let source = player.and_then(|player| self.player_source(player));

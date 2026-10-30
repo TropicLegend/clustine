@@ -105,6 +105,7 @@ fn around(cx: &Cx<'_, '_, '_>, range: i32) -> Vec<BlockPos> {
 /// The collision shape at `pos`, as the mob's own context has it, is empty.
 fn shape_empty(cx: &Cx<'_, '_, '_>, pos: BlockPos) -> bool {
     let context = Context {
+        stands_on_lava: false,
         bottom: cx.ai.position()[1],
         fall_distance: cx.ai.tick.living.body.fall_distance,
         falling_block: false,
