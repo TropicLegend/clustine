@@ -77,7 +77,7 @@ async fn join_matches_the_official_server() {
 
     // The same world as far as the join packet describes it.
     let (our_login, their_login) = (&ours.login, &theirs.login);
-    assert_eq!(our_login.dimension_names, their_login.dimension_names[..1]);
+    assert_eq!(our_login.dimension_names, their_login.dimension_names);
     assert_eq!(
         our_login.spawn.dimension_name,
         their_login.spawn.dimension_name

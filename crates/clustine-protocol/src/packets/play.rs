@@ -2129,6 +2129,9 @@ pub mod level_event {
     pub const BLOCK_BROKEN: i32 = 2001;
     /// Lava met water or took a block's place: a hiss and smoke, with no data.
     pub const LAVA_FIZZ: i32 = 1501;
+    /// A traveller came out of a Nether portal: the travel's sound, to them alone
+    /// (`LevelEvent.SOUND_PORTAL_TRAVEL`, `TeleportTransition.PLAY_PORTAL_SOUND`).
+    pub const PORTAL_TRAVEL: i32 = 1032;
 }
 
 impl Packet for LevelEvent {

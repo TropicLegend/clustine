@@ -27,13 +27,13 @@ use clustine_protocol::packets::play::{
     ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
     Cooldown, DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
     PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
-    RemoveEntities, RemoveMobEffect, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
-    SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
-    SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
-    SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat,
-    TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle, entity_data,
-    game_event, game_mode, inventory as protocol_inventory, level_event, player_info, pose,
-    relative,
+    RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk,
+    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
+    SetExperience, SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound,
+    SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition,
+    SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle,
+    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
+    pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -601,7 +601,38 @@ struct PlayerView {
     listed: BTreeSet<PlayerId>,
     /// Whether a batch has been sent that the client has not confirmed.
     batch_outstanding: bool,
+    /// The change of dimension under way: the client has been sent `Respawn`, and
+    /// waits, its moves held back, until the destination says it placed the player
+    /// (`docs/groundwork/p-plan.md`, section 4.2).
+    travelling: Option<Travelling>,
     batch_size: usize,
+}
+
+/// A change of dimension under way: since when, and how the player goes, which the
+/// end of it shows (the portal's sound).
+#[derive(Debug, Clone, Copy)]
+struct Travelling {
+    since: Instant,
+    way: Option<clustine_world::Way>,
+}
+
+/// The teleport a travelling client is said to await: no teleport has this id, so
+/// that its moves are held back until the teleport that places it
+/// (`docs/groundwork/p-plan.md`, section 4.2, R N3).
+const TRAVELLING: i32 = i32::MIN;
+
+/// Whether `input` has nothing to do with where the player is, so that it is taken
+/// across a change of dimension: a held slot, a creative slot, a swap of hands and
+/// flying (the plan, section 4.2, R D11). Moves and what is aimed at blocks or
+/// entities are of the old level.
+fn has_no_place(input: &PlayerInput) -> bool {
+    matches!(
+        input,
+        PlayerInput::SelectSlot { .. }
+            | PlayerInput::SetInventorySlot { .. }
+            | PlayerInput::SwapHands
+            | PlayerInput::SetFlying { .. }
+    )
 }
 
 /// The edge's link to a region.
@@ -1593,7 +1624,14 @@ impl Fanout {
             .iter()
             .filter(|(_, view)| {
                 let waiting = view.kept_inputs.front().map(|(_, since, _)| *since);
-                let since = [view.joining_since, waiting].into_iter().flatten().min();
+                // A travelling player as a joining one: the destination places them,
+                // or they are put out, and placed by their stay when they come back
+                // (`docs/groundwork/p-plan.md`, section 4.2, R N3).
+                let travelling = view.travelling.map(|travelling| travelling.since);
+                let since = [view.joining_since, waiting, travelling]
+                    .into_iter()
+                    .flatten()
+                    .min();
                 since.is_some_and(|since| since.elapsed() > patience)
             })
             .map(|(player, _)| *player)
@@ -1634,6 +1672,7 @@ impl Fanout {
                 self.players.insert(
                     player,
                     PlayerView {
+                        travelling: None,
                         session,
                         name: profile.name.clone(),
                         outbound,
@@ -2157,11 +2196,16 @@ impl Fanout {
                 let to = self.living(to);
                 self.hand_over(player, from, to, transfer, back).await;
             }
-            // The second half of a change of dimension, P7's
-            // (`docs/groundwork/p-plan.md`, section 4.2). No region places a traveller
-            // before P9.
-            Durable::Placed { player, .. } => {
-                error!(%from, ?player, "a region placed a traveller, which this edge cannot show yet");
+            Durable::Placed {
+                player,
+                entity,
+                dimension,
+                pose,
+                flying,
+            } => {
+                if self.has_stay(player, entity) {
+                    self.placed(player, dimension, pose, flying).await;
+                }
             }
             Durable::Refused { player, attempt } => {
                 // A player who has an entity is in the world through another way than
@@ -3293,14 +3337,6 @@ impl Fanout {
         transfer: PlayerTransfer,
         back: bool,
     ) {
-        // Until the edge keys its chunks by dimension (P7), a transfer in another
-        // dimension's coordinates would be taken for the overworld's; only P9's portals
-        // make one (`docs/groundwork/p-plan.md`, section 15.5).
-        debug_assert_eq!(
-            transfer.dimension,
-            clustine_world::Dimension::Overworld,
-            "a transfer of another dimension reached an edge that shows only the overworld"
-        );
         // What the player rides as their old region let them go is their word until
         // their new one says otherwise.
         // A transfer that names nothing says nothing of getting off, which the player's
@@ -3362,19 +3398,43 @@ impl Fanout {
         // A hand-over always closes the menu, and the close the old region said may
         // have been lost on a link that resumed (section 7 item 7).
         let closed = view.menus.departed();
+        // A transfer of another dimension than the client shows is a change of
+        // dimension: what triggers it is the difference, so that a departure turned
+        // back from a `NotMine` in the same dimension is none (R D10).
+        let changes_level = transfer.dimension != view.dimension;
+        let level = transfer.dimension;
         let again: Vec<_> = view
             .kept_inputs
             .iter()
+            .filter(|(_, _, input)| !changes_level || has_no_place(input))
             .map(|(number, _, input)| (*number, input.clone()))
             .collect();
-        debug!(name = %view.name, %from, %to, inputs = again.len(), "handing a player over");
+        debug!(name = %view.name, %from, %to, inputs = again.len(), changes_level, "handing a player over");
 
         // What the player sees is asked of their region from now on. On the link to
         // `to` this is before the arrival, so that one claim of that region covers the
         // chunk the player arrives in and their view. A player who arrives where the
         // word of their leaving comes from is asked for there already: the region
-        // that let them go has gone into it, or it into that region.
-        if to != from {
+        // that let them go has gone into it, or it into that region. One who changes
+        // dimension lets the old level go whole, and is shown nothing of the new one
+        // before the destination has placed them (`docs/groundwork/p-plan.md`, section
+        // 4.2, steps 1 to 5).
+        if changes_level {
+            self.leave_level(player, from).await;
+            if let Some(view) = self.players.get_mut(&player) {
+                view.dimension = transfer.dimension;
+                view.told_clocks = None;
+                view.travelling = Some(Travelling {
+                    since: Instant::now(),
+                    way: transfer.travel.map(|travel| travel.way),
+                });
+                view.awaiting_teleport.store(TRAVELLING, Ordering::Relaxed);
+            }
+            // The new view is asked of `to`; what the client is to be sent of it waits
+            // for the placing.
+            let _ = self.shift_view(player, chunk).await;
+            self.flush_asking().await;
+        } else if to != from {
             let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
             for chunk in &seen {
                 self.unwant(from, *chunk);
@@ -3400,9 +3460,193 @@ impl Fanout {
             };
             self.send_to_region(to, message).await;
         }
+        if changes_level {
+            // Step 7: only now the client, after the region has been told. It drops its
+            // level and its entities, keeping its own entity's data (`Respawn`, keep 3).
+            let respawn = [
+                encoded(&Respawn {
+                    spawn: spawn_info(&self.config, level),
+                    data_to_keep: Respawn::KEEP_ALL_DATA,
+                }),
+                encoded(&ChangeDifficulty {
+                    difficulty: clustine_world::Difficulty::WORLD.id() as u8,
+                    locked: false,
+                }),
+            ];
+            self.send_to_player(player, respawn).await;
+            return;
+        }
         // Normally the view has followed the move already; this covers a player who was
         // let go without having been seen to move, such as one who joined right there.
         self.move_view(player, chunk).await;
+    }
+
+    /// The second half of a change of dimension, or a travel within one (a gateway): the
+    /// destination has placed the player at `pose`. The client is sent, in the order
+    /// the game sends them (`docs/groundwork/p-brief.md`, section 3.1, items 8 to 17):
+    /// where they are, as a teleport it must accept, which lets its moves through
+    /// again; what they may do; the level's information, ending with the wait for its
+    /// chunks; the portal's sound. Then its view and its chunks. The inventory is the
+    /// destination's, asked of it whole.
+    async fn placed(&mut self, player: PlayerId, dimension: Dimension, pose: Pose, flying: bool) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        if view.dimension != dimension {
+            // A placing in another dimension than the client was last sent to: the
+            // edge did not see the departure that went there, which a transfer of
+            // another dimension always is.
+            error!(name = %view.name, ?dimension, now = ?view.dimension, "a player was placed in another dimension than their client shows");
+            return;
+        }
+        let travelling = view.travelling.take();
+        view.teleports = view.teleports.wrapping_add(1).max(1);
+        let teleport_id = view.teleports;
+        view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
+        let flags = if flying {
+            CREATIVE_ABILITIES | abilities::FLYING
+        } else {
+            CREATIVE_ABILITIES
+        };
+        let mut packets = vec![
+            // The game keeps the velocity the client has (`Relative.DELTA`).
+            encoded(&SynchronizePlayerPosition {
+                teleport_id,
+                x: pose.position.x,
+                y: pose.position.y,
+                z: pose.position.z,
+                velocity_x: 0.0,
+                velocity_y: 0.0,
+                velocity_z: 0.0,
+                yaw: pose.yaw,
+                pitch: pose.pitch,
+                relative_flags: relative::DELTA_X | relative::DELTA_Y | relative::DELTA_Z,
+            }),
+            encoded(&PlayerAbilities {
+                flags,
+                flying_speed: 0.05,
+                field_of_view_modifier: 0.1,
+            }),
+        ];
+        if travelling.is_some() {
+            packets.extend([
+                encoded(&SetDefaultSpawnPosition {
+                    dimension: OVERWORLD.to_owned(),
+                    position: Position {
+                        x: self.world_spawn.x,
+                        y: self.world_spawn.y,
+                        z: self.world_spawn.z,
+                    },
+                    yaw: 0.0,
+                    pitch: 0.0,
+                }),
+                encoded(&GameEvent {
+                    event: game_event::START_WAITING_FOR_LEVEL_CHUNKS,
+                    value: 0.0,
+                }),
+            ]);
+        }
+        let portal = travelling
+            .and_then(|travelling| travelling.way)
+            .is_some_and(|way| matches!(way, clustine_world::Way::NetherPortal { .. }));
+        if portal {
+            packets.push(encoded(&LevelEvent {
+                event: level_event::PORTAL_TRAVEL,
+                position: Position { x: 0, y: 0, z: 0 },
+                data: 0,
+                global: false,
+            }));
+        }
+        if !self.send_to_player(player, packets).await {
+            return;
+        }
+        // Its inventory as the destination has it: the answer to a resync is the
+        // inventory whole (`PlayerEvent::NoMenu`).
+        self.player_input_unchecked(player, PlayerInput::MenuResync)
+            .await;
+        let center = ChunkPos::containing(pose.position.x, pose.position.z);
+        self.show_level(player, center).await;
+    }
+
+    /// Shows a client the level it was placed in: its view centred on `center`, the
+    /// entities in it and the chunks, as a join's view is.
+    async fn show_level(&mut self, player: PlayerId, center: ChunkPos) {
+        let Some(view) = self.players.get(&player) else {
+            return;
+        };
+        if view.center != center || view.wanted.is_empty() {
+            self.move_view(player, center).await;
+        }
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let mut packets = vec![encoded(&SetCenterChunk {
+            chunk_x: view.center.x,
+            chunk_z: view.center.z,
+        })];
+        for shown in self.entities.values() {
+            packets.extend(view.update_visibility(player, shown, false, &mut self.wire));
+        }
+        for (vehicle, riders) in &effective_passengers(&self.passengers, &self.rides_word) {
+            let shows = |key: &EntityId| view.visible.contains_key(key);
+            if (shows(vehicle) || riders.iter().any(shows))
+                && let Some(packet) = passengers_packet(view, *vehicle, riders, &mut self.wire)
+            {
+                packets.push(packet);
+            }
+        }
+        if self.send_to_player(player, packets).await {
+            self.send_chunks(player).await;
+        }
+    }
+
+    /// Lets the level the client shows go whole, as at a change of dimension: the
+    /// client drops its chunks and its entities with the `Respawn` that follows, so
+    /// nothing is unloaded or removed one by one. The view's chunks are counted out of
+    /// the replica and let go at `from`, the region the player was of.
+    async fn leave_level(&mut self, player: PlayerId, from: RegionId) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let dimension = view.dimension;
+        let wanted = std::mem::take(&mut view.wanted);
+        let pending = std::mem::take(&mut view.pending);
+        view.sent.clear();
+        view.replace.clear();
+        view.batch_outstanding = false;
+        let visible: Vec<EntityId> = std::mem::take(&mut view.visible).into_keys().collect();
+        for position in &pending {
+            if let Some(chunk) = self.replica.get_mut(&LevelChunk::new(dimension, *position)) {
+                chunk.waits_no_more(player);
+            }
+        }
+        for position in &wanted {
+            let at = LevelChunk::new(dimension, *position);
+            let chunk = self
+                .replica
+                .get_mut(&at)
+                .expect("viewed chunks are in the replica");
+            chunk.viewers -= 1;
+            if chunk.viewers == 0 {
+                self.queues.take_out(at, chunk);
+                self.replica.remove(&at);
+                self.marked.remove(&at);
+            }
+        }
+        for position in &pending {
+            let at = LevelChunk::new(dimension, *position);
+            if self.replica.contains_key(&at) {
+                self.requeue(at);
+            }
+        }
+        for position in &wanted {
+            self.unwant(from, *position);
+        }
+        for entity in visible {
+            self.release_wire(entity);
+        }
+        self.forget_unwatched_entities();
+        self.flush_asking().await;
     }
 
     /// Gives up an entity that a region let go and that has nowhere to go: its player
@@ -3724,7 +3968,25 @@ impl Fanout {
         if !self.session_matches(player, session) {
             return;
         }
-        let view = self.players.get_mut(&player).expect("session matched");
+        // What a travelling client does that has to do with where it is, is of the
+        // level it has left: dropped as its moves are (`docs/groundwork/p-plan.md`,
+        // section 4.2, "Inputs").
+        let travelling = self
+            .players
+            .get(&player)
+            .is_some_and(|view| view.travelling.is_some());
+        if travelling && !has_no_place(&input) {
+            return;
+        }
+        self.player_input_unchecked(player, input).await;
+    }
+
+    /// Passes `input` on to the player's region as theirs, numbered and kept as every
+    /// input is: what the client sent, or what the edge asks for them.
+    async fn player_input_unchecked(&mut self, player: PlayerId, input: PlayerInput) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
         // An input names the stay it is of by its entity. Of a player who has
         // not been placed in the world the edge knows none, and their client,
         // which has not been put into the world, has nothing to say of what a
@@ -4872,9 +5134,16 @@ impl Fanout {
             inventory,
             ..
         } = entering;
+        // The level is the placing region's: a stay kept in another dimension than the
+        // overworld is placed by a region of it (`docs/groundwork/p-plan.md`, section 4.2).
+        let Some(region) = self.players.get(&player).map(|view| view.region) else {
+            return false;
+        };
+        let dimension = self.dimension_of(region);
         let Some(view) = self.players.get_mut(&player) else {
             return false;
         };
+        view.dimension = dimension;
         // Placing the player is the first teleport the client has to confirm.
         let teleport_id = 1;
         view.teleports = teleport_id;
@@ -4885,7 +5154,7 @@ impl Fanout {
             CREATIVE_ABILITIES
         };
         let entered = [
-            encoded(&login_packet(self.wire.of(entity), &self.config)),
+            encoded(&login_packet(self.wire.of(entity), &self.config, dimension)),
             // The world's difficulty, unlocked as a new dedicated server's is; a client's
             // change of it is not taken (`docs/groundwork/n7k-plan.md`, section 10).
             encoded(&ChangeDifficulty {
@@ -5946,7 +6215,9 @@ impl Fanout {
         let Some(view) = self.players.get_mut(&player) else {
             return true;
         };
-        if view.batch_outstanding || view.pending.is_empty() {
+        // A travelling client is sent nothing of its new level before it is placed
+        // there (`docs/groundwork/p-plan.md`, section 4.2).
+        if view.batch_outstanding || view.pending.is_empty() || view.travelling.is_some() {
             return true;
         }
         let center = view.center;
@@ -6514,6 +6785,7 @@ impl PlayerView {
             || matches!(&state.kind, EntityKind::Player { player: of, .. } if *of == me);
         let in_view = in_world
             && !own
+            && self.travelling.is_none()
             && shown.dimension == self.dimension
             && self.wanted.contains(&state.chunk());
         let shown = self.visible.contains_key(&state.entity);
@@ -7069,36 +7341,54 @@ fn view_area(center: ChunkPos, view_distance: i32) -> BTreeSet<ChunkPos> {
     area
 }
 
-fn login_packet(entity_id: i32, config: &FanoutConfig) -> Login {
-    let dimension_type = synced_registry("minecraft:dimension_type")
-        .and_then(|registry| registry.id_of(OVERWORLD))
-        .expect("the overworld is a vanilla dimension type");
+/// The login of a player who enters the world in `dimension`: every dimension the
+/// world has, and the one they are in.
+fn login_packet(entity_id: i32, config: &FanoutConfig, dimension: Dimension) -> Login {
     Login {
         entity_id,
         hardcore: false,
-        dimension_names: vec![OVERWORLD.to_owned()],
+        dimension_names: Dimension::ALL
+            .iter()
+            .map(|dimension| dimension.type_name().to_owned())
+            .collect(),
         max_players: config.max_players as i32,
         view_distance: config.view_distance,
         simulation_distance: config.view_distance,
         reduced_debug_info: false,
         enable_respawn_screen: true,
         limited_crafting: false,
-        spawn: SpawnInfo {
-            dimension_type,
-            dimension_name: OVERWORLD.to_owned(),
-            // The client blurs the borders of biomes with it, as the server's surface
-            // did.
-            hashed_seed: config.login.hashed_seed,
-            game_mode: game_mode::CREATIVE,
-            previous_game_mode: None,
-            is_debug: false,
-            is_flat: config.login.flat,
-            death_location: None,
-            portal_cooldown: 0,
-            sea_level: config.login.sea_level,
-        },
+        spawn: spawn_info(config, dimension),
         online_mode: false,
         enforces_secure_chat: false,
+    }
+}
+
+/// What a client is told of the level of `dimension` it enters, at its login and at a
+/// change of dimension (`CommonPlayerSpawnInfo`; `docs/groundwork/p-brief.md`, section
+/// 3.1).
+fn spawn_info(config: &FanoutConfig, dimension: Dimension) -> SpawnInfo {
+    let dimension_type = synced_registry("minecraft:dimension_type")
+        .and_then(|registry| registry.id_of(dimension.type_name()))
+        .expect("the three dimensions are vanilla dimension types");
+    SpawnInfo {
+        dimension_type,
+        dimension_name: dimension.type_name().to_owned(),
+        // The client blurs the borders of biomes with it, as the server's surface did.
+        hashed_seed: config.login.hashed_seed,
+        game_mode: game_mode::CREATIVE,
+        previous_game_mode: None,
+        is_debug: false,
+        // Only the flat world's overworld is flat: its Nether and End are those of
+        // seed 0 (`docs/groundwork/p-plan.md`, decision 9).
+        is_flat: config.login.flat && dimension == Dimension::Overworld,
+        death_location: None,
+        portal_cooldown: 0,
+        sea_level: match dimension {
+            Dimension::Overworld => config.login.sea_level,
+            // The noise settings' `sea_level` of the Nether and of the End.
+            Dimension::Nether => 32,
+            Dimension::End => 0,
+        },
     }
 }
 
@@ -9195,6 +9485,8 @@ mod scenarios {
     const EAST: RegionId = RegionId(1);
     const NORTH: RegionId = RegionId(2);
     const REGIONS: [RegionId; 3] = [WEST, EAST, NORTH];
+    /// A region of the Nether, linked only where a test asks for it.
+    const NETHER: RegionId = RegionId(10);
     /// Regions that come and go in the tests of merges and splits: one more that is
     /// there from the start of the world, and the parts that are split off.
     const SOUTH: RegionId = RegionId(3);
@@ -9325,12 +9617,18 @@ mod scenarios {
         gone: BTreeSet<RegionId>,
     }
 
-    /// A link to `region` whose owner has `epoch`, and the worker's end of it.
+    /// A link to `region` whose owner has `epoch`, and the worker's end of it: of the
+    /// Nether for [`NETHER`], of the overworld for every other.
     fn link_to(region: RegionId, epoch: u64) -> (RegionLink, WorkerEnd) {
         let (end, worker) = link::in_process(1024);
+        let dimension = if region == NETHER {
+            Dimension::Nether
+        } else {
+            Dimension::Overworld
+        };
         (
             RegionLink {
-                dimension: Default::default(),
+                dimension,
                 region,
                 epoch,
                 end,
@@ -9588,6 +9886,7 @@ mod scenarios {
             self.attempts.insert(player, self.sessions);
             let session = SessionId(self.sessions);
             let (outbound, packets) = mpsc::channel(4096);
+            let awaiting = Arc::new(AtomicI32::new(NO_TELEPORT));
             let join = Command::Join {
                 session,
                 profile: Profile {
@@ -9596,10 +9895,10 @@ mod scenarios {
                 },
                 requested_view_distance: requested,
                 outbound,
-                awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
+                awaiting_teleport: Arc::clone(&awaiting),
             };
             self.commands.send(join).await.unwrap();
-            Client::new(player, session, packets, Arc::clone(&self.ledger))
+            Client::new(player, session, packets, Arc::clone(&self.ledger), awaiting)
         }
 
         /// A player joins and the western region places them as `entity` where
@@ -9993,6 +10292,11 @@ mod scenarios {
         menus: Vec<ClientboundPlay>,
         /// Every explosion it was sent, in order.
         explosions: Vec<clustine_protocol::packets::play::Explode>,
+        /// The teleport its connection waits for the client to accept, as the edge sets
+        /// it: moves are held back while it is not [`NO_TELEPORT`].
+        awaiting: Arc<AtomicI32>,
+        /// Every change of level it was sent, in order.
+        respawns: Vec<Respawn>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -10035,12 +10339,15 @@ mod scenarios {
             session: SessionId,
             packets: mpsc::Receiver<Bytes>,
             ledger: WireLedger,
+            awaiting: Arc<AtomicI32>,
         ) -> Self {
             Self {
                 player,
                 session,
                 packets,
                 ledger,
+                awaiting,
+                respawns: Vec::new(),
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
@@ -10246,6 +10553,12 @@ mod scenarios {
                 ClientboundPlay::SetEntityLink(link) => self.links.push(link),
                 ClientboundPlay::SynchronizePlayerPosition(teleport) => {
                     self.teleports.push(teleport);
+                }
+                // A client drops the level it shows, its chunks and its entities.
+                ClientboundPlay::Respawn(respawn) => {
+                    self.chunks.clear();
+                    self.entities.clear();
+                    self.respawns.push(respawn);
                 }
                 ClientboundPlay::SetHeadRotation(head) => {
                     self.named.push((Naming::HeadRotation, head.entity_id));
@@ -11510,6 +11823,259 @@ mod scenarios {
             }
         }
         assert!(client.connected());
+        edge.end().await;
+    }
+
+    /// Where a portal in the west sends player 1 in the Nether.
+    const IN_THE_NETHER: ChunkPos = ChunkPos::new(-3, 2);
+
+    /// Player 1's transfer as the west lets them go through a Nether portal: in the
+    /// Nether's coordinates, with the travel (`docs/groundwork/p-plan.md`, section
+    /// 15.4).
+    fn through_a_portal(last_input: u64) -> PlayerTransfer {
+        let mut moved = transfer(EntityId(5), last_input, IN_THE_NETHER);
+        moved.dimension = Dimension::Nether;
+        moved.travel = Some(clustine_world::Travel {
+            to: Dimension::Nether,
+            target: block_of(IN_THE_NETHER),
+            way: clustine_world::Way::NetherPortal {
+                axis: Some(clustine_world::PortalAxis::X),
+                relative: [clustine_world::Double(0.5); 3],
+            },
+        });
+        moved
+    }
+
+    /// An edge with the Nether's region linked, and player 1 in the west as entity 5,
+    /// their view served, let go through a portal to the Nether.
+    async fn sent_to_the_nether() -> (Harness, Client) {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        for chunk in view(HOME) {
+            let ask = edge.ask(WEST, chunk);
+            edge.tell(WEST, snapshot(chunk, ask));
+        }
+        edge.quiet().await;
+        client.drain();
+        assert!(!client.chunks.is_empty());
+        edge.say(
+            WEST,
+            Durable::Departed {
+                player: player(1),
+                transfer: through_a_portal(0),
+                to: NETHER,
+            },
+        );
+        edge.settle(WEST).await;
+        (edge, client)
+    }
+
+    /// Section 4.2, the first half: the region the player goes to is asked for their
+    /// new view and told of them before the client hears anything; the client is told
+    /// `Respawn` in the Nether, keeping its own entity's data, and the world's
+    /// difficulty, drops its level, and is sent nothing of the new one, chunks least
+    /// of all, until it is placed; its moves are held back as while a teleport waits.
+    #[tokio::test]
+    async fn a_player_sent_to_another_dimension_is_respawned_there_and_shown_nothing_before_they_are_placed()
+     {
+        let (mut edge, mut client) = sent_to_the_nether().await;
+        let said = edge.said(NETHER).await;
+        let arrival = said
+            .iter()
+            .position(|message| matches!(message.body, EdgeToWorker::PlayerArrive { .. }))
+            .expect("the player is passed on");
+        let mut before = BTreeSet::new();
+        for message in &said[..arrival] {
+            if let EdgeToWorker::Subscribe { chunks, .. } = &message.body {
+                before.extend(chunks.iter().copied());
+            }
+        }
+        assert_eq!(before, view(IN_THE_NETHER));
+        // Nothing of the overworld's view is asked of the west any more.
+        edge.quiet().await;
+        assert!(edge.at(WEST).chunks(Role::Viewer).is_empty());
+
+        client.drain();
+        assert_eq!(client.respawns.len(), 1);
+        let respawn = &client.respawns[0];
+        assert_eq!(respawn.spawn.dimension_name, "minecraft:the_nether");
+        assert_eq!(respawn.data_to_keep, Respawn::KEEP_ALL_DATA);
+        assert!(
+            !respawn.spawn.is_flat,
+            "only the flat world's overworld is flat"
+        );
+        assert_eq!(respawn.spawn.sea_level, 32);
+        assert!(client.chunks.is_empty() && client.entities.is_empty());
+        assert_eq!(client.awaiting.load(Ordering::Relaxed), TRAVELLING);
+
+        // The Nether's chunks come, and are not sent before the player is placed.
+        let sent = client.sent.len();
+        for chunk in view(IN_THE_NETHER) {
+            let ask = edge.ask(NETHER, chunk);
+            edge.tell(NETHER, snapshot(chunk, ask));
+        }
+        edge.quiet().await;
+        client.drain();
+        assert_eq!(client.sent.len(), sent, "no chunk before the placing");
+        edge.end().await;
+    }
+
+    /// Section 4.2, the second half: once the Nether's region says it placed the
+    /// player, the client is sent where they are, as a teleport it must accept, their
+    /// abilities, the level's information ending with the wait for its chunks, and
+    /// the portal's sound; then its view and its chunks. The region is asked for the
+    /// inventory whole.
+    #[tokio::test]
+    async fn a_player_placed_in_the_nether_is_sent_where_they_are_and_then_the_nether() {
+        let (mut edge, mut client) = sent_to_the_nether().await;
+        edge.quiet().await;
+        for chunk in view(IN_THE_NETHER) {
+            let ask = edge.ask(NETHER, chunk);
+            edge.tell(NETHER, snapshot(chunk, ask));
+        }
+        edge.quiet().await;
+        client.drain();
+        let (teleports, ids) = (client.teleports.len(), client.ids.len());
+
+        let placed_at = within(IN_THE_NETHER);
+        edge.say(
+            NETHER,
+            Durable::Placed {
+                player: player(1),
+                entity: EntityId(5),
+                dimension: Dimension::Nether,
+                pose: Pose::at(placed_at),
+                flying: false,
+            },
+        );
+        edge.settle(NETHER).await;
+        // Confirming each batch of chunks, as a client does.
+        edge.sync(&mut client).await;
+        let teleport = &client.teleports[teleports];
+        assert_eq!(
+            (teleport.x, teleport.y, teleport.z),
+            (placed_at.x, placed_at.y, placed_at.z)
+        );
+        assert_eq!(
+            client.awaiting.load(Ordering::Relaxed),
+            teleport.teleport_id,
+            "the moves wait for the client to accept the placing"
+        );
+        assert_ne!(teleport.teleport_id, TRAVELLING);
+        // In the game's order: the position, the abilities, the spawn's position, the
+        // wait for chunks, the portal's sound; then the centre and the chunks.
+        let after: Vec<i32> = client.ids[ids..].to_vec();
+        let order = [
+            clustine_protocol::packet_ids::play::clientbound::PLAYER_POSITION,
+            clustine_protocol::packet_ids::play::clientbound::PLAYER_ABILITIES,
+            clustine_protocol::packet_ids::play::clientbound::SET_DEFAULT_SPAWN_POSITION,
+            clustine_protocol::packet_ids::play::clientbound::GAME_EVENT,
+            clustine_protocol::packet_ids::play::clientbound::LEVEL_EVENT,
+            clustine_protocol::packet_ids::play::clientbound::SET_CHUNK_CACHE_CENTER,
+        ];
+        assert_eq!(after[..order.len()], order, "{after:?}");
+        assert!(
+            client
+                .level_events
+                .iter()
+                .any(|event| event.event == level_event::PORTAL_TRAVEL)
+        );
+        assert_eq!(
+            client.chunks.keys().copied().collect::<BTreeSet<_>>(),
+            view(IN_THE_NETHER),
+            "the Nether's chunks follow"
+        );
+        let resync = edge.said(NETHER).await.into_iter().any(|message| {
+            matches!(
+                message.body,
+                EdgeToWorker::Input {
+                    input: PlayerInput::MenuResync,
+                    ..
+                }
+            )
+        });
+        assert!(resync, "the inventory is asked of the Nether's region");
+        edge.end().await;
+    }
+
+    /// Section 4.2, "Inputs": of what the client did before the portal and no region
+    /// applied, only what has nothing to do with where they are is passed on; and what
+    /// it does in the gap that is aimed at the old level is dropped.
+    #[tokio::test]
+    async fn only_inputs_that_have_no_place_cross_a_change_of_dimension() {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let client = edge.joined(player(1), EntityId(5)).await;
+        edge.input(&client, PlayerInput::SelectSlot { slot: 3 })
+            .await;
+        edge.input(&client, PlayerInput::SwapHands).await;
+        edge.input(
+            &client,
+            PlayerInput::Dig {
+                position: block_of(HOME),
+                sequence: 1,
+            },
+        )
+        .await;
+        edge.quiet().await;
+        edge.say(
+            WEST,
+            Durable::Departed {
+                player: player(1),
+                transfer: through_a_portal(0),
+                to: NETHER,
+            },
+        );
+        edge.settle(WEST).await;
+        edge.input(&client, PlayerInput::SelectSlot { slot: 5 })
+            .await;
+        edge.input(
+            &client,
+            PlayerInput::Dig {
+                position: block_of(HOME),
+                sequence: 2,
+            },
+        )
+        .await;
+        let inputs: Vec<PlayerInput> = edge
+            .said(NETHER)
+            .await
+            .into_iter()
+            .filter_map(|message| match message.body {
+                EdgeToWorker::Input { input, .. } => Some(input),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            inputs,
+            [
+                PlayerInput::SelectSlot { slot: 3 },
+                PlayerInput::SwapHands,
+                PlayerInput::SelectSlot { slot: 5 }
+            ]
+        );
+        edge.end().await;
+    }
+
+    /// Section 4.2: a travelling view has a patience, as a join has. A player the
+    /// destination does not place in it is put out.
+    #[tokio::test]
+    async fn a_player_nobody_places_after_a_portal_is_put_out_in_time() {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_millis(300)).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.say(
+            WEST,
+            Durable::Departed {
+                player: player(1),
+                transfer: through_a_portal(0),
+                to: NETHER,
+            },
+        );
+        edge.settle(WEST).await;
+        client.disconnected().await;
+        assert!(client.disconnected.is_some());
         edge.end().await;
     }
 
@@ -20025,6 +20591,7 @@ mod scenarios {
             self.attempts.insert(player, self.sessions);
             let session = SessionId(self.sessions);
             let (outbound, packets) = mpsc::channel(room);
+            let awaiting = Arc::new(AtomicI32::new(NO_TELEPORT));
             let join = Command::Join {
                 session,
                 profile: Profile {
@@ -20033,10 +20600,10 @@ mod scenarios {
                 },
                 requested_view_distance: None,
                 outbound,
-                awaiting_teleport: Arc::new(AtomicI32::new(NO_TELEPORT)),
+                awaiting_teleport: Arc::clone(&awaiting),
             };
             self.commands.send(join).await.unwrap();
-            Client::new(player, session, packets, Arc::clone(&self.ledger))
+            Client::new(player, session, packets, Arc::clone(&self.ledger), awaiting)
         }
 
         /// Makes sure that no region the test plays is asked for anything.
