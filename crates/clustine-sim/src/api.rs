@@ -868,6 +868,22 @@ pub enum PlayerInput {
     ReleaseUse,
 }
 
+impl PlayerInput {
+    /// Whether the input needs no place in the world: what a player does to their
+    /// inventory and their flying, which the edge passes on while their client is
+    /// between dimensions and a waiting stay keeps for its placing
+    /// (`docs/groundwork/p-plan.md`, sections 16.7 and 16.8).
+    pub fn has_no_place(&self) -> bool {
+        matches!(
+            self,
+            Self::SelectSlot { .. }
+                | Self::SetInventorySlot { .. }
+                | Self::SwapHands
+                | Self::SetFlying { .. }
+        )
+    }
+}
+
 /// The kinds of click in a menu (the game's `ContainerInput`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClickKind {
@@ -2182,10 +2198,6 @@ pub struct TickOutput {
     /// What the region asks the store's portal index, answered in a later tick's
     /// [`TickInputs::portal_answers`].
     pub portal_queries: Vec<PortalQuery>,
-    /// Chunks a traveller waiting to be placed needs loaded, generated or copied: the
-    /// search's square and where it will stand (the plan, section 15.5), which the
-    /// worker keeps as it keeps an arrival's.
-    pub travel_tickets: Vec<ChunkPos>,
 }
 
 /// A question to the store's portal index: the Nether portals within `radius` blocks

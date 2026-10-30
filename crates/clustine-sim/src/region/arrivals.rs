@@ -26,7 +26,7 @@ use crate::api::{RegionEvent, TickOutput};
 
 /// How long an arrival ticket keeps a chunk loaded after its last arrival is taken and
 /// none waits for it (ADR-0028, section 5: "and then 100 ticks").
-const ARRIVAL_TICKET_FOR: u64 = 100;
+pub(super) const ARRIVAL_TICKET_FOR: u64 = 100;
 
 /// How long a crossing counts as entities working at its line (the plan, section 5,
 /// G8, as circuits' changes count, ADR-0027 section 7).

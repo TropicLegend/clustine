@@ -478,9 +478,8 @@ impl Region {
     }
 
     /// What a portal does as its clock fires for `who`, in the portal of `kind` it
-    /// entered at `entry`: the cooldown is set already. Step P9 fills this: the
-    /// traveller's removal and its travel (`docs/groundwork/p-plan.md`, section 5.1).
-    /// Until then nobody goes anywhere.
+    /// entered at `entry`: the cooldown is set already. The traveller leaves on its
+    /// travel (`travel.rs`).
     pub(crate) fn portal_fired(
         &mut self,
         who: PortalUser,
@@ -488,10 +487,10 @@ impl Region {
         entry: BlockPos,
         output: &mut TickOutput,
     ) {
-        let _ = (who, kind, entry, output);
+        self.travel_fired(who, kind, entry, output);
     }
 }
 
 #[cfg(test)]
 #[path = "portals_tests.rs"]
-mod tests;
+pub(super) mod tests;

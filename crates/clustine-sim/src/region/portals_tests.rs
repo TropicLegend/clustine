@@ -22,13 +22,13 @@ use crate::placement::Click;
 use crate::state::RegionState;
 
 /// The frame's plane, and the x of its inside's two columns.
-const Z: i32 = 5;
-const LEFT: i32 = 2;
-const RIGHT: i32 = 3;
+pub(in crate::region) const Z: i32 = 5;
+pub(in crate::region) const LEFT: i32 = 2;
+pub(in crate::region) const RIGHT: i32 = 3;
 
 /// A frame of obsidian across x (its inside two wide and three high, at x 2 and 3 and
 /// from one above `floor` up), without its corners, standing on the floor at `floor`.
-fn frame_x(floor: i32) -> impl Fn(BlockPos) -> Option<BlockState> {
+pub(in crate::region) fn frame_x(floor: i32) -> impl Fn(BlockPos) -> Option<BlockState> {
     move |pos| {
         let bottom = floor + 1;
         let top = bottom + 4;
@@ -48,13 +48,13 @@ fn frame_z(floor: i32) -> impl Fn(BlockPos) -> Option<BlockState> {
 }
 
 /// The six blocks inside the frame of [`frame_x`] on the floor at `floor`.
-fn inside(floor: i32) -> Vec<BlockPos> {
+pub(in crate::region) fn inside(floor: i32) -> Vec<BlockPos> {
     (floor + 2..=floor + 4)
         .flat_map(|y| [at(LEFT, y, Z), at(RIGHT, y, Z)])
         .collect()
 }
 
-fn portal(axis: &str) -> BlockState {
+pub(in crate::region) fn portal(axis: &str) -> BlockState {
     state(&format!("minecraft:nether_portal[axis={axis}]"))
 }
 
@@ -77,7 +77,12 @@ fn click_on(pos: BlockPos, face: ClickFace, held: i32) -> Click {
 }
 
 /// Uses `held` on the face `face` of `pos`; whether it did anything.
-fn use_on(region: &mut Region, pos: BlockPos, face: ClickFace, held: i32) -> bool {
+pub(in crate::region) fn use_on(
+    region: &mut Region,
+    pos: BlockPos,
+    face: ClickFace,
+    held: i32,
+) -> bool {
     let player = PlayerId(Uuid::from_u128(77));
     let click = click_on(pos, face, held);
     region.entity_item_used_on(&click, player, &mut TickOutput::default())
@@ -86,7 +91,7 @@ fn use_on(region: &mut Region, pos: BlockPos, face: ClickFace, held: i32) -> boo
 /// A region of `dimension` holding the 5×5 chunks about the origin's, loaded, with a
 /// stone floor at `floor` and what `blocks` names, ticked once: [`world`]'s, in any
 /// dimension.
-fn world_in(
+pub(in crate::region) fn world_in(
     dimension: Dimension,
     floor: i32,
     blocks: impl Fn(BlockPos) -> Option<BlockState>,
@@ -146,7 +151,7 @@ fn world_in(
 
 /// The overworld's world of the tests of TNT with a frame across x lit by flint and
 /// steel on its bottom beam.
-fn lit_portal() -> Region {
+pub(in crate::region) fn lit_portal() -> Region {
     let mut region = world(1, frame_x(FLOOR));
     assert!(use_on(
         &mut region,

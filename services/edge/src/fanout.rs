@@ -626,13 +626,7 @@ const TRAVELLING: i32 = i32::MIN;
 /// flying (the plan, section 4.2, R D11). Moves and what is aimed at blocks or
 /// entities are of the old level.
 fn has_no_place(input: &PlayerInput) -> bool {
-    matches!(
-        input,
-        PlayerInput::SelectSlot { .. }
-            | PlayerInput::SetInventorySlot { .. }
-            | PlayerInput::SwapHands
-            | PlayerInput::SetFlying { .. }
-    )
+    input.has_no_place()
 }
 
 /// The edge's link to a region.
@@ -5065,6 +5059,19 @@ impl Fanout {
     /// the leave would be in front of the arrival, the region would apply it to nobody
     /// and then take the stay in, with nobody behind it.
     async fn enter_by_arrival(&mut self, player: PlayerId, to: RegionId, transfer: PlayerTransfer) {
+        // A stay a portal sent on that no region has placed yet: the region it goes to
+        // places it when its wait is over, and says so with `Spawned`, which puts the
+        // client into the world there, in its dimension. Until then the client is not
+        // in the world, and the join's patience runs on (`docs/groundwork/p-plan.md`,
+        // section 16.8).
+        if transfer.travel.is_some() {
+            if let Some(view) = self.players.get_mut(&player) {
+                view.region = to;
+            }
+            self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
+                .await;
+            return;
+        }
         let entity = transfer.entity_id;
         let position = transfer.pose.position;
         let entering = Entering {

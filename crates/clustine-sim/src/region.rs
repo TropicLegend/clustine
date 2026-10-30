@@ -22,6 +22,7 @@ use crate::state::{
 
 mod animals;
 mod arrivals;
+mod arriving;
 mod arrows;
 mod attached;
 mod bells;
@@ -123,6 +124,7 @@ mod throws;
 mod ticks;
 mod tnt;
 mod trading;
+mod travel;
 mod trees;
 mod turtle_eggs;
 mod updates;
@@ -131,6 +133,7 @@ mod using;
 mod vehicles;
 mod vibrations;
 mod villagers_across;
+mod waiting;
 mod water_creatures;
 mod wind_bursts;
 
@@ -642,6 +645,12 @@ pub struct Region {
     /// with them on the way to another region, or whose discard came. Empty between
     /// ticks.
     gone: Vec<(PlayerId, EntityId, u32)>,
+    /// The players a portal sent on in this tick, with the face they had at it, let go
+    /// at its end with the other departures (`travel.rs`). Empty between ticks.
+    travelled: Vec<(Departure, PlayerFace)>,
+    /// The portal blocks the region made for travellers, with the tick of each, until
+    /// the index's answers have them (`arriving.rs`).
+    made_portals: Vec<(u64, BlockPos)>,
     /// The faces of players the region does not hold, and the world's players
     /// (`faces.rs`).
     faces: faces::Faces,
@@ -788,8 +797,8 @@ impl Region {
             lends_asked,
             clock: state.clock,
             dragon_fight: state.dragon_fight,
-            waiting: state.waiting,
-            waiting_travellers: state.waiting_travellers,
+            waiting: waiting::asking_again(state.waiting),
+            waiting_travellers: waiting::travellers_asking_again(state.waiting_travellers),
             lends_to_answer: Vec::new(),
             lend_tickets: BTreeMap::new(),
             letting_go: BTreeSet::new(),
@@ -808,6 +817,8 @@ impl Region {
             dismounted: Vec::new(),
             took: Vec::new(),
             gone: Vec::new(),
+            travelled: Vec::new(),
+            made_portals: Vec::new(),
             faces: faces::Faces::default(),
             sleep: sleep::SleepMemory::default(),
             custom_spawners: custom_spawners::Schedules::default(),
@@ -1057,6 +1068,13 @@ impl Region {
         self.entering.get(&player)
     }
 
+    /// The stay the region holds waiting to be placed for `player`, if it holds one: the
+    /// runner answers an edge's hello for it as for an entering one
+    /// (`docs/groundwork/p-plan.md`, section 16.8).
+    pub fn waiting_state(&self, player: PlayerId) -> Option<&crate::state::WaitingState> {
+        self.waiting.get(&player)
+    }
+
     /// What the region keeps for `edge`, if it knows the edge.
     pub fn edge(&self, edge: EdgeId) -> Option<&EdgeState> {
         self.edges.get(&edge)
@@ -1168,10 +1186,10 @@ impl Region {
                     self.drop_pending_seat_of_player(*entity, &mut output);
                     // The store judges whether it ends the player's time in the world;
                     // a stay the region holds of the player at or after it does not end.
-                    let held = self
-                        .players
-                        .get(player)
-                        .is_some_and(|held| (held.entity_id, held.hops) >= (*entity, *hops));
+                    let held = (self.players.get(player))
+                        .map(|held| (held.entity_id, held.hops))
+                        .or_else(|| self.waiting_stay(*player))
+                        .is_some_and(|held| held >= (*entity, *hops));
                     if !held {
                         self.gone.push((*player, *entity, *hops));
                     }
@@ -1245,7 +1263,11 @@ impl Region {
         self.pistons_may_retry = false;
         // The entities sent into the region's chunks, with the effects of their group and
         // before the entities tick (`arrivals.rs`).
+        self.take_travellers(&inputs.travellers, &mut output);
         self.take_arrivals(&inputs.arrivals, &mut output);
+        // The waits of the travellers, which place those that are ready
+        // (`arriving.rs`).
+        self.tick_waits(&inputs.portal_answers, &mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         // The raids, between the fluid ticks and the chunk source (`raids.rs`).
@@ -1349,6 +1371,7 @@ impl Region {
         for (id, _) in &departing {
             self.stop_sleep(*id, true, false, &mut output);
         }
+        let travelled = mem::take(&mut self.travelled);
         let departing = departing.into_iter().filter_map(|(id, to)| {
             let player = self.players.remove(&id)?;
             self.unseat_leaving(None, &player, &mut output);
@@ -1361,8 +1384,19 @@ impl Region {
                 to,
             ))
         });
-        let departing: Vec<Departure> = unplaced.into_iter().chain(departing).collect();
-        for (edge, id, transfer, to) in departing {
+        // Those a portal sent on keep the face they had at it, and no departed face:
+        // nobody here waits for their next one (`docs/groundwork/p-plan.md`, sections
+        // 16.7 and 16.8).
+        let departing: Vec<(Departure, Option<PlayerFace>)> = (unplaced.into_iter())
+            .chain(departing)
+            .map(|departure| (departure, None))
+            .chain(
+                travelled
+                    .into_iter()
+                    .map(|(departure, face)| (departure, Some(face))),
+            )
+            .collect();
+        for ((edge, id, transfer, to), at_portal) in departing {
             // The world store is told the place the next region begins with.
             let note = StayNote::Has {
                 // The vehicle a portal sends them on with, kept in their record until a
@@ -1387,7 +1421,7 @@ impl Region {
                     time_since_rest: transfer.time_since_rest,
                     raid_omen_position: transfer.raid_omen_position,
                 },
-                face: PlayerFace {
+                face: at_portal.clone().unwrap_or_else(|| PlayerFace {
                     sprinting: transfer.keys.sprint,
                     ..PlayerFace::of(
                         &transfer.pose,
@@ -1397,11 +1431,14 @@ impl Region {
                         transfer.selected_slot,
                         transfer.riding.map(|riding| riding.vehicle),
                     )
-                },
+                }),
                 let_go: true,
             };
             // Its mobs keep seeing the player until the next region's face comes.
-            if let StayNote::Has { face, .. } = &note {
+            if let StayNote::Has { face, .. } = &note
+                && at_portal.is_none()
+                && transfer.travel.is_none()
+            {
                 let face = face.clone();
                 self.faces
                     .departed(id, transfer.entity_id, transfer.hops, face, self.tick);
@@ -1547,13 +1584,19 @@ impl Region {
             self.entering.remove(&player);
             self.journal.entering.insert(player);
         }
+        // So do its waiting stays, whose entity was reported removed where the portal
+        // took them.
+        self.drop_waiting_of(id);
         // A departed player can have come back since, through this edge or another, and
         // keeps their entity when they do. Such an entity is either reported removed
         // above already or alive in the region still, and must not be reported again.
-        let alive: BTreeSet<_> = self
-            .players
-            .values()
+        let alive: BTreeSet<_> = (self.players.values())
             .map(|player| player.entity_id)
+            .chain(
+                self.waiting
+                    .values()
+                    .map(|waiting| waiting.transfer.entity_id),
+            )
             .collect();
         let Some(edge) = self.edges.get_mut(&id) else {
             return;
@@ -1575,7 +1618,10 @@ impl Region {
                 } => Some(transfer),
                 _ => None,
             };
+            // One a portal sent was reported removed where it fired, in the
+            // source's dimension (`docs/groundwork/p-plan.md`, section 16.7, D9).
             if let Some(transfer) = on_their_way
+                && transfer.travel.is_none()
                 && !alive.contains(&transfer.entity_id)
                 && reported.insert(transfer.entity_id)
             {
@@ -1664,6 +1710,12 @@ impl Region {
         if self.entering.get(&id).is_some_and(dead) {
             self.end_entering(id, output);
         }
+        if self
+            .waiting_stay(id)
+            .is_some_and(|waiting| waiting < (stay, hops))
+        {
+            self.end_waiting(id, output);
+        }
     }
 
     /// A player enters the world through `edge`.
@@ -1679,6 +1731,7 @@ impl Region {
         // old one, and one that was still entering as well.
         self.end_player(join.player, output);
         self.end_entering(join.player, output);
+        self.end_waiting(join.player, output);
         let entity_id = self.next_entity_id;
         if !self.entity_ids.contains(entity_id) {
             let refused = Durable::Refused {
@@ -1774,6 +1827,7 @@ impl Region {
             self.entering.remove(&id);
             self.journal.entering.insert(id);
         }
+        self.leave_waiting(edge, id, entity, attempt);
     }
 
     /// A player comes in from another region through `edge`.
@@ -1818,7 +1872,10 @@ impl Region {
         // that the stay has ended.
         let entering_later =
             (self.entering.get(&id)).is_some_and(|entering| entering.entity_id > arriving);
-        if entering_later || present.is_some_and(|(entity, _)| entity > arriving) {
+        let waiting = self.waiting_stay(id);
+        let later =
+            |stay: Option<(EntityId, u32)>| stay.is_some_and(|(entity, _)| entity > arriving);
+        if entering_later || later(present) || later(waiting) {
             nowhere_to_go(output);
             let ended = Durable::Ended {
                 player: id,
@@ -1852,6 +1909,18 @@ impl Region {
             Some(_) => self.end_player(id, output),
             None => {}
         }
+        // A waiting stay is met as one that is here: a copy of it handed on no more
+        // often changes nothing, and an earlier stay ends.
+        match waiting {
+            Some((entity, hops)) if entity == arriving => {
+                if hops >= transfer.hops {
+                    return;
+                }
+                self.forget_waiting(id);
+            }
+            Some(_) => self.end_waiting(id, output),
+            None => {}
+        }
         if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
             // Land lent away is told of when it is pinned back, and believed until then
             // (`docs/adr/0027-lending-at-a-line.md`, section 1).
@@ -1873,12 +1942,32 @@ impl Region {
                 return;
             }
         }
+        // A player a portal sent waits to be placed by their travel, apart from those
+        // in the world (`docs/groundwork/p-plan.md`, section 16.7).
+        if transfer.travel.is_some() {
+            self.take_waiting_stay(edge, id, transfer);
+            return;
+        }
         // Taken in whatever else the region knows of the chunk. A pinned region does
         // not know that a chunk of its area is its own before it has claimed it, while
         // the store tells its neighbours so all the same; sent back, the player would
         // be let go to this region again for ever. A chunk it knows nothing of is
         // claimed at the end of the tick, because the player stands in it.
-        let player = Player {
+        let player = self.player_of(edge, transfer);
+        // Those watching already show the entity if they saw it cross over; to them
+        // this is nothing new.
+        output
+            .events
+            .push(RegionEvent::EntitySpawned(player.entity_state(id)));
+        output.events.extend(player.equipment_shown());
+        self.players.insert(id, player);
+        self.rider_arrived(id, output);
+        self.journal.players.insert(id);
+    }
+
+    /// The player a transfer through `edge` makes, as a region takes them in.
+    fn player_of(&self, edge: EdgeId, transfer: &PlayerTransfer) -> Player {
+        Player {
             sleeping: None,
             respawn: None,
             entity_id: transfer.entity_id,
@@ -1933,16 +2022,7 @@ impl Region {
                     }
                 })
                 .collect(),
-        };
-        // Those watching already show the entity if they saw it cross over; to them
-        // this is nothing new.
-        output
-            .events
-            .push(RegionEvent::EntitySpawned(player.entity_state(id)));
-        output.events.extend(player.equipment_shown());
-        self.players.insert(id, player);
-        self.rider_arrived(id, output);
-        self.journal.players.insert(id);
+        }
     }
 
     /// The world store has answered the note of a stay that is entering: where the
@@ -2038,7 +2118,14 @@ impl Region {
                 place.selected_slot,
             ),
             Some((place, false)) => {
-                if let Some(to) = answer.holder {
+                // A place in another dimension that nobody holds is that dimension's
+                // home's to take (`docs/groundwork/p-plan.md`, section 16.7).
+                let elsewhere = answer.holder.or_else(|| {
+                    (place.dimension != self.config.dimension)
+                        .then(|| self.home_of(place.dimension))
+                        .flatten()
+                });
+                if elsewhere.is_some() || place.travel.is_some() {
                     // Another region held the place: the stay goes there without
                     // being placed here. Nothing is claimed and no entity is shown; the
                     // edge finds its view by the attempt the transfer carries.
@@ -2079,7 +2166,12 @@ impl Region {
                         },
                         unit: None,
                     };
-                    unplaced.push((edge, id, transfer, to));
+                    match elsewhere {
+                        Some(to) => unplaced.push((edge, id, transfer, to)),
+                        // A travel into this region's own dimension, whose target it
+                        // holds or nobody does: the stay waits here to be placed.
+                        None => self.take_waiting_stay(edge, id, &transfer),
+                    }
                     return;
                 }
                 // Nobody held it, or this region did. If the region knows nothing of
@@ -2223,6 +2315,9 @@ impl Region {
                 notes.insert((*id, 2, EntityId(0)), note);
             }
         }
+        for (id, note) in self.waiting_notes(first) {
+            notes.insert((id, 2, EntityId(0)), note);
+        }
         // Whoever was let go is in the region no longer, so no note is replaced.
         for (id, note) in let_go {
             notes.insert((id, 2, EntityId(0)), note);
@@ -2311,8 +2406,9 @@ impl Region {
         input: &PlayerInput,
         output: &mut TickOutput,
     ) {
-        // Input can arrive for a player who has just left.
+        // Input can arrive for a player who has just left, or who waits to be placed.
         let Some(player) = self.players.get_mut(&id) else {
+            self.waiting_input(edge, id, entity, number, input);
             return;
         };
         // Only the edge a player belongs to acts for them. What another one passes on is
@@ -2345,6 +2441,16 @@ impl Region {
         // stay needs no other name from here on.
         player.attempt = None;
         self.journal.players.insert(id);
+        self.act(id, input, output);
+    }
+
+    /// Does what a player's input says, counted applied already: an input of the tick,
+    /// or one a waiting stay kept for its placing (`waiting.rs`).
+    fn act(&mut self, id: PlayerId, input: &PlayerInput, output: &mut TickOutput) {
+        let Some(player) = self.players.get_mut(&id) else {
+            return;
+        };
+        let (edge, entity) = (player.edge, player.entity_id);
         let (input, off_hand) = match input {
             PlayerInput::WithOffHand(used) => (used.as_ref(), true),
             input => (input, false),
@@ -3638,8 +3744,10 @@ impl Region {
             .chain(self.arrival_ticket_chunks())
             .collect();
         let (tick, return_after) = (self.tick, self.config.return_after);
+        let standing: BTreeSet<ChunkPos> = (self.players.values().map(Player::chunk))
+            .chain(self.waiting_chunks())
+            .collect();
         let (land, tickets) = (&mut self.land, &self.tickets);
-        let standing: BTreeSet<ChunkPos> = self.players.values().map(Player::chunk).collect();
 
         // A chunk is used while a player stands in it or it has a ticket of either
         // kind. One that is held and not kept goes when nothing uses it and nothing

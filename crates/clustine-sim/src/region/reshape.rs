@@ -167,6 +167,7 @@ impl Region {
                 Some(_) | None => {
                     state.players.retain(|_, player| player.edge != *id);
                     state.entering.retain(|_, entering| entering.edge != *id);
+                    state.waiting.retain(|_, waiting| waiting.edge != *id);
                     state.edges.insert(*id, noted(b.start, tick));
                 }
             }
@@ -197,6 +198,32 @@ impl Region {
                 // a region split and merged again is as one that never was.
                 let by = i128::from(tick - 1) - i128::from(other.tick);
                 state.players.insert(*id, on_ticks_moved_by(player, by));
+            }
+        }
+        // The waiting stays of both, by the same rule against every stay the survivor
+        // has of the player, and the travellers of both, the survivor's first
+        // (`docs/groundwork/p-plan.md`, section 16.8).
+        for (id, waiting) in &other.waiting {
+            if !theirs.contains_key(&waiting.edge) {
+                continue;
+            }
+            let arriving = (waiting.transfer.entity_id, waiting.transfer.hops);
+            let present = (state.players.get(id)).map(|present| (present.entity_id, present.hops));
+            let held =
+                (state.waiting.get(id)).map(|held| (held.transfer.entity_id, held.transfer.hops));
+            if present.max(held).is_some_and(|stay| stay >= arriving) {
+                continue;
+            }
+            state.players.remove(id);
+            state.waiting.insert(*id, waiting.clone());
+        }
+        for traveller in &other.waiting_travellers {
+            if !state
+                .waiting_travellers
+                .iter()
+                .any(|held| held.id == traveller.id)
+            {
+                state.waiting_travellers.push(traveller.clone());
             }
         }
         // The asks for lends of both; those the survivor holds or is pinned to go when
@@ -351,7 +378,30 @@ impl Region {
                 new.players.insert(*id, player);
             }
         }
-        for (id, players) in went {
+        // The waiting stays and travellers whose chunk goes, go with it.
+        let going: BTreeSet<ChunkPos> = chunks.iter().copied().collect();
+        for (id, waiting) in &self.waiting {
+            let position = waiting.transfer.pose.position;
+            if going.contains(&ChunkPos::containing(position.x, position.z))
+                && let Some(mut waiting) = state.waiting.remove(id)
+            {
+                waiting.transfer.hops += 1;
+                let transfer = &waiting.transfer;
+                went.entry(waiting.edge).or_default().push((
+                    *id,
+                    transfer.entity_id,
+                    transfer.attempt,
+                ));
+                new.waiting.insert(*id, waiting);
+            }
+        }
+        let (theirs, ours) = mem::take(&mut state.waiting_travellers)
+            .into_iter()
+            .partition(|waiting| going.contains(&waiting.traveller.chunk.position));
+        new.waiting_travellers = theirs;
+        state.waiting_travellers = ours;
+        for (id, mut players) in went {
+            players.sort_unstable_by_key(|(player, _, _)| *player);
             let edge = state
                 .edges
                 .get_mut(&id)

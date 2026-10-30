@@ -412,7 +412,7 @@ impl Command {
 /// What another thread hands a runner's thread, which waits for it between two ticks.
 enum Order {
     /// A command to take.
-    Reshape(Command),
+    Reshape(Box<Command>),
     /// A release has been asked for, which [`RegionRunner::release_asked`] says: this
     /// only has the thread look now and not at its next tick.
     Release,
@@ -2628,8 +2628,22 @@ impl RegionRunner {
                     attempt: state.attempt,
                 })
             };
+            // A player a portal sent here who waits to be placed is entering to the
+            // edge, which holds their client between the dimensions until the placing
+            // (`docs/groundwork/p-plan.md`, section 16.8). The edge does not read the
+            // attempt of such an answer.
+            let waiting = |player: PlayerId| {
+                let state = self
+                    .region
+                    .waiting_state(player)
+                    .filter(|state| from_state && state.edge == edge)?;
+                Some(Presence::Entering {
+                    attempt: state.transfer.attempt.unwrap_or(0),
+                })
+            };
             let answer = |player: PlayerId| {
-                let found = present(player).or_else(|| entering(player));
+                let found =
+                    (present(player).or_else(|| entering(player))).or_else(|| waiting(player));
                 found.unwrap_or(Presence::Absent)
             };
             let mut answers: Vec<_> = resume
@@ -3006,7 +3020,7 @@ impl RegionRunner {
         }
         // The tick's questions to the portal index, behind its commit, which the answer
         // covers (`docs/groundwork/p-plan.md`, section 15.4). The chunks a waiting
-        // traveller needs (`output.travel_tickets`) are kept by P9, which first asks.
+        // traveller needs the region keeps loaded itself, as an arrival's.
         if !output.portal_queries.is_empty() {
             self.store.request(StoreRequest::Portals {
                 queries: output.portal_queries,
@@ -3704,7 +3718,7 @@ impl RegionRunner {
 
     fn take_order(&mut self, order: Order) {
         match order {
-            Order::Reshape(command) => self.take_command(command),
+            Order::Reshape(command) => self.take_command(*command),
             // Looked at by whoever took this, as before every step.
             Order::Release => {}
         }
@@ -4757,7 +4771,7 @@ impl Worker {
         // dropped, which calls `done`.
         let _ = self
             .commands
-            .send(Order::Reshape(Command::new(reshape, done)));
+            .send(Order::Reshape(Box::new(Command::new(reshape, done))));
     }
 
     /// Asks the region thread to release the region, as [`RegionRunner::begin_release`]

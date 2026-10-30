@@ -102,6 +102,16 @@ fn within_border_at(border: f64, x: f64, z: f64) -> bool {
     x >= -border && x < border && z >= -border && z < border
 }
 
+/// `WorldBorder.clampToBounds(double, double, double)` of a border of half-width
+/// `border` about (0, 0): x and z held within it, the high edge less 1e-5 (a float's),
+/// and the point taken as the block it is in (`BlockPos.containing`). A Nether portal's
+/// target is this of the traveller's scaled position (p-brief 2.2, item 2).
+pub fn clamp_to_bounds(border: f64, x: f64, y: f64, z: f64) -> BlockPos {
+    let high = border - f64::from(1.0e-5_f32);
+    let clamp = |value: f64| clamp(value, -border, high).floor() as i32;
+    BlockPos::new(clamp(x), y.floor() as i32, clamp(z))
+}
+
 /// `WorldBorder.clampToBounds(BlockPos)` (WorldBorder.txt 225–271): x and z held
 /// within the border, the high edge less 1e-5 (a float's), then floored as
 /// `BlockPos.containing` does.
