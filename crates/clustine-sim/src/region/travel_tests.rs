@@ -337,8 +337,7 @@ fn two_travellers_placed_in_one_tick_share_the_portal_the_first_made() {
     let mut made = 0;
     for x in -20..=20 {
         for z in -20..=20 {
-            // The test's chunks have no heightmaps, so the portal can be made on the
-            // game's platform, at 70.
+            // Wherever the portal was made, on the floor or on the game's platform.
             for y in 0..128 {
                 if region.block(at(x, y, z)).is_some_and(|state| {
                     clustine_blocks::data::is_block(state, blocks::NETHER_PORTAL)

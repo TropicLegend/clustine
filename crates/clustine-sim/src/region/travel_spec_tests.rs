@@ -978,9 +978,6 @@ fn where_there_is_no_portal_one_is_made_on_the_flat_ground_at_the_target() {
 /// as good a floor as any, and the portal is made on it, not on the fallback's
 /// platform at y = 70.
 #[test]
-#[ignore = "departs from the specification: a column whose walk reaches the world's \
-            bottom reads the block below it as unreadable and is passed over whole, so \
-            on a floor over air the portal is made on the fallback's platform at y = 70"]
 fn a_portal_is_made_on_a_floor_with_air_under_it() {
     let mut region = nether_over_the_void(|_| None);
     let (id, transfer) = traveller(1, at(6, 41, -3));
@@ -1203,8 +1200,6 @@ fn a_leave_by_entity_ends_a_waiting_stay() {
 /// 16.8 (A1): "a leave ... end[s] it ... with a `Has` that keeps the travel (a leave)
 /// or a `Gone` (a reset)".
 #[test]
-#[ignore = "departs from the specification: a leave of a waiting stay notes only a \
-            `Gone`, where section 16.8 (A1) says a `Has` that keeps the travel"]
 fn a_leave_of_a_waiting_stay_notes_a_has_that_keeps_the_travel() {
     let (output, _, id, transfer) = leave_by_entity();
     let entity = transfer.entity_id;
@@ -1458,10 +1453,6 @@ fn inputs_that_need_no_place_are_kept_and_applied_at_the_placing_and_the_rest_pa
 /// the edge the pose and flying the player has once placed; a `SetFlying` kept while
 /// waiting is among what they have.
 #[test]
-#[ignore = "departs from the specification: `Placed` carries the flying the player \
-            arrived with, though a `SetFlying` kept while they waited is applied at the \
-            same placing; the edge then shows them not flying while the region has them \
-            flying"]
 fn placed_says_the_flying_a_kept_set_flying_gave() {
     let (mut region, id, transfer) = one_waiting(None);
     assert!(!transfer.flying);

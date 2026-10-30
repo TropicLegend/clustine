@@ -80,6 +80,10 @@ impl Region {
         };
         if let Some(waiting) = self.waiting.remove(&id) {
             if ended(&waiting) {
+                // Its place as it was left, with the travel, then the end of the stay
+                // (`docs/groundwork/p-plan.md`, section 16.8, A1).
+                let note = has_of(id, &waiting.transfer);
+                self.waiting_left.push((id, note));
                 self.gone
                     .push((id, waiting.transfer.entity_id, waiting.transfer.hops));
                 self.journal.waiting.insert(id);
@@ -140,20 +144,8 @@ impl Region {
     pub(super) fn waiting_notes(&self, first: bool) -> Vec<(PlayerId, StayNote)> {
         (self.waiting.iter())
             .filter(|(id, _)| first || self.journal.waiting.contains(id))
-            .map(|(id, waiting)| {
-                let transfer = &waiting.transfer;
-                let place = waiting_place(transfer);
-                let note = StayNote::Has {
-                    unit: None,
-                    player: *id,
-                    entity: transfer.entity_id,
-                    hops: transfer.hops,
-                    face: PlayerFace::standing(&place),
-                    place,
-                    let_go: false,
-                };
-                (*id, note)
-            })
+            .map(|(id, waiting)| (*id, has_of(*id, &waiting.transfer)))
+            .chain(self.waiting_left.iter().cloned())
             .collect()
     }
 
@@ -221,6 +213,21 @@ pub(super) fn travellers_asking_again(
         }
     }
     travellers
+}
+
+/// The `Has` of a waiting stay: in the travel's dimension, at its target, with the
+/// travel and no face of a body anyone saw.
+fn has_of(id: PlayerId, transfer: &PlayerTransfer) -> StayNote {
+    let place = waiting_place(transfer);
+    StayNote::Has {
+        unit: None,
+        player: id,
+        entity: transfer.entity_id,
+        hops: transfer.hops,
+        face: PlayerFace::standing(&place),
+        place,
+        let_go: false,
+    }
 }
 
 /// Where a waiting stay is, as the world store keeps it: the travel's target in its

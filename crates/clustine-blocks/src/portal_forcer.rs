@@ -778,6 +778,17 @@ pub fn make_portal(
     logical_height: i32,
     border: f64,
 ) -> Option<MadePortal> {
+    // Below the level the game reads void air (`Level.getBlockState` outside the
+    // build height), which no caller has: a floor at the bottom of the level stands on
+    // nothing solid, and is not a column the caller cannot read.
+    let in_level = |at: BlockPos| {
+        if at.y < min_y {
+            Some(blocks::VOID_AIR)
+        } else {
+            read(at)
+        }
+    };
+    let read: BlockReader = &in_level;
     let step = positive_step(axis);
     let top = min_y + logical_height - 1;
     let mut three_deep: Option<(f64, BlockPos)> = None;

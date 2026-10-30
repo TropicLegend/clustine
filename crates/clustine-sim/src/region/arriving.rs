@@ -422,6 +422,16 @@ impl Region {
         transfer.pose.yaw = yaw;
         let mut player = self.player_of(waiting.edge, &transfer);
         player.travel = None;
+        // The inputs kept while they waited are theirs before anything is told of the
+        // placing, so that it tells what they made of themselves: flying, the slot they
+        // hold.
+        self.players.insert(id, player);
+        for input in &waiting.kept {
+            self.act(id, input, output);
+        }
+        let Some(player) = self.players.remove(&id) else {
+            return;
+        };
         // A stay that never had an input applied carries its join's attempt: its edge
         // was never told an entity for it, so it was never in the world. A stay a
         // portal sent on lost its attempt at the firing (`travel.rs`).
@@ -448,9 +458,6 @@ impl Region {
                     self.show_shared_flags(id, output);
                 }
             }
-        }
-        for input in &waiting.kept {
-            self.act(id, input, output);
         }
     }
 

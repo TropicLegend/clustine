@@ -651,6 +651,9 @@ pub struct Region {
     /// The portal blocks the region made for travellers, with the tick of each, until
     /// the index's answers have them (`arriving.rs`).
     made_portals: Vec<(u64, BlockPos)>,
+    /// The last `Has` of each waiting stay a leave ended in this tick (`waiting.rs`).
+    /// Empty between ticks.
+    waiting_left: Vec<(PlayerId, StayNote)>,
     /// The faces of players the region does not hold, and the world's players
     /// (`faces.rs`).
     faces: faces::Faces,
@@ -819,6 +822,7 @@ impl Region {
             gone: Vec::new(),
             travelled: Vec::new(),
             made_portals: Vec::new(),
+            waiting_left: Vec::new(),
             faces: faces::Faces::default(),
             sleep: sleep::SleepMemory::default(),
             custom_spawners: custom_spawners::Schedules::default(),
@@ -1465,6 +1469,7 @@ impl Region {
         let dismounted = std::mem::take(&mut self.dismounted);
         let gone = mem::take(&mut self.gone);
         output.stays = self.notes(first, dismounted, let_go, gone);
+        self.waiting_left.clear();
         // A unit's takings after the notes, outside their map, so that no note replaces
         // one (`docs/groundwork/n7h-logout-on-a-mount.md`, section 4); the store takes
         // them first.
