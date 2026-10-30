@@ -150,3 +150,59 @@ async fn a_bot_walks_through_a_portal_into_the_nether_and_back_beside_where_it_l
         bot.location
     );
 }
+
+/// A second player through the same portal while the first is in the Nether already:
+/// both are placed there, and the edge counts each one's view of the Nether's chunks
+/// once (its invariants hold in a build with its checks).
+#[tokio::test]
+async fn two_bots_one_after_the_other_both_come_into_the_nether() {
+    let (_server, address) = start().await;
+    let mut first = Bot::join(&address, "First").await.unwrap();
+    let count = view_area((0, 0), VIEW_DISTANCE).len();
+    first.wait_for_chunks(count, PATIENCE).await.unwrap();
+    build_frame(&mut first).await;
+    first
+        .take_from_creative_inventory(1, items::FLINT_AND_STEEL)
+        .await
+        .unwrap();
+    first.select_slot(1).await.unwrap();
+    first
+        .use_item_on(INSIDE[0], GRASS + 1, Z, face::TOP)
+        .await
+        .unwrap();
+    first
+        .wait_until(PATIENCE, |bot| {
+            is(
+                bot.block_at(INSIDE[0], GRASS + 2, Z).unwrap(),
+                blocks::NETHER_PORTAL,
+            )
+        })
+        .await
+        .unwrap();
+    let entry = (2.0, f64::from(GRASS + 2), f64::from(Z) + 0.5);
+    for (index, bot) in [&mut first].into_iter().enumerate() {
+        bot.stand_at(entry.0, entry.1, entry.2).await.unwrap();
+        bot.wait_until(PATIENCE, |bot| bot.position.is_some() && in_portal(bot))
+            .await
+            .unwrap_or_else(|error| panic!("{error}: bot {index} was never placed"));
+    }
+    let mut second = Bot::join(&address, "Second").await.unwrap();
+    second.wait_for_chunks(count, PATIENCE).await.unwrap();
+    second.stand_at(entry.0, entry.1, entry.2).await.unwrap();
+    second
+        .wait_until(PATIENCE, |bot| {
+            bot.info.login.spawn.dimension_name == "minecraft:the_nether"
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{error}: the second never went"));
+    second
+        .wait_until(PATIENCE, |bot| bot.position.is_some() && in_portal(bot))
+        .await
+        .unwrap_or_else(|error| panic!("{error}: the second was never placed"));
+    // The first stays in the Nether, connected, seeing it.
+    first.idle(Duration::from_millis(500)).await.unwrap();
+    assert_eq!(
+        first.info.login.spawn.dimension_name,
+        "minecraft:the_nether"
+    );
+}

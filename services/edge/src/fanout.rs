@@ -6344,7 +6344,7 @@ impl Fanout {
     /// this one holds the chunk, looking at a chunk nobody serves. Only a subscription
     /// that was told the chunk is held elsewhere is ended: it carried nothing. When
     /// nobody sees the chunk any more, every subscription to it is ended, at every
-    /// region.
+    /// region of its dimension.
     fn unwant(&mut self, region: RegionId, chunk: ChunkPos) {
         let at = self.level_of(region, chunk);
         self.changed = true;
@@ -6370,11 +6370,14 @@ impl Fanout {
             }
         }
         if !watched {
+            // Only the regions of the chunk's own dimension: a region of another
+            // dimension that has a chunk of the same position has another chunk.
             let everywhere: Vec<_> = self
                 .regions
                 .iter()
                 .filter(|(_, port)| port.subscriptions.contains_key(&chunk))
                 .map(|(region, _)| *region)
+                .filter(|region| self.level_of(*region, chunk) == at)
                 .collect();
             for region in everywhere {
                 self.end(region, chunk);
