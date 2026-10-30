@@ -869,3 +869,26 @@ fn a_blaze_spawns_in_any_light_on_bricks_and_a_wither_skeleton_only_in_the_dark(
     assert!(crate::mobs::types::is_built(BLAZE));
     assert!(crate::mobs::types::is_built(WITHER_SKELETON));
 }
+
+/// `Monster`'s `xpReward` of 5, which the types that keep `Mob`'s reward take with what
+/// they wear: a creeper and a skeleton with nothing on give 5; an animal 1 to 3.
+#[test]
+fn a_monster_without_its_own_reward_gives_five_and_an_animal_one_to_three() {
+    let mob = Mob::fresh();
+    for kind in [
+        entity_types::CREEPER,
+        entity_types::SKELETON,
+        entity_types::SPIDER,
+    ] {
+        let kind = u16::try_from(kind).expect("a type id");
+        let mut draws = Random::of_entity(1, KEY, 0);
+        assert_eq!(
+            crate::mobs::types::of(kind).experience_reward(kind, &mob, &mut draws),
+            5
+        );
+    }
+    let cow = u16::try_from(entity_types::COW).expect("a type id");
+    let mut draws = Random::of_entity(1, KEY, 0);
+    let reward = crate::mobs::types::of(cow).experience_reward(cow, &mob, &mut draws);
+    assert!((1..=3).contains(&reward), "{reward}");
+}

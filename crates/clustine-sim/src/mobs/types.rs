@@ -545,10 +545,14 @@ pub(crate) trait MobType: Sync {
     }
 
     /// `getBaseExperienceReward`: the experience of its death, drawn from its own
-    /// stream. Its class decides by default
+    /// stream. Its class decides by default: a monster's `xpReward` of 5 (`Monster`'s
+    /// constructor) with what its equipment adds (`Mob.getBaseExperienceReward`; a
+    /// skeleton's bow, a creeper's nothing), an animal's 1 to 3
     /// ([`super::body::hurt::base_experience_reward`]).
     fn experience_reward(&self, kind: u16, mob: &Mob, draws: &mut Random) -> i32 {
-        let _ = mob;
+        if super::body::ladder::of(kind) == super::body::ladder::Family::Monster {
+            return illagers::experience(5, mob, draws);
+        }
         super::body::hurt::base_experience_reward(kind, draws)
     }
 
