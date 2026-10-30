@@ -1339,3 +1339,31 @@ P12 builds instead; the contract commit of 18.2 grows by all of the lead's items
   should, a strider over a line on lava, a bastion's piglins and brutes, a small
   fireball's fire across a line, conversions keeping equipment with nausea and their
   sound, and zombification in the overworld only.
+
+### 18.6 The second reading of 18.5
+
+The reviewer found 18.5 answers all twelve, nine of them soundly as written. What P12
+builds besides:
+
+- **The fireball's end**: discarded also when its owner died in this region while the
+  fireball is here, and when it reaches a chunk no region holds (the game's
+  `hasChunkAt`), so that a fireball that misses does not wait in unloaded land.
+- **A deflection names its player**: `EntityUse::Attack` carries the attacker's UUID
+  beside the look, so that a ghast killed across a line by a deflected fireball is killed
+  by that player (`last_hurt_by_player`), with its tear and experience.
+- **A hoglin's throw lands on a player**: `HitExtra::Throw` on a player's hurt path (a
+  motion sent to their client) is the lead's in the contract; the lead checks that a
+  player takes `HurtBy.effects`, for the wither skeleton's wither.
+- **Anger told to a mob's type**: the contract's arm for the anger across a line calls
+  a stub `MobType::told(&Told)` (the attacker's key and type, whether the anger is
+  universal), which E5 and E6 each fill for their own mobs; the receiving region judges
+  its piglin's sight of the player where `onlyIfSeen` asks it (a container opened).
+- **Light and generation**: the ambient light reaches `magic_value` by the dimension,
+  as chunk generation's spawning reads it too.
+- **Standing on lava** also in the check of a ridden vehicle's move and the navigation's
+  `clear_between`, each of which builds its own `Context`.
+- **The bastion's hoglins** belong to E6 beside E5's piglins and brutes; a template's
+  entities are made where their type is built (`is_built`), so no family touches that
+  code; `ENTITIES_GENERATION` rises in one lead commit after the three families.
+- **Tests** besides: a deflection by a player in another region than the fireball,
+  with the ghast's tear and experience; a hoglin throwing a player.
