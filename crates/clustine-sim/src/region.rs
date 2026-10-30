@@ -626,6 +626,11 @@ pub struct Region {
     /// What the game keeps of an entity in memory and not in its record, by key
     /// (`items.rs`); forgotten at a take-in, so no part of the state.
     entity_memory: BTreeMap<EntityId, items::Memory>,
+    /// The entities this region removed in this tick or the last, with the tick: a
+    /// fireball whose owner is among them is discarded (`owner.isRemoved()`), on its
+    /// next tick as the game's. Kept in memory only: a region restored within the tick
+    /// has none, and such a fireball flies on.
+    removed_lately: BTreeMap<EntityId, u64>,
     /// Units sent on with a seat kept in them for a player not come yet: where each
     /// went and for how many ticks more the entry counts, so that the player follows
     /// (`docs/groundwork/n5-plan.md`, section 8 item 5). Kept in memory only: a region
@@ -821,6 +826,7 @@ impl Region {
             orbs_taken: BTreeMap::new(),
             merged_into: Vec::new(),
             entity_memory: BTreeMap::new(),
+            removed_lately: BTreeMap::new(),
             forwarded: BTreeMap::new(),
             light: light::RegionLight::new(sky),
             using_across: None,
@@ -1145,6 +1151,9 @@ impl Region {
     /// Advances the region by one tick.
     pub fn tick(&mut self, inputs: &TickInputs) -> TickOutput {
         self.tick += 1;
+        let tick = self.tick;
+        self.removed_lately
+            .retain(|_, removed| *removed + 1 >= tick);
         self.ticks_counted_from_zero();
         let first = mem::take(&mut self.unnamed);
         // The world's clock: the later of the region's and what the store last

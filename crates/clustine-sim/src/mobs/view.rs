@@ -36,6 +36,8 @@ pub(crate) struct SeenPlayer {
     pub(crate) pitch: f32,
     pub(crate) main_hand: Option<ItemStack>,
     pub(crate) off_hand: Option<ItemStack>,
+    /// What they wear, feet to head: a piglin leaves a player in gold alone.
+    pub(crate) worn: [Option<ItemStack>; 4],
     pub(crate) sneaking: bool,
     /// Every player is a creative one, whom no mob takes as a target (the brief's
     /// 2.0.1).

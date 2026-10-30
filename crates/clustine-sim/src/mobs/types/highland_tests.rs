@@ -1521,6 +1521,7 @@ const SEED: u64 = 9;
 /// A creative player standing at `position`, holding `held`, sprinting or not.
 fn seen_player(key: u64, position: Vec3, held: Option<i32>, sprinting: bool) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position,

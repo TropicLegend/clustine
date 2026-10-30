@@ -139,6 +139,7 @@ impl MobWorld for Field {
 /// A player standing at `feet`, creative where `creative`.
 fn player(key: u64, feet: Vec3, creative: bool) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position: feet,

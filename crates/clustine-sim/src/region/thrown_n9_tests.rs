@@ -1245,6 +1245,7 @@ fn a_llama_spits_from_beside_its_mouth_at_a_third_of_its_target_s_height() {
         vehicle: None,
         main_hand: None,
         off_hand: None,
+        worn: Default::default(),
         yaw: 0.0,
         pitch: 0.0,
         copied: false,

@@ -121,7 +121,9 @@ impl Region {
 
     /// A mob's melee hit on the entity `key` (`Local::Strike`, `docs/groundwork/
     /// n9-plan.md`, section 8.2): taken here where the region holds the entity, refused
-    /// by a player (creative), and sent to the holder of one in a copy.
+    /// by a player of its own (creative), and sent to the holder of one in a copy or of
+    /// a player another region holds, with what the hit carries (a wither skeleton's
+    /// wither, a hoglin's throw), for their region to take or refuse.
     pub(crate) fn strike(&mut self, key: EntityId, hurt: Box<HurtBy>, output: &mut TickOutput) {
         if let Some((_, entity)) = self.find_entity(key) {
             let entity = entity.clone();
@@ -129,6 +131,11 @@ impl Region {
             return;
         }
         if self.player_with_entity(key).is_some() {
+            return;
+        }
+        if let Some((player, at, _)) = super::thrown::far_player_of(self, key) {
+            let at = crate::physics::containing(at);
+            self.send_on_player(player, key, at, EntityUse::Hurt(hurt));
             return;
         }
         self.send_on_entity(key, EntityUse::Hurt(hurt));

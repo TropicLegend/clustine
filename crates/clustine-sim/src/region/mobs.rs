@@ -759,6 +759,7 @@ fn seen(id: PlayerId, key: EntityId, face: &PlayerFace) -> SeenPlayer {
         pitch: face.pitch,
         main_hand: face.main_hand.clone(),
         off_hand: face.off_hand.clone(),
+        worn: face.worn.clone(),
         sneaking: face.sneaking,
         creative: face.game_mode == 1,
         spectator: face.game_mode == 3,

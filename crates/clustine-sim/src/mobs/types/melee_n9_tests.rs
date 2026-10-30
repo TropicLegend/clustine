@@ -160,6 +160,7 @@ impl MobWorld for Land {
 /// A survival player standing at `feet`.
 fn survivor(feet: Vec3) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: PLAYER,
         uuid: 9,
         position: feet,

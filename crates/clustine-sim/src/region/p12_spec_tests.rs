@@ -870,8 +870,6 @@ fn a_piglin_attacks_a_player_who_wears_no_gold() {
 /// sensor's `NEAREST_TARGETABLE_PLAYER_NOT_WEARING_GOLD`): a piglin leaves a player in a
 /// golden helmet alone.
 #[test]
-#[ignore = "departs from the specification: a piglin takes a survival player wearing a \
-            golden helmet as its target"]
 fn a_piglin_leaves_a_player_in_gold_alone() {
     assert!(!piglin_targets_two(golden_helmet()));
 }

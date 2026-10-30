@@ -26,8 +26,7 @@
 //!
 //! Named differences besides: the spear's three behaviours of the fight
 //! (`SpearApproach`, `SpearAttack`, `SpearRetreat`) hold their places and never start;
-//! a player's armour is not read (`SeenPlayer` carries none), which no creative player
-//! needs (`canAttack` refuses them before); the hoglins' records are read for their age
+//! the hoglins' records are read for their age
 //! and whether they may be hunted (`MobType::cannot_be_hunted`), and a hoglin's own hurt
 //! is not read (its `HURT_BY` is sensed, which the record lacks).
 
@@ -1770,9 +1769,8 @@ impl Sensor for PiglinSpecificSensor {
                     }
                 }
                 None => {
-                    // A player: their armour is not read (see the module's head).
                     if not_in_gold.is_none()
-                        && !piglin::wears_safe_armour(&[])
+                        && !piglin::wears_safe_armour(&looked.worn)
                         && sensing::can_attack(&looked)
                     {
                         not_in_gold = Some(key);

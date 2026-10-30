@@ -1188,8 +1188,6 @@ fn a_fireball_whose_owner_is_another_region_s_stays() {
 /// removed (`getOwner() != null && getOwner().isRemoved()`): one owned by an item that
 /// player 1 picks up goes.
 #[test]
-#[ignore = "departs from the specification: a fireball whose owner, an item of the region, \
-            is picked up and removed flies on"]
 fn a_fireball_whose_owner_of_the_region_is_removed_is_discarded() {
     let options = Options::nether()
         .holding(hotbar(&[stack(items::STICK, 1)], None))
@@ -1271,8 +1269,6 @@ fn a_fireball_whose_owner_dies_here_is_discarded_before_the_owner_is_removed() {
 /// Plan 18.5 (their 1): the same of an owner that is no item: a fireball owned by
 /// primed TNT of the region goes when the TNT has exploded and is removed.
 #[test]
-#[ignore = "departs from the specification: a fireball whose owner, primed TNT of the \
-            region, has exploded and been removed flies on"]
 fn a_fireball_whose_owner_tnt_has_exploded_is_discarded() {
     let at = bp(3, FEET, 3);
     let options = Options::nether().holding(hotbar(&[stack(items::FLINT_AND_STEEL, 1)], None));
@@ -1890,8 +1886,6 @@ fn a_blaze_in_water_is_hurt() {
 /// wither for 200 ticks; on a player of another region the hurt carries it
 /// (`HurtBy.effects`, plan 18.5 their 4 and 18.6), with the hit made by its stone sword.
 #[test]
-#[ignore = "departs from the specification: a mob's melee hit on a player another region \
-            holds (their face) is sent nowhere, so no hurt with wither reaches them"]
 fn a_wither_skeleton_s_hit_on_a_player_carries_wither_for_200_ticks() {
     let mut scene = below_a_wall(&[items::WITHER_SKELETON_SPAWN_EGG]);
     scene.hatch_on(0, bp(13, FLOOR, 0));
@@ -1917,20 +1911,50 @@ fn a_wither_skeleton_s_hit_on_a_player_carries_wither_for_200_ticks() {
 /// (`HoglinBase.throwTarget`, `HitExtra::Throw` with its attack knockback, 1), for the
 /// player's region to throw them.
 #[test]
-#[ignore = "departs from the specification: a mob's melee hit on a player another region \
-            holds (their face) is sent nowhere, so no hurt with the throw reaches them"]
 fn a_hoglin_s_hit_on_a_player_carries_its_throw() {
-    let mut scene = below_a_wall(&[items::HOGLIN_SPAWN_EGG]);
-    scene.hatch_on(0, bp(13, FLOOR, 0));
+    // A hoglin is 1.4 blocks tall: its reach does not come up to a player on the wall,
+    // in the game either, so this player stands on the floor beyond it.
+    let options = Options::nether()
+        .side(true)
+        .holding(eggs(&[items::HOGLIN_SPAWN_EGG]))
+        .standing(Vec3::new(11.5, FEET as f64, 4.5));
+    let mut scene = Scene::new(&options, &World::default());
+    scene.face(
+        2,
+        TWO,
+        Vec3::new(16.3, f64::from(FEET), 0.5),
+        [None, None, None, None],
+    );
+    // One hoglin in five is made a baby (`Hoglin.finalizeSpawn`), whose hit throws
+    // nobody (`HoglinBase.hurtAndThrowTarget`): hoglins are hatched until one is an
+    // adult, and its hit is the one judged.
+    let is_baby = |scene: &Scene, key| {
+        scene
+            .record(key)
+            .is_some_and(|hoglin| shown(&hoglin, index::BABY) == Some(DataShown::Boolean(true)))
+    };
+    let mut adult = None;
+    for z in [0, 2, -2, 4, -4, 6, -6] {
+        let key = scene.hatch_on(0, bp(13, FLOOR, z));
+        if !is_baby(&scene, key) {
+            adult = Some(key);
+            break;
+        }
+    }
+    let adult = adult.expect("one of seven hoglins is an adult");
     let mut hurts = Vec::new();
     for _ in 0..300 {
         let output = scene.idle();
-        hurts.extend(hurts_of_two(&output));
+        hurts.extend(
+            hurts_of_two(&output)
+                .into_iter()
+                .filter(|hurt| hurt.hit.is_some_and(|(by, _)| by == adult)),
+        );
         if !hurts.is_empty() {
             break;
         }
     }
-    let hurt = hurts.first().expect("the hoglin hits player 2");
+    let hurt = hurts.first().expect("the adult hoglin hits player 2");
     assert!(
         hurt.extras
             .iter()
@@ -2711,8 +2735,6 @@ fn hoglins_spawn_in_the_crimson_forest() {
 /// `onHit`'s explosion): a fireball of the west flying into a pig the east holds sends
 /// the pig its hit first and the explosion's after, and the pig in the east takes both.
 #[test]
-#[ignore = "departs from the specification: a fireball flies through a mob the region sees \
-            only in its copy beyond a line, with no hit and no blast"]
 fn a_large_fireball_s_direct_hit_across_a_line_comes_before_its_blast() {
     let mut line = Line::new(
         &World::default(),
@@ -2723,7 +2745,9 @@ fn a_large_fireball_s_direct_hit_across_a_line_comes_before_its_blast() {
         ),
     );
     line.east.select(0);
-    line.east.click(bp(16, FLOOR, 0));
+    // The hatching's output is carried to the west as any tick's, so that its copy
+    // has the pig.
+    line.from_east = line.east.click(bp(16, FLOOR, 0));
     let pig = line
         .east
         .of_kind(entity_types::PIG)
@@ -2770,7 +2794,8 @@ fn a_large_fireball_s_direct_hit_across_a_line_comes_before_its_blast() {
     assert!(on_pig.len() >= 2, "the hit and the blast: {on_pig:?}");
     match on_pig[0] {
         EntityUse::Hurt(hurt) => {
-            assert_eq!(hurt.damage_type, "minecraft:fireball");
+            // It has no owner: `damageSources().fireball(this, null)`.
+            assert_eq!(hurt.damage_type, "minecraft:unattributed_fireball");
             assert_eq!(hurt.amount.0, 6.0);
         }
         EntityUse::Thrown { damage, .. } => assert_eq!(damage.0, 6.0),

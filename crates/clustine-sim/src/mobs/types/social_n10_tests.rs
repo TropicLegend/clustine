@@ -949,6 +949,7 @@ fn hidden_more_than_its_seconds_at_the_place_it_comes_out_before_the_bell_s_time
 /// A player at `feet` holding `held`.
 fn player_at(key: u64, feet: Vec3, held: Option<i32>) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position: feet,

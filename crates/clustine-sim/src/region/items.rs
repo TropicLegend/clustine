@@ -438,6 +438,7 @@ impl Region {
         output.entity_changes.push((position, change));
         self.entity_chunks.remove(&key);
         self.entity_memory.remove(&key);
+        self.removed_lately.insert(key, self.tick);
         output.events.push(RegionEvent::EntityGone {
             entity: key,
             chunk: position,

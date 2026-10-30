@@ -51,6 +51,8 @@ pub(crate) struct Looked {
     pub(crate) vehicle: Option<EntityId>,
     pub(crate) main_hand: Option<ItemStack>,
     pub(crate) off_hand: Option<ItemStack>,
+    /// What a player wears; nothing for any other.
+    pub(crate) worn: [Option<ItemStack>; 4],
     pub(crate) yaw: f32,
     pub(crate) pitch: f32,
     /// Whether it is in a copy, another region's.
@@ -86,6 +88,7 @@ impl Looked {
             vehicle: entity.riding.vehicle,
             main_hand: None,
             off_hand: None,
+            worn: Default::default(),
             yaw: entity.yaw,
             pitch: entity.pitch,
             copied: seen.copied,
@@ -113,6 +116,7 @@ impl Looked {
             vehicle: player.vehicle,
             main_hand: player.main_hand.clone(),
             off_hand: player.off_hand.clone(),
+            worn: player.worn.clone(),
             yaw: player.yaw,
             pitch: player.pitch,
             copied: false,

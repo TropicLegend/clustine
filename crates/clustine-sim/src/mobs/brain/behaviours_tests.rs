@@ -147,6 +147,7 @@ impl MobWorld for Field {
 /// A creative player standing at `position`, holding `held` in the main hand.
 pub(super) fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position,

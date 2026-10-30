@@ -146,6 +146,7 @@ impl MobWorld for Pen {
 /// A creative player at `position` holding `held`, of the key and UUID `key`.
 fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position,

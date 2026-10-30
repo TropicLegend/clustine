@@ -462,6 +462,7 @@ fn a_guardian_shows_whether_it_moves_and_no_beam() {
 
 fn player(key: u64, at: [f64; 3], creative: bool) -> SeenPlayer {
     SeenPlayer {
+        worn: Default::default(),
         key: EntityId(key),
         uuid: u128::from(key),
         position: at,

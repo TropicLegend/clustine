@@ -40,10 +40,10 @@
 //! campfire lit.
 //!
 //! Named differences:
-//! - An owner removed otherwise than by its death here (despawned, gone across a line
-//!   and removed there) is not noticed: the fireball flies on until it hits or reaches
-//!   land nobody holds. One whose owner dies here is gone at once, where the game's
-//!   waits for the owner's removal twenty ticks after its death.
+//! - An owner removed in another region (gone across a line and removed there) is not
+//!   noticed: the fireball flies on until it hits or reaches land nobody holds. One
+//!   whose owner dies here is gone at once, where the game's waits for the owner's
+//!   removal twenty ticks after its death.
 //! - Land a region holds that this one has never heard of counts as nobody's.
 //! - The blocks it passes through (`applyEffectsFromBlocks`) and the world border are
 //!   left out, as for the thrown items; `canHitEntity`'s `noPhysics` is not read (no
@@ -267,12 +267,15 @@ impl Region {
         }
     }
 
-    /// Whether the fireball's owner is gone as far as the region can tell: a mob of its
-    /// own that is dying.
+    /// Whether the fireball's owner is gone as far as the region can tell: an entity
+    /// it removed, or a mob of its own that is dying.
     fn fireball_owner_gone(&self, owner: Option<ProjectileOwner>) -> bool {
         let Some(owner) = owner else {
             return false;
         };
+        if self.removed_lately.contains_key(&owner.key) {
+            return true;
+        }
         let Some((_, record)) = self.find_entity(owner.key) else {
             return false;
         };
