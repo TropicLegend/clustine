@@ -90,6 +90,14 @@ pub(crate) fn seen(chunk: ChunkPos, raid: &Raid) -> RaidSeen {
 }
 
 impl Region {
+    /// Whether a raid may begin in the region's level: the environment attribute
+    /// `gameplay/can_start_raid`, which `Raids.createOrExtendRaid` asks at the omen's
+    /// place before it looks for a village (n7k Raids 172–, at 35–56). Only the dimension
+    /// sets it (the Nether false), so it is the same at every place of the level.
+    pub(crate) fn can_start_raid(&self) -> bool {
+        self.config.dimension.rules().can_start_raid
+    }
+
     /// The raids of the region's land, each with the chunk that keeps it, ascending by
     /// chunk and then id.
     pub(crate) fn own_raids(&self) -> Vec<(ChunkPos, &Raid)> {

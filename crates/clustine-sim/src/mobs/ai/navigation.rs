@@ -15,7 +15,8 @@ use super::controls;
 use super::pathfinder::{
     self, Evaluator, EvaluatorFlags, FoundPath, PathNode, Searcher, find_path,
 };
-use crate::physics::{self, Vec3, World};
+use crate::mobs::view::MobWorld;
+use crate::physics::{self, Vec3};
 
 /// Which navigation a type makes (`createNavigation`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -325,8 +326,8 @@ fn create_path_at_own(ai: &mut Ai<'_, '_>, at: Vec3, reach: i32) -> Option<Made>
 
 /// `GroundPathNavigation.findSurfacePosition`: the first air above what is solid below
 /// an air target, or above a solid one.
-fn surface_position<W: World + ?Sized>(world: &W, pos: BlockPos) -> BlockPos {
-    let (min_y, max_y) = height_limits(world, pos);
+fn surface_position(world: &dyn MobWorld, pos: BlockPos) -> BlockPos {
+    let (min_y, max_y) = height_limits(world.dimension());
     let air = |y: i32| world.state(BlockPos::new(pos.x, y, pos.z)).props().is_air();
     let solid = |y: i32| {
         world
@@ -359,15 +360,15 @@ fn surface_position<W: World + ?Sized>(world: &W, pos: BlockPos) -> BlockPos {
     pos
 }
 
-/// The world's lowest and highest block (`getMinY`, `getMaxY`) for the chunk's column:
-/// the overworld's.
-fn height_limits<W: World + ?Sized>(_world: &W, _pos: BlockPos) -> (i32, i32) {
-    (OVERWORLD_MIN_Y, OVERWORLD_MIN_Y + OVERWORLD_HEIGHT - 1)
+/// The level's lowest and highest block (`getMinY`, `getMaxY`), which
+/// `GroundPathNavigation.findSurfacePosition` reads (n7 GroundPathNavigation, at 32, 71,
+/// 104 and 169): its dimension's whole height, not its logical one (the overworld −64
+/// to 319, the Nether and the End 0 to 255).
+pub(crate) fn height_limits(dimension: clustine_world::Dimension) -> (i32, i32) {
+    let rules = dimension.rules();
+    let height = i32::try_from(rules.height).expect("a level's height fits an i32");
+    (rules.min_y, rules.min_y + height - 1)
 }
-
-/// The overworld's bottom and height, the one dimension Clustine has.
-pub(crate) const OVERWORLD_MIN_Y: i32 = -64;
-pub(crate) const OVERWORLD_HEIGHT: i32 = 384;
 
 /// `createPath(targets, regionOffset, offsetUpward, reach, range)`: the path under way
 /// where it goes to the same target, else a search (its box is not kept: what it does
@@ -1120,3 +1121,7 @@ fn done_of(mob: &crate::mobs::Mob) -> bool {
         .as_ref()
         .is_none_or(|path| mob.body.progress.next as usize >= path.nodes.len())
 }
+
+#[cfg(test)]
+#[path = "navigation_dimension_tests.rs"]
+mod navigation_dimension_tests;

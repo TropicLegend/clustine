@@ -46,10 +46,6 @@ const DIFFICULTY: i32 = clustine_world::Difficulty::WORLD as i32;
 /// and fire has no block entity for the second.
 const UPDATE_NONE: u32 = 260;
 
-/// The tag of the blocks fire burns on for ever in the overworld (its dimension
-/// type's `infiniburn`).
-const INFINIBURN: &str = "minecraft:infiniburn_overworld";
-
 /// The biomes that set `increased_fire_burnout` in 26.3's data, sorted.
 const INCREASED_FIRE_BURNOUT: &[&str] = &[
     "minecraft:bamboo_jungle",
@@ -175,7 +171,10 @@ impl Region {
             self.remove_block(pos, output);
         }
         let below = relative(pos, Face::Down);
-        let infiniburn = in_tag(self.read(below), INFINIBURN);
+        // `FireBlock.tick` (d FireBlock 247–300, at 54) asks the level's dimension type
+        // for its `infiniburn` set: netherrack and magma in the overworld and the Nether,
+        // and bedrock besides in the End, where the spikes' fire stays.
+        let infiniburn = in_tag(self.read(below), self.infiniburn_tag());
         let age = i32::from(number(state, "age").unwrap_or(0));
         let next_age = (age + random.next_int(3) as i32 / 2).min(15);
         if age != next_age {
@@ -232,6 +231,13 @@ impl Region {
                 }
             }
         }
+    }
+
+    /// The tag of the blocks fire burns on for ever in the region's dimension (its type's
+    /// `infiniburn`), without the `#` the data writes it with.
+    fn infiniburn_tag(&self) -> &'static str {
+        let tag = self.config.dimension.rules().infiniburn;
+        tag.strip_prefix('#').unwrap_or(tag)
     }
 
     /// `FireBlock.checkBurnOut`: the block at `pos` burns by its odds out of `chance`,

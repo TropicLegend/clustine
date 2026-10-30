@@ -76,6 +76,10 @@ use crate::spawning::rules;
 #[path = "custom_spawners_n9_tests.rs"]
 mod custom_spawners_n9_tests;
 
+#[cfg(test)]
+#[path = "dimension_d2_tests.rs"]
+mod dimension_d2_tests;
+
 /// The phantom spawner's mark among the schedules.
 const PHANTOMS: u64 = 1;
 /// The patrol spawner's mark among the schedules.
@@ -178,8 +182,13 @@ pub(crate) struct Sleeper {
 impl Region {
     /// The custom spawners' phase of the tick, after the random ticks (the game's
     /// `tickCustomSpawners`, n7 ServerLevel): the phantoms' firings due since the
-    /// region's previous tick, then the patrols'.
+    /// region's previous tick, then the patrols'. Only the overworld has them: the game
+    /// gives its five spawners to the overworld's level alone and an empty list to every
+    /// other (d MinecraftServer `createLevels`, at 59–98 and 446).
     pub(super) fn run_custom_spawners(&mut self, output: &mut TickOutput) {
+        if self.config.dimension != clustine_world::Dimension::Overworld {
+            return;
+        }
         // `spawn_mobs` off: no spawner fires, and none catches up when it is on again.
         if !self.config.spawn_mobs {
             self.custom_spawners.last = None;
@@ -371,11 +380,9 @@ impl Region {
         if stream.next_int(5) != 0 {
             return;
         }
-        let Some(table) = self.faces.world.as_ref() else {
+        let Some(ids) = self.level_players() else {
             return;
         };
-        let mut ids: Vec<PlayerId> = table.iter().map(|player| player.player).collect();
-        ids.sort();
         let Ok(size) = u32::try_from(ids.len()) else {
             return;
         };
@@ -672,14 +679,28 @@ impl Region {
     /// order of ids (`getRandomPlayer`, as the patrol spawner chooses): none drawn where
     /// the table is empty, and none known where the region has not heard of it.
     fn random_world_player(&self, stream: &mut Random) -> Option<Option<PlayerId>> {
-        let table = self.faces.world.as_ref()?;
-        let mut ids: Vec<PlayerId> = table.iter().map(|player| player.player).collect();
-        ids.sort();
+        let ids = self.level_players()?;
         let size = u32::try_from(ids.len()).ok()?;
         if size == 0 {
             return Some(None);
         }
         Some(Some(ids[stream.next_int(size) as usize]))
+    }
+
+    /// The players of the world's table in the region's level, in the order of ids:
+    /// `getRandomPlayer` and `players()` are the overworld level's, whose spawners these
+    /// are, so a player in the Nether or the End is not among them. None where the region
+    /// has not heard of the table.
+    fn level_players(&self) -> Option<Vec<PlayerId>> {
+        let table = self.faces.world.as_ref()?;
+        let dimension = self.config.dimension;
+        let mut ids: Vec<PlayerId> = table
+            .iter()
+            .filter(|player| player.dimension == dimension)
+            .map(|player| player.player)
+            .collect();
+        ids.sort();
+        Some(ids)
     }
 
     /// The block a player of the region's own stands in, with their game mode.

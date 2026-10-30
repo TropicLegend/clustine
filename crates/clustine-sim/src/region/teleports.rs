@@ -164,7 +164,8 @@ impl Region {
     /// The chorus fruit's `teleport_randomly` of the player `id`
     /// (`TeleportRandomlyConsumeEffect.apply`): up to 16 tries of `randomTeleport` within
     /// `diameter` of their feet, each try's draws from `random` (the player's stream
-    /// aside), its height held to the world's (−64 to 319), the first that lands moving
+    /// aside), its height held to the level's logical height ([`Region::chorus_heights`]),
+    /// the first that lands moving
     /// them with the teleport's sound and the player's fall reset. Whether they were moved.
     /// Part S9's; S1's eating calls it.
     ///
@@ -183,7 +184,8 @@ impl Region {
             };
             let from = player.pose.position;
             let x = from.x + (random.next_double() - 0.5) * diameter;
-            let y = (from.y + (random.next_double() - 0.5) * diameter).clamp(-64.0, 319.0);
+            let (low, high) = self.chorus_heights();
+            let y = (from.y + (random.next_double() - 0.5) * diameter).clamp(low, high);
             let z = from.z + (random.next_double() - 0.5) * diameter;
             if player.riding.is_some() {
                 self.dismount_player(id, output);
@@ -234,6 +236,16 @@ impl Region {
             return true;
         }
         false
+    }
+
+    /// The heights a chorus fruit's try is held between: `getMinY()` and `getMinY() +
+    /// getLogicalHeight() − 1` of the level (d TeleportRandomlyConsumeEffect, 61–80), so
+    /// that in the Nether it never aims above 127, under the roof: the overworld −64 to
+    /// 319, the Nether 0 to 127, the End 0 to 255.
+    pub(crate) fn chorus_heights(&self) -> (f64, f64) {
+        let rules = self.config.dimension.rules();
+        let logical = i32::try_from(rules.logical_height).expect("a level's height fits an i32");
+        (f64::from(rules.min_y), f64::from(rules.min_y + logical - 1))
     }
 
     /// `teleportTo(x, y, z)` of the region's player `id`, with `broadcastEntityEvent(46)`:

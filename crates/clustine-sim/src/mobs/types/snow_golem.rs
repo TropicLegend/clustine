@@ -9,9 +9,8 @@
 //! there; that placement's `block_place` game event is not made (named, the plan's
 //! section 10).
 //!
-//! Named differences: Clustine has no Nether, whose dimension melts it too, and no
-//! rain, which would hurt it; the game rule `mob_griefing` is on, as everywhere in
-//! Clustine; the shears a player uses are not worn, every player being creative; its
+//! Named differences: Clustine has no rain, which would hurt it; the game rule
+//! `mob_griefing` is on, as everywhere in Clustine; the shears a player uses are not worn, every player being creative; its
 //! leash's offset is the client's (`getLeashOffset`, which nothing on the server
 //! reads).
 
@@ -104,6 +103,13 @@ pub(crate) fn melts_in(biome: Option<&str>) -> bool {
     biome.is_some_and(|name| MELTS_IN.binary_search(&name).is_ok())
 }
 
+/// Whether `gameplay/snow_golem_melts` holds at a position in `dimension` whose biome is
+/// `biome`: the attribute system layers a biome's value over its dimension type's, and
+/// as no biome sets it false, it holds where either sets it (the Nether's type does).
+pub(crate) fn melts_at(dimension: clustine_world::Dimension, biome: Option<&str>) -> bool {
+    dimension.rules().snow_golem_melts || melts_in(biome)
+}
+
 /// The cells of its trail at `feet`, in its order (`i` from 0 to 3): a quarter of a
 /// block either way in x, then in z, of its feet's x and z, at its feet's height.
 pub(crate) fn trail_cells(feet: physics::Vec3) -> [BlockPos; 4] {
@@ -151,15 +157,19 @@ fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &sensing::Looked, _power: 
 pub(crate) struct SnowGolem;
 
 /// `SnowGolem.aiStep` after `AbstractGolem`'s, with `LivingEntity.aiStep`'s hurt of a
-/// body sensitive to water before it: in water, `drown` 1; in a biome where it melts,
-/// `onFire` 1; then a layer of snow at each of its four corners that is air and where a
-/// layer can stand, each cell once.
+/// body sensitive to water before it: in water, `drown` 1; where it melts (n7 SnowGolem
+/// `aiStep` 21–57 reads `SNOW_GOLEM_MELTS` at its position: its dimension's and its
+/// biome's), `onFire` 1; then a layer of snow at each of its four corners that is air
+/// and where a layer can stand, each cell once.
 fn after_ai_step(tick: &mut MobTick<'_>) {
     if tick.living.fluids.in_water() {
         crate::mobs::body::hurt_by(tick, &DamageSource::of(DamageType::DROWN), 1.0);
     }
     let feet = tick.living.body.position;
-    if melts_in(tick.world.biome(physics::containing(feet))) {
+    if melts_at(
+        tick.world.dimension(),
+        tick.world.biome(physics::containing(feet)),
+    ) {
         crate::mobs::body::hurt_by(tick, &DamageSource::of(DamageType::ON_FIRE), 1.0);
     }
     let snow: BlockState = blocks::SNOW;

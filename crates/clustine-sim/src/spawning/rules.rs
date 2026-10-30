@@ -61,10 +61,6 @@ pub(crate) trait SpawnWorld {
         SEA_LEVEL
     }
     /// The level's dimension: the overworld where a reader knows no other.
-    #[expect(
-        dead_code,
-        reason = "the spawn light by dimension reads it (`docs/groundwork/p-plan.md`, 17.2 D2)"
-    )]
     fn dimension(&self) -> clustine_world::Dimension {
         clustine_world::Dimension::Overworld
     }
@@ -262,21 +258,36 @@ fn can_see_sky(world: &dyn SpawnWorld, pos: BlockPos) -> Option<bool> {
 }
 
 /// `Monster.isDarkEnoughToSpawn` (n7 Monster 81–132): the sky's undarkened light above
-/// `nextInt(32)` refuses (always drawn); the blocks' light above the overworld's limit
-/// of 0 refuses; then the darkened light at most `monster_spawn_light_level`'s sample,
-/// the overworld's uniform 0 to 7 (`nextInt(8)`). `None` where the light is not known,
-/// before any draw.
+/// `nextInt(32)` refuses (always drawn); then, where the dimension's
+/// `monster_spawn_block_light_limit` is under 15, the blocks' light above it refuses (the
+/// overworld's and the End's 0; the Nether's 15 is never compared, lines 30–58); then
+/// the darkened light at most `monster_spawn_light_level`'s sample (lines 93–105). `None`
+/// where the light is not known, before any draw.
 fn is_dark_enough(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> Option<bool> {
     let light = world.light(pos)?;
     let darkened = max_local_raw_brightness(world, pos)?;
     if u32::from(light.sky) > draws.next_int(32) {
         return Some(false);
     }
-    const BLOCK_LIGHT_LIMIT: u8 = 0;
-    if light.block > BLOCK_LIGHT_LIMIT {
+    let rules = world.dimension().rules();
+    let limit = rules.monster_spawn_block_light_limit;
+    if limit < 15 && i32::from(light.block) > limit {
         return Some(false);
     }
-    Some(u32::from(darkened) <= draws.next_int(8))
+    Some(i32::from(darkened) <= sample_spawn_light(rules.monster_spawn_light_level, draws))
+}
+
+/// `monsterSpawnLightTest().sample(random)`: the overworld's `UniformInt` of 0 to 7
+/// draws `Mth.randomBetweenInclusive` (`nextInt(max − min + 1) + min`, n7 UniformInt
+/// `sample`); the Nether's 7 and the End's 15 are `ConstantInt`s, which draw nothing.
+/// The data keeps a constant as equal bounds (the dimension types' JSON writes it as a
+/// bare number), so equal bounds are sampled without a draw.
+fn sample_spawn_light((low, high): (i32, i32), draws: &mut dyn Draws) -> i32 {
+    if low == high {
+        return low;
+    }
+    let span = u32::try_from(high - low + 1).expect("a uniform light's bounds are in order");
+    i32::try_from(draws.next_int(span)).expect("a light level fits an i32") + low
 }
 
 /// `Monster.checkMonsterSpawnRules`: dark enough, then `checkMobSpawnRules`.
@@ -679,3 +690,7 @@ pub(crate) fn biome_named(name: &str) -> Option<Biome> {
     let index = BIOME_SPAWNS.iter().position(|biome| biome.name == name)?;
     Some(Biome(u16::try_from(index).ok()?))
 }
+
+#[cfg(test)]
+#[path = "rules_dimension_tests.rs"]
+mod rules_dimension_tests;

@@ -9,7 +9,7 @@ use clustine_world::BlockPos;
 
 use super::Ai;
 use super::maths::{self, hotspot_cos, hotspot_sin};
-use super::navigation::{self, OVERWORLD_HEIGHT};
+use super::navigation;
 use super::pathfinder;
 use crate::physics::{self, Vec3};
 
@@ -169,9 +169,12 @@ fn move_up_to_above_solid(
     at
 }
 
-/// `Level.getMaxY()`.
+/// `Level.getMaxY()`, the top of the level's whole height (not its logical one), which
+/// `LandRandomPos.moveUpOutOfSolid` (n7 LandRandomPos, at 5), `HoverRandomPos` (at 71),
+/// `AirAndWaterRandomPos` (at 69) and `GoalUtils.isOutsideLimits` (n7 GoalUtils, at 8,
+/// `isOutsideBuildHeight`) read: 319 in the overworld, 255 in the Nether and the End.
 fn max_y(ai: &Ai<'_, '_>) -> i32 {
-    ai.tick.world.min_y() + OVERWORLD_HEIGHT - 1
+    navigation::height_limits(ai.tick.world.dimension()).1
 }
 
 /// `GoalUtils.mobRestricted(mob, h)`: it has a home whose centre is within its radius

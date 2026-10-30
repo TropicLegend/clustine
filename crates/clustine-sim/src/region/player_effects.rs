@@ -353,6 +353,11 @@ impl Region {
     /// (section 9.5): the centre is the mean of the occupied points of `#village` within
     /// 64 of the place, or the place, and the work is the centre's chunk's holder's.
     fn omen_ended(&mut self, place: clustine_world::BlockPos, omen: i32, output: &mut TickOutput) {
+        // `can_start_raid` false at the place (the Nether's): no raid, and the omen ends
+        // all the same, as `RaidOmenMobEffect` ends it whatever came of it.
+        if !self.can_start_raid() {
+            return;
+        }
         let points = self.pois_in_range(
             place,
             64,
