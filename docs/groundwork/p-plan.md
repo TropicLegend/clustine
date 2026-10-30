@@ -1065,3 +1065,81 @@ to be met everywhere a stay is. What P9 builds besides:
   transfer with a travel, sends the arrival only, and does not put the client into the
   world: the join's patience runs on, and the destination's `Spawned` puts them into
   the world in its dimension (`tell_entered` takes it from the placing region).
+
+## 17. P11, the rules by dimension, at the level of the code (2026-10-30)
+
+Section 6 says what P11 does; this is how, against the code after P9 (`e2179b7`). A survey
+of the simulation found that none of section 6's rules reads the region's dimension yet,
+and that some are missing whatever the dimension: a bed's explosion, the respawn anchor
+used by hand, ice broken into water, and the sponge. For review before it is built.
+
+### 17.1 The contracts the lead fixes first (one commit, before any family starts)
+
+- **The mobs' and the spawning's view of the level** (`mobs/view.rs` `MobWorld`,
+  `spawning/rules.rs`'s level trait, and their implementations in `region/mobs.rs`,
+  `region/natural_spawning.rs`, `region/raid_tick.rs` and the tests' views) gain
+  `fn dimension(&self) -> Dimension`, so that a mob's rule asks it of the view it already
+  has. The region's views answer `self.config.dimension`; the tests' views the overworld.
+- **The lava's rules** (`clustine-blocks/src/fluid.rs`): `tick_delay`, `drop_off` and
+  `slope_find_distance` take the level's `fast_lava` beside the fluid's kind, every
+  caller passing `false` until family B makes the region pass its dimension's. One
+  commit changes the signatures and the call sites (`region/fluids.rs`,
+  `region/updates.rs`, `region/redstone.rs`, `region.rs`), so that no family edits
+  another's lines to do it.
+- **Using an item** (`placement::use_item`'s `ItemUse`) gains the level's
+  `water_evaporates`, which the bucket reads; the region fills it.
+- **The sea level** stays `RegionConfig::sea_level`, set per region; the worker sets it
+  by the region's dimension (the overworld 63, the Nether 32, the End 0, as the
+  dimensions' noise settings say), not by whether the world has a seed alone.
+
+### 17.2 The families (subagents, each with files of its own)
+
+- **A. Water** (`placement/bucket.rs`, `region/dispensers/behaviours.rs`' emptying,
+  `region/random_ticks/melting.rs`, `region/random_ticks/minerals.rs`' dripstone, a new
+  `region/ice.rs`): where `water_evaporates`, a water bucket emptied by a player or a
+  dispenser makes the fizz (`level_event` 1501 and the sound) and places nothing; ice
+  that melts or is broken becomes air (`IceBlock.melt`, `playerDestroy`, which is built
+  here for every dimension, with its rule for the block below); dripstone drips no water
+  into a cauldron. The sponge is not in Clustine at all; it is named, not built.
+- **B. Lava** (`clustine-blocks/src/fluid.rs` and the region's fluid code after 17.1):
+  where `fast_lava`, a delay of 10, a drop-off of 1 and a slope distance of 4 (the
+  brief, 5.2, inferred; a comparison with the official server settles it), and an
+  entity in lava pushed by 0.007 instead of 0.0023333333333333335 (the physics).
+- **C. Beds and anchors** (`region/sleep.rs`, a new `region/anchors.rs`,
+  `clustine-blocks` for the anchor's charge state where it lacks it): a bed used where
+  its rule says it explodes is removed (both halves) and explodes with power 5 and fire,
+  hurting nobody until survival (the owner's answer, section 14); `straw_bed_rule` for
+  straw beds. The anchor: charged by glowstone in every dimension, with its sound, game
+  event and the glowstone used; used empty-handed with a charge, it sets the spawn in the
+  Nether (the respawn's dimension the Nether) and explodes elsewhere, with the water
+  rule of `RespawnAnchorBlock$1`. Respawning at an anchor (a charge spent) comes with
+  the respawn after a death, in the End's milestone.
+- **D1. Light and time** (`region/light.rs`, `time.rs`, `region/daylight_detector.rs`):
+  a level without a sky (`has_skylight` false) has no sky light (`Lighting::new(false)`
+  and `check_light`'s `sky`), and a level with a fixed time darkens never: its
+  `sky_darken` is the fixed one, so that what reads it (the endermen's daylight, the
+  daylight detector, spawning) follows without its own change.
+- **D2. What is off or moved outside the overworld** (`spawning/rules.rs`,
+  `region/random_ticks/fire.rs`, `region/raids.rs`, `region/player_effects.rs`' omen,
+  `region/custom_spawners.rs`, `mobs/types/snow_golem.rs`, `mobs/ai/navigation.rs`):
+  the monster spawn light and the block-light limit by dimension (the Nether: 7 and 15);
+  fire's infiniburn tag by dimension (the Nether's and the End's, bedrock in the End);
+  no raid begun where `can_start_raid` is false (the omen ends without one); the custom
+  spawners in the overworld only; a snow golem melts by `snow_golem_melts` as well as
+  by its biome; navigation's heights from the level's, not the overworld's constants.
+
+### 17.3 What P11 leaves
+
+- Piglins' and hoglins' zombification, and zombified piglins from portal blocks: with
+  those mobs, in P12.
+- A pearl that carries its owner into another dimension (R G10): the lead's, after P12,
+  as a change of dimension that no portal made, on P9's travel.
+- Compasses, lodestones and clocks: the client's, but `LodestoneTracker`'s clearing of a
+  target (the brief, 5.6), which waits for the lodestone itself.
+
+### 17.4 Tests
+
+Each family's rules, tested in both kinds of level, from the brief and the game's code,
+by the family; and from the specification by someone else (X), as for every step. The
+comparisons with the official server: the Nether's lava's spread and timing (B), and the
+anchor's charge and explosion (C), written by a subagent and run by the lead.
