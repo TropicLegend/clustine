@@ -4288,6 +4288,8 @@ mod tests {
     mod n9b_monsters;
     mod n9b_spawning;
     mod n9b_thrown;
+    #[path = "../p11_spec_tests.rs"]
+    mod p11_spec_tests;
     mod pigs;
     mod pistons;
     mod player_effects;
