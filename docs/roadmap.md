@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-29)
+## Where the work stands (2026-10-30)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -537,16 +537,24 @@ index kept from every commit or makes one; old worlds are refused; **the Nether 
 (portals and travel, its land, its rules and its mobs), **then the End** (its portal,
 platform, gateways, mobs and the dragon's first fight, and the void that kills).
 
-**Where P stands** (2026-10-30): **P1** is done, the dimensions as one type in
-`clustine-world` with the game's rules for each from datagen, the End lit with its sky.
-**P2**, the contracts every later step builds on, is built as `p-plan.md` section 15
-says, after an independent review of its design and a second reading (15.4, 15.5):
-a region's dimension where a region is named, a dimension where something crosses one
-(a player's transfer and place, a respawn, a traveller), travellers and the portal
-index's questions on the wire and in the log, an entity's portal clock, `Placed` in the
-outbox, the dragon fight's record; `FORMAT_VERSION` 19, `STATE_FORMAT` 25, so worlds made
-before are refused. Next: P3 (the store) beside P5 and P6 (the land), by subagents in
-worktrees of their own, the homes and the portal index the lead's.
+**Where P stands** (2026-10-30, evening): pushed are **P1** (the dimensions as one
+type with the game's rules), **P2** (the contracts, `p-plan.md` section 15), **P4**
+(merges and splits within one dimension), **P5a** and **P6** (the Nether's terrain,
+features and structures) and **P8** (the portal's blocks and clock). Built and committed
+on the lead's machine, not pushed: **P3** (the store by dimension, the homes of the
+Nether and the End made with the world, the portal index kept from every commit and
+with the table file), **P7** (the edge keyed by dimension; a change of dimension in two
+halves, `Respawn` and then the placing), and **P9** (the travel through a Nether portal,
+`p-plan.md` section 16, with the review's changes in 16.7 and 16.8: the firing at the
+source, the wait and the placing at the destination, the portal found or made by the
+game's geometry in `clustine-blocks/src/portal_forcer.rs`). Nothing of these is pushed
+yet: the full check of the stack found that the homes of the Nether and the End broke 69
+end-to-end tests that read a new world's list as the overworld alone; that is being put
+right, then the stack is checked whole and pushed, step by step. Next: tests of P9 from
+its specification by someone who did not write it, kill tests of a travel and a bot that
+walks through a portal and back; the comparisons with the official server for the
+`Respawn`; then P10 (the End's portal, the credits, gateways), P11 (rules by dimension)
+and P12 (the Nether's mobs). Nothing of P is for a real client to try yet.
 
 **N10's cost, measured** (2026-10-29, `bin/clustine/tests/n10_measured.rs`, release, two
 workers on two regions pinned at block x = 64, a village of 30 villagers, a bell and 30
