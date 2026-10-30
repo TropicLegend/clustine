@@ -335,3 +335,7 @@ pub fn portal_stays(
 #[cfg(test)]
 #[path = "portal_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "portal_specification.rs"]
+mod specification;

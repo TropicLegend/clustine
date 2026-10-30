@@ -4126,6 +4126,8 @@ mod tests {
     mod pistons;
     mod player_effects;
     mod pois;
+    #[path = "../portals_specification.rs"]
+    mod portals_specification;
     mod post_processing_and_seams;
     mod pressed;
     mod pushed;
