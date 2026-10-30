@@ -13,8 +13,10 @@ use super::{Rules, Vec3, World};
 
 /// How strongly water pushes (`Entity.updateFluidInteraction`).
 const WATER_CURRENT: f64 = 0.014;
-/// And lava, where it is not fast (the overworld's).
+/// And lava, where it is not fast (the overworld's), and where it is (the Nether's;
+/// `Entity.updateFluidInteraction`).
 const LAVA_CURRENT: f64 = 0.002_333_333_333_333_333_5;
+const FAST_LAVA_CURRENT: f64 = 0.007;
 
 /// A current summed over the cells of one kind of fluid (`CurrentAccumulator`).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -34,6 +36,8 @@ pub(crate) struct InFluids {
     pub(crate) lava_height: f64,
     water: Current,
     lava: Current,
+    /// Whether the level's lava is fast, which its push follows.
+    fast_lava: bool,
 }
 
 impl InFluids {
@@ -48,7 +52,10 @@ impl InFluids {
 
 /// `EntityFluidInteraction.update(entity, false)` for the entity whose box is `bounds`.
 pub(crate) fn update<W: World + ?Sized>(world: &W, bounds: &Aabb) -> InFluids {
-    let mut found = InFluids::default();
+    let mut found = InFluids {
+        fast_lava: world.fast_lava(),
+        ..InFluids::default()
+    };
     let inner = bounds.deflate(0.001);
     let x0 = super::floor(inner.min[0]);
     let y0 = super::floor(inner.min[1]);
@@ -142,7 +149,12 @@ pub(crate) fn push(found: &InFluids, motion: Vec3) -> Vec3 {
         motion = apply(&found.water, motion, WATER_CURRENT);
     }
     if found.in_lava() {
-        motion = apply(&found.lava, motion, LAVA_CURRENT);
+        let current = if found.fast_lava {
+            FAST_LAVA_CURRENT
+        } else {
+            LAVA_CURRENT
+        };
+        motion = apply(&found.lava, motion, current);
     }
     motion
 }

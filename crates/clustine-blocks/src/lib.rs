@@ -51,6 +51,13 @@ pub trait BlockView {
     /// Which side of the rules the two former copies disagreed on this caller takes.
     fn rules(&self) -> Rules;
 
+    /// Whether lava is fast in the level (`DimensionType`'s `fast_lava`, the Nether's):
+    /// its tick delay, drop-off and slope distance. A view that knows no level is the
+    /// overworld's.
+    fn fast_lava(&self) -> bool {
+        false
+    }
+
     /// `RandomSource.nextInt(bound)`, for a rule that draws (a coral's time to die out
     /// of water). Generation's views draw nothing and answer 0: the rules that draw are
     /// the simulation's.

@@ -801,7 +801,12 @@ impl Region {
         if self.should_spread_liquid(pos, state, output) {
             let held = clustine_blocks::fluid::FluidState::of(state);
             if let Some(kind) = held.kind() {
-                self.schedule_tick(pos, Ticked::Fluid(held.fluid), kind.tick_delay(), 0);
+                self.schedule_tick(
+                    pos,
+                    Ticked::Fluid(held.fluid),
+                    kind.tick_delay(self.fast_lava()),
+                    0,
+                );
             }
         }
     }
@@ -1135,6 +1140,10 @@ impl BlockView for RegionView<'_> {
 
     fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
         self.0.schedule_tick(at, Ticked::Fluid(fluid), delay, 0);
+    }
+
+    fn fast_lava(&self) -> bool {
+        self.0.fast_lava()
     }
 
     fn rules(&self) -> clustine_blocks::Rules {

@@ -7,6 +7,7 @@
 //! chunks the region holds and has loaded; the region decides which region a target
 //! belongs to and passes a placement on when it is another's (section 4.6).
 
+mod anchor;
 mod bucket;
 mod context;
 mod data;
@@ -256,6 +257,14 @@ fn use_block(click: &Click, state: BlockState, blocks: &dyn Blocks) -> Clicked {
     // A bed lays its user down, which the region decides (`region/sleep.rs`).
     if data::is(state, BlockClass::AbstractBedBlock) {
         return Clicked::ByRule { position, face };
+    }
+    // A respawn anchor is charged or used by the region's rule, or passes the click on
+    // (`placement/anchor.rs`, `region/anchors.rs`).
+    if data::is(state, BlockClass::RespawnAnchorBlock) {
+        if anchor::takes(click, state) {
+            return Clicked::ByRule { position, face };
+        }
+        return Clicked::Nothing;
     }
     // `CopperGolemStatueBlock.useItemOn`: anything but an axe turns the statue to its
     // next pose (`region/copper_golems.rs`); an axe passes to the item.
@@ -601,6 +610,9 @@ pub struct ItemUse {
     pub sneaking: bool,
     /// What the player carries, for an empty bucket's filled one.
     pub inventory: Inventory,
+    /// Whether water evaporates in the level (`water_evaporates`, the Nether's), which
+    /// a water bucket's emptying asks.
+    pub water_evaporates: bool,
 }
 
 /// What the use of an item changes.

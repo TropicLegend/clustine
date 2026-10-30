@@ -190,6 +190,9 @@ impl Region {
             ],
         );
         let explosion = Explosion {
+            fire: false,
+            hurts: true,
+            resistance_at: None,
             source,
             centre: at,
             radius,
@@ -323,7 +326,12 @@ impl Region {
             self.set_block_updated(pos, opened, UPDATE_CLIENTS, UPDATE_LIMIT, output);
             if flag(state, "waterlogged") {
                 let water = clustine_blocks::fluid::Kind::Water;
-                self.schedule_tick(pos, Ticked::Fluid(water.source()), water.tick_delay(), 0);
+                self.schedule_tick(
+                    pos,
+                    Ticked::Fluid(water.source()),
+                    water.tick_delay(false),
+                    0,
+                );
             }
             self.burst_opened(pos, opened, random, output);
         } else if is_class(state, BlockClass::FenceGateBlock) {

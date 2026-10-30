@@ -96,6 +96,13 @@ pub(crate) struct Explosion {
     /// Whether the source is in water, where frames, paintings, cushions and knots
     /// ignore it (`BlockAttachedEntity.ignoreExplosion`).
     pub(crate) source_in_water: bool,
+    /// Whether it sets fire (`createFire`): a bed's and an anchor's.
+    pub(crate) fire: bool,
+    /// Whether it hurts entities: a bed's and an anchor's hurt nobody until survival.
+    pub(crate) hurts: bool,
+    /// One block whose resistance the explosion's calculator takes otherwise: the
+    /// anchor's own, with water beside it (`RespawnAnchorBlock$1`).
+    pub(crate) resistance_at: Option<(BlockPos, f32)>,
 }
 
 /// The draws of a loot table, from the explosion's stream.
@@ -226,6 +233,8 @@ impl Region {
     /// What the explosion's effects across a line carry of it.
     fn blast_of(&self, explosion: &Explosion) -> Blast {
         Blast {
+            fire: explosion.fire,
+            hurts: explosion.hurts,
             source: explosion.source,
             tick: self.tick,
             centre: explosion.centre.map(Double),
@@ -823,6 +832,9 @@ impl Region {
             return;
         }
         let explosion = Explosion {
+            fire: false,
+            hurts: true,
+            resistance_at: None,
             source: key,
             centre: at,
             radius,
@@ -944,6 +956,9 @@ impl Region {
         };
         let record = record.clone();
         let explosion = Explosion {
+            fire: blast.fire,
+            hurts: blast.hurts,
+            resistance_at: None,
             source: blast.source,
             centre: blast.centre.map(|component| component.0),
             radius: blast.radius.0,

@@ -69,7 +69,7 @@ impl Region {
         held: FluidState,
         new: FluidState,
     ) -> i32 {
-        let delay = kind.tick_delay();
+        let delay = kind.tick_delay(self.fast_lava());
         if kind != Kind::Lava || held.is_empty() || new.is_empty() || held.falling || new.falling {
             return delay;
         }
@@ -135,7 +135,7 @@ impl Region {
         let amount = if held.falling {
             7
         } else {
-            i32::from(held.amount) - kind.drop_off()
+            i32::from(held.amount) - kind.drop_off(self.fast_lava())
         };
         if amount <= 0 {
             return;
@@ -258,7 +258,12 @@ impl Region {
                 .unwrap_or(waterlogged);
         }
         self.set_block(pos, waterlogged, output);
-        self.schedule_tick(pos, Ticked::Fluid(new.fluid), Kind::Water.tick_delay(), 0);
+        self.schedule_tick(
+            pos,
+            Ticked::Fluid(new.fluid),
+            Kind::Water.tick_delay(false),
+            0,
+        );
     }
 
     /// `LiquidBlock.shouldSpreadLiquid`: lava with water above or beside it becomes
@@ -339,6 +344,10 @@ impl BlockView for Carried<'_> {
 
     fn schedule_fluid_tick(&mut self, at: BlockPos, fluid: u8, delay: i32) {
         RegionView(self.region).schedule_fluid_tick(at, fluid, delay);
+    }
+
+    fn fast_lava(&self) -> bool {
+        self.region.fast_lava()
     }
 
     fn rules(&self) -> clustine_blocks::Rules {

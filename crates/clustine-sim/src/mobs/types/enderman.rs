@@ -607,7 +607,9 @@ impl MobType for Enderman {
         sync_target(tick);
         let own = state_of(&tick.mob);
         let tick_count = tick.tick_count.saturating_add(1);
-        if tick.world.sky_darken() >= 4 || tick_count < own.target_change_time.saturating_add(600) {
+        if !tick.world.is_bright_outside()
+            || tick_count < own.target_change_time.saturating_add(600)
+        {
             return;
         }
         let f = magic_value(tick);

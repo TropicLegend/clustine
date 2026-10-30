@@ -490,6 +490,9 @@ impl Region {
             self.remove_entity(key, entity.hops, position, output);
             let [x, y, z] = body.position;
             let explosion = Explosion {
+                fire: false,
+                hurts: true,
+                resistance_at: None,
                 source: key,
                 centre: [x, y + EXPLOSION_HEIGHT, z],
                 radius: power.0,
@@ -797,6 +800,9 @@ impl Region {
             + f64::from(CART_SPEED_FACTOR) * random.next_double() * 1.5 * by_speed)
             as f32;
         let explosion = Explosion {
+            fire: false,
+            hurts: true,
+            resistance_at: None,
             source: key,
             centre: moving.position,
             radius: power,

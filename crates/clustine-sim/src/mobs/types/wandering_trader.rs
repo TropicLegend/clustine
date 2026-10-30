@@ -123,7 +123,7 @@ pub(crate) fn update_trading(mob: &mut Mob, change: impl FnOnce(&mut Trading)) {
 
 /// `Level.isDarkOutside()`: the sky darkened by four or more.
 fn dark_outside(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.world.sky_darken() >= 4
+    ai.tick.world.is_dark_outside()
 }
 
 /// The drink a [`UseItemGoal`] holds out: an invisibility potion, or milk.

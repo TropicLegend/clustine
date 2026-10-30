@@ -189,7 +189,12 @@ impl Region {
         self.set_block_updated(pos, changed, UPDATE_CLIENTS, UPDATE_LIMIT, output);
         if flag(state, "waterlogged") {
             let water = clustine_blocks::fluid::Kind::Water;
-            self.schedule_tick(pos, Ticked::Fluid(water.source()), water.tick_delay(), 0);
+            self.schedule_tick(
+                pos,
+                Ticked::Fluid(water.source()),
+                water.tick_delay(false),
+                0,
+            );
         }
     }
 
@@ -462,6 +467,10 @@ impl Region {
         };
         if is_class(state, BlockClass::AbstractBedBlock) {
             self.use_bed(pos, player, output);
+            return;
+        }
+        if is_class(state, BlockClass::RespawnAnchorBlock) {
+            self.use_anchor(pos, face, player, output);
             return;
         }
         if Region::opens_menu(state) {

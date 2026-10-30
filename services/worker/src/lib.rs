@@ -1095,12 +1095,24 @@ impl RegionSettings {
             spawn: spawn.map(Vec3::bottom_centre_of),
             starting_inventory: self.starting_inventory,
             return_after: self.return_after,
-            lowest_y: self.lowest_y,
+            // Each dimension's own bottom (`docs/groundwork/p-plan.md`, 17.5): the
+            // overworld's as the settings say.
+            lowest_y: match dimension {
+                Dimension::Overworld => self.lowest_y,
+                other => other.rules().min_y,
+            },
             seed: world,
             // A flat world has no seed of its own yet: 0, which an official server
             // given `level-seed=0` shares.
             game_seed: seed.unwrap_or(0),
-            sea_level: if seed.is_some() { 63 } else { -63 },
+            // The dimensions' noise settings' (the plan, 17.1); a flat overworld's is
+            // its own.
+            sea_level: match dimension {
+                Dimension::Overworld if seed.is_some() => 63,
+                Dimension::Overworld => -63,
+                Dimension::Nether => 32,
+                Dimension::End => 0,
+            },
             spawn_mobs: spawn_mobs(),
             // A server's budget for lighting what it loads (ADR-0029), and the checks the
             // end-to-end tests ask for.

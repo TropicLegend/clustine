@@ -101,7 +101,11 @@ impl MobWorld for View<'_> {
     }
 
     fn sky_darken(&self) -> i32 {
-        crate::time::sky_darken(self.region.clock.day)
+        self.region.sky_darken()
+    }
+
+    fn dimension(&self) -> clustine_world::Dimension {
+        self.region.config.dimension
     }
 
     fn player_omens(&self, key: EntityId) -> crate::api::Omens {

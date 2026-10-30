@@ -131,6 +131,12 @@ pub struct Blast {
     /// vehicle and a hanging thing read of it.
     pub owner: Option<Uuid>,
     pub owner_creative: bool,
+    /// Whether it sets fire among the blocks it breaks (`createFire`): a bed's and an
+    /// anchor's do (`docs/groundwork/p-plan.md`, sections 17.5 and 17.6).
+    pub fire: bool,
+    /// Whether it hurts entities: a bed's and an anchor's hurt nobody until survival
+    /// (the owner's answer, section 14); every other's does.
+    pub hurts: bool,
 }
 
 /// What a player did to an entity in another region's land, with what the game reads of

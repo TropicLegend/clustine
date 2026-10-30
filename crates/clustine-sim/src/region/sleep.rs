@@ -33,7 +33,7 @@ use crate::mobs::Mob;
 use crate::mobs::brain::behaviours::rest;
 use crate::mobs::types::villager;
 use crate::physics::aabb::Aabb;
-use crate::time::{DAY, is_dark};
+use crate::time::DAY;
 
 /// The game rule `players_sleeping_percentage` (B 4.1): Clustine has no game rules yet.
 const SLEEPING_PERCENTAGE: u32 = 100;
@@ -132,7 +132,7 @@ impl Region {
         output: &mut TickOutput,
     ) {
         let straw = is_class(head_state, BlockClass::StrawBedBlock);
-        let dark = is_dark(self.last_day());
+        let dark = self.dark_outside(self.last_day());
         let Some(player) = self.players.get(&id) else {
             return;
         };
@@ -407,7 +407,7 @@ impl Region {
             .players
             .values()
             .any(|player| player.sleeping.is_some());
-        if !own_sleeper || !is_dark(self.last_day()) {
+        if !own_sleeper || !self.dark_outside(self.last_day()) {
             return;
         }
         let (active, sleeping, deep) = self.sleep_counts();
@@ -458,7 +458,7 @@ impl Region {
                 .is_some_and(|state| is_class(state, BlockClass::AbstractBedBlock));
             if !bed {
                 self.stop_sleep(id, true, true, output);
-            } else if !is_dark(day) {
+            } else if !self.dark_outside(day) {
                 self.stop_sleep(id, false, true, output);
             }
         }

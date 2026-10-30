@@ -62,7 +62,17 @@ fn world_with(
     blocks: &[(BlockPos, BlockState)],
     ticks: &[(BlockPos, ScheduledTick)],
 ) -> (Region, TickOutput) {
+    world_with_in(clustine_world::Dimension::Overworld, blocks, ticks)
+}
+
+/// [`world_with`] in a level of `dimension`, whose rules of fluids it follows.
+fn world_with_in(
+    dimension: clustine_world::Dimension,
+    blocks: &[(BlockPos, BlockState)],
+    ticks: &[(BlockPos, ScheduledTick)],
+) -> (Region, TickOutput) {
     let mut region = joined_in(ChunkArea::EVERYWHERE, &[1]);
+    region.config.dimension = dimension;
     let positions: Vec<ChunkPos> = (-2..=2)
         .flat_map(|x| (-2..=2).map(move |z| ChunkPos::new(x, z)))
         .collect();
@@ -105,6 +115,16 @@ fn sources_of(
     sources: &[BlockPos],
     blocks: &[(BlockPos, BlockState)],
 ) -> (Region, TickOutput) {
+    sources_in(clustine_world::Dimension::Overworld, fluid, sources, blocks)
+}
+
+/// [`sources_of`] in a level of `dimension`.
+fn sources_in(
+    dimension: clustine_world::Dimension,
+    fluid: u8,
+    sources: &[BlockPos],
+    blocks: &[(BlockPos, BlockState)],
+) -> (Region, TickOutput) {
     let block = if fluid == LAVA {
         blocks::LAVA
     } else {
@@ -116,7 +136,7 @@ fn sources_of(
         .iter()
         .map(|source| (*source, fluid_tick(*source, fluid)))
         .collect();
-    world_with(&all, &ticks)
+    world_with_in(dimension, &all, &ticks)
 }
 
 fn idle_tick(region: &mut Region) -> TickOutput {
@@ -246,6 +266,50 @@ fn water_reaches_each_further_block_five_ticks_after_the_last() {
 fn lava_reaches_the_second_block_thirty_ticks_after_the_first() {
     let source = on_floor_at(0, 0);
     let (mut region, _) = sources_of(LAVA, &[source], &[]);
+    assert_eq!(level_at(&region, on_floor_at(1, 0)), Some(2));
+    run(&mut region, 29);
+    assert_eq!(level_at(&region, on_floor_at(2, 0)), None);
+    run(&mut region, 1);
+    assert_eq!(level_at(&region, on_floor_at(2, 0)), Some(4));
+}
+
+/// Where lava is fast (the Nether's `fast_lava`, `LavaFluid.txt` 317–388), it drops one
+/// level a block, so it reaches seven blocks, as water does.
+#[test]
+fn lava_in_the_nether_spreads_seven_blocks_one_level_at_a_time() {
+    let source = on_floor_at(0, 0);
+    let (mut region, _) = sources_in(clustine_world::Dimension::Nether, LAVA, &[source], &[]);
+    run(&mut region, 1000);
+    for dx in -9..=9_i32 {
+        for dz in -9..=9_i32 {
+            let distance = (dx.abs() + dz.abs()) as u8;
+            let expected = (distance <= 7).then_some(distance);
+            assert_eq!(
+                level_at(&region, on_floor_at(dx, dz)),
+                expected,
+                "{dx}, {dz}"
+            );
+        }
+    }
+}
+
+/// And it spreads ten ticks after its source's tick, not thirty.
+#[test]
+fn lava_in_the_nether_reaches_the_second_block_ten_ticks_after_the_first() {
+    let source = on_floor_at(0, 0);
+    let (mut region, _) = sources_in(clustine_world::Dimension::Nether, LAVA, &[source], &[]);
+    assert_eq!(level_at(&region, on_floor_at(1, 0)), Some(1));
+    run(&mut region, 9);
+    assert_eq!(level_at(&region, on_floor_at(2, 0)), None);
+    run(&mut region, 1);
+    assert_eq!(level_at(&region, on_floor_at(2, 0)), Some(2));
+}
+
+/// In the End lava is slow, as in the overworld.
+#[test]
+fn lava_in_the_end_spreads_as_in_the_overworld() {
+    let source = on_floor_at(0, 0);
+    let (mut region, _) = sources_in(clustine_world::Dimension::End, LAVA, &[source], &[]);
     assert_eq!(level_at(&region, on_floor_at(1, 0)), Some(2));
     run(&mut region, 29);
     assert_eq!(level_at(&region, on_floor_at(2, 0)), None);

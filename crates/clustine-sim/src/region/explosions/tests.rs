@@ -171,6 +171,9 @@ fn drops_merge_into_stacks_of_at_most_sixteen_and_each_stays_at_its_first_block(
 fn rays_in_open_air_draw_once_each_and_reach_no_further_than_six_point_nine_blocks() {
     let region = world(1, nothing);
     let explosion = Explosion {
+        fire: false,
+        hurts: true,
+        resistance_at: None,
         source: EntityId(1),
         centre: [8.5, -45.5, 8.5],
         radius: 4.0,
@@ -618,6 +621,8 @@ mod across {
 
     fn blast(owner: Option<Uuid>) -> Blast {
         Blast {
+            fire: false,
+            hurts: true,
             source: EntityId(9_999),
             tick: 1,
             centre: [Double(4.5), Double(-59.9), Double(4.5)],

@@ -128,6 +128,10 @@ impl World for View<'_> {
         self.region.readable(chunk)
     }
 
+    fn fast_lava(&self) -> bool {
+        self.region.fast_lava()
+    }
+
     fn entity_colliders(&self, bounds: &Aabb) -> Vec<physics::entities::Collider> {
         self.region.colliders_in(bounds)
     }

@@ -59,27 +59,29 @@ impl Kind {
         }
     }
 
-    /// `getTickDelay`.
-    pub fn tick_delay(self) -> i32 {
-        match self {
-            Self::Water => 5,
-            Self::Lava => 30,
+    /// `getTickDelay`, in a level whose lava is fast (`fast_lava`, the Nether's) or not
+    /// (`LavaFluid.txt` 317–388).
+    pub fn tick_delay(self, fast_lava: bool) -> i32 {
+        match (self, fast_lava) {
+            (Self::Water, _) => 5,
+            (Self::Lava, true) => 10,
+            (Self::Lava, false) => 30,
         }
     }
 
     /// `getDropOff`: how much less a block beside holds.
-    pub fn drop_off(self) -> i32 {
-        match self {
-            Self::Water => 1,
-            Self::Lava => 2,
+    pub fn drop_off(self, fast_lava: bool) -> i32 {
+        match (self, fast_lava) {
+            (Self::Water, _) | (Self::Lava, true) => 1,
+            (Self::Lava, false) => 2,
         }
     }
 
     /// `getSlopeFindDistance`: how far a fluid looks for a way down.
-    pub fn slope_find_distance(self) -> i32 {
-        match self {
-            Self::Water => 4,
-            Self::Lava => 2,
+    pub fn slope_find_distance(self, fast_lava: bool) -> i32 {
+        match (self, fast_lava) {
+            (Self::Water, _) | (Self::Lava, true) => 4,
+            (Self::Lava, false) => 2,
         }
     }
 
@@ -521,7 +523,7 @@ pub fn new_liquid<V: BlockView + ?Sized>(
     if fluid.kind() == Some(kind) && can_pass_through_wall(Face::Up, state, above) {
         return FluidState::flowing(kind, 8, true);
     }
-    let amount = highest - kind.drop_off();
+    let amount = highest - kind.drop_off(view.fast_lava());
     if amount <= 0 {
         FluidState::EMPTY
     } else {
@@ -553,7 +555,7 @@ fn slope_distance<V: BlockView + ?Sized>(
         if is_hole(view, kind, beside_pos) {
             return depth;
         }
-        if depth < kind.slope_find_distance() {
+        if depth < kind.slope_find_distance(view.fast_lava()) {
             let distance =
                 slope_distance(view, kind, beside_pos, depth + 1, opposite(face), beside);
             nearest = nearest.min(distance);

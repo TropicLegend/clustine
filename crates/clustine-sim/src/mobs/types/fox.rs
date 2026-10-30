@@ -282,7 +282,7 @@ fn uuid_of(ai: &Ai<'_, '_>, key: EntityId) -> Option<u128> {
 
 /// `isBrightOutside()`: the sky darkened by less than four.
 fn bright_outside(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.world.sky_darken() < 4
+    ai.tick.world.is_bright_outside()
 }
 
 /// `canSeeSky(pos)`: the sky's light is full there (**Inferred**: `BlockAndTintGetter`'s
@@ -1673,7 +1673,7 @@ fn ambient(tick: &mut MobTick<'_>) -> i32 {
     if state_of(&tick.mob).has(flag_bits::SLEEPING) {
         return sounds::ENTITY_FOX_SLEEP;
     }
-    if tick.world.sky_darken() >= 4 && tick.draws.next_float() < 0.1 {
+    if tick.world.is_dark_outside() && tick.draws.next_float() < 0.1 {
         let [x, y, z] = tick.living.body.position;
         let around = crate::physics::aabb::Aabb::of_entity(
             [x, y, z],

@@ -71,7 +71,7 @@ impl Region {
         day: u64,
         output: &mut TickOutput,
     ) {
-        let darken = crate::time::sky_darken(day);
+        let darken = crate::time::level_sky_darken(self.config.dimension, day);
         let Some(sky) = self.effective_sky_brightness(pos, darken) else {
             return;
         };

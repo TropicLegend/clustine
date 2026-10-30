@@ -38,6 +38,12 @@ pub(crate) trait World {
     /// null).
     fn has_chunk(&self, chunk: ChunkPos) -> bool;
 
+    /// Whether lava is fast in the level (the Nether's), which pushes an entity in it
+    /// harder; the overworld's where a world knows no level.
+    fn fast_lava(&self) -> bool {
+        false
+    }
+
     /// The block entity of the moving piston at `pos`, where the block there is one
     /// and the world has it: what it collides with depends on how far its block has
     /// gone. A world without block entities has none, and the moving piston is empty.

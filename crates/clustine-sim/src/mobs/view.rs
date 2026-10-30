@@ -212,6 +212,21 @@ pub(crate) trait MobWorld: Holds {
         0
     }
 
+    /// The level's dimension: the overworld where a view knows no other.
+    fn dimension(&self) -> clustine_world::Dimension {
+        clustine_world::Dimension::Overworld
+    }
+
+    /// `Level.isBrightOutside`, which the mobs read for the day.
+    fn is_bright_outside(&self) -> bool {
+        crate::time::is_bright_outside(self.dimension(), self.sky_darken())
+    }
+
+    /// `Level.isDarkOutside`, which the mobs read for the night.
+    fn is_dark_outside(&self) -> bool {
+        crate::time::is_dark_outside(self.dimension(), self.sky_darken())
+    }
+
     /// The overworld clock's ticks (`WorldClock::day`), which the day's timeline
     /// follows: what a bee's `bees_stay_in_hive` reads (the morning where a view knows
     /// no clock).

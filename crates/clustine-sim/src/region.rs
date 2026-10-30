@@ -20,6 +20,7 @@ use crate::state::{
     EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
 };
 
+mod anchors;
 mod animals;
 mod arrivals;
 mod arriving;
@@ -1063,6 +1064,22 @@ impl Region {
     /// edge they belong to, which is whom the region tells what concerns them.
     pub fn player_state(&self, player: PlayerId) -> Option<PlayerState> {
         self.players.get(&player).map(|player| player.to_state())
+    }
+
+    /// `Level.getSkyDarken()` of the region's level now (`time::level_sky_darken`).
+    pub(crate) fn sky_darken(&self) -> i32 {
+        crate::time::level_sky_darken(self.config.dimension, self.clock.day)
+    }
+
+    /// Whether lava is fast in the region's level (`fast_lava`, the Nether's).
+    pub(crate) fn fast_lava(&self) -> bool {
+        self.config.dimension.rules().fast_lava
+    }
+
+    /// `Level.isDarkOutside()` of the region's level at the overworld clock's `day`.
+    pub(crate) fn dark_outside(&self, day: u64) -> bool {
+        let dimension = self.config.dimension;
+        crate::time::is_dark_outside(dimension, crate::time::level_sky_darken(dimension, day))
     }
 
     /// The stay the region holds as entering for `player`, if it holds one: the runner
@@ -2747,6 +2764,7 @@ impl Region {
                     pitch: rotation.1,
                     sneaking: *sneaking,
                     inventory: player.inventory.clone(),
+                    water_evaporates: self.config.dimension.rules().water_evaporates,
                 };
                 let sequence = *sequence;
                 let hand = if off_hand {
@@ -3269,7 +3287,7 @@ impl Region {
                 self.schedule_tick(
                     *position,
                     clustine_world::Ticked::Fluid(water.source()),
-                    water.tick_delay(),
+                    water.tick_delay(false),
                     0,
                 );
             }
@@ -3328,7 +3346,7 @@ impl Region {
                 self.schedule_tick(
                     *position,
                     clustine_world::Ticked::Fluid(water.source()),
-                    water.tick_delay(),
+                    water.tick_delay(false),
                     0,
                 );
             }

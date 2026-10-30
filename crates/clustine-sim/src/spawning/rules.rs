@@ -60,6 +60,14 @@ pub(crate) trait SpawnWorld {
     fn sea_level(&self) -> i32 {
         SEA_LEVEL
     }
+    /// The level's dimension: the overworld where a reader knows no other.
+    #[expect(
+        dead_code,
+        reason = "the spawn light by dimension reads it (`docs/groundwork/p-plan.md`, 17.2 D2)"
+    )]
+    fn dimension(&self) -> clustine_world::Dimension {
+        clustine_world::Dimension::Overworld
+    }
 }
 
 /// The overworld's sea level.

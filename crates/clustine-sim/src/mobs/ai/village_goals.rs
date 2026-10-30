@@ -117,7 +117,7 @@ pub(crate) fn is_wooden_door(world: &dyn MobWorld, pos: BlockPos) -> bool {
 
 /// `Level.isBrightOutside()`: the sky darkened by less than four.
 fn bright_outside(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.world.sky_darken() < 4
+    ai.tick.world.is_bright_outside()
 }
 
 /// `StrollThroughVillageGoal`'s state: where it wants to go.

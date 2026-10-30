@@ -59,7 +59,7 @@ const HALF_PI: f64 = 1.570_796_370_506_286_6;
 
 /// `Level.isBrightOutside()`: the sky darkened less than four levels.
 fn bright_outside(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.world.sky_darken() < 4
+    ai.tick.world.is_bright_outside()
 }
 
 /// `wantsToSwim()`: searching for land, or a target in water.

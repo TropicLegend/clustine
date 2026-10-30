@@ -232,7 +232,11 @@ impl SpawnWorld for RaidWorld<'_> {
     }
 
     fn sky_darken(&self) -> i32 {
-        crate::time::sky_darken(self.0.clock.day)
+        self.0.sky_darken()
+    }
+
+    fn dimension(&self) -> clustine_world::Dimension {
+        self.0.config.dimension
     }
 
     fn biome(&self, _: BlockPos) -> Option<clustine_world::Biome> {

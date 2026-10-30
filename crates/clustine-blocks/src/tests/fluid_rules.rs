@@ -59,12 +59,17 @@ fn the_fluids_have_the_games_ids() {
 
 #[test]
 fn water_and_lava_have_their_delays_drop_offs_and_reach() {
-    assert_eq!(Kind::Water.tick_delay(), 5);
-    assert_eq!(Kind::Lava.tick_delay(), 30);
-    assert_eq!(Kind::Water.drop_off(), 1);
-    assert_eq!(Kind::Lava.drop_off(), 2);
-    assert_eq!(Kind::Water.slope_find_distance(), 4);
-    assert_eq!(Kind::Lava.slope_find_distance(), 2);
+    assert_eq!(Kind::Water.tick_delay(false), 5);
+    assert_eq!(Kind::Lava.tick_delay(false), 30);
+    assert_eq!(Kind::Water.drop_off(false), 1);
+    assert_eq!(Kind::Lava.drop_off(false), 2);
+    assert_eq!(Kind::Water.slope_find_distance(false), 4);
+    assert_eq!(Kind::Lava.slope_find_distance(false), 2);
+    // Where lava is fast (`LavaFluid.txt` 317–388); water is as anywhere.
+    assert_eq!(Kind::Water.tick_delay(true), 5);
+    assert_eq!(Kind::Lava.tick_delay(true), 10);
+    assert_eq!(Kind::Lava.drop_off(true), 1);
+    assert_eq!(Kind::Lava.slope_find_distance(true), 4);
     assert!(Kind::Water.converts_to_source());
     assert!(!Kind::Lava.converts_to_source());
 }

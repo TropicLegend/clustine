@@ -1015,13 +1015,7 @@ impl Region {
         if charge == 4 {
             return self.optional_click(dispense, false, output);
         }
-        // `RespawnAnchorBlock.charge`: one more, with every update, and its sound.
-        self.set_block(
-            front,
-            set(state, "charges", &(charge + 1).to_string()),
-            output,
-        );
-        Region::block_sound(front, sounds::BLOCK_RESPAWN_ANCHOR_CHARGE, 1.0, 1.0, output);
+        self.charge_anchor(front, state, output);
         dispense.shrink(1);
         self.optional_click(dispense, true, output)
     }

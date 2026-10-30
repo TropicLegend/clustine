@@ -32,10 +32,11 @@ const WATER: u8 = 2;
 const FLOWING_LAVA: u8 = 3;
 const LAVA: u8 = 4;
 
-/// `Fluid.getTickDelay` in the overworld.
-fn fluid_delay(fluid: u8) -> i32 {
+/// `Fluid.getTickDelay` in a level whose lava is fast or not.
+fn fluid_delay(fluid: u8, fast_lava: bool) -> i32 {
     match fluid {
         FLOWING_WATER | WATER => 5,
+        FLOWING_LAVA | LAVA if fast_lava => 10,
         FLOWING_LAVA | LAVA => 30,
         _ => 0,
     }
@@ -91,7 +92,7 @@ pub fn update_shape<V: BlockView + ?Sized>(
     // A waterlogged block lets its water flow on (`SimpleWaterloggedBlock`'s blocks
     // all do this first).
     if state.property("waterlogged") == Some("true") {
-        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER, view.fast_lava()));
     }
     // What grows takes its shape as it grows (`growth.rs`). Generation asks too: kelp
     // beside the edge of a structure schedules its water there, as the game's does.
@@ -137,7 +138,7 @@ pub fn update_shape<V: BlockView + ?Sized>(
         let source = |state: BlockState| state.props().fluid().is_some_and(|fluid| fluid.source);
         if source(state) || source(neighbour) {
             let fluid = fluid_id(state);
-            view.schedule_fluid_tick(pos, fluid, fluid_delay(fluid));
+            view.schedule_fluid_tick(pos, fluid, fluid_delay(fluid, view.fast_lava()));
         }
         // Since 26.x bubble columns are water's own business: a full source of a fluid
         // a column may stand in, told of a block below that makes one, ticks itself to
@@ -270,7 +271,7 @@ pub fn update_shape<V: BlockView + ?Sized>(
     if is_class(state, BlockClass::SeagrassBlock) {
         let updated = vegetation(view, state, pos);
         if !updated.props().is_air() {
-            view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+            view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER, view.fast_lava()));
         }
         return updated;
     }
@@ -613,7 +614,7 @@ fn schedule_water_if_waterlogged<V: BlockView + ?Sized>(
     pos: BlockPos,
 ) {
     if state.property("waterlogged") == Some("true") {
-        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER));
+        view.schedule_fluid_tick(pos, WATER, fluid_delay(WATER, view.fast_lava()));
     }
 }
 

@@ -719,6 +719,7 @@ fn item_use(held: i32, feet: Vec3, pitch: f32) -> ItemUse {
         pitch,
         sneaking: false,
         inventory: Inventory::default(),
+        water_evaporates: false,
     }
 }
 

@@ -168,14 +168,74 @@ fn clamp(value: f32, min: f32, max: f32) -> f32 {
     if value < min { min } else { value.min(max) }
 }
 
-/// `Level.isDarkOutside`: what a bed's rule `when_dark` asks.
+/// `Level.skyDarken` of a level of `dimension` at the overworld clock's `day`: `15 −
+/// SKY_LIGHT_LEVEL` (`updateSkyBrightness`), the attribute the day's timeline sets in a
+/// level without a fixed time and the dimension sets in one with it (the Nether's 4, so
+/// 11; the End's none, so the attribute's default of 15 and none).
+pub fn level_sky_darken(dimension: clustine_world::Dimension, day: u64) -> i32 {
+    let rules = dimension.rules();
+    if rules.has_fixed_time {
+        (15.0_f32 - rules.sky_light_level.unwrap_or(15.0)) as i32
+    } else {
+        sky_darken(day)
+    }
+}
+
+/// `Level.isBrightOutside`: never in a level with a fixed time, else a darkening below 4.
+pub fn is_bright_outside(dimension: clustine_world::Dimension, sky_darken: i32) -> bool {
+    !dimension.rules().has_fixed_time && sky_darken < 4
+}
+
+/// `Level.isDarkOutside`: never in a level with a fixed time, else not bright; what a
+/// bed's rule `when_dark` asks.
+pub fn is_dark_outside(dimension: clustine_world::Dimension, sky_darken: i32) -> bool {
+    !dimension.rules().has_fixed_time && !is_bright_outside(dimension, sky_darken)
+}
+
+/// Whether the overworld is dark at `day`, as [`is_dark_outside`] has it there.
+#[cfg(test)]
 pub fn is_dark(day: u64) -> bool {
-    sky_darken(day) >= 4
+    is_dark_outside(clustine_world::Dimension::Overworld, sky_darken(day))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The darkening of each level (`Level.updateSkyBrightness`): the Nether's sky light
+    /// level is 4, so 11 at any time; the End sets none, so 0; the overworld's follows
+    /// its day.
+    #[test]
+    fn the_nether_and_the_end_darken_alike_at_any_time_and_the_overworld_by_its_day() {
+        use clustine_world::Dimension;
+        for day in [0, 6_000, 13_000, 18_000, 5 * DAY + 12_523] {
+            assert_eq!(level_sky_darken(Dimension::Nether, day), 11, "{day}");
+            assert_eq!(level_sky_darken(Dimension::End, day), 0, "{day}");
+            assert_eq!(level_sky_darken(Dimension::Overworld, day), sky_darken(day));
+        }
+    }
+
+    /// `Level.isBrightOutside` and `isDarkOutside`: neither in a level with a fixed
+    /// time, whatever its darkening; one or the other in the overworld.
+    #[test]
+    fn a_level_with_a_fixed_time_is_neither_bright_nor_dark_outside() {
+        use clustine_world::Dimension;
+        for darken in [0, 4, 11, 15] {
+            for dimension in [Dimension::Nether, Dimension::End] {
+                assert!(
+                    !is_bright_outside(dimension, darken),
+                    "{dimension:?} {darken}"
+                );
+                assert!(
+                    !is_dark_outside(dimension, darken),
+                    "{dimension:?} {darken}"
+                );
+            }
+            let bright = is_bright_outside(Dimension::Overworld, darken);
+            assert_eq!(bright, darken < 4);
+            assert_eq!(is_dark_outside(Dimension::Overworld, darken), !bright);
+        }
+    }
 
     #[test]
     fn a_bed_sleeps_from_tick_12523_to_tick_23477_of_a_clear_day() {

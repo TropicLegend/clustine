@@ -248,7 +248,7 @@ impl Region {
     /// nextInt(difficulty + 1)` phantoms, each finalised (`NATURAL`) and made by section
     /// 4.1's rule.
     pub(crate) fn spawn_phantoms(&mut self, sleepers: &[Sleeper], output: &mut TickOutput) {
-        if crate::time::sky_darken(self.clock.day) < 5 {
+        if self.sky_darken() < 5 {
             return;
         }
         for sleeper in sleepers {
@@ -365,7 +365,7 @@ impl Region {
     /// whose failure ends the patrol, each next one stepped by `nextInt(5) − nextInt(5)`
     /// along x and z.
     pub(crate) fn spawn_patrol(&mut self, mut stream: Random, output: &mut TickOutput) {
-        if crate::time::sky_darken(self.clock.day) >= 4 {
+        if self.sky_darken() >= 4 {
             return;
         }
         if stream.next_int(5) != 0 {
@@ -889,7 +889,7 @@ impl Region {
     /// as the player stands in a village, and then makes a zombie every third tick, twenty
     /// in all.
     pub(crate) fn tick_siege(&mut self, output: &mut TickOutput) {
-        if crate::time::sky_darken(self.clock.day) < 4 {
+        if self.sky_darken() < 4 {
             self.custom_spawners.siege = Siege::default();
             return;
         }

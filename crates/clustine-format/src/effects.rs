@@ -149,6 +149,10 @@ const BLAST_DECAY: u8 = 1;
 const BLAST_DIRECT: u8 = 2;
 const BLAST_OWNED: u8 = 4;
 const BLAST_BY_CREATIVE: u8 = 8;
+/// A blast that sets fire, and one that hurts nobody: bits an older record leaves
+/// clear, so that it reads as TNT's (`docs/groundwork/p-plan.md`, section 17.6).
+const BLAST_FIRE: u8 = 16;
+const BLAST_HARMLESS: u8 = 32;
 
 /// Bytes an effect takes at the least: its block and its kind.
 const EFFECT_LENGTH: usize = 13;
@@ -900,6 +904,12 @@ fn put_blast(out: &mut Vec<u8>, blast: &Blast) {
     if blast.owner_creative {
         flags |= BLAST_BY_CREATIVE;
     }
+    if blast.fire {
+        flags |= BLAST_FIRE;
+    }
+    if !blast.hurts {
+        flags |= BLAST_HARMLESS;
+    }
     out.push(flags);
     if let Some(owner) = blast.owner {
         out.extend_from_slice(&owner.as_u128().to_be_bytes());
@@ -912,7 +922,9 @@ fn take_blast(input: &mut Input<'_>) -> Result<Blast, FormatError> {
     let centre = take_doubles(input)?;
     let radius = Float(input.f32()?);
     let flags = input.u8()?;
-    if flags & !(BLAST_DECAY | BLAST_DIRECT | BLAST_OWNED | BLAST_BY_CREATIVE) != 0 {
+    let known =
+        BLAST_DECAY | BLAST_DIRECT | BLAST_OWNED | BLAST_BY_CREATIVE | BLAST_FIRE | BLAST_HARMLESS;
+    if flags & !known != 0 {
         return Err(FormatError::Corrupt("a blast's flags"));
     }
     let owner = if flags & BLAST_OWNED != 0 {
@@ -929,6 +941,8 @@ fn take_blast(input: &mut Input<'_>) -> Result<Blast, FormatError> {
         direct: flags & BLAST_DIRECT != 0,
         owner,
         owner_creative: flags & BLAST_BY_CREATIVE != 0,
+        fire: flags & BLAST_FIRE != 0,
+        hurts: flags & BLAST_HARMLESS == 0,
     })
 }
 
@@ -1627,8 +1641,22 @@ mod entity_uses {
         assert_ne!(plain, spikes, "a kind of its own");
     }
 
+    /// A blast written before fire and hurting were (its flags' high bits clear) reads
+    /// as TNT's: no fire, hurting (`docs/groundwork/p-plan.md`, section 17.6).
+    #[test]
+    fn a_blast_written_before_its_fire_and_hurting_reads_as_tnts() {
+        let mut out = Vec::new();
+        put_blast(&mut out, &blast(None));
+        let flags_at = 8 + 8 + 24 + 4;
+        assert_eq!(out[flags_at] & (BLAST_FIRE | BLAST_HARMLESS), 0);
+        let read = take_blast(&mut Input(&out)).expect("read back");
+        assert!(!read.fire && read.hurts);
+    }
+
     fn blast(owner: Option<u128>) -> Blast {
         Blast {
+            fire: false,
+            hurts: true,
             source: EntityId(u64::MAX - 3),
             tick: 1 << 40,
             centre: [Double(0.5), Double(-58.0), Double(-1024.5)],
@@ -1667,6 +1695,19 @@ mod entity_uses {
                 },
             });
         }
+        // A bed's or an anchor's: fire, hurting nobody.
+        round_trip(Effect {
+            at,
+            what: Effected::Exploded {
+                expected: clustine_data::blocks::TNT,
+                blast: Blast {
+                    fire: true,
+                    hurts: false,
+                    direct: false,
+                    ..blast(None)
+                },
+            },
+        });
         round_trip(Effect {
             at,
             what: Effected::Burnt {
@@ -2000,7 +2041,7 @@ mod entity_uses {
         );
         // The flags follow the block (12), the kind (1), the block expected (2), the
         // source (8), the tick (8), the centre (24) and the radius (4).
-        out[59] |= 16;
+        out[59] |= 64;
         assert!(take_effect(&mut Input(&out)).is_err());
     }
 }

@@ -395,7 +395,7 @@ impl Region {
         if !(-BORDER..BORDER).contains(&pos.x) || !(-BORDER..BORDER).contains(&pos.z) {
             return Some(15);
         }
-        self.raw_brightness(pos, crate::time::sky_darken(self.clock.day))
+        self.raw_brightness(pos, self.sky_darken())
     }
 
     /// `getBrightness(LightLayer.BLOCK, pos)`: the blocks' light alone, which melts snow

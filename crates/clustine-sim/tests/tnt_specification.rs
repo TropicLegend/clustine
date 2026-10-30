@@ -851,6 +851,8 @@ fn the_holder_breaks_the_far_blocks_lays_their_drops_and_kills_the_stand() {
 /// `tick`.
 fn blast(source: u32, tick: u64, owner: Option<Uuid>) -> Blast {
     Blast {
+        fire: false,
+        hurts: true,
         source: key(source),
         tick,
         centre: [Double(14.5), Double(-59.94), Double(4.5)],

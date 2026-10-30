@@ -2147,6 +2147,7 @@ fn use_down(held: i32, feet: Vec3) -> ItemUse {
         pitch: 90.0,
         sneaking: false,
         inventory: Inventory::with_hotbar(hotbar_holding(held)),
+        water_evaporates: false,
     }
 }
 

@@ -18,7 +18,7 @@ pub(crate) fn walk_target_value(ai: &Ai<'_, '_>, pos: BlockPos) -> f32 {
 
 /// `Level.isBrightOutside()`: the sky darkened by less than four.
 pub(crate) fn bright_outside(ai: &Ai<'_, '_>) -> bool {
-    ai.tick.world.sky_darken() < 4
+    ai.tick.world.is_bright_outside()
 }
 
 /// `Entity.getLightLevelDependentMagicValue()`: the light's worth at the mob's eyes, the

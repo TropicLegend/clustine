@@ -525,7 +525,7 @@ impl Goal for OfferFlowerGoal {
     fn can_use(&self, state: &mut Offering, ai: &mut Ai<'_, '_>) -> bool {
         // `Level.isBrightOutside()`: the overworld has no fixed time, and its sky is
         // darkened by less than 4.
-        if ai.tick.world.sky_darken() >= 4 {
+        if ai.tick.world.is_dark_outside() {
             return false;
         }
         if ai.tick.draws.next_int(8000) != 0 {
