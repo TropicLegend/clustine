@@ -44,7 +44,7 @@ across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, plates pressed by mobs; commands; the Nether and the End; survival
+sensors, crafters, plates pressed by mobs; commands; the End; survival
 mode and crafting.
 
 **Built since M3:**
@@ -537,24 +537,42 @@ index kept from every commit or makes one; old worlds are refused; **the Nether 
 (portals and travel, its land, its rules and its mobs), **then the End** (its portal,
 platform, gateways, mobs and the dragon's first fight, and the void that kills).
 
-**Where P stands** (2026-10-30, evening): pushed are **P1** (the dimensions as one
-type with the game's rules), **P2** (the contracts, `p-plan.md` section 15), **P4**
-(merges and splits within one dimension), **P5a** and **P6** (the Nether's terrain,
-features and structures) and **P8** (the portal's blocks and clock). Built and committed
-on the lead's machine, not pushed: **P3** (the store by dimension, the homes of the
-Nether and the End made with the world, the portal index kept from every commit and
-with the table file), **P7** (the edge keyed by dimension; a change of dimension in two
-halves, `Respawn` and then the placing), and **P9** (the travel through a Nether portal,
-`p-plan.md` section 16, with the review's changes in 16.7 and 16.8: the firing at the
-source, the wait and the placing at the destination, the portal found or made by the
-game's geometry in `clustine-blocks/src/portal_forcer.rs`). Nothing of these is pushed
-yet: the full check of the stack found that the homes of the Nether and the End broke 69
-end-to-end tests that read a new world's list as the overworld alone; that is being put
-right, then the stack is checked whole and pushed, step by step. Next: tests of P9 from
-its specification by someone who did not write it, kill tests of a travel and a bot that
-walks through a portal and back; the comparisons with the official server for the
-`Respawn`; then P10 (the End's portal, the credits, gateways), P11 (rules by dimension)
-and P12 (the Nether's mobs). Nothing of P is for a real client to try yet.
+**Where P stands** (2026-10-30, late): pushed are **P1** (the dimensions as one type
+with the game's rules), **P2** (the contracts, `p-plan.md` section 15), **P3** (the
+store by dimension, the homes of the Nether and the End made with the world, the portal
+index kept from every commit), **P4** (merges and splits within one dimension), **P5a**
+and **P6** (the Nether's terrain, features and structures), **P7** (the edge keyed by
+dimension; a change of dimension in two halves, `Respawn` and then the placing), **P8**
+(the portal's blocks and clock) and **P9** (the travel through a Nether portal,
+`p-plan.md` section 16), each with tests from its specification by someone who did not
+write it. Built and committed on the lead's machine, being checked whole before they
+are pushed: **P11** (the rules that differ by dimension, section 17: day and night,
+fast lava, water, ice, beds and respawn anchors, the Nether's sky light, the spawn
+light), **P12** (the Nether's mobs, section 18: the zombified piglin and its spawn from
+portal blocks, the magma cube, the ghast and its fireballs, the blaze, the wither
+skeleton, the strider, the piglin with its bartering and its anger, the piglin brute,
+the hoglin and the zoglin, zombification outside the Nether), and the generation of
+what is made with chunks raised to 4, so a world made before is refused. A comparison
+agent found that a second player coming into the Nether while another was there made
+the edge end the Nether's subscription of a chunk at the same position as an
+overworld chunk nobody saw any more; mended, with a test of two bots one after the
+other. Next: the comparisons of the change of dimension and of the rules by dimension
+with the official server (`dimensions_oracle.rs`), and what they find mended; tests of
+P12 from its specification (being written); comparisons of the Nether's mobs; then
+P10 and the End.
+
+**What to try with a real client, once P11 and P12 are pushed**: start a new world
+(`cargo run --release -p clustine`; a world made before is refused), build a Nether
+portal of obsidian and light it, and walk in: the Nether's land and a portal back
+should be there, the sky dark and lava fast. Bring a second player through after the
+first, and walk both back. A player is in creative, so the Nether's monsters do not
+attack them; what can be seen: ghasts drifting and wailing, piglins hunting young
+hoglins and admiring a gold ingot thrown to them, then throwing something back; striders
+on the lava sea, cold and purple off it, ridden with a saddle and a warped fungus on a
+stick; magma cubes and zombified piglins near portals; a bed exploding when used and a
+respawn anchor charged with glowstone setting the spawn. A piglin or hoglin led through
+a portal into the overworld shakes and turns into a zombified piglin or a zoglin after
+fifteen seconds. Not built yet: the End, and survival.
 
 **N10's cost, measured** (2026-10-29, `bin/clustine/tests/n10_measured.rs`, release, two
 workers on two regions pinned at block x = 64, a village of 30 villagers, a bell and 30
