@@ -262,6 +262,20 @@ impl Side {
         })
     }
 
+    /// The first item lying in the region's own loaded chunks, found there in the tick it
+    /// is thrown: the link's word of it ([`Side::thrown`]) can come some steps later on a
+    /// slow machine, and a stone's first ticks would be passed over.
+    fn thrown_here(&self) -> Option<EntityId> {
+        let region = self.runner.region();
+        region
+            .loaded_chunks()
+            .into_iter()
+            .filter_map(|position| region.chunk(position))
+            .flat_map(|chunk| chunk.entities().iter())
+            .find(|entity| i32::from(entity.kind) == clustine_data::entity_types::ITEM)
+            .map(|entity| entity.key)
+    }
+
     /// The records of `key` in the region's loaded chunks.
     fn records(&self, key: EntityId) -> Vec<Entity> {
         let region = self.runner.region();
@@ -615,7 +629,7 @@ fn followed(pins: Pins) -> Vec<(u64, RegionId, Entity)> {
     let mut key = None;
     for _ in 0..STEPS {
         step(&mut west, &mut east);
-        key = key.or_else(|| west.thrown());
+        key = key.or_else(|| west.thrown_here());
         let Some(key) = key else {
             continue;
         };
