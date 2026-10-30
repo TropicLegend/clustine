@@ -495,6 +495,53 @@ pub struct DimensionType {
     pub name: String,
     pub min_y: i64,
     pub height: i64,
+    pub logical_height: i64,
+    pub has_fixed_time: bool,
+    pub has_skylight: bool,
+    pub has_ceiling: bool,
+    pub has_ender_dragon_fight: bool,
+    pub coordinate_scale: f64,
+    pub ambient_light: f64,
+    pub infiniburn: String,
+    pub monster_spawn_light_level: (i64, i64),
+    pub monster_spawn_block_light_limit: i64,
+    pub default_clock: Option<String>,
+    pub bed_rule: BedRule,
+    pub straw_bed_rule: BedRule,
+    pub respawn_anchor_works: bool,
+    pub nether_portal_spawns_piglin: bool,
+    pub water_evaporates: bool,
+    pub fast_lava: bool,
+    pub piglins_zombify: bool,
+    pub can_start_raid: bool,
+    pub snow_golem_melts: bool,
+    pub sky_light_level: Option<f64>,
+}
+
+/// A bed's rule, with its two `BedRule.Rule`s as the variant names of `BedWhen`.
+#[derive(Clone, Copy)]
+pub struct BedRule {
+    pub can_sleep: &'static str,
+    pub can_set_spawn: &'static str,
+    pub destroy_on_use: bool,
+    pub destroy_on_leave: bool,
+}
+
+impl BedRule {
+    /// `BedRule.CAN_SLEEP_WHEN_DARK`, the default of `gameplay/bed_rule`.
+    const CAN_SLEEP_WHEN_DARK: BedRule = BedRule {
+        can_sleep: "WhenDark",
+        can_set_spawn: "Always",
+        destroy_on_use: false,
+        destroy_on_leave: false,
+    };
+    /// `BedRule.DESTROY_ON_LEAVE`, the default of `gameplay/straw_bed_rule`.
+    const DESTROY_ON_LEAVE: BedRule = BedRule {
+        can_sleep: "WhenDark",
+        can_set_spawn: "Never",
+        destroy_on_use: false,
+        destroy_on_leave: true,
+    };
 }
 
 pub struct RegistryTags {
@@ -570,11 +617,10 @@ impl GameData {
                 .join("dimension_type")
                 .join(format!("{}.json", local_name(entry)));
             let json = read_json(&file)?;
-            dimension_types.push(DimensionType {
-                name: entry.clone(),
-                min_y: integer(&json["min_y"], "min_y", &file)?,
-                height: integer(&json["height"], "height", &file)?,
-            });
+            dimension_types.push(
+                dimension_type(entry, &json)
+                    .with_context(|| format!("reading {}", file.display()))?,
+            );
         }
 
         let mut tags = Vec::new();
@@ -728,6 +774,157 @@ pub fn biome_report_entries(report: &Value) -> Result<Vec<BiomeReportEntry>> {
         });
     }
     Ok(read)
+}
+
+/// A dimension type and the gameplay attributes it sets, with the defaults of
+/// `EnvironmentAttributes` for those it does not. A field or a gameplay attribute this
+/// does not know is refused: it would be a rule of the game that Clustine silently
+/// lacks.
+fn dimension_type(name: &str, json: &Value) -> Result<DimensionType> {
+    const FIELDS: [&str; 17] = [
+        "ambient_light",
+        "attributes",
+        "cardinal_light",
+        "coordinate_scale",
+        "default_clock",
+        "has_ceiling",
+        "has_ender_dragon_fight",
+        "has_fixed_time",
+        "has_skylight",
+        "height",
+        "infiniburn",
+        "logical_height",
+        "min_y",
+        "monster_spawn_block_light_limit",
+        "monster_spawn_light_level",
+        "skybox",
+        "timelines",
+    ];
+    let fields = json.as_object().context("not a JSON object")?;
+    for field in fields.keys() {
+        ensure!(FIELDS.contains(&field.as_str()), "unknown field {field}");
+    }
+    let flag = |field: &str| -> Result<bool> {
+        match &json[field] {
+            Value::Null => Ok(false),
+            value => value
+                .as_bool()
+                .with_context(|| format!("{field} is not a boolean")),
+        }
+    };
+    let whole = |field: &str| -> Result<i64> {
+        json[field]
+            .as_i64()
+            .with_context(|| format!("{field} is not an integer"))
+    };
+    let monster_spawn_light_level = match &json["monster_spawn_light_level"] {
+        Value::Number(level) => {
+            let level = level.as_i64().context("monster_spawn_light_level")?;
+            (level, level)
+        }
+        Value::Object(provider)
+            if provider.get("type").and_then(Value::as_str) == Some("minecraft:uniform") =>
+        {
+            let bound = |key: &str| {
+                provider
+                    .get(key)
+                    .and_then(Value::as_i64)
+                    .with_context(|| format!("monster_spawn_light_level has no {key}"))
+            };
+            (bound("min_inclusive")?, bound("max_inclusive")?)
+        }
+        other => bail!("monster_spawn_light_level {other} is neither a number nor uniform"),
+    };
+
+    let mut rules = DimensionType {
+        name: name.to_owned(),
+        min_y: whole("min_y")?,
+        height: whole("height")?,
+        logical_height: whole("logical_height")?,
+        has_fixed_time: flag("has_fixed_time")?,
+        has_skylight: flag("has_skylight")?,
+        has_ceiling: flag("has_ceiling")?,
+        has_ender_dragon_fight: flag("has_ender_dragon_fight")?,
+        coordinate_scale: number(&json["coordinate_scale"], "coordinate_scale")?,
+        ambient_light: number(&json["ambient_light"], "ambient_light")?,
+        infiniburn: json["infiniburn"]
+            .as_str()
+            .context("infiniburn is not a tag")?
+            .to_owned(),
+        monster_spawn_light_level,
+        monster_spawn_block_light_limit: whole("monster_spawn_block_light_limit")?,
+        default_clock: match &json["default_clock"] {
+            Value::Null => None,
+            clock => Some(clock.as_str().context("default_clock")?.to_owned()),
+        },
+        bed_rule: BedRule::CAN_SLEEP_WHEN_DARK,
+        straw_bed_rule: BedRule::DESTROY_ON_LEAVE,
+        respawn_anchor_works: false,
+        nether_portal_spawns_piglin: false,
+        water_evaporates: false,
+        fast_lava: false,
+        piglins_zombify: true,
+        can_start_raid: true,
+        snow_golem_melts: false,
+        sky_light_level: None,
+    };
+    let attributes = match &json["attributes"] {
+        Value::Null => serde_json::Map::new(),
+        attributes => attributes
+            .as_object()
+            .context("attributes is not an object")?
+            .clone(),
+    };
+    for (attribute, value) in &attributes {
+        let Some(gameplay) = attribute.strip_prefix("minecraft:gameplay/") else {
+            // Sounds, music, colours and fog: the client's.
+            continue;
+        };
+        let flag = || {
+            value
+                .as_bool()
+                .with_context(|| format!("{attribute} is not a boolean"))
+        };
+        match gameplay {
+            "bed_rule" => rules.bed_rule = bed_rule(value).context("bed_rule")?,
+            "straw_bed_rule" => rules.straw_bed_rule = bed_rule(value).context("straw_bed_rule")?,
+            "respawn_anchor_works" => rules.respawn_anchor_works = flag()?,
+            "nether_portal_spawns_piglin" => rules.nether_portal_spawns_piglin = flag()?,
+            "water_evaporates" => rules.water_evaporates = flag()?,
+            "fast_lava" => rules.fast_lava = flag()?,
+            "piglins_zombify" => rules.piglins_zombify = flag()?,
+            "can_start_raid" => rules.can_start_raid = flag()?,
+            "snow_golem_melts" => rules.snow_golem_melts = flag()?,
+            "sky_light_level" => rules.sky_light_level = Some(number(value, "sky_light_level")?),
+            other => bail!("unknown gameplay attribute {other}"),
+        }
+    }
+    Ok(rules)
+}
+
+fn bed_rule(value: &Value) -> Result<BedRule> {
+    let when = |key: &str| -> Result<&'static str> {
+        Ok(match value[key].as_str() {
+            Some("always") => "Always",
+            Some("when_dark") => "WhenDark",
+            Some("never") => "Never",
+            other => bail!("{key} is {other:?}"),
+        })
+    };
+    let flag = |key: &str| -> Result<bool> {
+        match &value[key] {
+            Value::Null => Ok(false),
+            flag => flag
+                .as_bool()
+                .with_context(|| format!("{key} is not a boolean")),
+        }
+    };
+    Ok(BedRule {
+        can_sleep: when("can_sleep")?,
+        can_set_spawn: when("can_set_spawn")?,
+        destroy_on_use: flag("destroy_on_use")?,
+        destroy_on_leave: flag("destroy_on_leave")?,
+    })
 }
 
 fn number(value: &Value, what: &str) -> Result<f64> {

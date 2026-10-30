@@ -194,7 +194,7 @@ impl TerrainGenerator {
     /// [`Self::hashed_seed`] it needs no generator, so that whoever only tells clients
     /// of the world makes none.
     pub fn sea_level() -> i32 {
-        Dimension::Overworld.noise_settings().sea_level
+        clustine_terrain::biome::noise_settings(Dimension::Overworld).sea_level
     }
 
     fn terrain(&self) -> &Terrain {

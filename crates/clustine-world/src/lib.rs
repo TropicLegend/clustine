@@ -8,6 +8,7 @@ mod change;
 mod chunk;
 pub mod components;
 mod difficulty;
+mod dimension;
 mod effects;
 mod entity;
 pub mod generation;
@@ -28,6 +29,7 @@ pub use chunk::{
 };
 pub use components::{Component, Components};
 pub use difficulty::Difficulty;
+pub use dimension::Dimension;
 pub use effects::{
     Arrival, Blast, Causer, Due, Effect, EffectId, EffectKey, Effected, EntityUse, FiledEffect,
     GivenEffects, HitExtra, HurtBy, RaidNews, RaiderUse, Thrower, VillagerUse,

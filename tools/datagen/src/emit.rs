@@ -1573,16 +1573,86 @@ fn registries(data: &GameData) -> String {
 }
 
 fn dimension_types(data: &GameData) -> String {
-    let mut out = String::from("use crate::DimensionType;\n\n");
+    let mut out = String::from("use crate::{BedRule, BedWhen, DimensionType};\n\n");
     out.push_str(&format!(
         "pub static DIMENSION_TYPES: [DimensionType; {}] = [\n",
         data.dimension_types.len()
     ));
+    let bed = |rule: &crate::model::BedRule| {
+        format!(
+            "BedRule {{ can_sleep: BedWhen::{}, can_set_spawn: BedWhen::{}, \
+             destroy_on_use: {}, destroy_on_leave: {} }}",
+            rule.can_sleep, rule.can_set_spawn, rule.destroy_on_use, rule.destroy_on_leave
+        )
+    };
     for dimension in &data.dimension_types {
+        out.push_str("    DimensionType {\n");
+        out.push_str(&format!("        name: {:?},\n", dimension.name));
+        out.push_str(&format!("        min_y: {},\n", dimension.min_y));
+        out.push_str(&format!("        height: {},\n", dimension.height));
         out.push_str(&format!(
-            "    DimensionType {{ name: {:?}, min_y: {}, height: {} }},\n",
-            dimension.name, dimension.min_y, dimension.height
+            "        logical_height: {},\n",
+            dimension.logical_height
         ));
+        for (name, value) in [
+            ("has_fixed_time", dimension.has_fixed_time),
+            ("has_skylight", dimension.has_skylight),
+            ("has_ceiling", dimension.has_ceiling),
+            ("has_ender_dragon_fight", dimension.has_ender_dragon_fight),
+        ] {
+            out.push_str(&format!("        {name}: {value},\n"));
+        }
+        out.push_str(&format!(
+            "        coordinate_scale: {:?},\n",
+            dimension.coordinate_scale
+        ));
+        out.push_str(&format!(
+            "        ambient_light: {:?},\n",
+            dimension.ambient_light as f32
+        ));
+        out.push_str(&format!(
+            "        infiniburn: {:?},\n",
+            dimension.infiniburn
+        ));
+        out.push_str(&format!(
+            "        monster_spawn_light_level: ({}, {}),\n",
+            dimension.monster_spawn_light_level.0, dimension.monster_spawn_light_level.1
+        ));
+        out.push_str(&format!(
+            "        monster_spawn_block_light_limit: {},\n",
+            dimension.monster_spawn_block_light_limit
+        ));
+        out.push_str(&format!(
+            "        default_clock: {:?},\n",
+            dimension.default_clock
+        ));
+        out.push_str(&format!(
+            "        bed_rule: {},\n",
+            bed(&dimension.bed_rule)
+        ));
+        out.push_str(&format!(
+            "        straw_bed_rule: {},\n",
+            bed(&dimension.straw_bed_rule)
+        ));
+        for (name, value) in [
+            ("respawn_anchor_works", dimension.respawn_anchor_works),
+            (
+                "nether_portal_spawns_piglin",
+                dimension.nether_portal_spawns_piglin,
+            ),
+            ("water_evaporates", dimension.water_evaporates),
+            ("fast_lava", dimension.fast_lava),
+            ("piglins_zombify", dimension.piglins_zombify),
+            ("can_start_raid", dimension.can_start_raid),
+            ("snow_golem_melts", dimension.snow_golem_melts),
+        ] {
+            out.push_str(&format!("        {name}: {value},\n"));
+        }
+        out.push_str(&format!(
+            "        sky_light_level: {:?},\n",
+            dimension.sky_light_level.map(|level| level as f32)
+        ));
+        out.push_str("    },\n");
     }
     out.push_str("];\n");
     out

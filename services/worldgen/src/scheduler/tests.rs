@@ -1375,6 +1375,7 @@ fn a_unit_s_members_name_each_other_by_their_keys_in_the_chunk_they_land_in() {
         version: 1,
         dimension: "minecraft:overworld",
         dimension_number: 0,
+        sky: true,
     };
     let failures = super::output::add_keyed(
         &mut chunk,

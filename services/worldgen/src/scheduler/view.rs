@@ -36,6 +36,9 @@ pub(crate) struct Context {
     pub(crate) dimension: &'static str,
     /// The dimension's number in a generated entity's key.
     pub(crate) dimension_number: u8,
+    /// Whether the dimension's sections carry sky light: the overworld's and the End's
+    /// do, the Nether's do not.
+    pub(crate) sky: bool,
 }
 
 /// How many events a recorder keeps beside its counts.

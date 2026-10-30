@@ -44,6 +44,7 @@ impl<S: Stages> Scheduler<S> {
             version,
             dimension: stages.dimension().name,
             dimension_number: dimension_number(stages.dimension().name),
+            sky: stages.dimension().has_skylight,
         };
         let graph = Graph::new(
             options.order,
@@ -344,7 +345,7 @@ impl<S: Stages> Shared<S> {
                 let around = Around {
                     centre: &centre.chunk,
                     neighbours,
-                    sky: has_sky(self.context.dimension),
+                    sky: self.context.sky,
                 };
                 let (mut light, _) = clustine_light::light_with(&around, Unlisted::NONE, scratch);
                 // The nine were made by this generator, which an edge goes by when it
@@ -458,10 +459,4 @@ impl<S: Stages> Fetch for Shared<S> {
         }
         Arc::new(Output::Starts(self.stages.starts(source)))
     }
-}
-
-/// Whether a dimension has a sky, as the game's dimension types say; the data here
-/// does not carry it yet.
-fn has_sky(dimension: &str) -> bool {
-    !matches!(dimension, "minecraft:the_nether" | "minecraft:the_end")
 }

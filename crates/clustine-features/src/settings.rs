@@ -115,7 +115,7 @@ impl FeatureSettings {
         let height = i32::try_from(sections * 16).expect("a dimension is not that high");
         // The game's `WorldGenerationContext`: the generator's heights within the
         // dimension's. The Nether and the End generate 128 blocks of their 256.
-        let noise = dimension.noise_settings();
+        let noise = clustine_terrain::biome::noise_settings(dimension);
         let generation = Generation {
             min_y: min_y.max(noise.min_y),
             height: height.min(noise.height),

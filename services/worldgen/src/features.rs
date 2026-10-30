@@ -264,5 +264,5 @@ impl Stages for FeatureStages {
 /// `disable_mob_generation`, as the End's do (`NoiseBasedChunkGenerator.spawnOriginalMobs`).
 /// The game rule `spawn_mobs`, which turns it off too, is always on here.
 pub fn makes_mobs(dimension: Dimension) -> bool {
-    !dimension.noise_settings().disable_mob_generation
+    !clustine_terrain::biome::noise_settings(dimension).disable_mob_generation
 }

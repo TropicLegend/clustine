@@ -51,52 +51,23 @@ pub mod search;
 pub mod zoom;
 
 use clustine_data::biome_parameters::BiomeParameterList;
-use clustine_data::{DIMENSION_TYPES, synced_registry};
+use clustine_data::synced_registry;
 use clustine_world::{BIOME_CELLS, Biome};
 use clustine_worldgen_data::{EndRouter, NetherRouter, NoiseRouter, OverworldRouter, RouterEntry};
 
 use climate::{Climate, DEPTH, quantise};
 use search::{Nearest, ParameterTree};
 
-/// The three dimensions the game makes terrain for.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Dimension {
-    Overworld,
-    Nether,
-    End,
-}
+/// The three dimensions the game makes terrain for, which is the world's own type.
+pub use clustine_world::Dimension;
 
-impl Dimension {
-    pub const ALL: [Dimension; 3] = [Dimension::Overworld, Dimension::Nether, Dimension::End];
-
-    /// The dimension's noise settings, which are the same for every seed.
-    pub fn noise_settings(self) -> &'static clustine_worldgen_data::NoiseSettings {
-        use clustine_worldgen_data::noise_settings;
-        match self {
-            Dimension::Overworld => &noise_settings::OVERWORLD,
-            Dimension::Nether => &noise_settings::NETHER,
-            Dimension::End => &noise_settings::END,
-        }
-    }
-
-    /// The name of the dimension's type in the game's registry.
-    pub const fn type_name(self) -> &'static str {
-        match self {
-            Dimension::Overworld => "minecraft:overworld",
-            Dimension::Nether => "minecraft:the_nether",
-            Dimension::End => "minecraft:the_end",
-        }
-    }
-
-    /// The section coordinate of the lowest section of a chunk, and how many
-    /// sections a chunk has. Biomes are made for all of them, also where the
-    /// dimension's terrain ends lower, as in the upper half of the Nether.
-    pub fn sections(self) -> (i32, usize) {
-        let kind = DIMENSION_TYPES
-            .iter()
-            .find(|kind| kind.name == self.type_name())
-            .expect("the three dimension types are in the game's registry");
-        (kind.min_y >> 4, (kind.height / 16) as usize)
+/// The dimension's noise settings, which are the same for every seed.
+pub fn noise_settings(dimension: Dimension) -> &'static clustine_worldgen_data::NoiseSettings {
+    use clustine_worldgen_data::noise_settings;
+    match dimension {
+        Dimension::Overworld => &noise_settings::OVERWORLD,
+        Dimension::Nether => &noise_settings::NETHER,
+        Dimension::End => &noise_settings::END,
     }
 }
 

@@ -750,6 +750,11 @@ The estimates are lines of Rust with tests, measured against N9 (about 70,600 li
 
 ## 9. Not dumped (to dump before planning)
 
+All of these are dumped in `/home/claude/reference/d-javap/` since 2026-10-30 (P1),
+with `Level`, `CollisionGetter` (where `findFreePosition` is), `Blocks`, the cauldron
+classes (`CauldronInteractions`) and `TeleportRandomlyConsumeEffect` (the chorus
+fruit's teleport). The steps that read them complete this brief from them first.
+
 - **Fluids and blocks:** `LavaFluid`, `WaterFluid` (fast lava; evaporation in other places), `WetSpongeBlock`, `PointedDripstoneBlock`, the cauldron and dispenser water paths.
 - **End features:** `EndPlatformFeature`, `EndPodiumFeature`, `ChorusPlantFeature` (in d-javap but not read), `ChorusFlowerBlock`, the chorus fruit's teleport.
 - **Projectiles:** `AbstractHurtingProjectile`, `LargeFireball`, `SmallFireball`, `ThrownEnderpearl`; `DragonFireball` is in d-javap but was not read.

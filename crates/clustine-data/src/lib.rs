@@ -758,11 +758,66 @@ pub fn synced_registry(name: &str) -> Option<&'static Registry> {
 }
 
 /// A dimension type. Indexed by its id in the `minecraft:dimension_type` registry.
+///
+/// The fields are the type's own and the gameplay attributes it sets, with the game's
+/// defaults where it sets none (`EnvironmentAttributes`). Attributes that only the
+/// client reads (sounds, colours, fog) are left out; so are those a timeline sets
+/// through the day, which the type does not. Datagen refuses a gameplay attribute it
+/// does not know, so that a new rule is not lost without a word.
 #[derive(Debug)]
 pub struct DimensionType {
     pub name: &'static str,
     pub min_y: i32,
     pub height: u32,
+    /// The height a portal is made under, from `min_y` (`getLogicalHeight`).
+    pub logical_height: u32,
+    pub has_fixed_time: bool,
+    /// Whether sections carry sky light, and with no ceiling whether it can rain.
+    pub has_skylight: bool,
+    pub has_ceiling: bool,
+    pub has_ender_dragon_fight: bool,
+    /// How far one block here goes in another dimension through a Nether portal, as
+    /// `from.coordinate_scale / to.coordinate_scale`.
+    pub coordinate_scale: f64,
+    pub ambient_light: f32,
+    /// The block tag fire burns on for ever, with its `#`.
+    pub infiniburn: &'static str,
+    /// The brightness a monster may spawn at or under, drawn between the two bounds.
+    pub monster_spawn_light_level: (i32, i32),
+    /// The block light above which no monster spawns.
+    pub monster_spawn_block_light_limit: i32,
+    /// The clock the dimension's time follows; none in the Nether.
+    pub default_clock: Option<&'static str>,
+    pub bed_rule: BedRule,
+    pub straw_bed_rule: BedRule,
+    pub respawn_anchor_works: bool,
+    pub nether_portal_spawns_piglin: bool,
+    pub water_evaporates: bool,
+    pub fast_lava: bool,
+    pub piglins_zombify: bool,
+    pub can_start_raid: bool,
+    pub snow_golem_melts: bool,
+    /// A sky light level the type fixes; where it fixes none a timeline sets it.
+    pub sky_light_level: Option<f32>,
+}
+
+/// What a bed does in a dimension (the game's `BedRule`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BedRule {
+    pub can_sleep: BedWhen,
+    pub can_set_spawn: BedWhen,
+    /// Using the bed removes it and explodes.
+    pub destroy_on_use: bool,
+    /// Getting up removes it.
+    pub destroy_on_leave: bool,
+}
+
+/// When a bed lets a player sleep or set their spawn (`BedRule.Rule`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BedWhen {
+    Always,
+    WhenDark,
+    Never,
 }
 
 /// The tags of one registry, with members given as numeric ids in that registry.
@@ -1336,6 +1391,127 @@ mod tests {
         let overworld = &DIMENSION_TYPES[id as usize];
         assert_eq!(overworld.name, "minecraft:overworld");
         assert_eq!((overworld.min_y, overworld.height), (-64, 384));
+    }
+
+    /// The three types as `docs/groundwork/p-brief.md` section 1.1 reads them from the
+    /// game's classes, field by field.
+    #[test]
+    fn the_three_dimension_types_carry_the_rules_the_game_gives_them() {
+        let kind = |name: &str| {
+            DIMENSION_TYPES
+                .iter()
+                .find(|kind| kind.name == name)
+                .unwrap()
+        };
+        let (overworld, nether, end) = (
+            kind("minecraft:overworld"),
+            kind("minecraft:the_nether"),
+            kind("minecraft:the_end"),
+        );
+        let rows = |of: fn(&DimensionType) -> String| [of(overworld), of(nether), of(end)];
+
+        assert_eq!(
+            rows(|k| k.has_fixed_time.to_string()),
+            ["false", "true", "true"]
+        );
+        assert_eq!(
+            rows(|k| k.has_skylight.to_string()),
+            ["true", "false", "true"]
+        );
+        assert_eq!(
+            rows(|k| k.has_ceiling.to_string()),
+            ["false", "true", "false"]
+        );
+        assert_eq!(
+            rows(|k| k.has_ender_dragon_fight.to_string()),
+            ["false", "false", "true"]
+        );
+        assert_eq!(rows(|k| k.coordinate_scale.to_string()), ["1", "8", "1"]);
+        assert_eq!(
+            rows(|k| format!("{} {} {}", k.min_y, k.height, k.logical_height)),
+            ["-64 384 384", "0 256 128", "0 256 256"]
+        );
+        assert_eq!(
+            rows(|k| k.infiniburn.to_owned()),
+            [
+                "#minecraft:infiniburn_overworld",
+                "#minecraft:infiniburn_nether",
+                "#minecraft:infiniburn_end"
+            ]
+        );
+        assert_eq!(rows(|k| k.ambient_light.to_string()), ["0", "0.1", "0.25"]);
+        assert_eq!(
+            rows(|k| format!("{:?}", k.monster_spawn_light_level)),
+            ["(0, 7)", "(7, 7)", "(15, 15)"]
+        );
+        assert_eq!(
+            rows(|k| k.monster_spawn_block_light_limit.to_string()),
+            ["0", "15", "0"]
+        );
+        assert_eq!(
+            rows(|k| format!("{:?}", k.default_clock)),
+            [
+                "Some(\"minecraft:overworld\")",
+                "None",
+                "Some(\"minecraft:the_end\")"
+            ]
+        );
+
+        let sleeps = BedRule {
+            can_sleep: BedWhen::WhenDark,
+            can_set_spawn: BedWhen::Always,
+            destroy_on_use: false,
+            destroy_on_leave: false,
+        };
+        let explodes = BedRule {
+            can_sleep: BedWhen::Never,
+            can_set_spawn: BedWhen::Never,
+            destroy_on_use: true,
+            destroy_on_leave: false,
+        };
+        assert_eq!(
+            [overworld.bed_rule, nether.bed_rule, end.bed_rule],
+            [sleeps, explodes, explodes]
+        );
+        let straw = BedRule {
+            can_set_spawn: BedWhen::Never,
+            destroy_on_leave: true,
+            ..sleeps
+        };
+        assert_eq!(
+            [
+                overworld.straw_bed_rule,
+                nether.straw_bed_rule,
+                end.straw_bed_rule
+            ],
+            [straw, explodes, explodes]
+        );
+        assert_eq!(
+            rows(|k| k.respawn_anchor_works.to_string()),
+            ["false", "true", "false"]
+        );
+        assert_eq!(
+            rows(|k| k.nether_portal_spawns_piglin.to_string()),
+            ["true", "false", "false"]
+        );
+        for (rule, nether_only) in [
+            (rows(|k| k.water_evaporates.to_string()), "true"),
+            (rows(|k| k.fast_lava.to_string()), "true"),
+            (rows(|k| k.snow_golem_melts.to_string()), "true"),
+            (rows(|k| k.piglins_zombify.to_string()), "false"),
+            (rows(|k| k.can_start_raid.to_string()), "false"),
+        ] {
+            let elsewhere = if nether_only == "true" {
+                "false"
+            } else {
+                "true"
+            };
+            assert_eq!(rule, [elsewhere, nether_only, elsewhere]);
+        }
+        assert_eq!(
+            rows(|k| format!("{:?}", k.sky_light_level)),
+            ["None", "Some(4.0)", "None"]
+        );
     }
 
     #[test]
