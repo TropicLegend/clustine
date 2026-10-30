@@ -5991,7 +5991,10 @@ mod tests {
     /// introduced in full, because the edge has never heard of it.
     #[tokio::test]
     async fn an_entity_entering_the_subscribed_area_is_introduced() {
-        let (mut edge, worker_end) = in_process(256);
+        // Room for every message of a slow wait below: a runner gives up on an edge whose
+        // queue is full (`publish`), and on a machine busy with builds the chunk took long
+        // enough to load that the link was closed before the walk (2026-10-30).
+        let (mut edge, worker_end) = in_process(65_536);
         let mut runner = runner(worker_end);
 
         // The edge watches a chunk far from where the player enters the world.
