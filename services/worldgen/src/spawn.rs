@@ -16,6 +16,8 @@ pub struct ChunkSpawnView<'a> {
     pub nine: [&'a Chunk; 9],
     pub zoom: Zoom,
     pub sea_level: i32,
+    /// The level's dimension, whose ambient light the spawn's light reads.
+    pub dimension: clustine_world::Dimension,
 }
 
 impl ChunkSpawnView<'_> {
@@ -62,6 +64,10 @@ impl SpawnView for ChunkSpawnView<'_> {
 
     fn sea_level(&self) -> i32 {
         self.sea_level
+    }
+
+    fn dimension(&self) -> clustine_world::Dimension {
+        self.dimension
     }
 
     fn block(&self, at: BlockPos) -> BlockState {
@@ -148,6 +154,7 @@ mod tests {
             nine,
             zoom: Zoom::new(1),
             sea_level: 63,
+            dimension: clustine_world::Dimension::Overworld,
         };
         assert_eq!(view.max_y(), 319);
         assert_eq!(view.block(BlockPos::new(79, 70, -30)), blocks::STONE);

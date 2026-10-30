@@ -167,7 +167,7 @@ pub(crate) enum Class {
     /// The living things of an entity type tag.
     Tag(&'static str),
     /// `Monster`: the mobs of the monsters' category but the ghast, the phantom, the
-    /// slimes and the shulker, which are not of the class.
+    /// slimes, the shulker and the hoglin, which are not of the class.
     Monster,
 }
 
@@ -197,6 +197,8 @@ pub(crate) fn is_monster(kind: u16) -> bool {
             entity_types::SLIME,
             entity_types::MAGMA_CUBE,
             entity_types::SHULKER,
+            // Of the monsters' category but the class `Animal` (`Hoglin`).
+            entity_types::HOGLIN,
         ]
         .contains(&id)
 }

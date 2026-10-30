@@ -14,8 +14,9 @@
 
 use std::collections::BTreeMap;
 
+use clustine_data::spawns::SpawnCost;
 use clustine_data::{EntityTypeInfo, MobCategory};
-use clustine_world::{ChunkPos, Entity, EntityData, PlayerId};
+use clustine_world::{BlockPos, ChunkPos, Entity, EntityData, PlayerId};
 
 use super::{Random, Region};
 use crate::api::{CountsReport, PublishedCounts, SPAWN_CATEGORIES, SpawnCounts, TickOutput};
@@ -123,12 +124,14 @@ impl Region {
             return;
         };
         let spawn_persistent = self.clock.game_time.is_multiple_of(400);
+        let charges = self.spawn_charges();
         let mut state = SpawnState::new(
             self.spawning_players(),
             &self.counts.by_chunk,
             published,
             spawn_persistent,
-        );
+        )
+        .with_charges(charges);
         if !state.any_open() {
             return;
         }
@@ -148,6 +151,41 @@ impl Region {
         for (_, chunk) in chunks {
             self.spawn_for_chunk(chunk, &mut state, output);
         }
+    }
+
+    /// The spawn potential's point charges of the mobs already there (`createState`):
+    /// each counted mob of the region's loaded chunks whose type has a spawn cost in the
+    /// biome at its block (`getRoughBiome`), its charge at its block. The other regions'
+    /// mobs are not charged (named: no region reads another's mobs).
+    fn spawn_charges(&self) -> Vec<(BlockPos, f64)> {
+        let mut charges = Vec::new();
+        for chunk in self.chunks.values() {
+            for entity in chunk.entities() {
+                if counted_in(entity).is_none() {
+                    continue;
+                }
+                let pos = crate::physics::containing(entity.position);
+                if let Some(cost) = self.spawn_cost(entity.kind, pos) {
+                    charges.push((pos, cost.charge));
+                }
+            }
+        }
+        charges
+    }
+
+    /// `MobSpawnSettings.getMobSpawnCost(type)` of the biome at `pos`
+    /// (`getRoughBiome`, the cell's), where it gives the type one: the soul sand
+    /// valley's and the warped forest's.
+    pub(crate) fn spawn_cost(&self, kind: u16, pos: BlockPos) -> Option<SpawnCost> {
+        let name = self.biome_at(pos)?;
+        let biome = clustine_data::BIOME_SPAWNS
+            .iter()
+            .find(|biome| biome.name == name)?;
+        biome
+            .costs
+            .iter()
+            .find(|cost| cost.kind == usize::from(kind))
+            .copied()
     }
 
     /// The tick's report of its counts (section 9.2), at the end of the tick: every
@@ -262,6 +300,31 @@ pub(crate) struct SpawnState {
     /// The players close enough to each chunk asked, fixed at its first asking
     /// (`playersNearChunk`).
     near_chunk: BTreeMap<ChunkPos, Vec<usize>>,
+    /// The spawn potential's point charges (`PotentialCalculator`): each counted mob
+    /// of the region's whose biome gives its type a spawn cost, at its block, and each
+    /// mob the phase makes; and the charge of the last type passed (`lastCharge`).
+    charges: Vec<(BlockPos, f64)>,
+    last_charge: f64,
+}
+
+/// `PotentialCalculator.getPotentialEnergyChange(pos, charge)`: the sum of each point
+/// charge's `charge / distance` to `pos` (infinite where they coincide), times `charge`.
+fn potential_energy_change(charges: &[(BlockPos, f64)], pos: BlockPos, charge: f64) -> f64 {
+    let mut total = 0.0;
+    for (at, own) in charges {
+        let (dx, dy, dz) = (
+            f64::from(at.x - pos.x),
+            f64::from(at.y - pos.y),
+            f64::from(at.z - pos.z),
+        );
+        let distance = dx * dx + dy * dy + dz * dz;
+        total += if distance == 0.0 {
+            f64::INFINITY
+        } else {
+            own / distance.sqrt()
+        };
+    }
+    total * charge
 }
 
 impl SpawnState {
@@ -323,6 +386,8 @@ impl SpawnState {
             by_chunk,
             local,
             near_chunk: BTreeMap::new(),
+            charges: Vec::new(),
+            last_charge: 0.0,
         }
     }
 
@@ -356,6 +421,31 @@ impl SpawnState {
         for index in near {
             self.local[index][category] += 1;
         }
+    }
+
+    /// The point charges of the mobs already there (`createState`), which the phase's
+    /// spawns are weighed against.
+    pub(crate) fn with_charges(mut self, charges: Vec<(BlockPos, f64)>) -> Self {
+        self.charges = charges;
+        self
+    }
+
+    /// `SpawnState.canSpawn(type, pos, chunk)`: with no spawn cost for the type in the
+    /// biome at `pos`, yes; else whether the potential's change of its charge there is
+    /// within its energy budget. The charge is kept for [`SpawnState::charged`].
+    pub(crate) fn can_spawn(&mut self, cost: Option<SpawnCost>, pos: BlockPos) -> bool {
+        let Some(cost) = cost else {
+            self.last_charge = 0.0;
+            return true;
+        };
+        self.last_charge = cost.charge;
+        potential_energy_change(&self.charges, pos, cost.charge) <= cost.energy_budget
+    }
+
+    /// `afterSpawn`'s charge: the mob made at `pos` adds the charge its type was passed
+    /// with (`spawnPotential.addCharge(pos, lastCharge)`).
+    pub(crate) fn charged(&mut self, pos: BlockPos) {
+        self.charges.push((pos, self.last_charge));
     }
 
     /// Whether some non-spectator's chunk centre is within 128 blocks of `chunk`'s
@@ -460,6 +550,45 @@ mod tests {
     ) -> SpawnState {
         let own: BTreeMap<ChunkPos, SpawnCounts> = own.iter().copied().collect();
         SpawnState::new(players, &own, published, persistent)
+    }
+
+    /// The soul sand valley's cost of a ghast (budget 0.15, charge 0.7).
+    const GHAST_COST: SpawnCost = SpawnCost {
+        kind: 0,
+        energy_budget: 0.15,
+        charge: 0.7,
+    };
+
+    /// `PotentialCalculator`: a type with no cost always passes; with a cost, the
+    /// first passes in an empty potential, and a second near the first does not,
+    /// `0.7 · 0.7 / d` against the budget: at 4 blocks 0.1225 passes, at 3 blocks
+    /// 0.163 does not.
+    #[test]
+    fn the_spawn_potential_keeps_charged_mobs_apart_by_their_budget() {
+        let published = PublishedCounts::default();
+        let mut state = state(Vec::new(), &[], &published, false);
+        let origin = BlockPos::new(0, 40, 0);
+        assert!(state.can_spawn(None, origin));
+        assert!(state.can_spawn(Some(GHAST_COST), origin));
+        state.charged(origin);
+        assert!(state.can_spawn(None, origin), "no cost: no charge weighed");
+        assert!(state.can_spawn(Some(GHAST_COST), BlockPos::new(4, 40, 0)));
+        assert!(!state.can_spawn(Some(GHAST_COST), BlockPos::new(3, 40, 0)));
+        assert!(
+            !state.can_spawn(Some(GHAST_COST), origin),
+            "on a charge the potential is infinite"
+        );
+    }
+
+    /// A mob made with no cost charges nothing.
+    #[test]
+    fn a_mob_without_a_cost_adds_no_charge() {
+        let published = PublishedCounts::default();
+        let mut state = state(Vec::new(), &[], &published, false);
+        let origin = BlockPos::new(0, 40, 0);
+        assert!(state.can_spawn(None, origin));
+        state.charged(origin);
+        assert!(state.can_spawn(Some(GHAST_COST), BlockPos::new(1, 40, 0)));
     }
 
     #[test]

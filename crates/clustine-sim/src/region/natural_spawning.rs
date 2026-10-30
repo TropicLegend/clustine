@@ -16,8 +16,11 @@
 //! `isValidPositionForMob`; and only then the mob's key, its own stream's draws and its
 //! `finalizeSpawn` (finding 32), the chunk's stream as the level's random.
 //!
-//! Named differences: the potential of the spawn costs is not reckoned (no overworld
-//! biome has costs); the Nether fortress's own list on nether bricks is not asked; a
+//! Named differences: the potential of the spawn costs charges the region's own mobs
+//! alone, as no region reads another's; the Nether fortress's own list on nether
+//! bricks (`isInNetherFortressBounds`) is the fortress's override of a piece, which
+//! gives the same list wherever the game's does, the order of two structures' at one
+//! place aside; a
 //! box is obstructed by the region's own players and by the entities of its loaded and
 //! copied chunks, not by players whose faces it keeps; the world border's collision is
 //! not asked of the spawn's box (the placement asks the border of the block); a school
@@ -197,7 +200,11 @@ impl Region {
                 if !self.valid_spawn_position_for_type(category, &picked, at, distance, draws) {
                     continue;
                 }
-                // The potential's charge passes: no overworld biome has spawn costs.
+                // `spawnPredicate`: the potential's charge (`SpawnState.canSpawn`).
+                let cost = self.spawn_cost(kind, at);
+                if !state.can_spawn(cost, at) {
+                    continue;
+                }
                 if !types::is_built(kind) {
                     spawned.ended = Ended::Unbuilt(kind);
                     return spawned;
@@ -217,6 +224,7 @@ impl Region {
                 if let Some(counted) = category_of(kind) {
                     state.after_spawn(counted, at.chunk());
                 }
+                state.charged(at);
                 if total >= rules::max_spawn_cluster_size(kind) {
                     spawned.ended = Ended::Cluster;
                     return spawned;

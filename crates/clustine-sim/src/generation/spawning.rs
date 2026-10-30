@@ -469,15 +469,16 @@ pub(crate) fn pathfinding_cost_from_light_levels(view: &dyn SpawnView, pos: Bloc
     let far =
         !(-30_000_000..30_000_000).contains(&pos.x) || !(-30_000_000..30_000_000).contains(&pos.z);
     let brightness = if far { 15 } else { raw_brightness(view, pos) };
-    magic_value(brightness) - 0.5
+    magic_value(view.dimension(), brightness) - 0.5
 }
 
-/// `getLightLevelDependentMagicValue` of a raw brightness, the overworld's ambient
-/// light being 0: `Mth.lerp(0, g, 1)` is `g`.
-pub(crate) fn magic_value(brightness: u8) -> f32 {
+/// `getLightLevelDependentMagicValue` of a raw brightness in a level of `dimension`:
+/// `Mth.lerp(ambient, g, 1)` with the dimension's ambient light (the overworld's 0, the
+/// Nether's 0.1, the End's 0.25; `docs/groundwork/p-plan.md`, 18.5 and 18.6).
+pub(crate) fn magic_value(dimension: clustine_world::Dimension, brightness: u8) -> f32 {
     let f = f32::from(brightness) / 15.0;
     let g = f / (4.0 - 3.0 * f);
-    let ambient = 0.0_f32;
+    let ambient = dimension.rules().ambient_light;
     g + ambient * (1.0 - g)
 }
 

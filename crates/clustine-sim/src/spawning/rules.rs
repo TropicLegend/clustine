@@ -92,7 +92,7 @@ pub(crate) fn can_spawn_far_from_player(kind: u16) -> bool {
 /// `getMaxSpawnClusterSize()`: how many of one position's groups together end it.
 /// `AbstractFish`'s 8 and the schooling fish's `getMaxSchoolSize()` (the salmon's 5),
 /// `AbstractHorse`'s 6 (the llamas and the camel are horses), the wolf's 8, the
-/// pillager's 1, `Mob`'s 4 for every other.
+/// pillager's and the ghast's 1, `Mob`'s 4 for every other.
 pub(crate) fn max_spawn_cluster_size(kind: u16) -> u32 {
     use entity_types::*;
     match i32::from(kind) {
@@ -100,7 +100,7 @@ pub(crate) fn max_spawn_cluster_size(kind: u16) -> u32 {
         COD | PUFFERFISH | TROPICAL_FISH | WOLF => 8,
         HORSE | DONKEY | MULE | LLAMA | TRADER_LLAMA | CAMEL | CAMEL_HUSK | SKELETON_HORSE
         | ZOMBIE_HORSE => 6,
-        PILLAGER => 1,
+        PILLAGER | GHAST => 1,
         _ => 4,
     }
 }
@@ -139,6 +139,11 @@ fn within_border(pos: BlockPos) -> bool {
 /// The fluid at a state is water (`getFluidState(pos).is(FluidTags.WATER)`).
 fn has_water_fluid(state: BlockState) -> bool {
     fluid_in_tag(state, "minecraft:water")
+}
+
+/// The fluid at a state is lava (`is(FluidTags.LAVA)`).
+fn has_lava_fluid(state: BlockState) -> bool {
+    fluid_in_tag(state, "minecraft:lava")
 }
 
 /// The type's rule (`SpawnPlacements.checkSpawnRules(type, level, NATURAL, pos,
@@ -211,9 +216,17 @@ pub(crate) fn check_spawn_rules(
         STRAY => stray(kind, world, pos, draws),
         // #36
         TURTLE => turtle(world, pos),
-        // The Nether's and the End's, which no overworld list names (named above).
-        ENDERMITE | GHAST | MAGMA_CUBE | HOGLIN | PIGLIN | SILVERFISH | SKELETON_HORSE
-        | STRIDER | ZOMBIFIED_PIGLIN => false,
+        // The Nether's, each its family's (`docs/groundwork/p-plan.md`, section 18.2).
+        GHAST => crate::mobs::types::ghast::check_spawn_rules(world, pos, draws),
+        MAGMA_CUBE => crate::mobs::types::magma_cube::check_spawn_rules(world, pos, draws),
+        HOGLIN => crate::mobs::types::hoglin::check_spawn_rules(world, pos, draws),
+        PIGLIN => crate::mobs::types::piglin::check_spawn_rules(world, pos, draws),
+        STRIDER => crate::mobs::types::strider::check_spawn_rules(world, pos, draws),
+        ZOMBIFIED_PIGLIN => {
+            crate::mobs::types::zombified_piglin::check_spawn_rules(world, pos, draws)
+        }
+        // The End's, and those no list names (named above).
+        ENDERMITE | SILVERFISH | SKELETON_HORSE => false,
         // A type with no registration (`SpawnPlacements.DATA_BY_TYPE` has none).
         _ => true,
     }
@@ -597,7 +610,9 @@ fn walk_target_value(kind: u16, world: &dyn SpawnWorld, pos: BlockPos) -> Option
     if !is_pathfinder(kind) {
         return None;
     }
-    let cost = || -> Option<f32> { Some(magic_value(max_local_raw_brightness(world, pos)?) - 0.5) };
+    let cost = || -> Option<f32> {
+        Some(magic_value(world.dimension(), max_local_raw_brightness(world, pos)?) - 0.5)
+    };
     let below = || world.block(pos.offset(0, -1, 0));
     let id = i32::from(kind);
     match id {
@@ -621,6 +636,18 @@ fn walk_target_value(kind: u16, world: &dyn SpawnWorld, pos: BlockPos) -> Option
             let preferred = world.block(pos).is_some_and(has_water_fluid)
                 || below().is_some_and(|below| in_tag(below, "minecraft:sand"));
             if preferred { Some(10.0) } else { cost() }
+        }
+        // `Strider.getWalkTargetValue`: 10 in lava; a fresh strider is in none, so 0
+        // elsewhere (n7 Strider.txt 925–941).
+        STRIDER => {
+            let lava = world.block(pos).is_some_and(has_lava_fluid);
+            Some(if lava { 10.0 } else { 0.0 })
+        }
+        // `Hoglin.getWalkTargetValue`: 10 over crimson nylium, else 0; a fresh hoglin
+        // remembers no repellent (n7 Hoglin.txt 294–316).
+        HOGLIN => {
+            let nylium = below().is_some_and(|below| is_block(below, blocks::CRIMSON_NYLIUM));
+            Some(if nylium { 10.0 } else { 0.0 })
         }
         _ => match ladder::of(kind) {
             Family::Monster => Some(-cost()?),
@@ -649,10 +676,12 @@ pub(crate) fn obstruction_by_blocks(
 ) -> bool {
     use entity_types::*;
     let id = i32::from(kind);
+    // The strider asks only `isUnobstructed` too, so that it spawns in lava (n7
+    // Strider.txt 358–363).
     let water_mob = ladder::of(kind) == Family::WaterAnimal
         || matches!(
             id,
-            AXOLOTL | GUARDIAN | ELDER_GUARDIAN | DROWNED | NAUTILUS | ZOMBIE_NAUTILUS
+            AXOLOTL | GUARDIAN | ELDER_GUARDIAN | DROWNED | NAUTILUS | ZOMBIE_NAUTILUS | STRIDER
         );
     if water_mob {
         return true;

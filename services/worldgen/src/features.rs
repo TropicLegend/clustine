@@ -242,6 +242,7 @@ impl Stages for FeatureStages {
             nine,
             zoom: self.features.zoom(),
             sea_level: TerrainGenerator::sea_level_of(self.terrain.level()),
+            dimension: self.terrain.level(),
         };
         let seed = self.terrain.seed();
         let mut spawn = clustine_sim::generation::SpawnRandom::new(seed, position);

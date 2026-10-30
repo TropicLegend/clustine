@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use clustine_data::{BIOME_SPAWNS, DIMENSION_TYPES, blocks, entity_types};
-use clustine_world::{Chunk, EntityId};
+use clustine_world::{Chunk, Dimension, EntityId};
 
 use super::*;
 use crate::region::Random;
@@ -481,8 +481,14 @@ fn light_11_is_refused_and_12_taken_on_sand_for_a_rabbit() {
     ]);
     view.sky = 12;
     assert_eq!(spawn(&view, &taken).len(), 2);
-    assert!(magic_value(11) - 0.5 < 0.0);
-    assert_eq!(magic_value(12), 0.500_000_06);
+    assert!(magic_value(Dimension::Overworld, 11) - 0.5 < 0.0);
+    assert_eq!(magic_value(Dimension::Overworld, 12), 0.500_000_06);
+    // The Nether's and the End's ambient light (0.1, 0.25) is lerped in: in the dark
+    // a level's worth is its ambient light.
+    assert_eq!(magic_value(Dimension::Nether, 0), 0.1);
+    assert_eq!(magic_value(Dimension::End, 0), 0.25);
+    let g = magic_value(Dimension::Overworld, 12);
+    assert_eq!(magic_value(Dimension::Nether, 12), g + 0.1 * (1.0 - g));
 }
 
 /// A polar bear on ice where the biome at its block is a frozen ocean; elsewhere it

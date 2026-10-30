@@ -46,6 +46,11 @@ pub trait SpawnView {
     fn max_y(&self) -> i32;
     /// The dimension's sea level, below which and four more a turtle may spawn.
     fn sea_level(&self) -> i32;
+    /// The level's dimension, whose ambient light the light's worth reads: the
+    /// overworld where a view knows no other.
+    fn dimension(&self) -> clustine_world::Dimension {
+        clustine_world::Dimension::Overworld
+    }
     /// The block at `at`, in the centre or the eight around it (the box of a mob at the
     /// chunk's edge meets the shapes of blocks beside it); air beyond them or the
     /// dimension's height.

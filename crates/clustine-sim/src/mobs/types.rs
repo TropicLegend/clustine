@@ -35,6 +35,7 @@ pub(crate) mod axolotl;
 pub(crate) mod axolotl_ai;
 pub(crate) mod bat;
 pub(crate) mod bee;
+pub(crate) mod blaze;
 pub(crate) mod bogged;
 pub(crate) mod camel;
 pub(crate) mod camel_husk;
@@ -62,6 +63,7 @@ pub(crate) mod frog;
 pub(crate) mod frog_ai;
 #[cfg(test)]
 mod generation_tests;
+pub(crate) mod ghast;
 pub(crate) mod glow_squid;
 pub(crate) mod goat;
 #[cfg(test)]
@@ -76,6 +78,7 @@ pub(crate) mod guardians;
 pub(crate) mod happy_ghast;
 #[cfg(test)]
 mod highland_tests;
+pub(crate) mod hoglin;
 pub(crate) mod horse;
 pub(crate) mod husk;
 #[cfg(test)]
@@ -89,6 +92,7 @@ mod keeper_brain_tests;
 #[cfg(test)]
 mod keeper_tests;
 pub(crate) mod llama;
+pub(crate) mod magma_cube;
 pub(crate) mod monster_ai;
 pub(crate) mod mooshroom;
 pub(crate) mod mule;
@@ -102,6 +106,8 @@ pub(crate) mod parched;
 pub(crate) mod parrot;
 pub(crate) mod phantom;
 pub(crate) mod pig;
+pub(crate) mod piglin;
+pub(crate) mod piglin_brute;
 pub(crate) mod pillager;
 pub(crate) mod polar_bear;
 pub(crate) mod pufferfish;
@@ -123,6 +129,7 @@ mod social_n10_tests;
 pub(crate) mod spider;
 pub(crate) mod squid;
 pub(crate) mod stray;
+pub(crate) mod strider;
 pub(crate) mod tadpole;
 pub(crate) mod tadpole_ai;
 pub(crate) mod tamable;
@@ -148,7 +155,9 @@ mod water_tests;
 #[cfg(test)]
 mod wild_tests;
 pub(crate) mod witch;
+pub(crate) mod wither_skeleton;
 pub(crate) mod wolf;
+pub(crate) mod zoglin;
 pub(crate) mod zombie;
 pub(crate) mod zombie_family;
 #[cfg(test)]
@@ -156,6 +165,7 @@ mod zombie_family_tests;
 pub(crate) mod zombie_horse;
 pub(crate) mod zombie_nautilus;
 pub(crate) mod zombie_villager;
+pub(crate) mod zombified_piglin;
 
 use clustine_data::{entity_types, sounds};
 use clustine_world::{BlockPos, Entity, EntityData, EntityId, ItemStack};
@@ -1460,6 +1470,18 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::PHANTOM if phantom::BUILT => &phantom::Phantom,
         entity_types::ENDERMITE if endermite::BUILT => &endermite::Endermite,
         entity_types::SILVERFISH if silverfish::BUILT => &silverfish::Silverfish,
+        entity_types::ZOMBIFIED_PIGLIN if zombified_piglin::BUILT => {
+            &zombified_piglin::ZombifiedPiglin
+        }
+        entity_types::MAGMA_CUBE if magma_cube::BUILT => &magma_cube::MagmaCube,
+        entity_types::GHAST if ghast::BUILT => &ghast::Ghast,
+        entity_types::WITHER_SKELETON if wither_skeleton::BUILT => &wither_skeleton::WitherSkeleton,
+        entity_types::BLAZE if blaze::BUILT => &blaze::Blaze,
+        entity_types::STRIDER if strider::BUILT => &strider::Strider,
+        entity_types::PIGLIN if piglin::BUILT => &piglin::Piglin,
+        entity_types::PIGLIN_BRUTE if piglin_brute::BUILT => &piglin_brute::PiglinBrute,
+        entity_types::HOGLIN if hoglin::BUILT => &hoglin::Hoglin,
+        entity_types::ZOGLIN if zoglin::BUILT => &zoglin::Zoglin,
         _ => return None,
     };
     Some(found)

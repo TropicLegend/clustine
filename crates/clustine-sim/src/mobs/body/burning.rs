@@ -13,14 +13,14 @@ use crate::mobs::tick::MobTick;
 /// `LevelReader.getLightLevelDependentMagicValue(pos)` at the mob's eyes, or 0 where its
 /// view has no light (`Entity`'s: 0 where the chunk is not loaded). The raw brightness is
 /// the sky's light less its darkening or the block's, the larger
-/// (`LevelLightEngine.getRawBrightness`), and the overworld's ambient light is 0.
+/// (`LevelLightEngine.getRawBrightness`), and the level's ambient light is lerped in.
 pub(crate) fn magic_value(tick: &MobTick<'_>) -> f32 {
     let Some(light) = tick.world.light(eye_block(tick)) else {
         return 0.0;
     };
     let raw = (i32::from(light.sky) - tick.world.sky_darken()).max(i32::from(light.block));
-    let f = raw as f32 / 15.0;
-    f / (4.0 - 3.0 * f)
+    let raw = u8::try_from(raw.clamp(0, 15)).expect("a light level");
+    crate::generation::spawning::magic_value(tick.world.dimension(), raw)
 }
 
 /// `BlockPos.containing(getX(), getEyeY(), getZ())`.

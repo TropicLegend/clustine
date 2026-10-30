@@ -97,7 +97,14 @@ pub(crate) fn of(kind: u16) -> Family {
         | types::ELDER_GUARDIAN
         | types::ENDERMAN
         | types::ENDERMITE
-        | types::SILVERFISH => Family::Monster,
+        | types::SILVERFISH
+        // The Nether's of the class `Monster` (`docs/groundwork/p-plan.md`, 18.2).
+        | types::ZOMBIFIED_PIGLIN
+        | types::WITHER_SKELETON
+        | types::BLAZE
+        | types::PIGLIN
+        | types::PIGLIN_BRUTE
+        | types::ZOGLIN => Family::Monster,
         _ => Family::Other,
     }
 }
@@ -105,9 +112,12 @@ pub(crate) fn of(kind: u16) -> Family {
 /// `Monster.getSoundSource()`'s `HOSTILE` for a monster's own sounds; `NEUTRAL`, `Mob`'s,
 /// for every other mob's.
 pub(crate) fn sound_source(kind: u16) -> i32 {
-    // The cubes' and the phantom's own `getSoundSource()` is hostile too.
+    // The cubes', the phantom's and the ghast's own `getSoundSource()` is hostile too.
     match (of(kind), i32::from(kind)) {
-        (Family::Monster, _) | (_, types::SLIME | types::PHANTOM) => SOUND_SOURCE_HOSTILE,
+        (Family::Monster, _)
+        | (_, types::SLIME | types::PHANTOM | types::MAGMA_CUBE | types::GHAST) => {
+            SOUND_SOURCE_HOSTILE
+        }
         _ => crate::physics::item::SOUND_SOURCE_NEUTRAL,
     }
 }
