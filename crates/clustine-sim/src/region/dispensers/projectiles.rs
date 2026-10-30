@@ -155,6 +155,7 @@ impl Region {
             return self.default_dispense(dispense, output);
         };
         let shot = Shot {
+            fire_ticks: 0,
             kind: projectile,
             stack,
             weapon: None,

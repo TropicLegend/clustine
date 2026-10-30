@@ -465,6 +465,7 @@ fn a_skeleton_s_arrow_is_aimed_at_the_target_s_third_up_from_a_tenth_below_its_e
     assert_eq!(
         shots(&out),
         [Shot {
+            fire_ticks: 0,
             kind: kind(entity_types::ARROW),
             stack: ItemStack::new(items::ARROW, 1),
             weapon: Some(bow),

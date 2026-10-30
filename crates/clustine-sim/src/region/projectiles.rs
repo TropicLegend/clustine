@@ -306,7 +306,7 @@ impl Region {
             uncertainty: shot.uncertainty,
         };
         let from_mob = shot.from_mob;
-        self.make_projectile(
+        let made = self.make_projectile(
             making,
             |own, data| {
                 if let Some(power) = from_mob {
@@ -315,6 +315,12 @@ impl Region {
             },
             output,
         );
+        // Made burning, as `getArrow` lights it before the shot.
+        if let Some(arrow) = made
+            && shot.fire_ticks > 0
+        {
+            self.set_fire_ticks(arrow, shot.fire_ticks, output);
+        }
     }
 
     /// A made entity added where it was made, its draws noted, or sent to its holder.

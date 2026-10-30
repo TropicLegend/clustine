@@ -70,6 +70,12 @@ fn register(mob: Option<&Mob>, setup: &mut Setup) {
 pub(crate) struct WitherSkeleton;
 
 impl MobType for WitherSkeleton {
+    /// `getArrow`'s `igniteForSeconds(100)` (WitherSkeleton.txt 132–144): its arrows fly
+    /// burning, 2000 ticks.
+    fn arrow_fire_ticks(&self) -> i32 {
+        100 * 20
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         register(None, setup);
     }

@@ -541,6 +541,7 @@ pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, _power
     let dz = target.position[2] - z;
     let across = (dx * dx + dz * dz).sqrt();
     ai.tick.out.local.push(Local::Shoot(Shot {
+        fire_ticks: 0,
         kind: u16::try_from(entity_types::TRIDENT).expect("entity type ids fit 16 bits"),
         stack,
         weapon: None,

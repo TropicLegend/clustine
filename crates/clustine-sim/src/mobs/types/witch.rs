@@ -246,6 +246,7 @@ pub(crate) fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &Looked, _power
         }));
     let eyes = ai.eye_y();
     ai.tick.out.local.push(Local::Shoot(Shot {
+        fire_ticks: 0,
         kind: u16::try_from(entity_types::SPLASH_POTION).expect("entity type ids fit 16 bits"),
         stack,
         weapon: None,

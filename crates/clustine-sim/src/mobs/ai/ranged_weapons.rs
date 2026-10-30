@@ -207,6 +207,7 @@ pub(crate) fn skeleton_shot(ai: &mut Ai<'_, '_>, target: &Looked, power: f32, ef
         power: 1.6,
         uncertainty: ranged_attack_uncertainty(),
         from_mob: Some(power),
+        fire_ticks: ai.tick.mob_type.arrow_fire_ticks(),
     }));
     let pitch = 1.0 / (ai.tick.draws.next_float() * 0.4 + 0.8);
     ai.tick.out.events.push(Event::Sound {
@@ -666,6 +667,7 @@ pub(crate) fn perform_crossbow_attack(ai: &mut Ai<'_, '_>, target: &Looked, velo
             let direction = shot_vector([dx, dy, dz], angle).map(f64::from);
             let (kind, stack) = mob_arrow(&projectile);
             ai.tick.out.local.push(Local::Shoot(Shot {
+                fire_ticks: 0,
                 kind,
                 stack,
                 weapon: Some(weapon.clone()),

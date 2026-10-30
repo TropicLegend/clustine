@@ -270,6 +270,7 @@ fn a_mobs_snowball_passes_its_thrower_in_its_first_tick_where_anyone_elses_hits(
     let key = region.take_entity_key(ChunkPos::new(0, 0)).expect("a key");
     lay(&mut region, &cow(key, [3.5, -60.0, 0.5]));
     let shot = Local::Shoot(crate::mobs::tick::Shot {
+        fire_ticks: 0,
         kind: u16::try_from(entity_types::SNOWBALL).unwrap(),
         stack: SNOWBALL,
         weapon: None,
@@ -614,6 +615,7 @@ fn an_arrow_of_intangible_ammunition_is_for_creative_players_only() {
     use clustine_world::components::Component;
     let mut stack = ItemStack::new(items::ARROW, 1);
     let shot = |stack: ItemStack| crate::mobs::tick::Shot {
+        fire_ticks: 0,
         kind: u16::try_from(entity_types::ARROW).unwrap(),
         stack,
         weapon: None,
@@ -639,6 +641,7 @@ fn an_arrow_of_intangible_ammunition_is_for_creative_players_only() {
 #[test]
 fn a_llama_s_shot_makes_its_spit_and_a_trident_s_its_own_hit_sound() {
     let shot = |kind: i32, item| crate::mobs::tick::Shot {
+        fire_ticks: 0,
         kind: u16::try_from(kind).unwrap(),
         stack: ItemStack::new(item, 1),
         weapon: None,

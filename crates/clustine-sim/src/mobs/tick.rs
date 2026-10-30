@@ -382,6 +382,9 @@ pub struct Shot {
     pub power: f32,
     pub uncertainty: f32,
     pub from_mob: Option<f32>,
+    /// The fire the projectile is made burning with, in ticks: a wither skeleton's
+    /// arrow's `igniteForSeconds(100)` (`WitherSkeleton.getArrow`); none for any other.
+    pub fire_ticks: i32,
 }
 
 /// A mob in its tick: its record decoded, its body as the physics have it, its type,

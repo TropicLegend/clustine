@@ -385,7 +385,7 @@ impl Region {
     }
 
     /// The region's entity `key` burns for `ticks` from now (`setRemainingFireTicks`).
-    fn set_fire_ticks(&mut self, key: EntityId, ticks: i32, output: &mut TickOutput) {
+    pub(super) fn set_fire_ticks(&mut self, key: EntityId, ticks: i32, output: &mut TickOutput) {
         let Some((chunk, entity)) = self.find_entity(key) else {
             return;
         };

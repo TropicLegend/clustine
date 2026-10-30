@@ -353,6 +353,7 @@ impl Region {
         };
         let thrown = stack.with_count(1);
         let shot = Shot {
+            fire_ticks: 0,
             kind: u16::try_from(entity_types::TRIDENT).expect("entity type ids fit 16 bits"),
             stack: thrown,
             weapon: None,
@@ -550,6 +551,7 @@ impl Region {
         make: impl FnOnce(&mut Region, Vec3, EntityData, &mut TickOutput) -> Option<EntityId>,
     ) -> Option<EntityId> {
         let shot = Shot {
+            fire_ticks: 0,
             kind: u16::try_from(bow::arrow_kind(projectile.item))
                 .expect("entity type ids fit 16 bits"),
             stack: projectile.clone(),

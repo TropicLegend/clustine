@@ -114,6 +114,41 @@ fn a_skeleton_looses_one_arrow_at_each_release_of_its_bow() {
     }
 }
 
+/// `WitherSkeleton.getArrow`: a wither skeleton given a bow shoots its arrows burning
+/// for 100 seconds (`igniteForSeconds(100)`), where a skeleton's do not burn.
+#[test]
+fn a_wither_skeleton_s_arrows_fly_burning_and_a_skeleton_s_do_not() {
+    for (archer, burning) in [
+        (entity_types::WITHER_SKELETON, true),
+        (entity_types::SKELETON, false),
+    ] {
+        let mut region = world(SEED, nothing);
+        mob_at(
+            &mut region,
+            entity_types::IRON_GOLEM,
+            [10.5, -60.0, 0.5],
+            false,
+            |_, _| {},
+        );
+        mob_at(&mut region, archer, [0.5, -60.0, 0.5], true, |made, _| {
+            made.body.equipment.slots[usize::from(slots::MAIN_HAND)] =
+                Some(ItemStack::new(items::BOW, 1));
+            made.body.equipment.slots[usize::from(slots::HEAD)] =
+                Some(ItemStack::new(items::IRON_HELMET, 1));
+        });
+        let mut fired = None;
+        for _ in 0..120 {
+            idle(&mut region);
+            if let Some(key) = arrows(&region).first() {
+                fired = region.find_entity(*key).map(|(_, arrow)| arrow.fire_ticks);
+                break;
+            }
+        }
+        let fire = fired.expect("an arrow loosed");
+        assert_eq!(fire > 0, burning, "{archer}: {fire}");
+    }
+}
+
 /// The plan's 5.5 (finding 11) and n7 Witch `aiStep`: a witch drinks off the use state,
 /// by its own `usingTime`, set to the potion's use duration (32) as it starts and
 /// counted `usingTime-- > 0` at each `aiStep` after, so that the potion is drunk at the

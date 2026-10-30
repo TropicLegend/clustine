@@ -543,6 +543,7 @@ fn spit(ai: &mut Ai<'_, '_>, target: &Looked, _power: f32) {
         .out
         .local
         .push(crate::mobs::tick::Local::Shoot(crate::mobs::tick::Shot {
+            fire_ticks: 0,
             kind: u16::try_from(entity_types::LLAMA_SPIT).expect("entity type ids fit 16 bits"),
             stack: ItemStack::new(clustine_data::items::AIR, 0),
             weapon: None,

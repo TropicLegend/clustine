@@ -135,6 +135,7 @@ fn perform_ranged_attack(ai: &mut Ai<'_, '_>, target: &sensing::Looked, _power: 
         .out
         .local
         .push(Local::Shoot(crate::mobs::tick::Shot {
+            fire_ticks: 0,
             kind: u16::try_from(clustine_data::entity_types::SNOWBALL)
                 .expect("entity type ids fit 16 bits"),
             stack: ItemStack::new(items::SNOWBALL, 1),

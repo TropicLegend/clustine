@@ -668,6 +668,12 @@ pub(crate) trait MobType: Sync {
         false
     }
 
+    /// The fire, in ticks, of the arrows the type shoots (`getArrow`'s
+    /// `igniteForSeconds`): none by default; a wither skeleton's 100 seconds.
+    fn arrow_fire_ticks(&self) -> i32 {
+        0
+    }
+
     /// The stick that boosts the mob its player drives (`ItemSteerable`'s item, the
     /// `FoodOnAStickItem` whose `itemToSteer` is the type): none by default; the pig's
     /// carrot on a stick, the strider's warped fungus on a stick (family E4 of P12).
