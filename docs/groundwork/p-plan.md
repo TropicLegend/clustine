@@ -1286,3 +1286,56 @@ Each family's rules from the brief and the dumps, by the family; from the specif
 by someone else (X); comparisons with the official server of a ghast's fireball, a
 blaze's volley, piglin bartering's draws and a strider on lava, in a Nether scene, which
 an X subagent builds.
+
+### 18.5 The review of section 18 (2026-10-30), and what P12 builds instead
+
+An independent reviewer read 18.1 to 18.4 against the code at `3738751` and the dumps.
+They found the stubs, the tables named, the fortress list, the spawn costs, the steering
+seam, the ghast's timings and the fireball's griefing right, and twelve defects. What
+P12 builds instead; the contract commit of 18.2 grows by all of the lead's items:
+
+- **The fireball as the game keeps it** (their 1): `acceleration_power` (0.1, the
+  motion `(m + m̂·p)·0.95`, 0.8 in water), the owner as a `Thrower` (key, type, a
+  player's UUID), `left_owner`, `has_been_shot`, its item (a fire charge by default); no
+  `life` and no flag for a deflection, which the ghast reads from the cause being a
+  player. A fireball whose owner is not the region's is handed across a line as a
+  `Thrown` is, and is discarded only when its owner is the region's own and removed.
+- **Deflection** (their 2): `EntityUse::Attack` carries the attacker's look (with its
+  codec), so that a fireball held across a line is deflected there; the fireball's arms
+  in the shared code (`entities.rs`' uses and ticks, `explosions.rs`, `thrown.rs`,
+  `projectiles.rs`' pickable, the edge's `owner_of` and `spawn_packets`) call into
+  `fireballs.rs`; a deflection syncs its velocity at once.
+- **Mobs shoot through `Local`** (their 3): a fireball `Shot` in the contract; E3 is
+  briefed after E2 is merged.
+- **Hits with extras** (their 4): `HitExtra::Throw` and a type's hook that fills
+  `HurtBy.effects` (the wither skeleton's wither), in the contract.
+- **Conversions** (their 5): `Local::Convert` takes a level event or a sound, and an
+  effect given after (nausea for 200 ticks), in the contract.
+- **The brain's tables** (their 6): the piglins' and hoglins' sensed memories in
+  `MemoryKind::sensed()`, and the accessors each family reads of the other's mob (a
+  hoglin's `CannotBeHunted` and age, the adult piglins counted), declared in the
+  contract with stub bodies.
+- **Piglins' anger** (their 7): the calls from breaking a `#guarded_by_piglins` block and
+  opening a guarded container, and an `EntityUse` that angers a piglin across a line,
+  with the broadcast of anger and the hoglins' group attack through it, in the contract.
+- **The spawning's tables** (their 8): the walk target values of the strider (10 on
+  lava) and the hoglin (0, 10 on crimson nylium), the strider's obstruction rule, the
+  ghast's cluster size of 1, the hoglin counted by its class (an animal), and the
+  Nether's ambient light (0.1) in the light the spawner reads, all the lead's.
+- **Standing on lava** (their 9): the physics' `Context` knows whether the entity stands
+  on fluids and the state above a block, so that source lava under a strider is a half
+  block where the game's is; the travel's gate; and a strider navigation (stable on lava,
+  its maluses, its start node), all the lead's; E4 builds the strider on them.
+- **The structures' mobs** (their 10): a bastion's piglins and brutes and the striders
+  made with chunks belong to E5 and E4, and `ENTITIES_GENERATION` rises after them;
+  spawner blocks spawn nothing yet, so the fortress's blaze spawners are idle, named.
+- **What a player meets at once** (their 11): piglins' crossbows (E5); a fireball lights
+  TNT and campfires it hits (E2); a large fireball's direct hit reaches a target across a
+  line before its blast (E2); the strider jockey after E1 (E4 is briefed after E1).
+- **Tests** (their 12): bartering by its table's outcomes, the admiring's 119 ticks and
+  the throw's sequence, not by the game's draws; and on a divided world: a ghast's
+  fireball across a line, a deflection across a line that kills the ghast, piglins
+  angered across a line by gold mined, striders, hoglins and ghasts spawning as they
+  should, a strider over a line on lava, a bastion's piglins and brutes, a small
+  fireball's fire across a line, conversions keeping equipment with nausea and their
+  sound, and zombification in the overworld only.
