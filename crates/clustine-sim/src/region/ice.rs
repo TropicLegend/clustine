@@ -31,10 +31,10 @@ impl Region {
     /// `emptyContents` where `water_evaporates` holds): `fire_extinguish` of the blocks'
     /// source at the block's centre, at volume 0.5 and a pitch of `2.6 + (a − b) × 0.8`
     /// from two floats of the level's random, heard by all but `except` (the player who
-    /// emptied it, whose client plays its own); then eight `large_smoke` over the block.
-    /// The region sends no particles of its own, so the smoke is the fizz that lava's
-    /// meeting with water makes (level event 1501), which shows the same eight puffs and
-    /// plays lava's hiss besides. No game event: `playEmptySound`, which posts
+    /// emptied it, whose client plays its own). The eight `large_smoke` the game adds
+    /// after are `Level.addParticle`, which a server level leaves empty (read from the
+    /// 26.3 jar): only the emptying player's client, which runs the use itself, shows
+    /// them, and nothing is sent for them. No game event: `playEmptySound`, which posts
     /// `fluid_place`, is not reached.
     pub(crate) fn evaporate_water(
         &mut self,
@@ -56,7 +56,24 @@ impl Region {
             pitch,
             except,
         });
-        output.events.push(RegionEvent::Fizzed { position: pos });
+    }
+
+    /// The water of the bucket the player `player` emptied evaporates at `pos`, the fizz's
+    /// pitch drawn from the player's stream (the level's random, as the region keeps it
+    /// for what a player does).
+    pub(crate) fn evaporate_player_s_water(
+        &mut self,
+        player: PlayerId,
+        pos: BlockPos,
+        output: &mut TickOutput,
+    ) {
+        let Some(key) = self.players.get(&player).map(|player| player.entity_id) else {
+            return;
+        };
+        let mut random = self.entity_stream(key).random;
+        let start = random.clone();
+        self.evaporate_water(pos, Some(player), &mut random, output);
+        self.entity_drew(key, random.draws_since(&start));
     }
 
     /// `IceBlock.playerDestroy` (n8 IceBlock.txt 15-90) for `state` broken by a player at
@@ -269,17 +286,14 @@ mod tests {
         assert_eq!(random.draws_since(&start), 2, "two floats drawn");
         assert_eq!(
             output.events,
-            [
-                RegionEvent::Sound {
-                    sound: sounds::BLOCK_FIRE_EXTINGUISH,
-                    source: SOUND_SOURCE_BLOCKS,
-                    position: Vec3::new(8.5, f64::from(FLOOR) + 2.5, 8.5),
-                    volume: 0.5,
-                    pitch,
-                    except: Some(player(7)),
-                },
-                RegionEvent::Fizzed { position: ICE },
-            ]
+            [RegionEvent::Sound {
+                sound: sounds::BLOCK_FIRE_EXTINGUISH,
+                source: SOUND_SOURCE_BLOCKS,
+                position: Vec3::new(8.5, f64::from(FLOOR) + 2.5, 8.5),
+                volume: 0.5,
+                pitch,
+                except: Some(player(7)),
+            },]
         );
         assert!((1.8..=3.4).contains(&pitch));
     }
@@ -329,12 +343,21 @@ mod tests {
             .collect()
     }
 
+    /// Where water evaporated: the blocks of the `fire_extinguish` sounds.
     fn fizzes(output: &TickOutput) -> Vec<BlockPos> {
         output
             .events
             .iter()
             .filter_map(|event| match event {
-                RegionEvent::Fizzed { position } => Some(*position),
+                RegionEvent::Sound {
+                    sound: sounds::BLOCK_FIRE_EXTINGUISH,
+                    position,
+                    ..
+                } => Some(BlockPos::new(
+                    position.x.floor() as i32,
+                    position.y.floor() as i32,
+                    position.z.floor() as i32,
+                )),
                 _ => None,
             })
             .collect()

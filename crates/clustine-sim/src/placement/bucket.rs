@@ -120,13 +120,6 @@ fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> 
 /// bucket evaporates its water too, and its mob is made all the same, as
 /// `MobBucketItem.checkExtraContent` makes it); `None` for any other item, where water
 /// does not evaporate, or where it goes nowhere.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the region's call of it, which makes the fizz, is a seam outside this file"
-    )
-)]
 pub(crate) fn evaporated(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<BlockPos> {
     let held = item_use.held?;
     let holds_water = held == items::WATER_BUCKET
@@ -187,13 +180,7 @@ enum Emptied {
     /// The blocks that change, none where the fluid is there already.
     Changes(Vec<(BlockPos, BlockState)>),
     /// The water evaporated at the block, which keeps what it was.
-    Evaporated(
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "read by `evaporated`, whose caller is a seam")
-        )]
-        BlockPos,
-    ),
+    Evaporated(BlockPos),
 }
 
 /// What emptying a bucket of `fluid` into `pos` comes to: `Some` of it when it goes in

@@ -52,18 +52,24 @@ impl Region {
         if !changes.is_empty() && !self.change_all(&changes, output) {
             return false;
         }
-        output.events.push(RegionEvent::Sound {
-            sound: empty_sound(item),
-            source: SOUND_SOURCE_NEUTRAL,
-            position: clustine_world::Vec3::new(
-                f64::from(pos.x) + 0.5,
-                f64::from(pos.y) + 0.5,
-                f64::from(pos.z) + 0.5,
-            ),
-            volume: 1.0,
-            pitch: 1.0,
-            except: Some(player),
-        });
+        // Water that evaporates fizzes instead of the bucket's sound, and the mob is made
+        // all the same (`MobBucketItem.checkExtraContent`; `ice.rs`).
+        if let Some(at) = crate::placement::evaporated(used, &super::Readable(self)) {
+            self.evaporate_player_s_water(player, at, output);
+        } else {
+            output.events.push(RegionEvent::Sound {
+                sound: empty_sound(item),
+                source: SOUND_SOURCE_NEUTRAL,
+                position: clustine_world::Vec3::new(
+                    f64::from(pos.x) + 0.5,
+                    f64::from(pos.y) + 0.5,
+                    f64::from(pos.z) + 0.5,
+                ),
+                volume: 1.0,
+                pitch: 1.0,
+                except: Some(player),
+            });
+        }
         self.spawn_mob_with(
             kind,
             player,

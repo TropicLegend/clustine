@@ -647,6 +647,11 @@ pub(crate) fn mob_bucket(
     bucket::mob_bucket(item_use, blocks)
 }
 
+/// See [`bucket::evaporated`].
+pub(crate) fn evaporated(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<BlockPos> {
+    bucket::evaporated(item_use, blocks)
+}
+
 /// See [`bucket::source_hit`].
 pub(crate) fn source_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<BlockPos>, ()> {
     bucket::source_hit(item_use, blocks)

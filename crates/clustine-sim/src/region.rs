@@ -2787,6 +2787,12 @@ impl Region {
                 }
                 let bodies = self.bodies(Some(id));
                 let used = placement::use_item(&item_use, &Readable(self), &bodies);
+                // Water that evaporates places nothing and fizzes instead (`ice.rs`).
+                if used.is_none()
+                    && let Some(pos) = placement::evaporated(&item_use, &Readable(self))
+                {
+                    self.evaporate_player_s_water(id, pos, output);
+                }
                 if let Some(used) = used
                     && self.change_all(&used.changes, output)
                 {
@@ -4238,6 +4244,7 @@ mod tests {
     mod effects;
     mod entities;
     mod entity_effects;
+    mod evaporation;
     mod falling_and_drops;
     mod farm;
     mod fliers;
