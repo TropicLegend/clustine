@@ -2,8 +2,13 @@
 //! `docs/groundwork/n8-plan.md`, section 6.4): every 20 ticks its power from the sky's
 //! light and the sun's angle, inverted or not, and a click turning it.
 //!
-//! The game makes the ticker only where the dimension has sky light; Clustine's one
-//! dimension, the overworld, has it, so every detector ticks.
+//! The game makes the ticker only where the dimension has sky light (`getTicker`, n8
+//! `DaylightDetectorBlock` 185–197): in the Nether a detector keeps its power until it is
+//! clicked, and a click works it out all the same (`useWithoutItem`, 120–158), from no
+//! sky light, so 0, or 15 inverted. In a level with a fixed time (the Nether, the End)
+//! the darkening is the level's fixed one and the sun stands at noon
+//! ([`crate::time::level_sun_angle`]), so that in the End a detector gives its sky light
+//! whole, by day and by night.
 
 use clustine_blocks::data::{flag, is_class, number, set, set_flag};
 use clustine_data::{BlockClass, BlockState};
@@ -54,13 +59,18 @@ impl Region {
         state: BlockState,
         output: &mut TickOutput,
     ) {
+        // No ticker at all in a level without a sky (`getTicker`, 188–197).
+        if !self.config.dimension.rules().has_skylight {
+            return;
+        }
         if !self.clock.game_time.is_multiple_of(20) {
             return;
         }
         self.update_signal_strength(pos, state, self.clock.day, output);
     }
 
-    /// `updateSignalStrength` at the overworld clock's `day`: the power worked out and,
+    /// `updateSignalStrength` at the overworld clock's `day` (n8 `DaylightDetectorBlock`
+    /// 42–117), from the level's darkening and the level's sun: the power worked out and,
     /// where it differs, set with every update (`setBlockAndUpdate`), so that the
     /// neighbours hear of it as of any power source's change. Where the chunk is not lit
     /// the light is not judged and nothing changes.
@@ -75,7 +85,8 @@ impl Region {
         let Some(sky) = self.effective_sky_brightness(pos, darken) else {
             return;
         };
-        let power = detector_power(state, sky, crate::time::sun_angle(day));
+        let sun = crate::time::level_sun_angle(self.config.dimension, day);
+        let power = detector_power(state, sky, sun);
         if number(state, "power") != Some(power) {
             self.set_block(pos, set(state, "power", &power.to_string()), output);
         }
@@ -113,3 +124,7 @@ impl Region {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "daylight_detector_dimension_tests.rs"]
+mod dimension_tests;

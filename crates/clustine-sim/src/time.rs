@@ -181,6 +181,21 @@ pub fn level_sky_darken(dimension: clustine_world::Dimension, day: u64) -> i32 {
     }
 }
 
+/// `EnvironmentAttributes.SUN_ANGLE` of a level of `dimension` at the overworld clock's
+/// `day`: the `day` timeline's angle ([`sun_angle`]) where the level follows that
+/// timeline, and elsewhere the attribute's default, 0° (n7d `EnvironmentAttributes`
+/// 355–379), the sun at noon. The Nether's and the End's timelines (`#in_nether`,
+/// `#in_end`) are only the universal ones, which set no angle, and they are the levels
+/// with a fixed time; Clustine keeps no list of timelines, so the fixed time stands for
+/// the want of the `day` timeline, as it does in every type the game has.
+pub fn level_sun_angle(dimension: clustine_world::Dimension, day: u64) -> f32 {
+    if dimension.rules().has_fixed_time {
+        0.0
+    } else {
+        sun_angle(day)
+    }
+}
+
 /// `Level.isBrightOutside`: never in a level with a fixed time, else a darkening below 4.
 pub fn is_bright_outside(dimension: clustine_world::Dimension, sky_darken: i32) -> bool {
     !dimension.rules().has_fixed_time && sky_darken < 4
@@ -235,6 +250,22 @@ mod tests {
             assert_eq!(bright, darken < 4);
             assert_eq!(is_dark_outside(Dimension::Overworld, darken), !bright);
         }
+    }
+
+    /// The sun's angle each level reads: the overworld's by its day, the Nether's and the
+    /// End's the attribute's default, noon, at any time.
+    #[test]
+    fn the_sun_stands_at_noon_in_the_nether_and_the_end_and_moves_in_the_overworld() {
+        use clustine_world::Dimension;
+        for day in [0, 6_000, 13_000, 18_000, 5 * DAY + 12_523] {
+            assert_eq!(level_sun_angle(Dimension::Nether, day), 0.0, "{day}");
+            assert_eq!(level_sun_angle(Dimension::End, day), 0.0, "{day}");
+            assert_eq!(
+                level_sun_angle(Dimension::Overworld, day).to_bits(),
+                sun_angle(day).to_bits()
+            );
+        }
+        assert_eq!(level_sun_angle(Dimension::Overworld, 18_000), 180.0);
     }
 
     #[test]

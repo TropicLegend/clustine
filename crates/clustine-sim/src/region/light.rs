@@ -7,12 +7,19 @@
 //! eight neighbours are lit. What changes a chunk's blocks is noted by the chunk itself
 //! (`Chunk::set`), so no write goes round the engine. The light is no part of the
 //! region's state, its commit or its equality: a restored region lights its chunks anew.
+//!
+//! A level without a sky (`has_skylight` false, the Nether) carries no sky light at all:
+//! the game makes its light engine with the dimension's `hasSkyLight` (n7 `ChunkMap`
+//! 371–398, `ThreadedLevelLightEngine`'s constructor), which then has no sky layer and
+//! reads 0 for it, and reads no sky light from a saved chunk there (n10
+//! `SerializableChunkData` 71–78). So the engine runs on the blocks' light alone and every
+//! sky level read is 0 (`docs/groundwork/p-plan.md`, sections 17.2 D1 and 17.5, their 8).
 
 use std::collections::BTreeSet;
 
 use clustine_light::Around;
 use clustine_light::engine::{Chunks, Kept, LightAt, Lighting};
-use clustine_world::{BlockPos, Chunk, ChunkPos};
+use clustine_world::{BlockPos, Chunk, ChunkPos, SectionLight};
 
 use super::Region;
 
@@ -79,6 +86,9 @@ pub enum LightChecks {
 /// shown by counts, as it is no part of what the region is between ticks (the plan's
 /// 4.6).
 pub(crate) struct RegionLight {
+    /// Whether the region's level has a sky (`DimensionType.hasSkyLight`), which the
+    /// engine was made with.
+    sky: bool,
     engine: Lighting,
     /// The chunks given to the engine.
     known: BTreeSet<ChunkPos>,
@@ -94,10 +104,12 @@ pub(crate) struct RegionLight {
     checked: Option<ChunkPos>,
 }
 
-impl Default for RegionLight {
-    fn default() -> Self {
+impl RegionLight {
+    /// No chunk known yet, in a level with a sky or without one.
+    pub(crate) fn new(sky: bool) -> Self {
         Self {
-            engine: Lighting::new(true),
+            sky,
+            engine: Lighting::new(sky),
             known: BTreeSet::new(),
             waiting: BTreeSet::new(),
             kept: std::collections::BTreeMap::new(),
@@ -107,11 +119,34 @@ impl Default for RegionLight {
     }
 }
 
+/// A level with a sky, as the overworld has; the region makes its light again for its
+/// own level at its first step ([`Region::light_for_level`]).
+impl Default for RegionLight {
+    fn default() -> Self {
+        Self::new(true)
+    }
+}
+
 /// A region's clone has no light of its own yet: it lights what it has at its next step,
-/// as a restored region does, which gives the same light (a function of the blocks).
+/// as a restored region does, which gives the same light (a function of the blocks). It
+/// keeps whether its level has a sky, which is the level's and not the light's.
 impl Clone for RegionLight {
     fn clone(&self) -> Self {
-        Self::default()
+        Self::new(self.sky)
+    }
+}
+
+/// Levels kept from elsewhere without their sky's: a level without a sky has none to
+/// adopt, and the arrays would only be carried until the adoption ignored them.
+fn without_sky(kept: &mut Kept) {
+    let sections = kept.light.sky.len();
+    if kept
+        .light
+        .sky
+        .iter()
+        .any(|section| *section != SectionLight::Absent)
+    {
+        kept.light.sky = vec![SectionLight::Absent; sections];
     }
 }
 
@@ -144,10 +179,35 @@ impl Chunks for Present<'_> {
 
 impl Region {
     /// The light some of the chunks loaded in this tick kept from a merge or a split.
+    /// Where the region's level has no sky, their sky's levels are dropped as they come.
     pub(crate) fn take_kept_light(&mut self, kept: &[(ChunkPos, Kept)]) {
+        self.light_for_level();
+        let sky = self.light.sky;
         for (at, levels) in kept {
-            self.light.kept.insert(*at, levels.clone());
+            let mut levels = levels.clone();
+            if !sky {
+                without_sky(&mut levels);
+            }
+            self.light.kept.insert(*at, levels);
         }
+    }
+
+    /// The light made again for the region's level where it was made for another: a
+    /// region is made (`Region::restore`, and through it a split's part, a merge's
+    /// survivor and a restore) with the light of a level with a sky, and a Nether
+    /// region's has none. Whatever the engine knew is lit again, as after a restore; the
+    /// levels kept for waiting chunks stay, without their sky's where there is none.
+    fn light_for_level(&mut self) {
+        let sky = self.config.dimension.rules().has_skylight;
+        if self.light.sky == sky {
+            return;
+        }
+        let mut kept = std::mem::take(&mut self.light.kept);
+        if !sky {
+            kept.values_mut().for_each(without_sky);
+        }
+        self.light = RegionLight::new(sky);
+        self.light.kept = kept;
     }
 
     /// The light step (the plan's 4.1 and 4.5): the chunks that went are taken out, those
@@ -177,6 +237,7 @@ impl Region {
     /// The engine told what went, what was replaced whole and what changed; what came
     /// waits.
     fn sync_light(&mut self) {
+        self.light_for_level();
         let present: BTreeSet<ChunkPos> = self
             .chunks
             .keys()
@@ -335,7 +396,7 @@ impl Region {
             let expected = clustine_light::light(&Around {
                 centre,
                 neighbours,
-                sky: true,
+                sky: self.light.sky,
             });
             let made = engine.light(at, &present);
             assert!(
@@ -419,3 +480,7 @@ fn around(at: ChunkPos) -> [ChunkPos; 8] {
         ChunkPos::new(at.x + 1, at.z + 1),
     ]
 }
+
+#[cfg(test)]
+#[path = "light_dimension_tests.rs"]
+pub(super) mod dimension_tests;
