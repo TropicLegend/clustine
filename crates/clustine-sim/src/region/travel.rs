@@ -235,3 +235,7 @@ impl Region {
 #[cfg(test)]
 #[path = "travel_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "travel_spec_tests.rs"]
+mod spec_tests;
