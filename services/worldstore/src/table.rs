@@ -361,6 +361,8 @@ impl Table {
     /// log that is not in it.
     pub(crate) fn file(&self, from: u64) -> TableFile {
         TableFile {
+            // The store's, which it puts in as it writes the file (`portal_index.rs`).
+            portals: Vec::new(),
             from,
             next_region: self.next_region,
             home_chunk: self.home_chunk,

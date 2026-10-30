@@ -17,7 +17,10 @@ pub use clustine_sim::{
     CountsReport, PoiSeen, PublishedCounts, PublishedVillage, RaidSeen, SPAWN_CATEGORIES,
     SpawnCounts, VillageReport,
 };
-pub use clustine_sim::{FaceChange, FaceSeq, Place, PlayerFace, StayNote, Unit, WorldPlayer};
+pub use clustine_sim::{
+    FaceChange, FaceSeq, Place, PlayerFace, PortalAnswer, PortalQuery, QueryId, StayNote, Unit,
+    WorldPlayer,
+};
 pub use messages::{
     Assignment, ChunkBox, CopyUse, Coupling, Crowds, Decline, EdgeMessage, EdgeToWorker,
     FromCoordinator, Lends, Off, Parts, PlayersOf, Presence, REDSTONE_REPORTED, RegionHello,

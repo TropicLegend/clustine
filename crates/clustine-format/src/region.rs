@@ -96,7 +96,7 @@
 //! All integers are big-endian. All five are written whole under a temporary name and
 //! renamed, so a reader never sees half of one; the checksum is for damage.
 
-use clustine_world::{ChunkArea, ChunkPos, Dimension, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkArea, ChunkPos, Dimension, EntityId, EntityIds};
 
 use crate::bytes::Input;
 use crate::log::{LoggedPlace, LoggedUnit, put_place, take_place};
@@ -245,6 +245,10 @@ pub struct TableFile {
     /// The wandering trader spawner's chance and the firing that left it, once one did
     /// (`docs/groundwork/n10-plan.md`, decision 12).
     pub trader: Option<(u64, i32)>,
+    /// The portal index as of the table: every `nether_portal` block of every
+    /// dimension, ascending (`docs/groundwork/p-plan.md`, decision 8 and section 3.3),
+    /// so that the log's compaction does not lose it.
+    pub portals: Vec<(Dimension, BlockPos)>,
 }
 
 /// A region as the table file has it.
@@ -303,6 +307,13 @@ impl TableFile {
                 out.extend_from_slice(&chance.to_be_bytes());
             }
         }
+        out.extend_from_slice(&(self.portals.len() as u32).to_be_bytes());
+        for (dimension, position) in &self.portals {
+            put_dimension(&mut out, *dimension);
+            for coordinate in [position.x, position.y, position.z] {
+                out.extend_from_slice(&coordinate.to_be_bytes());
+            }
+        }
         seal(out)
     }
 
@@ -355,8 +366,17 @@ impl TableFile {
             1 => Some((input.u64()?, input.i32()?)),
             _ => return Err(FormatError::Corrupt("trader chance")),
         };
+        let count = input.u32()? as usize;
+        // Thirteen bytes each: no forged count reserves more than the file holds.
+        let mut portals = Vec::with_capacity(count.min(input.0.len() / 13));
+        for _ in 0..count {
+            let dimension = take_dimension(&mut input)?;
+            let position = BlockPos::new(input.i32()?, input.i32()?, input.i32()?);
+            portals.push((dimension, position));
+        }
         input.finish()?;
         Ok(Self {
+            portals,
             from,
             next_region,
             home_chunk,
@@ -816,6 +836,7 @@ mod tests {
 
     fn table() -> TableFile {
         TableFile {
+            portals: vec![(Dimension::Nether, BlockPos::new(1, -2, 3))],
             from: 7,
             next_region: 4,
             home_chunk: ChunkPos::new(0, -1),
@@ -1077,6 +1098,23 @@ mod tests {
             0,
             0,
             50, // the chance
+            0,
+            0,
+            0,
+            1, // one portal block,
+            1, // in the Nether,
+            0,
+            0,
+            0,
+            1, // at x 1,
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFE, // y -2
+            0,
+            0,
+            0,
+            3, // and z 3
         ];
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -1084,6 +1122,7 @@ mod tests {
 
         // A world with nothing in it.
         let empty = TableFile {
+            portals: Vec::new(),
             from: 0,
             next_region: 0,
             home_chunk: ChunkPos::new(0, 0),
@@ -1098,7 +1137,7 @@ mod tests {
         };
         assert_eq!(
             empty.encode().len(),
-            2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 16 + 1 + 4
+            2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 16 + 1 + 4 + 4
         );
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
@@ -1484,7 +1523,8 @@ mod tests {
         let short = resealed(bytes.clone(), |body| body.truncate(body.len() - 8));
         assert_eq!(TableFile::decode(&short), Err(FormatError::Truncated));
         let flag = resealed(bytes.clone(), |body| {
-            let at = body.len() - 13;
+            // Behind the flag: its firing and chance, and the portal block.
+            let at = body.len() - 13 - 17;
             body[at] = 2;
         });
         assert_eq!(
@@ -1492,10 +1532,10 @@ mod tests {
             Err(FormatError::Corrupt("trader chance"))
         );
         // More of anything than the file holds, which must not be reserved either: of
-        // absorbed regions, whose count is before the two pairs, the clock and the
-        // trader's chance, and of areas.
+        // absorbed regions, whose count is before the two pairs, the clock, the
+        // trader's chance and the portal block, and of areas.
         let forged = resealed(bytes.clone(), |body| {
-            let count = body.len() - 49;
+            let count = body.len() - 49 - 17;
             body[count..count + 4].fill(0xFF);
         });
         assert_eq!(TableFile::decode(&forged), Err(FormatError::Truncated));
@@ -1590,7 +1630,7 @@ mod tests {
             ),
             absorbed: Vec<(u32, u32)>,
         ) {
-            let table = TableFile {
+            let table = TableFile { portals: Vec::new(),
                 from,
                 next_region,
                 home_chunk: ChunkPos::new(home.0, home.1),

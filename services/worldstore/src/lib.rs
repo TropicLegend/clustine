@@ -38,6 +38,7 @@ mod lanes;
 mod lends;
 mod local;
 mod players;
+mod portal_index;
 mod spawn_counts;
 mod table;
 mod tally;
@@ -90,6 +91,8 @@ mod regions;
 mod replayed_claims;
 #[cfg(test)]
 mod replayed_marks_and_seams;
+#[cfg(test)]
+mod replayed_portals;
 #[cfg(test)]
 mod replayed_ticks;
 #[cfg(test)]

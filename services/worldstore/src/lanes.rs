@@ -77,6 +77,7 @@ use crate::effects::{self, Filed, Kept, Uses, sequence};
 use crate::faces::{self, Faces, Held};
 use crate::lends::{self, Lend, Lends};
 use crate::players::{self, Players, Taken, Undo};
+use crate::portal_index::{PortalIndex, blocks_of};
 use crate::table::{Division, Table};
 use crate::{Message, Opened, Peer, Session, StoreError};
 
@@ -130,6 +131,9 @@ pub(crate) struct Lanes {
     spawn: BlockPos,
     /// The world's number ([`Restored::world`]).
     world: u64,
+    /// Where the `nether_portal` blocks of each dimension are, kept from every commit
+    /// and with the table file (`portal_index.rs`).
+    portals: PortalIndex,
     /// The regions' counts of their mobs, in memory only (`spawn_counts.rs`).
     counts: crate::spawn_counts::Counts,
     /// The regions' points of interest and the margins they were published, in memory
@@ -487,12 +491,15 @@ impl Lanes {
             .unwrap_or(0);
 
         let table_path = regions_directory.join("table");
+        // The portal index as of the table, which the commits after it bring up to date.
+        let mut portals = PortalIndex::default();
         let mut stored = match disk.read(&table_path)? {
             Some(bytes) => {
                 let file = TableFile::decode(&bytes).map_err(|error| StoreError::Damaged {
                     path: table_path.clone(),
                     error,
                 })?;
+                portals = PortalIndex::of(file.portals.iter().copied());
                 Some(Table::read(file)?)
             }
             None => None,
@@ -563,6 +570,7 @@ impl Lanes {
                     LogRecord::Commit {
                         region,
                         tick,
+                        changes,
                         stays,
                         effects,
                         taken,
@@ -574,6 +582,16 @@ impl Lanes {
                         let of = Some((region, tick));
                         let at = sequence(segment, offset as u64);
                         let dimension = dimension_in(stored.as_ref(), region);
+                        // Every commit the table file does not stand for, whether or not
+                        // it is still part of its region's history: a portal found that
+                        // a lost tick made is not there when its chunk is read, and the
+                        // destination looks (`portal_index.rs`).
+                        // The table file is behind it, as for a record of the table.
+                        if stored.as_ref().is_none_or(|table| segment >= table.from)
+                            && portals.apply(dimension, &blocks_of(&changes))
+                        {
+                            table_last = Some(segment);
+                        }
                         let sent = arrivals.len();
                         for (index, (chunk, entity, due)) in arrivals.into_iter().enumerate() {
                             let id = EffectId {
@@ -847,6 +865,7 @@ impl Lanes {
         let tabled = stored.is_some();
         let used = stored.as_ref().map_or(0, |table| table.next_region);
         let mut lanes = Self {
+            portals,
             counts: Default::default(),
             village: Default::default(),
             disk,
@@ -1215,7 +1234,9 @@ impl Lanes {
     /// in it, and makes it durable.
     fn write_table(&mut self, from: u64) -> Result<(), StoreError> {
         let path = self.regions_directory().join("table");
-        replace(self.disk.as_ref(), &path, &self.table.file(from).encode())?;
+        let mut file = self.table.file(from);
+        file.portals = self.portals.all().collect();
+        replace(self.disk.as_ref(), &path, &file.encode())?;
         self.disk.sync_directory(&self.regions_directory())?;
         self.table.from = from;
         Ok(())
@@ -1362,14 +1383,23 @@ impl Lanes {
                 self.village.report(region, number, dimension, report);
                 return;
             }
-            // The portal index is P3's (`docs/groundwork/p-plan.md`, section 15.4); no
-            // region asks before P9, and one that did would wait for its answer.
+            // Answered with the group, behind the commits asked before it, once they are
+            // durable (`docs/groundwork/p-plan.md`, section 15.5).
             StoreRequest::Portals { queries } => {
-                warn!(
-                    region = %session.region,
-                    queries = queries.len(),
-                    "a region asked the portal index, which this store does not keep yet"
-                );
+                let dimension = self
+                    .table
+                    .dimension(session.region)
+                    .unwrap_or(Dimension::Overworld);
+                let answers = queries
+                    .into_iter()
+                    .map(|query| clustine_rpc::PortalAnswer {
+                        id: query.id,
+                        portals: self
+                            .portals
+                            .in_square(dimension, query.centre, query.radius),
+                    })
+                    .collect();
+                self.answer_in_group(session.region, StoreReply::Portals { answers });
                 return;
             }
             // Written to the log and kept with the table: the world's, published with
@@ -1646,6 +1676,7 @@ impl Lanes {
                 // The notes are in the commit's own record, so that the two are on
                 // disk together or not at all.
                 let notes: Vec<LoggedStay> = stays.iter().map(players::logged).collect();
+                let portal_blocks = blocks_of(&changes);
                 let record = LogRecord::Commit {
                     region: region.0,
                     tick,
@@ -1678,6 +1709,13 @@ impl Lanes {
                 let mut calls_off: Vec<(RegionId, LevelChunk)> = Vec::new();
                 match self.log.append(&record) {
                     Ok((segment, offset)) => {
+                        // As soon as the commit is in the log: a question asked behind
+                        // it is answered with the group, once it is durable.
+                        // The table file is behind it now, as after a record of the table:
+                        // it is written before the segment is let go.
+                        if self.portals.apply(dimension, &portal_blocks) {
+                            self.table_last = Some(segment);
+                        }
                         let at = sequence(segment, offset);
                         for (index, (effect, due, user)) in effects.into_iter().enumerate() {
                             let id = EffectId {
