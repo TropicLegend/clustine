@@ -522,8 +522,10 @@ impl Region {
 
     /// `PointedDripstoneBlock.getFluidAboveStalactite`: where above the block that the
     /// stalactite at `pos` hangs from its fluid comes from, what stands there and the
-    /// fluid. Mud gives water where water does not evaporate, which is everywhere in
-    /// the overworld.
+    /// fluid. Mud gives water where water does not evaporate; where it does (the
+    /// Nether) it gives the fluid of the mud itself, which is none, so that mud there
+    /// never dries to clay (d PointedDripstoneBlock.txt 519-545,
+    /// `lambda$getFluidAboveStalactite$0`).
     fn fluid_above_stalactite(
         &self,
         pos: BlockPos,
@@ -542,7 +544,7 @@ impl Region {
         )?;
         let source = relative(root, Face::Up);
         let there = self.block_or_void(source);
-        let fluid = if is_block(there, blocks::MUD) {
+        let fluid = if is_block(there, blocks::MUD) && !self.water_evaporates() {
             fluid::WATER
         } else {
             FluidState::of(there).fluid
@@ -761,7 +763,7 @@ fn covered(area: [f64; 4], near: FaceShape, far: FaceShape, skip: usize) -> bool
 #[cfg(test)]
 mod tests {
     use clustine_data::DIMENSION_TYPES;
-    use clustine_world::{Biome, Chunk, ChunkPos, EntityIds, Vec3};
+    use clustine_world::{Biome, Chunk, ChunkPos, Dimension, EntityIds, Vec3};
 
     use super::*;
     use crate::api::Inventory;
@@ -782,13 +784,21 @@ mod tests {
     /// A region with the 3×3 chunks around the origin loaded, empty but for a stone
     /// floor at y = -61, so that the chunk at the origin ticks.
     fn region() -> Region {
+        region_in(Dimension::Overworld)
+    }
+
+    /// The same in `dimension`, with its own height, the floor three blocks over its
+    /// bottom.
+    fn region_in(dimension: Dimension) -> Region {
+        let lowest_y = dimension.rules().min_y;
+        let floor = lowest_y + 3;
         let config = RegionConfig {
             homes: Vec::new(),
-            dimension: Default::default(),
-            spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
+            dimension,
+            spawn: Some(Vec3::new(0.5, f64::from(floor + 1), 0.5)),
             starting_inventory: Inventory::default(),
             return_after: 0,
-            lowest_y: -64,
+            lowest_y,
             seed: 0,
             game_seed: 0,
             sea_level: 63,
@@ -799,16 +809,16 @@ mod tests {
         };
         let ids = EntityIds::block(0).expect("the first block of ids");
         let mut region = Region::new(config, ids, Holdings::default());
-        let overworld = DIMENSION_TYPES
+        let kind = DIMENSION_TYPES
             .iter()
-            .find(|dimension| dimension.name == "minecraft:overworld")
-            .expect("the overworld");
+            .find(|kind| kind.name == dimension.type_name())
+            .expect("the dimension's type");
         for x in -1..=1 {
             for z in -1..=1 {
-                let mut chunk = Chunk::empty(overworld, Biome(0));
+                let mut chunk = Chunk::empty(kind, Biome(0));
                 for bx in 0..16 {
                     for bz in 0..16 {
-                        chunk.set(bx, -61, bz, blocks::STONE);
+                        chunk.set(bx, floor, bz, blocks::STONE);
                     }
                 }
                 region.chunks.insert(ChunkPos::new(x, z), chunk);
@@ -1212,6 +1222,55 @@ mod tests {
         let mut region = stalactite_under(blocks::MUD);
         until_changed_at(&mut region, MIDDLE, MIDDLE.offset(0, 2, 0), 0, 500).expect("it dries");
         assert_eq!(get(&region, MIDDLE.offset(0, 2, 0)), blocks::CLAY);
+    }
+
+    /// A stalactite tip hanging at y = 40 in `dimension` from dripstone, with `above`
+    /// above that: the tip, and the region.
+    fn stalactite_in(dimension: Dimension, above: BlockState) -> (Region, BlockPos) {
+        let mut region = region_in(dimension);
+        let tip = at(8, 40, 8);
+        put(&mut region, tip.offset(0, 2, 0), above);
+        put(&mut region, tip.offset(0, 1, 0), blocks::DRIPSTONE_BLOCK);
+        put(
+            &mut region,
+            tip,
+            state("minecraft:pointed_dripstone[vertical_direction=down,thickness=tip]"),
+        );
+        (region, tip)
+    }
+
+    #[test]
+    fn mud_above_a_stalactite_dries_to_clay_where_water_does_not_evaporate() {
+        for dimension in [Dimension::Overworld, Dimension::End] {
+            let (mut region, tip) = stalactite_in(dimension, blocks::MUD);
+            let mud = tip.offset(0, 2, 0);
+            until_changed_at(&mut region, tip, mud, 0, 500).expect("it dries");
+            assert_eq!(get(&region, mud), blocks::CLAY, "{dimension:?}");
+        }
+    }
+
+    #[test]
+    fn mud_above_a_stalactite_never_dries_to_clay_in_the_nether() {
+        let (mut region, tip) = stalactite_in(Dimension::Nether, blocks::MUD);
+        let mud = tip.offset(0, 2, 0);
+        // The overworld's streams that dry it within 500 do nothing here.
+        assert_eq!(until_changed_at(&mut region, tip, mud, 0, 2_000), None);
+        assert_eq!(get(&region, mud), blocks::MUD);
+    }
+
+    #[test]
+    fn water_above_a_stalactite_still_grows_it_in_the_nether() {
+        // Only mud asks whether water evaporates: a source of water above drips and
+        // grows dripstone in every dimension.
+        for dimension in Dimension::ALL {
+            let (mut region, tip) = stalactite_in(dimension, blocks::WATER);
+            let below = tip.offset(0, -1, 0);
+            until_changed_at(&mut region, tip, below, 0, 5_000).expect("it grows");
+            assert!(
+                is_block(get(&region, below), blocks::POINTED_DRIPSTONE),
+                "{dimension:?}"
+            );
+        }
     }
 
     #[test]

@@ -69,6 +69,7 @@ mod granted;
 mod hanging;
 pub(crate) mod hives;
 mod hoppers;
+mod ice;
 mod infested;
 mod instruments;
 mod items;

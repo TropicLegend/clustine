@@ -26,8 +26,6 @@
 //!   out, a glass bottle filled from water gives a potion with no contents, and every
 //!   potion dispensed is taken for water (a water bottle makes mud);
 //! - a command block minecart, which Clustine does not have, is dropped;
-//! - water does not evaporate where it is dispensed, as Clustine has no dimension where
-//!   it does;
 //! - a water bottle's five splashes over the dispenser are drawn and not sent, as the
 //!   repo sends no particles;
 //! - a shulker box is not placed into a player's box, and is into any other entity's,
@@ -61,6 +59,7 @@ use clustine_world::{
 use super::super::Region;
 use super::super::entities::insecure_uuid;
 use super::super::items::Memory;
+use super::super::random_ticks::Random;
 use super::super::updates::{RegionView, UPDATE_ALL, UPDATE_LIMIT, fluid_block};
 use super::{
     DISPENSED, Dispense, FAILED, WAX_ON, empty_sound, is_shulker_box_item, level_event, y_rot,
@@ -69,6 +68,18 @@ use crate::api::TickOutput;
 use crate::api::{ItemStack, PlayerEvent, RegionEvent, SOUND_SOURCE_BLOCKS, SOUND_SOURCE_PLAYERS};
 use crate::living::{MAX_AIR, slots};
 use crate::physics::aabb::Aabb;
+
+/// Where a full bucket's emptying went (`emptyContents`' answer, with the evaporation
+/// told apart, which posts no `fluid_place`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Poured {
+    /// It did not go: the dispenser drops the bucket instead.
+    Nowhere,
+    /// The fluid (or powder snow) went into the block.
+    Placed,
+    /// Its water evaporated at the block, which keeps what it was.
+    Evaporated,
+}
 
 /// What a dispenser does with an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,12 +305,18 @@ impl Region {
                 left
             }
             Behaviour::FullBucket(item) => {
-                let left = if self.empty_contents(item, dispense.front(), output) {
-                    self.post(Vibration::FLUID_PLACE, dispense.front());
+                let front = dispense.front();
+                let poured = self.empty_contents(item, front, &mut dispense.random, output);
+                let left = if poured == Poured::Nowhere {
+                    self.default_dispense(dispense, output)
+                } else {
+                    // `playEmptySound`'s `fluid_place`, which water that evaporated
+                    // never reaches.
+                    if poured == Poured::Placed {
+                        self.post(Vibration::FLUID_PLACE, front);
+                    }
                     let bucket = ItemStack::new(items::BUCKET, 1);
                     self.consume_with_remainder(dispense, bucket, output)
-                } else {
-                    self.default_dispense(dispense, output)
                 };
                 self.click_and_smoke(dispense, DISPENSED, output);
                 left
@@ -681,23 +698,31 @@ impl Region {
     /// of `item` into `pos`: water or lava where the block is air, gives way to it or (for
     /// water) takes it in; a block that gives way and is no liquid is broken with its
     /// drops first; water into a block that takes it in waterlogs it. A source of the same
-    /// fluid there already takes it too. Powder snow goes only into air. Whether it went.
-    fn empty_contents(&mut self, item: i32, pos: BlockPos, output: &mut TickOutput) -> bool {
+    /// fluid there already takes it too. Powder snow goes only into air. Water that would
+    /// go in evaporates where the level's `water_evaporates` holds, its two floats for the
+    /// fizz's pitch drawn from `random`, the level's stream of the dispense. Where it went.
+    fn empty_contents(
+        &mut self,
+        item: i32,
+        pos: BlockPos,
+        random: &mut Random,
+        output: &mut TickOutput,
+    ) -> Poured {
         let Some(state) = self.own_block(pos) else {
-            return false;
+            return Poured::Nowhere;
         };
         let props = state.props();
         if item == items::POWDER_SNOW_BUCKET {
             if !props.is_air() {
-                return false;
+                return Poured::Nowhere;
             }
             self.set_block(pos, blocks::POWDER_SNOW, output);
             Region::block_sound(pos, sounds::ITEM_BUCKET_EMPTY_POWDER_SNOW, 1.0, 1.0, output);
-            return true;
+            return Poured::Placed;
         }
         // The sulfur cube's bucket holds no fluid (its `content` is empty).
         if item == items::SULFUR_CUBE_BUCKET {
-            return false;
+            return Poured::Nowhere;
         }
         let (liquid, fluid) = if item == items::LAVA_BUCKET {
             (blocks::LAVA, clustine_blocks::fluid::LAVA)
@@ -714,12 +739,19 @@ impl Region {
         let can_place =
             replaceable || (container && clustine_blocks::fluid::can_place_liquid(state, fluid));
         if !(props.is_air() || can_place) {
-            return false;
+            return Poured::Nowhere;
+        }
+        // n7 BucketItem.txt 184-320: where water evaporates it fizzes away at `pos`,
+        // asked before a block that takes water is (so nothing is waterlogged), with no
+        // empty sound; the dispense counts it as emptied, and the bucket comes back.
+        if water && self.water_evaporates() {
+            self.evaporate_water(pos, None, random, output);
+            return Poured::Evaporated;
         }
         if container && water {
             self.place_liquid(pos, state, FluidState::source(Kind::Water, false), output);
             Region::block_sound(pos, empty_sound(item), 1.0, 1.0, output);
-            return true;
+            return Poured::Placed;
         }
         if replaceable && !props.is_liquid() {
             self.destroy_block(pos, true, UPDATE_LIMIT, output);
@@ -727,9 +759,9 @@ impl Region {
         let was_source = FluidState::of(state).is_source();
         if self.set_block_updated(pos, liquid, UPDATE_ALL, UPDATE_LIMIT, output) || was_source {
             Region::block_sound(pos, empty_sound(item), 1.0, 1.0, output);
-            return true;
+            return Poured::Placed;
         }
-        false
+        Poured::Nowhere
     }
 
     /// `BucketPickup.pickupBlock(null, level, pos, state)` of the block at `pos`: a source

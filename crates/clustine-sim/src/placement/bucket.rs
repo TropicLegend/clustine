@@ -101,8 +101,53 @@ fn empty_bucket(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<UsedItem> {
 }
 
 /// A water or lava bucket empties into the block before the one it is aimed at, or
-/// into that block itself if it can hold water. In creative mode it stays full.
+/// into that block itself if it can hold water. In creative mode it stays full. Where
+/// its water evaporates it changes nothing here: see [`evaporated`].
 fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> Option<UsedItem> {
+    let Emptied::Changes(changes) = pour(item_use, blocks, fluid)?.1 else {
+        return None;
+    };
+    (!changes.is_empty()).then_some(UsedItem {
+        changes,
+        slot: None,
+    })
+}
+
+/// Where the water of the bucket in hand evaporates instead of going in, as
+/// `BucketItem.emptyContents` lets it where the level's `water_evaporates` holds (n7
+/// BucketItem.txt 184-320): with the fizz and nothing placed, the creative player's
+/// bucket kept full. For a water bucket or a bucket of a mob that holds water (a mob's
+/// bucket evaporates its water too, and its mob is made all the same, as
+/// `MobBucketItem.checkExtraContent` makes it); `None` for any other item, where water
+/// does not evaporate, or where it goes nowhere.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the region's call of it, which makes the fizz, is a seam outside this file"
+    )
+)]
+pub(crate) fn evaporated(item_use: &ItemUse, blocks: &dyn Blocks) -> Option<BlockPos> {
+    let held = item_use.held?;
+    let holds_water = held == items::WATER_BUCKET
+        || (data::item(held)?.class == ItemClass::MobBucketItem
+            && held != items::SULFUR_CUBE_BUCKET);
+    if !holds_water {
+        return None;
+    }
+    match pour(item_use, blocks, blocks::WATER)?.1 {
+        Emptied::Evaporated(pos) => Some(pos),
+        Emptied::Changes(_) => None,
+    }
+}
+
+/// Where a filled bucket of `fluid` aimed by `item_use` empties: the block
+/// `BucketItem.use` names (the hit block where it takes water, else the one before it),
+/// and what emptying there or, failing that, into the block before the hit comes to.
+/// Vanilla's `emptyContents` tries the first target with the hit, where sneaking asks
+/// for air, and then the block before the hit without it, where sneaking does not
+/// matter. `None` where it goes nowhere or reaches a block the region cannot see.
+fn pour(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> Option<(BlockPos, Emptied)> {
     let hit = ray(item_use, blocks, Fluids::None).ok()??;
     let water = fluid == blocks::WATER;
     let hit_state = blocks.block(hit.pos)?;
@@ -112,53 +157,60 @@ fn filled_bucket(item_use: &ItemUse, blocks: &dyn Blocks, fluid: BlockState) -> 
     } else {
         beyond
     };
-    // Vanilla's `emptyContents` tries the first target with the hit, where sneaking
-    // asks for air, and then the block before the hit without it, where sneaking does
-    // not matter.
-    let changes = match empty_into(first, true, item_use.sneaking, blocks, fluid)? {
-        Some(changes) => changes,
-        None => empty_into(beyond, false, item_use.sneaking, blocks, fluid)??,
+    let (sneaking, evaporates) = (item_use.sneaking, item_use.water_evaporates);
+    let emptied = match empty_into(first, true, sneaking, blocks, fluid, evaporates)? {
+        Some(emptied) => emptied,
+        None => empty_into(beyond, false, sneaking, blocks, fluid, evaporates)??,
     };
-    (!changes.is_empty()).then_some(UsedItem {
-        changes,
-        slot: None,
-    })
+    Some((first, emptied))
 }
 
 /// A bucket of a mob (`MobBucketItem`, which aims as a water bucket does): the block
 /// the water goes into, which its mob is made at, and the changes, none where water is
-/// there already; `None` where the water goes nowhere.
+/// there already or where it evaporates; `None` where the water goes nowhere.
 pub(crate) fn mob_bucket(
     item_use: &ItemUse,
     blocks: &dyn Blocks,
 ) -> Option<(BlockPos, Vec<(BlockPos, BlockState)>)> {
-    let hit = ray(item_use, blocks, Fluids::None).ok()??;
-    let hit_state = blocks.block(hit.pos)?;
-    let beyond = hit.face.relative(hit.pos);
     // `BucketItem.use`'s position, which `checkExtraContent` makes the mob at even where
-    // the water went into the block before the hit instead.
-    let first = if hit_state.property("waterlogged").is_some() {
-        hit.pos
-    } else {
-        beyond
-    };
-    let changes = match empty_into(first, true, item_use.sneaking, blocks, blocks::WATER)? {
-        Some(changes) => changes,
-        None => empty_into(beyond, false, item_use.sneaking, blocks, blocks::WATER)??,
+    // the water went into the block before the hit instead, or evaporated.
+    let (first, emptied) = pour(item_use, blocks, blocks::WATER)?;
+    let changes = match emptied {
+        Emptied::Changes(changes) => changes,
+        Emptied::Evaporated(_) => Vec::new(),
     };
     Some((first, changes))
 }
 
-/// What emptying a bucket of `fluid` into `pos` changes: `Some` of the changes when it
-/// goes in (possibly none, where the fluid is there already), `Some(None)` when it does
-/// not, and `None` when `pos` is in a chunk the region cannot see.
+/// What emptying a bucket into a block that takes it comes to.
+enum Emptied {
+    /// The blocks that change, none where the fluid is there already.
+    Changes(Vec<(BlockPos, BlockState)>),
+    /// The water evaporated at the block, which keeps what it was.
+    Evaporated(
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "read by `evaporated`, whose caller is a seam")
+        )]
+        BlockPos,
+    ),
+}
+
+/// What emptying a bucket of `fluid` into `pos` comes to: `Some` of it when it goes in
+/// (possibly no change, where the fluid is there already), `Some(None)` when it does
+/// not, and `None` when `pos` is in a chunk the region cannot see. Water that goes in
+/// where `evaporates` holds evaporates before a block that takes water is asked to take
+/// it, as `emptyContents` asks the level before `LiquidBlockContainer.placeLiquid` (n7
+/// BucketItem.txt 184-201 against 321-363): a block that could be waterlogged in the
+/// Nether is left as it is.
 fn empty_into(
     pos: BlockPos,
     with_hit: bool,
     sneaking: bool,
     blocks: &dyn Blocks,
     fluid: BlockState,
-) -> Option<Option<Vec<(BlockPos, BlockState)>>> {
+    evaporates: bool,
+) -> Option<Option<Emptied>> {
     let state = blocks.block(pos)?;
     let water = fluid == blocks::WATER;
     let props = state.props();
@@ -170,14 +222,17 @@ fn empty_into(
     if !goes_in {
         return Some(None);
     }
+    if water && evaporates {
+        return Some(Some(Emptied::Evaporated(pos)));
+    }
     if container {
         if data::flag(state, "waterlogged") {
-            return Some(Some(Vec::new()));
+            return Some(Some(Emptied::Changes(Vec::new())));
         }
-        return Some(Some(vec![(
+        return Some(Some(Emptied::Changes(vec![(
             pos,
             data::set_flag(state, "waterlogged", true),
-        )]));
+        )])));
     }
     let same_source = props.fluid().is_some_and(|held| held.source)
         && if water {
@@ -186,9 +241,9 @@ fn empty_into(
             data::has_lava(state)
         };
     if same_source {
-        return Some(Some(Vec::new()));
+        return Some(Some(Emptied::Changes(Vec::new())));
     }
-    Some(Some(vec![(pos, fluid)]))
+    Some(Some(Emptied::Changes(vec![(pos, fluid)])))
 }
 
 /// A lily pad or frogspawn goes onto the block above what the ray hits, through
@@ -384,4 +439,186 @@ fn view_vector(yaw: f32, pitch: f32) -> [f64; 3] {
         f64::from(-pitch_sin),
         f64::from(yaw_cos * pitch_cos),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use clustine_world::Dimension;
+
+    use super::*;
+    use crate::api::Inventory;
+
+    /// A world of air with the blocks set in it, loaded for x below 16.
+    #[derive(Default)]
+    struct World(BTreeMap<BlockPos, BlockState>);
+
+    impl World {
+        fn with(mut self, pos: BlockPos, state: BlockState) -> Self {
+            self.0.insert(pos, state);
+            self
+        }
+
+        /// A floor of stone at y = 63.
+        fn floor() -> Self {
+            let mut world = Self::default();
+            for x in -4..8 {
+                for z in -4..8 {
+                    world.0.insert(BlockPos::new(x, 63, z), blocks::STONE);
+                }
+            }
+            world
+        }
+    }
+
+    impl Blocks for World {
+        fn block(&self, at: BlockPos) -> Option<BlockState> {
+            if at.x >= 16 || !(-64..320).contains(&at.y) {
+                return None;
+            }
+            Some(*self.0.get(&at).unwrap_or(&blocks::AIR))
+        }
+    }
+
+    /// The use of `held` by a player standing on the floor and looking down ahead, in
+    /// `dimension`.
+    fn used_in(dimension: Dimension, held: i32) -> ItemUse {
+        ItemUse {
+            held: Some(held),
+            feet: Vec3::new(0.5, 64.0, 0.5),
+            yaw: 0.0,
+            pitch: 60.0,
+            sneaking: false,
+            inventory: Inventory::default(),
+            water_evaporates: dimension.rules().water_evaporates,
+        }
+    }
+
+    /// Where a water bucket's water goes from `used_in` on the bare floor: above the
+    /// stone the player looks at.
+    fn target() -> BlockPos {
+        let used = use_item(
+            &used_in(Dimension::Overworld, items::WATER_BUCKET),
+            &World::floor(),
+            &[],
+        )
+        .expect("water goes onto the floor");
+        used.changes[0].0
+    }
+
+    #[test]
+    fn a_water_bucket_places_water_where_water_does_not_evaporate_and_fizzes_in_the_nether() {
+        let world = World::floor();
+        let pos = target();
+        for dimension in Dimension::ALL {
+            let item_use = used_in(dimension, items::WATER_BUCKET);
+            let used = use_item(&item_use, &world, &[]);
+            if dimension == Dimension::Nether {
+                assert_eq!(used, None, "nothing is placed");
+                assert_eq!(evaporated(&item_use, &world), Some(pos));
+            } else {
+                let used = used.expect("water is placed");
+                assert_eq!(used.changes, vec![(pos, blocks::WATER)], "{dimension:?}");
+                assert_eq!(used.slot, None, "the creative player's bucket stays full");
+                assert_eq!(evaporated(&item_use, &world), None, "{dimension:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn water_evaporates_before_a_block_that_takes_it_is_waterlogged() {
+        let pos = target();
+        let below = BlockPos::new(pos.x, pos.y - 1, pos.z);
+        let slab = BlockState::parse("minecraft:oak_slab[type=bottom]").expect("a slab");
+        let world = World::floor().with(below, slab);
+        for dimension in Dimension::ALL {
+            let item_use = used_in(dimension, items::WATER_BUCKET);
+            if dimension == Dimension::Nether {
+                assert_eq!(use_item(&item_use, &world, &[]), None);
+                assert_eq!(evaporated(&item_use, &world), Some(below));
+            } else {
+                let used = use_item(&item_use, &world, &[]).expect("the slab takes water");
+                assert_eq!(
+                    used.changes,
+                    vec![(below, data::set_flag(slab, "waterlogged", true))],
+                    "{dimension:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn water_evaporates_even_into_a_block_already_full_of_it() {
+        // `emptyContents` asks the level before it looks at what is there.
+        let pos = target();
+        let world = World::floor().with(pos, blocks::WATER);
+        let nether = used_in(Dimension::Nether, items::WATER_BUCKET);
+        assert_eq!(evaporated(&nether, &world), Some(pos));
+        for dimension in [Dimension::Overworld, Dimension::End] {
+            let item_use = used_in(dimension, items::WATER_BUCKET);
+            assert_eq!(use_item(&item_use, &world, &[]), None, "no change to make");
+            assert_eq!(evaporated(&item_use, &world), None);
+        }
+    }
+
+    #[test]
+    fn lava_is_poured_in_every_dimension() {
+        let world = World::floor();
+        let pos = target();
+        for dimension in Dimension::ALL {
+            let item_use = used_in(dimension, items::LAVA_BUCKET);
+            let used = use_item(&item_use, &world, &[]).expect("lava is placed");
+            assert_eq!(used.changes, vec![(pos, blocks::LAVA)], "{dimension:?}");
+            assert_eq!(evaporated(&item_use, &world), None);
+        }
+    }
+
+    #[test]
+    fn a_mob_bucket_s_water_evaporates_in_the_nether_and_its_mob_is_still_made_there() {
+        let world = World::floor();
+        let pos = target();
+        for dimension in Dimension::ALL {
+            let item_use = used_in(dimension, items::COD_BUCKET);
+            let (at, changes) = mob_bucket(&item_use, &world).expect("the bucket is emptied");
+            assert_eq!(at, pos, "{dimension:?}");
+            if dimension == Dimension::Nether {
+                assert_eq!(changes, vec![]);
+                assert_eq!(evaporated(&item_use, &world), Some(pos));
+            } else {
+                assert_eq!(changes, vec![(pos, blocks::WATER)], "{dimension:?}");
+                assert_eq!(evaporated(&item_use, &world), None);
+            }
+        }
+    }
+
+    #[test]
+    fn only_buckets_of_water_evaporate() {
+        let world = World::floor();
+        let nether = |held| used_in(Dimension::Nether, held);
+        for held in [
+            items::LAVA_BUCKET,
+            items::BUCKET,
+            items::POWDER_SNOW_BUCKET,
+            items::SULFUR_CUBE_BUCKET,
+            items::LILY_PAD,
+        ] {
+            assert_eq!(evaporated(&nether(held), &world), None, "{held}");
+        }
+        for held in [
+            items::WATER_BUCKET,
+            items::AXOLOTL_BUCKET,
+            items::TADPOLE_BUCKET,
+        ] {
+            assert!(evaporated(&nether(held), &world).is_some(), "{held}");
+        }
+    }
+
+    #[test]
+    fn a_water_bucket_aimed_at_nothing_evaporates_nowhere() {
+        let mut item_use = used_in(Dimension::Nether, items::WATER_BUCKET);
+        item_use.pitch = -90.0;
+        assert_eq!(evaporated(&item_use, &World::floor()), None);
+        assert_eq!(use_item(&item_use, &World::floor(), &[]), None);
+    }
 }

@@ -404,6 +404,9 @@ impl Region {
         let context = super::vibrations::Context::of(source, Some(state));
         self.vibrate_at(super::vibrations::Vibration::BLOCK_DESTROY, pos, context);
         self.set_block(pos, fluid_block(state), output);
+        // `Block.playerDestroy`, which the game calls only where the break makes drops:
+        // never for a creative player, which every player is (`ice.rs`).
+        self.ice_broken_by_player(pos, state, false, output);
     }
 
     /// `DoublePlantBlock.preventDropFromBottomPart`: the lower half of what is broken at
