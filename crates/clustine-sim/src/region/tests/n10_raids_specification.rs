@@ -791,6 +791,7 @@ fn victory_at_omen_three_gives_hero_of_the_village_two_to_a_hero_here_and_one_an
     let mut region = village();
     let elsewhere = PlayerId(uuid::Uuid::from_u128(0xE15E));
     region.faces.world = Some(vec![WorldPlayer {
+        dimension: Default::default(),
         player: elsewhere,
         entity: EntityId(0x0E15E),
         position: [500.5, -60.0, 0.5],
@@ -1596,6 +1597,7 @@ fn a_ravager_stopped_by_leaves_on_its_way_to_its_target_breaks_through_them() {
 fn world_of_player_one(region: &mut Region) {
     let entity = region.players[&player(1)].entity_id;
     region.faces.world = Some(vec![WorldPlayer {
+        dimension: Default::default(),
         player: player(1),
         entity,
         position: [0.5, -60.0, 0.5],

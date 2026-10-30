@@ -1285,6 +1285,7 @@ mod tests {
     /// What edges are told about a region that the worker `name` runs.
     fn route(assignment: Assignment, name: &str) -> RegionRoute {
         RegionRoute {
+            dimension: Default::default(),
             region: assignment.region,
             epoch: assignment.epoch,
             address: address_of(name),
@@ -2571,6 +2572,7 @@ mod tests {
     /// opened with, of which the first is the home region.
     fn listing(regions: &[(u32, u64)], absorbed: &[(u32, u32)], next: u32) -> RegionList {
         let info = |(region, epoch): &(u32, u64)| RegionInfo {
+            dimension: Default::default(),
             region: RegionId(*region),
             epoch: *epoch,
             bounds: None,
@@ -2578,6 +2580,7 @@ mod tests {
         };
         let pair = |(gone, into): &(u32, u32)| (RegionId(*gone), RegionId(*into));
         RegionList {
+            homes: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: RegionId(regions[0].0),
             regions: regions.iter().map(info).collect(),
@@ -3008,6 +3011,7 @@ mod tests {
              region 0 at epoch 12 with entity ids 1..4294967296"
         );
         let table = RoutingTable {
+            homes: Default::default(),
             home: None,
             spawn: None,
             absorbed: Vec::new(),

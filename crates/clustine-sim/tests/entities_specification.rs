@@ -40,7 +40,8 @@ fn config() -> RegionConfig {
     let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(HELD);
     RegionConfig {
-        spawn: FEET,
+        dimension: Default::default(),
+        spawn: Some(FEET),
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
         lowest_y: -64,
@@ -576,6 +577,7 @@ fn a_region_with_no_key_left_throws_nothing_and_puts_the_slot_back() {
 /// An item at rest, as the store keeps it: at the middle of the origin's chunk.
 fn lying(key: EntityId, hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: u16::try_from(entity_types::ITEM).expect("fits"),
         uuid: Uuid::from_u128(u128::from(key.0) | (1 << 100)),

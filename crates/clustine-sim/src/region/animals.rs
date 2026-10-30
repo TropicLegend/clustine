@@ -439,6 +439,7 @@ impl Region {
             };
         }
         Some(Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,

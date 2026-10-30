@@ -847,6 +847,7 @@ fn a_hopper_pulls_from_the_chest_above_it() {
 #[test]
 fn a_hopper_takes_an_item_lying_in_its_bowl() {
     let item = clustine_world::Entity {
+        portal: Default::default(),
         key: key(1),
         kind: u16::try_from(clustine_data::entity_types::ITEM).expect("fits"),
         uuid: uuid::Uuid::from_u128(7_001),

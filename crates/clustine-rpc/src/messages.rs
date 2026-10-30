@@ -7,8 +7,9 @@ use clustine_sim::api::{
 };
 use clustine_world::poi::Claim;
 use clustine_world::{
-    Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, EdgeId, Effect, EffectId, Entity,
-    EntityChange, EntityId, EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick, Seam,
+    Arrival, BlockPos, Change, Chunk, ChunkArea, ChunkPos, Dimension, EdgeId, Effect, EffectId,
+    Entity, EntityChange, EntityId, EntityIds, FiledEffect, KeptEvent, PlayerId, ScheduledTick,
+    Seam,
 };
 use serde::{Deserialize, Serialize};
 
@@ -393,8 +394,12 @@ pub enum StoreRequest {
         /// commits have them `Gone`.
         arrivals: Vec<(ChunkPos, Entity)>,
         /// The arrivals the tick took, ascending; each is filed and held by the region,
-        /// or the commit is refused.
+        /// or the commit is refused. The travellers it took are among them.
         arrivals_taken: Vec<EffectId>,
+        /// The entities other than players the tick's portals sent on, numbered after
+        /// its arrivals, each filed for its chunk in its dimension
+        /// (`docs/groundwork/p-plan.md`, section 15.4).
+        travellers: Vec<clustine_world::Traveller>,
         /// The world's clock after the tick, kept apart from the region's state so that
         /// the store keeps the world's: the later of every region's it has taken
         /// (`docs/groundwork/n7-plan.md`, section 8.4).
@@ -417,6 +422,13 @@ pub enum StoreRequest {
     /// (`docs/groundwork/n10-plan.md`, decision 12 and section 9.6): written to the log
     /// and kept with the table, the latest firing's standing. Not answered.
     TraderChance { firing: u64, chance: i32 },
+    /// Questions of the tick of the commit sent just before to the portal index, in
+    /// the region's dimension (`docs/groundwork/p-plan.md`, section 15.4): answered on
+    /// the stream with [`StoreReply::Portals`], once every commit made durable before
+    /// is in the index.
+    Portals {
+        queries: Vec<clustine_sim::PortalQuery>,
+    },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
     /// Grant the region these chunks. Each is granted unless another region holds it,
@@ -663,6 +675,16 @@ pub enum StoreReply {
     Arrivals {
         arrivals: Vec<Arrival>,
     },
+    /// On the stream: entities other than players a portal sent into chunks the region
+    /// holds, by their numbers, which they share with the arrivals
+    /// (`docs/groundwork/p-plan.md`, section 15.4).
+    Travellers {
+        travellers: Vec<(EffectId, clustine_world::Traveller)>,
+    },
+    /// On the stream: the answers to [`StoreRequest::Portals`].
+    Portals {
+        answers: Vec<clustine_sim::PortalAnswer>,
+    },
     /// On the stream: the committed form of `position`, which the region copies, as of
     /// the group of `sequence`; `last_change` is the sequence of the chunk's last change
     /// up to it. No chunk where the stored chunk cannot be read: the copy counts as
@@ -873,8 +895,11 @@ pub struct Restored {
     pub issued: EntityId,
     /// The world's spawn: the block a player's feet are in where they enter the world
     /// for the first time, as the world keeps it from when it was made. Its chunk is
-    /// the home chunk, which the region that holds it never gives back.
-    pub spawn: BlockPos,
+    /// the home chunk, which the region that holds it never gives back. The overworld's
+    /// regions' alone (`docs/groundwork/p-plan.md`, section 15.2).
+    pub spawn: Option<BlockPos>,
+    /// The dimension whose chunks the region holds.
+    pub dimension: Dimension,
     /// What the world's random ticks are drawn from: a number of the world's own, the
     /// same at every opening, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
@@ -957,7 +982,9 @@ pub enum StoreWelcome {
         /// [`Restored::issued`].
         issued: EntityId,
         /// [`Restored::spawn`].
-        spawn: BlockPos,
+        spawn: Option<BlockPos>,
+        /// [`Restored::dimension`].
+        dimension: Dimension,
         /// [`Restored::world`].
         world: u64,
         /// [`Restored::seed`].
@@ -1053,8 +1080,11 @@ pub fn in_use_from_bytes(bytes: &[u8]) -> Option<Vec<ChunkPos>> {
 /// ADR-0010, section 6, and ADR-0011, section 5.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionList {
-    /// The region that holds the chunk players enter the world in.
+    /// The region that holds the chunk players enter the world in: the overworld's home.
     pub home: RegionId,
+    /// Each dimension's home region, made with the world and never absorbed
+    /// (`docs/groundwork/p-plan.md`, decision 2), in the order of the dimensions.
+    pub homes: Vec<(Dimension, RegionId)>,
     /// The world's spawn ([`Restored::spawn`]), whose chunk is the one players enter
     /// the world in.
     pub spawn: BlockPos,
@@ -1073,6 +1103,8 @@ pub struct RegionList {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionInfo {
     pub region: RegionId,
+    /// The dimension whose chunks the region holds, for its whole life.
+    pub dimension: Dimension,
     /// The highest epoch the region was opened with; 0 if it never was.
     pub epoch: u64,
     /// The smallest box of chunks that has every chunk the region was granted, if it

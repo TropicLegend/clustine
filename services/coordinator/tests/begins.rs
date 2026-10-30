@@ -127,11 +127,13 @@ fn held(id: u32, epoch: u64) -> Assignment {
 /// as the id of the next region. No region is pinned to an area.
 fn list(living: &[(u32, u64)], absorbed: &[(u32, u32)], next: u32) -> RegionList {
     RegionList {
+        homes: Vec::new(),
         spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: region(0),
         regions: living
             .iter()
             .map(|(id, epoch)| RegionInfo {
+                dimension: Default::default(),
                 region: region(*id),
                 epoch: *epoch,
                 bounds: None,

@@ -175,6 +175,7 @@ impl Region {
                 pos: head,
                 yaw: crate::mobs::ai::maths::wrap_degrees(yaw),
                 pitch: pitch.clamp(-90.0, 90.0),
+                dimension: self.config.dimension,
             };
             let moved = player.respawn.is_none_or(|old| old.pos != head);
             if let Some(player) = self.players.get_mut(&id) {

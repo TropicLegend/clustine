@@ -216,6 +216,7 @@ fn logged_bytes(request: &StoreRequest) -> usize {
         "no player and no border"
     );
     LogRecord::Commit {
+        travellers: Vec::new(),
         region: 0,
         tick: *tick,
         epoch: 1,

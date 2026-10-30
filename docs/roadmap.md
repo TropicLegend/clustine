@@ -537,6 +537,17 @@ index kept from every commit or makes one; old worlds are refused; **the Nether 
 (portals and travel, its land, its rules and its mobs), **then the End** (its portal,
 platform, gateways, mobs and the dragon's first fight, and the void that kills).
 
+**Where P stands** (2026-10-30): **P1** is done, the dimensions as one type in
+`clustine-world` with the game's rules for each from datagen, the End lit with its sky.
+**P2**, the contracts every later step builds on, is built as `p-plan.md` section 15
+says, after an independent review of its design and a second reading (15.4, 15.5):
+a region's dimension where a region is named, a dimension where something crosses one
+(a player's transfer and place, a respawn, a traveller), travellers and the portal
+index's questions on the wire and in the log, an entity's portal clock, `Placed` in the
+outbox, the dragon fight's record; `FORMAT_VERSION` 19, `STATE_FORMAT` 25, so worlds made
+before are refused. Next: P3 (the store) beside P5 and P6 (the land), by subagents in
+worktrees of their own, the homes and the portal index the lead's.
+
 **N10's cost, measured** (2026-10-29, `bin/clustine/tests/n10_measured.rs`, release, two
 workers on two regions pinned at block x = 64, a village of 30 villagers, a bell and 30
 beds built across the line; a subagent's build ran beside some of them, niced, and the

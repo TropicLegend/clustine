@@ -282,7 +282,7 @@ impl Region {
         let mut random = self
             .block_streams
             .remove(&block)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, block, self.tick, SPILLS));
+            .unwrap_or_else(|| Random::of_block(self.seed(), block, self.tick, SPILLS));
         self.drop_contents_with(position, contents, size, &mut random, output);
         self.block_streams.insert(block, random);
     }

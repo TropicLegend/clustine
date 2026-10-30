@@ -522,7 +522,7 @@ impl Region {
         let wave = raid.groups_spawned + 1;
         raid.total_health = Float(0.0);
         let bonus = should_spawn_bonus_group(raid);
-        let mut level = Random::of_block(self.config.seed, pos, self.clock.game_time, RAID_LEVEL);
+        let mut level = Random::of_block(self.seed(), pos, self.clock.game_time, RAID_LEVEL);
         let mut led = false;
         for (raider, defaults) in RAIDER_TYPES {
             let index = if bonus { raid.group_count } else { wave };

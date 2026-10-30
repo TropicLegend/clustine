@@ -45,6 +45,7 @@ impl ToyMaker {
             unreachable!("a float is not below 0");
         }
         Some(Entity {
+            portal: Default::default(),
             key: making.key()?,
             kind,
             uuid: Default::default(),

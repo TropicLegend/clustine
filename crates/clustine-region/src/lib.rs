@@ -4,14 +4,17 @@
 //! a region holds: regions follow where their players are, and merge and split as they
 //! move (`docs/adr/0017-the-end-of-the-stripes.md`).
 
-use clustine_world::BlockPos;
 pub use clustine_world::RegionId;
+use clustine_world::{BlockPos, Dimension};
 use serde::{Deserialize, Serialize};
 
 /// Where an edge reaches the worker that runs a region.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegionRoute {
     pub region: RegionId,
+    /// The dimension whose chunks the region holds, for its whole life: what every
+    /// `ChunkPos` on the region's link is of (`docs/groundwork/p-plan.md`, section 15.1).
+    pub dimension: Dimension,
     /// Counts the owners the region has had. An owner with a lower epoch than another
     /// has been replaced.
     pub epoch: u64,
@@ -30,6 +33,9 @@ pub struct RoutingTable {
     /// it when the coordinator last read it
     /// (`docs/adr/0014-merging-and-splitting.md`, section 5.5). `None` until it has.
     pub home: Option<RegionId>,
+    /// Each dimension's home region, as the same reading of the store's list said; empty
+    /// until the list was read.
+    pub homes: Vec<(Dimension, RegionId)>,
     /// The world's spawn, as the same reading of the store's list said it: where an
     /// edge tells its clients the world's spawn is. `None` until the list was read.
     pub spawn: Option<BlockPos>,
@@ -62,11 +68,13 @@ mod tests {
     #[test]
     fn a_routing_table_is_complete_when_no_region_waits_for_an_owner() {
         let route = |region| RegionRoute {
+            dimension: Default::default(),
             region: RegionId(region),
             epoch: 1,
             address: format!("worker-{region}:25601"),
         };
         let mut table = RoutingTable {
+            homes: Default::default(),
             home: None,
             spawn: None,
             absorbed: Vec::new(),

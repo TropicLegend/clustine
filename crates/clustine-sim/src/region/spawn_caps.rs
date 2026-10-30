@@ -132,7 +132,7 @@ impl Region {
         if !state.any_open() {
             return;
         }
-        let seed = self.config.seed;
+        let seed = self.seed();
         let tick = self.tick;
         let mut chunks: Vec<(u64, ChunkPos)> = self
             .chunks

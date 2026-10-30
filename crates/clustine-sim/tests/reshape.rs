@@ -106,7 +106,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
@@ -367,6 +368,11 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -396,6 +402,11 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -424,6 +435,10 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
 /// A player as a region has them right after taking in `transfer` through `edge`.
 fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
     PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -2396,6 +2411,10 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -2453,6 +2472,7 @@ fn a_state(
     edges: &[(EdgeId, EdgeState)],
 ) -> RegionState {
     RegionState {
+        dragon_fight: None,
         tick,
         entity_ids,
         next_entity_id,
@@ -4964,7 +4984,8 @@ const START: u64 = 10;
 /// What the regions of a run are made with.
 fn run_config() -> RegionConfig {
     RegionConfig {
-        spawn: ENTRANCE,
+        dimension: Default::default(),
+        spawn: Some(ENTRANCE),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
@@ -4981,6 +5002,10 @@ fn run_config() -> RegionConfig {
 /// Where a player is and what they hold, as the store keeps it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: state.pose,

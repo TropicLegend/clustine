@@ -154,6 +154,7 @@ pub(crate) fn made_mob(
     );
     loaded_from_its_chunk(kind, &mut mob);
     Some(Entity {
+        portal: Default::default(),
         key: EntityId(0),
         kind,
         uuid,
@@ -265,6 +266,7 @@ mod tests {
 
     fn cow() -> Entity {
         Entity {
+            portal: Default::default(),
             key: EntityId(0),
             kind: clustine_data::entity_types::COW as u16,
             uuid: uuid::Uuid::nil(),

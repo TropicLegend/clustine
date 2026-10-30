@@ -2073,7 +2073,7 @@ impl Fanout {
             message @ (WorkerToEdge::Remote(_)
             | WorkerToEdge::RemoteDone { .. }
             | WorkerToEdge::ToPlayer {
-                event: PlayerEvent::Departed(_) | PlayerEvent::Refused,
+                event: PlayerEvent::Departed(_) | PlayerEvent::Refused | PlayerEvent::Placed { .. },
                 ..
             }) => {
                 error!(%from, ?message, "a region said outside its outbox what belongs in it");
@@ -2119,6 +2119,12 @@ impl Fanout {
                 let back = !own || to != from;
                 let to = self.living(to);
                 self.hand_over(player, from, to, transfer, back).await;
+            }
+            // The second half of a change of dimension, P7's
+            // (`docs/groundwork/p-plan.md`, section 4.2). No region places a traveller
+            // before P9.
+            Durable::Placed { player, .. } => {
+                error!(%from, ?player, "a region placed a traveller, which this edge cannot show yet");
             }
             Durable::Refused { player, attempt } => {
                 // A player who has an entity is in the world through another way than
@@ -3227,6 +3233,14 @@ impl Fanout {
         transfer: PlayerTransfer,
         back: bool,
     ) {
+        // Until the edge keys its chunks by dimension (P7), a transfer in another
+        // dimension's coordinates would be taken for the overworld's; only P9's portals
+        // make one (`docs/groundwork/p-plan.md`, section 15.5).
+        debug_assert_eq!(
+            transfer.dimension,
+            clustine_world::Dimension::Overworld,
+            "a transfer of another dimension reached an edge that shows only the overworld"
+        );
         // What the player rides as their old region let them go is their word until
         // their new one says otherwise.
         // A transfer that names nothing says nothing of getting off, which the player's
@@ -7247,6 +7261,11 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -10207,6 +10226,11 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),

@@ -232,6 +232,7 @@ fn the_three_are_built_and_the_allay_alone_is_no_animal() {
         assert!(super::is_built(kind), "{kind}");
     }
     let mut record = clustine_world::Entity {
+        portal: Default::default(),
         key: EntityId(1),
         kind: ALLAY,
         uuid: uuid::Uuid::from_u128(1),
@@ -609,6 +610,7 @@ fn a_sniffer_fed_torchflower_seeds_falls_in_love_and_eats_twice_each_of_a_level_
 #[test]
 fn sniffers_mate_only_while_idle_scenting_or_happy() {
     let record = |kind: u16| clustine_world::Entity {
+        portal: Default::default(),
         key: EntityId(1),
         kind,
         uuid: uuid::Uuid::from_u128(1),

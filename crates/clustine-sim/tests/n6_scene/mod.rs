@@ -59,7 +59,8 @@ pub fn inventory(slots: &[(usize, ItemStack)]) -> Inventory {
 
 pub fn config(inventory: Inventory) -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: inventory,
         return_after: 0,
         lowest_y: -64,
@@ -364,6 +365,10 @@ impl Scene {
                 player: player(n),
                 entity: entering,
                 place: Some(Place {
+                    dimension: Default::default(),
+                    travel: None,
+                    seen_credits: false,
+                    portal_cooldown: 0,
                     respawn: None,
                     experience: Default::default(),
                     pose: Pose {

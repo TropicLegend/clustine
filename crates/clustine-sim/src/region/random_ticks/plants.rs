@@ -635,7 +635,8 @@ mod tests {
     /// there without any update.
     fn region_with(placed: &[(BlockPos, BlockState)]) -> Region {
         let config = RegionConfig {
-            spawn: Vec3::new(0.5, -60.0, 0.5),
+            dimension: Default::default(),
+            spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
             starting_inventory: Inventory::default(),
             return_after: 0,
             lowest_y: -64,

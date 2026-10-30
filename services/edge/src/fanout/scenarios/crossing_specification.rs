@@ -367,6 +367,7 @@ async fn reports_with_fewer_hops_or_as_many_from_another_region_are_passed_over(
                 RegionEvent::EntityTracked(tracked(BEFORE, 0)),
                 RegionEvent::EntitySpawned(item(BEFORE, 0)),
                 RegionEvent::EntityGone {
+                    travelled: false,
                     entity: EntityId(KEY),
                     chunk: HOME,
                     hops: 0,
@@ -649,6 +650,7 @@ async fn a_removed_item_is_not_brought_back_by_the_old_holder_s_late_word() {
         delta(
             3,
             vec![RegionEvent::EntityGone {
+                travelled: false,
                 entity: EntityId(KEY),
                 chunk: HOME,
                 hops: 0,
@@ -664,6 +666,7 @@ async fn a_removed_item_is_not_brought_back_by_the_old_holder_s_late_word() {
         delta(
             4,
             vec![RegionEvent::EntityGone {
+                travelled: false,
                 entity: EntityId(KEY),
                 chunk: EASTERN,
                 hops: 1,

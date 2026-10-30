@@ -39,7 +39,8 @@ fn config() -> RegionConfig {
     let mut starting_hotbar = [const { None }; HOTBAR_SLOTS];
     starting_hotbar[0] = Some(STONE);
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(starting_hotbar),
         return_after: 0,
         lowest_y: -64,
@@ -837,6 +838,11 @@ fn applied_is_noted_for_edges_the_region_knows() {
 fn nothing_through_an_unknown_edge_is_taken_on() {
     let mut region = populated();
     let transfer = PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -1228,7 +1234,7 @@ impl Seen {
                     ..
                 } => self.not_mine += 1,
                 Durable::Ended { .. } => self.ended += 1,
-                Durable::Absorbed { .. } | Durable::SplitOff { .. } => {
+                Durable::Absorbed { .. } | Durable::SplitOff { .. } | Durable::Placed { .. } => {
                     panic!("a region made {entry:?}, which no tick does")
                 }
             }

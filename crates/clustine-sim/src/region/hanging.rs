@@ -299,6 +299,7 @@ fn settled(mut entity: Entity) -> Entity {
 /// data says.
 fn hanging(key: EntityId, kind: i32, uuid: uuid::Uuid, data: EntityData) -> Entity {
     settled(Entity {
+        portal: Default::default(),
         key,
         kind: u16::try_from(kind).expect("entity type ids fit 16 bits"),
         uuid,

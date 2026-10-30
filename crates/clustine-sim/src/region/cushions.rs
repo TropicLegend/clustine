@@ -114,6 +114,7 @@ impl Region {
         };
         let colour = u8::try_from(item - first).expect("sixteen colours");
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: clustine_data::entity_types::CUSHION as u16,
             uuid,

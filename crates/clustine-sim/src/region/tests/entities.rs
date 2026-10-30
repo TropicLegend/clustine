@@ -504,6 +504,7 @@ fn a_throw_from_a_chunk_that_does_not_tick_is_sent_as_an_arrival() {
 /// A resting item of `key` at `position` with `hops` changes of holder behind it.
 fn item_at(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: clustine_data::entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

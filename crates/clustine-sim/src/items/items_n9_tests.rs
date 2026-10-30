@@ -601,7 +601,8 @@ impl World {
             .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
             .collect();
         let config = RegionConfig {
-            spawn: SPAWN,
+            dimension: Default::default(),
+            spawn: Some(SPAWN),
             starting_inventory: Inventory::default(),
             return_after: 0,
             lowest_y: -64,

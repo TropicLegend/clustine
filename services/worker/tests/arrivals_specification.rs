@@ -734,6 +734,7 @@ impl Played {
         let tick = self.next;
         self.next += 1;
         self.handle.request(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick,
             changes: Vec::new(),
             state: Vec::new(),
@@ -787,6 +788,7 @@ impl Played {
 /// it, which nobody may pick up for a long time.
 fn stone(key: EntityId, position: [f64; 3], hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: clustine_data::entity_types::ITEM as u16,
         uuid: Uuid::from_u128(u128::from(key.0) + 99),

@@ -260,6 +260,7 @@ pub(crate) fn structure_entity(world: u64, kind: u16, placed: Placed<'_>) -> Opt
     let mut own = Random::of_generated(world, key);
     let uuid = insecure_uuid(own.next_u64(), own.next_u64());
     Some(Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid,
@@ -542,6 +543,7 @@ fn armour_stand(world: u64, kind: u16, tag: &Tag, placed: Placed<'_>) -> Option<
         .and_then(Tag::number)
         .map_or(MAX_AIR as i16, |air| air as i16);
     Some(Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid,
@@ -620,6 +622,7 @@ fn cushion(world: u64, kind: u16, tag: &Tag, placed: Placed<'_>) -> Option<Entit
     let mut own = Random::of_generated(world, key);
     let uuid = insecure_uuid(own.next_u64(), own.next_u64());
     Some(Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid,

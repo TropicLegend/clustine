@@ -17,7 +17,10 @@ const SEED: i64 = 13579;
 #[test]
 fn the_land_with_features_is_the_same_whichever_chunk_is_asked_first_and_on_any_number_of_threads()
 {
-    let terrain = Arc::new(TerrainGenerator::new(SEED));
+    let terrain = Arc::new(TerrainGenerator::new(
+        SEED,
+        clustine_world::Dimension::Overworld,
+    ));
     let (a, b) = (ChunkPos::new(0, 0), ChunkPos::new(1, -1));
     let made = |threads: usize, first: ChunkPos, second: ChunkPos| {
         let scheduler = Scheduler::new(
@@ -42,11 +45,17 @@ fn the_land_with_features_is_the_same_whichever_chunk_is_asked_first_and_on_any_
 #[test]
 fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     let identity = |stages: &dyn Stages| stages.settings().identity;
-    let with = identity(&FeatureStages::new(Arc::new(TerrainGenerator::new(SEED))));
+    let with = identity(&FeatureStages::new(Arc::new(TerrainGenerator::new(
+        SEED,
+        clustine_world::Dimension::Overworld,
+    ))));
     let without = identity(&FeatureStages::new(Arc::new(
         TerrainGenerator::without_structures(SEED),
     )));
-    let preview = identity(&PreviewStages::new(Arc::new(TerrainGenerator::new(SEED))));
+    let preview = identity(&PreviewStages::new(Arc::new(TerrainGenerator::new(
+        SEED,
+        clustine_world::Dimension::Overworld,
+    ))));
     // Made without the templates' blocks, which a server reads from its operator's
     // jar: a world made so says so.
     // The structures' blocks are placed where they start (S3), and their generation
@@ -70,7 +79,10 @@ fn the_land_with_features_names_the_steps_built_and_whether_structures_start() {
     );
     let library = TemplateLibrary::from_files(Vec::<(String, Vec<u8>)>::new()).unwrap();
     let with_templates = identity(&FeatureStages::with_templates(
-        Arc::new(TerrainGenerator::new(SEED)),
+        Arc::new(TerrainGenerator::new(
+            SEED,
+            clustine_world::Dimension::Overworld,
+        )),
         Arc::new(library),
     ));
     assert_eq!(

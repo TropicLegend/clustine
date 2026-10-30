@@ -63,6 +63,7 @@ impl Actor {
     fn commit(&mut self, tick: u64, stays: Vec<StayNote>) {
         self.sent.insert(tick, stays.clone());
         self.handle.request(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick,
             changes: Vec::new(),
             state: format!("delta {tick}").into_bytes(),

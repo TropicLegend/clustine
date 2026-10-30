@@ -140,6 +140,7 @@ impl Region {
         let drawn = own.draws_since(&start);
         debug_assert!(drawn >= UUID_DRAWS + 4);
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::FIREWORK_ROCKET)
                 .expect("entity type ids fit 16 bits"),

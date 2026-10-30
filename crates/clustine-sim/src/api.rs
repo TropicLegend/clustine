@@ -5,8 +5,9 @@
 
 use clustine_data::{BlockState, Swing};
 use clustine_world::{
-    Arrival, BlockPos, Change, Chunk, ChunkPos, EdgeId, Effect, EffectId, Entity, EntityChange,
-    EntityData, EntityId, FiledEffect, PlayerId, RegionId, Vec3,
+    Arrival, BlockPos, Change, Chunk, ChunkPos, Dimension, EdgeId, Effect, EffectId, Entity,
+    EntityChange, EntityData, EntityId, FiledEffect, PlayerId, PortalState, RegionId, Travel,
+    Traveller, Vec3,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -105,6 +106,16 @@ pub struct Place {
     /// Where their raid omen began, where it has (`docs/groundwork/n10-plan.md`, section
     /// 9.5).
     pub raid_omen_position: Option<BlockPos>,
+    /// The dimension the place is in (`docs/groundwork/p-plan.md`, section 15).
+    pub dimension: Dimension,
+    /// Where they are on their way to, if a portal sent them and no region has placed
+    /// them yet: the place is then the travel's target in its dimension (the same plan,
+    /// sections 15.4 and 15.5), and whoever takes them in places them by the travel.
+    pub travel: Option<Travel>,
+    /// Whether they have seen the credits (`seenCredits`).
+    pub seen_credits: bool,
+    /// Their portal cooldown (`PortalCooldown`), which the game saves with them.
+    pub portal_cooldown: u32,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -122,6 +133,8 @@ pub struct Respawn {
     pub pos: BlockPos,
     pub yaw: f32,
     pub pitch: f32,
+    /// The dimension of the bed (or, later, the anchor).
+    pub dimension: Dimension,
 }
 
 /// What a region says to the world store about a stay, in the commit of a tick. See
@@ -354,6 +367,8 @@ pub enum FaceChange {
 pub struct WorldPlayer {
     pub player: PlayerId,
     pub entity: EntityId,
+    /// The dimension `position` is in.
+    pub dimension: Dimension,
     pub position: [f64; 3],
     pub game_mode: u8,
     /// Their sleep counter (`sleepCounter`, 0 to 100) while they sleep, as the store
@@ -443,6 +458,19 @@ pub struct PlayerTransfer {
     pub effects: Vec<clustine_world::components::EffectInstance>,
     pub time_since_rest: u32,
     pub raid_omen_position: Option<BlockPos>,
+    /// The dimension the transfer is in: its pose and its riding's chunk are of it. For
+    /// a player a portal sent on, the travel's, at its target (`docs/groundwork/p-plan.md`,
+    /// section 15.4).
+    pub dimension: Dimension,
+    /// Where a portal sends them, until a region has placed them.
+    pub travel: Option<Travel>,
+    pub seen_credits: bool,
+    /// Their portal clock and cooldown, which the next region counts on from.
+    pub portal: PortalState,
+    /// The vehicle they go through a portal on, with all its passengers, root first
+    /// (the plan, sections 5.1 and 15.5); none on every other hand-over, where the unit
+    /// crosses as entities do.
+    pub unit: Option<Unit>,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
@@ -1101,6 +1129,18 @@ pub enum Durable {
         entity: EntityId,
         attempt: Option<u64>,
     },
+    /// A player a portal sent on, or a gateway, has been placed by this region, in its
+    /// `dimension` at `pose`: the word on which their edge finishes the change it began
+    /// at their departure (`docs/groundwork/p-plan.md`, sections 4.2 and 15.4). In the
+    /// outbox of the player's edge, after the commit that placed them; passed on to the
+    /// edge as [`PlayerEvent::Placed`].
+    Placed {
+        player: PlayerId,
+        entity: EntityId,
+        dimension: Dimension,
+        pose: Pose,
+        flying: bool,
+    },
 }
 
 /// What a [`Durable::NotMine`] sends on its way again.
@@ -1243,6 +1283,12 @@ pub struct TickInputs {
     /// Chunks the region holds or is about to hold, not loaded, for which an arrival
     /// waits: loaded for it with an arrival ticket (the plan, sections 5 and 6).
     pub arrivals_waiting: Vec<ChunkPos>,
+    /// Entities other than players that a portal sent into the region's land, filed for
+    /// a chunk it holds, in the order of their numbers, which they share with the
+    /// arrivals (`docs/groundwork/p-plan.md`, sections 5.2 and 15.4).
+    pub travellers: Vec<(EffectId, Traveller)>,
+    /// The world store's answers to the region's [`PortalQuery`]s.
+    pub portal_answers: Vec<PortalAnswer>,
     /// The world store's answers to the region's [`StayNote::Entering`] notes, in the
     /// order they came. An answer is taken only for the very stay the region still
     /// holds as entering for the player, and passed over otherwise. Whatever the case,
@@ -1469,6 +1515,14 @@ pub enum PlayerEvent {
     /// The player could not enter the world. A region does not emit this itself: it
     /// makes a [`Durable::Refused`], which a worker passes on as this.
     Refused,
+    /// The player was placed after a portal or a gateway sent them on. A region does
+    /// not emit this itself: it makes a [`Durable::Placed`], which a worker passes on as
+    /// this.
+    Placed {
+        dimension: Dimension,
+        pose: Pose,
+        flying: bool,
+    },
     /// The region changed a slot of the player's inventory of its own accord, as the
     /// game's server does where the client does not foresee it (the swap of the hands),
     /// and the client is to be told what it holds now. `slot` is numbered as
@@ -1707,6 +1761,8 @@ pub enum RegionEvent {
         entity: EntityId,
         chunk: ChunkPos,
         hops: u32,
+        /// It went through a portal: clients are shown a removal, not a death.
+        travelled: bool,
     },
     /// The player entity `collector` picked up `count` of the item `item`, which is in
     /// `chunk` (`TakeItemEntity`); the item's removal, if it went whole, follows.
@@ -2117,6 +2173,46 @@ pub struct TickOutput {
     /// The entities the tick sent across a line, each to the chunk it is in, whole with
     /// the `hops` it had: their chunks' changes have them `Gone`.
     pub arrivals: Vec<(ChunkPos, Entity)>,
-    /// The arrivals the tick took, ascending.
+    /// The arrivals the tick took, ascending, the travellers it took among them.
     pub arrivals_taken: Vec<EffectId>,
+    /// The entities other than players its portals sent on, with their riders, each
+    /// filed for the chunk it is aimed at (`docs/groundwork/p-plan.md`, sections 5.1 and
+    /// 15.4).
+    pub travellers: Vec<Traveller>,
+    /// What the region asks the store's portal index, answered in a later tick's
+    /// [`TickInputs::portal_answers`].
+    pub portal_queries: Vec<PortalQuery>,
+    /// Chunks a traveller waiting to be placed needs loaded, generated or copied: the
+    /// search's square and where it will stand (the plan, section 15.5), which the
+    /// worker keeps as it keeps an arrival's.
+    pub travel_tickets: Vec<ChunkPos>,
+}
+
+/// A question to the store's portal index: the Nether portals within `radius` blocks
+/// of `centre` on x and z, in the region's own dimension (the game's `getInSquare`;
+/// `docs/groundwork/p-plan.md`, sections 0.8 and 15.4). Its answer covers every commit
+/// the store had made durable when it answered, the asking region's own among them.
+/// Answers are not durable: a region asks again after a hello.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortalQuery {
+    pub id: QueryId,
+    pub centre: BlockPos,
+    pub radius: i32,
+}
+
+/// A query's number: the region's tick that asked and its place among the tick's
+/// questions, so that no answer to a question asked before a take-over meets a later
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct QueryId {
+    pub tick: u64,
+    pub index: u32,
+}
+
+/// The store's answer to a [`PortalQuery`]: the positions of the `nether_portal` blocks
+/// it found, in ascending order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortalAnswer {
+    pub id: QueryId,
+    pub portals: Vec<BlockPos>,
 }

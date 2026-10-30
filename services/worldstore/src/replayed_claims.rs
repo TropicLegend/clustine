@@ -36,6 +36,7 @@ fn commit(
     claims: Vec<(ChunkPos, Vec<Claim>)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes
             .iter()

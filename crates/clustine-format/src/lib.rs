@@ -23,6 +23,7 @@ mod raids;
 mod region;
 mod seams;
 mod stacks;
+mod travel;
 
 pub use chunk::{ChunkFile, KIND_CHUNK};
 pub use entities::{EntitiesFile, KIND_ENTITIES};
@@ -60,7 +61,7 @@ pub use region::{
 /// (`docs/groundwork/n10-plan.md`, section 3.2); 18 since a chunk keeps raids and a
 /// commit may carry them, and a player's place holds where their raid omen began after
 /// their time since rest (sections 9.1 and 9.5 of the same plan).
-pub const FORMAT_VERSION: u8 = 18;
+pub const FORMAT_VERSION: u8 = 19;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

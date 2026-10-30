@@ -44,6 +44,7 @@ fn every_wild_land_animal_is_built_and_only_the_bat_is_no_animal() {
         assert!(super::is_built(kind as u16), "{kind}");
     }
     let mut bat = clustine_world::Entity {
+        portal: Default::default(),
         key: EntityId(1),
         kind: entity_types::BAT as u16,
         uuid: uuid::Uuid::from_u128(1),

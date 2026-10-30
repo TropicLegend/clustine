@@ -74,6 +74,7 @@ impl Pond {
         let bounds = Aabb::of_entity(position, info.width, info.height);
         self.entities.push((
             Entity {
+                portal: Default::default(),
                 key,
                 kind,
                 uuid: uuid::Uuid::from_u128(u128::from(key.0)),

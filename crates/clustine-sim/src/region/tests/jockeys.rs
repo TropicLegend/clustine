@@ -30,6 +30,7 @@ fn mob_of(key: u64, kind: i32, feet: [f64; 3], prepare: impl FnOnce(&mut Mob)) -
     mob.body.vitals.air = MAX_AIR;
     prepare(&mut mob);
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key) + 1),

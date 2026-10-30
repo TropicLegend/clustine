@@ -762,6 +762,7 @@ mod tests {
 
     fn item(key: u64, x: f64) -> clustine_world::Entity {
         clustine_world::Entity {
+            portal: Default::default(),
             key: clustine_world::EntityId(key),
             kind: 71,
             uuid: uuid::Uuid::from_u128(u128::from(key)),

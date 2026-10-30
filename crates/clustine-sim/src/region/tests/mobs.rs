@@ -15,6 +15,7 @@ fn cow(position: [f64; 3], on_ground: bool) -> Entity {
     mob.body.vitals.health = 10.0;
     mob.body.vitals.air = MAX_AIR;
     Entity {
+        portal: Default::default(),
         key: COW_KEY,
         kind: clustine_data::entity_types::COW as u16,
         uuid: uuid::Uuid::from_u128(40),

@@ -205,6 +205,7 @@ pub(crate) fn fresh_record(
     mob: &Mob,
 ) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid,

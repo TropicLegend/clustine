@@ -234,6 +234,7 @@ mod tests {
                     day: 13_000,
                 },
                 players: vec![crate::WorldPlayer {
+                    dimension: Default::default(),
                     player: PlayerId(uuid::Uuid::from_u128(7)),
                     entity: EntityId(9),
                     position: [1.5, 64.0, -2.5],
@@ -282,9 +283,11 @@ mod tests {
             round_trip(reply);
         }
         round_trip(RegionList {
+            homes: Vec::new(),
             home: RegionId(0),
             spawn: clustine_world::BlockPos::new(-31, 72, -1_000_000),
             regions: vec![RegionInfo {
+                dimension: Default::default(),
                 region,
                 epoch: 5,
                 bounds: Some(ChunkBox {
@@ -516,6 +519,7 @@ mod tests {
         };
 
         let restored = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
             held: Vec::new(),
             pinned: vec![ChunkArea {
@@ -538,7 +542,7 @@ mod tests {
                 },
             ],
             issued: EntityId(0),
-            spawn: BlockPos::new(-1, 320, 29_999_999),
+            spawn: Some(BlockPos::new(-1, 320, 29_999_999)),
             world: 0,
             seed: Some(i64::MIN),
             in_use: Vec::new(),
@@ -556,11 +560,12 @@ mod tests {
         assert_eq!(restored.tick(), 9);
         let welcomes = [
             StoreWelcome::Accepted {
+                dimension: Default::default(),
                 faces: Vec::new(),
                 entity_ids: restored.entity_ids,
                 pinned: restored.pinned.clone(),
                 issued: EntityId(u64::MAX),
-                spawn: BlockPos::new(0, -60, 0),
+                spawn: Some(BlockPos::new(0, -60, 0)),
                 world: 0,
                 seed: Some(-13579),
                 offset: None,
@@ -587,6 +592,7 @@ mod tests {
             blocking::write(&mut written, welcome).unwrap();
         }
         let request = StoreRequest::Commit {
+            travellers: Vec::new(),
             tick: 9,
             changes: vec![(BlockPos::new(-1, -64, 3), blocks::GLASS).into()],
             state: vec![4, 5],
@@ -673,6 +679,7 @@ mod tests {
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
             held: Vec::new(),
             pinned: Vec::new(),
@@ -680,7 +687,7 @@ mod tests {
             state: None,
             deltas: Vec::new(),
             issued: EntityId(0),
-            spawn: BlockPos::new(-1, 320, 29_999_999),
+            spawn: Some(BlockPos::new(-1, 320, 29_999_999)),
             world: 0,
             seed: None,
             in_use: Vec::new(),
@@ -723,6 +730,10 @@ mod tests {
         inventory.set(39, Some(ItemStack::new(7, 1)));
         inventory.set(OFF_HAND, Some(ItemStack::new(9, 3)));
         let place = Place {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal_cooldown: 0,
             respawn: None,
             experience: Default::default(),
             pose: Pose {
@@ -740,6 +751,10 @@ mod tests {
             raid_omen_position: None,
         };
         let standing = Place {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal_cooldown: 0,
             respawn: None,
             experience: Default::default(),
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
@@ -753,6 +768,7 @@ mod tests {
         };
 
         round_trip(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick: 9,
             changes: Vec::new(),
             state: vec![4, 5],
@@ -832,11 +848,12 @@ mod tests {
         }
         for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
+                dimension: Default::default(),
                 faces: Vec::new(),
                 entity_ids: EntityIds::block(3).unwrap(),
                 pinned: Vec::new(),
                 issued,
-                spawn: BlockPos::new(-90, 64, 32),
+                spawn: Some(BlockPos::new(-90, 64, 32)),
                 world: 0,
                 seed: None,
                 offset: None,
@@ -851,6 +868,7 @@ mod tests {
                 },
             });
             round_trip(Restored {
+                dimension: Default::default(),
                 faces: Vec::new(),
                 held: Vec::new(),
                 pinned: Vec::new(),
@@ -858,7 +876,7 @@ mod tests {
                 state: None,
                 deltas: Vec::new(),
                 issued,
-                spawn: BlockPos::new(-90, 64, 32),
+                spawn: Some(BlockPos::new(-90, 64, 32)),
                 world: 0,
                 seed: None,
                 in_use: Vec::new(),
@@ -980,6 +998,7 @@ mod tests {
         ];
         let id = |sequence, index| EffectId { sequence, index };
         round_trip(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick: 9,
             changes: Vec::new(),
             state: vec![1],

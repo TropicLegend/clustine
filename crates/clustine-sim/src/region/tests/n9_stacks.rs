@@ -326,6 +326,7 @@ fn lying(region: &mut Region, feet: [f64; 3], stack: ItemStack) -> EntityId {
     let chunk = ChunkPos::containing(feet[0], feet[2]);
     let key = region.take_entity_key(chunk).expect("a key");
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: u16::try_from(entity_types::ITEM).expect("a type"),
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 3),

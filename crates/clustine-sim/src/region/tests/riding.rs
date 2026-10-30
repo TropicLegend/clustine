@@ -30,6 +30,7 @@ fn key(n: u64) -> EntityId {
 /// An entity of the type `kind` at `position`, at rest, with `data`.
 fn entity(n: u64, kind: i32, position: [f64; 3], data: EntityData) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: kind as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

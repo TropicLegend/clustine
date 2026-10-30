@@ -65,6 +65,7 @@ fn cooldown(region: &Region, at: BlockPos) -> i32 {
 /// and so never merges either.
 fn item(n: u64, position: [f64; 3], stack: ItemStack) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

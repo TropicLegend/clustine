@@ -711,6 +711,9 @@ impl Lanes {
                             arrival_steps.push((None, ArrivalStep::Take(id)));
                         }
                     }
+                    // Filed by P3 (`docs/groundwork/p-plan.md`, section 15.4); until then no
+                    // region sends a traveller, and no record of them is written.
+                    LogRecord::TravellersForward { .. } => {}
                     LogRecord::ArrivalsForward { arrivals } => {
                         for Arrival {
                             id,
@@ -1256,6 +1259,16 @@ impl Lanes {
                 self.village.report(session.region, session.number, report);
                 return;
             }
+            // The portal index is P3's (`docs/groundwork/p-plan.md`, section 15.4); no
+            // region asks before P9, and one that did would wait for its answer.
+            StoreRequest::Portals { queries } => {
+                warn!(
+                    region = %session.region,
+                    queries = queries.len(),
+                    "a region asked the portal index, which this store does not keep yet"
+                );
+                return;
+            }
             // Written to the log and kept with the table: the world's, published with
             // the clock (`docs/groundwork/n10-plan.md`, section 9.6).
             StoreRequest::TraderChance { firing, chance } => {
@@ -1287,6 +1300,7 @@ impl Lanes {
                 entity_changes,
                 arrivals,
                 mut arrivals_taken,
+                travellers,
                 clock,
             } => {
                 let region = session.region;
@@ -1505,6 +1519,10 @@ impl Lanes {
                         .map(|(chunk, entity, due, _)| (*chunk, entity.clone(), *due))
                         .collect(),
                     arrivals_taken: arrivals_taken.clone(),
+                    // Kept in the log with the tick that sent them; P3 files them for their
+                    // chunks (`docs/groundwork/p-plan.md`, section 15.4). No region sends
+                    // one before P9.
+                    travellers,
                 }
                 .encode();
                 self.group.regions.insert(region);
@@ -3307,7 +3325,10 @@ impl Lanes {
             held: self.table.grants(region),
             pinned: self.table.pinned(region).to_vec(),
             issued: EntityId(self.players.issued()),
-            spawn: self.spawn,
+            // Every region is the overworld's until the table keeps a region's dimension
+            // (`docs/groundwork/p-plan.md`, section 15.3).
+            spawn: Some(self.spawn),
+            dimension: clustine_world::Dimension::Overworld,
             world: self.world,
             seed: self.seed,
             in_use,

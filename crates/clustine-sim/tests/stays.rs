@@ -99,7 +99,8 @@ fn kept() -> Inventory {
 
 fn config() -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(starting()),
         // Nothing is given back in these tests.
         return_after: 1_000_000,
@@ -144,6 +145,10 @@ fn middle(chunk: ChunkPos) -> Vec3 {
 fn place_in(chunk: ChunkPos) -> Place {
     let ground = middle(chunk);
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose {
@@ -203,6 +208,10 @@ fn stays(output: &TickOutput) -> Vec<StayNote> {
 /// Where a player is and what they hold, as a region's state has it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: state.pose,
@@ -219,6 +228,10 @@ fn place_of(state: &PlayerState) -> Place {
 /// Where a transfer has a player be and hold.
 fn place_from(transfer: &PlayerTransfer) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: transfer.pose,
@@ -322,6 +335,11 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -633,6 +651,10 @@ fn spawned(place: &Place) -> (PlayerId, PlayerEvent) {
 /// Where a player is who enters the world for the first time.
 fn at_spawn() -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose::at(SPAWN),
@@ -735,6 +757,11 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -781,6 +808,11 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -828,6 +860,10 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
     };
     // With what they held, at the spawn point, looking ahead and not flying.
     let back = Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose::at(SPAWN),
@@ -1073,6 +1109,10 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     other.tick = 9;
     other.edges = region.state().edges;
     let theirs = PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -1534,6 +1574,10 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let region = entering();
     let mut state = region.state();
     let earlier = PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -1630,6 +1674,10 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
 #[test]
 fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
     let copy = |hops: u32, edge: EdgeId, position: Vec3| PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -1792,6 +1840,10 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     tick(&mut region, &changes(stays));
     let mut state = region.state();
     let earlier = PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -2031,6 +2083,10 @@ struct Record {
 
 /// One of the store's two answers.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a test's answers, a few at a time, and an entering one carries a whole place"
+)]
 enum Answer {
     Enter(Entered),
     Dead(PlayerId, EntityId, u32),

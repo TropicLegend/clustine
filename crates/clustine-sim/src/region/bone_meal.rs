@@ -122,7 +122,7 @@ impl Region {
         let mut random = self
             .block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, BONE_MEAL));
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, BONE_MEAL));
         let grew = self.grow_crop(pos, &mut random, output);
         self.block_streams.insert(pos, random);
         if !grew {

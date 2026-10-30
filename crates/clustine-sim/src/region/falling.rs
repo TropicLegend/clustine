@@ -193,6 +193,7 @@ impl Region {
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         self.entity_drew(key, 2);
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::FALLING_BLOCK).expect("entity type ids fit 16 bits"),
             uuid,

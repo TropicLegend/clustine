@@ -320,6 +320,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         deltas,
         issued,
         spawn,
+        dimension,
         world,
         seed,
         in_use,
@@ -338,6 +339,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         pinned,
         issued,
         spawn,
+        dimension,
         world,
         seed,
         offset,
@@ -495,7 +497,8 @@ impl Arriving {
         entity_ids: EntityIds,
         pinned: Vec<ChunkArea>,
         issued: EntityId,
-        spawn: BlockPos,
+        spawn: Option<BlockPos>,
+        dimension: clustine_world::Dimension,
         world: u64,
     ) -> Self {
         Self {
@@ -508,6 +511,7 @@ impl Arriving {
                 deltas: Vec::new(),
                 issued,
                 spawn,
+                dimension,
                 world,
                 seed: None,
                 in_use: Vec::new(),
@@ -736,6 +740,7 @@ fn welcomed(
             pinned,
             issued,
             spawn,
+            dimension,
             world,
             seed,
             offset,
@@ -747,7 +752,7 @@ fn welcomed(
             clock,
             faces,
         }) => {
-            let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, world);
+            let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, dimension, world);
             let restored = &mut arriving.restored;
             restored.seed = seed;
             restored.clock = clock;
@@ -1020,8 +1025,9 @@ mod tests {
             refused.err()
         );
         let mut expected = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::SPAWN,
+            spawn: Some(crate::tests::SPAWN),
             held: Vec::new(),
             // The eastern stripe.
             pinned: division().pinned[1..].to_vec(),
@@ -1577,8 +1583,9 @@ mod tests {
             let said: Option<StoreHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
+                dimension: Default::default(),
                 faces: Vec::new(),
-                spawn: crate::tests::SPAWN,
+                spawn: Some(crate::tests::SPAWN),
                 entity_ids: EntityIds::block(0).unwrap(),
                 pinned: Vec::new(),
                 issued: EntityId(0),
@@ -1723,6 +1730,7 @@ mod tests {
         for length in deltas {
             tick += 1;
             owner.request(StoreRequest::Commit {
+                travellers: Vec::new(),
                 tick,
                 changes: Vec::new(),
                 state: bytes(tick, *length),
@@ -1775,8 +1783,14 @@ mod tests {
 
     /// Puts together what [`Parts`] made.
     fn together(entity_ids: EntityIds, parts: Vec<RestoredPart>) -> io::Result<Restored> {
-        let mut arriving =
-            Arriving::new(entity_ids, Vec::new(), EntityId(0), crate::tests::SPAWN, 0);
+        let mut arriving = Arriving::new(
+            entity_ids,
+            Vec::new(),
+            EntityId(0),
+            Some(crate::tests::SPAWN),
+            clustine_world::Dimension::Overworld,
+            0,
+        );
         let mut parts = parts.into_iter();
         loop {
             let part = parts.next().expect("the last part ends them");
@@ -1801,8 +1815,9 @@ mod tests {
     fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::SPAWN,
+            spawn: Some(crate::tests::SPAWN),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids,
@@ -2021,8 +2036,9 @@ mod tests {
             },
         ];
         let expected = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::SPAWN,
+            spawn: Some(crate::tests::SPAWN),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids,
@@ -2235,8 +2251,9 @@ mod tests {
                 assert!(block.index() > given.index(), "{block:?} after {given:?}");
                 given = block;
                 let accepted = StoreWelcome::Accepted {
+                    dimension: Default::default(),
                     faces: Vec::new(),
-                    spawn: crate::tests::SPAWN,
+                    spawn: Some(crate::tests::SPAWN),
                     entity_ids: block,
                     pinned: expected.pinned.clone(),
                     issued: EntityId(0),
@@ -2281,8 +2298,9 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::SPAWN,
+            spawn: Some(crate::tests::SPAWN),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
@@ -2372,8 +2390,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let restored = Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::SPAWN,
+            spawn: Some(crate::tests::SPAWN),
             held: vec![(ChunkPos::new(0, 0), 3)],
             pinned: Vec::new(),
             entity_ids: EntityIds::block(1).unwrap(),

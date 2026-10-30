@@ -111,6 +111,7 @@ fn frame_at(
         invisible: false,
     };
     let mut entity = Entity {
+        portal: Default::default(),
         key: key(n),
         kind: entity_types::ITEM_FRAME as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

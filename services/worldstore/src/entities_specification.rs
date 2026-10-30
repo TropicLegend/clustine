@@ -30,6 +30,7 @@ const A: ChunkPos = ChunkPos::new(0, 0);
 
 fn thrown(key: u64) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: 71,
         uuid: uuid::Uuid::from_u128(u128::from(key) << 8 | 0x5),
@@ -147,6 +148,7 @@ fn after(count: usize) -> Chunk {
 
 fn commit(handle: &StoreHandle, step: &Step) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: step.tick,
         changes: step.blocks.iter().copied().map(Change::from).collect(),
         state: format!("delta {}", step.tick).into_bytes(),

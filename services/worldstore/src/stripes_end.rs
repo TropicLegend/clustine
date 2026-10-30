@@ -99,12 +99,14 @@ fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
     let epoch = |id: usize| epochs.get(id).copied().unwrap_or(0);
     if told.pinned.is_empty() {
         let home = RegionInfo {
+            dimension: Default::default(),
             region: RegionId(0),
             epoch: epoch(0),
             bounds: around(&[told.home]),
             pinned: Vec::new(),
         };
         return RegionList {
+            homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
             spawn: crate::tests::spawn_in(told.home),
             home: RegionId(0),
             regions: vec![home],
@@ -115,12 +117,14 @@ fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
     let home = told.pinned.iter().position(|area| area.contains(told.home));
     let home = home.expect("regions side by side cover the world");
     let region = |(id, area): (usize, &ChunkArea)| RegionInfo {
+        dimension: Default::default(),
         region: RegionId(id as u32),
         epoch: epoch(id),
         bounds: None,
         pinned: vec![*area],
     };
     RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(home as u32))],
         spawn: crate::tests::spawn_in(told.home),
         home: RegionId(home as u32),
         regions: told.pinned.iter().enumerate().map(region).collect(),
@@ -922,12 +926,14 @@ fn world_of_stripes() -> (Arc<MemoryDisk>, Before) {
 fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &str) {
     let (west, east) = (area(None, Some(CUT)), area(Some(CUT), None));
     let info = |region: usize, bounds, pinned| RegionInfo {
+        dimension: Default::default(),
         region: RegionId(region as u32),
         epoch: before.files[region].epoch,
         bounds,
         pinned,
     };
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(1))],
         spawn: crate::tests::spawn_in(from.home),
         home: RegionId(1),
         regions: vec![
@@ -958,8 +964,9 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     };
     let expected = [
         Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::spawn_in(from.home),
+            spawn: Some(crate::tests::spawn_in(from.home)),
             entity_ids: NO_ENTITY_IDS,
             state: state(5, "merged"),
             deltas: deltas(&[6]),
@@ -983,8 +990,9 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::spawn_in(from.home),
+            spawn: Some(crate::tests::spawn_in(from.home)),
             entity_ids: NO_ENTITY_IDS,
             state: state(1, "east"),
             deltas: deltas(&[2]),
@@ -1003,8 +1011,9 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: crate::tests::spawn_in(from.home),
+            spawn: Some(crate::tests::spawn_in(from.home)),
             entity_ids: NO_ENTITY_IDS,
             state: state(2, "part"),
             deltas: deltas(&[3, 4]),
@@ -1899,12 +1908,14 @@ fn a_store_that_is_told_no_division_has_one_region_pinned_to_the_whole_world() {
     let in_memory = Store::memory(generator());
     let in_files = Store::local(directory.path(), generator()).unwrap();
     let whole_world = RegionInfo {
+        dimension: Default::default(),
         region: RegionId(0),
         epoch: 0,
         bounds: None,
         pinned: vec![ChunkArea::EVERYWHERE],
     };
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::SPAWN,
         home: RegionId(0),
         regions: vec![whole_world],
@@ -2034,12 +2045,14 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
     let done = rig.disk.operations();
 
     let info = |region, chunks: &[ChunkPos]| RegionInfo {
+        dimension: Default::default(),
         region: RegionId(region),
         epoch: 0,
         bounds: around(chunks),
         pinned: Vec::new(),
     };
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::spawn_in(HOME),
         home: RegionId(0),
         regions: vec![info(0, &[HOME, stays]), info(1, &goes)],

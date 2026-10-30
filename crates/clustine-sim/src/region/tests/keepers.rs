@@ -43,6 +43,7 @@ fn mob_at(
         supplied(kind, attribute(clustine_data::attributes::MAX_HEALTH)).unwrap() as f32;
     mob.body.vitals.air = crate::mobs::types::of(kind).max_air();
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

@@ -294,7 +294,7 @@ impl Region {
                 }
                 let bottom = min_y + 16 * index as i32;
                 let section = bottom.div_euclid(16);
-                let mut random = Random::of_section(self.config.seed, chunk, section, self.tick);
+                let mut random = Random::of_section(self.seed(), chunk, section, self.tick);
                 for _ in 0..self.config.random_tick_speed {
                     // `Level.getBlockRandomPos`: x, y and z within the section.
                     let drawn = random.next_int(1 << 12);
@@ -336,7 +336,7 @@ impl Region {
     pub(crate) fn next_draw(&mut self) -> Random {
         self.draws += 1;
         Random::of_section(
-            self.config.seed,
+            self.seed(),
             ChunkPos::new(0, 0),
             self.draws as i32,
             self.tick,

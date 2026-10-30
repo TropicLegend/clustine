@@ -56,6 +56,7 @@ const PIG: u32 = 2;
 /// An oak boat standing on the floor at `position`, carrying nobody.
 fn boat(n: u32, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::OAK_BOAT).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),
@@ -210,6 +211,10 @@ fn join_of(n: u128, attempt: u64) -> PlayerChange {
 /// The place a player stands at `at`, holding nothing.
 fn place_at(at: [f64; 3]) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose {
@@ -696,6 +701,11 @@ fn an_arrival_over_a_seated_stay_takes_no_unit_and_keeps_both_notes() {
 /// Player 1, walking, handed over in the stay `entity` at `at`.
 fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),

@@ -44,6 +44,7 @@ fn horse_at(kind: i32, position: [f64; 3], yaw: f32, saddled: bool) -> Entity {
         mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack::new(items::SADDLE, 1));
     }
     Entity {
+        portal: Default::default(),
         key: HORSE_KEY,
         kind,
         uuid: uuid::Uuid::from_u128(40),

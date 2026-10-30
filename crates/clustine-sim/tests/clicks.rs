@@ -59,7 +59,8 @@ fn starting_hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(spawn: Vec3) -> RegionConfig {
     RegionConfig {
-        spawn,
+        dimension: Default::default(),
+        spawn: Some(spawn),
         starting_inventory: Inventory::with_hotbar(starting_hotbar()),
         return_after: 0,
         lowest_y: -64,

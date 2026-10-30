@@ -170,6 +170,7 @@ fn player(key: u64, position: Vec3, held: Option<i32>) -> SeenPlayer {
 /// An item entity of `stack` at `position`, of the key `key`.
 fn item(key: u64, stack: ItemStack, position: Vec3) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key)),

@@ -87,6 +87,7 @@ fn every_kind_of_effect() -> Vec<(Effect, Due)> {
 
 fn commit(effects: Vec<(Effect, Due)>, taken: Vec<EffectId>) -> LogRecord {
     LogRecord::Commit {
+        travellers: Vec::new(),
         region: 3,
         tick: 4_000,
         epoch: 9,
@@ -153,6 +154,7 @@ fn a_commit_without_effects_or_takings_is_of_the_kind_it_always_was() {
         unreachable!()
     };
     let with_marks = LogRecord::Commit {
+        travellers: Vec::new(),
         region,
         tick,
         epoch,

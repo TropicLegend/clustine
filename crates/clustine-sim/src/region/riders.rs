@@ -53,6 +53,7 @@ impl Player {
     fn as_passenger(&self, vehicle: EntityId) -> Entity {
         let position = self.pose.position;
         Entity {
+            portal: Default::default(),
             key: self.entity_id,
             kind: entity_types::PLAYER as u16,
             uuid: uuid::Uuid::nil(),
@@ -536,7 +537,7 @@ impl Region {
             &player.as_passenger(riding.vehicle),
             &PLAYER_POSES,
         );
-        let mut place = player.place(self.tick);
+        let mut place = player.place(self.tick, self.config.dimension);
         place.pose.position = clustine_world::Vec3::new(at[0], at[1], at[2]);
         let mut face = player.face();
         face.position = at;

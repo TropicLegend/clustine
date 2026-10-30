@@ -36,6 +36,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3], mut mob: Mob) -> Entity 
         mob.body.vitals.air = crate::mobs::types::of(kind).max_air();
     }
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),
@@ -668,6 +669,7 @@ fn a_dolphin_fed_a_fish_finds_no_treasure_and_gives_it_up_at_once() {
 
 fn item_at(key: EntityId, stack: ItemStack, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

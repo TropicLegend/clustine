@@ -650,3 +650,211 @@ new defects, chiefly in how a player travels. What changed:
   fight in the End's milestone with its respawn by crystals last, the wither later; the
   dimensions' regions on the same workers, placed by load; the terrain plan's D3
   dropped.
+
+## 15. The contracts as P2 builds them (2026-10-30)
+
+Section 3.2 says what P2 fixes; this is how, read against the code at `7bef868`. One
+change from 3.2 is the lead's, and is argued here before anything is built.
+
+### 15.1 What a link's dimension already says
+
+A region holds chunks of one dimension, from its making to its end, and never absorbs a
+region of another (decision 1, 3.4). So every `ChunkPos` a region sends or is sent on
+its own link is of the region's dimension, and so is every `ChunkPos` of the store's
+records of that region. P2 gives the region's dimension once, where a region is named:
+`RegionInfo`, `Restored`, `RegionConfig`, `RegionRoute`. Whoever reads a region's
+message qualifies its chunks by that.
+
+- **The edge** knows every link's region from its route, and so its dimension. What 3.2
+  put in `Shown`, `HandedOn`, `EntityGone`, `RemoteAction` and `RemoteDone` is that
+  dimension, which the edge has from the link the event came on (R D8, R D9 and R N6
+  are answered by the edge's keys of P7, not by the events). P2 does not add it to them.
+- **The store** knows every region's dimension from its table. Claims, lends, arrivals
+  within a dimension, `Elsewhere`, effects, faces and counts stay `ChunkPos` on the
+  wire, and become `LevelChunk` in the store's maps (P3).
+- **What does cross dimensions** names it: a `PlayerTransfer` (its `dimension`
+  qualifies every chunk in it, its riding's vehicle chunk among them), a `Traveller`
+  (its target is a `LevelChunk`), a `Place` and a `Respawn` (a player's, kept by the
+  store across stays), and a `WorldPlayer` (the store's list of every player).
+
+This keeps the change to the wire where a dimension is crossed, and removes a field that
+could disagree with the link's region.
+
+### 15.2 The types
+
+**`clustine-world`:**
+
+- `Dimension` (P1).
+- `LevelChunk { dimension, position: ChunkPos }`, ordered by dimension and then position:
+  the key of the store's and the edge's chunk maps.
+- `travel`: what crosses with a traveller.
+  - `Travel { to: Dimension, target: Vec3, way: Way }`. `target` is where the game aims
+    before it searches: the scaled and clamped point of a Nether portal (G 2.2, 2), the
+    End's spawn point, a gateway's exit.
+  - `Way`:
+    - `NetherPortal { axis: Option<PortalAxis>, relative: [f64; 3] }`: the source portal's
+      axis and the traveller's place in its rectangle (G 2.2, 6), which the destination
+      places the traveller by;
+    - `EndPortal`, into the End or out of it to the respawn;
+    - `Gateway`, within the End;
+    - `Credits`, the respawn after the credits (5.3).
+  - `PortalAxis { X, Z }`.
+  - `Traveller { travel: Travel, chunk: LevelChunk, entities: Vec<Entity> }`: an entity
+    other than a player, root first with its riders that are not players, filed for the
+    target chunk (5.1, 5.2).
+- `Entity.portal: PortalState { clock: Option<PortalClock>, cooldown: u32 }`, with
+  `PortalClock { kind: PortalKind, entry: BlockPos, time: u32, inside: bool }` and
+  `PortalKind { Nether, End, Gateway }`: the game's `PortalProcessor` and
+  `portalCooldown` (G 2.1).
+- `dragon::DragonFight`: G 6.1's saved fields (`needs_state_scanning`, `dragon_killed`,
+  `previously_killed`, the respawn's stage and time, the dragon's key, the exit
+  portal's place, the gateways, the respawn crystals' keys). It is kept in the End's home
+  region's state (P2 makes the field, P12 fills it).
+
+**`clustine-sim`:**
+
+- `RegionConfig` gains `dimension`; `spawn` becomes `Option<Vec3>`, the overworld's
+  regions' alone. `lowest_y` is the floor. The light needs no field: it is
+  `dimension.rules().has_skylight`.
+- The random ticks' seed mixes in the dimension's number, which is 0 for the overworld,
+  so that the overworld's draws stay as they are (R G4).
+- `Place` gains `dimension`, `travel: Option<Travel>` and `seen_credits`. A stay let go
+  through a portal keeps its travel in its place until a region places it (R N4): the
+  store keeps the place as the `Has` says, and the destination clears the travel.
+- `Respawn` gains `dimension`.
+- `PlayerTransfer` gains `dimension`, `travel: Option<Travel>` and `seen_credits`.
+- `PlayerState` gains `portal: PortalState` and `in_credits`.
+- `PlayerEvent::Placed { dimension, pose, flying }`, from the region that placed a
+  travelling player, after its commit (4.2).
+- `WorldPlayer` gains `dimension`.
+- `PlayerEvent::EntityGone` gains `travelled: bool`: gone through a portal, which
+  clients are shown as a removal, not a death.
+- `TickInputs` gains the filed travellers, `(EffectId, Traveller)`, and `TickOutput`
+  the travellers a tick sends, `Vec<Traveller>`. A traveller taken is named among the
+  arrivals taken: they share the arrivals' numbers.
+- `RegionState` gains `dragon_fight: Option<DragonFight>`.
+
+**`clustine-rpc`:** `RegionInfo.dimension`; `RegionList.homes: Vec<(Dimension,
+RegionId)>` beside `home`, which stays the overworld's; `Restored.dimension` and
+`Restored.spawn: Option<BlockPos>`.
+
+**`clustine-region`:** `RegionRoute.dimension`; `RoutingTable.homes`.
+
+**`clustine-format`:** `LoggedPlace` gains the dimension, the travel and
+`seen_credits`, and its respawn the dimension; an entity's record its portal state; a
+commit its travellers. `FORMAT_VERSION` goes to 19 and `STATE_FORMAT` to 25.
+
+**The generator:** `TerrainGenerator::new(seed, dimension)`; the overworld's callers
+pass `Dimension::Overworld`, and P5 serves the others.
+
+**The edge:** `WireIds::run(key, count)`, the first of `count` consecutive ids for an
+entity of several parts (the dragon's, G 6.4).
+
+### 15.3 What P2 leaves to the steps that use it
+
+- The store's table, with a region's dimension and a home per dimension, and its
+  `LevelChunk` keys: P3, which raises `FORMAT_VERSION` again if the table file changes.
+  Until then the store says every region is the overworld's, and `homes` names the
+  overworld's home alone.
+- The portal index's records and query: P3 (the lead's).
+- What fills each new field: until its step, every region is the overworld's, no
+  place has a travel, no portal clock runs and no fight is kept.
+
+### 15.4 The review of section 15 (2026-10-30), and what P2 builds instead
+
+An independent reviewer read 15.1 to 15.3 against the code at `7bef868`. They found
+15.1's argument sound for every message that stays in one dimension: the edge knows
+the sender of every entry (`fanout.rs:2088`, merged entries by `came_with`); the
+holders named in `RemoteDone`, `NotMine` and `SplitOff` are always of the sender's
+dimension; the store's claims, lends, `Elsewhere`, effects, counts and copies are all
+the writer's. They found it wrong where a portal fires, and gaps that would reopen P2.
+What P2 builds instead:
+
+- **Which coordinates a travelling transfer carries (their D1).** A `PlayerTransfer`
+  with a travel, and its riding's vehicle chunk, are in `travel.to`, at `target`: the
+  destination's coordinates, which the destination replaces when it places the player.
+  The let-go `Has` of the firing tick keeps that place (with its travel), and its
+  **face is the source's pose**, filed by the store in the writer's dimension, as are
+  the region's own departed faces. A removal reported for the player at the source
+  (an edge's reset) uses the source's chunk.
+- **The old dimension's watchers (their D2).** The firing region reports the travelling
+  player's removal itself, to its edges, as the region that showed them last: the
+  destination's `EntityRemoved` reaches only the new dimension's watchers.
+- **`Placed` is durable (their D3):** `Durable::Placed`, in the outbox of the player's
+  edge, as `Departed` is; a worker passes it on as `PlayerEvent::Placed`.
+- **The destination's waiting player (their D4).** A travelling player is taken into the
+  destination's state at once, as every arrival is, and waits there:
+  `PlayerState.travel: Option<Travel>` until they are placed. A `Has` written while
+  they wait (a logout) keeps the travel in its place.
+- **The seed (their D5)** is `Region::seed`, the world's seed XOR the dimension's number
+  times a constant, used for every stream the region draws, so the overworld's are
+  unchanged and the others' apart at every position (built).
+- **`RegionEvent::EntityGone`** (their D6) gains `travelled`; it is for entities other
+  than players, hence D2.
+- **Travellers on the wire and in the log.** `StoreRequest::Commit` and the stream's
+  arrivals carry them; a commit's travellers are numbered after its arrivals (index
+  `arrivals.len() + i`), always due at once. The log writes untaken travellers forward
+  in a record of their own, and a fold at a change of division **never** folds a
+  traveller into a chunk: it writes it forward. The store's `KeptArrival` widens to hold
+  one (P3).
+- **The portal index's query** (3.2 asked for it in P2): `TickOutput.portal_queries`,
+  each `PortalQuery { id, centre: BlockPos, radius }` in the region's own dimension, and
+  `TickInputs.portal_answers`, each `PortalAnswer { id, portals: Vec<BlockPos> }`, with
+  `StoreRequest::Portals` and `StoreReply::Portals` between worker and store. The index's
+  records are P3's, which raises `FORMAT_VERSION` to 20.
+- **A vehicle with a player** goes in the player's transfer: `PlayerTransfer.unit:
+  Option<Unit>`, root first, as a logout takes it (5.1).
+- **The cooldown across hand-overs:** `PlayerTransfer.portal: PortalState`, and the
+  cooldown in `Place` (`portal_cooldown`), which the game saves.
+- **Gateways:** `Way::Gateway { from: BlockPos, exact: bool }`, the source gateway and
+  whether its exit is exact, which the game writes back to the gateway. A gateway's
+  travel stays in the End, so the edge starts its second half on `Placed` whatever
+  the dimension: a placing in the same dimension is a teleport.
+
+### 15.5 The second reading of 15.4
+
+The reviewer found 15.4 answers every finding, and two things more:
+
+- **The vehicle in a transfer (their N1).** The let-go `Has` of the firing tick carries
+  the player's unit, as a logout's does, so that a player who leaves before they are
+  placed keeps their vehicle in their record. The destination that places the player
+  on it says `Took` in the same commit, as the home does when it puts a stay back on
+  its unit, so the vehicle is never put back twice. The old dimension's watchers are
+  told each entity of the unit is gone, `EntityGone { travelled: true }`.
+- **What the wait needs besides the answer (their N2).**
+  - `TickOutput.travel_tickets: Vec<ChunkPos>`, the chunks a waiting traveller needs
+    loaded, generated or copied (the search's square and the arrival's chunks), which
+    the worker keeps as it keeps an arrival's: also the game's portal ticket of 5.2.
+  - An answer covers every commit the store has made durable before it answers, the
+    asking region's own among them. Answers are not durable: a region asks again after
+    a hello, and numbers its queries by its tick and an index, so that no answer to a
+    query from before a take-over meets a later one.
+  - One radius per query, the traveller's (16 into the Nether, 128 out of it).
+- **An edge before P7.** An edge not yet keyed by dimension would take a transfer in
+  another dimension's coordinates for the overworld's. Only P9's firing tick makes
+  one, and P7 comes first; until P7 the edge's hand-over asserts in debug builds that a
+  transfer is the overworld's, so that a P8 test that fires early is caught.
+
+### 15.6 What P2 built (2026-10-30)
+
+As 15.2 to 15.5 say, with these notes:
+
+- **The home chunk.** A region's home chunk is `RegionConfig::home`: the spawn's chunk in
+  the overworld, chunk (0, 0) in the others, which a region that holds it never gives
+  back, so that a Nether or End home keeps it as 3.4 asks. A region without a spawn
+  skips the game's distance to the spawn when it spawns mobs, as the game does outside
+  the spawn's dimension (`NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint` compares
+  the respawn data's dimension).
+- **Placeholders until their step.** The store says every region is the overworld's and
+  names the overworld's home alone (P3); it writes a commit's travellers into the log and
+  passes a `TravellersForward` over on replay (P3 files them); it does not answer a
+  portal query, and logs one (P3). The edge logs a `Durable::Placed` and asserts in
+  debug builds that a transfer is the overworld's (P7). The worker passes travellers and
+  portal answers into the tick, and travellers and queries on to the store; it keeps no
+  chunks for `travel_tickets` yet (P9). The region carries every new field of a player
+  through its state, its places, its transfers and its stays.
+- **`WireIds::run`** is the edge's own, with nothing on any wire: P12 adds it with the
+  dragon, without reopening a contract.
+- **Versions.** `FORMAT_VERSION` is 19 (a place's dimension, travel, credits and
+  cooldown, a respawn's dimension, an entity's portal state, a commit's travellers and
+  their forward record), `STATE_FORMAT` 25.

@@ -110,7 +110,7 @@ impl Region {
         state: &mut SpawnState,
         output: &mut TickOutput,
     ) {
-        let mut draws = Random::of_chunk(self.config.seed, chunk, self.tick, SPAWNING);
+        let mut draws = Random::of_chunk(self.seed(), chunk, self.tick, SPAWNING);
         for category in 0..SPAWN_CATEGORIES {
             if state.open[category] && state.can_spawn_local(category, chunk) {
                 self.spawn_category_for_chunk(category, chunk, state, &mut draws, output);
@@ -244,19 +244,19 @@ impl Region {
         if distance <= TOO_NEAR_SQR {
             return false;
         }
-        let spawn = crate::physics::containing([
-            self.config.spawn.x,
-            self.config.spawn.y,
-            self.config.spawn.z,
-        ]);
-        let centre = [
-            f64::from(spawn.x) + 0.5,
-            f64::from(spawn.y) + 0.5,
-            f64::from(spawn.z) + 0.5,
-        ];
-        let d: [f64; 3] = std::array::from_fn(|axis| centre[axis] - position[axis]);
-        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < TOO_NEAR_SQR {
-            return false;
+        // The game looks at the world's spawn only in the spawn's own dimension
+        // (`isRightDistanceToPlayerAndSpawnPoint`).
+        if let Some(spawn) = self.config.spawn {
+            let spawn = crate::physics::containing([spawn.x, spawn.y, spawn.z]);
+            let centre = [
+                f64::from(spawn.x) + 0.5,
+                f64::from(spawn.y) + 0.5,
+                f64::from(spawn.z) + 0.5,
+            ];
+            let d: [f64; 3] = std::array::from_fn(|axis| centre[axis] - position[axis]);
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < TOO_NEAR_SQR {
+                return false;
+            }
         }
         let there = at.chunk();
         there == chunk || self.ticks_chunk(there)
@@ -369,7 +369,7 @@ impl Region {
         if distance > rules::despawn_distance_sqr(category) {
             // Made of a scratch stream: only its kind of mob is asked.
             let chunk = ChunkPos::containing(position[0], position[2]);
-            let mut scratch = Random::of_chunk(self.config.seed, chunk, self.tick, SCRATCH);
+            let mut scratch = Random::of_chunk(self.seed(), chunk, self.tick, SCRATCH);
             let (_, mob) = crate::mobs::making::construct(kind, &mut scratch, yaw);
             if types::of(kind).remove_when_far_away(kind, &mob, 0, distance) {
                 return false;
@@ -478,6 +478,7 @@ impl Region {
         let made = companions.made;
         self.entity_drew(key, own.draws_since(&own_start));
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,

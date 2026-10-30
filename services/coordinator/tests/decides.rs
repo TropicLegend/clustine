@@ -303,10 +303,12 @@ impl World {
             max_x: boundaries.get(stripe).copied(),
         };
         let list = RegionList {
+            homes: Vec::new(),
             spawn,
             home: region(0),
             regions: (0..regions)
                 .map(|id| RegionInfo {
+                    dimension: Default::default(),
                     region: region(id),
                     epoch: 0,
                     bounds: None,
@@ -886,6 +888,7 @@ impl World {
         let part = self.list.next.0;
         self.crowds.insert(part, goes);
         self.list.regions.push(RegionInfo {
+            dimension: Default::default(),
             region: region(part),
             epoch: as_epoch,
             bounds: None,
@@ -4638,6 +4641,7 @@ fn a_region_that_the_list_adds_is_assigned_and_holds_everything_back_until_it_ha
     // The list has a region that nobody runs: a part whose worker died before it
     // said so. A reading shows it.
     world.list.regions.push(RegionInfo {
+        dimension: Default::default(),
         region: region(4),
         epoch: 500,
         bounds: None,
@@ -4709,6 +4713,7 @@ fn a_region_that_a_reading_showed_during_a_split_and_that_was_not_its_part_is_ad
     assert_eq!(world.step().begun, [split(1, 3, &[&[at(106)]])]);
     // The list has a region 3 that nobody runs, and it is not this split's.
     world.list.regions.push(RegionInfo {
+        dimension: Default::default(),
         region: region(3),
         epoch: 500,
         bounds: None,

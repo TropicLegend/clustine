@@ -88,7 +88,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
@@ -299,6 +300,11 @@ fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> Remot
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -328,6 +334,11 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -483,7 +494,7 @@ impl Model {
     fn new(config: &RegionConfig, holdings: &Holdings) -> Self {
         Self {
             pinned: holdings.pinned.clone(),
-            home: chunk_of(config.spawn),
+            home: config.home(),
             return_after: config.return_after,
             held: holdings.held.iter().map(|chunk| (*chunk, None)).collect(),
             asked: BTreeSet::new(),

@@ -105,7 +105,7 @@ fn home_holds_the_spawn(store: &Store, spawn: BlockPos) -> (RegionList, Restored
     };
     let (handle, restored) = store.open_region(hello).unwrap();
     drop(handle);
-    assert_eq!(restored.spawn, spawn);
+    assert_eq!(restored.spawn, Some(spawn));
     (list, restored)
 }
 
@@ -221,7 +221,7 @@ fn the_spawn_survives_a_newer_generator_that_would_put_it_elsewhere() {
     };
     let store = Store::local_divided(directory.path(), newer(), Pins::whole_world()).unwrap();
     let (_, restored) = home_holds_the_spawn(&store, AWAY);
-    assert_eq!(restored.spawn, AWAY);
+    assert_eq!(restored.spawn, Some(AWAY));
     // A chunk of the newer version is stored, which raises the version `meta` names.
     let list = store.regions().unwrap();
     let (handle, _) = store
@@ -378,7 +378,7 @@ fn every_region_is_told_the_spawn_when_opened_in_memory_and_over_tcp() {
         assert_eq!(regions.len(), 3);
         for region in &regions {
             let (handle, restored) = store.open_region(first(*region)).unwrap();
-            assert_eq!(restored.spawn, AWAY, "{region:?}");
+            assert_eq!(restored.spawn, Some(AWAY), "{region:?}");
             drop(handle);
         }
 
@@ -391,7 +391,7 @@ fn every_region_is_told_the_spawn_when_opened_in_memory_and_over_tcp() {
                 epoch: 2,
             };
             let (handle, restored) = StoreHandle::connect(&address, hello).unwrap();
-            assert_eq!(restored.spawn, AWAY, "{region:?} over TCP");
+            assert_eq!(restored.spawn, Some(AWAY), "{region:?} over TCP");
             drop(handle);
         }
         server.stop();
@@ -407,7 +407,7 @@ fn the_home_region_of_a_world_without_pins_is_told_the_spawn_over_tcp() {
     let list = crate::regions(&address).unwrap();
     assert_eq!(list.spawn, AWAY);
     let (handle, restored) = StoreHandle::connect(&address, first(list.home)).unwrap();
-    assert_eq!(restored.spawn, AWAY);
+    assert_eq!(restored.spawn, Some(AWAY));
     assert_eq!(restored.held, [(AWAY.chunk(), 0)]);
     drop(handle);
     server.stop();
@@ -445,7 +445,12 @@ fn the_flat_world_keeps_its_spawn_at_the_origin() {
 fn a_seeded_world_from_before_t8_whose_spawn_would_move_is_refused() {
     let directory = tempfile::tempdir().unwrap();
     let spawn = BlockPos::new(-96, 66, 32);
-    let generator = || Arc::new(TerrainGenerator::new(13579));
+    let generator = || {
+        Arc::new(TerrainGenerator::new(
+            13579,
+            clustine_world::Dimension::Overworld,
+        ))
+    };
     let store = Store::local_divided(directory.path(), generator(), Pins::none()).unwrap();
     assert_eq!(store.regions().unwrap().spawn, spawn);
     drop(store);
@@ -485,7 +490,12 @@ fn a_seeded_world_from_before_t8_whose_spawn_would_move_is_refused() {
 fn a_seeded_world_from_before_t8_whose_spawn_is_at_the_origin_opens_and_keeps_it() {
     let directory = tempfile::tempdir().unwrap();
     let spawn = BlockPos::new(0, 71, 0);
-    let generator = || Arc::new(TerrainGenerator::new(3));
+    let generator = || {
+        Arc::new(TerrainGenerator::new(
+            3,
+            clustine_world::Dimension::Overworld,
+        ))
+    };
     drop(Store::local_divided(directory.path(), generator(), Pins::none()).unwrap());
     let earlier = before_t8(directory.path());
 

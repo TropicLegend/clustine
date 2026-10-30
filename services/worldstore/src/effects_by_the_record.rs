@@ -263,6 +263,7 @@ fn commit_of(
     taken: &[EffectId],
 ) -> StoreRequest {
     StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes
             .iter()

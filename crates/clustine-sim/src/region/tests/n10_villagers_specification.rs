@@ -159,6 +159,7 @@ fn put(region: &mut Region, position: [f64; 3], made: &Villager) -> EntityId {
     }
     brain::write_memories(&PROVIDER, &mut mob, remembered);
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::VILLAGER as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 0xB100),
@@ -189,6 +190,7 @@ fn still_zombie(region: &mut Region, position: [f64; 3]) -> EntityId {
     mob.body.vitals.air = MAX_AIR;
     mob.body.flags.no_ai = true;
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::ZOMBIE as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 0xB100),

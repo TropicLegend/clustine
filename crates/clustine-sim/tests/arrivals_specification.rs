@@ -54,7 +54,8 @@ fn config(return_after: u64) -> RegionConfig {
     let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
-        spawn: FEET,
+        dimension: Default::default(),
+        spawn: Some(FEET),
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after,
         lowest_y: -64,
@@ -311,6 +312,7 @@ fn key(n: u32) -> EntityId {
 /// changes of holder behind it.
 fn item(n: u32, position: [f64; 3], motion: [f64; 3], hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::ITEM).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),

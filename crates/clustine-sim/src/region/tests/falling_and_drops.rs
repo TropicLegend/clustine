@@ -21,6 +21,7 @@ fn drag() -> f64 {
 /// A falling block of `state` at `position` with `motion` that has fallen `time` ticks.
 fn falling(key: u64, position: [f64; 3], motion: [f64; 3], state: BlockState, time: i32) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId((1 << 40) + key),
         kind: clustine_data::entity_types::FALLING_BLOCK as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key)),
@@ -186,6 +187,7 @@ fn sand_falls_from_rest_and_lands_on_the_floor_in_the_game_s_tick() {
                 state: blocks::SAND.0,
             },
             &RegionEvent::EntityGone {
+                travelled: false,
                 entity: sand.key,
                 chunk: ChunkPos::new(0, 0),
                 hops: 0,

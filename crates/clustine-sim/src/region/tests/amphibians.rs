@@ -35,6 +35,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3], mut mob: Mob) -> Entity 
         mob.body.vitals.air = crate::mobs::types::of(kind).max_air();
     }
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

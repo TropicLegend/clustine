@@ -486,7 +486,8 @@ mod tests {
 
     fn config(return_after: u64) -> RegionConfig {
         RegionConfig {
-            spawn: SPAWN,
+            dimension: Default::default(),
+            spawn: Some(SPAWN),
             starting_inventory: Inventory::default(),
             return_after,
             lowest_y: -64,
@@ -524,6 +525,10 @@ mod tests {
         let mut hotbar = [const { None }; HOTBAR_SLOTS];
         hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack::new(1, entity));
         PlayerState {
+            portal: Default::default(),
+            travel: None,
+            seen_credits: false,
+            in_credits: false,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -566,6 +571,11 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -625,6 +635,7 @@ mod tests {
     ) -> RegionState {
         let entity_ids = EntityIds::block(block).unwrap();
         RegionState {
+            dragon_fight: None,
             tick,
             entity_ids,
             next_entity_id: EntityId(entity_ids.first.0 + given as u64),
@@ -1080,7 +1091,7 @@ mod tests {
         // A region whose spawn point is far off, in a chunk it does not hold: the
         // origin is no home to it.
         let elsewhere = RegionConfig {
-            spawn: middle(at(0, 90)),
+            spawn: Some(middle(at(0, 90))),
             ..config(3)
         };
         let cases = [
@@ -1147,6 +1158,7 @@ mod tests {
             ..stay
         };
         let expected = RegionState {
+            dragon_fight: None,
             tick: 21,
             entity_ids: NO_ENTITY_IDS,
             next_entity_id: EntityId(0),

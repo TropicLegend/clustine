@@ -1157,6 +1157,11 @@ impl Script {
         let person = self.people.get_mut(&who).expect("the player has joined");
         let from = person.region;
         let transfer = PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),

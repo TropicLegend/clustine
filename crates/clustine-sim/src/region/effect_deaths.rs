@@ -192,7 +192,7 @@ impl Region {
         let own = self.entity_stream(key).random;
         let ticking = matches!(self.ticking, Some((ticking, _)) if ticking == key);
         let level = ticking.then(|| {
-            let mut level = Random::of_entity_aside(self.config.seed, key, record.lived, self.tick);
+            let mut level = Random::of_entity_aside(self.seed(), key, record.lived, self.tick);
             for _ in 0..self.aside_draws.get(&key).copied().unwrap_or(0) {
                 level.next_u64();
             }

@@ -126,7 +126,8 @@ fn region_at(day: u64, reach: i32, kept: Kept, beds: &[BlockPos]) -> Region {
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
-        spawn: Vec3::new(0.5, FEET, 0.5),
+        dimension: Default::default(),
+        spawn: Some(Vec3::new(0.5, FEET, 0.5)),
         starting_inventory: Default::default(),
         return_after: u64::MAX,
         lowest_y: -64,
@@ -169,6 +170,7 @@ fn table(numbers: &[u128]) -> Vec<WorldPlayer> {
     numbers
         .iter()
         .map(|number| WorldPlayer {
+            dimension: Default::default(),
             player: player_number(*number),
             entity: EntityId(1_000_000 + *number as u64),
             position: [0.5, FEET, 0.5],
@@ -201,6 +203,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3], prepare: impl FnOnce(&mu
     mob.body.vitals.air = crate::mobs::types::of(kind).max_air();
     prepare(&mut mob);
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: Uuid::from_u128(u128::from(key.0)),

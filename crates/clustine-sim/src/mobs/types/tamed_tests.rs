@@ -179,6 +179,7 @@ fn only_tamed_wolves_mate_and_only_with_a_tamed_wolf_not_sitting_and_cats_likewi
     });
     let mates = |kind: i32, this: &Mob, other: &Mob| {
         let record = |key: u64| clustine_world::Entity {
+            portal: Default::default(),
             key: EntityId(key),
             kind: kind as u16,
             uuid: uuid::Uuid::from_u128(u128::from(key)),

@@ -41,6 +41,7 @@ fn mob_at(
     mob.body.flags.picks_up_loot = kind == entity_types::VILLAGER;
     mob.state = state;
     Entity {
+        portal: Default::default(),
         key,
         kind: kind as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 1000),

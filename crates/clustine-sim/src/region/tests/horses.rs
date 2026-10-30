@@ -37,6 +37,7 @@ fn horse_at(
     mob.body.vitals.air = MAX_AIR;
     mob.state = animal::write(shared, horse);
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

@@ -732,7 +732,7 @@ fn jobs_within_the_chunks_sent(row: &mut Row, stretch: &Stretch) {
 /// How long making the chunks of the view around `centre` takes here on one thread,
 /// for whoever reads a time that includes generation.
 fn generation_of_a_view(centre: (i32, i32), view: i32) -> String {
-    let terrain = TerrainGenerator::new(SEED);
+    let terrain = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     let area = view_area(centre, view);
     let began = std::time::Instant::now();
     for (x, z) in &area {
@@ -750,7 +750,9 @@ fn generation_of_a_view(centre: (i32, i32), view: i32) -> String {
 
 /// The chunk players enter in.
 fn spawn_chunk() -> (i32, i32) {
-    let spawn = TerrainGenerator::new(SEED).spawn().chunk();
+    let spawn = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld)
+        .spawn()
+        .chunk();
     (spawn.x, spawn.z)
 }
 

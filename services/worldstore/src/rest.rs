@@ -274,6 +274,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_done_when_the_store_is_at
 
     let done = rig.disk.operations();
     let part = RegionInfo {
+        dimension: Default::default(),
         region: RegionId(2),
         epoch: 0,
         bounds: Some(ChunkBox {

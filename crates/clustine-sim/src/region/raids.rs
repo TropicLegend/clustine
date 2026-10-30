@@ -194,7 +194,7 @@ impl Region {
 
     /// The raid `id`'s stream as it stands in this tick, and what it drew before.
     pub(crate) fn raid_stream(&self, id: EntityId, ticks_active: u64) -> Random {
-        let mut stream = Random::of_raid(self.config.seed, id, ticks_active);
+        let mut stream = Random::of_raid(self.seed(), id, ticks_active);
         for _ in 0..self.raid_memory.draws.get(&id).copied().unwrap_or(0) {
             stream.next_u64();
         }

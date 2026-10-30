@@ -25,6 +25,7 @@ fn mob_of(key: EntityId, kind: i32, position: [f64; 3], on_ground: bool) -> Enti
     mob.body.vitals.health = crate::mobs::body::attributes::supplied(kind, 23).unwrap() as f32;
     mob.body.vitals.air = MAX_AIR;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),
@@ -522,6 +523,7 @@ fn a_mob_far_from_the_region_s_players_stays_while_a_player_of_another_region_is
     lay(&mut region, &fish);
     region.players.get_mut(&player(1)).unwrap().pose.position = Vec3::new(300.0, -60.0, 0.5);
     let elsewhere = WorldPlayer {
+        dimension: Default::default(),
         player: player(2),
         entity: EntityId(9_000),
         position: [10.5, -60.0, 5.5],

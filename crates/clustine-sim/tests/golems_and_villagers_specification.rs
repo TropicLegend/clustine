@@ -1427,6 +1427,7 @@ fn a_villager_in_deep_water_floats_up_and_a_zombie_sinks() {
 fn a_villager_walks_to_bread_on_the_ground_and_takes_it() {
     let villager = desert_villager(1, [4.5, FLOOR, 4.5]);
     let bread = Entity {
+        portal: Default::default(),
         key: key(2),
         kind: u16::try_from(entity_types::ITEM).expect("fits"),
         uuid: Uuid::from_u128(7_002),

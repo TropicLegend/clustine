@@ -71,7 +71,8 @@ fn config() -> RegionConfig {
     let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
         lowest_y: -64,
@@ -261,6 +262,7 @@ fn key(n: u32) -> EntityId {
 /// An oak boat standing on the floor at `position`, carrying nobody.
 fn boat(n: u32, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::OAK_BOAT).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),
@@ -493,6 +495,11 @@ fn crossing() -> Crossing {
 /// Player `n`, walking, handed over at `at` for the first time.
 fn walker(n: u128, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -1247,6 +1254,11 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
     assert!(sent.riding.passengers[0].pending.is_some());
 
     let transfer = PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),

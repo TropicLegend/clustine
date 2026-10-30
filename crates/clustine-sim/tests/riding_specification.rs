@@ -87,7 +87,8 @@ fn config() -> RegionConfig {
     hotbar[BOAT_SLOT as usize] = Some(ItemStack::new(items::OAK_BOAT, 1));
     hotbar[CUSHION_SLOT as usize] = Some(ItemStack::new(items::WHITE_CUSHION, 1));
     RegionConfig {
-        spawn: FEET,
+        dimension: Default::default(),
+        spawn: Some(FEET),
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
         lowest_y: -64,
@@ -320,6 +321,7 @@ fn key(n: u32) -> EntityId {
 
 fn entity(n: u32, kind: i32, position: [f64; 3], data: EntityData) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: kind as u16,
         uuid: Uuid::from_u128(9_000 + u128::from(n)),

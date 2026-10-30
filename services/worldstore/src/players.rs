@@ -457,8 +457,13 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
                 [respawn.pos.x, respawn.pos.y, respawn.pos.z],
                 respawn.yaw,
                 respawn.pitch,
+                respawn.dimension,
             )
         }),
+        dimension: place.dimension,
+        travel: place.travel,
+        seen_credits: place.seen_credits,
+        portal_cooldown: place.portal_cooldown,
         position: [x, y, z],
         yaw: place.pose.yaw,
         pitch: place.pose.pitch,
@@ -485,11 +490,16 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
         },
         respawn: logged
             .respawn
-            .map(|([x, y, z], yaw, pitch)| clustine_rpc::Respawn {
+            .map(|([x, y, z], yaw, pitch, dimension)| clustine_rpc::Respawn {
                 pos: clustine_world::BlockPos::new(x, y, z),
                 yaw,
                 pitch,
+                dimension,
             }),
+        dimension: logged.dimension,
+        travel: logged.travel,
+        seen_credits: logged.seen_credits,
+        portal_cooldown: logged.portal_cooldown,
         pose: Pose {
             position: Vec3::new(x, y, z),
             yaw: logged.yaw,

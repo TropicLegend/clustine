@@ -86,7 +86,8 @@
 use clustine_world::{
     Arrow, ArrowKind, Attached, BlockPos, ChunkPos, Cloud, Contents, Double, EdgeId, Entity,
     EntityChange, EntityData, EntityField, EntityId, Entry, Fangs, Firework, Float, Hurt, InGround,
-    Leash, LeashHolder, Pending, Pickup, Riding, Seat, Spit, TypeState,
+    Leash, LeashHolder, Pending, Pickup, PortalClock, PortalKind, PortalState, Riding, Seat, Spit,
+    TypeState,
 };
 use uuid::Uuid;
 
@@ -101,6 +102,8 @@ use crate::{FORMAT_VERSION, FormatError};
 pub const KIND_ENTITIES: u8 = 7;
 
 const ON_GROUND: u8 = 1;
+/// The entity's record ends with its portal state, which is left out where it is idle.
+const WITH_PORTAL: u8 = 2;
 
 const DATA_ITEM: u8 = 1;
 const DATA_FALLING_BLOCK: u8 = 2;
@@ -171,6 +174,7 @@ const FIELD_BODY_GONE: u8 = 13;
 const FIELD_MIND_ENTRY: u8 = 14;
 const FIELD_MIND_GONE: u8 = 15;
 const FIELD_TYPE_STATE: u8 = 16;
+const FIELD_PORTAL: u8 = 17;
 
 const CHANGE_WHOLE: u8 = 1;
 const CHANGE_GONE: u8 = 2;
@@ -1141,7 +1145,8 @@ pub(crate) fn put_entity(out: &mut Vec<u8>, entity: &Entity) {
     put_vector(out, entity.motion);
     out.extend_from_slice(&entity.yaw.to_be_bytes());
     out.extend_from_slice(&entity.pitch.to_be_bytes());
-    out.push(if entity.on_ground { ON_GROUND } else { 0 });
+    let portal = !entity.portal.is_idle();
+    out.push(if entity.on_ground { ON_GROUND } else { 0 } | if portal { WITH_PORTAL } else { 0 });
     out.extend_from_slice(&entity.hops.to_be_bytes());
     out.extend_from_slice(&entity.lived.to_be_bytes());
     out.extend_from_slice(&entity.fresh_at.to_be_bytes());
@@ -1149,6 +1154,54 @@ pub(crate) fn put_entity(out: &mut Vec<u8>, entity: &Entity) {
     out.extend_from_slice(&entity.fire_ticks.to_be_bytes());
     put_riding(out, &entity.riding);
     put_data(out, &entity.data);
+    if portal {
+        put_portal(out, &entity.portal);
+    }
+}
+
+/// Appends a portal state: its cooldown, then whether a clock follows and the clock.
+fn put_portal(out: &mut Vec<u8>, portal: &PortalState) {
+    out.extend_from_slice(&portal.cooldown.to_be_bytes());
+    match &portal.clock {
+        None => out.push(0),
+        Some(clock) => {
+            out.push(match clock.kind {
+                PortalKind::Nether => 1,
+                PortalKind::End => 2,
+                PortalKind::Gateway => 3,
+            });
+            put_position(out, clock.entry);
+            out.extend_from_slice(&clock.time.to_be_bytes());
+            out.push(u8::from(clock.inside));
+        }
+    }
+}
+
+/// Reads what [`put_portal`] wrote.
+fn take_portal(input: &mut Input<'_>) -> Result<PortalState, FormatError> {
+    let cooldown = input.u32()?;
+    let kind = match input.u8()? {
+        0 => {
+            return Ok(PortalState {
+                clock: None,
+                cooldown,
+            });
+        }
+        1 => PortalKind::Nether,
+        2 => PortalKind::End,
+        3 => PortalKind::Gateway,
+        _ => return Err(FormatError::Corrupt("portal kind")),
+    };
+    let clock = PortalClock {
+        kind,
+        entry: take_position(input)?,
+        time: input.u32()?,
+        inside: take_flag(input, "a portal clock's mark")?,
+    };
+    Ok(PortalState {
+        clock: Some(clock),
+        cooldown,
+    })
 }
 
 /// Reads what [`put_entity`] wrote.
@@ -1160,10 +1213,11 @@ pub(crate) fn take_entity(input: &mut Input<'_>) -> Result<Entity, FormatError> 
     let motion = take_vector(input)?;
     let (yaw, pitch) = (input.f32()?, input.f32()?);
     let flags = input.u8()?;
-    if flags & !ON_GROUND != 0 {
+    if flags & !(ON_GROUND | WITH_PORTAL) != 0 {
         return Err(FormatError::Corrupt("entity flags"));
     }
-    Ok(Entity {
+    let mut entity = Entity {
+        portal: PortalState::default(),
         key,
         kind,
         uuid,
@@ -1180,7 +1234,15 @@ pub(crate) fn take_entity(input: &mut Input<'_>) -> Result<Entity, FormatError> 
         fire_ticks: input.i32()?,
         riding: take_riding(input)?,
         data: take_data(input)?,
-    })
+    };
+    if flags & WITH_PORTAL != 0 {
+        entity.portal = take_portal(input)?;
+        if entity.portal.is_idle() {
+            // Written only where it is not, so that an entity has one record.
+            return Err(FormatError::Corrupt("an idle portal state written"));
+        }
+    }
+    Ok(entity)
 }
 
 fn put_field(out: &mut Vec<u8>, field: &EntityField) {
@@ -1246,6 +1308,10 @@ fn put_field(out: &mut Vec<u8>, field: &EntityField) {
             out.push(FIELD_FIRE);
             out.extend_from_slice(&ticks.to_be_bytes());
         }
+        EntityField::Portal(portal) => {
+            out.push(FIELD_PORTAL);
+            put_portal(out, portal);
+        }
         EntityField::Riding(riding) => {
             out.push(FIELD_RIDING);
             put_riding(out, riding);
@@ -1274,6 +1340,7 @@ fn take_field(input: &mut Input<'_>) -> Result<EntityField, FormatError> {
         FIELD_FALL_DISTANCE => EntityField::FallDistance(input.f64()?),
         FIELD_FIRE => EntityField::FireTicks(input.i32()?),
         FIELD_RIDING => EntityField::Riding(take_riding(input)?),
+        FIELD_PORTAL => EntityField::Portal(take_portal(input)?),
         _ => return Err(FormatError::Corrupt("entity field tag")),
     })
 }
@@ -1463,6 +1530,7 @@ pub(crate) mod tests {
 
     pub(crate) fn item(key: u64, position: [f64; 3], thrower: Option<u128>) -> Entity {
         Entity {
+            portal: Default::default(),
             key: EntityId(key),
             kind: 71,
             uuid: Uuid::from_u128(0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10),
@@ -2000,6 +2068,7 @@ pub(crate) mod tests {
             ),
             datas(),
             ridings(),
+            portals(),
         )
             .prop_map(
                 |(
@@ -2012,8 +2081,10 @@ pub(crate) mod tests {
                     (hops, lived, fresh_at, fall_distance, fire_ticks),
                     data,
                     riding,
+                    portal,
                 )| {
                     Entity {
+                        portal,
                         key: EntityId(key),
                         kind,
                         uuid: Uuid::from_u128(uuid),
@@ -2032,6 +2103,27 @@ pub(crate) mod tests {
                     }
                 },
             )
+    }
+
+    /// Idle half the time, as most entities' are.
+    fn portals() -> impl Strategy<Value = PortalState> {
+        let clock = (
+            0..3u8,
+            any::<(i32, i32, i32)>(),
+            any::<u32>(),
+            any::<bool>(),
+        )
+            .prop_map(|(kind, (x, y, z), time, inside)| PortalClock {
+                kind: [PortalKind::Nether, PortalKind::End, PortalKind::Gateway][kind as usize],
+                entry: BlockPos::new(x, y, z),
+                time,
+                inside,
+            });
+        prop_oneof![
+            Just(PortalState::default()),
+            (proptest::option::of(clock), any::<u32>())
+                .prop_map(|(clock, cooldown)| PortalState { clock, cooldown }),
+        ]
     }
 
     fn ridings() -> impl Strategy<Value = Riding> {
@@ -2474,6 +2566,7 @@ pub(crate) mod tests {
             any::<f64>().prop_map(EntityField::FallDistance),
             any::<i32>().prop_map(EntityField::FireTicks),
             ridings().prop_map(EntityField::Riding),
+            portals().prop_map(EntityField::Portal),
         ]
     }
 

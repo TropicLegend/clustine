@@ -113,6 +113,7 @@ fn monster(key: u64, id: i32, feet: Vec3, target: Option<EntityId>) -> (Entity, 
     mob.body.vitals.health = 20.0;
     mob.body.combat.target = target;
     let entity = Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: kind(id),
         uuid: uuid::Uuid::from_u128(u128::from(key)),

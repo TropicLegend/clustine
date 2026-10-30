@@ -257,6 +257,7 @@ async fn a_tipped_arrow_is_shown_with_its_owner_its_flags_and_its_colour() {
             chunk: HOME,
         },
         RegionEvent::EntityGone {
+            travelled: false,
             entity: EntityId(key),
             chunk: HOME,
             hops: 0,

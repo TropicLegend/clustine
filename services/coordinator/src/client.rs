@@ -796,12 +796,14 @@ mod tests {
 
     fn table(version: u64) -> RoutingTable {
         RoutingTable {
+            homes: Default::default(),
             home: None,
             spawn: None,
             absorbed: Vec::new(),
             waiting: 1,
             version,
             routes: vec![RegionRoute {
+                dimension: Default::default(),
                 region: RegionId(1),
                 epoch: version,
                 address: "a:25601".to_owned(),

@@ -119,6 +119,7 @@ impl Field {
         mob.body.vitals.health = health;
         let info = EntityTypeInfo::of(id);
         let entity = Entity {
+            portal: Default::default(),
             key: TARGET,
             kind: kind(id),
             uuid: uuid::Uuid::from_u128(77),

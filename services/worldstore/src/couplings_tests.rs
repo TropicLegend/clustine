@@ -89,6 +89,7 @@ fn flushed(handle: &StoreHandle) -> Vec<StoreReply> {
 
 fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect]) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("tick {tick}").into_bytes(),
@@ -436,6 +437,7 @@ fn what_a_restore_costs_a_coupled_region_after_a_crash_beside_its_checkpoint() {
                         blocks::STONE
                     };
                     handle.request(StoreRequest::Commit {
+                        travellers: Vec::new(),
                         tick,
                         changes: vec![(block, state).into()],
                         state: format!("the state of the region at tick {tick:>8}").into_bytes(),

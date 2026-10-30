@@ -179,6 +179,7 @@ pub(super) fn healthy() -> Mob {
 /// The record of a mob of `kind` at `position`.
 pub(super) fn record(key: EntityId, kind: u16, position: Vec3, mob: &Mob) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

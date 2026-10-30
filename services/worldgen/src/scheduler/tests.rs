@@ -82,6 +82,7 @@ impl Maker for ToyMaker {
 /// the spawn's centre, and its place among what that made.
 fn toy_entity(at: [f64; 3], made_by: ChunkPos, place: usize) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(0),
         kind: 72,
         uuid: Default::default(),

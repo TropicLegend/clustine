@@ -589,6 +589,7 @@ impl Region {
         let _bob = own.next_float();
         let yaw = own.next_float() * 360.0;
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
             uuid,

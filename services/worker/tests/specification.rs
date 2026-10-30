@@ -976,7 +976,9 @@ impl Witness {
                 PlayerEvent::Acknowledged { sequence } => {
                     self.handled.insert(*player, *sequence);
                 }
-                PlayerEvent::Departed(_) | PlayerEvent::Refused => self.replaced_kinds += 1,
+                PlayerEvent::Departed(_) | PlayerEvent::Refused | PlayerEvent::Placed { .. } => {
+                    self.replaced_kinds += 1
+                }
                 PlayerEvent::InventorySlot { .. }
                 | PlayerEvent::BlockShown { .. }
                 | PlayerEvent::HeldSlot { .. }
@@ -5343,6 +5345,7 @@ fn store_by_hand(
     }
     for (tick, state) in deltas {
         handle.request(clustine_rpc::StoreRequest::Commit {
+            travellers: Vec::new(),
             tick,
             changes: Vec::new(),
             state,
@@ -5389,6 +5392,10 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),

@@ -192,6 +192,7 @@ fn of_two_entries_with_one_key_the_later_is_kept_and_written() {
 /// `seams`.
 fn commit(marks_taken: Vec<ChunkPos>, seams: Vec<(ChunkPos, Vec<Seam>)>) -> LogRecord {
     LogRecord::Commit {
+        travellers: Vec::new(),
         region: 3,
         tick: 77,
         epoch: 5,

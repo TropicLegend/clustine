@@ -167,7 +167,7 @@ impl Region {
     pub fn hand_over_light(&mut self) -> Vec<(ChunkPos, Kept)> {
         self.sync_light();
         self.run_light();
-        let taken = (self.config.seed, self.tick);
+        let taken = (self.seed(), self.tick);
         self.chunks
             .keys()
             .filter_map(|at| Some((*at, self.light.engine.kept(*at, taken)?)))

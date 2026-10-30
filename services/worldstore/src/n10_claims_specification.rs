@@ -43,6 +43,7 @@ struct Commit {
 
 fn commit(handle: &StoreHandle, tick: u64, what: Commit) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: what
             .changes

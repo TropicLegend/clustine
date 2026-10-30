@@ -70,6 +70,7 @@ const OWN_VEHICLE: u32 = 3;
 /// An oak boat as entity `n`, standing on the floor at `position`, carrying nobody.
 fn boat(n: u32, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::OAK_BOAT).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),

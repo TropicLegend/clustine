@@ -95,7 +95,8 @@ fn stack(item: i32, count: i32) -> ItemStack {
 
 fn config_holding(inventory: Inventory) -> RegionConfig {
     RegionConfig {
-        spawn: FEET,
+        dimension: Default::default(),
+        spawn: Some(FEET),
         starting_inventory: inventory,
         return_after: 0,
         lowest_y: -64,
@@ -272,6 +273,7 @@ fn key(n: u32) -> EntityId {
 /// 1 (not its very first tick), health 5, never to be picked up unless a test says so.
 fn item(n: u32, position: [f64; 3], motion: [f64; 3], on_ground: bool) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::ITEM).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),
@@ -313,6 +315,7 @@ fn item_of(n: u32, position: [f64; 3], of: ItemStack, delay: u16, age: u32) -> E
 /// one.
 fn falling(n: u32, position: [f64; 3], block: BlockState) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(entity_types::FALLING_BLOCK).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 8_000),

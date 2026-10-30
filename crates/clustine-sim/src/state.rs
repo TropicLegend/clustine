@@ -36,6 +36,10 @@ pub struct RegionState {
     pub lends_asked: BTreeMap<ChunkPos, u64>,
     /// The world's clock as of the last tick.
     pub clock: crate::api::WorldClock,
+    /// The End's dragon fight, kept by the End's home region
+    /// (`docs/groundwork/p-plan.md`, section 15.2); boxed, as one region of a world
+    /// has it.
+    pub dragon_fight: Option<Box<clustine_world::dragon::DragonFight>>,
 }
 
 /// A stay the home region has given a joining player and holds as entering: the player
@@ -121,6 +125,14 @@ pub struct PlayerState {
     /// Where their raid omen began (`raidOmenPosition`), where it has; the raid starts
     /// there at its end (`docs/groundwork/n10-plan.md`, section 9.5).
     pub raid_omen_position: Option<BlockPos>,
+    /// Their portal clock and cooldown.
+    pub portal: clustine_world::PortalState,
+    /// Where a portal sends them while they wait in this region to be placed
+    /// (`docs/groundwork/p-plan.md`, section 15.4).
+    pub travel: Option<clustine_world::Travel>,
+    pub seen_credits: bool,
+    /// Whether they watch the credits, hidden and still (the plan, section 5.3).
+    pub in_credits: bool,
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,
@@ -287,6 +299,7 @@ impl RegionState {
             entering: BTreeMap::new(),
             lends_asked: BTreeMap::new(),
             clock: Default::default(),
+            dragon_fight: None,
         }
     }
 

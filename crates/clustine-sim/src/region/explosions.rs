@@ -864,7 +864,7 @@ impl Region {
         if state != expected || state.props().is_air() {
             return;
         }
-        let mut random = Random::of_block(self.config.seed, at, self.tick, FAR_BLAST);
+        let mut random = Random::of_block(self.seed(), at, self.tick, FAR_BLAST);
         let tnt = is_class(state, BlockClass::TntBlock);
         if !tnt {
             // `spawnAfterBreak(level, pos, EMPTY, false)`, before the loot.
@@ -898,8 +898,7 @@ impl Region {
             let Some(&(first, _)) = collectors.first() else {
                 continue;
             };
-            let mut random =
-                Random::of_block(self.config.seed, first, self.tick, FAR_BLAST ^ source.0);
+            let mut random = Random::of_block(self.seed(), first, self.tick, FAR_BLAST ^ source.0);
             for (pos, stack) in collectors {
                 self.pop_resource(pos, stack, &mut random, output);
             }
@@ -922,7 +921,7 @@ impl Region {
             return;
         }
         if is_class(state, BlockClass::TntBlock) {
-            let mut random = Random::of_block(self.config.seed, at, self.tick, FAR_BLAST);
+            let mut random = Random::of_block(self.seed(), at, self.tick, FAR_BLAST);
             self.spawn_primed_tnt(at, None, false, &mut random, output);
         }
         self.set_block_updated(at, blocks::AIR, UPDATE_ALL, UPDATE_LIMIT, output);

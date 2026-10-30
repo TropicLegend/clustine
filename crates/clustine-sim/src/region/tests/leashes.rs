@@ -27,6 +27,7 @@ fn key(n: u64) -> EntityId {
 
 fn boat(n: u64, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: entity_types::OAK_BOAT as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

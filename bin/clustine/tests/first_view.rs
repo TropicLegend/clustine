@@ -40,7 +40,10 @@ async fn measured_the_ticks_of_the_home_region_while_a_first_view_is_made() {
     // Where the store puts the spawn: on the land with features, without templates, as
     // a server started without a jar of the game's has it.
     let spawn = Scheduler::new(
-        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(land))),
+        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(
+            land,
+            clustine_world::Dimension::Overworld,
+        ))),
         Options::for_processors(2),
     )
     .spawn();

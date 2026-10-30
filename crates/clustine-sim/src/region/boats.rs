@@ -390,6 +390,7 @@ impl Region {
         let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,

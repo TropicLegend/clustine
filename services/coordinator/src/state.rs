@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use clustine_region::{RegionId, RegionRoute, RoutingTable};
 use clustine_rpc::{Assignment, Decline, Off, PlayersOf, RegionList, Vouch};
-use clustine_world::{BlockPos, ChunkPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, ChunkPos, Dimension, EntityId, EntityIds};
 use tracing::{info, warn};
 
 use crate::policy::Policy;
@@ -489,6 +489,8 @@ struct Region {
     /// What a coordinator that merges and splits by itself keeps of it; nothing for
     /// one that does not.
     kept: Kept,
+    /// The dimension whose chunks it holds, as the store's list says.
+    dimension: Dimension,
 }
 
 /// The worker that runs a region.
@@ -878,6 +880,8 @@ pub struct Coordinator {
     /// The home region, the absorbed pairs and the next region id of the world
     /// store's list as it was last read; nothing until it has been.
     home: Option<RegionId>,
+    /// Each dimension's home region, as the same list said.
+    homes: Vec<(Dimension, RegionId)>,
     /// The world's spawn, which the store keeps with the world, as the same list said.
     /// Players enter the world in its chunk.
     spawn: Option<BlockPos>,
@@ -956,6 +960,7 @@ impl Coordinator {
             version: first_epoch,
             releases: BTreeMap::new(),
             home: None,
+            homes: Vec::new(),
             spawn: None,
             absorbed: Vec::new(),
             next: None,
@@ -1740,9 +1745,16 @@ impl Coordinator {
             }
         }
 
+        for info in &list.regions {
+            if let Some(region) = self.regions.get_mut(&info.region) {
+                region.dimension = info.dimension;
+            }
+        }
         let home = Some(list.home);
-        self.pending.relisted |= self.home != home || self.absorbed != list.absorbed;
+        self.pending.relisted |=
+            self.home != home || self.homes != list.homes || self.absorbed != list.absorbed;
         self.home = home;
+        self.homes.clone_from(&list.homes);
         self.spawn = Some(list.spawn);
         self.absorbed.clone_from(&list.absorbed);
         self.next = Some(list.next);
@@ -2804,12 +2816,17 @@ impl Coordinator {
             .into_iter()
             .map(|(region, holder)| RegionRoute {
                 region,
+                dimension: self
+                    .regions
+                    .get(&region)
+                    .map_or(Dimension::Overworld, |state| state.dimension),
                 epoch: holder.assignment.epoch,
                 address: holder.address,
             })
             .collect();
         RoutingTable {
             home: self.home,
+            homes: self.homes.clone(),
             spawn: self.spawn,
             absorbed: self.absorbed.clone(),
             waiting: self.waiting_count(),
@@ -3513,6 +3530,7 @@ mod tests {
             let mut routes: Vec<RegionRoute> = Vec::new();
             for (name, assignments) in &now.assignments {
                 routes.extend(assignments.iter().map(|assignment| RegionRoute {
+                    dimension: Default::default(),
                     region: assignment.region,
                     epoch: assignment.epoch,
                     address: self.addresses[name].clone(),
@@ -3717,6 +3735,7 @@ mod tests {
 
     fn route(region: u32, epoch: u64, address: &str) -> RegionRoute {
         RegionRoute {
+            dimension: Default::default(),
             region: RegionId(region),
             epoch,
             address: address.to_owned(),
@@ -3736,6 +3755,7 @@ mod tests {
     fn stripes(count: u32) -> RegionList {
         let regions = (0..count).map(|region| living(region, 0)).collect();
         RegionList {
+            homes: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: RegionId(0),
             regions,
@@ -3748,6 +3768,7 @@ mod tests {
     /// it lies does not concern the coordinator yet.
     fn living(region: u32, epoch: u64) -> RegionInfo {
         RegionInfo {
+            dimension: Default::default(),
             region: RegionId(region),
             epoch,
             bounds: None,
@@ -8551,6 +8572,7 @@ mod tests {
         fn list(&self) -> RegionList {
             let regions = self.living.iter();
             RegionList {
+                homes: Vec::new(),
                 spawn: clustine_world::BlockPos::new(0, -60, 0),
                 home: RegionId(0),
                 regions: regions.map(|(id, epoch)| living(id.0, *epoch)).collect(),

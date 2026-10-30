@@ -31,6 +31,7 @@ const FUSE: i16 = 12;
 
 fn entity(n: u32, kind: i32, position: [f64; 3], data: EntityData) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(kind).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),

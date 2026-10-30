@@ -807,6 +807,7 @@ impl Region {
         self.entity_drew(key, 2);
         let corner = [f64::from(fence.x), f64::from(fence.y), f64::from(fence.z)];
         let knot = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::LEASH_KNOT).expect("entity type ids fit 16 bits"),
             uuid,

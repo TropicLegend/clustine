@@ -503,7 +503,10 @@ fn the_generators_spawn_is_the_official_one_where_no_feature_explains_otherwise(
         let world = World::read(directory);
         let generator = Scheduler::new(
             FeatureStages::with_templates(
-                Arc::new(TerrainGenerator::new(world.seed)),
+                Arc::new(TerrainGenerator::new(
+                    world.seed,
+                    clustine_world::Dimension::Overworld,
+                )),
                 Arc::clone(&templates),
             ),
             Options::for_processors(threads),

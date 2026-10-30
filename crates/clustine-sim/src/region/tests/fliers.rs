@@ -38,6 +38,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3], mut mob: Mob) -> Entity 
         supplied(kind, attribute(clustine_data::attributes::MAX_HEALTH)).unwrap() as f32;
     mob.body.vitals.air = crate::living::MAX_AIR;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),
@@ -105,6 +106,7 @@ fn items_lying(region: &Region) -> Vec<ItemStack> {
 
 fn item_at(key: EntityId, stack: ItemStack, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

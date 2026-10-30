@@ -57,7 +57,7 @@ fn a_hand_over_carries_the_ticks_since_the_reset_to_the_next_region() {
     let tick = region.tick_number();
     let player = region.players.remove(&player(1)).expect("player 1 is here");
     // Let go at the end of this tick: the next region's first inputs read three.
-    let transfer = player.into_transfer(tick);
+    let transfer = player.into_transfer(tick, clustine_world::Dimension::Overworld);
     assert_eq!(transfer.attack_ticks, Some(3));
 }
 

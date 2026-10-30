@@ -269,6 +269,7 @@ impl Region {
             UUID_DRAWS + construction + SHOOT_DRAWS
         );
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,
@@ -348,6 +349,7 @@ impl Region {
         let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(kind).expect("entity type ids fit 16 bits"),
             uuid,

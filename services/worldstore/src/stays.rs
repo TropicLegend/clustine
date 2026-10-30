@@ -55,6 +55,10 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
     let mut ender = clustine_world::EnderChest::default();
     ender.set(26, Some(ItemStack::new(6, 3)));
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: clustine_rpc::Experience {
             level: 3,
@@ -99,6 +103,7 @@ pub(crate) fn has(player: PlayerId, entity: u64, hops: u32, place: Place) -> Sta
 /// Commits `tick` with these notes and nothing else that tells it from another.
 pub(crate) fn commit(handle: &StoreHandle, tick: u64, stays: Vec<StayNote>) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),
@@ -164,6 +169,10 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
     let ender: [_; clustine_format::ENDER_SLOTS] = (*place.ender.0).clone();
     let experience = place.experience;
     LoggedPlace {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: (experience.level, experience.progress, experience.total),
         position: [
@@ -974,6 +983,7 @@ fn a_commit_of_an_owner_that_was_replaced_leaves_no_note() {
 fn a_commit_that_an_opening_passes_over_leaves_no_note() {
     let (p, q) = (player(7), player(8));
     let noted = |region: u32, tick: u64, epoch: u64, stays: &[StayNote]| LogRecord::Commit {
+        travellers: Vec::new(),
         region,
         tick,
         epoch,

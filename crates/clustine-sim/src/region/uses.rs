@@ -126,6 +126,7 @@ mod tests {
     #[test]
     fn a_passengers_effect_goes_to_a_block_of_its_units_chunk() {
         let mut entity = Entity {
+            portal: Default::default(),
             key: EntityId(1),
             kind: 71,
             uuid: uuid::Uuid::from_u128(1),

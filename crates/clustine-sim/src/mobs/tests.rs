@@ -6,6 +6,7 @@ use super::part::{self, PartError, body_ids, mind_ids};
 /// A cow in a chunk's record, holding `mob`.
 fn entity_of(mob: &Mob) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(7),
         kind: clustine_data::entity_types::COW as u16,
         uuid: uuid::Uuid::from_u128(7),

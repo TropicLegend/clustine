@@ -180,6 +180,7 @@ mod tests {
 
     fn item(key: u64, x: f64) -> Entity {
         Entity {
+            portal: Default::default(),
             key: EntityId(key),
             kind: 71,
             uuid: uuid::Uuid::from_u128(u128::from(key)),

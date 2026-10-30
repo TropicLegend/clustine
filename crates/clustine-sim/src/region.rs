@@ -5,8 +5,8 @@ use std::mem;
 
 use clustine_data::{BlockState, ITEMS, ItemComponents, Swing, blocks};
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, Double, EdgeId, Effect, EntityId, EntityIds, EntityUse,
-    Float, PlayerId, RegionId, Vec3,
+    BlockPos, Chunk, ChunkArea, ChunkPos, Dimension, Double, EdgeId, Effect, EntityId, EntityIds,
+    EntityUse, Float, PlayerId, RegionId, Vec3,
 };
 
 use crate::api::{
@@ -142,9 +142,12 @@ pub use reshape::{NoSplit, Part, Sides, Splitting};
 /// which chunks it holds is the world store's to say; see [`Holdings`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionConfig {
-    /// Where players enter the world. The chunk it is in is the home chunk, which a
-    /// region that holds it never gives back.
-    pub spawn: Vec3,
+    /// The dimension whose chunks the region holds, for its whole life
+    /// (`docs/groundwork/p-plan.md`, decision 1).
+    pub dimension: Dimension,
+    /// Where players enter the world, in the overworld's regions; none in the others.
+    /// See [`RegionConfig::home`].
+    pub spawn: Option<Vec3>,
     /// What players carry when they enter the world for the first time.
     pub starting_inventory: Inventory,
     /// How many ticks a chunk the region holds outside its pinned areas may be without
@@ -180,6 +183,18 @@ pub struct RegionConfig {
     /// (`docs/groundwork/n8-plan.md`, section 7.6): none in a flat world or a test that
     /// grows nothing.
     pub features: Features,
+}
+
+impl RegionConfig {
+    /// The dimension's home chunk, which a region that holds it never gives back: the
+    /// chunk of the spawn in the overworld, and chunk (0, 0) in the others, where the
+    /// home region of the dimension keeps it (`docs/groundwork/p-plan.md`, sections
+    /// 3.4 and 15.2).
+    pub fn home(&self) -> ChunkPos {
+        self.spawn.map_or(ChunkPos::new(0, 0), |spawn| {
+            ChunkPos::containing(spawn.x, spawn.z)
+        })
+    }
 }
 
 /// The overworld's features, built once a process from the world's seed and shared by its
@@ -296,7 +311,7 @@ impl Tickets {
 struct Land {
     /// [`Holdings::pinned`].
     pinned: Vec<ChunkArea>,
-    /// The chunk [`RegionConfig::spawn`] is in.
+    /// [`RegionConfig::home`].
     home: ChunkPos,
     /// The chunks the region knows something of. A chunk is in one condition at a
     /// time, which is why this is one collection and not three.
@@ -419,6 +434,12 @@ struct Player {
     rested: u64,
     /// See [`PlayerState::raid_omen_position`].
     raid_omen_position: Option<BlockPos>,
+    /// See [`PlayerState::portal`], [`PlayerState::travel`], [`PlayerState::seen_credits`]
+    /// and [`PlayerState::in_credits`].
+    portal: clustine_world::PortalState,
+    travel: Option<clustine_world::Travel>,
+    seen_credits: bool,
+    in_credits: bool,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -542,6 +563,8 @@ pub struct Region {
     lends_asked: BTreeMap<ChunkPos, u64>,
     /// The world's clock as of the last tick (`api::WorldClock`).
     clock: crate::api::WorldClock,
+    /// [`RegionState::dragon_fight`].
+    dragon_fight: Option<Box<clustine_world::dragon::DragonFight>>,
     /// The store's asks of lends of this tick, answered at its end (`lends.rs`); no
     /// part of the state, as the store calls a lend off at every hello.
     lends_to_answer: Vec<LendAsked>,
@@ -648,6 +671,15 @@ pub struct Region {
 }
 
 impl Region {
+    /// What the region's draws are made from: the world's seed, with the dimension's
+    /// number mixed in, so that two dimensions draw apart at the same positions
+    /// (`docs/groundwork/p-plan.md`, section 15.2). The overworld's number is 0, which
+    /// leaves the seed as it is.
+    pub(crate) fn seed(&self) -> u64 {
+        let number = u64::from(self.config.dimension.number());
+        self.config.seed ^ number.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
     /// A region that has never run, which gives its players the entity ids of
     /// `entity_ids`. The same as restoring [`RegionState::new`].
     pub fn new(config: RegionConfig, entity_ids: EntityIds, holdings: Holdings) -> Self {
@@ -676,7 +708,7 @@ impl Region {
             .collect();
         let mut land = Land {
             pinned: holdings.pinned,
-            home: ChunkPos::containing(config.spawn.x, config.spawn.z),
+            home: config.home(),
             known: BTreeMap::new(),
             lent: BTreeSet::new(),
             lent_away: BTreeMap::new(),
@@ -742,6 +774,7 @@ impl Region {
             journal: Journal::default(),
             lends_asked,
             clock: state.clock,
+            dragon_fight: state.dragon_fight,
             lends_to_answer: Vec::new(),
             lend_tickets: BTreeMap::new(),
             letting_go: BTreeSet::new(),
@@ -842,6 +875,7 @@ impl Region {
             entering: self.entering.clone(),
             lends_asked: self.lends_asked.clone(),
             clock: self.clock,
+            dragon_fight: self.dragon_fight.clone(),
         }
     }
 
@@ -1302,17 +1336,28 @@ impl Region {
             self.unseat_leaving(None, &player, &mut output);
             self.journal.players.insert(id);
             let edge = player.edge;
-            Some((edge, id, player.into_transfer(self.tick), to))
+            Some((
+                edge,
+                id,
+                player.into_transfer(self.tick, self.config.dimension),
+                to,
+            ))
         });
         let departing: Vec<Departure> = unplaced.into_iter().chain(departing).collect();
         for (edge, id, transfer, to) in departing {
             // The world store is told the place the next region begins with.
             let note = StayNote::Has {
-                unit: None,
+                // The vehicle a portal sends them on with, kept in their record until a
+                // region places them on it (`docs/groundwork/p-plan.md`, section 15.5).
+                unit: transfer.unit.clone(),
                 player: id,
                 entity: transfer.entity_id,
                 hops: transfer.hops,
                 place: Place {
+                    dimension: transfer.dimension,
+                    travel: transfer.travel,
+                    seen_credits: transfer.seen_credits,
+                    portal_cooldown: transfer.portal.cooldown,
                     respawn: None,
                     pose: transfer.pose,
                     flying: transfer.flying,
@@ -1854,6 +1899,10 @@ impl Region {
                 .tick
                 .saturating_sub(u64::from(transfer.time_since_rest)),
             raid_omen_position: transfer.raid_omen_position,
+            portal: transfer.portal,
+            travel: transfer.travel,
+            seen_credits: transfer.seen_credits,
+            in_credits: false,
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -1944,6 +1993,13 @@ impl Region {
                 )
             })
             .unwrap_or_default();
+        // What the game saves with them: whether they saw the credits, and their portal
+        // cooldown.
+        let (seen_credits, portal_cooldown) = answer
+            .place
+            .as_ref()
+            .map(|place| (place.seen_credits, place.portal_cooldown))
+            .unwrap_or_default();
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
         // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). They wait at
@@ -1994,6 +2050,16 @@ impl Region {
                         effects: place.effects.clone(),
                         time_since_rest: place.time_since_rest,
                         raid_omen_position: place.raid_omen_position,
+                        // The place's dimension, and the travel a portal began, which
+                        // the holder places them by.
+                        dimension: place.dimension,
+                        travel: place.travel,
+                        seen_credits,
+                        portal: clustine_world::PortalState {
+                            clock: None,
+                            cooldown: portal_cooldown,
+                        },
+                        unit: None,
                     };
                     unplaced.push((edge, id, transfer, to));
                     return;
@@ -2042,6 +2108,15 @@ impl Region {
             effects: crate::mobs::body::effects::from_instances(&effects, self.tick),
             rested: self.tick.saturating_sub(u64::from(time_since_rest)),
             raid_omen_position,
+            portal: clustine_world::PortalState {
+                clock: None,
+                cooldown: portal_cooldown,
+            },
+            // A travel kept in their place is placed by when a portal's steps are built
+            // (P9); until then no place has one.
+            travel: kept.and_then(|(place, below)| place.travel.filter(|_| !below)),
+            seen_credits,
+            in_credits: false,
         };
         self.enter(id, player, attempt, output);
     }
@@ -2052,7 +2127,12 @@ impl Region {
     /// configured spawn if the region has not loaded the home chunk or the column is
     /// empty. See `docs/groundwork/w6-plan.md`, section 2.
     fn spawn_pose(&self) -> Pose {
-        let spawn = self.config.spawn;
+        // Only the overworld's home region lets a player enter without a place; a
+        // region of another dimension that did would put them on its home chunk's floor.
+        let spawn =
+            self.config
+                .spawn
+                .unwrap_or(Vec3::new(0.5, f64::from(self.config.lowest_y), 0.5));
         let mut pose = Pose::at(spawn);
         let Some(chunk) = self.chunks.get(&self.land.home) else {
             return pose;
@@ -2118,7 +2198,7 @@ impl Region {
                     player: *id,
                     entity: player.entity_id,
                     hops: player.hops,
-                    place: player.place(self.tick),
+                    place: player.place(self.tick, self.config.dimension),
                     face: player.face(),
                     let_go: false,
                 };
@@ -3690,6 +3770,10 @@ impl Player {
             effects: crate::mobs::body::effects::kept(&self.effects),
             rested: self.rested,
             raid_omen_position: self.raid_omen_position,
+            portal: self.portal,
+            travel: self.travel,
+            seen_credits: self.seen_credits,
+            in_credits: self.in_credits,
         }
     }
 
@@ -3723,6 +3807,10 @@ impl Player {
             effects: crate::mobs::body::effects::from_kept(&state.effects),
             rested: state.rested,
             raid_omen_position: state.raid_omen_position,
+            portal: state.portal,
+            travel: state.travel,
+            seen_credits: state.seen_credits,
+            in_credits: state.in_credits,
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
@@ -3765,8 +3853,14 @@ impl Player {
 
     /// Where the player is and what they hold, as the world store keeps it after the
     /// tick `tick`.
-    fn place(&self, tick: u64) -> Place {
+    fn place(&self, tick: u64, dimension: clustine_world::Dimension) -> Place {
         Place {
+            dimension,
+            // A player who waits to be placed keeps their travel in what the store keeps
+            // (`docs/groundwork/p-plan.md`, section 15.4).
+            travel: self.travel,
+            seen_credits: self.seen_credits,
+            portal_cooldown: self.portal.cooldown,
             pose: self.pose,
             flying: self.flying,
             inventory: self.inventory.clone(),
@@ -3782,7 +3876,7 @@ impl Player {
 
     /// What another region needs to carry on with the player, who has been handed on
     /// once more by it in `tick`.
-    fn into_transfer(self, tick: u64) -> PlayerTransfer {
+    fn into_transfer(self, tick: u64, dimension: clustine_world::Dimension) -> PlayerTransfer {
         // Counted as the attack's is, from the next region's first tick.
         let effects = crate::mobs::body::effects::instances(&self.effects, tick + 1);
         let time_since_rest = self.time_since_rest(tick + 1);
@@ -3812,6 +3906,11 @@ impl Player {
             effects,
             time_since_rest,
             raid_omen_position: self.raid_omen_position,
+            dimension,
+            travel: self.travel,
+            seen_credits: self.seen_credits,
+            portal: self.portal,
+            unit: None,
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -4082,7 +4181,8 @@ mod tests {
     /// What a region is created with. It gives back at once what nothing uses.
     fn config() -> RegionConfig {
         RegionConfig {
-            spawn: SPAWN,
+            dimension: Default::default(),
+            spawn: Some(SPAWN),
             starting_inventory: Inventory::with_hotbar(hotbar()),
             return_after: 0,
             lowest_y: -64,
@@ -6157,6 +6257,11 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -6742,6 +6847,11 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        dimension: Default::default(),
+                        travel: None,
+                        seen_credits: false,
+                        portal: Default::default(),
+                        unit: None,
                         sleeping: None,
                         respawn: None,
                         experience: Default::default(),
@@ -7066,6 +7176,11 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),

@@ -549,6 +549,7 @@ fn a_generated_camel_first_taken_in_stands_as_one_long_stood_and_is_not_set_agai
     .key()
     .expect("within the border");
     let camel = |hops: u32| Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::CAMEL as u16,
         uuid: uuid::Uuid::from_u128(7),

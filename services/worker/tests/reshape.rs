@@ -1419,6 +1419,11 @@ fn arrive(id: PlayerId, transfer: &PlayerTransfer) -> EdgeToWorker {
 /// along.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -4304,6 +4309,7 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
     assert_eq!(edge.sent, 2);
     assert_eq!(whole.a.region().state(), stays);
     let goes = RegionState {
+        dragon_fight: None,
         tick: m,
         entity_ids: EntityIds {
             first: EntityId(0),

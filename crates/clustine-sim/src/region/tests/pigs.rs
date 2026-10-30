@@ -30,6 +30,7 @@ fn pig_at(position: [f64; 3], saddled: bool) -> Entity {
         mob.body.equipment.slots[slots::SADDLE as usize] = Some(ItemStack::new(items::SADDLE, 1));
     }
     Entity {
+        portal: Default::default(),
         key: PIG_KEY,
         kind: entity_types::PIG as u16,
         uuid: uuid::Uuid::from_u128(40),

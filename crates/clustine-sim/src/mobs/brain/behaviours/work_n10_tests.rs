@@ -327,6 +327,7 @@ impl Placed {
     fn record(&self) -> (Entity, Aabb) {
         let body = &self.living.body;
         let entity = Entity {
+            portal: Default::default(),
             key: self.key,
             kind: entity_types::VILLAGER as u16,
             uuid: Uuid::from_u128(u128::from(self.key.0)),

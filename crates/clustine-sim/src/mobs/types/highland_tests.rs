@@ -1119,6 +1119,7 @@ fn a_camel_steps_softly_on_sand_and_its_husk_at_four_tenths() {
 #[test]
 fn camels_breed_with_camels_and_a_camel_husk_with_nothing() {
     let entity = |key: u64, kind: u16, mob: &Mob| clustine_world::Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key)),
@@ -1543,6 +1544,7 @@ fn seen_player(key: u64, position: Vec3, held: Option<i32>, sprinting: bool) -> 
 /// The record of the mob `mob` of the type `kind` at `position`.
 fn entity_of(key: EntityId, kind: u16, position: Vec3, mob: &Mob) -> clustine_world::Entity {
     clustine_world::Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

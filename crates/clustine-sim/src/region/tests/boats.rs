@@ -54,6 +54,7 @@ fn with_status(status: u8) -> EntityData {
 /// A boat of the type `kind` at `position`, at rest.
 fn boat_of(n: u64, kind: i32, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: kind as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

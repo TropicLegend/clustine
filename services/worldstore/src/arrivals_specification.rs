@@ -48,6 +48,7 @@ const FAR_EAST: ChunkPos = ChunkPos::new(16, 0);
 /// An item lying in the middle of `chunk`, with `hops`.
 fn item(key: u64, chunk: ChunkPos, hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: 71,
         uuid: uuid::Uuid::from_u128(u128::from(key) << 8 | 0x3),
@@ -90,6 +91,7 @@ fn commit(
     arrivals_taken: Vec<EffectId>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),
@@ -697,6 +699,7 @@ fn a_refused_commit_with_an_arrival_into_land_nobody_holds_grants_nothing() {
     flushed(&home);
     let before = logged(&disk);
     home.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 2,
         changes: Vec::new(),
         state: b"delta 2".to_vec(),
@@ -819,6 +822,7 @@ fn effects_in(told: &[StoreReply]) -> usize {
 
 fn commit_effect(handle: &StoreHandle, tick: u64, effect: Effect) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),

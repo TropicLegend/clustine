@@ -39,6 +39,7 @@ fn mob_of(
         mob.body.flags.picks_up_loot = true;
     }
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),
@@ -103,6 +104,7 @@ fn items_lying(region: &Region) -> Vec<(EntityId, ItemStack)> {
 
 fn item_at(key: EntityId, stack: ItemStack, position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

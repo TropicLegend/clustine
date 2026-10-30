@@ -24,6 +24,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3]) -> Entity {
         supplied(kind, attribute(clustine_data::attributes::MAX_HEALTH)).unwrap() as f32;
     mob.body.vitals.air = 300;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

@@ -122,6 +122,7 @@ fn cow_at(key: EntityId, position: [f64; 3], alive: bool) -> Entity {
             supplied(kind, attribute(clustine_data::attributes::MAX_HEALTH)).unwrap() as f32;
     }
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

@@ -1349,6 +1349,7 @@ fn a_report_to_a_second_viewer_carries_their_own_last_input() {
 
 fn cart(kind: i32, position: [f64; 3]) -> clustine_world::Entity {
     clustine_world::Entity {
+        portal: Default::default(),
         key: key(1),
         kind: u16::try_from(kind).expect("fits"),
         uuid: uuid::Uuid::from_u128(7_001),

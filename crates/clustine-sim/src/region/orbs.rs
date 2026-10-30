@@ -235,6 +235,7 @@ impl Region {
             motion = physics::scale(motion, -1.0);
         }
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: orb_kind(),
             uuid,
@@ -287,6 +288,7 @@ impl Region {
         let y = own.next_double() * 0.2 * 2.0;
         let z = (own.next_double() * 0.2 - 0.1) * 2.0;
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: orb_kind(),
             uuid,

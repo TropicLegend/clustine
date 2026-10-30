@@ -42,6 +42,7 @@ fn block(chunk: ChunkPos, n: i32) -> BlockPos {
 
 fn commit(handle: &StoreHandle, tick: u64, changes: &[(BlockPos, BlockState)]) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes
             .iter()
@@ -364,6 +365,7 @@ fn a_copy_is_what_its_holder_restores_with_after_saves_and_a_checkpoint() {
 /// (`docs/adr/0026-redstone.md`, section 6).
 fn commit_changes(handle: &StoreHandle, tick: u64, changes: Vec<clustine_world::Change>) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes,
         state: format!("tick {tick}").into_bytes(),
@@ -474,6 +476,7 @@ fn a_change_of_claims_alone_is_an_update_of_the_copy_with_the_claims() {
         free: 0,
     };
     holder.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 2,
         changes: Vec::new(),
         state: b"tick 2".to_vec(),

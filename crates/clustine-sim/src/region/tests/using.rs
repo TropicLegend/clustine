@@ -191,7 +191,7 @@ fn a_hand_over_carries_the_use_and_what_each_cooldown_has_run() {
     let tick = region.tick_number();
     let player = region.players.remove(&player(1)).expect("player 1 is here");
     let using = player.using;
-    let transfer = player.into_transfer(tick);
+    let transfer = player.into_transfer(tick, clustine_world::Dimension::Overworld);
     assert_eq!(transfer.using, using);
     // Counted at the end of the tick, as the attack's reset is: the next region's
     // first tick is the cooldown's sixth.

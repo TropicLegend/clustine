@@ -151,6 +151,7 @@ mod tests {
 
     fn player(number: u128, x: f64, z: f64, game_mode: u8) -> WorldPlayer {
         WorldPlayer {
+            dimension: Default::default(),
             player: PlayerId(uuid::Uuid::from_u128(number)),
             entity: EntityId(u64::try_from(number).unwrap()),
             position: [x, 64.0, z],

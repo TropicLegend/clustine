@@ -259,7 +259,7 @@ impl Region {
         }
         let mut stream = hurt
             .hit
-            .map(|(attacker, lived)| Random::of_hit(self.config.seed, attacker, lived, key));
+            .map(|(attacker, lived)| Random::of_hit(self.seed(), attacker, lived, key));
         let from = hurt
             .cause
             .as_ref()

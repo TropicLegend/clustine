@@ -156,6 +156,7 @@ fn commit(
     arrivals: Vec<(ChunkPos, Entity)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),
@@ -958,6 +959,7 @@ fn a_restart_replays_a_commit_whose_only_stay_entry_is_a_taking() {
 fn an_opening_that_passes_over_a_taking_leaves_the_unit_in_the_record() {
     let p = player(7);
     let record = |region: u32, tick: u64, epoch: u64, stays: Vec<LoggedStay>| LogRecord::Commit {
+        travellers: Vec::new(),
         region,
         tick,
         epoch,
@@ -1056,6 +1058,7 @@ fn a_segment_whose_only_stay_entry_is_a_taking_is_not_let_go_before_the_players_
         .map(|member| (ROOT_CHUNK, EntityChange::Whole(member.clone())))
         .collect();
     west.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 4,
         changes: Vec::new(),
         state: b"delta 4".to_vec(),

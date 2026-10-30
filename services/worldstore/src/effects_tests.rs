@@ -38,6 +38,7 @@ fn effect_in(chunk: ChunkPos, n: i32) -> Effect {
 
 fn commit(handle: &StoreHandle, tick: u64, effects: &[Effect], taken: &[EffectId]) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("tick {tick}").into_bytes(),

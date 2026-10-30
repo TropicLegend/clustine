@@ -81,6 +81,7 @@ fn setting(field: &EntityField) -> (u8, u16) {
         EntityField::FallDistance(_) => (11, 0),
         EntityField::FireTicks(_) => (12, 0),
         EntityField::Riding(_) => (13, 0),
+        EntityField::Portal(_) => (14, 0),
     }
 }
 
@@ -103,6 +104,7 @@ mod tests {
 
     fn mob(key: u64) -> Entity {
         Entity {
+            portal: Default::default(),
             key: EntityId(key),
             kind: 0,
             uuid: uuid::Uuid::from_u128(u128::from(key)),

@@ -38,7 +38,10 @@ fn regions_game_seed(generator: &dyn ChunkGenerator) -> i64 {
 #[test]
 fn a_generated_world_s_regions_get_its_seed() {
     for seed in [3, -1_234_567_890_123, i64::MAX] {
-        let terrain = Arc::new(TerrainGenerator::new(seed));
+        let terrain = Arc::new(TerrainGenerator::new(
+            seed,
+            clustine_world::Dimension::Overworld,
+        ));
         let world = Scheduler::new(FeatureStages::new(terrain), Options::for_processors(1));
         assert_eq!(regions_game_seed(&world), seed, "the world of seed {seed}");
     }

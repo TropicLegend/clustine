@@ -95,22 +95,26 @@ fn a_new_world_has_the_regions_of_its_division() {
         max: ORIGIN,
     };
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(2))],
         spawn: crate::tests::SPAWN,
         home: RegionId(2),
         regions: vec![
             RegionInfo {
+                dimension: Default::default(),
                 region: RegionId(0),
                 epoch: 0,
                 bounds: None,
                 pinned: gap().pinned[..1].to_vec(),
             },
             RegionInfo {
+                dimension: Default::default(),
                 region: RegionId(1),
                 epoch: 0,
                 bounds: None,
                 pinned: gap().pinned[1..].to_vec(),
             },
             RegionInfo {
+                dimension: Default::default(),
                 region: RegionId(2),
                 epoch: 0,
                 bounds: Some(home),
@@ -694,6 +698,7 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
     };
     put(&disk, "/world/regions/1.state", &state.encode());
     let commit = |region, tick, epoch, x, y, block| LogRecord::Commit {
+        travellers: Vec::new(),
         region,
         tick,
         epoch,
@@ -2053,6 +2058,7 @@ fn a_split_makes_a_region_of_the_part() {
     assert_eq!(split(&old, 7, &[FREE, inside, FREE], 4, 3), done);
     let list = store.regions().unwrap();
     let made = RegionInfo {
+        dimension: Default::default(),
         region: RegionId(3),
         epoch: 4,
         bounds: Some(ChunkBox {

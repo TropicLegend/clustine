@@ -37,6 +37,7 @@ fn mob_at(key: EntityId, kind: i32, position: [f64; 3], state: TypeState) -> Ent
     mob.body.vitals.air = MAX_AIR;
     mob.state = state;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

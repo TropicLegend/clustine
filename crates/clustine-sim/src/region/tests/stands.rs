@@ -33,6 +33,7 @@ fn key(n: u64) -> EntityId {
 /// A stand at `position`, at rest, a tick old, wearing `equipment`.
 fn stand(n: u64, position: [f64; 3], equipment: Vec<(u8, ItemStack)>) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: entity_types::ARMOR_STAND as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

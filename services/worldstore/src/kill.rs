@@ -74,6 +74,7 @@ fn store_on(disk: Arc<MemoryDisk>) -> Result<Store, StoreError> {
 
 fn commit(handle: &StoreHandle, tick: u64, position: BlockPos, state: BlockState, delta: Vec<u8>) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: vec![(position, state).into()],
         state: delta,

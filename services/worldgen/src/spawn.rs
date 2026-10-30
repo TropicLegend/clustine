@@ -181,8 +181,10 @@ mod tests {
     #[test]
     fn the_same_chunk_made_twice_makes_the_same_animals() {
         use crate::stages::Stages;
-        let stages =
-            crate::FeatureStages::new(std::sync::Arc::new(crate::TerrainGenerator::new(4)));
+        let stages = crate::FeatureStages::new(std::sync::Arc::new(crate::TerrainGenerator::new(
+            4,
+            clustine_world::Dimension::Overworld,
+        )));
         let plains = clustine_data::synced_registry("minecraft:worldgen/biome")
             .and_then(|biomes| biomes.id_of("minecraft:plains"))
             .expect("the plains");

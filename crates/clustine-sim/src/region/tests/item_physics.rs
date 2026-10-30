@@ -29,6 +29,7 @@ fn item(
     stack: ItemStack,
 ) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId((1 << 40) + key),
         kind: clustine_data::entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key)),
@@ -409,6 +410,7 @@ fn lava_burns_an_item_in_two_ticks_and_netherite_not_at_all() {
     let output = idle(&mut region);
     assert_eq!(record(&region, burning.key), None);
     assert!(output.events.contains(&RegionEvent::EntityGone {
+        travelled: false,
         entity: burning.key,
         chunk: ORIGIN,
         hops: 0,
@@ -627,6 +629,7 @@ fn an_item_despawns_at_the_age_of_6000() {
     let output = idle(&mut region);
     assert_eq!(record(&region, old.key), None);
     assert!(output.events.contains(&RegionEvent::EntityGone {
+        travelled: false,
         entity: old.key,
         chunk: ORIGIN,
         hops: 0,
@@ -679,6 +682,7 @@ fn a_player_picks_an_item_up_after_its_delay_into_the_slot_the_game_chooses() {
         .position(|event| *event == taken)
         .unwrap();
     let gone = RegionEvent::EntityGone {
+        travelled: false,
         entity: lying.key,
         chunk: ORIGIN,
         hops: 0,

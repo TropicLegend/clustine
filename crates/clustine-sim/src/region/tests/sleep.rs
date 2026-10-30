@@ -70,6 +70,7 @@ fn a_bed_used_by_day_sets_the_spawn_and_says_one_sleeps_only_at_night() {
     assert_eq!(
         region.players[&player(1)].respawn,
         Some(Respawn {
+            dimension: Default::default(),
             pos: HEAD,
             yaw: 90.0,
             pitch: 0.0,
@@ -196,6 +197,7 @@ fn a_straw_bed_never_sets_the_spawn_and_breaks_when_its_sleeper_gets_up() {
 /// Another player of the world, `n`, as the store publishes them.
 fn elsewhere(n: u128, sleeping: Option<u32>) -> WorldPlayer {
     WorldPlayer {
+        dimension: Default::default(),
         player: player(n),
         entity: EntityId(1000 + n as u64),
         position: [500.5, -60.0, 0.5],

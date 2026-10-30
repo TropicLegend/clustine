@@ -206,7 +206,7 @@ fn a_hand_over_carries_each_level_s_ticks_left_and_the_next_region_counts_them_o
     }
     let tick = region.tick_number();
     let player = region.players.remove(&player(1)).expect("player 1 is here");
-    let transfer = player.into_transfer(tick);
+    let transfer = player.into_transfer(tick, clustine_world::Dimension::Overworld);
     // Counted from the next region's first tick: added for forty, ten ticked here and
     // the next one there.
     let [ref carried] = transfer.effects[..] else {
@@ -241,7 +241,7 @@ fn an_effect_does_not_run_down_while_its_player_is_away() {
         &mut output,
     );
     let tick = region.tick_number();
-    let place = region.players[&player(1)].place(tick);
+    let place = region.players[&player(1)].place(tick, clustine_world::Dimension::Overworld);
     let [ref kept] = place.effects[..] else {
         panic!("one effect: {:?}", place.effects);
     };

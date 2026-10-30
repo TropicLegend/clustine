@@ -83,6 +83,9 @@ pub struct Entity {
     /// What it rides, who rides it and who holds its leash (`docs/groundwork/n5-plan.md`).
     pub riding: Riding,
     pub data: EntityData,
+    /// Its portal clock and cooldown (the game's `PortalProcessor` and
+    /// `portalCooldown`; `docs/groundwork/p-plan.md`, section 15.2).
+    pub portal: crate::PortalState,
 }
 
 impl Entity {
@@ -118,6 +121,7 @@ impl PartialEq for Entity {
             && self.fire_ticks == other.fire_ticks
             && self.riding == other.riding
             && self.data == other.data
+            && self.portal == other.portal
     }
 }
 
@@ -519,6 +523,8 @@ pub enum EntityField {
     FallDistance(f64),
     FireTicks(i32),
     Riding(Riding),
+    /// Its portal clock and cooldown.
+    Portal(crate::PortalState),
 }
 
 impl PartialEq for EntityField {
@@ -550,6 +556,7 @@ impl PartialEq for EntityField {
             (Self::FallDistance(a), Self::FallDistance(b)) => a.to_bits() == b.to_bits(),
             (Self::FireTicks(a), Self::FireTicks(b)) => a == b,
             (Self::Riding(a), Self::Riding(b)) => a == b,
+            (Self::Portal(a), Self::Portal(b)) => a == b,
             _ => false,
         }
     }
@@ -597,6 +604,7 @@ impl EntityField {
             Self::FallDistance(distance) => entity.fall_distance = *distance,
             Self::FireTicks(ticks) => entity.fire_ticks = *ticks,
             Self::Riding(riding) => entity.riding = riding.clone(),
+            Self::Portal(portal) => entity.portal = *portal,
         }
     }
 }
@@ -807,6 +815,7 @@ mod tests {
     #[test]
     fn a_field_set_on_an_entity_is_what_it_then_has() {
         let mut entity = Entity {
+            portal: Default::default(),
             key: EntityId(7),
             kind: 72,
             uuid: Uuid::from_u128(9),
@@ -846,6 +855,7 @@ mod tests {
             bytes: vec![byte],
         };
         let mut mob = Entity {
+            portal: Default::default(),
             key: EntityId(9),
             kind: 30,
             uuid: Uuid::from_u128(1),

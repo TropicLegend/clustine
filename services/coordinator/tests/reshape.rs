@@ -86,11 +86,13 @@ fn held(id: u32, epoch: u64) -> Assignment {
 /// pairs of `absorbed`, and `next` as the id of the next region.
 fn list(living: &[u32], absorbed: &[(u32, u32)], next: u32) -> RegionList {
     RegionList {
+        homes: Vec::new(),
         spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: region(0),
         regions: living
             .iter()
             .map(|id| RegionInfo {
+                dimension: Default::default(),
                 region: region(*id),
                 epoch: 0,
                 bounds: None,
@@ -4109,12 +4111,14 @@ impl Store {
 
     fn list(&self) -> RegionList {
         RegionList {
+            homes: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: region(0),
             regions: self
                 .living
                 .iter()
                 .map(|(id, lane)| RegionInfo {
+                    dimension: Default::default(),
                     region: region(*id),
                     epoch: lane.epoch,
                     bounds: None,
@@ -6165,11 +6169,13 @@ fn the_coordinator_reads_the_list_again_after_a_split_whose_worker_lost_the_stor
     let lease = Duration::from_secs(5);
     let look = Duration::from_millis(250);
     let list = |living: &[u32], next: u32| RegionList {
+        homes: Vec::new(),
         spawn: clustine_world::BlockPos::new(0, -60, 0),
         home: RegionId(0),
         regions: living
             .iter()
             .map(|id| RegionInfo {
+                dimension: Default::default(),
                 region: RegionId(*id),
                 epoch: 0,
                 bounds: None,

@@ -188,10 +188,10 @@ impl Region {
             return;
         }
         let now = self.clock.game_time;
+        let world = self.seed();
         let schedules = &mut self.custom_spawners;
         let after = schedules.last.unwrap_or(now.saturating_sub(1));
         schedules.last = Some(now);
-        let world = self.config.seed;
         let phantoms = firings(
             world,
             PHANTOMS,
@@ -647,7 +647,7 @@ impl Region {
     /// spawners' phase, after the patrols' (the brief's 8.5: phantoms, patrols, cats,
     /// the siege, the trader).
     fn run_village_spawners(&mut self, after: u64, now: u64, output: &mut TickOutput) {
-        let world = self.config.seed;
+        let world = self.seed();
         let schedules = &mut self.custom_spawners;
         let cats = firings(world, CATS, cat_delay, &mut schedules.cats, after, now);
         let traders = firings(
@@ -894,7 +894,7 @@ impl Region {
             return;
         }
         if self.clock.day % crate::time::DAY == ROLL_VILLAGE_SIEGE {
-            let mut stream = Random::of_schedule(self.config.seed, SIEGE_NIGHTS, self.clock.day);
+            let mut stream = Random::of_schedule(self.seed(), SIEGE_NIGHTS, self.clock.day);
             let player = if stream.next_int(10) == 0 {
                 self.random_world_player(&mut stream).flatten()
             } else {
@@ -905,7 +905,7 @@ impl Region {
         let Some(player) = self.custom_spawners.siege.player else {
             return;
         };
-        let mut stream = Random::of_schedule(self.config.seed, SIEGE_TICKS, self.clock.game_time);
+        let mut stream = Random::of_schedule(self.seed(), SIEGE_TICKS, self.clock.game_time);
         if !self.custom_spawners.siege.set_up {
             if !self.set_up_siege(player, &mut stream) {
                 return;

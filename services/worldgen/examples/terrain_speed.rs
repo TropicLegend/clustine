@@ -32,7 +32,7 @@ fn main() {
         .nth(1)
         .map_or(13579, |seed| seed.parse().expect("the seed is a number"));
     let started = Instant::now();
-    let generator = TerrainGenerator::new(seed);
+    let generator = TerrainGenerator::new(seed, clustine_world::Dimension::Overworld);
     println!(
         "seed {seed}: seeding the noises took {:?}",
         started.elapsed()

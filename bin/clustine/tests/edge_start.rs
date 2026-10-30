@@ -62,11 +62,13 @@ fn table(
     waiting: u32,
 ) -> FromCoordinator {
     let routes = routes.iter().map(|(region, epoch, address)| RegionRoute {
+        dimension: Default::default(),
         region: RegionId(*region),
         epoch: *epoch,
         address: (*address).to_owned(),
     });
     FromCoordinator::Routing(RoutingTable {
+        homes: Default::default(),
         version,
         routes: routes.collect(),
         home: home.map(RegionId),

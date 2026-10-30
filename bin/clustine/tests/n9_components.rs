@@ -119,6 +119,7 @@ fn with_a_removal() -> ItemStack {
 
 fn entity(key: u64, kind: i32, data: EntityData) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: u16::try_from(kind).expect("a type"),
         uuid: uuid::Uuid::from_u128(u128::from(key) + 11),
@@ -234,6 +235,10 @@ fn place() -> LoggedPlace {
         std::array::from_fn(|_| None);
     ender[26] = Some(with_every_component(items::CROSSBOW));
     LoggedPlace {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         position: [1.5, -60.0, 2.5],
         yaw: 10.0,
         pitch: -5.0,
@@ -304,6 +309,7 @@ fn every_writer_of_the_log_keeps_every_component_of_a_stack() {
         Due::FromTaking,
     )];
     let record = LogRecord::Commit {
+        travellers: Vec::new(),
         region: 3,
         tick: 40,
         epoch: 2,

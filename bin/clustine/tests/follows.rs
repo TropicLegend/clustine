@@ -2246,9 +2246,11 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
     // One region: region 0 is the home region and holds everything.
     let home = RegionId(0);
     let mut list = RegionList {
+        homes: Vec::new(),
         spawn: clustine_world::BlockPos::new(0, 64, 0),
         home,
         regions: vec![RegionInfo {
+            dimension: Default::default(),
             region: home,
             epoch: 0,
             bounds: None,
@@ -2328,6 +2330,7 @@ fn a_region_that_was_split_as_its_worker_died_is_left_alone_as_after_a_split_tha
 
     // The store makes the split, and `a` dies before it says so.
     list.regions.push(RegionInfo {
+        dimension: Default::default(),
         region: part,
         epoch: as_epoch,
         bounds: Some(ChunkBox {

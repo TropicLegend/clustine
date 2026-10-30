@@ -44,6 +44,7 @@ fn villager_at(
     }
     brain::write_memories(&PROVIDER, &mut mob, remembered);
     Entity {
+        portal: Default::default(),
         key,
         kind: entity_types::VILLAGER as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

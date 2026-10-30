@@ -126,6 +126,7 @@ fn scenario(store: &Store) -> Vec<u64> {
     };
     for tick in 1..=TICKS {
         handle.request(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick,
             changes: changes(tick),
             state: delta(tick),

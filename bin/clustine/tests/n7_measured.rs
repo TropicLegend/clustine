@@ -716,7 +716,10 @@ fn seed() -> i64 {
 fn land(seed: i64) -> Scheduler<FeatureStages> {
     let processors = std::thread::available_parallelism().map_or(2, usize::from);
     Scheduler::new(
-        FeatureStages::new(Arc::new(TerrainGenerator::new(seed))),
+        FeatureStages::new(Arc::new(TerrainGenerator::new(
+            seed,
+            clustine_world::Dimension::Overworld,
+        ))),
         Options::for_processors(processors),
     )
 }

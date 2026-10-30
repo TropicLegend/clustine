@@ -40,6 +40,7 @@ fn falling_half() -> f64 {
 /// An item of dirt at `position`, at rest, on the ground or not, never picked up.
 fn item(key: u64, position: [f64; 3], on_ground: bool) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId((1 << 40) + key),
         kind: clustine_data::entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key)),
@@ -337,6 +338,7 @@ fn a_falling_block_in_the_path_of_a_head_is_pushed_and_lands_beyond_it() {
     let mut region = on_ticking_floor_with(&[(piston, state("minecraft:piston[facing=east]"))]);
     power(&mut region, BlockPos::new(1, -60, 3), true);
     let sand = Entity {
+        portal: Default::default(),
         key: EntityId((1 << 40) + 7),
         kind: clustine_data::entity_types::FALLING_BLOCK as u16,
         uuid: uuid::Uuid::from_u128(7),

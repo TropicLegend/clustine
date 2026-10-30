@@ -98,6 +98,7 @@ fn commit(handle: &StoreHandle, tick: u64) {
         Vec::new()
     };
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes,
         state: delta(tick),

@@ -187,6 +187,7 @@ fn other(key: EntityId, id: i32, feet: Vec3) -> (Entity, Aabb) {
     mob.body.vitals.health = 20.0;
     let info = EntityTypeInfo::of(id);
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: kind(id),
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

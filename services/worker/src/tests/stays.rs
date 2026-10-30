@@ -343,6 +343,10 @@ fn standing(x: f64) -> Pose {
 /// The place of somebody who has walked to `x` and done nothing else.
 fn place_at(x: f64) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: standing(x),
@@ -396,6 +400,10 @@ fn told(seat: &Seat, player: PlayerId, attempt: u64) -> Option<(EntityId, Place)
                 ..
             } if of == attempt => {
                 let place = Place {
+                    dimension: Default::default(),
+                    travel: None,
+                    seen_credits: false,
+                    portal_cooldown: 0,
                     respawn: None,
                     experience: Default::default(),
                     pose,
@@ -609,6 +617,10 @@ fn a_player_who_comes_back_is_placed_where_they_were_in_the_home_region_as_they_
     let mut hotbar = std::array::from_fn(|_| None);
     hotbar[4] = Some(stack);
     let place = Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose {
@@ -738,6 +750,11 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
     }
     let second = EntityId(2);
     let transfer = PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -861,6 +878,10 @@ fn a_player_who_left_below_the_world_enters_at_the_spawn_point_with_what_they_he
     let mut hotbar = std::array::from_fn(|_| None);
     hotbar[2] = Some(stack);
     let place = Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         respawn: None,
         experience: Default::default(),
         pose: Pose::at(SPAWN),
@@ -1800,8 +1821,9 @@ fn restored_with(
 ) -> Restored {
     let tick_state = |tick: u64, state: Vec<u8>| clustine_rpc::TickState { tick, state };
     Restored {
+        dimension: Default::default(),
         faces: Vec::new(),
-        spawn: clustine_world::BlockPos::new(0, -60, 0),
+        spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
         entity_ids: block,
         state: state.map(|state| tick_state(state.tick, stored(state))),
         deltas: deltas

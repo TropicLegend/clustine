@@ -114,6 +114,7 @@ fn mob_of(region: &mut Region, of: i32, feet: [f64; 3]) -> Entity {
     mob.body.vitals.air = MAX_AIR;
     mob.body.flags.no_ai = true;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 3),
@@ -488,6 +489,7 @@ fn a_trident_in_the_ground_is_picked_up_by_its_owner_and_by_no_one_else() {
     });
     let key = region.take_entity_key(ChunkPos::new(0, 0)).expect("a key");
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: kind(entity_types::TRIDENT),
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 5),
@@ -676,6 +678,7 @@ fn stuck(
         since,
     });
     let entity = Entity {
+        portal: Default::default(),
         key,
         kind: kind(of),
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 9),

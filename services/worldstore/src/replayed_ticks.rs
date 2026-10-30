@@ -60,6 +60,7 @@ fn commit(
     ticks: Vec<(ChunkPos, Vec<ScheduledTick>)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes
             .iter()

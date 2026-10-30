@@ -237,6 +237,7 @@ impl Region {
         made(&mut mob);
         self.entity_drew(player_key, level.draws_since(&level_start));
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,

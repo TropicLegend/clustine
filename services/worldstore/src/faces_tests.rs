@@ -183,6 +183,7 @@ fn the_clock_is_published_with_the_world_s_players() {
     answers(&home);
     answers(&west);
     home.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 3,
         changes: Vec::new(),
         state: b"delta 3".to_vec(),
@@ -249,6 +250,7 @@ fn let_go(player: clustine_world::PlayerId, entity: u64, hops: u32) -> StayNote 
 /// Whether the store still has the player's face: it is in the world's players.
 fn in_the_world(store_west: &StoreHandle, home: &StoreHandle, tick: u64) -> bool {
     home.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),
@@ -348,6 +350,7 @@ fn a_region_s_first_commit_after_a_hello_marks_offline_whom_it_wrote_and_does_no
     commit(&west, 2, vec![has(p, 5, 1, in_the_west())]);
     answers(&west);
     home.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 2,
         changes: Vec::new(),
         state: b"delta 2".to_vec(),
@@ -387,6 +390,7 @@ fn a_region_s_first_commit_after_a_hello_marks_offline_whom_it_wrote_and_does_no
 /// `game_time`.
 fn clocked(handle: &StoreHandle, tick: u64, game_time: u64) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: format!("delta {tick}").into_bytes(),

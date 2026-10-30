@@ -9,6 +9,7 @@ mod chunk;
 pub mod components;
 mod difficulty;
 mod dimension;
+pub mod dragon;
 mod effects;
 mod entity;
 pub mod generation;
@@ -20,6 +21,7 @@ pub mod raid;
 mod section;
 pub mod spawn;
 pub mod trading;
+mod travel;
 
 pub use change::Change;
 pub use chunk::{
@@ -46,6 +48,9 @@ pub use position::{
 };
 pub use projectiles::{Arrow, ArrowKind, Cloud, Fangs, Firework, InGround, Pickup, Spit};
 pub use section::{BIOME_CELLS, Biome, Section};
+pub use travel::{
+    LevelChunk, PortalAxis, PortalClock, PortalKind, PortalState, Travel, Traveller, Way,
+};
 
 /// Blocks along each edge of a section.
 pub const SECTION_SIZE: usize = 16;

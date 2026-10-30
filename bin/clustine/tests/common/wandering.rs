@@ -1264,7 +1264,10 @@ impl Wanders {
             Some(land) => {
                 // Players enter in the middle of the world's spawn block, on the
                 // ground of its column as it is when they enter.
-                let spawn = Vec3::bottom_centre_of(TerrainGenerator::new(land as i64).spawn());
+                let spawn = Vec3::bottom_centre_of(
+                    TerrainGenerator::new(land as i64, clustine_world::Dimension::Overworld)
+                        .spawn(),
+                );
                 World {
                     spawn: (spawn.x, spawn.y, spawn.z),
                     ..flat

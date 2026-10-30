@@ -145,6 +145,10 @@ impl Faces {
         let listed = self.kept.iter().map(|(player, held)| WorldPlayer {
             player: *player,
             entity: held.entity,
+            // Every region is the overworld's until the store keeps a region's
+            // dimension (`docs/groundwork/p-plan.md`, section 15.3): a face is then of
+            // the dimension of the region that wrote it.
+            dimension: clustine_world::Dimension::Overworld,
             position: held.face.position,
             game_mode: held.face.game_mode,
             sleeping: held.face.sleeping.map(|since| {

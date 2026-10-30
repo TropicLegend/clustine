@@ -51,6 +51,7 @@ fn cow(key: EntityId, feet: [f64; 3]) -> Entity {
     mob.body.vitals.air = crate::living::MAX_AIR;
     mob.body.flags.no_ai = true;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 1),

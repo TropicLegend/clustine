@@ -457,7 +457,7 @@ impl Region {
     fn hive_stream(&mut self, pos: BlockPos) -> Random {
         self.block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, HIVES))
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, HIVES))
     }
 
     /// `BeehiveBlockEntity.serverTick` of every hive with bees in the chunks the region
@@ -601,6 +601,7 @@ impl Region {
         let kind = entity_types::BEE as u16;
         let info = EntityTypeInfo::of(entity_types::BEE);
         let probe = clustine_world::Entity {
+            portal: Default::default(),
             key: EntityId(0),
             kind,
             uuid: Default::default(),

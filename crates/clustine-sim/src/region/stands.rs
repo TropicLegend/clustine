@@ -296,6 +296,7 @@ impl Region {
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let _yaw = own.next_float();
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind,
             uuid,

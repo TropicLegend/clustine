@@ -852,7 +852,7 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
     .with_placed_off(&off_names)
     .expect("the placed features turned off are the data's");
     let terrain = Arc::new(
-        TerrainGenerator::new(seed)
+        TerrainGenerator::new(seed, clustine_world::Dimension::Overworld)
             .with_biome_answers(answers(&cells))
             .with_structures_off(structures_off.clone()),
     );
@@ -1133,7 +1133,9 @@ fn areas_where_every_biome_of_the_overworld_stands() {
         .iter()
         .map(|biome| biome.0)
         .collect();
-    let spawn = TerrainGenerator::new(seed).spawn().chunk();
+    let spawn = TerrainGenerator::new(seed, clustine_world::Dimension::Overworld)
+        .spawn()
+        .chunk();
     let mut found: BTreeMap<u16, ChunkPos> = BTreeMap::new();
     const STEP: i32 = 6;
     'rings: for ring in (40 / STEP)..(1200 / STEP) {
@@ -1179,7 +1181,7 @@ fn areas_where_every_structure_stands() {
 
     let seed: i64 = std::env::var("CLUSTINE_GAME_FEATURES_SEED")
         .map_or(13579, |seed| seed.parse().expect("a seed is a number"));
-    let terrain = TerrainGenerator::new(seed);
+    let terrain = TerrainGenerator::new(seed, clustine_world::Dimension::Overworld);
     let structures =
         clustine_structures::Structures::new(seed, clustine_terrain::biome::Dimension::Overworld);
     let sets = structures.possible_sets().to_vec();

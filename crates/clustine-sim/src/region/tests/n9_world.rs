@@ -145,6 +145,10 @@ pub(super) fn entering_place(
     time_since_rest: u32,
 ) -> Place {
     Place {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal_cooldown: 0,
         pose: Pose::at(feet),
         flying: false,
         inventory: Inventory::default(),

@@ -323,7 +323,7 @@ impl Region {
     fn take_dispenser_stream(&mut self, pos: BlockPos) -> Random {
         self.block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, DISPENSING))
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, DISPENSING))
     }
 
     /// `DispenserBlock.dispenseFrom(level, state, pos)`: a slot drawn, and the
@@ -635,6 +635,7 @@ impl Region {
         let yaw = own.next_float() * 360.0;
         let _motion = [own.next_double(), own.next_double()];
         Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
             uuid,

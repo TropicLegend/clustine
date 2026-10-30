@@ -429,11 +429,13 @@ mod tests {
     /// A table with routes for `routed` and with so many regions waiting for a worker.
     fn table(home: Option<u32>, routed: &[u32], waiting: u32) -> RoutingTable {
         let route = |region: &u32| RegionRoute {
+            dimension: Default::default(),
             region: RegionId(*region),
             epoch: 7,
             address: "a:25601".to_owned(),
         };
         RoutingTable {
+            homes: Default::default(),
             version: 1,
             routes: routed.iter().map(route).collect(),
             home: home.map(RegionId),

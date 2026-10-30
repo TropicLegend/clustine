@@ -27,6 +27,7 @@ fn drag() -> f64 {
 /// changes of holder behind it, never picked up.
 fn item(key: u64, position: [f64; 3], motion: [f64; 3], on_ground: bool, hops: u32) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId((1 << 40) + key),
         kind: clustine_data::entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(key)),

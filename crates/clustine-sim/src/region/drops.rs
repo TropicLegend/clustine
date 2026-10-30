@@ -79,7 +79,7 @@ impl Region {
         let mut random = self
             .block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, DROPS));
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, DROPS));
         let stacks = block_drops(state, pos, &mut Loot(&mut random), &mut |at| {
             self.block(at).unwrap_or(blocks::AIR)
         });
@@ -103,7 +103,7 @@ impl Region {
         let mut random = self
             .block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, DROPS));
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, DROPS));
         self.pop_resource(pos, stack, &mut random, output);
         self.block_streams.insert(pos, random);
     }
@@ -193,6 +193,7 @@ impl Region {
         let z = own.next_double() * 0.2 - 0.1;
         self.entity_drew(key, 6);
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::ITEM).expect("entity type ids fit 16 bits"),
             uuid,

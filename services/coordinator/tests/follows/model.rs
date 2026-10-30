@@ -447,12 +447,14 @@ impl World {
     /// The store's list: what the model made.
     pub fn list(&self) -> RegionList {
         RegionList {
+            homes: Vec::new(),
             spawn: clustine_world::BlockPos::new(0, -60, 0),
             home: HOME,
             regions: self
                 .regions
                 .iter()
                 .map(|(region, land)| RegionInfo {
+                    dimension: Default::default(),
                     region: *region,
                     epoch: 0,
                     bounds: None,

@@ -207,6 +207,7 @@ fn healthy(kind: u16, state: clustine_world::TypeState) -> Mob {
 /// The record of a mob of the type `kind` at `position`.
 fn record(key: EntityId, kind: u16, position: Vec3, mob: &Mob) -> Entity {
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

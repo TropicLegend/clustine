@@ -47,6 +47,7 @@ fn report(full: bool, chunks: &[(i32, i32, u32)]) -> StoreRequest {
 /// and waits until it is done.
 fn commit_at(handle: &StoreHandle, tick: u64, game_time: u64) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         state: format!("delta {tick}").into_bytes(),
         tick,
         changes: Vec::new(),

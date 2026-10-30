@@ -956,7 +956,10 @@ fn the_servers_store(directory: &Path) -> (Store, std::sync::mpsc::Receiver<Inst
     let (ended, end) = std::sync::mpsc::channel();
     let generator = Arc::new(Ending {
         scheduler: Some(Scheduler::new(
-            PreviewStages::new(Arc::new(TerrainGenerator::new(13579))),
+            PreviewStages::new(Arc::new(TerrainGenerator::new(
+                13579,
+                clustine_world::Dimension::Overworld,
+            ))),
             Options {
                 order: Order::Bare,
                 ..Options::for_processors(processors)
@@ -1532,6 +1535,7 @@ fn commit_ticks(
     ticks: Vec<(ChunkPos, Vec<clustine_world::ScheduledTick>)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: whole("delta", tick),
@@ -1644,6 +1648,7 @@ fn a_chunk_given_an_entity_by_a_restore_keeps_it_when_a_newer_generator_makes_it
     let store = store_on(&disk, toy);
     let x = open(&store, hello(EAST, 2));
     x.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 1,
         changes: Vec::new(),
         state: whole("delta", 1),
@@ -1737,6 +1742,7 @@ fn commit_entities(
     changes: Vec<(ChunkPos, clustine_world::EntityChange)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: Vec::new(),
         state: whole("delta", tick),

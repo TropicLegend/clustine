@@ -171,7 +171,7 @@ impl Region {
         let mut random = self
             .block_streams
             .remove(&pos)
-            .unwrap_or_else(|| Random::of_block(self.config.seed, pos, self.tick, PRIMING));
+            .unwrap_or_else(|| Random::of_block(self.seed(), pos, self.tick, PRIMING));
         let made = self.spawn_primed_tnt(pos, owner, false, &mut random, output);
         self.block_streams.insert(pos, random);
         let Some(position) = made else {
@@ -229,6 +229,7 @@ impl Region {
         let mut own = self.entity_stream(key).random;
         let uuid = insecure_uuid(own.next_u64(), own.next_u64());
         let entity = Entity {
+            portal: Default::default(),
             key,
             kind: u16::try_from(entity_types::TNT).expect("entity type ids fit 16 bits"),
             uuid,

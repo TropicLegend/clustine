@@ -72,7 +72,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after,
         lowest_y: -64,
@@ -401,6 +402,10 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
@@ -468,6 +473,7 @@ fn edges_before_a_split() -> [(EdgeId, EdgeState); 2] {
 /// holds it or not, and it gives nothing back while a test lasts.
 fn with_players(holdings: Holdings, players: &[(i32, EdgeId, ChunkPos)]) -> Region {
     let state = RegionState {
+        dragon_fight: None,
         tick: 40,
         entity_ids: ids(),
         next_entity_id: entity(20),
@@ -1570,7 +1576,8 @@ const START: u64 = 10;
 
 fn run_config() -> RegionConfig {
     RegionConfig {
-        spawn: ENTRANCE,
+        dimension: Default::default(),
+        spawn: Some(ENTRANCE),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,

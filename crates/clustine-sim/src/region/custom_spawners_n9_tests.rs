@@ -100,7 +100,8 @@ fn region_with(day: u64, blocks: impl Fn(BlockPos) -> Option<BlockState>, villag
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
-        spawn: Vec3::new(0.5, FEET, 0.5),
+        dimension: Default::default(),
+        spawn: Some(Vec3::new(0.5, FEET, 0.5)),
         starting_inventory: Default::default(),
         return_after: u64::MAX,
         lowest_y: -64,
@@ -376,6 +377,7 @@ fn table(numbers: &[u128]) -> Vec<WorldPlayer> {
     numbers
         .iter()
         .map(|number| WorldPlayer {
+            dimension: Default::default(),
             player: player_number(*number),
             entity: EntityId(1_000_000 + *number as u64),
             position: [0.5, FEET, 0.5],

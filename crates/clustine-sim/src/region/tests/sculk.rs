@@ -294,6 +294,7 @@ fn an_item_on_a_sensor_sets_it_off_even_of_wool() {
         let sensor_at = BlockPos::new(6, -60, 6);
         let mut region = ticking_with(&[(sensor_at, inactive())]);
         let entity = clustine_world::Entity {
+            portal: Default::default(),
             key: EntityId((1 << 40) + 1),
             kind: clustine_data::entity_types::ITEM as u16,
             uuid: uuid::Uuid::from_u128(1),

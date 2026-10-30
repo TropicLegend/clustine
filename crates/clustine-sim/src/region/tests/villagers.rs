@@ -45,6 +45,7 @@ fn mob_at(
     mob.body.flags.picks_up_loot = picks_up;
     mob.state = state;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),
@@ -503,6 +504,7 @@ fn a_villager_in_deep_water_swims_up_to_its_top() {
 
 fn bread_at(position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: BREAD_KEY,
         kind: entity_types::ITEM as u16,
         uuid: uuid::Uuid::from_u128(u128::from(BREAD_KEY.0)),

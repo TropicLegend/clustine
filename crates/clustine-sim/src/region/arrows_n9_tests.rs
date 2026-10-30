@@ -127,6 +127,7 @@ fn lying(region: &mut Region, kind: u16, position: [f64; 3], lived: u32, arrow: 
         .take_entity_key(ChunkPos::containing(position[0], position[2]))
         .expect("a key");
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 11),
@@ -157,6 +158,7 @@ fn cow(key: EntityId, feet: [f64; 3]) -> Entity {
     mob.body.vitals.air = crate::living::MAX_AIR;
     mob.body.flags.no_ai = true;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0) + 1),

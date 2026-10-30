@@ -19,6 +19,7 @@ fn zombie_at(position: [f64; 3]) -> Entity {
         .expect("a zombie's") as f32;
     mob.body.vitals.air = 300;
     Entity {
+        portal: Default::default(),
         key: ZOMBIE,
         kind,
         uuid: uuid::Uuid::from_u128(77),

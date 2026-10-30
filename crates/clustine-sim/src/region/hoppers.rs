@@ -630,7 +630,7 @@ impl Region {
         let bound = u32::try_from(count).unwrap_or(u32::MAX);
         let drawn = match draw {
             Draw::Block(pos, purpose) => {
-                Random::of_block(self.config.seed, pos, self.tick, purpose).next_int(bound)
+                Random::of_block(self.seed(), pos, self.tick, purpose).next_int(bound)
             }
             Draw::Entity(key) => {
                 let mut random = self.entity_stream(key).random;

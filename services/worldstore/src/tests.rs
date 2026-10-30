@@ -132,6 +132,7 @@ pub(crate) fn delta(tick: u64) -> Vec<u8> {
 /// Commits the block changes of `tick`, with [`delta`] as the change of state.
 pub(crate) fn log(store: &StoreHandle, tick: u64, changes: &[(i32, i32, i32, BlockState)]) {
     store.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         state: delta(tick),
         tick,
         changes: changes
@@ -577,6 +578,7 @@ fn commits_carry_the_region_and_the_epoch_of_the_owner() {
             restored: 0,
         },
         LogRecord::Commit {
+            travellers: Vec::new(),
             region: 1,
             tick: 3,
             epoch: 7,
@@ -1142,7 +1144,12 @@ fn a_world_is_tied_to_its_generator() {
 fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with_a_seed() {
     use clustine_worldgen::TerrainGenerator;
 
-    let of_seed = |seed: i64| -> Arc<dyn ChunkGenerator> { Arc::new(TerrainGenerator::new(seed)) };
+    let of_seed = |seed: i64| -> Arc<dyn ChunkGenerator> {
+        Arc::new(TerrainGenerator::new(
+            seed,
+            clustine_world::Dimension::Overworld,
+        ))
+    };
     let refused = |directory: &std::path::Path, generator: Arc<dyn ChunkGenerator>| {
         let current = generator.settings().identity;
         let Err(error) = spawn_local(directory, generator) else {
@@ -1273,8 +1280,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 
 /// A world of format 1, 2 or 3, of 13, whose stacks have no components, of 14, whose
 /// places keep no effects, of 15, whose chunks keep no structures, of 16, whose chunks
-/// keep no claims on points of interest, or of 17, whose chunks keep no raids, is not
-/// opened,
+/// keep no claims on points of interest, of 17, whose chunks keep no raids, or of 18,
+/// whose places name no dimension, is not opened,
 /// not made over and not touched: worlds are
 /// thrown away until the first release, and whoever kept one is told what to do with
 /// the directory. The store says that before it looks at anything else, so the sentence
@@ -1284,8 +1291,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 fn a_world_of_an_earlier_format_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched()
 {
     let settings = generator().settings().identity;
-    assert_eq!(FORMAT_VERSION, 18, "17 is the format just before");
-    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17]
+    assert_eq!(FORMAT_VERSION, 19, "18 is the format just before");
+    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17, 18]
         .into_iter()
         .flat_map(|format| {
             [
@@ -2117,7 +2124,10 @@ fn a_checkpoint_of_a_replaced_owner_is_not_put_in_place() {
 /// names its generator.
 pub(crate) fn seeded_identity(seed: i64) -> String {
     use clustine_worldgen::stages::Stages as _;
-    let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(seed));
+    let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(
+        seed,
+        clustine_world::Dimension::Overworld,
+    ));
     clustine_worldgen::FeatureStages::new(terrain)
         .settings()
         .identity
@@ -2159,9 +2169,10 @@ fn the_seed_of_a_world_with_features_is_read_from_its_generators_identity() {
 fn a_flat_world_and_the_preview_of_a_seeds_land_have_no_seed_of_features() {
     let flat = generator().settings().identity;
     assert_eq!(world_seed(&flat), None, "{flat}");
-    let preview = clustine_worldgen::TerrainGenerator::new(13579)
-        .settings()
-        .identity;
+    let preview =
+        clustine_worldgen::TerrainGenerator::new(13579, clustine_world::Dimension::Overworld)
+            .settings()
+            .identity;
     assert!(preview.contains("seed 13579"), "{preview}");
     assert_eq!(world_seed(&preview), None, "{preview}");
     assert_eq!(world_seed(""), None);

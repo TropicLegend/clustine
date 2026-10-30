@@ -2347,7 +2347,7 @@ mod tests {
         use crate::disk::OsDisk;
 
         // A view's worth of land at the spawn point and beyond, as a region asks for it.
-        let generator = TerrainGenerator::new(13579);
+        let generator = TerrainGenerator::new(13579, clustine_world::Dimension::Overworld);
         let made: Vec<_> = (0..512)
             .map(|i| {
                 let position = ChunkPos::new(i % 32 - 16, i / 32 - 8);

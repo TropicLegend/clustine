@@ -143,6 +143,7 @@ impl Actor {
         let blocks = chunks.iter().map(|chunk| (*chunk, x, y, z)).collect();
         self.unanswered.insert(self.tick, blocks);
         self.handle.request(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick: self.tick,
             changes,
             state: self.state("delta"),

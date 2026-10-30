@@ -528,6 +528,7 @@ fn a_block_and_an_entity_across_a_line_are_made_into_effects_with_the_blast() {
 /// An item record for a copy, not taken from the region's keys.
 fn record_for_copy(position: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(0),
         kind: u16::try_from(entity_types::ITEM).expect("a type's id"),
         uuid: Uuid::from_u128(99),

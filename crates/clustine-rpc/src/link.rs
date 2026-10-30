@@ -252,6 +252,11 @@ mod tests {
 
     fn transfer() -> PlayerTransfer {
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),

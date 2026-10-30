@@ -91,6 +91,7 @@ fn commit(
     seams: Vec<(ChunkPos, Vec<Seam>)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes
             .iter()

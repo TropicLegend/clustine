@@ -1108,6 +1108,10 @@ mod tests {
                     stay: 258,
                     hops: 4,
                     place: Some(LoggedPlace {
+                        dimension: Default::default(),
+                        travel: None,
+                        seen_credits: false,
+                        portal_cooldown: 0,
                         respawn: None,
                         experience: (2, 0.5, 13),
                         position: [1.5, -2.0, 0.0],
@@ -1294,6 +1298,11 @@ mod tests {
         // No respawn point, no effects, no time since rest and no raid omen's place.
         body.push(0);
         body.extend_from_slice(&[0; 4]);
+        body.extend_from_slice(&[0; 4]);
+        body.push(0);
+        // The overworld, the credits not seen, no portal cooldown and no travel.
+        body.push(0);
+        body.push(0);
         body.extend_from_slice(&[0; 4]);
         body.push(0);
         assert_eq!(bytes[..body.len()], body);
@@ -1624,7 +1633,7 @@ mod tests {
                                 inventory,
                                 ender,
                             )| {
-                                LoggedPlace {
+                                LoggedPlace { dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
                                     respawn: None,
                                     experience: (0, 0.0, 0),
                                     position,

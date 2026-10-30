@@ -38,7 +38,7 @@ fn a_chunk_is_the_same_whatever_was_asked_before_and_whatever_is_kept() {
     ];
 
     // In this order, each beside what the ones before it left.
-    let warm = TerrainGenerator::new(SEED);
+    let warm = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     let forwards: Vec<Chunk> = positions.iter().map(|at| warm.generate(*at)).collect();
     // A second time, with everything kept.
     for (position, chunk) in positions.iter().zip(&forwards) {
@@ -47,7 +47,7 @@ fn a_chunk_is_the_same_whatever_was_asked_before_and_whatever_is_kept() {
 
     // By another generator of the same seed, in the opposite order, with nothing
     // kept before each.
-    let cold = TerrainGenerator::new(SEED);
+    let cold = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     for (position, chunk) in positions.iter().zip(&forwards).rev() {
         cold.forget();
         assert_eq!(cold.kept(), 0);
@@ -62,7 +62,7 @@ fn a_chunk_is_the_same_whatever_was_asked_before_and_whatever_is_kept() {
         assert!(chunk.light().is_some());
     }
     // Another seed is another world.
-    let other = TerrainGenerator::new(SEED + 1);
+    let other = TerrainGenerator::new(SEED + 1, clustine_world::Dimension::Overworld);
     assert_ne!(other.generate(positions[1]), forwards[1]);
 }
 
@@ -75,7 +75,7 @@ const BENT: ChunkPos = ChunkPos::new(-14, 15);
 fn a_chunk_has_the_blocks_of_the_terrain_bent_by_structures_and_the_biomes_of_the_source() {
     let structures = Structures::new(SEED, Dimension::Overworld);
     let (terrain, source) = (structures.terrain(), structures.biomes());
-    let generator = TerrainGenerator::new(SEED);
+    let generator = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     let mut states = std::collections::BTreeSet::new();
     let mut biomes = std::collections::BTreeSet::new();
     let mut bent = 0;
@@ -130,7 +130,7 @@ fn a_chunk_has_the_blocks_of_the_terrain_bent_by_structures_and_the_biomes_of_th
 fn a_chunk_carries_the_light_of_its_blocks_beside_its_eight_neighbours() {
     let terrain = Terrain::new(SEED, Dimension::Overworld);
     let source = BiomeSource::new(SEED, Dimension::Overworld);
-    let generator = TerrainGenerator::new(SEED);
+    let generator = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     let position = ChunkPos::new(4, -3);
     let chunk = generator.generate(position);
 
@@ -177,16 +177,19 @@ fn a_chunk_carries_the_light_of_its_blocks_beside_its_eight_neighbours() {
 
 #[test]
 fn the_settings_name_the_seed_and_the_version_apart() {
-    let settings = TerrainGenerator::new(SEED).settings();
+    let settings = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld).settings();
     assert_eq!(
         settings.identity,
         "terrain;preview;minecraft:overworld;seed 13579"
     );
     assert_eq!(settings.version, TERRAIN_VERSION);
-    assert_ne!(settings, TerrainGenerator::new(-SEED).settings());
+    assert_ne!(
+        settings,
+        TerrainGenerator::new(-SEED, clustine_world::Dimension::Overworld).settings()
+    );
     assert_ne!(settings, FlatGenerator::classic().settings());
     assert!(
-        TerrainGenerator::new(-SEED)
+        TerrainGenerator::new(-SEED, clustine_world::Dimension::Overworld)
             .settings()
             .identity
             .ends_with("seed -13579")
@@ -195,7 +198,7 @@ fn the_settings_name_the_seed_and_the_version_apart() {
 
 #[test]
 fn a_client_is_told_the_hash_of_the_seed_and_where_the_sea_is() {
-    let generator = TerrainGenerator::new(SEED);
+    let generator = TerrainGenerator::new(SEED, clustine_world::Dimension::Overworld);
     assert_eq!(generator.seed(), SEED);
     // Without a generator: an edge makes none.
     assert_eq!(TerrainGenerator::hashed_seed(SEED), obfuscate_seed(SEED));
@@ -211,7 +214,7 @@ fn a_new_worlds_spawn_is_dry_ground_to_stand_on() {
     // The first has sea at the origin, where players entered before a world's spawn
     // was chosen as the game chooses it; the others were not chosen.
     for seed in [SEED, 1, 2, 3, -4] {
-        let generator = TerrainGenerator::new(seed);
+        let generator = TerrainGenerator::new(seed, clustine_world::Dimension::Overworld);
         let spawn = generator.spawn();
         let chunk = generator.generate(spawn.chunk());
         let (x, z) = spawn.in_chunk();
@@ -228,7 +231,10 @@ fn a_new_worlds_spawn_is_dry_ground_to_stand_on() {
         );
         // The same every time: a world keeps what it got, and a crash before it was
         // kept gets it again.
-        assert_eq!(TerrainGenerator::new(seed).spawn(), spawn);
+        assert_eq!(
+            TerrainGenerator::new(seed, clustine_world::Dimension::Overworld).spawn(),
+            spawn
+        );
     }
 }
 
@@ -242,7 +248,10 @@ fn the_preview_on_the_scheduler_makes_the_chunks_the_preview_makes() {
     use clustine_worldgen::PreviewStages;
     use clustine_worldgen::scheduler::{Options, Order, Scheduler};
 
-    let terrain = Arc::new(TerrainGenerator::new(SEED));
+    let terrain = Arc::new(TerrainGenerator::new(
+        SEED,
+        clustine_world::Dimension::Overworld,
+    ));
     let positions = [
         ChunkPos::new(0, 0),
         ChunkPos::new(1, 0),

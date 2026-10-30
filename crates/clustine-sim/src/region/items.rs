@@ -205,14 +205,14 @@ impl Region {
     pub(super) fn entity_stream(&self, key: EntityId) -> Stream {
         let (mut random, drawn) = match self.ticking {
             Some((ticking, lived)) if ticking == key => (
-                Random::of_entity(self.config.seed, key, lived),
+                Random::of_entity(self.seed(), key, lived),
                 self.entity_draws.get(&key),
             ),
             _ => {
                 // A player, or an entity not yet in its chunk, has lived no tick here.
                 let lived = self.find_entity(key).map_or(0, |(_, entity)| entity.lived);
                 (
-                    Random::of_entity_aside(self.config.seed, key, lived, self.tick),
+                    Random::of_entity_aside(self.seed(), key, lived, self.tick),
                     self.aside_draws.get(&key),
                 )
             }
@@ -437,6 +437,7 @@ impl Region {
             entity: key,
             chunk: position,
             hops,
+            travelled: false,
         });
     }
 

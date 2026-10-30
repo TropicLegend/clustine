@@ -304,6 +304,7 @@ async fn a_falling_block_appears_before_its_block_leaves_and_lands_before_it_goe
             state: SAND.0,
         },
         RegionEvent::EntityGone {
+            travelled: false,
             entity: EntityId(key),
             chunk: HOME,
             hops: 0,
@@ -351,6 +352,7 @@ async fn a_pick_up_is_shown_to_everyone_shown_the_item_and_then_it_goes() {
             chunk: HOME,
         },
         RegionEvent::EntityGone {
+            travelled: false,
             entity: EntityId(key),
             chunk: HOME,
             hops: 0,
@@ -412,6 +414,7 @@ async fn a_removal_goes_by_hops_and_is_kept_against_late_word_for_600_ticks() {
     .await;
     let gone = |hops| {
         vec![RegionEvent::EntityGone {
+            travelled: false,
             entity: EntityId(key),
             chunk: HOME,
             hops,

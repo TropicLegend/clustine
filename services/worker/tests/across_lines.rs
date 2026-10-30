@@ -571,6 +571,7 @@ impl Played {
         let tick = self.next;
         self.next += 1;
         self.handle.request(StoreRequest::Commit {
+            travellers: Vec::new(),
             tick,
             changes: Vec::new(),
             state: Vec::new(),

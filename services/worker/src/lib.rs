@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 24;
+pub const STATE_FORMAT: u8 = 25;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1056,8 +1056,22 @@ impl RegionSettings {
     /// ([`Restored::seed`]): players enter in the middle of the spawn, random ticks are
     /// drawn from the number, and saplings grow the trees of the seed's features.
     pub fn with_spawn(self, spawn: BlockPos, world: u64, seed: Option<i64>) -> RegionConfig {
+        self.of_region(Dimension::Overworld, Some(spawn), world, seed)
+    }
+
+    /// The configuration of a region of `dimension`, which has the world's spawn if it
+    /// is the overworld's ([`Restored::spawn`], [`Restored::dimension`]); otherwise as
+    /// [`RegionSettings::with_spawn`].
+    pub fn of_region(
+        self,
+        dimension: Dimension,
+        spawn: Option<BlockPos>,
+        world: u64,
+        seed: Option<i64>,
+    ) -> RegionConfig {
         RegionConfig {
-            spawn: Vec3::bottom_centre_of(spawn),
+            dimension,
+            spawn: spawn.map(Vec3::bottom_centre_of),
             starting_inventory: self.starting_inventory,
             return_after: self.return_after,
             lowest_y: self.lowest_y,
@@ -1073,7 +1087,7 @@ impl RegionSettings {
                 checks: light_checks(),
                 ..clustine_sim::LightSettings::SERVER
             },
-            features: features_of(seed),
+            features: features_of(dimension, seed),
             random_tick_speed: random_tick_speed(),
         }
     }
@@ -1149,35 +1163,33 @@ fn light_checks() -> clustine_sim::LightChecks {
     }
 }
 
-/// The features of the world a process serves, kept with their seed: built for the
-/// first region it opens and shared by the rest, since reading every feature of the
-/// game's data takes some milliseconds and a worker serves one world. A test that
-/// opens worlds of other seeds in one process has them built again.
-static FEATURES: Mutex<Option<(i64, Arc<FeatureSettings>)>> = Mutex::new(None);
+/// The features of the world a process serves, by dimension and seed: built for the
+/// first region of a dimension it opens and shared by the rest, since reading every
+/// feature of the game's data takes some milliseconds and a worker serves one world.
+/// Tests that open worlds of other seeds in one process keep each seed's, so that two
+/// running at once do not take each other's away.
+static FEATURES: Mutex<BTreeMap<(Dimension, i64), Arc<FeatureSettings>>> =
+    Mutex::new(BTreeMap::new());
 
-/// The overworld's features of `seed`, or of the flat world's seed 0 without one: in a
-/// flat world too a sapling grows into the game's tree and bone meal on grass places
-/// the plains' plants, as a game's superflat world has them.
+/// The features of `dimension` of `seed`, or of the flat world's seed 0 without one:
+/// in a flat world too a sapling grows into the game's tree and bone meal on grass
+/// places the plains' plants, as a game's superflat world has them.
 ///
 /// They are without the blocks of the structure templates, which a worker does not
 /// read from the game's jar: the trees saplings grow and what bone meal places need
 /// none, and a region places no other feature.
-fn features_of(seed: Option<i64>) -> Features {
+fn features_of(dimension: Dimension, seed: Option<i64>) -> Features {
     let seed = seed.unwrap_or(0);
     // Built while the lock is held, so that regions opened at once wait for the one
     // build rather than each making their own.
     let mut kept = FEATURES.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((of, features)) = &*kept
-        && *of == seed
-    {
-        return Features(Some(Arc::clone(features)));
-    }
-    let features = Arc::new(
-        FeatureSettings::new(seed, Dimension::Overworld)
-            .expect("the features' data is built into the server and read whole by its tests"),
-    );
-    *kept = Some((seed, Arc::clone(&features)));
-    Features(Some(features))
+    let features = kept.entry((dimension, seed)).or_insert_with(|| {
+        Arc::new(
+            FeatureSettings::new(seed, dimension)
+                .expect("the features' data is built into the server and read whole by its tests"),
+        )
+    });
+    Features(Some(Arc::clone(features)))
 }
 
 impl RegionRunner {
@@ -1196,7 +1208,12 @@ impl RegionRunner {
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn, restored.world, restored.seed);
+        let config = settings.of_region(
+            restored.dimension,
+            restored.spawn,
+            restored.world,
+            restored.seed,
+        );
         let faces = mem::take(&mut restored.faces);
         let borders = Restored {
             deltas: Vec::new(),
@@ -1599,6 +1616,15 @@ impl RegionRunner {
     fn take_replies(&mut self) -> bool {
         while let Some(reply) = self.store.try_reply() {
             match reply {
+                // Travellers and the portal index's answers go to the coming tick as
+                // they come (`docs/groundwork/p-plan.md`, section 15.4): the region keeps
+                // what it needs loaded for them itself.
+                StoreReply::Travellers { travellers } => {
+                    self.inputs.travellers.extend(travellers);
+                }
+                StoreReply::Portals { answers } => {
+                    self.inputs.portal_answers.extend(answers);
+                }
                 // Lends (`docs/adr/0027-lending-at-a-line.md`): into the coming tick, as
                 // a claim's answer goes. An ask answered in any way is no longer under way.
                 StoreReply::LendAsked { lend, chunks, to } => {
@@ -2919,6 +2945,7 @@ impl RegionRunner {
             || !taken.is_empty()
             || !arrivals.is_empty()
             || !arrivals_taken.is_empty()
+            || !output.travellers.is_empty()
             || self.border.has_made()
             || self.border.commits_every_tick();
         if needs_commit {
@@ -2956,7 +2983,16 @@ impl RegionRunner {
                 entity_changes,
                 arrivals,
                 arrivals_taken,
+                travellers: output.travellers,
                 clock: output.clock,
+            });
+        }
+        // The tick's questions to the portal index, behind its commit, which the answer
+        // covers (`docs/groundwork/p-plan.md`, section 15.4). The chunks a waiting
+        // traveller needs (`output.travel_tickets`) are kept by P9, which first asks.
+        if !output.portal_queries.is_empty() {
+            self.store.request(StoreRequest::Portals {
+                queries: output.portal_queries,
             });
         }
         // The counts of its mobs the tick reported, behind its commit
@@ -5230,7 +5266,8 @@ mod tests {
                 | StoreRequest::Lending { .. }
                 | StoreRequest::Counts(_)
                 | StoreRequest::Village(_)
-                | StoreRequest::TraderChance { .. } => return None,
+                | StoreRequest::TraderChance { .. }
+                | StoreRequest::Portals { .. } => return None,
             })
         }
     }
@@ -5375,7 +5412,10 @@ mod tests {
 
         fn new() -> Self {
             use clustine_worldgen::stages::Stages as _;
-            let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(Self::SEED));
+            let terrain = Arc::new(clustine_worldgen::TerrainGenerator::new(
+                Self::SEED,
+                clustine_world::Dimension::Overworld,
+            ));
             Self(clustine_worldgen::FeatureStages::new(terrain).settings())
         }
     }
@@ -5397,7 +5437,12 @@ mod tests {
         assert_eq!(restored.seed, Some(Seeded::SEED));
         let configured = || {
             settings(0)
-                .with_spawn(restored.spawn, restored.world, restored.seed)
+                .of_region(
+                    restored.dimension,
+                    restored.spawn,
+                    restored.world,
+                    restored.seed,
+                )
                 .features
                 .0
                 .expect("a world with a seed has features")
@@ -5466,7 +5511,12 @@ mod tests {
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
         let rings = settings.rings;
-        let config = settings.with_spawn(restored.spawn, restored.world, restored.seed);
+        let config = settings.of_region(
+            restored.dimension,
+            restored.spawn,
+            restored.world,
+            restored.seed,
+        );
         let control = Arc::new(GateControl::default());
 
         let gate = Gate {
@@ -5541,6 +5591,11 @@ mod tests {
     /// A player as another region hands them over, standing in the chunk at the origin.
     fn transfer(entity_id: EntityId) -> PlayerTransfer {
         PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -8096,8 +8151,9 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: clustine_world::BlockPos::new(0, -60, 0),
+            spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: EntityIds::block(0).unwrap(),
@@ -8312,6 +8368,11 @@ mod tests {
         // an outbox entry: a `NotMine`.
         let beyond = Vec3::new(40.5, -60.0, 0.5);
         let arriving = PlayerTransfer {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal: Default::default(),
+            unit: None,
             sleeping: None,
             respawn: None,
             experience: Default::default(),
@@ -8464,54 +8525,58 @@ mod tests {
     /// (section 9.5 of the same plan): one byte more a player, none set here. Format 24
     /// has the entry that says a remote action is done carry the blocks its player is
     /// shown after a click, a byte more such an entry; none is in an outbox here, so
-    /// only the number differs.
+    /// only the number differs. Format 25 keeps a player's portal clock and cooldown,
+    /// their travel, whether they saw the credits and whether they watch them, five
+    /// bytes more a player where none is set, six more a transfer in an outbox (its
+    /// dimension, travel, credits, portal state and unit), and the End's dragon fight,
+    /// a byte more a state (`docs/groundwork/p-plan.md`, section 15).
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 24);
+        assert_eq!(STATE_FORMAT, 25);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "001802018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "001902018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
-                "00000000000002000107030102060601040010000000000000000000000000000000034d054e6f74",
-                "636800000000004044400000000000004ec0000000000000e03f0000000000000000002900000000",
-                "00000000000000000000000000000000000000000000000000000000000000000000000000001b00",
-                "00000000000000000000000000000000000000000000000000000502010117000000000000000000",
-                "00000000000000000000000000000102021000000000000000000000000000000002021200207900",
-                "01010300100000000000000000000000000000000101055374657665000000000040444000000000",
-                "00004ec0000000000000e03f00000000000000000129000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000001b000000000000000000000000000000",
-                "00000000000000000000000001010000000000000000000000000000000000000000000000010001",
-                "04050104060201030506090110000000000000000000000000000000034d01170607100000000000",
-                "00000000000000000000034c01180110000000000000000000000000000000034e034a6562071901",
-                "0106090202",
+                "00000000000002000000000000010703010206060104001000000000000000000000000000000003",
+                "4d054e6f74636800000000004044400000000000004ec0000000000000e03f000000000000000000",
+                "29000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                "0000001b000000000000000000000000000000000000000000000000000000050201011700000000",
+                "00000000000000000000000000000000000000000000000000010202100000000000000000000000",
+                "00000000020212002079000101030010000000000000000000000000000000010105537465766500",
+                "000000004044400000000000004ec0000000000000e03f0000000000000000012900000000000000",
+                "00000000000000000000000000000000000000000000000000000000000000000000001b00000000",
+                "00000000000000000000000000000000000000000000000101000000000000000000000000000000",
+                "00000000000000000100000000000000010405010406020103050609011000000000000000000000",
+                "0000000000034d0117060710000000000000000000000000000000034c0118011000000000000000",
+                "0000000000000000034e034a6562071901010609020200",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00180200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "00190200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",
-                "00000000000000000000000000000000000000000200010701030102060000060104001000000000",
-                "0000000000000000000000034d054e6f74636800000000004044400000000000004ec00000000000",
-                "00e03f00000000000000000029000000000000000000000000000000000000000000000000000000",
-                "0000000000000000000000000000001b000000000000000000000000000000000000000000000000",
-                "00000005020101170000000000000000000000000000000000000000000000010202100000000000",
-                "00000000000000000000020212002079000101030010000000000000000000000000000000010105",
-                "537465766500000000004044400000000000004ec0000000000000e03f0000000000000000012900",
-                "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
-                "001b0000000000000000000000000000000000000000000000000000000101000000000000000000",
-                "00000000000000000000000000000100010405010406020103050609011000000000000000000000",
-                "0000000000034d0117060710000000000000000000000000000000034c0118031000000000000000",
-                "00000000000000000100100000000000000000000000000000000200100000000000000000000000",
-                "0000000003014e034a656207190101060109",
+                "00000000000000000000000000000000000000000200000000000001070103010206000006010400",
+                "10000000000000000000000000000000034d054e6f74636800000000004044400000000000004ec0",
+                "000000000000e03f0000000000000000002900000000000000000000000000000000000000000000",
+                "00000000000000000000000000000000000000001b00000000000000000000000000000000000000",
+                "00000000000000000502010117000000000000000000000000000000000000000000000000000000",
+                "00000102021000000000000000000000000000000002021200207900010103001000000000000000",
+                "0000000000000000010105537465766500000000004044400000000000004ec0000000000000e03f",
+                "00000000000000000129000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000001b000000000000000000000000000000000000000000000000000000",
+                "01010000000000000000000000000000000000000000000000010000000000000001040501040602",
+                "01030506090110000000000000000000000000000000034d01170607100000000000000000000000",
+                "00000000034c01180310000000000000000000000000000000010010000000000000000000000000",
+                "00000002001000000000000000000000000000000003014e034a656207190101060109",
             )
         );
     }
@@ -8523,8 +8588,9 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            dimension: Default::default(),
             faces: Vec::new(),
-            spawn: clustine_world::BlockPos::new(0, -60, 0),
+            spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
             held: Vec::new(),
             pinned: Vec::new(),
             entity_ids: ids,

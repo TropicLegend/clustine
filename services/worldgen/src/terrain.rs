@@ -28,7 +28,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use clustine_data::{DIMENSION_TYPES, DimensionType};
+use clustine_data::DimensionType;
 use clustine_light::Around;
 use clustine_structures::{Start, Structures};
 use clustine_terrain::biome::zoom::obfuscate_seed;
@@ -119,17 +119,15 @@ impl std::fmt::Debug for TerrainGenerator {
 }
 
 impl TerrainGenerator {
-    /// The generator of the overworld of the world with this seed. Making one seeds
-    /// the dimension's noises, which takes a moment; make it once.
-    pub fn new(seed: i64) -> Self {
-        let dimension = DIMENSION_TYPES
-            .iter()
-            .find(|dimension| dimension.name == Dimension::Overworld.type_name())
-            .expect("the overworld is a vanilla dimension type");
+    /// The generator of `dimension` of the world with this seed. Making one seeds the
+    /// dimension's noises, which takes a moment; make it once. The overworld's is
+    /// served; the Nether's and the End's land is served from step P5 of
+    /// `docs/groundwork/p-plan.md`, which fixed this constructor in P2.
+    pub fn new(seed: i64, dimension: Dimension) -> Self {
         Self {
             seed,
-            dimension,
-            structures: Structures::new(seed, Dimension::Overworld),
+            dimension: dimension.rules(),
+            structures: Structures::new(seed, dimension),
             with_structures: true,
             biome_answers: None,
             structures_off: Vec::new(),
@@ -146,7 +144,7 @@ impl TerrainGenerator {
     pub fn without_structures(seed: i64) -> Self {
         Self {
             with_structures: false,
-            ..Self::new(seed)
+            ..Self::new(seed, Dimension::Overworld)
         }
     }
 

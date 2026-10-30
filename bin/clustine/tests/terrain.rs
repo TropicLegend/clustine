@@ -29,7 +29,10 @@ const SEED: i64 = 3;
 /// structure templates.
 fn land() -> Scheduler<FeatureStages> {
     Scheduler::new(
-        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(SEED))),
+        FeatureStages::new(std::sync::Arc::new(TerrainGenerator::new(
+            SEED,
+            clustine_world::Dimension::Overworld,
+        ))),
         Options::for_processors(2),
     )
 }

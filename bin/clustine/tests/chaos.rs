@@ -197,7 +197,9 @@ impl Chaos {
         east: f64,
     ) -> Self {
         let world = world.into();
-        let spawn = land.map(|land| TerrainGenerator::new(land as i64).spawn());
+        let spawn = land.map(|land| {
+            TerrainGenerator::new(land as i64, clustine_world::Dimension::Overworld).spawn()
+        });
         let shift = spawn.map_or(ChunkPos::new(0, 0), BlockPos::chunk);
         let boundaries: Vec<i32> = match world {
             World::Pinned(boundaries) => boundaries.iter().map(|x| x + shift.x).collect(),

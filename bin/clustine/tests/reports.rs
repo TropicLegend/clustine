@@ -79,6 +79,7 @@ impl Played {
     fn table(&self, version: u64, address: &str, assignments: &[Assignment]) -> FromCoordinator {
         let routes = assignments.iter().map(|assignment| RegionRoute {
             region: assignment.region,
+            dimension: Default::default(),
             epoch: assignment.epoch,
             address: address.to_owned(),
         });
@@ -86,6 +87,7 @@ impl Played {
             version,
             routes: routes.collect(),
             home: Some(RegionId(0)),
+            homes: Vec::new(),
             spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
             absorbed: Vec::new(),
             waiting: 0,

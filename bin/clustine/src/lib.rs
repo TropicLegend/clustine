@@ -103,7 +103,10 @@ impl Land {
 
     /// [`Self::of_seed`] with the blocks of the structure templates.
     pub fn of_seed_with(seed: i64, templates: Option<Arc<TemplateLibrary>>) -> Self {
-        let terrain = Arc::new(TerrainGenerator::new(seed));
+        let terrain = Arc::new(TerrainGenerator::new(
+            seed,
+            clustine_world::Dimension::Overworld,
+        ));
         let stages = match templates {
             Some(templates) => FeatureStages::with_templates(terrain, templates),
             None => FeatureStages::new(terrain),

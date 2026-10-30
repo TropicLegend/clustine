@@ -17,6 +17,7 @@ const RIDER: EntityId = EntityId(42);
 fn mob_at(key: EntityId, kind: i32, position: [f64; 3], mob: Mob) -> Entity {
     let kind = kind as u16;
     Entity {
+        portal: Default::default(),
         key,
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key.0)),

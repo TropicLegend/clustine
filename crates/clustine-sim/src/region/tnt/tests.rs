@@ -56,7 +56,8 @@ fn chunk_of(position: ChunkPos, blocks: &dyn Fn(BlockPos) -> Option<BlockState>)
 
 fn config(seed: u64) -> RegionConfig {
     RegionConfig {
-        spawn: Vec3::new(0.5, -60.0, 0.5),
+        dimension: Default::default(),
+        spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
         starting_inventory: Inventory::default(),
         return_after: u64::MAX,
         lowest_y: -64,
@@ -180,6 +181,10 @@ pub(in crate::region) fn add_player(
         steps: Default::default(),
         swinging: None,
         raid_omen_position: None,
+        portal: Default::default(),
+        travel: None,
+        seen_credits: false,
+        in_credits: false,
     };
     region.players.insert(id, player);
     (id, entity_id)
@@ -195,6 +200,7 @@ pub(in crate::region) fn record(
     let chunk = ChunkPos::containing(position[0], position[2]);
     let key = region.take_entity_key(chunk).expect("room and a key");
     Entity {
+        portal: Default::default(),
         key,
         kind: u16::try_from(kind).expect("a type's id"),
         uuid: Uuid::from_u128(u128::from(key.0) + 7),

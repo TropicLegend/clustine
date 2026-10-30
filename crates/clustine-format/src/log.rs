@@ -114,8 +114,8 @@
 use clustine_data::BlockState;
 use clustine_world::poi::Claim;
 use clustine_world::{
-    Arrival, BlockPos, Change, ChunkPos, Due, Effect, EffectId, Entity, EntityChange, FiledEffect,
-    InChunk, ItemStack, KeptEvent, ScheduledTick, Seam, Ticked,
+    Arrival, BlockPos, Change, ChunkPos, Dimension, Due, Effect, EffectId, Entity, EntityChange,
+    FiledEffect, InChunk, ItemStack, KeptEvent, ScheduledTick, Seam, Ticked, Travel, Traveller,
 };
 
 use crate::bytes::Input;
@@ -143,6 +143,8 @@ const KIND_ARRIVALS_FORWARD: u8 = 18;
 const KIND_COMMIT_WITH_CLAIMS: u8 = 19;
 const KIND_COMMIT_WITH_RAIDS: u8 = 20;
 const KIND_TRADER_CHANCE: u8 = 21;
+const KIND_COMMIT_WITH_TRAVELLERS: u8 = 22;
+const KIND_TRAVELLERS_FORWARD: u8 = 23;
 
 /// The kinds of a stay note.
 const STAY_ENTERING: u8 = 1;
@@ -277,8 +279,9 @@ pub struct LoggedPlace {
     /// The player's experience: their level, the progress to the next (0 to 1) and
     /// the points they gathered in all.
     pub experience: (i32, f32, i32),
-    /// Where a bed set their respawn point: the bed's head, and the yaw and pitch.
-    pub respawn: Option<([i32; 3], f32, f32)>,
+    /// Where a bed set their respawn point: the bed's head, the yaw and pitch, and the
+    /// bed's dimension.
+    pub respawn: Option<([i32; 3], f32, f32, Dimension)>,
     /// Their effects, each level with the ticks it has left (`docs/groundwork/n9-plan.md`,
     /// section 5.4), and the ticks since they last slept.
     pub effects: Vec<clustine_world::components::EffectInstance>,
@@ -286,6 +289,12 @@ pub struct LoggedPlace {
     /// Where their raid omen began, where it has (`docs/groundwork/n10-plan.md`,
     /// section 9.5).
     pub raid_omen_position: Option<[i32; 3]>,
+    /// The dimension the place is in (`docs/groundwork/p-plan.md`, section 15).
+    pub dimension: Dimension,
+    /// Where a portal sends them, until a region has placed them.
+    pub travel: Option<Travel>,
+    pub seen_credits: bool,
+    pub portal_cooldown: u32,
 }
 
 impl PartialEq for LoggedPlace {
@@ -301,15 +310,18 @@ impl PartialEq for LoggedPlace {
             && self.experience.0 == other.experience.0
             && self.experience.1.to_bits() == other.experience.1.to_bits()
             && self.experience.2 == other.experience.2
-            && self
-                .respawn
-                .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
-                == other
-                    .respawn
-                    .map(|(pos, yaw, pitch)| (pos, yaw.to_bits(), pitch.to_bits()))
+            && self.respawn.map(|(pos, yaw, pitch, dimension)| {
+                (pos, yaw.to_bits(), pitch.to_bits(), dimension)
+            }) == other.respawn.map(|(pos, yaw, pitch, dimension)| {
+                (pos, yaw.to_bits(), pitch.to_bits(), dimension)
+            })
             && self.effects == other.effects
             && self.time_since_rest == other.time_since_rest
             && self.raid_omen_position == other.raid_omen_position
+            && self.dimension == other.dimension
+            && self.travel == other.travel
+            && self.seen_credits == other.seen_credits
+            && self.portal_cooldown == other.portal_cooldown
     }
 }
 
@@ -378,8 +390,17 @@ pub enum LogRecord {
         /// its holder may take it (`docs/groundwork/n3-plan.md`). A commit without any,
         /// and without arrivals taken, is written as it was before there were arrivals.
         arrivals: Vec<(ChunkPos, Entity, Due)>,
-        /// The arrivals the tick took, ascending.
+        /// The arrivals the tick took, ascending, the travellers it took among them.
         arrivals_taken: Vec<EffectId>,
+        /// The entities other than players its portals sent on, numbered after its
+        /// arrivals (`docs/groundwork/p-plan.md`, section 15.4). A commit without any is
+        /// written as it was before there were travellers.
+        travellers: Vec<Traveller>,
+    },
+    /// Travellers untaken, written again ahead of the segment they were in, with their
+    /// numbers. A traveller is never folded into a chunk (the same plan, section 15.4).
+    TravellersForward {
+        travellers: Vec<(EffectId, Traveller)>,
     },
     /// These arrivals were taken by a fold at a change of division, which wrote them into
     /// their chunks (the plan, section 6).
@@ -476,9 +497,11 @@ impl LogRecord {
                 entity_changes,
                 arrivals,
                 arrivals_taken,
+                travellers,
             } => {
                 let (blocks, entities) = split_changes(changes);
-                let with_raids = !raids.is_empty();
+                let with_travellers = !travellers.is_empty();
+                let with_raids = with_travellers || !raids.is_empty();
                 let with_claims = with_raids || !claims.is_empty();
                 let with_arrivals =
                     with_claims || !arrivals.is_empty() || !arrivals_taken.is_empty();
@@ -488,7 +511,9 @@ impl LogRecord {
                 let effected = with_entities || !effects.is_empty() || !taken.is_empty();
                 let records =
                     effected || !ticks.is_empty() || !marks_taken.is_empty() || !seams.is_empty();
-                payload.push(if with_raids {
+                payload.push(if with_travellers {
+                    KIND_COMMIT_WITH_TRAVELLERS
+                } else if with_raids {
                     KIND_COMMIT_WITH_RAIDS
                 } else if with_claims {
                     KIND_COMMIT_WITH_CLAIMS
@@ -562,6 +587,9 @@ impl LogRecord {
                                 payload.extend_from_slice(&chunk.z.to_be_bytes());
                                 crate::raids::put_raids(&mut payload, of_chunk);
                             }
+                        }
+                        if with_travellers {
+                            crate::travel::put_travellers(&mut payload, travellers);
                         }
                     } else if with_entity_changes {
                         crate::entities::put_entity_changes(&mut payload, entity_changes);
@@ -646,6 +674,14 @@ impl LogRecord {
                 payload.push(KIND_ARRIVALS_DROPPED);
                 crate::effects::put_ids(&mut payload, ids);
             }
+            Self::TravellersForward { travellers } => {
+                payload.push(KIND_TRAVELLERS_FORWARD);
+                payload.extend_from_slice(&(travellers.len() as u32).to_be_bytes());
+                for (id, traveller) in travellers {
+                    crate::effects::put_id(&mut payload, *id);
+                    crate::travel::put_traveller(&mut payload, traveller);
+                }
+            }
             Self::ArrivalsForward { arrivals } => {
                 payload.push(KIND_ARRIVALS_FORWARD);
                 payload.extend_from_slice(&(arrivals.len() as u32).to_be_bytes());
@@ -688,6 +724,7 @@ impl LogRecord {
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
+                travellers: Vec::new(),
             },
             KIND_COMMIT_WITH_STAYS => Self::Commit {
                 region: input.u32()?,
@@ -707,6 +744,7 @@ impl LogRecord {
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
+                travellers: Vec::new(),
             },
             kind @ (KIND_COMMIT_WITH_TICKS
             | KIND_COMMIT_WITH_EFFECTS
@@ -715,7 +753,8 @@ impl LogRecord {
             | KIND_COMMIT_WITH_ENTITY_CHANGES
             | KIND_COMMIT_WITH_ARRIVALS
             | KIND_COMMIT_WITH_CLAIMS
-            | KIND_COMMIT_WITH_RAIDS) => {
+            | KIND_COMMIT_WITH_RAIDS
+            | KIND_COMMIT_WITH_TRAVELLERS) => {
                 let (region, tick, epoch) = (input.u32()?, input.u64()?, input.u64()?);
                 let blocks = take_changes(&mut input)?;
                 let state = take_bytes(&mut input)?;
@@ -802,7 +841,7 @@ impl LogRecord {
                     }
                 }
                 let mut raids = Vec::new();
-                if kind == KIND_COMMIT_WITH_RAIDS {
+                if kind >= KIND_COMMIT_WITH_RAIDS {
                     let chunks = input.u32()? as usize;
                     // Each is eight bytes and a count at least.
                     raids.reserve(chunks.min(input.0.len() / 12));
@@ -810,8 +849,17 @@ impl LogRecord {
                         let chunk = ChunkPos::new(input.i32()?, input.i32()?);
                         raids.push((chunk, crate::raids::take_raids(&mut input)?));
                     }
-                    if raids.is_empty() {
+                    if kind == KIND_COMMIT_WITH_RAIDS && raids.is_empty() {
                         return Err(FormatError::Corrupt("a commit with raids that has none"));
+                    }
+                }
+                let mut travellers = Vec::new();
+                if kind == KIND_COMMIT_WITH_TRAVELLERS {
+                    travellers = crate::travel::take_travellers(&mut input)?;
+                    if travellers.is_empty() {
+                        return Err(FormatError::Corrupt(
+                            "a commit with travellers that has none",
+                        ));
                     }
                 }
                 // A commit is written in one form only: without effects as kind 9, and
@@ -846,6 +894,7 @@ impl LogRecord {
                     entity_changes,
                     arrivals,
                     arrivals_taken,
+                    travellers,
                 }
             }
             KIND_OPENED => Self::Opened {
@@ -892,6 +941,16 @@ impl LogRecord {
             KIND_ARRIVALS_DROPPED => Self::ArrivalsDropped {
                 ids: crate::effects::take_ids(&mut input)?,
             },
+            KIND_TRAVELLERS_FORWARD => {
+                let count = input.u32()? as usize;
+                // Each is far longer than a byte: no forged count reserves more.
+                let mut travellers = Vec::with_capacity(count.min(input.0.len()));
+                for _ in 0..count {
+                    let id = crate::effects::take_id(&mut input)?;
+                    travellers.push((id, crate::travel::take_traveller(&mut input)?));
+                }
+                Self::TravellersForward { travellers }
+            }
             KIND_ARRIVALS_FORWARD => {
                 let count = input.u32()? as usize;
                 // Each is far longer than a byte: no forged count reserves more.
@@ -1197,13 +1256,14 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     out.extend_from_slice(&total.to_be_bytes());
     match place.respawn {
         None => out.push(0),
-        Some((pos, yaw, pitch)) => {
+        Some((pos, yaw, pitch, dimension)) => {
             out.push(1);
             for coordinate in pos {
                 out.extend_from_slice(&coordinate.to_be_bytes());
             }
             out.extend_from_slice(&yaw.to_be_bytes());
             out.extend_from_slice(&pitch.to_be_bytes());
+            crate::travel::put_dimension(out, dimension);
         }
     }
     let count = u32::try_from(place.effects.len()).expect("fewer effects than a u32 counts");
@@ -1221,6 +1281,10 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
             }
         }
     }
+    crate::travel::put_dimension(out, place.dimension);
+    out.push(u8::from(place.seen_credits));
+    out.extend_from_slice(&place.portal_cooldown.to_be_bytes());
+    crate::travel::put_optional_travel(out, place.travel.as_ref());
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1244,6 +1308,7 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
             [input.i32()?, input.i32()?, input.i32()?],
             input.f32()?,
             input.f32()?,
+            crate::travel::take_dimension(input)?,
         )),
         _ => return Err(FormatError::Corrupt("a place's respawn flag")),
     };
@@ -1262,7 +1327,15 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
         1 => Some([input.i32()?, input.i32()?, input.i32()?]),
         _ => return Err(FormatError::Corrupt("a place's raid omen flag")),
     };
+    let dimension = crate::travel::take_dimension(input)?;
+    let seen_credits = take_bool(input, "a place's seen credits flag")?;
+    let portal_cooldown = input.u32()?;
+    let travel = crate::travel::take_optional_travel(input)?;
     Ok(LoggedPlace {
+        dimension,
+        seen_credits,
+        portal_cooldown,
+        travel,
         position,
         yaw,
         pitch,
@@ -1386,6 +1459,7 @@ mod tests {
 
     fn record(tick: u64, count: i32) -> LogRecord {
         LogRecord::Commit {
+            travellers: Vec::new(),
             region: 3,
             tick,
             epoch: 1,
@@ -1411,6 +1485,7 @@ mod tests {
     #[test]
     fn known_answer() {
         let record = LogRecord::Commit {
+            travellers: Vec::new(),
             region: 4,
             tick: 2,
             epoch: 1,
@@ -1881,6 +1956,7 @@ mod tests {
         let entity = crate::entities::tests::item(1, [20.5, -60.0, 3.5], None);
         let commit =
             |arrivals: Vec<(ChunkPos, Entity, Due)>, taken: Vec<EffectId>| LogRecord::Commit {
+                travellers: Vec::new(),
                 region: 1,
                 tick: 4,
                 epoch: 1,
@@ -1936,9 +2012,9 @@ mod tests {
         // notes, one with the ticks of chunks, one with effects, the store's records
         // of effects, a commit with block entities, one with block events, one with
         // entity changes, one with arrivals, the store's records of arrivals and one with
-        // claims and one with raids, and the trader's chance, became kinds of their own;
-        // 22 stands in for them.
-        for kind in [0, 22, 255] {
+        // claims and one with raids, the trader's chance, and a commit with travellers and
+        // the store's record of them, became kinds of their own; 24 stands in for them.
+        for kind in [0, 24, 255] {
             assert_eq!(
                 read_log(&frame(&[FORMAT_VERSION, kind])),
                 Err(FormatError::Corrupt("record kind"))
@@ -2005,6 +2081,7 @@ mod tests {
             }],
         ] {
             let record = LogRecord::Commit {
+                travellers: Vec::new(),
                 region: 2,
                 tick: 40,
                 epoch: 3,
@@ -2066,6 +2143,7 @@ mod tests {
     /// A commit of `tick` with these ticks, without notes of stays.
     fn commit_with_ticks(tick: u64, ticks: Vec<(ChunkPos, Vec<ScheduledTick>)>) -> LogRecord {
         LogRecord::Commit {
+            travellers: Vec::new(),
             region: 6,
             tick,
             epoch: 2,
@@ -2135,6 +2213,7 @@ mod tests {
             unreachable!()
         };
         let without = LogRecord::Commit {
+            travellers: Vec::new(),
             region,
             tick,
             epoch,
@@ -2183,6 +2262,7 @@ mod tests {
             unreachable!()
         };
         let record = LogRecord::Commit {
+            travellers: Vec::new(),
             region,
             tick,
             epoch,
@@ -2211,6 +2291,7 @@ mod tests {
     #[test]
     fn a_commit_without_ticks_is_written_byte_for_byte_as_before() {
         let plain = LogRecord::Commit {
+            travellers: Vec::new(),
             region: 4,
             tick: 2,
             epoch: 1,
@@ -2433,6 +2514,7 @@ mod tests {
                 entity_changes: Vec::new(),
                 arrivals: Vec::new(),
                 arrivals_taken: Vec::new(),
+                travellers: Vec::new(),
             },
             commit_with_stays(),
             LogRecord::Opened {
@@ -2481,6 +2563,7 @@ mod tests {
     /// A commit whose changes are blocks and block entities' data, interleaved.
     fn commit_with_entities(changes: Vec<Change>) -> LogRecord {
         LogRecord::Commit {
+            travellers: Vec::new(),
             region: 2,
             tick: 7,
             epoch: 3,
@@ -2690,6 +2773,7 @@ mod tests {
     fn known_answer_of_a_commit_with_entity_changes() {
         let key = clustine_world::EntityId(0x2_0000_0001);
         let record = LogRecord::Commit {
+            travellers: Vec::new(),
             region: 1,
             tick: 3,
             epoch: 2,
@@ -2907,6 +2991,10 @@ mod tests {
         let mut ender = [const { None }; ENDER_SLOTS];
         ender[0] = Some(ItemStack::new(6, 1));
         LoggedPlace {
+            dimension: Default::default(),
+            travel: None,
+            seen_credits: false,
+            portal_cooldown: 0,
             respawn: None,
             experience: (5, 0.25, 87),
             position: [1.5, -2.0, 0.0],
@@ -2926,6 +3014,7 @@ mod tests {
     /// A commit with one note of each kind.
     fn commit_with_stays() -> LogRecord {
         LogRecord::Commit {
+            travellers: Vec::new(),
             region: 4,
             tick: 2,
             epoch: 1,
@@ -3002,6 +3091,7 @@ mod tests {
             unreachable!("a commit")
         };
         let record = LogRecord::Commit {
+            travellers: Vec::new(),
             region,
             tick,
             epoch,
@@ -3213,6 +3303,11 @@ mod tests {
         payload.extend_from_slice(&[0; 4]);
         payload.extend_from_slice(&[0; 4]);
         payload.push(0);
+        // The overworld, the credits not seen, no portal cooldown and no travel.
+        payload.push(0);
+        payload.push(0);
+        payload.extend_from_slice(&[0; 4]);
+        payload.push(0);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3235,6 +3330,7 @@ mod tests {
             unreachable!()
         };
         let without = LogRecord::Commit {
+            travellers: Vec::new(),
             region,
             tick,
             epoch,
@@ -3359,12 +3455,12 @@ mod tests {
 
     /// Records of format 13, written before stacks had components, of 14, before
     /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
-    /// kept claims, and of 17, before they kept raids, are refused as any record of
-    /// another format is.
+    /// kept claims, of 17, before they kept raids, and of 18, before places named
+    /// their dimension, are refused as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_17_are_refused() {
-        assert_eq!(FORMAT_VERSION, 18);
-        for earlier in [13, 14, 15, 16, 17] {
+    fn records_of_formats_13_to_18_are_refused() {
+        assert_eq!(FORMAT_VERSION, 19);
+        for earlier in [13, 14, 15, 16, 17, 18] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3418,6 +3514,7 @@ mod tests {
         };
         assert_ne!(nan, zero);
         let record = LogRecord::Commit {
+            travellers: Vec::new(),
             region: 1,
             tick: 1,
             epoch: 1,
@@ -3464,6 +3561,57 @@ mod tests {
         ]
     }
 
+    fn dimensions() -> impl Strategy<Value = Dimension> {
+        (0..3u8).prop_map(|number| Dimension::numbered(number).expect("three dimensions"))
+    }
+
+    /// Travels of every way.
+    pub(crate) fn travels() -> impl Strategy<Value = Travel> {
+        (
+            dimensions(),
+            any::<(i32, i32, i32)>(),
+            0..6u8,
+            any::<[f64; 3]>(),
+            any::<(i32, i32, i32)>(),
+            any::<bool>(),
+        )
+            .prop_map(|(to, (x, y, z), way, relative, (fx, fy, fz), exact)| {
+                use clustine_world::{Double, PortalAxis, Way};
+                let way = match way {
+                    0..=2 => Way::NetherPortal {
+                        axis: [None, Some(PortalAxis::X), Some(PortalAxis::Z)][usize::from(way)],
+                        relative: relative.map(Double),
+                    },
+                    3 => Way::EndPortal,
+                    4 => Way::Gateway {
+                        from: BlockPos::new(fx, fy, fz),
+                        exact,
+                    },
+                    _ => Way::Credits,
+                };
+                Travel {
+                    to,
+                    target: BlockPos::new(x, y, z),
+                    way,
+                }
+            })
+    }
+
+    /// Travellers of one to four entities.
+    fn travellers() -> impl Strategy<Value = Traveller> {
+        (
+            travels(),
+            dimensions(),
+            any::<(i32, i32)>(),
+            proptest::collection::vec(crate::entities::tests::entities(), 1..4),
+        )
+            .prop_map(|(travel, dimension, (x, z), entities)| Traveller {
+                travel,
+                chunk: clustine_world::LevelChunk::new(dimension, ChunkPos::new(x, z)),
+                entities,
+            })
+    }
+
     fn places() -> impl Strategy<Value = LoggedPlace> {
         (
             any::<[f64; 3]>(),
@@ -3473,6 +3621,12 @@ mod tests {
             proptest::collection::vec(stacks(), ENDER_SLOTS)
                 .prop_map(|slots| <[_; ENDER_SLOTS]>::try_from(slots).expect("27 slots")),
             any::<(i32, f32, i32)>(),
+            (
+                dimensions(),
+                proptest::option::of(travels()),
+                any::<(bool, u32)>(),
+                proptest::option::of((any::<[i32; 3]>(), any::<(f32, f32)>(), dimensions())),
+            ),
         )
             .prop_map(
                 |(
@@ -3482,9 +3636,15 @@ mod tests {
                     inventory,
                     ender,
                     experience,
+                    (dimension, travel, (seen_credits, portal_cooldown), respawn),
                 )| {
                     LoggedPlace {
-                        respawn: None,
+                        dimension,
+                        travel,
+                        seen_credits,
+                        portal_cooldown,
+                        respawn: respawn
+                            .map(|(pos, (yaw, pitch), dimension)| (pos, yaw, pitch, dimension)),
                         position,
                         yaw,
                         pitch,
@@ -3549,6 +3709,46 @@ mod tests {
 
     proptest! {
         #[test]
+        fn travellers_round_trip_in_a_commit_and_written_forward(
+            region: u32,
+            tick: u64,
+            travellers in proptest::collection::vec(travellers(), 1..3),
+            ids in proptest::collection::vec(any::<(u64, u32)>(), 1..3),
+        ) {
+            let forward: Vec<(EffectId, Traveller)> = ids
+                .iter()
+                .zip(&travellers)
+                .map(|((sequence, index), traveller)| (EffectId { sequence: *sequence, index: *index }, traveller.clone()))
+                .collect();
+            let records = vec![
+                LogRecord::Commit {
+                    region,
+                    tick,
+                    epoch: 1,
+                    changes: Vec::new(),
+                    state: Vec::new(),
+                    stays: Vec::new(),
+                    ticks: Vec::new(),
+                    marks_taken: Vec::new(),
+                    seams: Vec::new(),
+                    effects: Vec::new(),
+                    taken: Vec::new(),
+                    events: Vec::new(),
+                    claims: Vec::new(),
+                    raids: Vec::new(),
+                    entity_changes: Vec::new(),
+                    arrivals: Vec::new(),
+                    arrivals_taken: Vec::new(),
+                    travellers,
+                },
+                LogRecord::TravellersForward { travellers: forward },
+            ];
+            let bytes: Vec<u8> = records.iter().flat_map(LogRecord::encode).collect();
+            prop_assert_eq!(bytes[FRAME_HEADER_LENGTH + 1], KIND_COMMIT_WITH_TRAVELLERS);
+            prop_assert_eq!(read_log(&bytes), Ok((records, bytes.len())));
+        }
+
+        #[test]
         fn records_of_regions_round_trip(
             region: u32,
             other: u32,
@@ -3597,7 +3797,7 @@ mod tests {
             restored: u64,
             stays in stays(),
         ) {
-            let commit = LogRecord::Commit {
+            let commit = LogRecord::Commit { travellers: Vec::new(),
                 region,
                 tick,
                 epoch,
@@ -3638,7 +3838,7 @@ mod tests {
             ),
             stays in stays(),
         ) {
-            let commit = LogRecord::Commit {
+            let commit = LogRecord::Commit { travellers: Vec::new(),
                 region: 1,
                 tick,
                 epoch: 3,
@@ -3678,7 +3878,7 @@ mod tests {
             if with_block_entity {
                 changes.push(Change::BlockEntity(BlockPos::new(0, -60, 0), b"data".to_vec()));
             }
-            let commit = LogRecord::Commit {
+            let commit = LogRecord::Commit { travellers: Vec::new(),
                 region: 1,
                 tick,
                 epoch: 3,
@@ -3725,7 +3925,7 @@ mod tests {
             // Ascending, as a commit has them.
             arrivals_taken.sort();
             arrivals_taken.dedup();
-            let commit = LogRecord::Commit {
+            let commit = LogRecord::Commit { travellers: Vec::new(),
                 region: 1,
                 tick,
                 epoch: 3,

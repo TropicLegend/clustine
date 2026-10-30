@@ -154,6 +154,7 @@ fn healthy(kind: u16) -> Mob {
 /// The record of `mob`, of the type `kind`, standing at `feet`.
 fn record(key: u64, kind: u16, feet: Vec3, mob: &Mob) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind,
         uuid: uuid::Uuid::from_u128(u128::from(key)),
@@ -1301,7 +1302,8 @@ mod in_a_region {
     /// in their chunks.
     fn region_with(entities: &[Entity]) -> Region {
         let config = RegionConfig {
-            spawn: clustine_world::Vec3::new(0.5, FEET, 0.5),
+            dimension: Default::default(),
+            spawn: Some(clustine_world::Vec3::new(0.5, FEET, 0.5)),
             starting_inventory: Inventory::with_hotbar([const { None }; HOTBAR_SLOTS]),
             return_after: 0,
             lowest_y: -64,

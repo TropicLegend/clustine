@@ -63,7 +63,8 @@ fn state(name: &str) -> BlockState {
 
 fn config(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> RegionConfig {
     RegionConfig {
-        spawn: SPAWN,
+        dimension: Default::default(),
+        spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar),
         return_after: 0,
         lowest_y: -64,
@@ -517,6 +518,7 @@ fn key(n: u32) -> EntityId {
 
 fn entity(n: u32, kind: i32, position: [f64; 3], data: EntityData) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: u16::try_from(kind).expect("fits"),
         uuid: Uuid::from_u128(u128::from(n) + 7_000),

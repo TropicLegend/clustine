@@ -59,9 +59,11 @@ fn around(chunks: &[ChunkPos]) -> Option<ChunkBox> {
 /// and nothing else, with `next` as the next region id and without its epoch.
 fn alone(home: ChunkPos, next: u32) -> RegionList {
     RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::spawn_in(home),
         home: RegionId(0),
         regions: vec![RegionInfo {
+            dimension: Default::default(),
             region: RegionId(0),
             epoch: 0,
             bounds: around(&[home]),
@@ -612,6 +614,7 @@ fn life(store: &Store) -> Built {
     assert_eq!((list.home, list.next), (RegionId(0), RegionId(2)));
     assert_eq!(list.regions[0].bounds, around(&[HOME, NEAR]));
     let part = RegionInfo {
+        dimension: Default::default(),
         region: RegionId(1),
         epoch: 4,
         bounds: around(&[EAST, EAST_TOO]),
@@ -692,9 +695,11 @@ fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
     let told = open_world();
     let (list, regions) = opened(store, &told, epoch, case);
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::spawn_in(told.home),
         home: RegionId(0),
         regions: vec![RegionInfo {
+            dimension: Default::default(),
             region: RegionId(0),
             epoch: 0,
             bounds: around(&[HOME, NEAR, EAST, EAST_TOO, LEFT, GROWN]),
@@ -914,12 +919,14 @@ fn as_without_pins_lived_in(store: &Store, built: &Built, epoch: u64, case: &str
     let told = open_world();
     let (list, regions) = opened(store, &told, epoch, case);
     let region = |region: u32, held: &[ChunkPos]| RegionInfo {
+        dimension: Default::default(),
         region: RegionId(region),
         epoch: 0,
         bounds: around(held),
         pinned: Vec::new(),
     };
     let expected = RegionList {
+        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::spawn_in(HOME),
         home: RegionId(0),
         regions: vec![
@@ -1045,6 +1052,7 @@ fn as_side_by_side_lived_in(
     let mut expected =
         table::Table::made_from(told, 3, 1).list(crate::tests::spawn_in(told.home), |_| 0);
     expected.regions.push(RegionInfo {
+        dimension: Default::default(),
         region: RegionId(2),
         epoch: 0,
         bounds: around(&of_the_part(cut)),

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, VecDeque};
 use clustine_format::{TableFile, TableRegion};
 use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList};
-use clustine_world::{BlockPos, ChunkArea, ChunkPos};
+use clustine_world::{BlockPos, ChunkArea, ChunkPos, Dimension};
 
 use crate::StoreError;
 
@@ -564,12 +564,16 @@ impl Table {
     pub(crate) fn list(&self, spawn: BlockPos, epoch: impl Fn(RegionId) -> u64) -> RegionList {
         RegionList {
             home: self.home_region,
+            // The overworld's home alone until the table makes one per dimension
+            // (`docs/groundwork/p-plan.md`, section 15.3).
+            homes: vec![(Dimension::Overworld, self.home_region)],
             spawn,
             regions: self
                 .regions
                 .iter()
                 .map(|(region, holding)| RegionInfo {
                     region: *region,
+                    dimension: Dimension::Overworld,
                     epoch: epoch(*region),
                     bounds: bounds(holding.grants.keys().copied()),
                     pinned: holding.pinned.clone(),
@@ -706,9 +710,11 @@ mod tests {
             max: home,
         };
         let expected = RegionList {
+            homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
             spawn: crate::tests::SPAWN,
             home: RegionId(0),
             regions: vec![RegionInfo {
+                dimension: Default::default(),
                 region: RegionId(0),
                 epoch: 0,
                 bounds: Some(around),
@@ -1038,6 +1044,7 @@ mod tests {
             ),
         ]
         .map(|(region, pinned, bounds)| RegionInfo {
+            dimension: Default::default(),
             region: RegionId(region),
             epoch: u64::from(region) * 10,
             bounds,

@@ -402,6 +402,7 @@ fn effects_the_lender_had_not_taken_go_to_the_borrower_with_the_lend() {
         },
     };
     borrower.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick: 1,
         changes: Vec::new(),
         state: b"tick 1".to_vec(),

@@ -64,6 +64,7 @@ fn cart_data(contents: Vec<(u8, ItemStack)>) -> EntityData {
 /// A cart of the type `kind` at `position`, moving at `motion`.
 fn cart_of(n: u64, kind: i32, position: [f64; 3], motion: [f64; 3]) -> Entity {
     Entity {
+        portal: Default::default(),
         key: key(n),
         kind: kind as u16,
         uuid: uuid::Uuid::from_u128(u128::from(n)),

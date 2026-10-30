@@ -47,6 +47,7 @@ const W: ChunkPos = ChunkPos::new(-1, 0);
 /// An item of key `key` lying at `x`, `z` in the world.
 pub(crate) fn item(key: u64, x: f64, z: f64) -> Entity {
     Entity {
+        portal: Default::default(),
         key: EntityId(key),
         kind: 71,
         uuid: uuid::Uuid::from_u128((u128::from(key) << 64) | 0xabc),
@@ -88,6 +89,7 @@ fn commit(
     entity_changes: Vec<(ChunkPos, EntityChange)>,
 ) {
     handle.request(StoreRequest::Commit {
+        travellers: Vec::new(),
         tick,
         changes: changes.iter().copied().map(Change::from).collect(),
         state: format!("delta {tick}").into_bytes(),

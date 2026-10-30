@@ -54,7 +54,8 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// Region A: every chunk with x below 1, with its spawn two blocks from region B.
 fn config_a() -> RegionConfig {
     RegionConfig {
-        spawn: Vec3::new(14.5, 64.0, 8.5),
+        dimension: Default::default(),
+        spawn: Some(Vec3::new(14.5, 64.0, 8.5)),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
@@ -85,7 +86,8 @@ fn holdings_a() -> Holdings {
 /// Region B: the chunks with x equal to 1.
 fn config_b() -> RegionConfig {
     RegionConfig {
-        spawn: Vec3::new(24.5, 64.0, 8.5),
+        dimension: Default::default(),
+        spawn: Some(Vec3::new(24.5, 64.0, 8.5)),
         starting_inventory: Inventory::with_hotbar(hotbar()),
         return_after: 0,
         lowest_y: -64,
@@ -964,6 +966,11 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
 
 fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
     PlayerTransfer {
+        dimension: Default::default(),
+        travel: None,
+        seen_credits: false,
+        portal: Default::default(),
+        unit: None,
         sleeping: None,
         respawn: None,
         experience: Default::default(),
