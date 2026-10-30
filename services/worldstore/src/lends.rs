@@ -6,15 +6,15 @@
 use std::collections::BTreeMap;
 
 use clustine_region::RegionId;
-use clustine_world::ChunkPos;
+use clustine_world::LevelChunk;
 
 /// How many chunk rows of z a stretch of a line has, within which lends between two
 /// regions go one way at a time (the same record, section 1).
 pub(crate) const STRETCH_ROWS: i32 = 8;
 
 /// The stretch of a line that `chunk` is in.
-pub(crate) fn stretch(chunk: ChunkPos) -> i32 {
-    chunk.z.div_euclid(STRETCH_ROWS)
+pub(crate) fn stretch(chunk: LevelChunk) -> i32 {
+    chunk.position.z.div_euclid(STRETCH_ROWS)
 }
 
 /// A lend under way.
@@ -24,7 +24,7 @@ pub(crate) struct Lend {
     pub(crate) borrower: RegionId,
     /// Its chunks, each with the number of the lender's return that gives it back for
     /// the lend, once the lender has said `Lending` of it.
-    pub(crate) chunks: BTreeMap<ChunkPos, Option<u64>>,
+    pub(crate) chunks: BTreeMap<LevelChunk, Option<u64>>,
 }
 
 #[derive(Debug, Default)]
@@ -34,7 +34,7 @@ pub(crate) struct Lends {
     next: u64,
     under_way: BTreeMap<u64, Lend>,
     /// The lend each chunk is under.
-    by_chunk: BTreeMap<ChunkPos, u64>,
+    by_chunk: BTreeMap<LevelChunk, u64>,
 }
 
 impl Lends {
@@ -44,7 +44,7 @@ impl Lends {
         &mut self,
         lender: RegionId,
         borrower: RegionId,
-        chunks: &[ChunkPos],
+        chunks: &[LevelChunk],
     ) -> u64 {
         self.next += 1;
         let lend = self.next;
@@ -62,7 +62,7 @@ impl Lends {
     }
 
     /// The lend `chunk` is under, if any.
-    pub(crate) fn of_chunk(&self, chunk: ChunkPos) -> Option<u64> {
+    pub(crate) fn of_chunk(&self, chunk: LevelChunk) -> Option<u64> {
         self.by_chunk.get(&chunk).copied()
     }
 
@@ -71,7 +71,7 @@ impl Lends {
     }
 
     /// Notes that the lender gives `chunk` back for `lend` with its return `number`.
-    pub(crate) fn returning(&mut self, lend: u64, chunk: ChunkPos, number: u64) {
+    pub(crate) fn returning(&mut self, lend: u64, chunk: LevelChunk, number: u64) {
         if let Some(of) = self
             .under_way
             .get_mut(&lend)
@@ -83,7 +83,7 @@ impl Lends {
 
     /// Takes those of `chunks` that are under `lend` out of it, which ends the lend once
     /// it has none left. Returns those taken, in the order of `chunks`.
-    pub(crate) fn take(&mut self, lend: u64, chunks: &[ChunkPos]) -> Vec<ChunkPos> {
+    pub(crate) fn take(&mut self, lend: u64, chunks: &[LevelChunk]) -> Vec<LevelChunk> {
         let Some(of) = self.under_way.get_mut(&lend) else {
             return Vec::new();
         };
@@ -143,17 +143,25 @@ impl Lends {
 mod tests {
     use super::*;
 
+    /// The overworld's chunk at `x`, `z`, where lends are: pins are the overworld's.
+    fn at(x: i32, z: i32) -> LevelChunk {
+        LevelChunk::new(
+            clustine_world::Dimension::Overworld,
+            clustine_world::ChunkPos::new(x, z),
+        )
+    }
+
     const LENDER: RegionId = RegionId(0);
     const BORROWER: RegionId = RegionId(1);
 
     #[test]
     fn a_lend_ends_when_its_last_chunk_is_taken_and_its_number_is_not_given_again() {
         let mut lends = Lends::default();
-        let one = ChunkPos::new(0, 0);
-        let two = ChunkPos::new(0, 1);
+        let one = at(0, 0);
+        let two = at(0, 1);
         let lend = lends.begin(LENDER, BORROWER, &[one, two]);
         assert_eq!(lends.of_chunk(two), Some(lend));
-        assert_eq!(lends.take(lend, &[one, ChunkPos::new(5, 5)]), [one]);
+        assert_eq!(lends.take(lend, &[one, at(5, 5)]), [one]);
         assert!(lends.get(lend).is_some());
         assert_eq!(lends.take(lend, &[two]), [two]);
         assert!(lends.get(lend).is_none());
@@ -165,9 +173,9 @@ mod tests {
     fn calling_off_a_region_ends_the_lends_it_lends_or_borrows_in_only() {
         let mut lends = Lends::default();
         let third = RegionId(2);
-        let first = lends.begin(LENDER, BORROWER, &[ChunkPos::new(0, 0)]);
-        let second = lends.begin(third, LENDER, &[ChunkPos::new(9, 0)]);
-        let other = lends.begin(third, BORROWER, &[ChunkPos::new(9, 9)]);
+        let first = lends.begin(LENDER, BORROWER, &[at(0, 0)]);
+        let second = lends.begin(third, LENDER, &[at(9, 0)]);
+        let other = lends.begin(third, BORROWER, &[at(9, 9)]);
         let ended: Vec<u64> = lends
             .call_off(LENDER)
             .into_iter()
@@ -175,18 +183,18 @@ mod tests {
             .collect();
         assert_eq!(ended, [first, second]);
         assert!(lends.get(other).is_some());
-        assert_eq!(lends.of_chunk(ChunkPos::new(0, 0)), None);
+        assert_eq!(lends.of_chunk(at(0, 0)), None);
     }
 
     #[test]
     fn a_stretch_is_eight_rows_of_z_rounded_down() {
-        assert_eq!(stretch(ChunkPos::new(3, 7)), 0);
-        assert_eq!(stretch(ChunkPos::new(3, 8)), 1);
-        assert_eq!(stretch(ChunkPos::new(3, -1)), -1);
-        assert_eq!(stretch(ChunkPos::new(3, -8)), -1);
-        assert_eq!(stretch(ChunkPos::new(3, -9)), -2);
+        assert_eq!(stretch(at(3, 7)), 0);
+        assert_eq!(stretch(at(3, 8)), 1);
+        assert_eq!(stretch(at(3, -1)), -1);
+        assert_eq!(stretch(at(3, -8)), -1);
+        assert_eq!(stretch(at(3, -9)), -2);
         let mut lends = Lends::default();
-        lends.begin(LENDER, BORROWER, &[ChunkPos::new(0, 9)]);
+        lends.begin(LENDER, BORROWER, &[at(0, 9)]);
         assert!(lends.under_way_in(LENDER, BORROWER, 1));
         assert!(!lends.under_way_in(BORROWER, LENDER, 1));
         assert!(!lends.under_way_in(LENDER, BORROWER, 0));

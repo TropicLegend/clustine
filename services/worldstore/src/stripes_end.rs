@@ -446,6 +446,7 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         );
         let home = TableRegion {
             id: 0,
+            dimension: clustine_world::Dimension::Overworld,
             pinned: Vec::new(),
             grants: vec![(HOME, 0)],
         };
@@ -973,7 +974,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: vec![(MERGED, 5)],
             pinned: vec![west],
             issued: EntityId(0),
-            world: crate::world_number(&generator().settings().identity),
+            world: crate::world_number(&crate::tests::identity_of(generator())),
             seed: None,
             // After a start every chunk a region was granted is in use by it.
             in_use: vec![MERGED],
@@ -999,7 +1000,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: Vec::new(),
             pinned: vec![east],
             issued: EntityId(0),
-            world: crate::world_number(&generator().settings().identity),
+            world: crate::world_number(&crate::tests::identity_of(generator())),
             seed: None,
             in_use: Vec::new(),
             offset: None,
@@ -1020,7 +1021,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             held: vec![(PART[0], 2), (PART[1], 2)],
             pinned: Vec::new(),
             issued: EntityId(0),
-            world: crate::world_number(&generator().settings().identity),
+            world: crate::world_number(&crate::tests::identity_of(generator())),
             seed: None,
             in_use: PART.to_vec(),
             offset: None,

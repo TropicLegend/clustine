@@ -139,7 +139,7 @@ fn files(disk: &Arc<MemoryDisk>) -> FileChunks {
 /// The entities durable on `disk` in the file of the chunk at `position`, if it has one.
 fn entities_file(disk: &MemoryDisk, position: ChunkPos) -> Option<Vec<Entity>> {
     let left = Arc::new(disk.crashed(Survival::Nothing));
-    let path = files(&left).entities_path(position);
+    let path = files(&left).entities_path(crate::tests::overworld(position));
     let bytes = left.read(&path).unwrap()?;
     let file = EntitiesFile::decode(&bytes).unwrap();
     assert_eq!(file.position, position);
@@ -149,7 +149,9 @@ fn entities_file(disk: &MemoryDisk, position: ChunkPos) -> Option<Vec<Entity>> {
 /// The chunk durable on `disk` at `position`, as a store would load it.
 fn stored(disk: &MemoryDisk, position: ChunkPos) -> Option<Chunk> {
     let left = Arc::new(disk.crashed(Survival::Nothing));
-    files(&left).load(position).unwrap()
+    files(&left)
+        .load(crate::tests::overworld(position))
+        .unwrap()
 }
 
 /// Sand in `A`, which the first commit of [`three_commits`] places.
@@ -299,12 +301,12 @@ fn chunks_restored_with_entities_have_them_in_a_file_beside_their_blocks() {
     again.flush();
     drop((again, east, store));
 
-    let path = files(&disk).entities_path(C);
+    let path = files(&disk).entities_path(crate::tests::overworld(C));
     assert_eq!(
         path,
         Path::new("/world/chunks/overworld/0.0/2.0.entities"),
         "beside {:?}",
-        files(&disk).chunk_path(C)
+        files(&disk).chunk_path(crate::tests::overworld(C))
     );
     assert_eq!(entities_file(&disk, A), Some(vec![first_at_the_end()]));
     assert_eq!(entities_file(&disk, B), None);
@@ -412,12 +414,22 @@ fn a_pending_save_of_blocks_then_of_entities_writes_both_from_the_later_chunk() 
             vec![set(&first(), &first_moved())],
         );
         // What is stored before: the earlier chunk, whole.
-        chunks.save(A, 1, 1, &earlier).unwrap();
+        chunks
+            .save(crate::tests::overworld(A), 1, 1, &earlier)
+            .unwrap();
         chunks.sync().unwrap();
         let newer = expected(A, &[], vec![item(9, 1.0, 1.0)]);
-        chunks.save_parts(A, 2, 1, &newer, one).unwrap();
-        chunks.save_parts(A, 3, 1, &later, other).unwrap();
-        assert_eq!(chunks.load(A).unwrap().as_ref(), Some(&later), "{case}");
+        chunks
+            .save_parts(crate::tests::overworld(A), 2, 1, &newer, one)
+            .unwrap();
+        chunks
+            .save_parts(crate::tests::overworld(A), 3, 1, &later, other)
+            .unwrap();
+        assert_eq!(
+            chunks.load(crate::tests::overworld(A)).unwrap().as_ref(),
+            Some(&later),
+            "{case}"
+        );
         chunks.sync().unwrap();
         assert_eq!(stored(&disk, A), Some(later), "{case}");
     }
@@ -454,7 +466,7 @@ fn removing_a_chunks_last_entity_removes_its_file_and_the_entity_does_not_come_b
         state: b"state 2".to_vec(),
     });
     east.flush();
-    let path = files(&disk).entities_path(A);
+    let path = files(&disk).entities_path(crate::tests::overworld(A));
     assert!(!disk.exists(&path).unwrap());
     assert!(!disk.crashed(Survival::Nothing).exists(&path).unwrap());
     assert_eq!(load(&east, A), without);

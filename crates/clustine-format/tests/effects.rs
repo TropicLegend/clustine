@@ -191,7 +191,10 @@ fn effects_dropped_and_written_forward_round_trip() {
         LogRecord::EffectsDropped {
             ids: vec![id(3, 0), id(3, 1), id(400, 0)],
         },
-        LogRecord::EffectsForward { effects: forward },
+        LogRecord::EffectsForward {
+            dimension: clustine_world::Dimension::End,
+            effects: forward,
+        },
         LogRecord::EffectsDropped { ids: Vec::new() },
     ];
     let bytes: Vec<u8> = records.iter().flat_map(LogRecord::encode).collect();

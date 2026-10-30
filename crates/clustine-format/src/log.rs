@@ -405,14 +405,21 @@ pub enum LogRecord {
     /// These arrivals were taken by a fold at a change of division, which wrote them into
     /// their chunks (the plan, section 6).
     ArrivalsDropped { ids: Vec<EffectId> },
-    /// These arrivals, untaken, written again ahead of the segment they were in.
-    ArrivalsForward { arrivals: Vec<Arrival> },
+    /// These arrivals of `dimension`, untaken, written again ahead of the segment they
+    /// were in.
+    ArrivalsForward {
+        dimension: Dimension,
+        arrivals: Vec<Arrival>,
+    },
     /// The effects of these numbers were dropped untaken: the chunk they act on stopped
     /// being used (`docs/adr/0025-effects-between-regions.md`, section 5).
     EffectsDropped { ids: Vec<EffectId> },
-    /// Untaken effects written again, with their numbers, so that the segment they were
-    /// first written in can be let go (the same record, section 5).
-    EffectsForward { effects: Vec<FiledEffect> },
+    /// Untaken effects of `dimension` written again, with their numbers, so that the
+    /// segment they were first written in can be let go (the same record, section 5).
+    EffectsForward {
+        dimension: Dimension,
+        effects: Vec<FiledEffect>,
+    },
     /// The region was opened by an owner with `epoch` and restored up to tick
     /// `restored`. A record of the region that comes before this one with a later tick
     /// is not part of the region's history: the owner that opened it here did not read
@@ -666,8 +673,9 @@ impl LogRecord {
                 payload.push(KIND_EFFECTS_DROPPED);
                 crate::effects::put_ids(&mut payload, ids);
             }
-            Self::EffectsForward { effects } => {
+            Self::EffectsForward { dimension, effects } => {
                 payload.push(KIND_EFFECTS_FORWARD);
+                crate::travel::put_dimension(&mut payload, *dimension);
                 crate::effects::put_filed(&mut payload, effects);
             }
             Self::ArrivalsDropped { ids } => {
@@ -682,8 +690,12 @@ impl LogRecord {
                     crate::travel::put_traveller(&mut payload, traveller);
                 }
             }
-            Self::ArrivalsForward { arrivals } => {
+            Self::ArrivalsForward {
+                dimension,
+                arrivals,
+            } => {
                 payload.push(KIND_ARRIVALS_FORWARD);
+                crate::travel::put_dimension(&mut payload, *dimension);
                 payload.extend_from_slice(&(arrivals.len() as u32).to_be_bytes());
                 for arrival in arrivals {
                     crate::effects::put_id(&mut payload, arrival.id);
@@ -936,6 +948,7 @@ impl LogRecord {
                 ids: crate::effects::take_ids(&mut input)?,
             },
             KIND_EFFECTS_FORWARD => Self::EffectsForward {
+                dimension: crate::travel::take_dimension(&mut input)?,
                 effects: crate::effects::take_filed(&mut input)?,
             },
             KIND_ARRIVALS_DROPPED => Self::ArrivalsDropped {
@@ -952,6 +965,7 @@ impl LogRecord {
                 Self::TravellersForward { travellers }
             }
             KIND_ARRIVALS_FORWARD => {
+                let dimension = crate::travel::take_dimension(&mut input)?;
                 let count = input.u32()? as usize;
                 // Each is far longer than a byte: no forged count reserves more.
                 let mut arrivals = Vec::with_capacity(count.min(input.0.len()));
@@ -965,7 +979,10 @@ impl LogRecord {
                         due,
                     });
                 }
-                Self::ArrivalsForward { arrivals }
+                Self::ArrivalsForward {
+                    dimension,
+                    arrivals,
+                }
             }
             _ => return Err(FormatError::Corrupt("record kind")),
         };
@@ -3455,12 +3472,13 @@ mod tests {
 
     /// Records of format 13, written before stacks had components, of 14, before
     /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
-    /// kept claims, of 17, before they kept raids, and of 18, before places named
-    /// their dimension, are refused as any record of another format is.
+    /// kept claims, of 17, before they kept raids, of 18, before places named their
+    /// dimension, and of 19, before the records written forward named theirs, are
+    /// refused as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_18_are_refused() {
-        assert_eq!(FORMAT_VERSION, 19);
-        for earlier in [13, 14, 15, 16, 17, 18] {
+    fn records_of_formats_13_to_19_are_refused() {
+        assert_eq!(FORMAT_VERSION, 20);
+        for earlier in [13, 14, 15, 16, 17, 18, 19] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3951,6 +3969,7 @@ mod tests {
             }
             prop_assert_eq!(read_log(&bytes), Ok((vec![commit], bytes.len())));
             let forward = LogRecord::ArrivalsForward {
+                dimension: Dimension::Nether,
                 arrivals: arrivals
                     .iter()
                     .zip(&arrivals_taken)

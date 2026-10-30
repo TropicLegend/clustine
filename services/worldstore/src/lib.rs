@@ -19,7 +19,8 @@
 //! that serves chunks, and is stored once a region was answered with it; until that is
 //! durable it is generated again when it is needed, and is the same. That is why a
 //! world is tied to the generator settings it was created with. See
-//! `docs/adr/0021-generation-is-a-function.md`, sections 6 and 7.
+//! `docs/adr/0021-generation-is-a-function.md`, sections 6 and 7. Each of the world's
+//! three dimensions has a generator of its own ([`Generators`]).
 //!
 //! Whoever runs a region may be in another process than the store: [`serve`] offers a
 //! store over TCP, [`StoreHandle::connect`] opens a region of a store that is served,
@@ -32,6 +33,7 @@ mod couplings;
 mod disk;
 mod effects;
 mod faces;
+mod generators;
 mod lanes;
 mod lends;
 mod local;
@@ -62,6 +64,8 @@ mod faces_tests;
 mod generation_tests;
 #[cfg(test)]
 mod kill;
+#[cfg(test)]
+mod kill_dimensions;
 #[cfg(test)]
 mod kill_entities;
 #[cfg(test)]
@@ -122,11 +126,14 @@ use std::time::Duration;
 use clustine_format::FormatError;
 use clustine_region::RegionId;
 use clustine_rpc::{RegionHello, RegionList, Restored, StoreReply, StoreRequest};
-use clustine_world::{BlockPos, ChunkGenerator, ChunkPos};
+use clustine_world::{BlockPos, Dimension, LevelChunk};
+#[cfg(test)]
+use clustine_world::{ChunkGenerator, ChunkPos};
 
 use crate::chunks::{ChunkService, Chunks, FileChunks, Job, Jobs, MemoryChunks};
 use crate::disk::{Disk, MemoryDisk, OsDisk, SlowedDisk};
 pub use crate::disk::{DiskFigures, disk_figures};
+pub use crate::generators::{Generators, Void};
 use crate::lanes::Lanes;
 pub use crate::table::{Division, NotAscending, Pins};
 pub use crate::tcp::{Server, regions, serve};
@@ -339,14 +346,14 @@ enum Message {
     Returned {
         session: Session,
         number: u64,
-        chunks: Vec<ChunkPos>,
+        chunks: Vec<LevelChunk>,
     },
     /// The thread for chunks has made the base of a copy of `position` that the region
     /// of `session` asked for, or found the copy absent
     /// (`docs/adr/0025-effects-between-regions.md`, section 3).
     Copied {
         session: Session,
-        position: ChunkPos,
+        position: LevelChunk,
         sequence: u64,
         last_change: u64,
         chunk: Option<clustine_world::Chunk>,
@@ -390,24 +397,29 @@ pub struct Store {
 impl Store {
     /// Starts a store that keeps everything in memory only, for a world that is one
     /// region: [`Store::memory_divided`] with one region pinned to the whole world.
-    pub fn memory(generator: Arc<dyn ChunkGenerator>) -> Store {
-        Self::memory_divided(generator, Pins::whole_world())
+    pub fn memory(generators: impl Into<Generators>) -> Store {
+        Self::memory_divided(generators, Pins::whole_world())
             .expect("a world of one region has no areas that overlap")
     }
 
     /// Starts a store that keeps everything in memory only, for a world pinned as
-    /// `pins` says. The world is new: its spawn is where the generator puts it, which
-    /// makes the chunks it reads, and the home chunk is the spawn's.
+    /// `pins` says. The world is new: its spawn is where the overworld's generator puts
+    /// it, which makes the chunks it reads, and the home chunk is the spawn's.
+    ///
+    /// `generators` makes the chunks nobody stored of each dimension. One generator
+    /// alone is the overworld's, with the other dimensions air
+    /// ([`Generators::overworld_alone`]).
     pub fn memory_divided(
-        generator: Arc<dyn ChunkGenerator>,
+        generators: impl Into<Generators>,
         pins: Pins,
     ) -> Result<Store, StoreError> {
-        let spawn = generator.spawn();
+        let generators = generators.into();
+        let spawn = generators.overworld.spawn();
         begin(
             Arc::new(MemoryDisk::default()),
             Path::new("/world"),
             Box::new(MemoryChunks::default()),
-            generator,
+            generators,
             pins,
             spawn,
         )
@@ -415,8 +427,8 @@ impl Store {
 
     /// Starts a store as [`Store::local_divided`] does, for a world that is one region,
     /// as [`Store::memory`] does.
-    pub fn local(root: &Path, generator: Arc<dyn ChunkGenerator>) -> Result<Store, StoreError> {
-        Self::local_divided(root, generator, Pins::whole_world())
+    pub fn local(root: &Path, generators: impl Into<Generators>) -> Result<Store, StoreError> {
+        Self::local_divided(root, generators, Pins::whole_world())
     }
 
     /// Starts a store that keeps the world in the directory `root`, creating the world
@@ -424,10 +436,11 @@ impl Store {
     /// have not checkpointed is left in the log, for each region to be restored with
     /// when it is opened.
     ///
-    /// A new world's spawn is where the generator puts it, and is written into the
-    /// world's `meta` with the rest when the world is made, before anything else; a
-    /// world keeps it from then on, whatever version of the generator continues it.
-    /// The home chunk is the spawn's.
+    /// A new world's spawn is where the overworld's generator puts it, and is written
+    /// into the world's `meta` with the rest when the world is made, before anything
+    /// else; a world keeps it from then on, whatever version of the generator continues
+    /// it. The home chunk is the spawn's. The world is tied to the identity of all
+    /// three of `generators`.
     ///
     /// If the world there was divided otherwise, by other areas or with another home
     /// chunk, it is made over: what its regions committed is put into the stored
@@ -438,14 +451,15 @@ impl Store {
     /// finds the region gone, or begun anew.
     pub fn local_divided(
         root: &Path,
-        generator: Arc<dyn ChunkGenerator>,
+        generators: impl Into<Generators>,
         pins: Pins,
     ) -> Result<Store, StoreError> {
+        let generators = generators.into();
         let disk: Arc<dyn Disk> = Arc::new(OsDisk::default());
-        let meta = local::prepare(&disk, root, generator.as_ref())?;
+        let meta = local::prepare(&disk, root, &generators)?;
         let spawn = meta.spawn;
         let chunks = FileChunks::new(Arc::clone(&disk), root).with_meta(meta);
-        begin(disk, root, Box::new(chunks), generator, pins, spawn)
+        begin(disk, root, Box::new(chunks), generators, pins, spawn)
     }
 
     /// Starts a store as [`Store::local_divided`] does, on a disk whose every sync takes
@@ -453,29 +467,32 @@ impl Store {
     /// slow, as the owner's network storage is without the cache in front of it.
     pub fn local_divided_slowed(
         root: &Path,
-        generator: Arc<dyn ChunkGenerator>,
+        generators: impl Into<Generators>,
         pins: Pins,
         extra: Duration,
     ) -> Result<Store, StoreError> {
+        let generators = generators.into();
         let disk: Arc<dyn Disk> = Arc::new(SlowedDisk::new(extra));
-        let meta = local::prepare(&disk, root, generator.as_ref())?;
+        let meta = local::prepare(&disk, root, &generators)?;
         let spawn = meta.spawn;
         let chunks = FileChunks::new(Arc::clone(&disk), root).with_meta(meta);
-        begin(disk, root, Box::new(chunks), generator, pins, spawn)
+        begin(disk, root, Box::new(chunks), generators, pins, spawn)
     }
 
     /// [`Store::memory_divided`] for the store's own tests, which name the home chunk
     /// with the division: it has to be the chunk of the generator's spawn.
     #[cfg(test)]
     pub(crate) fn memory_told(
-        generator: Arc<dyn ChunkGenerator>,
+        generators: impl Into<Generators>,
         division: Division,
     ) -> Result<Store, StoreError> {
         let home = division.home;
         let pins = Pins {
             areas: division.pinned,
         };
-        let store = Self::memory_divided(Beginning::at(home, generator), pins)?;
+        let mut generators = generators.into();
+        generators.overworld = Beginning::at(home, generators.overworld);
+        let store = Self::memory_divided(generators, pins)?;
         assert_eq!(
             store.regions()?.spawn.chunk(),
             home,
@@ -488,14 +505,16 @@ impl Store {
     #[cfg(test)]
     pub(crate) fn local_told(
         root: &Path,
-        generator: Arc<dyn ChunkGenerator>,
+        generators: impl Into<Generators>,
         division: Division,
     ) -> Result<Store, StoreError> {
         let home = division.home;
         let pins = Pins {
             areas: division.pinned,
         };
-        let store = Self::local_divided(root, Beginning::at(home, generator), pins)?;
+        let mut generators = generators.into();
+        generators.overworld = Beginning::at(home, generators.overworld);
+        let store = Self::local_divided(root, generators, pins)?;
         assert_eq!(
             store.regions()?.spawn.chunk(),
             home,
@@ -743,8 +762,8 @@ fn whole_world() -> RegionHello {
 
 /// Starts a store that keeps everything in memory only, and opens the one region of a
 /// world that is not divided.
-pub fn spawn(generator: Arc<dyn ChunkGenerator>) -> StoreHandle {
-    let (handle, _) = Store::memory(generator)
+pub fn spawn(generators: impl Into<Generators>) -> StoreHandle {
+    let (handle, _) = Store::memory(generators)
         .open_region(whole_world())
         .expect("a store that has just been started accepts the hello for its one region");
     handle
@@ -754,9 +773,9 @@ pub fn spawn(generator: Arc<dyn ChunkGenerator>) -> StoreHandle {
 /// not divided.
 pub fn spawn_local(
     root: &Path,
-    generator: Arc<dyn ChunkGenerator>,
+    generators: impl Into<Generators>,
 ) -> Result<StoreHandle, StoreError> {
-    let (handle, _) = Store::local(root, generator)?.open_region(whole_world())?;
+    let (handle, _) = Store::local(root, generators)?.open_region(whole_world())?;
     Ok(handle)
 }
 
@@ -806,17 +825,10 @@ fn start(
     disk: Arc<dyn Disk>,
     root: &Path,
     chunks: Box<dyn Chunks>,
-    generator: Arc<dyn ChunkGenerator>,
+    generators: impl Into<Generators>,
     division: &Division,
 ) -> Result<Store, StoreError> {
-    let generator = Beginning::at(division.home, generator);
-    let spawn = generator.spawn();
-    assert_eq!(
-        spawn.chunk(),
-        division.home,
-        "the test's home is not the spawn's"
-    );
-    start_clocked(disk, root, chunks, generator, division, None)
+    start_clocked(disk, root, chunks, generators, division, None)
 }
 
 /// [`start`] with a clock the test moves itself, for the couplings' grace and patience
@@ -826,12 +838,13 @@ fn start_clocked(
     disk: Arc<dyn Disk>,
     root: &Path,
     chunks: Box<dyn Chunks>,
-    generator: Arc<dyn ChunkGenerator>,
+    generators: impl Into<Generators>,
     division: &Division,
     clock: Option<lanes::Clock>,
 ) -> Result<Store, StoreError> {
-    let generator = Beginning::at(division.home, generator);
-    let spawn = generator.spawn();
+    let mut generators = generators.into();
+    generators.overworld = Beginning::at(division.home, generators.overworld);
+    let spawn = generators.overworld.spawn();
     assert_eq!(
         spawn.chunk(),
         division.home,
@@ -840,24 +853,25 @@ fn start_clocked(
     let pins = Pins {
         areas: division.pinned.clone(),
     };
-    begin_clocked(disk, root, chunks, generator, pins, spawn, clock)
+    begin_clocked(disk, root, chunks, generators, pins, spawn, clock)
 }
 
 /// The world's number ([`clustine_rpc::messages::Restored::world`]): FNV-1a of what
-/// decides the generator's output, which names the seed of a world that has one, so
-/// that it is the same at every start and differs between worlds.
+/// decides the generators' output ([`Generators::identity`]), which names the seed of a
+/// world that has one, so that it is the same at every start and differs between
+/// worlds.
 pub fn world_number(identity: &str) -> u64 {
     identity.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
 }
 
-/// The seed of the features of the world whose generator's identity is `identity`
-/// ([`clustine_rpc::messages::Restored::seed`]): that of a generator that places them,
-/// whose identity begins `terrain;features`, and none for the flat world and the preview
-/// of a seed's land, which place none.
+/// The seed of the features of the world whose generators' identity is `identity`
+/// ([`clustine_rpc::messages::Restored::seed`]): that of an overworld generator that
+/// places them, whose identity begins `terrain;features`, and none for the flat world
+/// and the preview of a seed's land, which place none.
 pub fn world_seed(identity: &str) -> Option<i64> {
-    let mut parts = identity.split(';');
+    let mut parts = generators::overworld_identity(identity).split(';');
     if parts.next() != Some("terrain") || !parts.next()?.starts_with("features ") {
         return None;
     }
@@ -872,8 +886,8 @@ pub fn world_seed(identity: &str) -> Option<i64> {
 const SPAWN_AREA: i32 = 8 + 2;
 
 /// Starts the threads of a store that keeps its log and region files on `disk` under
-/// `root`, and its chunks in `chunks`, for a world pinned as `pins` says,
-/// whose spawn is `spawn` and its chunk the home chunk.
+/// `root`, and its chunks in `chunks`, for a world pinned as `pins` says, whose
+/// dimensions `generators` makes, whose spawn is `spawn` and its chunk the home chunk.
 ///
 /// The thread for chunks runs first: reading the world may have it put what the regions
 /// of another division committed into the stored chunks. It ends by itself if the world
@@ -882,11 +896,11 @@ fn begin(
     disk: Arc<dyn Disk>,
     root: &Path,
     chunks: Box<dyn Chunks>,
-    generator: Arc<dyn ChunkGenerator>,
+    generators: Generators,
     pins: Pins,
     spawn: BlockPos,
 ) -> Result<Store, StoreError> {
-    begin_clocked(disk, root, chunks, generator, pins, spawn, None)
+    begin_clocked(disk, root, chunks, generators, pins, spawn, None)
 }
 
 /// [`begin`], with the commit thread's clock if one is given.
@@ -894,19 +908,19 @@ fn begin_clocked(
     disk: Arc<dyn Disk>,
     root: &Path,
     chunks: Box<dyn Chunks>,
-    generator: Arc<dyn ChunkGenerator>,
+    generators: Generators,
     pins: Pins,
     spawn: BlockPos,
     clock: Option<lanes::Clock>,
 ) -> Result<Store, StoreError> {
     let division = pins.with_home(spawn.chunk());
-    let identity = generator.settings().identity;
+    let identity = generators.identity();
     let world = world_number(&identity);
     let seed = world_seed(&identity);
     let (jobs, queued) = mpsc::channel();
     let service = ChunkService::new(
         chunks,
-        generator,
+        generators,
         Arc::clone(&disk),
         root.join("regions"),
         jobs.clone(),
@@ -924,7 +938,7 @@ fn begin_clocked(
     // is there; a region that asks for one meanwhile waits for it as for any other.
     // Chunks are stored only once a region was handed them, so this is at every start.
     let _ = prepare.send(Job::Prepare {
-        around: spawn.chunk(),
+        around: LevelChunk::new(Dimension::Overworld, spawn.chunk()),
         radius: SPAWN_AREA,
     });
     let (messages, received) = mpsc::channel();

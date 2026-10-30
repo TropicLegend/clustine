@@ -2,12 +2,16 @@
 //! (`docs/groundwork/n7-faces.md`, step 2): the commit thread's, in memory only. A start
 //! of the store, or a log that failed, begins with none, and every region's first tick
 //! names every stay it has, which brings them back.
+//!
+//! A face is filed in the dimension of the region whose note wrote it: a player let go
+//! through a portal is of the source until the destination writes them
+//! (`docs/groundwork/p-plan.md`, section 15.4, their D1).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_region::RegionId;
 use clustine_rpc::{FaceChange, FaceSeq, PlayerFace, WorldPlayer};
-use clustine_world::{ChunkPos, EntityId, PlayerId};
+use clustine_world::{ChunkPos, Dimension, EntityId, LevelChunk, PlayerId};
 
 /// A player's face as the store keeps it.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,13 +22,16 @@ pub(crate) struct Held {
     pub(crate) face: PlayerFace,
     /// The region whose note wrote it.
     pub(crate) writer: RegionId,
+    /// The dimension of that region, which the face is of.
+    pub(crate) dimension: Dimension,
     /// Whether that note let the stay go: the player is between two regions.
     pub(crate) let_go: bool,
 }
 
 impl Held {
-    pub(crate) fn chunk(&self) -> ChunkPos {
-        ChunkPos::containing(self.face.position[0], self.face.position[2])
+    pub(crate) fn chunk(&self) -> LevelChunk {
+        let position = ChunkPos::containing(self.face.position[0], self.face.position[2]);
+        LevelChunk::new(self.dimension, position)
     }
 }
 
@@ -32,7 +39,7 @@ impl Held {
 #[derive(Debug, Default)]
 pub(crate) struct Faces {
     kept: BTreeMap<PlayerId, Held>,
-    by_chunk: BTreeMap<ChunkPos, BTreeSet<PlayerId>>,
+    by_chunk: BTreeMap<LevelChunk, BTreeSet<PlayerId>>,
 }
 
 impl Faces {
@@ -59,12 +66,12 @@ impl Faces {
     }
 
     /// The chunks with faces in them, ascending.
-    pub(crate) fn chunks(&self) -> impl Iterator<Item = ChunkPos> + '_ {
+    pub(crate) fn chunks(&self) -> impl Iterator<Item = LevelChunk> + '_ {
         self.by_chunk.keys().copied()
     }
 
     /// The faces in `chunks`, as a base: each as the face it is.
-    pub(crate) fn base(&self, chunks: impl IntoIterator<Item = ChunkPos>) -> Vec<FaceChange> {
+    pub(crate) fn base(&self, chunks: impl IntoIterator<Item = LevelChunk>) -> Vec<FaceChange> {
         let mut base = Vec::new();
         for chunk in chunks {
             for player in self.by_chunk.get(&chunk).into_iter().flatten() {
@@ -120,7 +127,7 @@ impl Faces {
         &mut self,
         from: RegionId,
         to: RegionId,
-        moved: impl Fn(ChunkPos) -> bool,
+        moved: impl Fn(LevelChunk) -> bool,
     ) {
         for held in self.kept.values_mut() {
             if held.writer == from && moved(held.chunk()) {
@@ -145,10 +152,7 @@ impl Faces {
         let listed = self.kept.iter().map(|(player, held)| WorldPlayer {
             player: *player,
             entity: held.entity,
-            // Every region is the overworld's until the store keeps a region's
-            // dimension (`docs/groundwork/p-plan.md`, section 15.3): a face is then of
-            // the dimension of the region that wrote it.
-            dimension: clustine_world::Dimension::Overworld,
+            dimension: held.dimension,
             position: held.face.position,
             game_mode: held.face.game_mode,
             sleeping: held.face.sleeping.map(|since| {
@@ -174,5 +178,54 @@ pub(crate) fn face_change(player: PlayerId, held: &Held) -> FaceChange {
         hops: held.hops,
         seq: held.seq,
         face: held.face.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clustine_rpc::PlayerFace;
+
+    use super::*;
+    use crate::stays::{place, player};
+
+    fn held(dimension: Dimension, writer: u32, x: f64) -> Held {
+        Held {
+            entity: EntityId(7),
+            hops: 0,
+            seq: FaceSeq(1, 0),
+            face: PlayerFace::standing(&place(x, 3.0)),
+            writer: RegionId(writer),
+            dimension,
+            let_go: false,
+        }
+    }
+
+    #[test]
+    fn a_face_is_filed_and_listed_in_the_dimension_of_the_region_that_wrote_it() {
+        let mut faces = Faces::default();
+        faces.write(player(1), held(Dimension::Overworld, 0, 5.0));
+        faces.write(player(2), held(Dimension::Nether, 1, 5.0));
+        let position = ChunkPos::containing(5.0, 3.0);
+        let overworld = LevelChunk::new(Dimension::Overworld, position);
+        let nether = LevelChunk::new(Dimension::Nether, position);
+        assert_eq!(faces.chunks().collect::<Vec<_>>(), [overworld, nether]);
+        let of = |changes: Vec<FaceChange>| -> Vec<PlayerId> {
+            changes
+                .iter()
+                .filter_map(|change| match change {
+                    FaceChange::Face { player, .. } => Some(*player),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(of(faces.base([overworld])), [player(1)]);
+        assert_eq!(of(faces.base([nether])), [player(2)]);
+        let world: Vec<Dimension> = faces.world(|_| 0).iter().map(|p| p.dimension).collect();
+        assert_eq!(world, [Dimension::Overworld, Dimension::Nether]);
+        // Written again by a region of another dimension, the face moves to its chunk.
+        let before = faces.write(player(1), held(Dimension::Nether, 1, 5.0));
+        assert_eq!(before.map(|held| held.chunk()), Some(overworld));
+        assert_eq!(faces.chunks().collect::<Vec<_>>(), [nether]);
+        assert_eq!(of(faces.base([nether])), [player(1), player(2)]);
     }
 }

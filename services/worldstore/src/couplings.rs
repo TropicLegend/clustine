@@ -15,7 +15,7 @@ use std::time::Duration;
 use clustine_format::{CoupledRegion, CouplingsFile, Handshake};
 use clustine_region::RegionId;
 use clustine_rpc::{CopyUse, Coupling, StoreReply, Uncoupling};
-use clustine_world::{ChunkPos, Due, Effect, Effected};
+use clustine_world::{Due, Effect, Effected, LevelChunk};
 
 use crate::effects::Uses;
 
@@ -93,7 +93,7 @@ pub(crate) struct Couplings {
     /// coupled until it is through.
     reshaping: BTreeSet<RegionId>,
     /// Of each region, the copies it has beside a chunk that would tick with them.
-    beside: BTreeMap<RegionId, BTreeSet<ChunkPos>>,
+    beside: BTreeMap<RegionId, BTreeSet<LevelChunk>>,
     /// Of each region, the tick it is durable through (see the module's text).
     ticks: BTreeMap<RegionId, u64>,
     pace: BTreeMap<RegionId, Pace>,
@@ -311,7 +311,7 @@ impl Couplings {
 
     /// `region`'s copies in `begins` are beside a chunk that would tick with them, and
     /// those in `ends` no longer are.
-    pub(crate) fn beside(&mut self, region: RegionId, begins: &[ChunkPos], ends: &[ChunkPos]) {
+    pub(crate) fn beside(&mut self, region: RegionId, begins: &[LevelChunk], ends: &[LevelChunk]) {
         let beside = self.beside.entry(region).or_default();
         for chunk in ends {
             beside.remove(chunk);
@@ -732,6 +732,13 @@ mod tests {
     const B: RegionId = RegionId(2);
     const C: RegionId = RegionId(3);
 
+    fn overworld(x: i32, z: i32) -> LevelChunk {
+        LevelChunk::new(
+            clustine_world::Dimension::Overworld,
+            clustine_world::ChunkPos::new(x, z),
+        )
+    }
+
     fn ms(ms: u64) -> Duration {
         Duration::from_millis(ms)
     }
@@ -744,7 +751,7 @@ mod tests {
         user: RegionId,
         x: i32,
     ) {
-        let chunk = ChunkPos::new(x, 0);
+        let chunk = overworld(x, 0);
         uses.begin(user, chunk);
         couplings.beside(copier, &[chunk], &[]);
     }
@@ -920,7 +927,7 @@ mod tests {
         needing(&mut couplings, &mut uses, A, B, 0);
         turn(&mut couplings, ms(0), &[], &uses);
         couple(&mut couplings, &uses, (A, 10), (B, 10), ms(1));
-        couplings.beside(A, &[], &[ChunkPos::new(0, 0)]);
+        couplings.beside(A, &[], &[overworld(0, 0)]);
         // Both keep ticking, so nobody is stalled meanwhile.
         let mut tick = 10;
         let mut at = 2;
@@ -984,7 +991,7 @@ mod tests {
         );
         couplings.opened(A, ms(10));
         // An opened region says again which copies are beside chunks that tick.
-        couplings.beside(A, &[ChunkPos::new(0, 0)], &[]);
+        couplings.beside(A, &[overworld(0, 0)], &[]);
         let told = turn(&mut couplings, ms(20), &[], &uses);
         assert!(
             told.contains(&(A, StoreReply::CoupleWith { partner: B })),

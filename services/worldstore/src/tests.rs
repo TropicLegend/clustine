@@ -31,8 +31,20 @@ pub(crate) fn spawn_in(home: ChunkPos) -> BlockPos {
     BlockPos::new(home.x * 16, SPAWN.y, home.z * 16)
 }
 
+/// The overworld's chunk at `position`: where the store's tests keep chunks, as every
+/// world did before it had other dimensions.
+pub(crate) fn overworld(position: ChunkPos) -> clustine_world::LevelChunk {
+    clustine_world::LevelChunk::new(clustine_world::Dimension::Overworld, position)
+}
+
 pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
+}
+
+/// The identity of the world whose overworld `generator` makes, the store's tests'
+/// worlds, whose other dimensions are air ([`Generators::overworld_alone`]).
+pub(crate) fn identity_of(generator: Arc<dyn ChunkGenerator>) -> String {
+    Generators::from(generator).identity()
 }
 
 /// Waits for the next answer to `store` other than that a commit is done or that a
@@ -1151,7 +1163,7 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
         ))
     };
     let refused = |directory: &std::path::Path, generator: Arc<dyn ChunkGenerator>| {
-        let current = generator.settings().identity;
+        let current = identity_of(Arc::clone(&generator));
         let Err(error) = spawn_local(directory, generator) else {
             panic!("the world was opened as {current}");
         };
@@ -1171,7 +1183,7 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
     drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
     // Again with the same seed is fine, by a generator that was made anew.
     drop(spawn_local(seeded.path(), of_seed(13579)).unwrap());
-    let stored = of_seed(13579).settings().identity;
+    let stored = identity_of(of_seed(13579));
     assert_eq!(refused(seeded.path(), of_seed(13580)), stored);
     assert_eq!(refused(seeded.path(), of_seed(-13579)), stored);
     assert_eq!(refused(seeded.path(), generator()), stored);
@@ -1182,7 +1194,7 @@ fn a_world_of_a_seed_is_not_opened_flat_or_with_another_seed_nor_a_flat_one_with
     drop(spawn_local(flat.path(), generator()).unwrap());
     assert_eq!(
         refused(flat.path(), of_seed(13579)),
-        generator().settings().identity
+        identity_of(generator())
     );
     drop(spawn_local(flat.path(), generator()).unwrap());
 }
@@ -1238,7 +1250,7 @@ fn a_chunk_file_with_a_wrong_checksum_is_reported_and_the_chunk_is_not_loaded() 
 
         let disk: Arc<dyn Disk> = Arc::new(crate::disk::OsDisk::default());
         let mut chunks = chunks::FileChunks::new(disk, directory.path());
-        let error = chunks.load(position).unwrap_err();
+        let error = chunks.load(crate::tests::overworld(position)).unwrap_err();
         assert!(
             matches!(error, StoreError::Format(FormatError::ChecksumMismatch)),
             "byte {at}: {error}"
@@ -1280,9 +1292,9 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 
 /// A world of format 1, 2 or 3, of 13, whose stacks have no components, of 14, whose
 /// places keep no effects, of 15, whose chunks keep no structures, of 16, whose chunks
-/// keep no claims on points of interest, of 17, whose chunks keep no raids, or of 18,
-/// whose places name no dimension, is not opened,
-/// not made over and not touched: worlds are
+/// keep no claims on points of interest, of 17, whose chunks keep no raids, of 18, whose
+/// places name no dimension, or of 19, whose table names no region's dimension, is not
+/// opened, not made over and not touched: worlds are
 /// thrown away until the first release, and whoever kept one is told what to do with
 /// the directory. The store says that before it looks at anything else, so the sentence
 /// is the same whatever else of the world differs, and every file is afterwards what
@@ -1291,8 +1303,8 @@ fn everything_in(directory: &Path) -> Vec<(String, Option<Vec<u8>>)> {
 fn a_world_of_an_earlier_format_is_refused_with_the_records_sentence_and_nothing_in_it_is_touched()
 {
     let settings = generator().settings().identity;
-    assert_eq!(FORMAT_VERSION, 19, "18 is the format just before");
-    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17, 18]
+    assert_eq!(FORMAT_VERSION, 20, "19 is the format just before");
+    let metas = [1u8, 2, 3, 13, 14, 15, 16, 17, 18, 19]
         .into_iter()
         .flat_map(|format| {
             [
@@ -1397,19 +1409,19 @@ struct HeldSaves {
 }
 
 impl Chunks for HeldSaves {
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, position: clustine_world::LevelChunk) -> Result<Option<Chunk>, StoreError> {
         self.chunks.load(position)
     }
 
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
-        if position == HELD {
+        if position.position == HELD {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
@@ -1423,7 +1435,7 @@ impl Chunks for HeldSaves {
 
     fn note(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
@@ -2186,7 +2198,8 @@ fn a_region_of_a_world_with_features_is_restored_with_its_seed() {
     for region in [0, 1] {
         let (_, restored) = store.open_region(hello(region, 1)).unwrap();
         assert_eq!(restored.seed, Some(13579));
-        assert_eq!(restored.world, world_number(&identity));
+        let world = identity_of(Arc::new(Seeded(identity.clone())));
+        assert_eq!(restored.world, world_number(&world));
     }
 }
 

@@ -239,6 +239,7 @@ fn decline_in_words(decline: Decline) -> String {
         Decline::Tick { named } => format!("the tick is not above {named}"),
         Decline::NoSuchRegion => "the region to absorb is no living region".to_owned(),
         Decline::Home => "the home region is never absorbed".to_owned(),
+        Decline::OtherDimension => "no merge joins two dimensions".to_owned(),
         Decline::NotOpened { epoch } => match epoch {
             Some(epoch) => format!("the region to absorb has an owner with epoch {epoch}"),
             None => "the region to absorb has no owner".to_owned(),

@@ -12,6 +12,12 @@
 //! system, and syncs in turn each pay for the disk. See
 //! `docs/adr/0018-a-checkpoints-chunks-written-together.md`, and for the one file a
 //! chunk is, `docs/adr/0022-what-a-chunk-carries.md`, section 3.
+//!
+//! A chunk is named by its dimension and its position ([`LevelChunk`]): each dimension
+//! has its chunks in a directory of its own, and a generator of its own makes those not
+//! stored (`docs/groundwork/p-plan.md`, section 3.3). The changes a region's commits
+//! make, which name positions alone, are of the region's dimension, which the jobs that
+//! carry them name.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -25,11 +31,13 @@ use clustine_rpc::{Parts, Restored, StoreReply};
 use clustine_world::generation::{Failed, Wanted};
 use clustine_world::poi::Claim;
 use clustine_world::{
-    BlockPos, Change, Chunk, ChunkGenerator, ChunkPos, EntityChange, KeptEvent, ScheduledTick, Seam,
+    BlockPos, Change, Chunk, ChunkPos, Dimension, EntityChange, KeptEvent, LevelChunk,
+    ScheduledTick, Seam,
 };
 use tracing::{error, info, warn};
 
 use crate::disk::{Disk, parent, temporary};
+use crate::generators::Generators;
 use crate::lanes::commit_changes;
 use crate::local::Meta;
 use crate::{Message, Opened, Peer, StoreError};
@@ -38,18 +46,21 @@ use crate::{Message, Opened, Peer, StoreError};
 /// made a world over for another division. No region is ever opened with epoch 0.
 pub(crate) const NO_REGION: u64 = 0;
 
-/// The directory of the world's dimension under `chunks/`: its name without the
-/// namespace. A world has one dimension, and until a generator says which
-/// (`docs/adr/0021-generation-is-a-function.md`, section 8) every world is the
-/// overworld; the store learns the name from the generator's settings then.
-const DIMENSION: &str = "overworld";
+/// The directory of `dimension`'s chunks under `chunks/`: its name in the game's
+/// registries without the namespace, as the format names it
+/// (`docs/world-format.md`, "Directory layout"): `overworld`, where every world kept
+/// its chunks when it had the overworld alone, `the_nether` and `the_end`.
+fn directory(dimension: Dimension) -> &'static str {
+    let name = dimension.type_name();
+    name.strip_prefix("minecraft:").unwrap_or(name)
+}
 
 /// Where chunks are kept.
 pub(crate) trait Chunks: Send {
     /// The stored chunk, or `None` if it was never stored.
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError>;
+    fn load(&mut self, position: LevelChunk) -> Result<Option<Chunk>, StoreError>;
     /// Whether a chunk is stored at `position`, as [`Chunks::load`] would find it.
-    fn has(&mut self, position: ChunkPos) -> Result<bool, StoreError> {
+    fn has(&mut self, position: LevelChunk) -> Result<bool, StoreError> {
         Ok(self.load(position)?.is_some())
     }
     /// Stores the `parts` of the chunk, so that the chunk is what is loaded from now on:
@@ -59,7 +70,7 @@ pub(crate) trait Chunks: Send {
     /// the region that saves it, for whoever looks at what is stored.
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
@@ -68,7 +79,7 @@ pub(crate) trait Chunks: Send {
     /// Stores the whole chunk, as [`Chunks::save_parts`] does with every part.
     fn save(
         &mut self,
-        position: ChunkPos,
+        position: LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
@@ -90,7 +101,12 @@ pub(crate) trait Chunks: Send {
     /// write is kept, and written by the next one (S5). A chunk made for the first time
     /// is noted whole, its entities with it (`docs/groundwork/n7l-plan.md`, section 2.4);
     /// one made again over a stored one (S8) only its blocks, its stored entities kept.
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
+    fn note(
+        &mut self,
+        position: LevelChunk,
+        chunk: &Chunk,
+        parts: Parts,
+    ) -> Result<(), StoreError> {
         if self.load(position)?.is_none() {
             self.save(position, 0, NO_REGION, chunk)?;
         } else if parts.blocks {
@@ -102,22 +118,27 @@ pub(crate) trait Chunks: Send {
     fn noted(&self) -> usize {
         0
     }
-    /// A chunk that the generator of `version` made has been handed to a region, as it
-    /// was made or to be changed: a file that holds it, or what was made of it, may be
-    /// put in place by the next [`Chunks::sync`] (ADR-0021, section 6).
-    fn handed(&mut self, _version: u16) {}
+    /// A chunk that `dimension`'s generator of `version` made has been handed to a
+    /// region, as it was made or to be changed: a file that holds it, or what was made
+    /// of it, may be put in place by the next [`Chunks::sync`] (ADR-0021, section 6).
+    fn handed(&mut self, _dimension: Dimension, _version: u16) {}
 }
 
 /// Keeps chunks in memory: they last as long as the store.
 #[derive(Default)]
-pub(crate) struct MemoryChunks(BTreeMap<ChunkPos, Chunk>);
+pub(crate) struct MemoryChunks(BTreeMap<LevelChunk, Chunk>);
 
 impl Chunks for MemoryChunks {
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, position: LevelChunk) -> Result<Option<Chunk>, StoreError> {
         Ok(self.0.get(&position).cloned())
     }
 
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
+    fn note(
+        &mut self,
+        position: LevelChunk,
+        chunk: &Chunk,
+        parts: Parts,
+    ) -> Result<(), StoreError> {
         match self.0.get_mut(&position) {
             None => {
                 self.0.insert(position, chunk.clone());
@@ -136,7 +157,7 @@ impl Chunks for MemoryChunks {
     /// stored is stored whole, as a first-timer's files are written whole.
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: LevelChunk,
         _tick: u64,
         _epoch: u64,
         chunk: &Chunk,
@@ -165,8 +186,8 @@ impl Chunks for MemoryChunks {
 /// it has any:
 ///
 /// ```text
-/// chunks/overworld/<rx>.<rz>/<x>.<z>.chunk      grouped by 32×32 chunks
-/// chunks/overworld/<rx>.<rz>/<x>.<z>.entities   beside it
+/// chunks/<dimension>/<rx>.<rz>/<x>.<z>.chunk      grouped by 32×32 chunks
+/// chunks/<dimension>/<rx>.<rz>/<x>.<z>.entities   beside it
 /// ```
 ///
 /// A saved chunk is held here and touches no file until [`Chunks::sync`], which writes
@@ -184,11 +205,12 @@ pub(crate) struct FileChunks {
     disk: Arc<dyn Disk>,
     root: PathBuf,
     /// The chunks saved or noted since the last sync, each as it was last saved.
-    pending: BTreeMap<ChunkPos, Saved>,
+    pending: BTreeMap<LevelChunk, Saved>,
     /// The world's `meta`, where there is one to keep up.
     meta: Option<Meta>,
-    /// The highest version of the generator that made a chunk handed to a region.
-    handed: u16,
+    /// The highest version of each dimension's generator that made a chunk handed to a
+    /// region, in the order of the dimensions' numbers.
+    handed: [u16; 3],
 }
 
 /// A chunk that was saved or noted and is not in the files yet.
@@ -318,7 +340,7 @@ impl FileChunks {
             root: root.to_owned(),
             pending: BTreeMap::new(),
             meta: None,
-            handed: 0,
+            handed: [0; 3],
         }
     }
 
@@ -328,10 +350,11 @@ impl FileChunks {
         self
     }
 
-    pub(crate) fn chunk_path(&self, position: ChunkPos) -> PathBuf {
+    pub(crate) fn chunk_path(&self, chunk: LevelChunk) -> PathBuf {
+        let position = chunk.position;
         self.root
             .join("chunks")
-            .join(DIMENSION)
+            .join(directory(chunk.dimension))
             .join(format!("{}.{}", position.x >> 5, position.z >> 5))
             .join(format!("{}.{}.chunk", position.x, position.z))
     }
@@ -339,16 +362,17 @@ impl FileChunks {
     /// Whether a save or note of `position` would put the chunk's first blocks file in
     /// place: none is on disk and none is pending, or the pending one is a first-timer's.
     /// One look at the disk for each new pending position.
-    fn first_timer(&self, position: ChunkPos) -> Result<bool, StoreError> {
+    fn first_timer(&self, position: LevelChunk) -> Result<bool, StoreError> {
         if let Some(pending) = self.pending.get(&position) {
             return Ok(pending.first);
         }
         Ok(!self.disk.exists(&self.chunk_path(position))?)
     }
 
-    /// Where the entities of the chunk at `position` are kept, beside its file.
-    pub(crate) fn entities_path(&self, position: ChunkPos) -> PathBuf {
-        self.chunk_path(position)
+    /// Where the entities of the chunk at `chunk` are kept, beside its file.
+    pub(crate) fn entities_path(&self, chunk: LevelChunk) -> PathBuf {
+        let position = chunk.position;
+        self.chunk_path(chunk)
             .with_file_name(format!("{}.{}.entities", position.x, position.z))
     }
 }
@@ -356,16 +380,17 @@ impl FileChunks {
 impl Chunks for FileChunks {
     /// Without reading the file: a store that starts asks it of the chunks around the
     /// spawn.
-    fn has(&mut self, position: ChunkPos) -> Result<bool, StoreError> {
+    fn has(&mut self, position: LevelChunk) -> Result<bool, StoreError> {
         Ok(self.pending.contains_key(&position) || self.disk.exists(&self.chunk_path(position))?)
     }
 
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, chunk: LevelChunk) -> Result<Option<Chunk>, StoreError> {
+        let position = chunk.position;
         // What was saved is what is loaded from then on, also while no file has it.
-        if let Some(saved) = self.pending.get(&position) {
+        if let Some(saved) = self.pending.get(&chunk) {
             return Ok(Some(saved.chunk.clone()));
         }
-        let Some(bytes) = self.disk.read(&self.chunk_path(position))? else {
+        let Some(bytes) = self.disk.read(&self.chunk_path(chunk))? else {
             return Ok(None);
         };
         let (mut file, unfit) = ChunkFile::decode(&bytes)?;
@@ -377,7 +402,7 @@ impl Chunks for FileChunks {
         // Read only beside the blocks: a chunk that is not stored is made by the
         // generator, and the commits since the last checkpoint, which have every entity
         // change since, are put into it at a restore.
-        if let Some(bytes) = self.disk.read(&self.entities_path(position))? {
+        if let Some(bytes) = self.disk.read(&self.entities_path(chunk))? {
             let entities = EntitiesFile::decode(&bytes)?;
             if entities.position != position {
                 return Err(FormatError::Corrupt("the entities' file is of another chunk").into());
@@ -399,7 +424,7 @@ impl Chunks for FileChunks {
 
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
@@ -425,13 +450,18 @@ impl Chunks for FileChunks {
         // A save merged into a note drops the note's standing: after a failed sync every
         // handle that saved is lost, and its region restored from the log (the plan,
         // section 9 item 7).
-        let mut saved = Saved::new(position, tick, epoch, chunk.clone(), parts);
+        let mut saved = Saved::new(position.position, tick, epoch, chunk.clone(), parts);
         saved.first = first;
         self.pending.insert(position, saved);
         Ok(())
     }
 
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) -> Result<(), StoreError> {
+    fn note(
+        &mut self,
+        position: LevelChunk,
+        chunk: &Chunk,
+        parts: Parts,
+    ) -> Result<(), StoreError> {
         // A save that is pending is the chunk with a change in it, and a note that is
         // pending is this very chunk, by purity.
         if self.pending.contains_key(&position) {
@@ -443,7 +473,7 @@ impl Chunks for FileChunks {
         // entities' file stays.
         let first = self.first_timer(position)?;
         let parts = if first { Parts::ALL } else { parts };
-        let mut saved = Saved::new(position, 0, NO_REGION, chunk.clone(), parts);
+        let mut saved = Saved::new(position.position, 0, NO_REGION, chunk.clone(), parts);
         saved.noted = true;
         saved.first = first;
         self.pending.insert(position, saved);
@@ -455,13 +485,21 @@ impl Chunks for FileChunks {
             return Ok(());
         }
         if let Some(meta) = &mut self.meta
-            && meta.version < self.handed
+            && meta
+                .versions
+                .iter()
+                .zip(&self.handed)
+                .any(|(named, handed)| named < handed)
         {
             // Before any file that may hold a chunk of the newer version is put in
             // place, so that no file of the world holds a chunk of a version above
             // the one `meta` names (ADR-0021, section 6). Until then an older server
             // can still open the world.
-            if let Err(error) = meta.raise(self.disk.as_ref(), self.handed) {
+            let mut raised = meta.versions;
+            for (named, handed) in raised.iter_mut().zip(self.handed) {
+                *named = (*named).max(handed);
+            }
+            if let Err(error) = meta.raise(self.disk.as_ref(), raised) {
                 // As a round that failed: the saves are made again by whoever saved
                 // them, and the notes by the next sync.
                 self.pending.retain(|_, saved| saved.noted);
@@ -527,8 +565,9 @@ impl Chunks for FileChunks {
         self.pending.values().filter(|saved| saved.noted).count()
     }
 
-    fn handed(&mut self, version: u16) {
-        self.handed = self.handed.max(version);
+    fn handed(&mut self, dimension: Dimension, version: u16) {
+        let handed = &mut self.handed[usize::from(dimension.number())];
+        *handed = (*handed).max(version);
     }
 }
 
@@ -536,12 +575,15 @@ impl Chunks for FileChunks {
 pub(crate) enum Job {
     /// Answered with the chunk, or with [`StoreReply::Unreadable`]; one that is not
     /// stored is answered [`StoreReply::Generating`] first.
-    Load { position: ChunkPos, peer: Arc<Peer> },
+    Load {
+        position: LevelChunk,
+        peer: Arc<Peer>,
+    },
     /// The chunk is what is loaded from now on. It is written and made durable with
     /// the next checkpoint, return, flush or restoring of whatever handle, or with this
     /// save if it leaves [`PENDING_LIMIT`] chunks to be written.
     Save {
-        position: ChunkPos,
+        position: LevelChunk,
         tick: u64,
         /// The epoch the handle opened its region with.
         epoch: u64,
@@ -564,13 +606,15 @@ pub(crate) enum Job {
     /// chunks of the return with this number that are still to be freed by it.
     Return {
         number: u64,
-        chunks: Vec<ChunkPos>,
+        chunks: Vec<LevelChunk>,
         peer: Arc<Peer>,
     },
     /// Applies the block changes of the commits a region is restored with to the stored
     /// chunks, makes the saves so far durable, and then hands the opened region to
     /// whoever asked for it; or the error, if either could not be done.
     Restore {
+        /// The region's dimension, whose chunks the changes are of.
+        dimension: Dimension,
         changes: Vec<Replayed>,
         tick: u64,
         /// The epoch the region is opened with.
@@ -580,10 +624,11 @@ pub(crate) enum Job {
         restored: Restored,
         answer: Sender<Result<(Opened, Restored), StoreError>>,
     },
-    /// Applies block changes to the stored chunks and makes them durable.
+    /// Applies block changes, each list of changes to the chunks of its dimension, to
+    /// the stored chunks, and makes them durable.
     Fold {
-        changes: Vec<Replayed>,
-        done: Sender<Result<BTreeSet<ChunkPos>, StoreError>>,
+        changes: Vec<(Dimension, Vec<Replayed>)>,
+        done: Sender<Result<BTreeSet<LevelChunk>, StoreError>>,
     },
     /// Everything before it is done, of whatever handle, and what there was to say of
     /// it to the commit thread is said: tells that thread so, through `reply_to`,
@@ -603,7 +648,7 @@ pub(crate) enum Job {
     /// copier's stream with [`Message::Copied`]. Nothing is stored or noted, and no
     /// job of the copier's waits for it.
     Copy {
-        position: ChunkPos,
+        position: LevelChunk,
         /// The holder's commits in the log, in its order.
         listed: Vec<Listed>,
         /// The tick the holder holds the chunk from, whose commits after it are
@@ -616,7 +661,7 @@ pub(crate) enum Job {
     /// Has the generator make ahead the chunks within `radius` of `around` that are not
     /// stored, nearest first: the spawn's, when the store starts (T8f of
     /// `docs/groundwork/t8-plan.md`). Nobody is answered.
-    Prepare { around: ChunkPos, radius: i32 },
+    Prepare { around: LevelChunk, radius: i32 },
     /// The commit thread has ended: nothing will be given any more.
     End,
 }
@@ -717,7 +762,7 @@ enum Entry {
 }
 
 struct Copying {
-    position: ChunkPos,
+    position: LevelChunk,
     changes: Vec<Replayed>,
     sequence: u64,
     last_change: u64,
@@ -729,7 +774,7 @@ struct Copying {
 }
 
 struct Loading {
-    position: ChunkPos,
+    position: LevelChunk,
     peer: Arc<Peer>,
     request: u64,
     /// Dropped, it tells the generator that nobody waits for the chunk any more.
@@ -740,6 +785,7 @@ struct Loading {
 }
 
 struct Restoring {
+    dimension: Dimension,
     changes: Vec<Replayed>,
     tick: u64,
     epoch: u64,
@@ -748,11 +794,11 @@ struct Restoring {
     restored: Restored,
     answer: Sender<Result<(Opened, Restored), StoreError>>,
     /// The chunks the changes lie in, and how many changes each has.
-    touched: BTreeMap<ChunkPos, usize>,
+    touched: BTreeMap<LevelChunk, usize>,
     /// The chunks the changes are applied to, as they are: stored, or made.
-    bases: BTreeMap<ChunkPos, Chunk>,
+    bases: BTreeMap<LevelChunk, Chunk>,
     /// The chunks that are being made, by the number of their request.
-    waiting: BTreeMap<u64, (ChunkPos, Wanted)>,
+    waiting: BTreeMap<u64, (LevelChunk, Wanted)>,
 }
 
 impl Entry {
@@ -784,12 +830,12 @@ struct Before {
     /// The handles of the jobs before, by their number.
     handles: BTreeSet<u64>,
     /// The chunks the jobs before name.
-    named: BTreeSet<ChunkPos>,
+    named: BTreeSet<LevelChunk>,
 }
 
 impl Before {
     fn add(&mut self, entry: &Entry) {
-        let (peer, named): (&Peer, Vec<ChunkPos>) = match entry {
+        let (peer, named): (&Peer, Vec<LevelChunk>) = match entry {
             Entry::Given(Job::Barrier { .. } | Job::Wake | Job::End | Job::Prepare { .. }) => {
                 return;
             }
@@ -811,9 +857,12 @@ impl Before {
             Entry::Loading(loading) => (&loading.peer, vec![loading.position]),
             Entry::Given(Job::Checkpoint { peer, .. } | Job::Flush { peer }) => (peer, Vec::new()),
             Entry::Given(Job::Return { chunks, peer, .. }) => (peer, chunks.clone()),
-            Entry::Given(Job::Restore { changes, peer, .. }) => {
-                (peer, touched(changes).into_keys().collect())
-            }
+            Entry::Given(Job::Restore {
+                dimension,
+                changes,
+                peer,
+                ..
+            }) => (peer, touched(of(*dimension, changes)).into_keys().collect()),
             Entry::Restoring(restoring) => {
                 (&restoring.peer, restoring.touched.keys().copied().collect())
             }
@@ -868,18 +917,19 @@ pub(crate) struct ChunkService {
     arrivals: Arrivals,
     /// For the generator's answers to wake the thread with.
     wake: Sender<Job>,
-    /// The generator's version: a stored chunk that an older one made with a failure
-    /// is made again (ADR-0021, section 6, S8).
-    version: u16,
-    /// Last, so that it is dropped last: a test that holds a generator learns from
+    /// Each dimension's generator's version, in the order of the dimensions' numbers: a
+    /// stored chunk that an older one made with a failure is made again (ADR-0021,
+    /// section 6, S8).
+    versions: [u16; 3],
+    /// Last, so that they are dropped last: a test that holds a generator learns from
     /// that that the thread has ended.
-    generator: Arc<dyn ChunkGenerator>,
+    generators: Generators,
 }
 
 impl ChunkService {
     pub(crate) fn new(
         chunks: Box<dyn Chunks>,
-        generator: Arc<dyn ChunkGenerator>,
+        generators: Generators,
         disk: Arc<dyn Disk>,
         regions: PathBuf,
         wake: Sender<Job>,
@@ -894,8 +944,8 @@ impl ChunkService {
             requests: 0,
             arrivals: Arrivals::default(),
             wake,
-            version: generator.settings().version,
-            generator,
+            versions: generators.versions(),
+            generators,
         }
     }
 
@@ -922,7 +972,11 @@ impl ChunkService {
     /// See [`Job::Prepare`]. A chunk that is stored is read from its file when it is
     /// asked for, so making it would only keep the generator from what is asked; one
     /// whose file cannot be looked at is left to the load that asks for it.
-    fn prepare(&mut self, around: ChunkPos, radius: i32) {
+    fn prepare(&mut self, around: LevelChunk, radius: i32) {
+        let LevelChunk {
+            dimension,
+            position: around,
+        } = around;
         let mut area: Vec<ChunkPos> = (-radius..=radius)
             .flat_map(|x| (-radius..=radius).map(move |z| (x, z)))
             .map(|(x, z)| ChunkPos::new(around.x + x, around.z + z))
@@ -932,14 +986,18 @@ impl ChunkService {
             (x * x + z * z, chunk.x, chunk.z)
         };
         area.sort_by_key(distance);
-        area.retain(|position| matches!(self.chunks.has(*position), Ok(false)));
+        area.retain(|position| {
+            let chunk = LevelChunk::new(dimension, *position);
+            matches!(self.chunks.has(chunk), Ok(false))
+        });
         info!(
+            dimension = dimension.type_name(),
             x = around.x,
             z = around.z,
             chunks = area.len(),
             "the chunks around the spawn that are not stored are made ahead"
         );
-        self.generator.prepare(&area);
+        self.generators.of(dimension).prepare(&area);
     }
 
     fn give(&mut self, job: Job) {
@@ -954,7 +1012,7 @@ impl ChunkService {
     /// [`StoreReply::Withdrawn`], and what the generator was making for it is let go of
     /// (ADR-0021, section 7, rule 5). Nothing is noted for it. A load that has not
     /// begun is taken out as well, or it would be begun behind the one taken out.
-    fn withdraw(&mut self, peer: &Peer, chunks: &[ChunkPos]) {
+    fn withdraw(&mut self, peer: &Peer, chunks: &[LevelChunk]) {
         let mut withdrawn = Vec::new();
         self.queue.retain(|entry| {
             let (position, of) = match entry {
@@ -968,8 +1026,10 @@ impl ChunkService {
             withdrawn.push(position);
             false
         });
-        for position in withdrawn {
-            peer.answer(StoreReply::Withdrawn { position });
+        for chunk in withdrawn {
+            peer.answer(StoreReply::Withdrawn {
+                position: chunk.position,
+            });
         }
     }
 
@@ -1041,6 +1101,7 @@ impl ChunkService {
                 self.copy(index, copying, &listed, from);
             }
             Job::Restore {
+                dimension,
                 changes,
                 tick,
                 epoch,
@@ -1049,7 +1110,7 @@ impl ChunkService {
                 restored,
                 answer,
             } => {
-                let touched = touched(&changes);
+                let touched = touched(of(dimension, &changes));
                 let mut bases = BTreeMap::new();
                 let mut waiting = BTreeMap::new();
                 for (position, count) in &touched {
@@ -1067,6 +1128,7 @@ impl ChunkService {
                     }
                 }
                 let restoring = Restoring {
+                    dimension,
                     changes,
                     tick,
                     epoch,
@@ -1092,13 +1154,14 @@ impl ChunkService {
     }
 
     /// Looks a load up (ADR-0021, section 7, rule 2).
-    fn load(&mut self, index: usize, position: ChunkPos, peer: Arc<Peer>) {
+    fn load(&mut self, index: usize, level: LevelChunk, peer: Arc<Peer>) {
         // Nobody listens to what a lost handle asked for.
         if peer.is_lost() {
             return;
         }
-        let stored = match self.chunks.load(position) {
-            Ok(Some(chunk)) if !self.remakes(&chunk) => {
+        let position = level.position;
+        let stored = match self.chunks.load(level) {
+            Ok(Some(chunk)) if !self.remakes(level.dimension, &chunk) => {
                 peer.answer(StoreReply::Loaded { position, chunk });
                 return;
             }
@@ -1114,9 +1177,9 @@ impl ChunkService {
         };
         // Before the generator is asked, which may answer before it returns.
         peer.answer(StoreReply::Generating { position });
-        let (request, wanted) = self.request(position);
+        let (request, wanted) = self.request(level);
         let loading = Loading {
-            position,
+            position: level,
             peer,
             request,
             _wanted: wanted,
@@ -1133,8 +1196,9 @@ impl ChunkService {
             return;
         }
         let position = copying.position;
+        // The holder's commits are of its dimension, which is the chunk's.
         let changes = match from {
-            Some(from) => self.listed_changes(listed, position, from),
+            Some(from) => self.listed_changes(listed, position.position, from),
             None => Ok(Vec::new()),
         };
         copying.changes = match changes {
@@ -1145,7 +1209,7 @@ impl ChunkService {
             }
         };
         copying.stored = match self.chunks.load(position) {
-            Ok(Some(chunk)) if !self.remakes(&chunk) => {
+            Ok(Some(chunk)) if !self.remakes(position.dimension, &chunk) => {
                 return copied(&copying, Some(chunk));
             }
             Ok(stored) => stored,
@@ -1201,13 +1265,13 @@ impl ChunkService {
     /// it, and nobody changed its blocks since, which would have taken the mark (S8).
     /// Its stored entities are kept whatever is made (`docs/groundwork/n7l-plan.md`,
     /// section 2.4 item 4).
-    fn remakes(&self, stored: &Chunk) -> bool {
-        stored.with_failure() && stored.generated() < self.version
+    fn remakes(&self, dimension: Dimension, stored: &Chunk) -> bool {
+        stored.with_failure() && stored.generated() < self.versions[usize::from(dimension.number())]
     }
 
-    /// Asks the generator for the chunk at `position`. Its answer comes among the
-    /// arrivals, by the number returned.
-    fn request(&mut self, position: ChunkPos) -> (u64, Wanted) {
+    /// Asks the generator of its dimension for the chunk at `chunk`. Its answer comes
+    /// among the arrivals, by the number returned.
+    fn request(&mut self, chunk: LevelChunk) -> (u64, Wanted) {
         self.requests += 1;
         let request = self.requests;
         let mut answer = Answer {
@@ -1216,9 +1280,10 @@ impl ChunkService {
             wake: self.wake.clone(),
             told: false,
         };
-        let wanted = self
-            .generator
-            .request(position, Box::new(move |made| answer.tell(Some(made))));
+        let wanted = self.generators.of(chunk.dimension).request(
+            chunk.position,
+            Box::new(move |made| answer.tell(Some(made))),
+        );
         (request, wanted)
     }
 
@@ -1239,7 +1304,8 @@ impl ChunkService {
                         if let Some(stored) = &copying.stored {
                             chunk.set_entities(stored.entities().to_vec());
                         }
-                        self.chunks.handed(chunk.generated());
+                        let dimension = copying.position.dimension;
+                        self.chunks.handed(dimension, chunk.generated());
                         copied(&copying, Some(chunk));
                     }
                     // As a load: a newer generator that fails leaves the older one's.
@@ -1255,7 +1321,7 @@ impl ChunkService {
                         .expect("the restore waits for this request");
                     match made {
                         Some(Ok(chunk)) => {
-                            self.chunks.handed(chunk.generated());
+                            self.chunks.handed(position.dimension, chunk.generated());
                             restoring.bases.insert(position, chunk);
                         }
                         Some(Err(Failed)) => {
@@ -1282,11 +1348,12 @@ impl ChunkService {
     /// Answers a load that waited for the generator (ADR-0021, section 7, rule 3).
     fn loaded(&mut self, loading: Loading, made: Option<Result<Chunk, Failed>>) {
         let Loading {
-            position,
+            position: level,
             peer,
             stored,
             ..
         } = loading;
+        let position = level.position;
         // It was not taken out yet only because the thread had not looked.
         if peer.is_lost() {
             return;
@@ -1311,9 +1378,9 @@ impl ChunkService {
                     position,
                     chunk: chunk.clone(),
                 });
-                self.chunks.handed(chunk.generated());
+                self.chunks.handed(level.dimension, chunk.generated());
                 // Under S8 in the old chunk's place.
-                self.note(position, &chunk, parts);
+                self.note(level, &chunk, parts);
             }
             made => {
                 if made.is_none() {
@@ -1335,7 +1402,7 @@ impl ChunkService {
     /// Notes a chunk that a region was answered with, to be written by the next sync
     /// of any handle (ADR-0021, section 6, S2). It is not among any handle's saves: no
     /// handle is lost if it cannot be written, and it is tried again (S5).
-    fn note(&mut self, position: ChunkPos, chunk: &Chunk, parts: Parts) {
+    fn note(&mut self, position: LevelChunk, chunk: &Chunk, parts: Parts) {
         if let Err(error) = self.chunks.note(position, chunk, parts) {
             // It is made again when it is needed, and is the same (S3).
             warn!(?position, %error, "a generated chunk could not be noted for writing");
@@ -1351,6 +1418,7 @@ impl ChunkService {
     /// durable and hands the region over.
     fn restore(&mut self, restoring: Restoring) {
         let Restoring {
+            dimension,
             changes,
             tick,
             epoch,
@@ -1361,12 +1429,18 @@ impl ChunkService {
             bases,
             ..
         } = restoring;
-        let applied = apply(self.chunks.as_mut(), bases, &changes, tick, epoch)
-            // In the files before the region is handed over: a world whose chunk files
-            // cannot be written is then not opened, instead of being opened and lost
-            // at its first checkpoint, and what an opening applied is not held in
-            // memory until one.
-            .and_then(|()| self.sync());
+        let applied = apply(
+            self.chunks.as_mut(),
+            bases,
+            of(dimension, &changes),
+            tick,
+            epoch,
+        )
+        // In the files before the region is handed over: a world whose chunk files
+        // cannot be written is then not opened, instead of being opened and lost
+        // at its first checkpoint, and what an opening applied is not held in
+        // memory until one.
+        .and_then(|()| self.sync());
         if let Err(error) = applied {
             error!(region = %peer.session.region, %error, "a region could not be restored");
             let _ = answer.send(Err(error));
@@ -1385,8 +1459,16 @@ impl ChunkService {
     /// keeps the thread until it is done, waiting for the generator on a way of its
     /// own: no region is open then. It answers the chunks it could neither read nor make,
     /// which it left as they were.
-    fn fold(&mut self, changes: &[Replayed]) -> Result<BTreeSet<ChunkPos>, StoreError> {
-        let touched = touched(changes);
+    fn fold(
+        &mut self,
+        changes: &[(Dimension, Vec<Replayed>)],
+    ) -> Result<BTreeSet<LevelChunk>, StoreError> {
+        let all = || {
+            changes
+                .iter()
+                .flat_map(|(dimension, changes)| of(*dimension, changes))
+        };
+        let touched = touched(all());
         let mut bases = BTreeMap::new();
         let (made, arriving) = mpsc::channel();
         let mut wanted = BTreeMap::new();
@@ -1398,8 +1480,8 @@ impl ChunkService {
                 Ok(None) => {
                     let made = made.clone();
                     let position = *position;
-                    let request = self.generator.request(
-                        position,
+                    let request = self.generators.of(position.dimension).request(
+                        position.position,
                         Box::new(move |chunk| {
                             // Nobody waits for it if the fold was given up.
                             let _ = made.send((position, chunk));
@@ -1419,7 +1501,7 @@ impl ChunkService {
             wanted.remove(&position);
             match chunk {
                 Ok(chunk) => {
-                    self.chunks.handed(chunk.generated());
+                    self.chunks.handed(position.dimension, chunk.generated());
                     bases.insert(position, chunk);
                 }
                 Err(Failed) => lost(position, touched[&position], &"it failed"),
@@ -1435,7 +1517,7 @@ impl ChunkService {
             .collect();
         // The tick and the epoch of a saved chunk are only for whoever looks at the
         // files, and no region saves these.
-        apply(self.chunks.as_mut(), bases, changes, 0, NO_REGION)?;
+        apply(self.chunks.as_mut(), bases, all(), 0, NO_REGION)?;
         self.chunks.sync()?;
         Ok(unmade)
     }
@@ -1638,11 +1720,23 @@ impl Replayed {
     }
 }
 
+/// The changes of a region of `dimension`, each with the chunk it lies in.
+fn of(
+    dimension: Dimension,
+    changes: &[Replayed],
+) -> impl Iterator<Item = (LevelChunk, &Replayed)> + Clone {
+    changes
+        .iter()
+        .map(move |change| (LevelChunk::new(dimension, change.chunk()), change))
+}
+
 /// The chunks that replayed changes lie in, and how many changes each has.
-fn touched(changes: &[Replayed]) -> BTreeMap<ChunkPos, usize> {
+fn touched<'a>(
+    changes: impl Iterator<Item = (LevelChunk, &'a Replayed)>,
+) -> BTreeMap<LevelChunk, usize> {
     let mut touched = BTreeMap::new();
-    for change in changes {
-        *touched.entry(change.chunk()).or_insert(0) += 1;
+    for (chunk, _) in changes {
+        *touched.entry(chunk).or_insert(0) += 1;
     }
     touched
 }
@@ -1667,7 +1761,7 @@ fn copied(copying: &Copying, chunk: Option<Chunk>) {
 
 /// Says that the changes to a chunk are not applied: the next checkpoint cuts them
 /// from the log, and they are gone then (ADR-0021, section 7, "Restore, in full").
-fn lost(position: ChunkPos, changes: usize, why: &dyn std::fmt::Display) {
+fn lost(position: LevelChunk, changes: usize, why: &dyn std::fmt::Display) {
     error!(
         ?position,
         changes,
@@ -1686,19 +1780,19 @@ fn lost(position: ChunkPos, changes: usize, why: &dyn std::fmt::Display) {
 /// applying all of them again in order ends in the same state, because each one sets a
 /// block to a definite state and the last one for a block wins, and each change of an
 /// entity sets what it changes to a definite value.
-fn apply(
+fn apply<'a>(
     chunks: &mut dyn Chunks,
-    bases: BTreeMap<ChunkPos, Chunk>,
-    changes: &[Replayed],
+    bases: BTreeMap<LevelChunk, Chunk>,
+    changes: impl Iterator<Item = (LevelChunk, &'a Replayed)>,
     tick: u64,
     epoch: u64,
 ) -> Result<(), StoreError> {
-    let mut bases: BTreeMap<ChunkPos, (Chunk, Parts)> = bases
+    let mut bases: BTreeMap<LevelChunk, (Chunk, Parts)> = bases
         .into_iter()
         .map(|(position, chunk)| (position, (chunk, Parts::NONE)))
         .collect();
-    for change in changes {
-        if let Some((chunk, parts)) = bases.get_mut(&change.chunk()) {
+    for (at, change) in changes {
+        if let Some((chunk, parts)) = bases.get_mut(&at) {
             // A chunk not stored yet is written whole by its first save, whatever part
             // changed (`Chunks::save_parts`).
             *parts = parts.with(change.part());
@@ -1779,6 +1873,7 @@ mod tests {
 
     use clustine_data::blocks;
     use clustine_rpc::{RegionHello, StoreRequest};
+    use clustine_world::ChunkGenerator;
     use clustine_world::generation::{Done, GeneratorSettings};
     use clustine_worldgen::FlatGenerator;
 
@@ -1998,7 +2093,10 @@ mod tests {
     fn durable(disk: &MemoryDisk, position: ChunkPos) -> bool {
         let left: Arc<dyn Disk> = Arc::new(disk.crashed(Survival::Nothing));
         let mut chunks = FileChunks::new(left, Path::new(ROOT));
-        chunks.load(position).unwrap().is_some()
+        chunks
+            .load(crate::tests::overworld(position))
+            .unwrap()
+            .is_some()
     }
 
     #[test]
@@ -2166,7 +2264,10 @@ mod tests {
         assert!(durable(&disk, A));
         let left: Arc<dyn Disk> = Arc::new(disk.crashed(Survival::Nothing));
         let file = left
-            .read(&FileChunks::new(Arc::clone(&left), Path::new(ROOT)).chunk_path(A))
+            .read(
+                &FileChunks::new(Arc::clone(&left), Path::new(ROOT))
+                    .chunk_path(crate::tests::overworld(A)),
+            )
             .unwrap()
             .unwrap();
         let (file, _) = ChunkFile::decode(&file).unwrap();
@@ -2216,7 +2317,9 @@ mod tests {
         let steps = {
             let disk = Arc::new(MemoryDisk::default());
             let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
-            chunks.note(A, &first, Parts::ALL).unwrap();
+            chunks
+                .note(crate::tests::overworld(A), &first, Parts::ALL)
+                .unwrap();
             chunks.sync().unwrap();
             disk.operations()
         };
@@ -2230,11 +2333,13 @@ mod tests {
             ] {
                 let disk = Arc::new(MemoryDisk::failing(Fault::Stop(stop)));
                 let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
-                chunks.note(A, &first, Parts::ALL).unwrap();
+                chunks
+                    .note(crate::tests::overworld(A), &first, Parts::ALL)
+                    .unwrap();
                 let _ = chunks.sync();
                 let left: Arc<dyn Disk> = Arc::new(disk.crashed(survival));
                 let mut after = FileChunks::new(left, Path::new(ROOT));
-                match after.load(A) {
+                match after.load(crate::tests::overworld(A)) {
                     Ok(Some(chunk)) => assert_eq!(
                         chunk.entities(),
                         first.entities(),
@@ -2256,16 +2361,22 @@ mod tests {
         let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
         let mut with = made(A);
         with.set_entities(vec![crate::entities_tests::item(9, 320.5, 2.5)]);
-        chunks.save_parts(A, 1, 1, &with, Parts::ENTITIES).unwrap();
+        chunks
+            .save_parts(crate::tests::overworld(A), 1, 1, &with, Parts::ENTITIES)
+            .unwrap();
         chunks.sync().unwrap();
         assert!(durable(&disk, A));
         let left: Arc<dyn Disk> = Arc::new(disk.crashed(Survival::Nothing));
-        let loaded = FileChunks::new(left, Path::new(ROOT)).load(A).unwrap();
+        let loaded = FileChunks::new(left, Path::new(ROOT))
+            .load(crate::tests::overworld(A))
+            .unwrap();
         assert_eq!(loaded, Some(with.clone()));
 
         let before = disk.operations();
         with.set_entities(Vec::new());
-        chunks.save_parts(A, 2, 1, &with, Parts::ENTITIES).unwrap();
+        chunks
+            .save_parts(crate::tests::overworld(A), 2, 1, &with, Parts::ENTITIES)
+            .unwrap();
         chunks.sync().unwrap();
         // One round: the entities' file removed, its directory synced, no blocks file.
         assert!(
@@ -2282,15 +2393,21 @@ mod tests {
     fn a_failed_sync_keeps_the_notes_and_a_note_does_not_replace_a_save() {
         let disk = Arc::new(MemoryDisk::failing(Fault::Fail(1)));
         let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
-        chunks.save(A, 3, 1, &edited()).unwrap();
-        chunks.note(A, &made(A), Parts::ALL).unwrap();
-        assert!(chunks.load(A).unwrap() == Some(edited()));
-        chunks.note(B, &made(B), Parts::ALL).unwrap();
+        chunks
+            .save(crate::tests::overworld(A), 3, 1, &edited())
+            .unwrap();
+        chunks
+            .note(crate::tests::overworld(A), &made(A), Parts::ALL)
+            .unwrap();
+        assert!(chunks.load(crate::tests::overworld(A)).unwrap() == Some(edited()));
+        chunks
+            .note(crate::tests::overworld(B), &made(B), Parts::ALL)
+            .unwrap();
         assert_eq!((chunks.pending(), chunks.noted()), (1, 1));
 
         assert!(chunks.sync().is_err());
         assert_eq!((chunks.pending(), chunks.noted()), (0, 1));
-        assert!(chunks.load(B).unwrap() == Some(made(B)));
+        assert!(chunks.load(crate::tests::overworld(B)).unwrap() == Some(made(B)));
         chunks.sync().unwrap();
         assert!(durable(&disk, B));
         assert!(!durable(&disk, A));
@@ -2368,7 +2485,9 @@ mod tests {
             let mut files = FileChunks::new(Arc::new(OsDisk::default()), directory.path());
             let noting = Instant::now();
             for (position, chunk) in &made {
-                files.note(*position, chunk, Parts::ALL).unwrap();
+                files
+                    .note(crate::tests::overworld(*position), chunk, Parts::ALL)
+                    .unwrap();
             }
             let noted = noting.elapsed();
             let syncing = Instant::now();

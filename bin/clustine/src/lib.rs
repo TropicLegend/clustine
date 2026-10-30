@@ -25,10 +25,10 @@ use clustine_region::RegionId;
 use clustine_rpc::RegionList;
 use clustine_sim::api::{HOTBAR_SLOTS, Inventory, ItemStack};
 use clustine_structures::template_blocks::TemplateLibrary;
-use clustine_world::ChunkGenerator;
+use clustine_world::{ChunkGenerator, Dimension};
 use clustine_worldgen::scheduler::{Options, Scheduler};
-use clustine_worldgen::{FeatureStages, FlatGenerator, TerrainGenerator};
-use clustine_worldstore::{Pins, Store, StoreError};
+use clustine_worldgen::{FeatureStages, FlatGenerator, PreviewStages, TerrainGenerator};
+use clustine_worldstore::{Generators, Pins, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -67,23 +67,60 @@ pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
 }
 
-/// What a world is made of: what makes the chunks nobody has changed, which only the
-/// world store has, and what a client is told of the world when it logs in, which is
-/// an edge's. The world's spawn follows from the first: the store puts it where the
-/// game would when it makes the world, keeps it, and says it to every region it opens
-/// and to the coordinator. In a cluster the world store and every edge need the same
-/// `--seed`, or none.
+/// The bare land of `dimension` of the world with `seed`, made on the scheduler's pool
+/// of its own: the End's, until the End's milestone builds its kinds of feature
+/// (`docs/groundwork/p-plan.md`, section 14). Nobody enters it before then, so the pool
+/// idles and its cache stays empty meanwhile.
+fn bare_land(seed: i64, dimension: Dimension) -> Arc<dyn ChunkGenerator> {
+    let terrain = Arc::new(TerrainGenerator::new(seed, dimension));
+    Arc::new(Scheduler::new(
+        PreviewStages::new(terrain),
+        Options::for_processors(processors()),
+    ))
+}
+
+/// The land of `dimension` of the world with `seed` with its features, made in
+/// ADR-0021's order of runs on the scheduler's pool of its own, with the blocks of the
+/// structure templates where the operator gave them.
+fn featured_land(
+    seed: i64,
+    dimension: Dimension,
+    templates: Option<Arc<TemplateLibrary>>,
+) -> Arc<dyn ChunkGenerator> {
+    let terrain = Arc::new(TerrainGenerator::new(seed, dimension));
+    let stages = match templates {
+        Some(templates) => FeatureStages::with_templates(terrain, templates),
+        None => FeatureStages::new(terrain),
+    };
+    Arc::new(Scheduler::new(
+        stages,
+        Options::for_processors(processors()),
+    ))
+}
+
+/// What a world is made of: what makes the chunks nobody has changed in each of its
+/// dimensions, which only the world store has, and what a client is told of the world
+/// when it logs in, which is an edge's. The world's spawn follows from the first: the
+/// store puts it where the game would when it makes the world, keeps it, and says it to
+/// every region it opens and to the coordinator. In a cluster the world store and every
+/// edge need the same `--seed`, or none.
 #[derive(Clone)]
 pub struct Land {
-    pub(crate) generator: Arc<dyn ChunkGenerator>,
+    pub(crate) generators: Generators,
     pub(crate) login: LoginWorld,
 }
 
 impl Land {
-    /// The flat world, which a server has unless it is told a seed.
+    /// The flat world, which a server has unless it is told a seed. Its Nether and its
+    /// End are those of seed 0, as the game's flat world has them
+    /// (`docs/groundwork/p-plan.md`, decision 9).
     pub fn flat() -> Self {
         Self {
-            generator: generator(),
+            generators: Generators::new(
+                generator(),
+                featured_land(0, Dimension::Nether, None),
+                bare_land(0, Dimension::End),
+            ),
             login: login_of(None),
         }
     }
@@ -103,20 +140,13 @@ impl Land {
 
     /// [`Self::of_seed`] with the blocks of the structure templates.
     pub fn of_seed_with(seed: i64, templates: Option<Arc<TemplateLibrary>>) -> Self {
-        let terrain = Arc::new(TerrainGenerator::new(
-            seed,
-            clustine_world::Dimension::Overworld,
-        ));
-        let stages = match templates {
-            Some(templates) => FeatureStages::with_templates(terrain, templates),
-            None => FeatureStages::new(terrain),
-        };
         Self {
             login: login_of(Some(seed)),
-            generator: Arc::new(Scheduler::new(
-                stages,
-                Options::for_processors(processors()),
-            )),
+            generators: Generators::new(
+                featured_land(seed, Dimension::Overworld, templates.clone()),
+                featured_land(seed, Dimension::Nether, templates),
+                bare_land(seed, Dimension::End),
+            ),
         }
     }
 
@@ -128,6 +158,12 @@ impl Land {
     /// What a client is told of the world when it logs in.
     pub fn login(&self) -> LoginWorld {
         self.login
+    }
+
+    /// What makes the chunks of each dimension: what a store of this world is given, so
+    /// that a world made by a tool or a test is the one a server opens.
+    pub fn generators(&self) -> Generators {
+        self.generators.clone()
     }
 }
 
@@ -276,7 +312,7 @@ impl Server {
 
     /// [`Self::start`] for a world of the given land.
     pub async fn start_in(config: Config, land: Land) -> Result<Self> {
-        let generator = || Arc::clone(&land.generator);
+        let generators = || land.generators.clone();
         // Without pins the world is one home region pinned to nothing, which its
         // regions grow from; with them, regions pinned side by side at the cuts.
         let pins = if config.pins.is_empty() {
@@ -286,10 +322,10 @@ impl Server {
                 .map_err(|error| anyhow!("the pins have to be {error}"))?
         };
         let store = match &config.world {
-            Some(directory) => Store::local_divided(directory, generator(), pins)
+            Some(directory) => Store::local_divided(directory, generators(), pins)
                 .with_context(|| format!("opening the world in {}", directory.display()))?,
             None => {
-                Store::memory_divided(generator(), pins).context("starting a world in memory")?
+                Store::memory_divided(generators(), pins).context("starting a world in memory")?
             }
         };
         let store: Kept = Arc::new(Mutex::new(Some(store)));

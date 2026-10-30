@@ -24,7 +24,6 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clustine::{Config, Server};
@@ -35,7 +34,6 @@ use clustine_protocol::packets::play::face;
 use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionHello, RegionInfo, RegionList, StoreRequest};
 use clustine_world::ChunkPos;
-use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Pins, Store};
 
 use common::{VIEW_DISTANCE, config, free_address, spawn_server_with_log, view_area};
@@ -474,8 +472,9 @@ async fn a_world_whose_state_file_of_the_home_region_is_damaged_does_not_start_a
 /// said to have written into it is of this build by its first two bytes and nothing
 /// a state can be read from behind.
 fn make_a_world_that_cannot_be_restored(world: &Path) {
-    let generator = Arc::new(FlatGenerator::classic());
-    let store = Store::local_divided(world, generator, Pins::none()).unwrap();
+    // The flat world's land in every dimension, as the server that opens it has it.
+    let store =
+        Store::local_divided(world, clustine::Land::flat().generators(), Pins::none()).unwrap();
     let hello = RegionHello {
         region: HOME,
         epoch: 1,

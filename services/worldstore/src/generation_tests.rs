@@ -369,7 +369,7 @@ fn generated(handle: &StoreHandle, position: ChunkPos) -> Chunk {
 fn stored_with(disk: &MemoryDisk, survival: Survival, position: ChunkPos) -> Option<Chunk> {
     let left = Arc::new(disk.crashed(survival));
     FileChunks::new(left, Path::new(ROOT))
-        .load(position)
+        .load(crate::tests::overworld(position))
         .unwrap()
 }
 
@@ -1299,7 +1299,8 @@ fn close_writes_what_is_pending_and_flush_does_not() {
 #[test]
 fn close_writes_what_is_pending_in_a_world_on_disk() {
     let directory = tempfile::tempdir().unwrap();
-    let path = FileChunks::new(Arc::new(MemoryDisk::default()), directory.path()).chunk_path(A);
+    let path = FileChunks::new(Arc::new(MemoryDisk::default()), directory.path())
+        .chunk_path(crate::tests::overworld(A));
     let (toy, control) = toy_of(VERSION);
     let store = Store::local_told(directory.path(), toy, gap()).unwrap();
     let x = open(&store, hello(EAST, 1));
@@ -1700,7 +1701,9 @@ fn a_stored_chunk_with_entities_is_made_again_with_its_entities_kept() {
     assert!(with_entity.with_failure());
     {
         let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
-        chunks.save(A, 1, 1, &with_entity).unwrap();
+        chunks
+            .save(crate::tests::overworld(A), 1, 1, &with_entity)
+            .unwrap();
         chunks.sync().unwrap();
     }
     let (toy, control) = toy_of(2);

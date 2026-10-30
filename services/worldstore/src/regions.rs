@@ -736,7 +736,9 @@ pub(crate) fn world_of_today() -> Arc<MemoryDisk> {
     let mut chunks = FileChunks::new(disk.clone(), Path::new(ROOT));
     let mut saved = generator().generate(ORIGIN);
     saved.set(3, -61, 4, blocks::AIR);
-    chunks.save(ORIGIN, 1, 1, &saved).unwrap();
+    chunks
+        .save(crate::tests::overworld(ORIGIN), 1, 1, &saved)
+        .unwrap();
     chunks.sync().unwrap();
     // What such a store wrote there for stripes divided at x = 0. Nothing reads it.
     put(&disk, "/world/layout", b"9c191507aacacf62\n");
@@ -863,19 +865,19 @@ struct Gated<C> {
 }
 
 impl<C: Chunks> Chunks for Gated<C> {
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, position: clustine_world::LevelChunk) -> Result<Option<Chunk>, StoreError> {
         self.chunks.load(position)
     }
 
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
-        if self.gated.contains(&position) {
+        if self.gated.contains(&position.position) {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
@@ -889,7 +891,7 @@ impl<C: Chunks> Chunks for Gated<C> {
 
     fn note(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {

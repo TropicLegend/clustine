@@ -10,28 +10,28 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_region::RegionId;
-use clustine_world::ChunkPos;
+use clustine_world::LevelChunk;
 
 #[derive(Default)]
 pub(crate) struct Copies {
-    copiers: BTreeMap<ChunkPos, BTreeSet<RegionId>>,
-    copied: BTreeMap<RegionId, BTreeSet<ChunkPos>>,
+    copiers: BTreeMap<LevelChunk, BTreeSet<RegionId>>,
+    copied: BTreeMap<RegionId, BTreeSet<LevelChunk>>,
     /// Of every chunk copied, the sequence of the last change its copiers were told of,
     /// or of the group in which it was first copied.
-    anchors: BTreeMap<ChunkPos, u64>,
+    anchors: BTreeMap<LevelChunk, u64>,
 }
 
 impl Copies {
     /// `region` copies `chunk` from the group of `sequence` on. Returns the last change
     /// its base is to name.
-    pub(crate) fn register(&mut self, region: RegionId, chunk: ChunkPos, sequence: u64) -> u64 {
+    pub(crate) fn register(&mut self, region: RegionId, chunk: LevelChunk, sequence: u64) -> u64 {
         self.copiers.entry(chunk).or_default().insert(region);
         self.copied.entry(region).or_default().insert(chunk);
         *self.anchors.entry(chunk).or_insert(sequence)
     }
 
     /// `region` copies `chunk` no longer.
-    pub(crate) fn unregister(&mut self, region: RegionId, chunk: ChunkPos) {
+    pub(crate) fn unregister(&mut self, region: RegionId, chunk: LevelChunk) {
         if let Some(copiers) = self.copiers.get_mut(&chunk) {
             copiers.remove(&region);
             if copiers.is_empty() {
@@ -61,14 +61,14 @@ impl Copies {
     }
 
     /// The regions that copy `chunk`, ascending.
-    pub(crate) fn copiers(&self, chunk: ChunkPos) -> Vec<RegionId> {
+    pub(crate) fn copiers(&self, chunk: LevelChunk) -> Vec<RegionId> {
         self.copiers
             .get(&chunk)
             .map_or_else(Vec::new, |copiers| copiers.iter().copied().collect())
     }
 
     /// Whether `region` copies `chunk`.
-    pub(crate) fn copies(&self, region: RegionId, chunk: ChunkPos) -> bool {
+    pub(crate) fn copies(&self, region: RegionId, chunk: LevelChunk) -> bool {
         self.copiers
             .get(&chunk)
             .is_some_and(|copiers| copiers.contains(&region))
@@ -76,7 +76,7 @@ impl Copies {
 
     /// `chunk` changed in the record of `sequence`: the change before, which its update
     /// names, if anyone copies it.
-    pub(crate) fn changed(&mut self, chunk: ChunkPos, sequence: u64) -> Option<u64> {
+    pub(crate) fn changed(&mut self, chunk: LevelChunk, sequence: u64) -> Option<u64> {
         let anchor = self.anchors.get_mut(&chunk)?;
         Some(std::mem::replace(anchor, sequence))
     }
@@ -86,10 +86,17 @@ impl Copies {
 mod tests {
     use super::*;
 
+    fn at(x: i32, z: i32) -> LevelChunk {
+        LevelChunk::new(
+            clustine_world::Dimension::Overworld,
+            clustine_world::ChunkPos::new(x, z),
+        )
+    }
+
     #[test]
     fn a_chain_is_anchored_where_its_chunk_was_first_copied() {
         let mut copies = Copies::default();
-        let chunk = ChunkPos::new(3, 4);
+        let chunk = at(3, 4);
         let (a, b) = (RegionId(1), RegionId(2));
         assert_eq!(copies.changed(chunk, 5), None);
         assert_eq!(copies.register(a, chunk, 10), 10);
@@ -104,5 +111,20 @@ mod tests {
         assert_eq!(copies.copiers(chunk), []);
         // Nobody copies it: the next copier begins a chain of its own.
         assert_eq!(copies.register(a, chunk, 30), 30);
+    }
+
+    #[test]
+    fn the_same_position_in_two_dimensions_has_a_chain_of_its_own() {
+        let mut copies = Copies::default();
+        let overworld = at(3, 4);
+        let nether = LevelChunk::new(clustine_world::Dimension::Nether, overworld.position);
+        let (a, b) = (RegionId(1), RegionId(2));
+        assert_eq!(copies.register(a, overworld, 10), 10);
+        assert_eq!(copies.register(b, nether, 20), 20);
+        assert_eq!(copies.copiers(overworld), [a]);
+        assert_eq!(copies.copiers(nether), [b]);
+        assert_eq!(copies.changed(nether, 21), Some(20));
+        assert_eq!(copies.changed(overworld, 22), Some(10));
+        assert!(!copies.copies(a, nether));
     }
 }

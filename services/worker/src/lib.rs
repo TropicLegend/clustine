@@ -5391,10 +5391,11 @@ mod tests {
         assert!(flat.features.0.is_some());
     }
 
-    /// The number the store gives the classic flat world.
+    /// The number the store gives the classic flat world of these tests, whose other
+    /// dimensions are air: its identity names the generators of all three.
     fn flat_world() -> u64 {
-        use clustine_world::ChunkGenerator as _;
-        clustine_worldstore::world_number(&FlatGenerator::classic().settings().identity)
+        let generators = clustine_worldstore::Generators::from(Arc::new(FlatGenerator::classic()));
+        clustine_worldstore::world_number(&generators.identity())
     }
 
     /// A store of a flat world that is one region and only lasts as long as the store.

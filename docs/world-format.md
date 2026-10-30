@@ -1,6 +1,6 @@
 # World format
 
-How Clustine stores a world on disk. This describes **format version 16**
+How Clustine stores a world on disk. This describes **format version 20**
 (`FORMAT_VERSION` in `crates/clustine-format/src/lib.rs`) as implemented in
 `crates/clustine-format` (encodings) and `services/worldstore` (files); see
 `docs/adr/0008-durable-regions-and-resuming.md` for what the store promises of commits
@@ -15,13 +15,13 @@ finds an earlier `format` in a world's `meta` stops before it reads, changes or 
 anything else in the directory, and says:
 
 ```text
-This world was made by an earlier Clustine (world format 15; this server writes
-format 16). Worlds are not carried over before the first release: move <directory>
+This world was made by an earlier Clustine (world format 19; this server writes
+format 20). Worlds are not carried over before the first release: move <directory>
 away or name another, and a new world is made.
 ```
 
 A world of a later format is refused too, as any other setting of `meta` that differs
-("the world was made with format `17`, but this server uses `16`").
+("the world was made with format `21`, but this server uses `20`").
 
 The version is raised whenever what is written changes meaning; a tag that no world
 made before it can hold (a new kind of entity data, of effect or of a use of an entity)
@@ -41,6 +41,8 @@ needs no raise, as an older record never has it. The raises since 2:
 | 16 | A chunk keeps the structure starts that reach it which natural spawning and the patrol spawner ask |
 | 17 | A chunk keeps the claims on its points of interest, and a commit may carry them |
 | 18 | A chunk keeps raids, and a commit may carry them; a place holds where the raid omen began after the time since rest; the log has the trader's chance (kind 21), and the table keeps it after the clock |
+| 19 | A place names its dimension, its travel, the credits seen and its portal cooldown, and a respawn its dimension; an entity keeps its portal state; a commit may carry travellers, and the log writes them forward (`docs/groundwork/p-plan.md`, section 15.6) |
+| 20 | Each region of the table names its dimension; each dimension's chunks are under a directory of their own, and `meta` names the three dimensions' generators (section 3.3 of the same plan) |
 
 ## Principles
 
@@ -91,9 +93,12 @@ another version than its own, and refuses bytes left over after what it read.
 
 - `meta` is a text file of `key=value` lines: `format` (the format version),
   `data-version` (the Minecraft data version whose block state and biome ids the world
-  uses), `generator` (the generator's settings, but its version),
-  `generator-version`, the highest version of the generator that made a chunk the world
-  stores (`docs/adr/0021-generation-is-a-function.md`, section 8), and `spawn`, the
+  uses), `generator` (the settings of the three dimensions' generators, but their
+  versions: the overworld's, the Nether's and the End's, each apart from the next by
+  ` | `), `generator-version`, the highest version of the overworld's generator that made
+  a chunk the world stores (`docs/adr/0021-generation-is-a-function.md`, section 8),
+  `generator-version-the_nether` and `generator-version-the_end` likewise of the other
+  two, each of which is held to its own dimension's generator as below, and `spawn`, the
   world's spawn as `x,y,z`, where the generator put it when the world was made. The
   file is written before anything else when the world is made, with the version of the
   generator that made it. A store with a newer generator opens the world and changes
@@ -131,9 +136,9 @@ another version than its own, and refuses bytes left over after what it read.
 - `chunks` holds the files of every stored chunk at chunk coordinates `x`, `z`, grouped
   into directories of 32×32 chunks (`rx = x >> 5`, `rz = z >> 5`): its blocks file,
   `<x>.<z>.chunk`, and, where it has entities, its entities' file, `<x>.<z>.entities`.
-  `<dimension>` is the world's dimension without its namespace (`overworld`,
-  `the_nether`, `the_end`). A world has one dimension, and every world is the overworld
-  so far.
+  `<dimension>` is the chunk's dimension without its namespace (`overworld`,
+  `the_nether`, `the_end`): each dimension's chunks are kept apart, and the same `x`,
+  `z` in two dimensions are two chunks.
 - A world from before there was a table has a file `layout`; that it is there says so,
   and what it says is not read.
 
@@ -790,6 +795,7 @@ place can go.
 | The division the table was made from: count, then areas | u32, areas |
 | Regions, in ascending order of their ids: count, then per region | u32 |
 | … id | u32 |
+| … its dimension: 0 the overworld, 1 the Nether, 2 the End | u8 |
 | … the areas it is pinned to: count, areas | u32, areas |
 | … its grants, ascending by x then z: count, then per grant x, z, tick | u32, (i32, i32, u64)… |
 | Absorbed regions, oldest first: count, then per pair absorbed, into | u32, (u32, u32)… |
@@ -800,7 +806,10 @@ place can go.
 An area is a u8 of flags (bit 0: it has a western end, bit 1: an eastern end; the others
 0) followed by i32 `min_x` and i32 `max_x`, each 0 if absent: the chunks with
 `min_x <= x < max_x`, whatever their z. The reader refuses regions or grants out of
-order or twice, and an end that is absent and not 0. The clock is the later of every
+order or twice, and an end that is absent and not 0. A region holds chunks of its
+dimension alone, for its whole life: its grants are chunks of it, and so is every chunk
+the records of the log name for it. Only a region of the overworld is pinned, and an
+area holds chunks of the overworld alone; the home chunk is the overworld's. The clock is the later of every
 region's the store took (`docs/groundwork/n7-plan.md`, section 8.4). The trader's chance
 is the world's (`docs/groundwork/n10-plan.md`, section 9.6): of the records of kind 21,
 the latest firing's stands, and of one firing the lowest chance, as only the region that

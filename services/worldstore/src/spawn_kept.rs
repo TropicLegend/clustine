@@ -20,7 +20,7 @@ use crate::chunks::FileChunks;
 use crate::disk::{Disk, Fault, MemoryDisk};
 use crate::regions::SURVIVALS;
 use crate::tests::reply;
-use crate::{Pins, Store, StoreError, StoreHandle};
+use crate::{Generators, Pins, Store, StoreError, StoreHandle};
 
 /// A spawn well away from the origin, in neither of its axes' first chunk, so that a
 /// spawn taken from anywhere else would show.
@@ -125,20 +125,21 @@ fn a_new_world_killed_at_any_step_of_its_making_has_no_meta_or_one_with_the_spaw
         let disk = Arc::new(MemoryDisk::failing(Fault::Stop(stop)));
         let shared: Arc<dyn Disk> = disk.clone();
         // The whole of the making: `meta`, and then the store's table and log.
-        let whole = crate::local::prepare(&shared, root, generator.as_ref()).and_then(|meta| {
-            assert_eq!(meta.spawn, AWAY, "stopped at {stop}");
-            let spawn = meta.spawn;
-            let chunks = FileChunks::new(Arc::clone(&shared), root).with_meta(meta);
-            let store = crate::begin(
-                Arc::clone(&shared),
-                root,
-                Box::new(chunks),
-                Arc::clone(&generator),
-                Pins::none(),
-                spawn,
-            )?;
-            store.regions()
-        });
+        let whole = crate::local::prepare(&shared, root, &Generators::from(Arc::clone(&generator)))
+            .and_then(|meta| {
+                assert_eq!(meta.spawn, AWAY, "stopped at {stop}");
+                let spawn = meta.spawn;
+                let chunks = FileChunks::new(Arc::clone(&shared), root).with_meta(meta);
+                let store = crate::begin(
+                    Arc::clone(&shared),
+                    root,
+                    Box::new(chunks),
+                    Generators::from(Arc::clone(&generator)),
+                    Pins::none(),
+                    spawn,
+                )?;
+                store.regions()
+            });
         for survival in SURVIVALS {
             let left = disk.crashed(survival);
             let found = left.read(&root.join("meta")).unwrap();

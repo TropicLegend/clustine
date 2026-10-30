@@ -288,7 +288,8 @@ fn a_copy_of_land_nobody_holds_is_the_stored_chunk_and_one_that_cannot_be_read_i
         }]
     );
 
-    let path = FileChunks::new(disk.clone(), Path::new("/world")).chunk_path(WEST);
+    let path = FileChunks::new(disk.clone(), Path::new("/world"))
+        .chunk_path(crate::tests::overworld(WEST));
     put(&disk, path.to_str().unwrap(), b"not a chunk");
     copies(&copier, &[WEST], &[]);
     let streamed = up_to_mark(&copier);

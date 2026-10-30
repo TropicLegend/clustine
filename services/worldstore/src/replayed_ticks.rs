@@ -207,7 +207,10 @@ fn chunks_restored_with_ticks_are_stored_with_them() {
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let chunks = FileChunks::new(left, Path::new("/world"));
     let mut chunks: Box<dyn Chunks> = Box::new(chunks);
-    let stored = chunks.load(C).unwrap().expect("the restore stored C");
+    let stored = chunks
+        .load(crate::tests::overworld(C))
+        .unwrap()
+        .expect("the restore stored C");
     assert_eq!(stored, expected(C, &[], vec![fluid(7, 7), tick(8, 2)]));
     assert_eq!(stored.generated(), 0);
 }

@@ -26,7 +26,7 @@ pub async fn worldstore(
         Pins::side_by_side(&pins).map_err(|error| anyhow!("--pin takes {error}"))?
     };
     let pinned = pins.areas.len();
-    let store = Store::local_divided(&world, land.generator, pins)
+    let store = Store::local_divided(&world, land.generators, pins)
         .with_context(|| format!("opening the world in {}", world.display()))?;
     let listener =
         std::net::TcpListener::bind(listen).with_context(|| format!("listening on {listen}"))?;

@@ -35,6 +35,12 @@
 //! A segment is removed once nothing in it is needed any more and every segment before
 //! it is gone. Records are not removed one by one: a record that a checkpoint covers is
 //! passed over because its tick is not above the state file's.
+//!
+//! A region holds chunks of one dimension, which the table keeps: what a region's
+//! messages and records name by position alone is of that dimension, and is named here
+//! by dimension and position ([`LevelChunk`]) wherever the store keeps it, so that the
+//! same position in two dimensions is two chunks (`docs/groundwork/p-plan.md`,
+//! sections 3.3 and 15.1).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -57,12 +63,12 @@ use clustine_rpc::{
 };
 use clustine_world::poi::Claim;
 use clustine_world::{
-    Arrival, BlockPos, Change as BlockChange, ChunkPos, Due, Effect, EffectId, Entity,
-    EntityChange, EntityId, EntityIds, FiledEffect, PlayerId,
+    Arrival, BlockPos, Change as BlockChange, ChunkPos, Dimension, Due, Effect, EffectId, Entity,
+    EntityChange, EntityId, EntityIds, FiledEffect, LevelChunk, PlayerId, Traveller,
 };
 use tracing::{error, info, warn};
 
-use crate::arrivals::{ArrivalUndo, FiledArrivals, KeptArrival};
+use crate::arrivals::{ArrivalUndo, FiledArrivals, Forward, Gathered, Handed, KeptArrival};
 use crate::chunks::{Job, Jobs, Listed, Replayed};
 use crate::copies::Copies;
 use crate::couplings::{Couplings, Said};
@@ -94,6 +100,10 @@ const RECORD_EFFECTS: usize = 65_536;
 /// record is some hundreds of bytes, of a few kilobytes at most, far below a record's
 /// room for this many.
 const RECORD_ARRIVALS: usize = 4_096;
+
+/// At most this many travellers are written forward by one record of the log: a
+/// traveller is an entity with its riders, a few at most (the format's limit is 64).
+const RECORD_TRAVELLERS: usize = 256;
 
 /// How often the commit thread looks at the time while regions are coupled or in a
 /// handshake, when nothing else wakes it.
@@ -207,10 +217,10 @@ struct Lane {
     /// The chunks a return of which is on its way through the thread for chunks, each
     /// with the number of that return. A chunk is freed only by the return it is noted
     /// with here, so that one that was called off frees nothing later.
-    returning: BTreeMap<ChunkPos, u64>,
+    returning: BTreeMap<LevelChunk, u64>,
     /// Chunks of returns asked for that the region found unreadable: arrivals filed for
     /// them do not call their return off (`docs/groundwork/n3-plan.md`, section 6).
-    unreadable: BTreeSet<ChunkPos>,
+    unreadable: BTreeSet<LevelChunk>,
     /// How many returns the session that opened the region last has asked for, from
     /// which their numbers come.
     returns: u64,
@@ -294,7 +304,7 @@ struct Group {
     stream: BTreeMap<RegionId, Vec<Streamed>>,
     /// The copies asked for in the group, which are registered and based once it is
     /// durable, so that a base is current through a group.
-    copies_wanted: Vec<(RegionId, ChunkPos)>,
+    copies_wanted: Vec<(RegionId, LevelChunk)>,
     /// The highest tick each region committed in the group, whose progress its
     /// partners are told once the group is durable.
     committed: BTreeMap<RegionId, u64>,
@@ -343,10 +353,10 @@ enum ArrivalStep {
 enum Streamed {
     /// An effect filed, sent unless it was taken or dropped within the group.
     Effect(EffectId),
-    /// An arrival filed, sent unless it was taken within the group, or its chunk's holder
-    /// is another region by the group's end: resolved then, never sent as a copy, so that
-    /// one a later commit of the group took is not sent behind that commit's answer
-    /// (`docs/groundwork/n3-plan.md`, section 5, G4).
+    /// An arrival or a traveller filed, sent unless it was taken within the group, or its
+    /// chunk's holder is another region by the group's end: resolved then, never sent as
+    /// a copy, so that one a later commit of the group took is not sent behind that
+    /// commit's answer (`docs/groundwork/n3-plan.md`, section 5, G4).
     Arrival(EffectId),
     Reply(Box<StoreReply>),
 }
@@ -356,13 +366,45 @@ enum Change {
     /// The region was granted the chunks.
     Granted {
         region: RegionId,
-        chunks: Vec<ChunkPos>,
+        chunks: Vec<LevelChunk>,
     },
     /// The region gave the chunks back, which it had held from these ticks.
     Returned {
         region: RegionId,
-        grants: Vec<(ChunkPos, u64)>,
+        grants: Vec<(LevelChunk, u64)>,
     },
+}
+
+/// The positions of `chunks`, which are of one region's dimension, as its messages
+/// and records name them.
+fn positions(chunks: &[LevelChunk]) -> Vec<ChunkPos> {
+    chunks.iter().map(|chunk| chunk.position).collect()
+}
+
+/// The chunks at `positions` of `dimension`.
+fn levels(dimension: Dimension, positions: &[ChunkPos]) -> Vec<LevelChunk> {
+    positions
+        .iter()
+        .map(|position| LevelChunk::new(dimension, *position))
+        .collect()
+}
+
+/// The dimension of the region `region` of the log, as the table read so far has it:
+/// the commits and the records of the table name positions alone, of their region's
+/// dimension. A region the table never had or has forgotten (one of the oldest absorbed
+/// ones) is taken for the overworld's, as every region was before regions had
+/// dimensions; a record that does not fit the table is refused by it all the same.
+fn dimension_in(stored: Option<&Table>, region: u32) -> Dimension {
+    let known = stored.and_then(|table| table.dimension_ever(RegionId(region)));
+    known.unwrap_or_else(|| {
+        if stored.is_some() {
+            warn!(
+                region,
+                "the log names a region the table does not know; its chunks are taken for the overworld's"
+            );
+        }
+        Dimension::Overworld
+    })
 }
 
 impl Lanes {
@@ -526,21 +568,30 @@ impl Lanes {
                         taken,
                         arrivals,
                         arrivals_taken,
+                        travellers,
                         ..
                     } => {
                         let of = Some((region, tick));
                         let at = sequence(segment, offset as u64);
+                        let dimension = dimension_in(stored.as_ref(), region);
+                        let sent = arrivals.len();
                         for (index, (chunk, entity, due)) in arrivals.into_iter().enumerate() {
                             let id = EffectId {
                                 sequence: at,
                                 index: index as u32,
                             };
-                            let kept = KeptArrival {
-                                chunk,
-                                entity,
-                                due,
-                                segment,
+                            let chunk = LevelChunk::new(dimension, chunk);
+                            let kept = KeptArrival::entity(chunk, entity, due, segment);
+                            arrival_steps.push((of, ArrivalStep::File(id, kept)));
+                        }
+                        // Numbered after the arrivals, each for the chunk it names
+                        // (`docs/groundwork/p-plan.md`, section 15.4).
+                        for (index, traveller) in travellers.into_iter().enumerate() {
+                            let id = EffectId {
+                                sequence: at,
+                                index: (sent + index) as u32,
                             };
+                            let kept = KeptArrival::traveller(traveller, segment);
                             arrival_steps.push((of, ArrivalStep::File(id, kept)));
                         }
                         for id in arrivals_taken {
@@ -561,6 +612,7 @@ impl Lanes {
                                 id,
                                 Kept {
                                     effect,
+                                    dimension,
                                     due,
                                     segment,
                                 },
@@ -611,6 +663,8 @@ impl Lanes {
                         chunks,
                     } => {
                         if let Some(table) = changed_by(&mut stored, segment)? {
+                            let dimension = dimension_in(Some(&*table), region);
+                            let chunks = levels(dimension, &chunks);
                             table.grant(RegionId(region), tick, &chunks)?;
                             table_last = Some(segment);
                         }
@@ -623,7 +677,8 @@ impl Lanes {
                     }
                     LogRecord::Returned { region, chunks } => {
                         if let Some(table) = changed_by(&mut stored, segment)? {
-                            for chunk in chunks {
+                            let dimension = dimension_in(Some(&*table), region);
+                            for chunk in levels(dimension, &chunks) {
                                 // The record says that the region does not hold the
                                 // chunk, which is so.
                                 if table.release(RegionId(region), chunk).is_none() {
@@ -695,6 +750,8 @@ impl Lanes {
                             made.unwritten = true;
                         }
                         if let Some(table) = changed_by(&mut stored, segment)? {
+                            let dimension = dimension_in(Some(&*table), region);
+                            let chunks = levels(dimension, &chunks);
                             table.split(RegionId(region), RegionId(part), tick, &chunks)?;
                             table_last = Some(segment);
                         }
@@ -711,10 +768,18 @@ impl Lanes {
                             arrival_steps.push((None, ArrivalStep::Take(id)));
                         }
                     }
-                    // Filed by P3 (`docs/groundwork/p-plan.md`, section 15.4); until then no
-                    // region sends a traveller, and no record of them is written.
-                    LogRecord::TravellersForward { .. } => {}
-                    LogRecord::ArrivalsForward { arrivals } => {
+                    // Travellers written forward, in their place among the commits'
+                    // steps as the arrivals' are, never taken back.
+                    LogRecord::TravellersForward { travellers } => {
+                        for (id, traveller) in travellers {
+                            let kept = KeptArrival::traveller(traveller, segment);
+                            arrival_steps.push((None, ArrivalStep::File(id, kept)));
+                        }
+                    }
+                    LogRecord::ArrivalsForward {
+                        dimension,
+                        arrivals,
+                    } => {
                         for Arrival {
                             id,
                             chunk,
@@ -722,21 +787,18 @@ impl Lanes {
                             due,
                         } in arrivals
                         {
-                            let kept = KeptArrival {
-                                chunk,
-                                entity,
-                                due,
-                                segment,
-                            };
+                            let chunk = LevelChunk::new(dimension, chunk);
+                            let kept = KeptArrival::entity(chunk, entity, due, segment);
                             arrival_steps.push((None, ArrivalStep::File(id, kept)));
                         }
                     }
-                    LogRecord::EffectsForward { effects } => {
+                    LogRecord::EffectsForward { dimension, effects } => {
                         for FiledEffect { id, effect, due } in effects {
                             filed.file(
                                 id,
                                 Kept {
                                     effect,
+                                    dimension,
                                     due,
                                     segment,
                                 },
@@ -940,8 +1002,8 @@ impl Lanes {
             }
         }
         let mut dropped = Vec::new();
-        for filed in self.filed.all() {
-            let chunk = filed.effect.at.chunk();
+        for (filed, dimension) in self.filed.all() {
+            let chunk = LevelChunk::new(dimension, filed.effect.at.chunk());
             match self.table.holder(chunk) {
                 Some(holder) if self.uses.user(chunk).is_none() => {
                     self.uses.begin(holder, chunk);
@@ -1046,7 +1108,7 @@ impl Lanes {
                     // went on the stream before the base, and the worker may hand the
                     // base in later still.
                     let base = StoreReply::CopyBase {
-                        position,
+                        position: position.position,
                         sequence,
                         last_change,
                         chunk,
@@ -1181,7 +1243,7 @@ impl Lanes {
     /// for: the chunk is no longer being returned, the region is answered `Claimed` for it
     /// in the group, and its use begins again (`docs/groundwork/n3-plan.md`, sections 5
     /// and 6). One the region found unreadable is returned all the same.
-    fn call_off_returns(&mut self, chunks: Vec<(RegionId, ChunkPos)>) {
+    fn call_off_returns(&mut self, chunks: Vec<(RegionId, LevelChunk)>) {
         for (holder, chunk) in chunks {
             let Some(lane) = self.regions.get_mut(&holder) else {
                 continue;
@@ -1191,7 +1253,7 @@ impl Lanes {
             }
             if let Some(owner) = lane.owner.as_mut() {
                 owner.unsynced.push(StoreReply::Claimed {
-                    granted: vec![chunk],
+                    granted: vec![chunk.position],
                     foreign: Vec::new(),
                 });
             }
@@ -1215,6 +1277,33 @@ impl Lanes {
         self.group.said(said);
     }
 
+    /// Of the regions that hold the home chunk of the dimension a traveller of
+    /// `travellers` goes to, the latest tick of each: a chunk nobody holds is granted to
+    /// such a region as of it, as an arrival's is to its sender.
+    fn homes_of(&self, travellers: &[Traveller]) -> BTreeMap<RegionId, u64> {
+        travellers
+            .iter()
+            .filter_map(|traveller| {
+                let home = self
+                    .table
+                    .holder(self.table.home_of(traveller.chunk.dimension))?;
+                Some((home, self.regions.get(&home)?.latest))
+            })
+            .collect()
+    }
+
+    /// Tells each home of `granted` in the group that it holds the chunks a commit's
+    /// travellers were sent into, ahead of its stream and so of the travellers.
+    fn claimed_for_travellers(&mut self, granted: BTreeMap<RegionId, Vec<LevelChunk>>) {
+        for (home, chunks) in granted {
+            let claimed = StoreReply::Claimed {
+                granted: positions(&chunks),
+                foreign: Vec::new(),
+            };
+            self.answer_in_group(home, claimed);
+        }
+    }
+
     /// Does what the owner `session` asks for, if it still owns its region.
     fn request(&mut self, session: Session, request: StoreRequest) {
         // A merge and a split are no part of a group: each ends the group, is made
@@ -1235,6 +1324,18 @@ impl Lanes {
             } => return self.split(session, tick, state, part, as_epoch, region),
             request => request,
         };
+        // Every chunk the region names is of its dimension. A region the table does not
+        // have has no lane either.
+        let Some(dimension) = self.table.dimension(session.region) else {
+            return;
+        };
+        let level = move |position: ChunkPos| LevelChunk::new(dimension, position);
+        // The ticks the homes that travellers may go to are at, looked up before the
+        // region's lane is taken, which a commit's grant to one of them is made with.
+        let homes = match &request {
+            StoreRequest::Commit { travellers, .. } => self.homes_of(travellers),
+            _ => BTreeMap::new(),
+        };
         let Some(lane) = self.regions.get_mut(&session.region) else {
             return;
         };
@@ -1252,11 +1353,13 @@ impl Lanes {
             // Kept as it comes, behind the commit it goes with: in memory only.
             StoreRequest::Counts(report) => {
                 self.publication_wanted |= report.full;
-                self.counts.report(session.region, session.number, report);
+                let (region, number) = (session.region, session.number);
+                self.counts.report(region, number, dimension, report);
                 return;
             }
             StoreRequest::Village(report) => {
-                self.village.report(session.region, session.number, report);
+                let (region, number) = (session.region, session.number);
+                self.village.report(region, number, dimension, report);
                 return;
             }
             // The portal index is P3's (`docs/groundwork/p-plan.md`, section 15.4); no
@@ -1369,9 +1472,9 @@ impl Lanes {
                 // the sender before the commit is appended, so that a restart that reads
                 // the log, or keeps the first part of a torn group, files the arrival
                 // against its holder (ADR-0028, section 5).
-                let mut nobodys: Vec<ChunkPos> = arrivals
+                let mut nobodys: Vec<LevelChunk> = arrivals
                     .iter()
-                    .map(|(chunk, _)| *chunk)
+                    .map(|(chunk, _)| level(*chunk))
                     .filter(|chunk| self.table.holder(*chunk).is_none())
                     .collect();
                 nobodys.sort_unstable();
@@ -1382,7 +1485,7 @@ impl Lanes {
                         let record = LogRecord::Granted {
                             region: region.0,
                             tick: at,
-                            chunks: chunks.to_vec(),
+                            chunks: positions(chunks),
                         };
                         match self.log.append(&record.encode()) {
                             Ok((segment, _)) => self.table_last = Some(segment),
@@ -1413,9 +1516,57 @@ impl Lanes {
                     }
                     // Ahead of the group's stream, and so of the arrivals.
                     owner.unsynced.push(StoreReply::Claimed {
-                        granted: nobodys,
+                        granted: positions(&nobodys),
                         foreign: Vec::new(),
                     });
+                }
+                // A traveller sent into land nobody holds goes to the region that holds
+                // its dimension's home chunk, not to the sender, which may be of another
+                // dimension (`docs/groundwork/p-plan.md`, section 3.3, R D12): the land is
+                // granted to it as of its latest tick, before the commit is appended, as
+                // an arrival's is to its sender. Where nobody holds the home chunk either,
+                // the traveller waits, filed, for whoever is granted its chunk.
+                let mut to_homes: BTreeMap<RegionId, Vec<LevelChunk>> = BTreeMap::new();
+                for traveller in &travellers {
+                    let chunk = traveller.chunk;
+                    if self.table.holder(chunk).is_some() {
+                        continue;
+                    }
+                    let home = self.table.holder(self.table.home_of(chunk.dimension));
+                    let Some((home, at)) = home.and_then(|home| Some((home, *homes.get(&home)?)))
+                    else {
+                        continue;
+                    };
+                    let record = LogRecord::Granted {
+                        region: home.0,
+                        tick: at,
+                        chunks: vec![chunk.position],
+                    };
+                    match self.log.append(&record.encode()) {
+                        Ok((segment, _)) => self.table_last = Some(segment),
+                        Err(error) => {
+                            error!(%home, %error, "a grant could not be written to the log");
+                            self.fail_log();
+                            return;
+                        }
+                    }
+                    self.table
+                        .grant(home, at, &[chunk])
+                        .expect("a chunk nobody holds is granted to the home of its dimension");
+                    self.group.changed.push(Change::Granted {
+                        region: home,
+                        chunks: vec![chunk],
+                    });
+                    if self.uses.begin(home, chunk) {
+                        tell_copiers(
+                            &self.uses,
+                            &self.couplings,
+                            &self.copies,
+                            &mut self.group,
+                            chunk,
+                        );
+                    }
+                    to_homes.entry(home).or_default().push(chunk);
                 }
                 // When each is due in its holder's ticks: at once where the sender holds
                 // the chunk itself, which it was granted or which it had not loaded.
@@ -1424,7 +1575,7 @@ impl Lanes {
                     .map(|(chunk, entity)| {
                         let holder = self
                             .table
-                            .holder(chunk)
+                            .holder(level(chunk))
                             .expect("an arrival's chunk is held: granted above if nobody held it");
                         let due = if holder == region {
                             Due::FromTaking
@@ -1442,7 +1593,7 @@ impl Lanes {
                 let effects: Vec<(Effect, Due, RegionId)> = effects
                     .into_iter()
                     .filter_map(|effect| {
-                        let user = self.uses.user(effect.at.chunk())?;
+                        let user = self.uses.user(level(effect.at.chunk()))?;
                         let due = self.couplings.due(region, user, tick, &effect);
                         Some((effect, due, user))
                     })
@@ -1453,9 +1604,9 @@ impl Lanes {
                 let mut taken: Vec<EffectId> = taken
                     .into_iter()
                     .filter(|id| {
-                        self.filed.get(*id).is_some_and(|kept| {
-                            self.uses.user(kept.effect.at.chunk()) == Some(region)
-                        })
+                        self.filed
+                            .get(*id)
+                            .is_some_and(|kept| self.uses.user(kept.chunk()) == Some(region))
                     })
                     .collect();
                 taken.sort_unstable();
@@ -1468,9 +1619,9 @@ impl Lanes {
                 let copied = |chunk: ChunkPos| {
                     let held = self
                         .table
-                        .held_from(region, chunk)
+                        .held_from(region, level(chunk))
                         .is_some_and(|from| tick > from);
-                    held && !self.copies.copiers(chunk).is_empty()
+                    held && !self.copies.copiers(level(chunk)).is_empty()
                 };
                 // A chunk's claims count as its change too, since copies read them
                 // (`docs/groundwork/n10-plan.md`, section 3.2).
@@ -1519,14 +1670,12 @@ impl Lanes {
                         .map(|(chunk, entity, due, _)| (*chunk, entity.clone(), *due))
                         .collect(),
                     arrivals_taken: arrivals_taken.clone(),
-                    // Kept in the log with the tick that sent them; P3 files them for their
-                    // chunks (`docs/groundwork/p-plan.md`, section 15.4). No region sends
-                    // one before P9.
-                    travellers,
+                    travellers: travellers.clone(),
                 }
                 .encode();
+                let sent = arrivals.len();
                 self.group.regions.insert(region);
-                let mut calls_off: Vec<(RegionId, ChunkPos)> = Vec::new();
+                let mut calls_off: Vec<(RegionId, LevelChunk)> = Vec::new();
                 match self.log.append(&record) {
                     Ok((segment, offset)) => {
                         let at = sequence(segment, offset);
@@ -1537,6 +1686,7 @@ impl Lanes {
                             };
                             let kept = Kept {
                                 effect,
+                                dimension,
                                 due,
                                 segment,
                             };
@@ -1561,17 +1711,33 @@ impl Lanes {
                                 sequence: at,
                                 index: index as u32,
                             };
-                            let kept = KeptArrival {
-                                chunk,
-                                entity,
-                                due,
-                                segment,
-                            };
+                            let chunk = level(chunk);
+                            let kept = KeptArrival::entity(chunk, entity, due, segment);
                             self.arrivals.file(id, kept);
                             self.group.arrivals.push(ArrivalUndo::Filed(id));
                             self.group.stream(holder, Streamed::Arrival(id));
                             if self.table.pinned_holder(chunk).is_none() {
                                 calls_off.push((holder, chunk));
+                            }
+                        }
+                        // The travellers after them, numbered so, each filed for its
+                        // chunk and on the stream of the region that holds it, due at
+                        // once; one whose chunk nobody holds waits for its holder
+                        // (`docs/groundwork/p-plan.md`, section 15.4).
+                        for (index, traveller) in travellers.into_iter().enumerate() {
+                            let id = EffectId {
+                                sequence: at,
+                                index: (sent + index) as u32,
+                            };
+                            let chunk = traveller.chunk;
+                            self.arrivals
+                                .file(id, KeptArrival::traveller(traveller, segment));
+                            self.group.arrivals.push(ArrivalUndo::Filed(id));
+                            if let Some(holder) = self.table.holder(chunk) {
+                                self.group.stream(holder, Streamed::Arrival(id));
+                                if self.table.pinned_holder(chunk).is_none() {
+                                    calls_off.push((holder, chunk));
+                                }
                             }
                         }
                         for id in arrivals_taken {
@@ -1582,9 +1748,9 @@ impl Lanes {
                         for (chunk, (changes, entity_changes, claims)) in updates {
                             let previous = self
                                 .copies
-                                .changed(chunk, at)
+                                .changed(level(chunk), at)
                                 .expect("a chunk somebody copies has a chain");
-                            for copier in self.copies.copiers(chunk) {
+                            for copier in self.copies.copiers(level(chunk)) {
                                 let update = StoreReply::CopyUpdate {
                                     position: chunk,
                                     sequence: at,
@@ -1609,6 +1775,7 @@ impl Lanes {
                         lane.named = lane.named.max(tick);
                         if notes.is_empty() && gone.is_empty() && !names_all {
                             self.call_off_returns(calls_off);
+                            self.claimed_for_travellers(to_homes);
                             return;
                         }
                         // Only now that the commit is taken: the notes of an owner
@@ -1637,11 +1804,16 @@ impl Lanes {
                             // section 4). It is advice: a claim later in this group can
                             // take the chunk, and its holder can give it back a moment
                             // later.
+                            // Of the place's dimension: a unit is kept with the place
+                            // it was left at.
                             let enter = |place: Option<LoggedPlace>, unit: Option<LoggedUnit>| {
+                                let dimension = place.as_ref().map(|place| place.dimension);
+                                let dimension = dimension.unwrap_or(Dimension::Overworld);
                                 let chunk = match &unit {
                                     Some(unit) => Some(unit.root().chunk()),
                                     None => place.as_ref().map(players::chunk_of),
                                 };
+                                let chunk = chunk.map(|chunk| LevelChunk::new(dimension, chunk));
                                 StoreReply::Enter {
                                     player,
                                     entity,
@@ -1688,6 +1860,7 @@ impl Lanes {
                                             seq,
                                             face: face.clone(),
                                             writer: region,
+                                            dimension,
                                             let_go: *let_go,
                                         };
                                         written.push((player, held));
@@ -1700,6 +1873,7 @@ impl Lanes {
                             owner.unsynced.push(StoreReply::Dead { stays: dead });
                         }
                         self.call_off_returns(calls_off);
+                        self.claimed_for_travellers(to_homes);
                         for (player, held) in written {
                             self.face_written(player, held);
                         }
@@ -1737,11 +1911,14 @@ impl Lanes {
             // is; what the thread for chunks is given has passed, and is done in the
             // order it passed in.
             StoreRequest::Load { position } | StoreRequest::Save { position, .. }
-                if self.table.held_from(session.region, position).is_none() =>
+                if self
+                    .table
+                    .held_from(session.region, level(position))
+                    .is_none() =>
             {
                 peer.answer(StoreReply::NotHeld {
                     position,
-                    holder: self.table.holder(position),
+                    holder: self.table.holder(level(position)),
                 });
                 return;
             }
@@ -1751,6 +1928,7 @@ impl Lanes {
                 // Its use begins as the load is passed on, so that what is filed while
                 // it is loaded waits for it (`docs/adr/0025-effects-between-regions.md`,
                 // section 5).
+                let position = level(position);
                 if self.uses.begin(session.region, position) {
                     tell_copiers(
                         &self.uses,
@@ -1774,7 +1952,7 @@ impl Lanes {
                 chunk,
                 parts,
             } => Job::Save {
-                position,
+                position: level(position),
                 tick,
                 epoch: owner.epoch,
                 chunk,
@@ -1793,7 +1971,7 @@ impl Lanes {
                 let mut foreign = Vec::new();
                 let mut new = Vec::new();
                 let mut asked = BTreeSet::new();
-                for chunk in chunks {
+                for chunk in levels(dimension, &chunks) {
                     // Each once, in the order of the request.
                     if !asked.insert(chunk) {
                         continue;
@@ -1808,7 +1986,7 @@ impl Lanes {
                     if let Some(lender) = lender
                         && lane.returning.contains_key(&chunk)
                     {
-                        foreign.push((chunk, lender));
+                        foreign.push((chunk.position, lender));
                         continue;
                     }
                     match self.table.holder(chunk) {
@@ -1818,7 +1996,7 @@ impl Lanes {
                             lane.returning.remove(&chunk);
                             granted.push(chunk);
                         }
-                        Some(holder) => foreign.push((chunk, holder)),
+                        Some(holder) => foreign.push((chunk.position, holder)),
                         None => {
                             new.push(chunk);
                             granted.push(chunk);
@@ -1832,7 +2010,7 @@ impl Lanes {
                     let record = LogRecord::Granted {
                         region: region.0,
                         tick,
-                        chunks: chunks.to_vec(),
+                        chunks: positions(chunks),
                     };
                     match self.log.append(&record.encode()) {
                         Ok((segment, _)) => self.table_last = Some(segment),
@@ -1887,24 +2065,26 @@ impl Lanes {
                     let reply = StoreReply::Faces { changes: faces };
                     self.group.stream(region, Streamed::Reply(Box::new(reply)));
                 }
-                owner
-                    .unsynced
-                    .push(StoreReply::Claimed { granted, foreign });
+                owner.unsynced.push(StoreReply::Claimed {
+                    granted: positions(&granted),
+                    foreign,
+                });
                 self.group.regions.insert(region);
                 return;
             }
             StoreRequest::Return { chunks, unreadable } => {
                 let region = session.region;
+                let chunks = levels(dimension, &chunks);
                 let mut returned = Vec::new();
                 let mut asked = BTreeSet::new();
-                lane.unreadable.extend(unreadable);
+                lane.unreadable.extend(levels(dimension, &unreadable));
                 // A chunk with arrivals filed for it, which the release would leave to
                 // nobody, is not given back: the arrivals keep it held, the region is
                 // answered `Claimed` for it, and they are sent again for it to take
                 // (`docs/groundwork/n3-plan.md`, sections 5 and 6). One the region found
                 // unreadable goes back all the same.
-                let kept_back: Vec<ChunkPos> = {
-                    let mut kept: Vec<ChunkPos> = chunks
+                let kept_back: Vec<LevelChunk> = {
+                    let mut kept: Vec<LevelChunk> = chunks
                         .iter()
                         .copied()
                         .filter(|chunk| {
@@ -1918,7 +2098,7 @@ impl Lanes {
                     kept.dedup();
                     kept
                 };
-                let chunks: Vec<ChunkPos> = chunks
+                let chunks: Vec<LevelChunk> = chunks
                     .into_iter()
                     .filter(|chunk| !kept_back.contains(chunk))
                     .collect();
@@ -1929,7 +2109,7 @@ impl Lanes {
                         }
                     }
                     owner.unsynced.push(StoreReply::Claimed {
-                        granted: kept_back,
+                        granted: positions(&kept_back),
                         foreign: Vec::new(),
                     });
                     self.group.regions.insert(region);
@@ -1938,16 +2118,16 @@ impl Lanes {
                 // being pinned and was never granted, which no return frees: its use
                 // ends all the same (`docs/adr/0025-effects-between-regions.md`,
                 // section 5, and "Found while building", E6).
-                let mut let_go: Vec<ChunkPos> = chunks
+                let mut let_go: Vec<LevelChunk> = chunks
                     .iter()
                     .copied()
-                    .filter(|chunk| *chunk != self.table.home_chunk)
+                    .filter(|chunk| !self.table.is_home(*chunk))
                     .collect();
                 let_go.sort_unstable();
                 let_go.dedup();
                 for chunk in chunks {
                     let granted = self.table.granted_from(region, chunk).is_some();
-                    if !granted || chunk == self.table.home_chunk {
+                    if !granted || self.table.is_home(chunk) {
                         warn!(
                             %region,
                             ?chunk,
@@ -2001,7 +2181,7 @@ impl Lanes {
                     &mut self.log,
                     &mut self.group,
                     region,
-                    &chunks,
+                    &levels(dimension, &chunks),
                 );
                 if let Err(error) = ended {
                     error!(%region, %error, "effects dropped could not be written to the log");
@@ -2012,15 +2192,16 @@ impl Lanes {
             StoreRequest::Copies { wanted, gone } => {
                 let region = session.region;
                 for chunk in gone {
-                    self.copies.unregister(region, chunk);
+                    self.copies.unregister(region, level(chunk));
                 }
                 // A copy wanted again, after a gap in its updates, is based anew.
                 for chunk in wanted {
-                    self.group.copies_wanted.push((region, chunk));
+                    self.group.copies_wanted.push((region, level(chunk)));
                 }
                 return;
             }
             StoreRequest::Beside { begins, ends } => {
+                let (begins, ends) = (levels(dimension, &begins), levels(dimension, &ends));
                 self.couplings.beside(session.region, &begins, &ends);
                 // Looked at when the group ends, with the use as it is then.
                 self.group.looking = true;
@@ -2037,13 +2218,20 @@ impl Lanes {
                 self.group.said(said);
                 return;
             }
-            StoreRequest::Lend { chunks } => return self.lend(session.region, &peer, chunks),
+            StoreRequest::Lend { chunks } => {
+                let chunks = levels(dimension, &chunks);
+                return self.lend(session.region, &peer, chunks);
+            }
             StoreRequest::LendRefused {
                 lend,
                 chunks,
                 again,
-            } => return self.lend_refused(session.region, lend, &chunks, again),
+            } => {
+                let chunks = levels(dimension, &chunks);
+                return self.lend_refused(session.region, lend, &chunks, again);
+            }
             StoreRequest::Lending { lend, chunks } => {
+                let chunks = levels(dimension, &chunks);
                 return self.lending(session.region, peer, lend, &chunks);
             }
         };
@@ -2157,18 +2345,24 @@ impl Lanes {
             };
             let mut told = false;
             let mut effects = Vec::new();
-            let mut arrivals = Vec::new();
-            // What is batched goes out in the order it was put on the stream.
-            let flush = |effects: &mut Vec<FiledEffect>, arrivals: &mut Vec<Arrival>| {
+            let mut arrivals = Gathered::default();
+            // What is batched goes out in the order it was put on the stream: arrivals
+            // and travellers each in a batch of their own, as they come.
+            let flush = |effects: &mut Vec<FiledEffect>, arrivals: &mut Gathered| {
                 let mut told = false;
                 if !effects.is_empty() {
                     let effects = mem::take(effects);
                     owner.peer.answer(StoreReply::Effects { effects });
                     told = true;
                 }
-                if !arrivals.is_empty() {
-                    let arrivals = mem::take(arrivals);
+                if !arrivals.arrivals.is_empty() {
+                    let arrivals = mem::take(&mut arrivals.arrivals);
                     owner.peer.answer(StoreReply::Arrivals { arrivals });
+                    told = true;
+                }
+                if !arrivals.travellers.is_empty() {
+                    let travellers = mem::take(&mut arrivals.travellers);
+                    owner.peer.answer(StoreReply::Travellers { travellers });
                     told = true;
                 }
                 told
@@ -2177,20 +2371,37 @@ impl Lanes {
                 match item {
                     Streamed::Effect(id) => {
                         told |= flush(&mut Vec::new(), &mut arrivals);
-                        effects.extend(self.filed.filed(id).filter(|filed| {
-                            self.uses.user(filed.effect.at.chunk()) == Some(region)
-                        }));
+                        let filed = self
+                            .filed
+                            .get(id)
+                            .filter(|kept| self.uses.user(kept.chunk()) == Some(region));
+                        effects.extend(filed.and_then(|_| self.filed.filed(id)));
                     }
                     // Only for the chunk's holder as the group ends: one whose holder
                     // changed within the group is sent to the new holder by what
                     // changed it.
                     Streamed::Arrival(id) => {
-                        told |= flush(&mut effects, &mut Vec::new());
-                        arrivals.extend(
-                            self.arrivals
-                                .filed(id)
-                                .filter(|arrival| self.table.holder(arrival.chunk) == Some(region)),
-                        );
+                        told |= flush(&mut effects, &mut Gathered::default());
+                        let held = self
+                            .arrivals
+                            .get(id)
+                            .is_some_and(|kept| self.table.holder(kept.chunk) == Some(region));
+                        let handed = self.arrivals.filed(id).filter(|_| held);
+                        match handed {
+                            Some(Handed::Arrival(arrival)) => {
+                                if !arrivals.travellers.is_empty() {
+                                    told |= flush(&mut Vec::new(), &mut arrivals);
+                                }
+                                arrivals.arrivals.push(arrival);
+                            }
+                            Some(Handed::Traveller(id, traveller)) => {
+                                if !arrivals.arrivals.is_empty() {
+                                    told |= flush(&mut Vec::new(), &mut arrivals);
+                                }
+                                arrivals.travellers.push((id, traveller));
+                            }
+                            None => {}
+                        }
                     }
                     Streamed::Reply(reply) => {
                         flush(&mut effects, &mut arrivals);
@@ -2388,7 +2599,9 @@ impl Lanes {
     /// no commit a region is restored with, nothing the table file does not have, and
     /// no stay note the players' file does not have. The effects not taken yet that
     /// live in them are written forward first (`docs/adr/0025-effects-between-regions.md`,
-    /// section 5).
+    /// section 5), and so are the arrivals and the travellers. An effect or an arrival
+    /// that the record of its kind cannot name the dimension of keeps its segment, and
+    /// every one after it (`effects.rs`, `arrivals.rs`).
     fn collect(&mut self) {
         let needed = self.needed_by_lanes();
         let from = self.table.from;
@@ -2413,7 +2626,8 @@ impl Lanes {
             if !carried.is_empty() && self.write_forward(carried).is_err() {
                 return;
             }
-            // Arrivals too, which are never dropped untaken (`docs/groundwork/n3-plan.md`).
+            // Arrivals too, which are never dropped untaken (`docs/groundwork/n3-plan.md`),
+            // and travellers.
             let carried = self.arrivals.living_in(..=last);
             if !carried.is_empty() && self.write_arrivals_forward(carried).is_err() {
                 return;
@@ -2426,15 +2640,33 @@ impl Lanes {
         });
     }
 
-    /// Writes the arrivals forward, as [`Lanes::write_forward`] writes effects: records of
-    /// a group of their own in a segment of their own, made durable, which they live in
-    /// from then on.
-    fn write_arrivals_forward(&mut self, carried: Vec<Arrival>) -> Result<(), ()> {
+    /// Writes the arrivals and the travellers forward, as [`Lanes::write_forward`] writes
+    /// effects: records of a group of their own in a segment of their own, made durable,
+    /// which they live in from then on. A record of arrivals for each dimension's.
+    fn write_arrivals_forward(&mut self, carried: Forward) -> Result<(), ()> {
         let mut segment = None;
-        let written = carried.chunks(RECORD_ARRIVALS).try_for_each(|arrivals| {
-            let record = LogRecord::ArrivalsForward {
-                arrivals: arrivals.to_vec(),
-            };
+        let mut by_dimension: BTreeMap<Dimension, Vec<Arrival>> = BTreeMap::new();
+        for (dimension, arrival) in &carried.arrivals {
+            by_dimension
+                .entry(*dimension)
+                .or_default()
+                .push(arrival.clone());
+        }
+        let arrivals = by_dimension.iter().flat_map(|(dimension, arrivals)| {
+            arrivals
+                .chunks(RECORD_ARRIVALS)
+                .map(|arrivals| LogRecord::ArrivalsForward {
+                    dimension: *dimension,
+                    arrivals: arrivals.to_vec(),
+                })
+        });
+        let travellers = carried
+            .travellers
+            .chunks(RECORD_TRAVELLERS)
+            .map(|travellers| LogRecord::TravellersForward {
+                travellers: travellers.to_vec(),
+            });
+        let written = arrivals.chain(travellers).try_for_each(|record| {
             let (at, _) = self.log.append(&record.encode())?;
             segment = Some(at);
             Ok(())
@@ -2446,22 +2678,23 @@ impl Lanes {
         }
         self.log.close();
         let segment = segment.expect("arrivals were written");
-        for Arrival {
-            id,
-            chunk,
-            entity,
-            due,
-        } in carried
-        {
-            self.arrivals.file(
+        for (
+            dimension,
+            Arrival {
                 id,
-                KeptArrival {
-                    chunk,
-                    entity,
-                    due,
-                    segment,
-                },
-            );
+                chunk,
+                entity,
+                due,
+            },
+        ) in carried.arrivals
+        {
+            let chunk = LevelChunk::new(dimension, chunk);
+            self.arrivals
+                .file(id, KeptArrival::entity(chunk, entity, due, segment));
+        }
+        for (id, traveller) in carried.travellers {
+            self.arrivals
+                .file(id, KeptArrival::traveller(traveller, segment));
         }
         Ok(())
     }
@@ -2469,15 +2702,26 @@ impl Lanes {
     /// Writes the effects forward, as records of a group of their own, and makes them
     /// durable: they live in the segment of those records from then on. A failure cuts
     /// the group off like any other, after which every region has lost its owner.
-    fn write_forward(&mut self, carried: Vec<FiledEffect>) -> Result<(), ()> {
+    fn write_forward(&mut self, carried: Vec<(Dimension, FiledEffect)>) -> Result<(), ()> {
         let mut segment = None;
-        let written = carried.chunks(RECORD_EFFECTS).try_for_each(|effects| {
-            let record = LogRecord::EffectsForward {
-                effects: effects.to_vec(),
-            };
-            let (at, _) = self.log.append(&record.encode())?;
-            segment = Some(at);
-            Ok(())
+        // A record for each dimension's, which the record names.
+        let mut by_dimension: BTreeMap<Dimension, Vec<FiledEffect>> = BTreeMap::new();
+        for (dimension, effect) in &carried {
+            by_dimension
+                .entry(*dimension)
+                .or_default()
+                .push(effect.clone());
+        }
+        let written = by_dimension.iter().try_for_each(|(dimension, effects)| {
+            effects.chunks(RECORD_EFFECTS).try_for_each(|effects| {
+                let record = LogRecord::EffectsForward {
+                    dimension: *dimension,
+                    effects: effects.to_vec(),
+                };
+                let (at, _) = self.log.append(&record.encode())?;
+                segment = Some(at);
+                Ok(())
+            })
         });
         if let Err(error) = written.and_then(|()| self.log.sync()) {
             error!(%error, "effects could not be written forward in the log");
@@ -2487,11 +2731,12 @@ impl Lanes {
         // A segment of its own, so that what keeps it is the effects alone.
         self.log.close();
         let segment = segment.expect("effects were written");
-        for FiledEffect { id, effect, due } in carried {
+        for (dimension, FiledEffect { id, effect, due }) in carried {
             self.filed.file(
                 id,
                 Kept {
                     effect,
+                    dimension,
                     due,
                     segment,
                 },
@@ -2591,7 +2836,13 @@ impl Lanes {
     /// What `region` holds by a lend and has lent away, as the table has it now.
     fn lends_of(&self, region: RegionId) -> LendsOf {
         let (lent, lent_away) = self.table.lends(region);
-        LendsOf { lent, lent_away }
+        LendsOf {
+            lent: positions(&lent),
+            lent_away: lent_away
+                .into_iter()
+                .map(|(chunk, holder)| (chunk.position, holder))
+                .collect(),
+        }
     }
 
     /// Answers the owner of `region`, if it has one, once the group is durable.
@@ -2639,7 +2890,7 @@ impl Lanes {
 
     /// The faces in the chunks `region` holds, as a base.
     fn faces_held_by(&self, region: RegionId) -> Vec<FaceChange> {
-        let chunks: Vec<ChunkPos> = self
+        let chunks: Vec<LevelChunk> = self
             .faces
             .chunks()
             .filter(|chunk| self.table.holder(*chunk) == Some(region))
@@ -2675,9 +2926,9 @@ impl Lanes {
     /// (`docs/adr/0027-lending-at-a-line.md`, section 3).
     fn call_off(&mut self, region: RegionId) {
         for (lend, of) in self.lends.call_off(region) {
-            let chunks: Vec<ChunkPos> = of.chunks.keys().copied().collect();
+            let chunks: Vec<LevelChunk> = of.chunks.keys().copied().collect();
             for party in [of.lender, of.borrower] {
-                let chunks = chunks.clone();
+                let chunks = positions(&chunks);
                 self.answer_now(party, StoreReply::LendCalledOff { lend, chunks });
             }
             self.resend_arrivals(of.lender, &chunks);
@@ -2688,7 +2939,7 @@ impl Lanes {
     /// again after a lend called off: a worker drops what it kept for a chunk it lends
     /// (`docs/groundwork/n3-plan.md`, sections 5 and 6). As numbers, resolved when the
     /// group ends.
-    fn resend_arrivals(&mut self, region: RegionId, chunks: &[ChunkPos]) {
+    fn resend_arrivals(&mut self, region: RegionId, chunks: &[LevelChunk]) {
         for chunk in chunks {
             for id in self.arrivals.ids_of(*chunk) {
                 self.group.stream(region, Streamed::Arrival(id));
@@ -2698,14 +2949,14 @@ impl Lanes {
 
     /// Tells the pinned regions whose chunks among `chunks` `from` held by a grant
     /// that `to` holds them now, after a merge or a split.
-    fn tell_lenders(&self, from: RegionId, to: RegionId, chunks: &[ChunkPos]) {
+    fn tell_lenders(&self, from: RegionId, to: RegionId, chunks: &[LevelChunk]) {
         let mut lenders: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
         for chunk in chunks {
             if let Some(lender) = self.table.pinned_holder(*chunk)
                 && lender != from
                 && lender != to
             {
-                lenders.entry(lender).or_default().push(*chunk);
+                lenders.entry(lender).or_default().push(chunk.position);
             }
         }
         for (lender, chunks) in lenders {
@@ -2715,18 +2966,24 @@ impl Lanes {
 
     /// `borrower` asks for a lend of `chunks` (`docs/adr/0027-lending-at-a-line.md`,
     /// section 2): each is asked of its lender, or answered at once.
-    fn lend(&mut self, borrower: RegionId, peer: &Arc<Peer>, chunks: Vec<ChunkPos>) {
+    fn lend(&mut self, borrower: RegionId, peer: &Arc<Peer>, chunks: Vec<LevelChunk>) {
         let pinned = self.table.pinned(borrower).to_vec();
-        let beside = |chunk: ChunkPos| {
-            [-1, 1].into_iter().any(|dx| {
-                let next = ChunkPos::new(chunk.x + dx, chunk.z);
-                pinned.iter().any(|area| area.contains(next))
-            })
+        // Pins are the overworld's, and so are lends.
+        let beside = |chunk: LevelChunk| {
+            let LevelChunk {
+                dimension,
+                position,
+            } = chunk;
+            dimension == Dimension::Overworld
+                && [-1, 1].into_iter().any(|dx| {
+                    let next = ChunkPos::new(position.x + dx, position.z);
+                    pinned.iter().any(|area| area.contains(next))
+                })
         };
         let mut not_lendable = Vec::new();
         let mut wait = Vec::new();
         let mut held = Vec::new();
-        let mut asked: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
+        let mut asked: BTreeMap<RegionId, Vec<LevelChunk>> = BTreeMap::new();
         let mut seen = BTreeSet::new();
         for chunk in chunks {
             if !seen.insert(chunk) {
@@ -2746,7 +3003,7 @@ impl Lanes {
             }
             // Its own pinned land and the home chunk are no lend's, whoever holds them.
             let pinned_holder = self.table.pinned_holder(chunk);
-            if pinned_holder == Some(borrower) || chunk == self.table.home_chunk {
+            if pinned_holder == Some(borrower) || self.table.is_home(chunk) {
                 not_lendable.push(chunk);
                 continue;
             }
@@ -2790,13 +3047,14 @@ impl Lanes {
             self.answer_in_group(
                 borrower,
                 StoreReply::Claimed {
-                    granted: held,
+                    granted: positions(&held),
                     foreign: Vec::new(),
                 },
             );
         }
         for (chunks, again) in [(not_lendable, false), (wait, true)] {
             if !chunks.is_empty() {
+                let chunks = positions(&chunks);
                 peer.answer(StoreReply::NotLent { chunks, again });
             }
         }
@@ -2806,7 +3064,7 @@ impl Lanes {
                 lender,
                 StoreReply::LendAsked {
                     lend,
-                    chunks,
+                    chunks: positions(&chunks),
                     to: borrower,
                 },
             );
@@ -2815,13 +3073,13 @@ impl Lanes {
 
     /// The lender does not let go of `chunks` for `lend`: the borrower is told, and
     /// they are no longer under lend.
-    fn lend_refused(&mut self, lender: RegionId, lend: u64, chunks: &[ChunkPos], again: bool) {
+    fn lend_refused(&mut self, lender: RegionId, lend: u64, chunks: &[LevelChunk], again: bool) {
         let Some(of) = self.lends.get(lend).filter(|of| of.lender == lender) else {
             return;
         };
         let borrower = of.borrower;
         // Not one it has given back for the lend already.
-        let refused: Vec<ChunkPos> = chunks
+        let refused: Vec<LevelChunk> = chunks
             .iter()
             .copied()
             .filter(|chunk| of.chunks.get(chunk) == Some(&None))
@@ -2831,7 +3089,7 @@ impl Lanes {
             self.answer_now(
                 borrower,
                 StoreReply::NotLent {
-                    chunks: refused,
+                    chunks: positions(&refused),
                     again,
                 },
             );
@@ -2841,7 +3099,7 @@ impl Lanes {
     /// The lender gives `chunks` back for `lend`: passed on like a return, behind the
     /// saves before it, without its use ending (the same record, section 3, step 3). A
     /// chunk not under the lend any more is answered as called off at once.
-    fn lending(&mut self, lender: RegionId, peer: Arc<Peer>, lend: u64, chunks: &[ChunkPos]) {
+    fn lending(&mut self, lender: RegionId, peer: Arc<Peer>, lend: u64, chunks: &[LevelChunk]) {
         let of = self.lends.get(lend).filter(|of| of.lender == lender);
         let mut given = Vec::new();
         let mut off = Vec::new();
@@ -2853,7 +3111,8 @@ impl Lanes {
         }
         if !off.is_empty() {
             self.resend_arrivals(lender, &off);
-            peer.answer(StoreReply::LendCalledOff { lend, chunks: off });
+            let chunks = positions(&off);
+            peer.answer(StoreReply::LendCalledOff { lend, chunks });
         }
         if given.is_empty() {
             return;
@@ -2886,28 +3145,30 @@ impl Lanes {
     /// of the lend still under it are granted to the borrower, with their use, the
     /// effects filed for them and their copies (the same record, section 3, step 4).
     /// The others are answered as called off.
-    fn lent(&mut self, lender: RegionId, lend: u64, number: u64, chunks: Vec<ChunkPos>) {
+    fn lent(&mut self, lender: RegionId, lend: u64, number: u64, chunks: Vec<LevelChunk>) {
         let of: Option<Lend> = self.lends.get(lend).cloned();
         let borrower = of.as_ref().map(|of| of.borrower);
-        let (good, bad): (Vec<ChunkPos>, Vec<ChunkPos>) = chunks.into_iter().partition(|chunk| {
-            of.as_ref().is_some_and(|of| {
-                of.lender == lender
-                    && of.chunks.get(chunk) == Some(&Some(number))
-                    && self.table.holder(*chunk) == Some(lender)
-                    && self.table.pinned_holder(*chunk) == Some(lender)
-                    && self.table.has(of.borrower)
-            })
-        });
+        let (good, bad): (Vec<LevelChunk>, Vec<LevelChunk>) =
+            chunks.into_iter().partition(|chunk| {
+                of.as_ref().is_some_and(|of| {
+                    of.lender == lender
+                        && of.chunks.get(chunk) == Some(&Some(number))
+                        && self.table.holder(*chunk) == Some(lender)
+                        && self.table.pinned_holder(*chunk) == Some(lender)
+                        && self.table.has(of.borrower)
+                })
+            });
         if !bad.is_empty() {
             let taken = self.lends.take(lend, &bad);
             if let Some(borrower) = borrower
                 && !taken.is_empty()
             {
-                let chunks = taken;
+                let chunks = positions(&taken);
                 self.answer_now(borrower, StoreReply::LendCalledOff { lend, chunks });
             }
             self.resend_arrivals(lender, &bad);
-            self.answer_now(lender, StoreReply::LendCalledOff { lend, chunks: bad });
+            let chunks = positions(&bad);
+            self.answer_now(lender, StoreReply::LendCalledOff { lend, chunks });
         }
         let Some(borrower) = borrower else {
             return;
@@ -2921,7 +3182,7 @@ impl Lanes {
             let record = LogRecord::Granted {
                 region: borrower.0,
                 tick,
-                chunks: chunks.to_vec(),
+                chunks: positions(chunks),
             };
             match self.log.append(&record.encode()) {
                 Ok((segment, _)) => self.table_last = Some(segment),
@@ -2969,7 +3230,7 @@ impl Lanes {
         self.answer_in_group(
             borrower,
             StoreReply::Claimed {
-                granted: granted.clone(),
+                granted: positions(&granted),
                 foreign: Vec::new(),
             },
         );
@@ -2984,13 +3245,13 @@ impl Lanes {
         self.answer_in_group(
             lender,
             StoreReply::Lent {
-                chunks: granted,
+                chunks: positions(&granted),
                 to: borrower,
             },
         );
     }
 
-    fn returned(&mut self, session: Session, number: u64, chunks: Vec<ChunkPos>) {
+    fn returned(&mut self, session: Session, number: u64, chunks: Vec<LevelChunk>) {
         let region = session.region;
         let Some(lane) = self.regions.get_mut(&region) else {
             return;
@@ -3004,7 +3265,7 @@ impl Lanes {
         // Only what is noted with this very return. A chunk that was claimed again and
         // returned once more is noted with the later one, whose saves are not durable
         // yet.
-        let freed: Vec<ChunkPos> = chunks
+        let freed: Vec<LevelChunk> = chunks
             .into_iter()
             .filter(|chunk| lane.returning.get(chunk) == Some(&number))
             .collect();
@@ -3015,7 +3276,7 @@ impl Lanes {
         for chunks in freed.chunks(RECORD_CHUNKS) {
             let record = LogRecord::Returned {
                 region: region.0,
-                chunks: chunks.to_vec(),
+                chunks: positions(chunks),
             };
             match self.log.append(&record.encode()) {
                 Ok((segment, _)) => self.table_last = Some(segment),
@@ -3028,14 +3289,14 @@ impl Lanes {
         }
         // At once: the chunks are nobody's, or the pinned region's whose area they are
         // in, for the next claim, which is written behind this record.
-        let grants: Vec<(ChunkPos, u64)> = freed
+        let grants: Vec<(LevelChunk, u64)> = freed
             .into_iter()
             .filter_map(|chunk| Some((chunk, self.table.release(region, chunk)?)))
             .collect();
         // A chunk of another's pinned area is that region's again, which it is told
         // once the release is durable, whoever held it by a grant
         // (`docs/adr/0027-lending-at-a-line.md`, sections 1 and 4).
-        let mut back: BTreeMap<RegionId, Vec<ChunkPos>> = BTreeMap::new();
+        let mut back: BTreeMap<RegionId, Vec<LevelChunk>> = BTreeMap::new();
         for (chunk, _) in &grants {
             if let Some(pinned) = self.table.pinned_holder(*chunk)
                 && pinned != region
@@ -3052,6 +3313,7 @@ impl Lanes {
                     self.group.stream(pinned, Streamed::Arrival(id));
                 }
             }
+            let chunks = positions(&chunks);
             self.answer_in_group(pinned, StoreReply::PinnedBack { chunks });
         }
         if !grants.is_empty() {
@@ -3111,7 +3373,7 @@ impl Lanes {
             return;
         }
         match self.admit(hello, reply_to) {
-            Ok((opened, restored, changes, _, _)) if changes.is_empty() => {
+            Ok((opened, restored, changes, ..)) if changes.is_empty() => {
                 // Nothing is lost by not going through the thread for chunks: what the
                 // owner before had it do is still done before anything the new owner
                 // asks, as both go through its one queue.
@@ -3121,8 +3383,9 @@ impl Lanes {
                     self.close(session);
                 }
             }
-            Ok((opened, restored, changes, tick, peer)) => {
+            Ok((opened, restored, changes, tick, peer, dimension)) => {
                 let _ = self.jobs.send(Job::Restore {
+                    dimension,
                     changes,
                     tick,
                     epoch: hello.epoch,
@@ -3140,13 +3403,14 @@ impl Lanes {
     }
 
     /// Makes whoever said `hello` the owner of the region, if nothing speaks against it,
-    /// and reads what the region is restored with.
+    /// and reads what the region is restored with, and the region's dimension, which
+    /// the changes to replay are of.
     #[allow(clippy::type_complexity)]
     fn admit(
         &mut self,
         hello: RegionHello,
         reply_to: Sender<Message>,
-    ) -> Result<(Opened, Restored, Vec<Replayed>, u64, Arc<Peer>), StoreError> {
+    ) -> Result<(Opened, Restored, Vec<Replayed>, u64, Arc<Peer>, Dimension), StoreError> {
         let RegionHello { region, epoch } = hello;
         // Before anything is written: the regions are those the table has, and a hello
         // makes none.
@@ -3290,9 +3554,7 @@ impl Lanes {
         if !resent.is_empty() {
             peer.answer(StoreReply::Effects { effects: resent });
         }
-        if !arrivals.is_empty() {
-            peer.answer(StoreReply::Arrivals { arrivals });
-        }
+        answer_arrivals(&peer, arrivals);
         if told {
             peer.answer(StoreReply::Mark { through });
         }
@@ -3318,20 +3580,29 @@ impl Lanes {
             changes.extend(replayed(&self.table, region, tick, changed));
             deltas.push(TickState { tick, state });
         }
+        let dimension = self
+            .table
+            .dimension(region)
+            .expect("a region the table has has a dimension");
         let restored = Restored {
             entity_ids,
             state: state.map(|StateFile { tick, state }| TickState { tick, state }),
             deltas,
-            held: self.table.grants(region),
+            held: self
+                .table
+                .grants(region)
+                .into_iter()
+                .map(|(chunk, tick)| (chunk.position, tick))
+                .collect(),
             pinned: self.table.pinned(region).to_vec(),
             issued: EntityId(self.players.issued()),
-            // Every region is the overworld's until the table keeps a region's dimension
-            // (`docs/groundwork/p-plan.md`, section 15.3).
-            spawn: Some(self.spawn),
-            dimension: clustine_world::Dimension::Overworld,
+            // The world's spawn is the overworld's, and so is the chunk players enter
+            // by (`docs/groundwork/p-plan.md`, section 15.2).
+            spawn: (dimension == Dimension::Overworld).then_some(self.spawn),
+            dimension,
             world: self.world,
             seed: self.seed,
-            in_use,
+            in_use: positions(&in_use),
             offset: of_region.offset,
             couplings: of_region.couplings,
             handshakes: of_region.handshakes,
@@ -3346,7 +3617,7 @@ impl Lanes {
             replies,
             lost,
         };
-        Ok((opened, restored, changes, restored_tick, peer))
+        Ok((opened, restored, changes, restored_tick, peer, dimension))
     }
 
     /// The merge of section 3.6 of ADR-0011: the region of `session`, which survives,
@@ -3392,7 +3663,7 @@ impl Lanes {
         // The arrivals the absorbed region held are the survivor's from here on, due at
         // once: they were due in the absorbed region's ticks.
         let table = &self.table;
-        let absorbed_arrivals: Vec<ChunkPos> = self
+        let absorbed_arrivals: Vec<LevelChunk> = self
             .arrivals
             .chunks()
             .filter(|chunk| table.holder(*chunk) == Some(absorbed))
@@ -3462,9 +3733,9 @@ impl Lanes {
         }
         peer.answer(StoreReply::Absorbed {
             absorbed,
-            chunks,
+            chunks: positions(&chunks),
             pinned,
-            in_use,
+            in_use: positions(&in_use),
             lends: self.lends_of(region),
         });
         // The survivor begins anew, and has its effects on its stream again, and every
@@ -3479,9 +3750,7 @@ impl Lanes {
         if !resent.is_empty() {
             peer.answer(StoreReply::Effects { effects: resent });
         }
-        if !arrivals.is_empty() {
-            peer.answer(StoreReply::Arrivals { arrivals });
-        }
+        answer_arrivals(&peer, arrivals);
         if told {
             peer.answer(StoreReply::Mark {
                 through: self.log.last,
@@ -3509,6 +3778,11 @@ impl Lanes {
         }
         if absorbed == self.table.home_region {
             return Err(Decline::Home);
+        }
+        // No merge joins two dimensions (`docs/groundwork/p-plan.md`, section 3.4): the
+        // coordinator never asks for one, and the table would not take its record.
+        if self.table.dimension(region) != self.table.dimension(absorbed) {
+            return Err(Decline::OtherDimension);
         }
         // Whoever asks is the one that was told to absorb the region only if it has
         // the region open with the epoch it was told: the store does not know workers.
@@ -3576,6 +3850,12 @@ impl Lanes {
             part_state,
         }
         .encode();
+        // Of the region's dimension, which is the part's.
+        let dimension = self
+            .table
+            .dimension(region)
+            .expect("a region with an owner is a living region");
+        let chunks = levels(dimension, &chunks);
         let next = RegionId(self.table.next_region);
         let declined = match self.may_split(region, tick, &chunks, as_epoch) {
             Ok(()) if record.len() > MAX_RECORD_LENGTH => Err(Decline::TooLarge),
@@ -3611,7 +3891,7 @@ impl Lanes {
         self.filed.count_from_taking(&moved);
         // The arrivals of the part's chunks are its own, sent at its hello, due at once.
         let table = &self.table;
-        let parts_arrivals: Vec<ChunkPos> = self
+        let parts_arrivals: Vec<LevelChunk> = self
             .arrivals
             .chunks()
             .filter(|chunk| table.holder(*chunk) == Some(new))
@@ -3673,7 +3953,7 @@ impl Lanes {
         &self,
         region: RegionId,
         tick: u64,
-        chunks: &[ChunkPos],
+        chunks: &[LevelChunk],
         as_epoch: u64,
     ) -> Result<(), Decline> {
         let lane = self.regions.get(&region).ok_or(Decline::NoSuchRegion)?;
@@ -3690,9 +3970,11 @@ impl Lanes {
             .iter()
             .find(|chunk| self.table.held_from(region, **chunk).is_none())
         {
-            return Err(Decline::NotHeld { chunk: *chunk });
+            return Err(Decline::NotHeld {
+                chunk: chunk.position,
+            });
         }
-        if chunks.contains(&self.table.home_chunk) {
+        if chunks.iter().any(|chunk| self.table.is_home(*chunk)) {
             return Err(Decline::Home);
         }
         Ok(())
@@ -3782,7 +4064,9 @@ impl Lanes {
         if left.is_empty() {
             return Ok(());
         }
-        let mut changes = Vec::new();
+        // Each region's changes in its dimension, as the table has it: a world without
+        // one had the overworld alone.
+        let mut changes: Vec<(Dimension, Vec<Replayed>)> = Vec::new();
         for (region, lane) in &self.regions {
             let mut chosen = BTreeMap::new();
             for entry in &lane.live {
@@ -3790,27 +4074,33 @@ impl Lanes {
                     chosen.insert(tick, changed);
                 }
             }
+            let dimension = match held {
+                true => dimension_in(Some(&self.table), region.0),
+                false => Dimension::Overworld,
+            };
+            let mut of_region = Vec::new();
             for (tick, changed) in chosen {
                 if held {
-                    changes.extend(replayed(&self.table, *region, tick, changed));
+                    of_region.extend(replayed(&self.table, *region, tick, changed));
                 } else {
-                    changes.extend(changed);
+                    of_region.extend(changed);
                 }
             }
+            changes.push((dimension, of_region));
         }
         // The arrivals left untaken go into their chunks with the rest, after every
         // commit's changes and whoever holds the chunk, by key: a fold done again after a
         // crash writes the same (`docs/groundwork/n3-plan.md`, sections 5 and 6). An
-        // arrival whose chunk the fold cannot read goes with the chunk, which is made
-        // An arrival whose chunk the fold could not read or make stays filed, written
+        // arrival whose chunk the fold could not read or make stays filed, written
         // forward ahead of the records below, for whoever is granted the chunk next (the
-        // ADR, section 5; the plan, section 6).
+        // ADR, section 5; the plan, section 6). A traveller is never folded: it goes to
+        // whoever places it, through a portal it may make (`docs/groundwork/p-plan.md`,
+        // section 15.4), and is written forward with the arrivals kept.
         let folded = self.arrivals.all();
-        for arrival in &folded {
-            changes.push(Replayed::Entity(
-                arrival.chunk,
-                EntityChange::Whole(arrival.entity.clone()),
-            ));
+        for (arrival, dimension) in &folded {
+            let change =
+                Replayed::Entity(arrival.chunk, EntityChange::Whole(arrival.entity.clone()));
+            changes.push((*dimension, vec![change]));
         }
         let (done, finished) = mpsc::channel();
         let _ = self.jobs.send(Job::Fold { changes, done });
@@ -3819,10 +4109,33 @@ impl Lanes {
         let unmade = finished
             .recv()
             .map_err(|_| io::Error::other("the thread for chunks has gone"))??;
-        let (kept, folded): (Vec<Arrival>, Vec<Arrival>) = folded
+        type Leveled = Vec<(Arrival, Dimension)>;
+        let (kept, folded): (Leveled, Leveled) =
+            folded.into_iter().partition(|(arrival, dimension)| {
+                unmade.contains(&LevelChunk::new(*dimension, arrival.chunk))
+            });
+        // The record that writes arrivals forward names no dimension (`arrivals.rs`): one
+        // of another dimension than the overworld that the fold could not put into its
+        // chunk is not written forward, and goes with the commit that sent it.
+        let (kept, lost): (Vec<_>, Vec<_>) = kept
             .into_iter()
-            .partition(|arrival| unmade.contains(&arrival.chunk));
-        if !kept.is_empty() && self.write_arrivals_forward(kept).is_err() {
+            .partition(|(_, dimension)| *dimension == Dimension::Overworld);
+        for (arrival, dimension) in &lost {
+            error!(
+                dimension = dimension.type_name(),
+                chunk = ?arrival.chunk,
+                key = ?arrival.entity.key,
+                "an entity sent into a chunk that can be neither read nor made is lost with the world made over"
+            );
+        }
+        let carried = Forward {
+            arrivals: kept
+                .into_iter()
+                .map(|(arrival, dimension)| (dimension, arrival))
+                .collect(),
+            travellers: self.arrivals.travellers(),
+        };
+        if !carried.is_empty() && self.write_arrivals_forward(carried).is_err() {
             return Err(io::Error::other("arrivals could not be written forward").into());
         }
 
@@ -3831,7 +4144,7 @@ impl Lanes {
         // records exclude the commits this drops the arrivals of, so that nothing relies on
         // the dropping alone.
         if !folded.is_empty() {
-            let ids: Vec<EffectId> = folded.iter().map(|arrival| arrival.id).collect();
+            let ids: Vec<EffectId> = folded.iter().map(|(arrival, _)| arrival.id).collect();
             for ids in ids.chunks(RECORD_EFFECTS) {
                 let dropped = LogRecord::ArrivalsDropped { ids: ids.to_vec() };
                 if let Err(error) = self.log.append(&dropped.encode()) {
@@ -3858,7 +4171,7 @@ impl Lanes {
             self.fail_log();
             return Err(error.into());
         }
-        for arrival in folded {
+        for (arrival, _) in folded {
             self.arrivals.remove(arrival.id);
         }
         for region in &left {
@@ -3938,11 +4251,27 @@ fn replayed(
     tick: u64,
     changes: Vec<Replayed>,
 ) -> impl Iterator<Item = Replayed> + '_ {
+    let dimension = table.dimension(region).unwrap_or_default();
     changes.into_iter().filter(move |change| {
         table
-            .held_from(region, change.chunk())
+            .held_from(region, LevelChunk::new(dimension, change.chunk()))
             .is_some_and(|from| tick > from)
     })
+}
+
+/// Puts the arrivals and the travellers of `gathered` on the stream of `peer`, each kind
+/// in a batch of its own.
+fn answer_arrivals(peer: &Peer, gathered: Gathered) {
+    let Gathered {
+        arrivals,
+        travellers,
+    } = gathered;
+    if !arrivals.is_empty() {
+        peer.answer(StoreReply::Arrivals { arrivals });
+    }
+    if !travellers.is_empty() {
+        peer.answer(StoreReply::Travellers { travellers });
+    }
 }
 
 /// Ends the use by `region` of those of `chunks` it uses, and drops what is filed for
@@ -3957,7 +4286,7 @@ fn end_uses(
     log: &mut Log,
     group: &mut Group,
     region: RegionId,
-    chunks: &[ChunkPos],
+    chunks: &[LevelChunk],
 ) -> io::Result<()> {
     let mut dropped = Vec::new();
     for chunk in chunks {
@@ -3982,7 +4311,7 @@ fn end_uses(
 
 /// Who uses a chunk, as a region that copies it is told
 /// (`docs/adr/0025-effects-between-regions.md`, section 8).
-fn copy_use(uses: &Uses, couplings: &Couplings, copier: RegionId, chunk: ChunkPos) -> CopyUse {
+fn copy_use(uses: &Uses, couplings: &Couplings, copier: RegionId, chunk: LevelChunk) -> CopyUse {
     couplings.copy_use(copier, uses.user(chunk))
 }
 
@@ -3992,12 +4321,12 @@ fn tell_copiers(
     couplings: &Couplings,
     copies: &Copies,
     group: &mut Group,
-    chunk: ChunkPos,
+    chunk: LevelChunk,
 ) {
     for copier in copies.copiers(chunk) {
         let used = copy_use(uses, couplings, copier, chunk);
         let reply = StoreReply::CopyUsed {
-            position: chunk,
+            position: chunk.position,
             used,
         };
         group.stream(copier, Streamed::Reply(Box::new(reply)));
@@ -4312,7 +4641,7 @@ fn segment_path(directory: &Path, segment: u64) -> PathBuf {
 }
 
 /// The regions that copy `chunk` and the one that holds it.
-fn audience(copies: &Copies, table: &Table, chunk: ChunkPos) -> BTreeSet<RegionId> {
+fn audience(copies: &Copies, table: &Table, chunk: LevelChunk) -> BTreeSet<RegionId> {
     let mut regions: BTreeSet<RegionId> = copies.copiers(chunk).into_iter().collect();
     regions.extend(table.holder(chunk));
     regions

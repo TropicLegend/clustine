@@ -744,19 +744,19 @@ struct Gated<C> {
 }
 
 impl<C: Chunks> Chunks for Gated<C> {
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, position: clustine_world::LevelChunk) -> Result<Option<Chunk>, StoreError> {
         self.chunks.load(position)
     }
 
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
         parts: Parts,
     ) -> Result<(), StoreError> {
-        if self.gated.contains(&position) {
+        if self.gated.contains(&position.position) {
             // Once to say that the save has started, once to be let go on.
             self.barrier.wait();
             self.barrier.wait();
@@ -770,7 +770,7 @@ impl<C: Chunks> Chunks for Gated<C> {
 
     fn note(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
@@ -1424,7 +1424,7 @@ fn an_arrival_in_a_segment_let_go_is_written_forward_and_read_at_the_start() {
         let forward: Vec<Vec<Arrival>> = records
             .into_iter()
             .filter_map(|record| match record {
-                LogRecord::ArrivalsForward { arrivals } => Some(arrivals),
+                LogRecord::ArrivalsForward { arrivals, .. } => Some(arrivals),
                 _ => None,
             })
             .collect();
@@ -1789,7 +1789,8 @@ fn a_fold_stopped_at_any_point_and_done_again_leaves_the_arrival_in_its_chunk_on
 #[test]
 fn a_fold_that_cannot_read_an_arrivals_chunk_keeps_the_arrival_filed() {
     let disk = sent_and_not_taken();
-    let path = FileChunks::new(disk.clone(), Path::new("/world")).chunk_path(W);
+    let path =
+        FileChunks::new(disk.clone(), Path::new("/world")).chunk_path(crate::tests::overworld(W));
     replace(disk.as_ref(), &path, b"not a chunk").unwrap();
     disk.sync_directory(path.parent().unwrap()).unwrap();
     for start in 0..2 {

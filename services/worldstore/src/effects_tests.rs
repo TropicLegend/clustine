@@ -359,7 +359,7 @@ fn effects_in_a_segment_collection_removes_are_written_forward_first() {
         let forward: Vec<_> = records
             .into_iter()
             .filter_map(|record| match record {
-                LogRecord::EffectsForward { effects } => Some(effects),
+                LogRecord::EffectsForward { effects, .. } => Some(effects),
                 _ => None,
             })
             .collect();

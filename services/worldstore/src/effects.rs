@@ -5,12 +5,17 @@
 //! An effect lives in the segment of the log that has its latest record: the commit
 //! that made it, or the record that wrote it forward. A segment is not removed while an
 //! effect lives in it; the commit thread writes such effects forward first.
+//!
+//! A chunk is named by its dimension and its position: an effect acts on a block of the
+//! dimension of the region that made it, whose commit has it, and a region uses chunks
+//! of its own dimension only. The record that writes effects forward names their
+//! dimension (`LogRecord::EffectsForward`), one record for the effects of each.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeBounds;
 
 use clustine_region::RegionId;
-use clustine_world::{ChunkPos, Due, Effect, EffectId, FiledEffect};
+use clustine_world::{Dimension, Due, Effect, EffectId, FiledEffect, LevelChunk};
 
 /// The sequence of the record at `offset` in `segment`: its place in the log, which
 /// increases for the life of the world. A segment is never appended to beyond
@@ -27,13 +32,13 @@ pub(crate) fn sequence(segment: u64, offset: u64) -> u64 {
 /// one user at most.
 #[derive(Default)]
 pub(crate) struct Uses {
-    user: BTreeMap<ChunkPos, RegionId>,
-    chunks: BTreeMap<RegionId, BTreeSet<ChunkPos>>,
+    user: BTreeMap<LevelChunk, RegionId>,
+    chunks: BTreeMap<RegionId, BTreeSet<LevelChunk>>,
 }
 
 impl Uses {
     /// `region` uses `chunk` from now on. Whether its user changed.
-    pub(crate) fn begin(&mut self, region: RegionId, chunk: ChunkPos) -> bool {
+    pub(crate) fn begin(&mut self, region: RegionId, chunk: LevelChunk) -> bool {
         let before = self.user.insert(chunk, region);
         if let Some(before) = before
             && before != region
@@ -46,7 +51,7 @@ impl Uses {
     }
 
     /// `region` does not use `chunk` any more. Whether it did.
-    pub(crate) fn end(&mut self, region: RegionId, chunk: ChunkPos) -> bool {
+    pub(crate) fn end(&mut self, region: RegionId, chunk: LevelChunk) -> bool {
         if self.user.get(&chunk) != Some(&region) {
             return false;
         }
@@ -60,12 +65,12 @@ impl Uses {
         true
     }
 
-    pub(crate) fn user(&self, chunk: ChunkPos) -> Option<RegionId> {
+    pub(crate) fn user(&self, chunk: LevelChunk) -> Option<RegionId> {
         self.user.get(&chunk).copied()
     }
 
     /// The chunks `region` uses, in ascending order.
-    pub(crate) fn of(&self, region: RegionId) -> Vec<ChunkPos> {
+    pub(crate) fn of(&self, region: RegionId) -> Vec<LevelChunk> {
         self.chunks
             .get(&region)
             .map_or_else(Vec::new, |chunks| chunks.iter().copied().collect())
@@ -77,12 +82,12 @@ impl Uses {
         &mut self,
         from: RegionId,
         to: RegionId,
-        chunks: Option<&[ChunkPos]>,
-    ) -> Vec<ChunkPos> {
-        let moved: Vec<ChunkPos> = match chunks {
+        chunks: Option<&[LevelChunk]>,
+    ) -> Vec<LevelChunk> {
+        let moved: Vec<LevelChunk> = match chunks {
             None => self.of(from),
             Some(chunks) => {
-                let mut moved: Vec<ChunkPos> = chunks
+                let mut moved: Vec<LevelChunk> = chunks
                     .iter()
                     .copied()
                     .filter(|chunk| self.user(*chunk) == Some(from))
@@ -99,51 +104,67 @@ impl Uses {
     }
 }
 
-/// An effect not taken yet, and the segment its latest record is in.
+/// An effect not taken yet, the dimension of the block it acts on, and the segment its
+/// latest record is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Kept {
     pub(crate) effect: Effect,
+    pub(crate) dimension: Dimension,
     pub(crate) due: Due,
     pub(crate) segment: u64,
+}
+
+impl Kept {
+    /// The chunk of the block it acts on.
+    pub(crate) fn chunk(&self) -> LevelChunk {
+        LevelChunk::new(self.dimension, self.effect.at.chunk())
+    }
 }
 
 /// The effects filed and not taken or dropped yet.
 #[derive(Default)]
 pub(crate) struct Filed {
     effects: BTreeMap<EffectId, Kept>,
-    by_chunk: BTreeMap<ChunkPos, BTreeSet<EffectId>>,
+    by_chunk: BTreeMap<LevelChunk, BTreeSet<EffectId>>,
     /// How many effects live in each segment.
     living: BTreeMap<u64, usize>,
+}
+
+/// Counts one more in `segment`.
+fn count_in(counts: &mut BTreeMap<u64, usize>, segment: u64) {
+    *counts.entry(segment).or_default() += 1;
+}
+
+/// Counts one fewer in `segment`.
+fn count_out(counts: &mut BTreeMap<u64, usize>, segment: u64) {
+    if let Some(count) = counts.get_mut(&segment) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(&segment);
+        }
+    }
 }
 
 impl Filed {
     /// Files an effect, or moves it to the segment of a later record of it.
     pub(crate) fn file(&mut self, id: EffectId, kept: Kept) {
         self.remove(id);
-        self.by_chunk
-            .entry(kept.effect.at.chunk())
-            .or_default()
-            .insert(id);
-        *self.living.entry(kept.segment).or_default() += 1;
+        self.by_chunk.entry(kept.chunk()).or_default().insert(id);
+        count_in(&mut self.living, kept.segment);
         self.effects.insert(id, kept);
     }
 
     /// Takes the effect out, if it is filed.
     pub(crate) fn remove(&mut self, id: EffectId) -> Option<Kept> {
         let kept = self.effects.remove(&id)?;
-        let chunk = kept.effect.at.chunk();
+        let chunk = kept.chunk();
         if let Some(ids) = self.by_chunk.get_mut(&chunk) {
             ids.remove(&id);
             if ids.is_empty() {
                 self.by_chunk.remove(&chunk);
             }
         }
-        if let Some(count) = self.living.get_mut(&kept.segment) {
-            *count -= 1;
-            if *count == 0 {
-                self.living.remove(&kept.segment);
-            }
-        }
+        count_out(&mut self.living, kept.segment);
         Some(kept)
     }
 
@@ -152,7 +173,7 @@ impl Filed {
     }
 
     /// The numbers of the effects filed for `chunk`, ascending.
-    pub(crate) fn ids_of(&self, chunk: ChunkPos) -> Vec<EffectId> {
+    pub(crate) fn ids_of(&self, chunk: LevelChunk) -> Vec<EffectId> {
         self.by_chunk
             .get(&chunk)
             .map_or_else(Vec::new, |ids| ids.iter().copied().collect())
@@ -160,7 +181,7 @@ impl Filed {
 
     /// The effects filed for any of `chunks`, as the stream carries them, ascending by
     /// number.
-    pub(crate) fn for_chunks(&self, chunks: &[ChunkPos]) -> Vec<FiledEffect> {
+    pub(crate) fn for_chunks(&self, chunks: &[LevelChunk]) -> Vec<FiledEffect> {
         let mut ids: Vec<EffectId> = chunks
             .iter()
             .flat_map(|chunk| self.ids_of(*chunk))
@@ -182,7 +203,7 @@ impl Filed {
     /// A scheduled tick filed for one of `chunks` counts its delay from its taking from
     /// now on: the use of the chunks moved to another region, whose ticks are not those
     /// it was converted to (the record, "Found while building").
-    pub(crate) fn count_from_taking(&mut self, chunks: &[ChunkPos]) {
+    pub(crate) fn count_from_taking(&mut self, chunks: &[LevelChunk]) {
         for chunk in chunks {
             for id in self.by_chunk.get(chunk).into_iter().flatten() {
                 if let Some(kept) = self.effects.get_mut(id) {
@@ -206,8 +227,12 @@ impl Filed {
         self.living.contains_key(&segment)
     }
 
-    /// The effects that live in the segments of `segments`, ascending by number.
-    pub(crate) fn living_in(&self, segments: impl RangeBounds<u64>) -> Vec<FiledEffect> {
+    /// The effects that live in the segments of `segments`, ascending by number, each
+    /// with its dimension: those that are written forward.
+    pub(crate) fn living_in(
+        &self,
+        segments: impl RangeBounds<u64>,
+    ) -> Vec<(Dimension, FiledEffect)> {
         let segments: BTreeSet<u64> = self.living.range(segments).map(|(s, _)| *s).collect();
         if segments.is_empty() {
             return Vec::new();
@@ -215,15 +240,15 @@ impl Filed {
         self.effects
             .iter()
             .filter(|(_, kept)| segments.contains(&kept.segment))
-            .filter_map(|(id, _)| self.filed(*id))
+            .filter_map(|(id, kept)| Some((kept.dimension, self.filed(*id)?)))
             .collect()
     }
 
-    /// Every effect filed, ascending by number.
-    pub(crate) fn all(&self) -> Vec<FiledEffect> {
+    /// Every effect filed, ascending by number, with the dimension of its block.
+    pub(crate) fn all(&self) -> Vec<(FiledEffect, Dimension)> {
         self.effects
-            .keys()
-            .filter_map(|id| self.filed(*id))
+            .iter()
+            .filter_map(|(id, kept)| Some((self.filed(*id)?, kept.dimension)))
             .collect()
     }
 }
@@ -251,9 +276,13 @@ impl Filed {
 #[cfg(test)]
 mod tests {
     use clustine_data::blocks;
-    use clustine_world::{BlockPos, Effected};
+    use clustine_world::{BlockPos, ChunkPos, Effected};
 
     use super::*;
+
+    fn overworld(x: i32, z: i32) -> LevelChunk {
+        LevelChunk::new(Dimension::Overworld, ChunkPos::new(x, z))
+    }
 
     fn effect(x: i32) -> Effect {
         Effect {
@@ -266,12 +295,17 @@ mod tests {
         }
     }
 
-    fn kept(x: i32, segment: u64) -> Kept {
+    fn kept_in(dimension: Dimension, x: i32, segment: u64) -> Kept {
         Kept {
             effect: effect(x),
+            dimension,
             due: Due::At { tick: 9 },
             segment,
         }
+    }
+
+    fn kept(x: i32, segment: u64) -> Kept {
+        kept_in(Dimension::Overworld, x, segment)
     }
 
     fn id(sequence: u64, index: u32) -> EffectId {
@@ -288,7 +322,7 @@ mod tests {
     fn a_chunk_has_one_user_and_its_use_moves_whole_or_in_part() {
         let mut uses = Uses::default();
         let (a, b, c) = (RegionId(1), RegionId(2), RegionId(3));
-        let chunks: Vec<ChunkPos> = (0..4).map(|x| ChunkPos::new(x, 0)).collect();
+        let chunks: Vec<LevelChunk> = (0..4).map(|x| overworld(x, 0)).collect();
         for chunk in &chunks {
             uses.begin(a, *chunk);
         }
@@ -318,7 +352,7 @@ mod tests {
             filed
                 .living_in(..=1)
                 .iter()
-                .map(|f| f.id)
+                .map(|(_, f)| f.id)
                 .collect::<Vec<_>>(),
             [id(1, 0), id(1, 1)]
         );
@@ -326,10 +360,10 @@ mod tests {
         filed.file(id(1, 0), kept(0, 3));
         filed.file(id(1, 1), kept(20, 3));
         assert!(!filed.lives_in(1));
-        assert_eq!(filed.ids_of(ChunkPos::new(0, 0)), [id(1, 0), id(2, 0)]);
+        assert_eq!(filed.ids_of(overworld(0, 0)), [id(1, 0), id(2, 0)]);
         assert_eq!(
             filed
-                .for_chunks(&[ChunkPos::new(1, 0), ChunkPos::new(0, 0)])
+                .for_chunks(&[overworld(1, 0), overworld(0, 0)])
                 .iter()
                 .map(|f| f.id)
                 .collect::<Vec<_>>(),
@@ -359,8 +393,54 @@ mod tests {
         let mut filed = Filed::default();
         filed.file(id(1, 0), kept(0, 1));
         filed.file(id(1, 1), kept(20, 1));
-        filed.count_from_taking(&[ChunkPos::new(1, 0)]);
+        filed.count_from_taking(&[overworld(1, 0)]);
         assert_eq!(filed.get(id(1, 0)).unwrap().due, Due::At { tick: 9 });
         assert_eq!(filed.get(id(1, 1)).unwrap().due, Due::FromTaking);
+    }
+
+    #[test]
+    fn the_same_position_in_two_dimensions_is_two_chunks_with_a_user_each() {
+        let mut uses = Uses::default();
+        let (overworld_region, nether_region) = (RegionId(1), RegionId(2));
+        let nether = LevelChunk::new(Dimension::Nether, ChunkPos::new(0, 0));
+        assert!(uses.begin(overworld_region, overworld(0, 0)));
+        assert!(uses.begin(nether_region, nether));
+        assert_eq!(uses.user(overworld(0, 0)), Some(overworld_region));
+        assert_eq!(uses.user(nether), Some(nether_region));
+        let mut filed = Filed::default();
+        filed.file(id(1, 0), kept(0, 1));
+        filed.file(id(1, 1), kept_in(Dimension::Nether, 0, 1));
+        assert_eq!(filed.ids_of(overworld(0, 0)), [id(1, 0)]);
+        assert_eq!(filed.ids_of(nether), [id(1, 1)]);
+        assert_eq!(filed.get(id(1, 1)).map(Kept::chunk), Some(nether));
+    }
+
+    #[test]
+    fn the_effects_of_every_dimension_go_forward_each_with_its_dimension() {
+        let mut filed = Filed::default();
+        filed.file(id(1, 0), kept(0, 1));
+        filed.file(id(1, 1), kept_in(Dimension::End, 0, 1));
+        filed.file(id(2, 0), kept_in(Dimension::Nether, 0, 2));
+        let forward: Vec<(Dimension, EffectId)> = filed
+            .living_in(..=2)
+            .iter()
+            .map(|(dimension, effect)| (*dimension, effect.id))
+            .collect();
+        assert_eq!(
+            forward,
+            [
+                (Dimension::Overworld, id(1, 0)),
+                (Dimension::End, id(1, 1)),
+                (Dimension::Nether, id(2, 0))
+            ]
+        );
+        filed.remove(id(1, 1));
+        assert!(filed.lives_in(1));
+        let all: Vec<Dimension> = filed
+            .all()
+            .iter()
+            .map(|(_, dimension)| *dimension)
+            .collect();
+        assert_eq!(all, [Dimension::Overworld, Dimension::Nether]);
     }
 }

@@ -13,7 +13,9 @@
 use clustine_data::{BlockState, blocks};
 use clustine_rpc::{PoiSeen, PublishedVillage, VillageReport, WorldClock};
 use clustine_world::poi::{Claim, PoiType};
-use clustine_world::{BlockPos, Chunk, ChunkPos, Effect, Effected, FiledEffect, InChunk};
+use clustine_world::{
+    BlockPos, Chunk, ChunkPos, Dimension, Effect, Effected, FiledEffect, InChunk, LevelChunk,
+};
 
 use super::*;
 use crate::disk::{MemoryDisk, Survival};
@@ -569,7 +571,7 @@ fn report(full: bool, chunks: &[(i32, i32, Option<bool>)], let_go: &[(i32, i32)]
     }
 }
 
-fn nothing_copied(_: ChunkPos) -> bool {
+fn nothing_copied(_: LevelChunk) -> bool {
     false
 }
 
@@ -584,18 +586,33 @@ fn chunks_of(published: &PublishedVillage) -> Vec<ChunkPos> {
 #[test]
 fn nothing_is_published_to_a_region_before_its_full_report() {
     let mut village = Village::default();
-    village.report(E, 1, report(true, &[(1, 0, Some(true))], &[]));
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(true, &[(1, 0, Some(true))], &[]),
+    );
     assert_eq!(
         village.publication(W, 1, nothing_copied, &Default::default()),
         None
     );
     // A partial report before any full one is no land.
-    village.report(W, 1, report(false, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(false, &[(0, 0, None)], &[]),
+    );
     assert_eq!(
         village.publication(W, 1, nothing_copied, &Default::default()),
         None
     );
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
     let first = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -606,7 +623,12 @@ fn nothing_is_published_to_a_region_before_its_full_report() {
 #[test]
 fn a_region_is_published_the_chunks_within_five_of_its_land_and_no_farther() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
     let mut others = Vec::new();
     for (x, z) in [
         (5, 0),
@@ -620,7 +642,7 @@ fn a_region_is_published_the_chunks_within_five_of_its_land_and_no_farther() {
     ] {
         others.push((x, z, Some(true)));
     }
-    village.report(E, 1, report(true, &others, &[]));
+    village.report(E, 1, Dimension::Overworld, report(true, &others, &[]));
     let published = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -637,13 +659,19 @@ fn a_region_is_published_the_chunks_within_five_of_its_land_and_no_farther() {
 #[test]
 fn a_region_is_never_published_its_own_land_nor_the_chunks_it_copies() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, Some(true)), (1, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, Some(true)), (1, 0, None)], &[]),
+    );
     village.report(
         E,
         1,
+        Dimension::Overworld,
         report(true, &[(2, 0, Some(true)), (3, 0, Some(false))], &[]),
     );
-    let copied = |position: ChunkPos| position == ChunkPos::new(2, 0);
+    let copied = |chunk: LevelChunk| chunk.position == ChunkPos::new(2, 0);
     let published = village
         .publication(W, 1, copied, &Default::default())
         .unwrap();
@@ -663,8 +691,18 @@ fn a_region_is_never_published_its_own_land_nor_the_chunks_it_copies() {
 #[test]
 fn after_the_first_publication_only_changes_are_published_and_nothing_when_none() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
-    village.report(E, 1, report(true, &[(2, 0, Some(true)), (3, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(true, &[(2, 0, Some(true)), (3, 0, None)], &[]),
+    );
     assert!(
         village
             .publication(W, 1, nothing_copied, &Default::default())
@@ -680,6 +718,7 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
     village.report(
         E,
         1,
+        Dimension::Overworld,
         VillageReport {
             full: false,
             pois: vec![
@@ -707,7 +746,12 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
     );
     assert!(delta.dropped.is_empty());
     // The same report again changes nothing.
-    village.report(E, 1, report(false, &[(2, 0, Some(false))], &[]));
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(false, &[(2, 0, Some(false))], &[]),
+    );
     assert_eq!(
         village.publication(W, 1, nothing_copied, &Default::default()),
         None
@@ -717,10 +761,16 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
 #[test]
 fn the_ring_follows_the_land_and_the_copies_as_they_change() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
     village.report(
         E,
         1,
+        Dimension::Overworld,
         report(true, &[(6, 0, Some(true)), (2, 0, Some(true))], &[]),
     );
     let first = village
@@ -729,7 +779,12 @@ fn the_ring_follows_the_land_and_the_copies_as_they_change() {
     assert_eq!(chunks_of(&first), [ChunkPos::new(2, 0)]);
 
     // The west's land grows to chunk 1: chunk 6 comes within five.
-    village.report(W, 1, report(false, &[(1, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(false, &[(1, 0, None)], &[]),
+    );
     let grown = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -737,7 +792,7 @@ fn the_ring_follows_the_land_and_the_copies_as_they_change() {
     assert_eq!(chunks_of(&grown), [ChunkPos::new(6, 0)]);
 
     // It copies chunk 2 now: dropped from its margin.
-    let copied = |position: ChunkPos| position == ChunkPos::new(2, 0);
+    let copied = |chunk: LevelChunk| chunk.position == ChunkPos::new(2, 0);
     let copying = village
         .publication(W, 1, copied, &Default::default())
         .unwrap();
@@ -750,7 +805,7 @@ fn the_ring_follows_the_land_and_the_copies_as_they_change() {
     assert_eq!(chunks_of(&again), [ChunkPos::new(2, 0)]);
 
     // It lets chunk 1 go: chunk 6 is beyond five again.
-    village.report(W, 1, report(false, &[], &[(1, 0)]));
+    village.report(W, 1, Dimension::Overworld, report(false, &[], &[(1, 0)]));
     let shrunk = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -760,21 +815,41 @@ fn the_ring_follows_the_land_and_the_copies_as_they_change() {
 #[test]
 fn a_chunk_that_changes_hands_is_published_by_its_new_holder_s_word() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
-    village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
-    village.report(RegionId(2), 1, report(true, &[(-9, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(true, &[(2, 0, Some(true))], &[]),
+    );
+    village.report(
+        RegionId(2),
+        1,
+        Dimension::Overworld,
+        report(true, &[(-9, 0, None)], &[]),
+    );
     village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
 
     // The east lets chunk 2 go: its records are kept meanwhile.
-    village.report(E, 1, report(false, &[], &[(2, 0)]));
+    village.report(E, 1, Dimension::Overworld, report(false, &[], &[(2, 0)]));
     assert_eq!(
         village.publication(W, 1, nothing_copied, &Default::default()),
         None
     );
     // A third region takes it and says the bed is free.
-    village.report(RegionId(2), 1, report(false, &[(2, 0, Some(false))], &[]));
+    village.report(
+        RegionId(2),
+        1,
+        Dimension::Overworld,
+        report(false, &[(2, 0, Some(false))], &[]),
+    );
     let delta = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -783,7 +858,12 @@ fn a_chunk_that_changes_hands_is_published_by_its_new_holder_s_word() {
         [(ChunkPos::new(2, 0), vec![occupied_bed(2, 0, false)])]
     );
     // The west takes it in turn: its own land, dropped from its margin.
-    village.report(W, 1, report(false, &[(2, 0, Some(false))], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(false, &[(2, 0, Some(false))], &[]),
+    );
     let own = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -793,8 +873,18 @@ fn a_chunk_that_changes_hands_is_published_by_its_new_holder_s_word() {
 #[test]
 fn an_opening_makes_the_next_publication_whole_and_an_old_owner_s_word_is_let_go() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
-    village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(true, &[(2, 0, Some(true))], &[]),
+    );
     village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -805,8 +895,18 @@ fn an_opening_makes_the_next_publication_whole_and_an_old_owner_s_word_is_let_go
 
     // A take-over: the east's new owner, session 2, reports whole; the old owner's
     // late partial report says the bed was freed, and is not taken.
-    village.report(E, 2, report(true, &[(2, 0, Some(true))], &[]));
-    village.report(E, 1, report(false, &[(2, 0, Some(false))], &[]));
+    village.report(
+        E,
+        2,
+        Dimension::Overworld,
+        report(true, &[(2, 0, Some(true))], &[]),
+    );
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(false, &[(2, 0, Some(false))], &[]),
+    );
     assert_eq!(
         village.publication(W, 1, nothing_copied, &Default::default()),
         None
@@ -822,7 +922,12 @@ fn an_opening_makes_the_next_publication_whole_and_an_old_owner_s_word_is_let_go
     );
 
     // A merge or split within the west's session: its full report, then whole again.
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
     let whole = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
@@ -836,14 +941,24 @@ fn an_opening_makes_the_next_publication_whole_and_an_old_owner_s_word_is_let_go
 #[test]
 fn a_store_started_again_knows_only_what_regions_reported_since() {
     let mut village = Village::default();
-    village.report(W, 1, report(true, &[(0, 0, None)], &[]));
+    village.report(
+        W,
+        1,
+        Dimension::Overworld,
+        report(true, &[(0, 0, None)], &[]),
+    );
     // The east has not reported to this store: nothing of its land is known.
     let first = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();
     assert!(first.whole);
     assert!(first.pois.is_empty());
-    village.report(E, 1, report(true, &[(2, 0, Some(true))], &[]));
+    village.report(
+        E,
+        1,
+        Dimension::Overworld,
+        report(true, &[(2, 0, Some(true))], &[]),
+    );
     let next = village
         .publication(W, 1, nothing_copied, &Default::default())
         .unwrap();

@@ -1057,20 +1057,20 @@ mod tests {
         assert!(ChunkFile::decode(&with_structures_part(&longer)).is_err());
     }
 
-    /// A chunk of format 18, from before the Nether and the End, is refused as every
-    /// earlier format is: worlds made before are not carried over.
+    /// A chunk of format 19, from before the table named each region's dimension, is
+    /// refused as every earlier format is: worlds made before are not carried over.
     #[test]
-    fn a_chunk_file_of_format_18_is_refused() {
-        assert_eq!(FORMAT_VERSION, 19);
+    fn a_chunk_file_of_format_19_is_refused() {
+        assert_eq!(FORMAT_VERSION, 20);
         let mut bytes = file(full()).encode();
-        bytes[0] = 18;
+        bytes[0] = 19;
         let (front, _) = bytes.split_at(bytes.len() - 4);
         let checksum = crc32fast::hash(front);
         let at = bytes.len() - 4;
         bytes[at..].copy_from_slice(&checksum.to_be_bytes());
         assert_eq!(
             ChunkFile::decode(&bytes),
-            Err(FormatError::UnsupportedVersion(18))
+            Err(FormatError::UnsupportedVersion(19))
         );
     }
 

@@ -38,6 +38,7 @@
 //! | The division the store was started with: count, then areas | u32, areas |
 //! | Regions, in ascending order of their ids: count, then per region | u32 |
 //! | … id | u32 |
+//! | … its dimension: 0 the overworld, 1 the Nether, 2 the End | u8 |
 //! | … the areas it is pinned to: count, areas | u32, areas |
 //! | … its grants, ascending by x then z: count, then per grant x, z, tick | u32, (i32, i32, u64)… |
 //! | Absorbed regions, oldest first: count, then per pair absorbed, into | u32, (u32, u32)… |
@@ -95,10 +96,11 @@
 //! All integers are big-endian. All five are written whole under a temporary name and
 //! renamed, so a reader never sees half of one; the checksum is for damage.
 
-use clustine_world::{ChunkArea, ChunkPos, EntityId, EntityIds};
+use clustine_world::{ChunkArea, ChunkPos, Dimension, EntityId, EntityIds};
 
 use crate::bytes::Input;
 use crate::log::{LoggedPlace, LoggedUnit, put_place, take_place};
+use crate::travel::{put_dimension, take_dimension};
 use crate::{FORMAT_VERSION, FormatError};
 
 const KIND_REGION: u8 = 1;
@@ -118,7 +120,7 @@ const AREA_LENGTH: usize = 9;
 const GRANT_LENGTH: usize = 16;
 
 /// Bytes a region takes in a table file at the least, and a pair of absorbed regions.
-const REGION_LENGTH: usize = 12;
+const REGION_LENGTH: usize = 13;
 const PAIR_LENGTH: usize = 8;
 
 /// The flags of an area: which of its ends it has.
@@ -221,7 +223,7 @@ pub struct TableFile {
     /// The id the next region gets. Every id below it has been a region's, and is never
     /// another's.
     pub next_region: u32,
-    /// The chunk players enter the world in.
+    /// The chunk players enter the world in, of the overworld.
     pub home_chunk: ChunkPos,
     /// The region that holds the home chunk.
     pub home_region: u32,
@@ -245,6 +247,10 @@ pub struct TableFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRegion {
     pub id: u32,
+    /// The dimension whose chunks the region holds, for its whole life
+    /// (`docs/groundwork/p-plan.md`, decision 1): its grants are chunks of it, and so is
+    /// every chunk its messages name.
+    pub dimension: Dimension,
     /// The areas the region is pinned to: it holds every chunk of them that is not
     /// granted to a region.
     pub pinned: Vec<ChunkArea>,
@@ -267,6 +273,7 @@ impl TableFile {
         out.extend_from_slice(&(self.regions.len() as u32).to_be_bytes());
         for region in &self.regions {
             out.extend_from_slice(&region.id.to_be_bytes());
+            put_dimension(&mut out, region.dimension);
             put_areas(&mut out, &region.pinned);
             out.extend_from_slice(&(region.grants.len() as u32).to_be_bytes());
             for (chunk, tick) in &region.grants {
@@ -310,6 +317,7 @@ impl TableFile {
             if regions.last().is_some_and(|before| before.id >= id) {
                 return Err(FormatError::Corrupt("regions out of order"));
             }
+            let dimension = take_dimension(&mut input)?;
             let pinned = take_areas(&mut input)?;
             let count = input.u32()? as usize;
             let mut grants: Vec<(ChunkPos, u64)> =
@@ -321,7 +329,12 @@ impl TableFile {
                 }
                 grants.push((chunk, input.u64()?));
             }
-            regions.push(TableRegion { id, pinned, grants });
+            regions.push(TableRegion {
+                id,
+                dimension,
+                pinned,
+                grants,
+            });
         }
 
         let count = input.u32()? as usize;
@@ -811,6 +824,7 @@ mod tests {
             regions: vec![
                 TableRegion {
                     id: 1,
+                    dimension: Dimension::Overworld,
                     pinned: vec![
                         ChunkArea {
                             min_x: Some(-2),
@@ -822,6 +836,7 @@ mod tests {
                 },
                 TableRegion {
                     id: 3,
+                    dimension: Dimension::Nether,
                     pinned: Vec::new(),
                     grants: vec![(ChunkPos::new(-1, 5), 9), (ChunkPos::new(2, -6), 258)],
                 },
@@ -922,6 +937,7 @@ mod tests {
             0,
             0,
             1, // region 1
+            0, // of the overworld
             0,
             0,
             0,
@@ -952,6 +968,7 @@ mod tests {
             0,
             0,
             3, // region 3
+            1, // of the Nether
             0,
             0,
             0,
@@ -1461,8 +1478,16 @@ mod tests {
             body[count..count + 4].fill(0xFF);
         });
         assert_eq!(TableFile::decode(&forged), Err(FormatError::Truncated));
-        let forged = resealed(bytes, |body| body[26..30].fill(0xFF));
+        let forged = resealed(bytes.clone(), |body| body[26..30].fill(0xFF));
         assert!(TableFile::decode(&forged).is_err());
+        // A region of a dimension there is none of: the first region's dimension is
+        // at byte 56, behind the division's two areas, the count and its id.
+        assert_eq!(bytes[56], 0);
+        let nowhere = resealed(bytes, |body| body[56] = 3);
+        assert_eq!(
+            TableFile::decode(&nowhere),
+            Err(FormatError::Corrupt("a dimension"))
+        );
 
         // Regions and grants that are not in ascending order, or are there twice.
         let mut unordered = table();
@@ -1534,6 +1559,7 @@ mod tests {
             regions in prop::collection::btree_map(
                 any::<u32>(),
                 (
+                    0..3u8,
                     areas(),
                     prop::collection::btree_map((-40..40, -40..40), any::<u64>(), 0..30),
                 ),
@@ -1549,8 +1575,9 @@ mod tests {
                 division,
                 regions: regions
                     .into_iter()
-                    .map(|(id, (pinned, grants))| TableRegion {
+                    .map(|(id, (dimension, pinned, grants))| TableRegion {
                         id,
+                        dimension: Dimension::numbered(dimension).unwrap(),
                         pinned,
                         grants: grants
                             .into_iter()

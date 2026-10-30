@@ -272,9 +272,15 @@ fn chunks_restored_with_marks_taken_and_seams_are_stored_so() {
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let chunks = FileChunks::new(left, Path::new("/world"));
     let mut chunks: Box<dyn Chunks> = Box::new(chunks);
-    let a = chunks.load(A).unwrap().expect("the restore stored A");
+    let a = chunks
+        .load(crate::tests::overworld(A))
+        .unwrap()
+        .expect("the restore stored A");
     assert_eq!(a, expected(marked(A), &[connected(A)], vec![s2()]));
-    let b = chunks.load(B).unwrap().expect("the restore stored B");
+    let b = chunks
+        .load(crate::tests::overworld(B))
+        .unwrap()
+        .expect("the restore stored B");
     assert_eq!(b, expected(marked(B), &[connected(B)], Vec::new()));
 }
 

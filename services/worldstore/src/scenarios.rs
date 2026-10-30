@@ -480,19 +480,19 @@ struct Stopping<C> {
 }
 
 impl<C: Chunks> Chunks for Stopping<C> {
-    fn load(&mut self, position: ChunkPos) -> Result<Option<Chunk>, StoreError> {
+    fn load(&mut self, position: clustine_world::LevelChunk) -> Result<Option<Chunk>, StoreError> {
         self.chunks.load(position)
     }
 
     fn save_parts(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         tick: u64,
         epoch: u64,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {
-        self.gate.pass(Stop::BeforeSave(position));
+        self.gate.pass(Stop::BeforeSave(position.position));
         self.chunks.save_parts(position, tick, epoch, chunk, parts)
     }
 
@@ -505,7 +505,7 @@ impl<C: Chunks> Chunks for Stopping<C> {
 
     fn note(
         &mut self,
-        position: ChunkPos,
+        position: clustine_world::LevelChunk,
         chunk: &Chunk,
         parts: clustine_rpc::Parts,
     ) -> Result<(), StoreError> {

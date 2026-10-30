@@ -904,7 +904,9 @@ fn a_chunk_saved_after_faults_in_a_row_is_whole_after_a_crash() {
     let changes = {
         let disk = Arc::new(MemoryDisk::default());
         let mut chunks = FileChunks::new(disk.clone(), root);
-        chunks.save(WEST, 1, 1, &chunk).unwrap();
+        chunks
+            .save(crate::tests::overworld(WEST), 1, 1, &chunk)
+            .unwrap();
         chunks.sync().unwrap();
         disk.operations()
     };
@@ -913,12 +915,16 @@ fn a_chunk_saved_after_faults_in_a_row_is_whole_after_a_crash() {
             let disk = Arc::new(MemoryDisk::failing(Fault::Fails(n, count)));
             let mut chunks = FileChunks::new(disk.clone(), root);
             // As a region does that is told its saves may not be durable: again.
-            let saved =
-                (0..5).any(|_| chunks.save(WEST, 1, 1, &chunk).is_ok() && chunks.sync().is_ok());
+            let saved = (0..5).any(|_| {
+                chunks
+                    .save(crate::tests::overworld(WEST), 1, 1, &chunk)
+                    .is_ok()
+                    && chunks.sync().is_ok()
+            });
             assert!(saved, "Fails({n}, {count})");
             for survival in SURVIVALS {
                 let left = Arc::new(disk.crashed(survival));
-                let loaded = FileChunks::new(left, root).load(WEST);
+                let loaded = FileChunks::new(left, root).load(crate::tests::overworld(WEST));
                 assert!(
                     matches!(&loaded, Ok(Some(loaded)) if *loaded == chunk),
                     "Fails({n}, {count}), {survival:?}: {:?}",

@@ -60,8 +60,11 @@ pub use region::{
 /// keeps the claims on its points of interest and a commit may carry them
 /// (`docs/groundwork/n10-plan.md`, section 3.2); 18 since a chunk keeps raids and a
 /// commit may carry them, and a player's place holds where their raid omen began after
-/// their time since rest (sections 9.1 and 9.5 of the same plan).
-pub const FORMAT_VERSION: u8 = 19;
+/// their time since rest (sections 9.1 and 9.5 of the same plan); 19 since a place, a
+/// respawn, an entity and a commit carry what the Nether and the End need of them
+/// (`docs/groundwork/p-plan.md`, section 15.6); 20 since each region of the table names
+/// its dimension (section 3.3 of the same plan).
+pub const FORMAT_VERSION: u8 = 20;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

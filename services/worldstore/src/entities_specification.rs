@@ -176,7 +176,9 @@ fn commit(handle: &StoreHandle, step: &Step) {
 fn has_entities_file(disk: &MemoryDisk) -> bool {
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let files = FileChunks::new(left.clone(), Path::new("/world"));
-    left.read(&files.entities_path(A)).unwrap().is_some()
+    left.read(&files.entities_path(crate::tests::overworld(A)))
+        .unwrap()
+        .is_some()
 }
 
 /// After every step, and whatever a crash then leaves of the disk, the restored chunk
@@ -258,8 +260,10 @@ fn a_save_of_one_part_leaves_the_other_file_byte_for_byte_and_pending_saves_writ
         parts: Parts::ALL,
     });
     east.flush();
-    let blocks_file = read(&files.chunk_path(A)).expect("the blocks are stored");
-    let entities_file = read(&files.entities_path(A)).expect("the entities are stored");
+    let blocks_file =
+        read(&files.chunk_path(crate::tests::overworld(A))).expect("the blocks are stored");
+    let entities_file =
+        read(&files.entities_path(crate::tests::overworld(A))).expect("the entities are stored");
 
     commit(&east, &all[1]);
     committed(&east, all[1].tick);
@@ -270,9 +274,16 @@ fn a_save_of_one_part_leaves_the_other_file_byte_for_byte_and_pending_saves_writ
         parts: Parts::ENTITIES,
     });
     east.flush();
-    assert_eq!(read(&files.chunk_path(A)), Some(blocks_file.clone()));
-    assert_ne!(read(&files.entities_path(A)), Some(entities_file));
-    let entities_file = read(&files.entities_path(A)).expect("still there");
+    assert_eq!(
+        read(&files.chunk_path(crate::tests::overworld(A))),
+        Some(blocks_file.clone())
+    );
+    assert_ne!(
+        read(&files.entities_path(crate::tests::overworld(A))),
+        Some(entities_file)
+    );
+    let entities_file =
+        read(&files.entities_path(crate::tests::overworld(A))).expect("still there");
 
     commit(&east, &all[2]);
     committed(&east, all[2].tick);
@@ -283,8 +294,14 @@ fn a_save_of_one_part_leaves_the_other_file_byte_for_byte_and_pending_saves_writ
         parts: Parts::BLOCKS,
     });
     east.flush();
-    assert_eq!(read(&files.entities_path(A)), Some(entities_file));
-    assert_ne!(read(&files.chunk_path(A)), Some(blocks_file));
+    assert_eq!(
+        read(&files.entities_path(crate::tests::overworld(A))),
+        Some(entities_file)
+    );
+    assert_ne!(
+        read(&files.chunk_path(crate::tests::overworld(A))),
+        Some(blocks_file)
+    );
 
     // Two saves while neither is written: blocks, then entities of a later chunk.
     let later = {
@@ -308,7 +325,7 @@ fn a_save_of_one_part_leaves_the_other_file_byte_for_byte_and_pending_saves_writ
     east.flush();
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let stored = FileChunks::new(left, Path::new("/world"))
-        .load(A)
+        .load(crate::tests::overworld(A))
         .unwrap()
         .expect("stored");
     assert_eq!(stored, later, "both parts of the later chunk");

@@ -17,15 +17,31 @@ use std::sync::Arc;
 
 use clustine_data::DATA_VERSION;
 use clustine_format::FORMAT_VERSION;
-use clustine_world::{BlockPos, ChunkGenerator};
+use clustine_world::{BlockPos, ChunkGenerator, Dimension};
 use tracing::info;
 
 use crate::StoreError;
 use crate::disk::{Disk, replace};
+use crate::generators::{Generators, overworld_identity};
 
-/// The line of `meta` that names the highest version of the generator that made a
-/// chunk the world stores (`docs/adr/0021-generation-is-a-function.md`, section 8).
+/// The line of `meta` that names the highest version of the overworld's generator that
+/// made a chunk the world stores (`docs/adr/0021-generation-is-a-function.md`, section
+/// 8). The other dimensions' have lines of their own ([`version_line`]).
 const GENERATOR_VERSION: &str = "generator-version";
+
+/// The name of the line of `meta` that names the highest version of `dimension`'s
+/// generator that made a chunk the world stores: each dimension has a generator of its
+/// own, whose versions rise apart.
+fn version_line(dimension: Dimension) -> String {
+    match dimension {
+        Dimension::Overworld => GENERATOR_VERSION.to_owned(),
+        other => {
+            let name = other.type_name();
+            let name = name.strip_prefix("minecraft:").unwrap_or(name);
+            format!("{GENERATOR_VERSION}-{name}")
+        }
+    }
+}
 
 /// The line of `meta` that holds the world's spawn, `x,y,z`: where the generator put it
 /// when the world was made (`docs/groundwork/t8-plan.md`, T8c).
@@ -37,35 +53,40 @@ pub(crate) struct Meta {
     path: PathBuf,
     /// The lines of the file as they are.
     lines: Vec<String>,
-    /// The version the file names.
-    pub(crate) version: u16,
+    /// The version the file names of each dimension's generator, in the order of the
+    /// dimensions' numbers.
+    pub(crate) versions: [u16; 3],
     /// The world's spawn, which the file holds.
     pub(crate) spawn: BlockPos,
 }
 
 impl Meta {
-    /// Puts `version` in the file in place of the one there, durably: the file is
+    /// Puts `versions` in the file in place of those there, durably: the file is
     /// replaced and synced, and so is its directory, as when the world was made.
-    pub(crate) fn raise(&mut self, disk: &dyn Disk, version: u16) -> io::Result<()> {
+    pub(crate) fn raise(&mut self, disk: &dyn Disk, versions: [u16; 3]) -> io::Result<()> {
         let mut lines = self.lines.clone();
         for line in &mut lines {
-            if line
-                .strip_prefix(GENERATOR_VERSION)
-                .is_some_and(|rest| rest.starts_with('='))
-            {
-                *line = format!("{GENERATOR_VERSION}={version}");
+            for dimension in Dimension::ALL {
+                let name = version_line(dimension);
+                if line
+                    .strip_prefix(name.as_str())
+                    .is_some_and(|rest| rest.starts_with('='))
+                {
+                    let version = versions[usize::from(dimension.number())];
+                    *line = format!("{name}={version}");
+                }
             }
         }
         let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
         replace(disk, &self.path, text.as_bytes())?;
         disk.sync_directory(parent_of(&self.path))?;
         info!(
-            from = self.version,
-            to = version,
+            from = ?self.versions,
+            to = ?versions,
             "the world's meta names the newer generator, which made a chunk it now stores"
         );
         self.lines = lines;
-        self.version = version;
+        self.versions = versions;
         Ok(())
     }
 }
@@ -79,6 +100,7 @@ fn parent_of(path: &Path) -> &Path {
 /// features at two steps of phase F), rather than worlds of two seeds.
 fn same_seed(stored: &str, current: &str) -> bool {
     let seed = |identity: &str| {
+        let identity = overworld_identity(identity);
         identity
             .starts_with("terrain;")
             .then(|| identity.split(';').find(|part| part.starts_with("seed ")))
@@ -93,14 +115,16 @@ fn same_seed(stored: &str, current: &str) -> bool {
 pub(crate) fn prepare(
     disk: &Arc<dyn Disk>,
     root: &Path,
-    generator: &dyn ChunkGenerator,
+    generators: &Generators,
 ) -> Result<Meta, StoreError> {
     fs::create_dir_all(root)?;
-    let settings = generator.settings();
+    // The spawn is the overworld's, whose generator searches for it.
+    let generator: &dyn ChunkGenerator = generators.overworld.as_ref();
+    let server = generators.versions();
     let current = [
         ("format", FORMAT_VERSION.to_string()),
         ("data-version", DATA_VERSION.to_string()),
-        ("generator", settings.identity),
+        ("generator", generators.identity()),
     ];
 
     let path = root.join("meta");
@@ -140,23 +164,30 @@ pub(crate) fn prepare(
                     });
                 }
             }
-            let version = stored(GENERATOR_VERSION)?.parse::<u16>().map_err(|_| {
-                StoreError::MalformedMeta(format!("{GENERATOR_VERSION} is not a version"))
-            })?;
-            if version > settings.version {
-                return Err(StoreError::OlderGenerator {
-                    world: version,
-                    server: settings.version,
-                });
-            }
-            if version < settings.version {
-                // Nothing is changed for it: going back to the older server is
-                // possible until a chunk of this one is stored.
-                info!(
-                    world = version,
-                    server = settings.version,
-                    "this world's chunks were made by an older version of the generator; chunks made from now on are this version's"
-                );
+            let mut versions = [0; 3];
+            for dimension in Dimension::ALL {
+                let name = version_line(dimension);
+                let version = stored(&name)?
+                    .parse::<u16>()
+                    .map_err(|_| StoreError::MalformedMeta(format!("{name} is not a version")))?;
+                let server = server[usize::from(dimension.number())];
+                if version > server {
+                    return Err(StoreError::OlderGenerator {
+                        world: version,
+                        server,
+                    });
+                }
+                if version < server {
+                    // Nothing is changed for it: going back to the older server is
+                    // possible until a chunk of this one is stored.
+                    info!(
+                        dimension = dimension.type_name(),
+                        world = version,
+                        server,
+                        "this world's chunks were made by an older version of the generator; chunks made from now on are this version's"
+                    );
+                }
+                versions[usize::from(dimension.number())] = version;
             }
             let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
             let spawn = match text
@@ -195,7 +226,7 @@ pub(crate) fn prepare(
             Ok(Meta {
                 path,
                 lines,
-                version,
+                versions,
                 spawn,
             })
         }
@@ -207,7 +238,10 @@ pub(crate) fn prepare(
                 .iter()
                 .map(|(setting, value)| format!("{setting}={value}"))
                 .collect();
-            lines.push(format!("{GENERATOR_VERSION}={}", settings.version));
+            for dimension in Dimension::ALL {
+                let version = server[usize::from(dimension.number())];
+                lines.push(format!("{}={version}", version_line(dimension)));
+            }
             lines.push(spawn_line(spawn));
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             replace(disk.as_ref(), &path, text.as_bytes())?;
@@ -215,7 +249,7 @@ pub(crate) fn prepare(
             Ok(Meta {
                 path,
                 lines,
-                version: settings.version,
+                versions: server,
                 spawn,
             })
         }
@@ -241,6 +275,7 @@ mod tests {
     use clustine_worldgen::FlatGenerator;
 
     use super::*;
+    use crate::chunks::FileChunks;
     use crate::tests::{any_reply, division, hello, open};
     use crate::{Store, StoreHandle};
 
@@ -310,9 +345,73 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         drop(local(directory.path(), Versioned::new(3)).unwrap());
         assert_eq!(version_in(directory.path()), "3");
-        // A line of its own, apart from the generator's identity.
-        let identity = FlatGenerator::classic().settings().identity;
-        assert!(meta(directory.path()).contains(&format!("\ngenerator={identity}\n")));
+        // A line of its own, apart from the generators' identity, which names those of
+        // all three dimensions; and the others' versions, each on a line of its own.
+        let flat: Arc<dyn ChunkGenerator> = Arc::new(FlatGenerator::classic());
+        let identity = Generators::from(flat).identity();
+        let text = meta(directory.path());
+        assert!(
+            text.contains(&format!("\ngenerator={identity}\n")),
+            "{text}"
+        );
+        assert!(identity.contains("minecraft:the_nether"), "{identity}");
+        for line in [
+            "generator-version-the_nether=1",
+            "generator-version-the_end=1",
+        ] {
+            assert!(text.contains(&format!("\n{line}\n")), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_world_names_the_version_of_each_dimension_s_generator_and_refuses_an_older_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let generators = |nether: u16| {
+            let mut generators = Generators::from(Versioned::new(1));
+            generators.nether = Versioned::new(nether);
+            generators
+        };
+        drop(Store::local_told(directory.path(), generators(4), division()).unwrap());
+        let text = meta(directory.path());
+        assert!(text.contains("\ngenerator-version=1\n"), "{text}");
+        assert!(
+            text.contains("\ngenerator-version-the_nether=4\n"),
+            "{text}"
+        );
+        // An older Nether is refused as an older overworld is.
+        let Err(error) = Store::local_told(directory.path(), generators(3), division()) else {
+            panic!("a world was opened by an older generator of its Nether");
+        };
+        assert!(
+            matches!(
+                error,
+                StoreError::OlderGenerator {
+                    world: 4,
+                    server: 3
+                }
+            ),
+            "{error}"
+        );
+        // A newer one opens it, and changes nothing until it stores a chunk.
+        drop(Store::local_told(directory.path(), generators(5), division()).unwrap());
+        assert_eq!(meta(directory.path()), text);
+    }
+
+    #[test]
+    fn the_chunks_of_each_dimension_are_kept_in_a_directory_of_their_own() {
+        let directory = tempfile::tempdir().unwrap();
+        let chunks = FileChunks::new(Arc::new(crate::disk::OsDisk::default()), directory.path());
+        let position = ChunkPos::new(33, -1);
+        for (dimension, name) in [
+            (Dimension::Overworld, "overworld"),
+            (Dimension::Nether, "the_nether"),
+            (Dimension::End, "the_end"),
+        ] {
+            let chunk = clustine_world::LevelChunk::new(dimension, position);
+            let expected = directory.path().join("chunks").join(name).join("1.-1");
+            assert_eq!(chunks.chunk_path(chunk), expected.join("33.-1.chunk"));
+            assert_eq!(chunks.entities_path(chunk), expected.join("33.-1.entities"));
+        }
     }
 
     #[test]
@@ -487,6 +586,8 @@ mod tests {
         let Err(error) = Store::local(directory.path(), Arc::new(Named(features))) else {
             panic!("the preview's world was opened by the land with features");
         };
+        // The world's identity names the other dimensions' generators too.
+        let (preview, features) = (alone(preview), alone(features));
         assert_eq!(
             error.to_string(),
             format!(
@@ -507,6 +608,12 @@ mod tests {
         assert!(matches!(error, StoreError::Incompatible { .. }), "{error}");
     }
 
+    /// The identity of a world whose overworld's generator is `overworld`, and whose
+    /// other dimensions are air.
+    fn alone(overworld: &str) -> String {
+        format!("{overworld} | void;minecraft:the_nether | void;minecraft:the_end")
+    }
+
     #[test]
     fn identities_are_of_one_seed_only_where_both_are_land_and_name_the_same_seed() {
         assert!(same_seed(
@@ -518,6 +625,15 @@ mod tests {
             "terrain;preview;minecraft:overworld;seed 50"
         ));
         assert!(!same_seed("flat;classic", "flat;classic"));
+        // Of a world's identity, the overworld's generator's is looked at.
+        assert!(same_seed(
+            &alone("terrain;features 1;minecraft:overworld;seed 5"),
+            &alone("terrain;features 2;minecraft:overworld;seed 5")
+        ));
+        assert!(!same_seed(
+            &alone("terrain;preview;minecraft:overworld;seed 5"),
+            &alone("terrain;preview;minecraft:overworld;seed 50")
+        ));
     }
 
     #[test]
@@ -616,19 +732,27 @@ mod tests {
                 spawn: crate::tests::SPAWN,
                 path: root.join("meta"),
                 lines: text.lines().map(str::to_owned).collect(),
-                version: 1,
+                versions: [1, 1, 1],
             };
             let mut chunks = FileChunks::new(disk.clone(), root).with_meta(meta);
             let chunk = Versioned::new(2).generate(position);
-            chunks.handed(chunk.generated());
+            chunks.handed(Dimension::Overworld, chunk.generated());
             chunks
-                .note(position, &chunk, clustine_rpc::Parts::ALL)
+                .note(
+                    crate::tests::overworld(position),
+                    &chunk,
+                    clustine_rpc::Parts::ALL,
+                )
                 .unwrap();
             let done = chunks.sync().is_ok();
             for survival in SURVIVALS {
                 let left: Arc<dyn Disk> = Arc::new(disk.crashed(survival));
                 let mut read = FileChunks::new(Arc::clone(&left), root);
-                if read.load(position).unwrap().is_some() {
+                if read
+                    .load(crate::tests::overworld(position))
+                    .unwrap()
+                    .is_some()
+                {
                     let meta = left.read(&root.join("meta")).unwrap().unwrap();
                     let meta = String::from_utf8(meta).unwrap();
                     assert!(

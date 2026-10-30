@@ -864,6 +864,10 @@ pub enum Decline {
     /// `next`. The store looks at this last, so nothing else stands in the way of the
     /// same split with that id.
     NotNext { next: RegionId },
+    /// The two regions are of two dimensions, which no merge joins
+    /// (`docs/groundwork/p-plan.md`, section 3.4). Added at the end, so that what was
+    /// said before reads as it did.
+    OtherDimension,
 }
 
 /// What the world store has of a region, as it hands it to the owner that opens it.

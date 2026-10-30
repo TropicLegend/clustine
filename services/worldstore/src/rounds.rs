@@ -442,7 +442,7 @@ fn as_before_or_as_saved(chunks: &mut dyn Chunks, case: &str) -> [bool; SAVED.le
     let mut saved = [false; SAVED.len()];
     for (index, (position, _)) in SAVED.iter().enumerate() {
         let loaded = chunks
-            .load(*position)
+            .load(crate::tests::overworld(*position))
             .unwrap_or_else(|error| panic!("{case}: the chunk at {position:?} is lost: {error}"));
         let old = (index != NEW).then(|| before(index));
         saved[index] = loaded.as_ref() == Some(after(index));
@@ -453,7 +453,7 @@ fn as_before_or_as_saved(chunks: &mut dyn Chunks, case: &str) -> [bool; SAVED.le
     }
     // A chunk nobody saved is none of a sync's business.
     let aside = chunks
-        .load(UNTOUCHED)
+        .load(crate::tests::overworld(UNTOUCHED))
         .unwrap_or_else(|error| panic!("{case}: the chunk nobody saved is lost: {error}"));
     assert!(
         aside.as_ref() == Some(untouched()),
@@ -511,18 +511,32 @@ fn a_chunk_that_was_saved_and_not_synced_is_what_is_loaded_and_has_no_file() {
     let disk = Arc::new(MemoryDisk::default());
     let mut chunks = FileChunks::new(disk.clone(), root());
     let position = ChunkPos::new(3, -7);
-    chunks.save(position, 5, EPOCH, &edited()).unwrap();
+    chunks
+        .save(crate::tests::overworld(position), 5, EPOCH, &edited())
+        .unwrap();
     assert_eq!(disk.operations(), 0, "the save changed or synced a file");
-    assert!(!disk.exists(&chunks.chunk_path(position)).unwrap());
-    assert_eq!(chunks.chunk_path(position), chunk_path(position));
-    assert!(chunks.load(position).unwrap() == Some(edited()));
+    assert!(
+        !disk
+            .exists(&chunks.chunk_path(crate::tests::overworld(position)))
+            .unwrap()
+    );
+    assert_eq!(
+        chunks.chunk_path(crate::tests::overworld(position)),
+        chunk_path(position)
+    );
+    assert!(chunks.load(crate::tests::overworld(position)).unwrap() == Some(edited()));
     // It is nowhere but in the store that noted it.
     let mut other = FileChunks::new(disk.clone(), root());
-    assert!(other.load(position).unwrap().is_none());
+    assert!(
+        other
+            .load(crate::tests::overworld(position))
+            .unwrap()
+            .is_none()
+    );
 
     chunks.sync().unwrap();
-    assert!(chunks.load(position).unwrap() == Some(edited()));
-    assert!(other.load(position).unwrap() == Some(edited()));
+    assert!(chunks.load(crate::tests::overworld(position)).unwrap() == Some(edited()));
+    assert!(other.load(crate::tests::overworld(position)).unwrap() == Some(edited()));
 }
 
 /// A later save of a chunk takes the place of an earlier one that was not synced yet,
@@ -536,17 +550,24 @@ fn a_second_save_before_the_sync_is_what_counts_and_what_the_sync_makes_durable(
     let position = ChunkPos::new(3, -7);
     let mut second = edited();
     second.set(1, 1, 1, blocks::GLASS);
-    chunks.save(position, 5, EPOCH, &edited()).unwrap();
-    chunks.save(position, 6, EPOCH, &second).unwrap();
-    assert!(chunks.load(position).unwrap() == Some(second.clone()));
+    chunks
+        .save(crate::tests::overworld(position), 5, EPOCH, &edited())
+        .unwrap();
+    chunks
+        .save(crate::tests::overworld(position), 6, EPOCH, &second)
+        .unwrap();
+    assert!(chunks.load(crate::tests::overworld(position)).unwrap() == Some(second.clone()));
 
     chunks.sync().unwrap();
-    assert!(chunks.load(position).unwrap() == Some(second.clone()));
-    assert!(disk.exists(&chunks.chunk_path(position)).unwrap());
+    assert!(chunks.load(crate::tests::overworld(position)).unwrap() == Some(second.clone()));
+    assert!(
+        disk.exists(&chunks.chunk_path(crate::tests::overworld(position)))
+            .unwrap()
+    );
     for survival in SURVIVALS {
         let mut left = FileChunks::new(Arc::new(disk.crashed(survival)), root());
         assert!(
-            left.load(position).unwrap() == Some(second.clone()),
+            left.load(crate::tests::overworld(position)).unwrap() == Some(second.clone()),
             "{survival:?}"
         );
     }
@@ -602,7 +623,7 @@ fn a_save_is_in_the_files_after_a_flush_and_not_before() {
     assert!(load(&east, position) == edited());
     // Durably so: a flush is a sync, and nothing of a sync is left to a later one.
     let mut left = FileChunks::new(Arc::new(disk.crashed(Survival::Nothing)), root());
-    assert!(left.load(position).unwrap() == Some(edited()));
+    assert!(left.load(crate::tests::overworld(position)).unwrap() == Some(edited()));
 }
 
 /// An open that had commits to apply writes what is pending before it hands the
@@ -631,8 +652,8 @@ fn a_save_is_in_the_files_after_an_open_that_applied_commits_and_not_before() {
     has_its_file(&disk, applied);
     assert!(!east.is_lost());
     let mut left = FileChunks::new(Arc::new(disk.crashed(Survival::Nothing)), root());
-    assert!(left.load(saved).unwrap() == Some(edited()));
-    assert!(left.load(applied).unwrap() == Some(changed));
+    assert!(left.load(crate::tests::overworld(saved)).unwrap() == Some(edited()));
+    assert!(left.load(crate::tests::overworld(applied)).unwrap() == Some(changed));
 }
 
 /// Nothing syncs between two checkpoints, which are five minutes apart, and a region
@@ -681,7 +702,10 @@ fn the_saves_are_in_the_files_once_128_chunks_are_pending_and_not_before() {
             &chunk
         };
         assert!(
-            left.load(*position).unwrap().as_ref() == Some(expected),
+            left.load(crate::tests::overworld(*position))
+                .unwrap()
+                .as_ref()
+                == Some(expected),
             "{position:?} is not durable"
         );
     }
@@ -829,7 +853,9 @@ fn a_sync_is_one_round_of_chunk_files_and_one_of_their_directories() {
         .map(|(position, _)| chunk_path(*position))
         .collect();
     for (index, (position, _)) in SAVED.iter().enumerate() {
-        chunks.save(*position, 2, EPOCH, after(index)).unwrap();
+        chunks
+            .save(crate::tests::overworld(*position), 2, EPOCH, after(index))
+            .unwrap();
     }
     chunks.sync().unwrap();
 
@@ -949,7 +975,7 @@ fn a_sync_that_fails_at_any_step_leaves_every_chunk_whole_and_a_later_one_leaves
     let world = world();
     let save_anew = |chunks: &mut FileChunks| -> Result<(), StoreError> {
         for (index, (position, _)) in SAVED.iter().enumerate() {
-            chunks.save(*position, 2, EPOCH, after(index))?;
+            chunks.save(crate::tests::overworld(*position), 2, EPOCH, after(index))?;
         }
         Ok(())
     };
@@ -1308,7 +1334,9 @@ fn two_hundred_chunks_are_saved_and_synced_on_the_real_disk() {
 
     let begun = Instant::now();
     for (position, chunk) in &saved {
-        chunks.save(*position, 1, EPOCH, chunk).unwrap();
+        chunks
+            .save(crate::tests::overworld(*position), 1, EPOCH, chunk)
+            .unwrap();
     }
     let noted = begun.elapsed();
     chunks.sync().unwrap();
@@ -1322,7 +1350,11 @@ fn two_hundred_chunks_are_saved_and_synced_on_the_real_disk() {
     let mut again = FileChunks::new(Arc::new(OsDisk::default()), directory.path());
     for (position, chunk) in &saved {
         assert!(
-            again.load(*position).unwrap().as_ref() == Some(chunk),
+            again
+                .load(crate::tests::overworld(*position))
+                .unwrap()
+                .as_ref()
+                == Some(chunk),
             "{position:?}"
         );
     }
