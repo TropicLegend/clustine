@@ -1218,3 +1218,71 @@ P11 builds besides:
 - The lead moves the dispenser's charging into `anchors.rs` before family A starts. The
   pistons' top follows from `lowest_y` by dimension and is nobody's to change. D1 changes
   `check_light`'s `sky` with `RegionLight`'s.
+
+## 18. P12, the Nether's mobs, at the level of the code (2026-10-30)
+
+Section 7 lists the mobs; the owner's order (section 14) gives this milestone the
+Nether's: the zombified piglin, the magma cube, the ghast and its fireball, the wither
+skeleton, the blaze and its small fireballs with the fortress's spawn list, the strider
+and its riding, the piglin (its brain, bartering, zombification), the hoglin and the
+zoglin, and the piglin brute; with them the two rules P11 left (17.3): piglins' and
+hoglins' zombification, and zombified piglins from portal blocks. The End's (the
+endermite is built; the shulker, the crystals, the dragon) wait for the End's milestone.
+This is how, against the code after P11 (`3738751`). For review before it is built.
+
+### 18.1 What exists
+
+A survey found: a mob type is a `MobType` (`mobs/types.rs`) registered by one module line
+and one arm of `built(kind)`, its state opaque bytes in `EntityData::Mob`, so no codec
+changes for a mob; the stub pattern (`BUILT = false`, a guarded arm) of N9f-3; the
+Nether's biome spawn lists in the generated data, the fortress's structure list in
+`natural_spawning.rs`, and the spawn rules of the blaze and the zoglin; the piglins' and
+hoglins' brain memories declared; a pig's steering by an item; items thrown by a mob
+(`Local::Throw`). Missing: any fireball (a new kind of entity, not a mob), the biomes'
+spawn costs (soul sand valley, warped forest), the fortress's list asked on nether bricks
+only, a mob that stands on a fluid, and the spawn rules of the rest.
+
+### 18.2 The contracts the lead fixes first (one commit)
+
+- **Stubs** for the ten types, each `BUILT = false` with its arm in `built(kind)`, and their
+  entries in the shared tables (`body/ladder.rs`' families and sound sources,
+  `ai/sensing.rs`' monsters, `region/mobs.rs`' lists), so that no family edits a table.
+- **Spawn rules** by type: `spawning/rules.rs` calls a function in each family's file for
+  its kind (`check_spawn_rules`, false while the stub is unbuilt).
+- **Fireballs**: `EntityData::Fireball { kind (large, small), owner, acceleration,
+  explosion_power, deflected, life }` with its codec (`clustine-world`, `clustine-format`),
+  a stub `region/fireballs.rs` with `Region::shoot_fireball(...)` and its tick and hit,
+  and the edges' showing of it (the protocol's spawn packet and its data).
+- **The fortress's spawn list on nether bricks** (`NaturalSpawner`'s structure override,
+  the brief's 5.10) and the **spawn costs** of the Nether's biomes
+  (`PotentialCalculator`), in `natural_spawning.rs`, the lead's.
+- **Seams**: steering by an item generalised from the carrot on a stick to the warped
+  fungus on a stick (`region/riders.rs`); `MobType::can_stand_on_fluid` read by the
+  pathfinder; a portal block's random tick calling the zombified piglin's spawn
+  (`portals.rs`, P8's file), a stub in the family's file.
+
+### 18.3 The families (subagents, files of their own)
+
+- **E1. Zombified piglin and magma cube**, with the portal spawn (the brief's 4.2 and
+  5.8) and the magma cube on `cube_mob.rs`' rules.
+- **E2. Fireballs and the ghast**: `region/fireballs.rs` (flight, acceleration,
+  deflection by a hit, impact: the large one's explosion with fire, the small one's fire
+  and damage), and the ghast (flight, its shooting goal, its sounds and level events).
+- **E3. Blaze and wither skeleton**: the blaze's goal shooting small fireballs through
+  the contract's call, its hovering and its water hurt; the wither skeleton's sword,
+  wither and flaming arrows.
+- **E4. Strider**: lava walking (`can_stand_on_fluid`, the fluid collision), warm and
+  cold, steering with the warped fungus on a stick, its saddle, its spawn in lava with a
+  rider by chance.
+- **E5. Piglin and piglin brute**: the brain, bartering (`gameplay/piglin_bartering`,
+  admiring, throwing), gold armour, anger at gold taken or mined, zombification.
+- **E6. Hoglin and zoglin**: the hoglin's brain, its avoidance of warped fungi, portals
+  and respawn anchors, breeding with crimson fungi, its conversion to a zoglin; the
+  zoglin.
+
+### 18.4 Tests
+
+Each family's rules from the brief and the dumps, by the family; from the specification
+by someone else (X); comparisons with the official server of a ghast's fireball, a
+blaze's volley, piglin bartering's draws and a strider on lava, in a Nether scene, which
+an X subagent builds.
