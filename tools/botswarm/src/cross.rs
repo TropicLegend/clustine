@@ -86,9 +86,18 @@ pub async fn cross(address: &str, crossing: &Crossing) -> Result<CrossingReport>
         .context("the watcher could not join")?;
     watcher.wait_for_chunks(1, PATIENCE).await?;
     // The walkers are compared with what the watcher saw before they came.
-    let spawned_before = watcher.stats.entities_spawned;
-    let removed_before = watcher.stats.entities_removed;
-    let seen_before = watcher.entities.len();
+    // Players alone: the world's mobs come and go about the watcher whatever the
+    // walkers do.
+    let spawned_before = watcher.stats.players_spawned;
+    let removed_before = watcher.stats.players_removed;
+    let players_seen = |watcher: &Bot| {
+        watcher
+            .entities
+            .values()
+            .filter(|entity| entity.kind == clustine_data::entity_types::PLAYER)
+            .count()
+    };
+    let seen_before = players_seen(&watcher);
 
     // The walkers say when they are back and then stay until told to leave, so that the
     // watcher can look at them.
@@ -142,11 +151,11 @@ pub async fn cross(address: &str, crossing: &Crossing) -> Result<CrossingReport>
         .iter()
         .filter_map(|walker| seen(&watcher, walker))
         .sum();
-    let spawned = watcher.stats.entities_spawned - spawned_before;
-    let removed = watcher.stats.entities_removed - removed_before;
+    let spawned = watcher.stats.players_spawned - spawned_before;
+    let removed = watcher.stats.players_removed - removed_before;
     ensure!(
         spawned == crossing.walkers as u32 && removed == 0,
-        "the watcher saw {spawned} entities appear and {removed} vanish for {} walkers",
+        "the watcher saw {spawned} players appear and {removed} vanish for {} walkers",
         crossing.walkers
     );
 
@@ -156,7 +165,7 @@ pub async fn cross(address: &str, crossing: &Crossing) -> Result<CrossingReport>
         ended??;
     }
     watcher
-        .wait_until(PATIENCE, |watcher| watcher.entities.len() == seen_before)
+        .wait_until(PATIENCE, |watcher| players_seen(watcher) == seen_before)
         .await
         .context("walkers who left are still seen")?;
 

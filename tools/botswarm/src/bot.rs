@@ -189,6 +189,10 @@ pub struct PlayStats {
     /// without interruption appears once, however far it moves.
     pub entities_spawned: u32,
     pub entities_removed: u32,
+    /// The same of players' entities alone, which mobs spawning and despawning in the
+    /// world do not move.
+    pub players_spawned: u32,
+    pub players_removed: u32,
     /// How many packets of each kind arrived, by packet name.
     pub received: BTreeMap<&'static str, u32>,
     /// How many packets of the play state arrived, the login packet not counted.
@@ -1741,6 +1745,9 @@ impl Bot {
                     packet.uuid
                 );
                 self.stats.entities_spawned += 1;
+                if packet.kind == entity_types::PLAYER {
+                    self.stats.players_spawned += 1;
+                }
                 self.entities.insert(
                     packet.entity_id,
                     SeenEntity {
@@ -1826,6 +1833,9 @@ impl Bot {
                     }
                     if let Some(gone) = self.entities.remove(&entity) {
                         self.stats.entities_removed += 1;
+                        if gone.kind == entity_types::PLAYER {
+                            self.stats.players_removed += 1;
+                        }
                         self.vanished.push(gone);
                     }
                 }
