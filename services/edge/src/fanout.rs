@@ -30,9 +30,10 @@ use clustine_protocol::packets::play::{
     RemoveEntities, RemoveMobEffect, SectionBlocksUpdate, SetCenterChunk, SetContainerContent,
     SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment, SetExperience,
     SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound, SpawnEntity,
-    SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat, TakeItemEntity,
-    UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle, entity_data, game_event,
-    game_mode, inventory as protocol_inventory, level_event, player_info, pose, relative,
+    SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition, SystemChat,
+    TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle, entity_data,
+    game_event, game_mode, inventory as protocol_inventory, level_event, player_info, pose,
+    relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -6952,17 +6953,20 @@ fn login_packet(entity_id: i32, config: &FanoutConfig) -> Login {
         reduced_debug_info: false,
         enable_respawn_screen: true,
         limited_crafting: false,
-        dimension_type,
-        dimension_name: OVERWORLD.to_owned(),
-        // The client blurs the borders of biomes with it, as the server's surface did.
-        hashed_seed: config.login.hashed_seed,
-        game_mode: game_mode::CREATIVE,
-        previous_game_mode: None,
-        is_debug: false,
-        is_flat: config.login.flat,
-        death_location: None,
-        portal_cooldown: 0,
-        sea_level: config.login.sea_level,
+        spawn: SpawnInfo {
+            dimension_type,
+            dimension_name: OVERWORLD.to_owned(),
+            // The client blurs the borders of biomes with it, as the server's surface
+            // did.
+            hashed_seed: config.login.hashed_seed,
+            game_mode: game_mode::CREATIVE,
+            previous_game_mode: None,
+            is_debug: false,
+            is_flat: config.login.flat,
+            death_location: None,
+            portal_cooldown: 0,
+            sea_level: config.login.sea_level,
+        },
         online_mode: false,
         enforces_secure_chat: false,
     }

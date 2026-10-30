@@ -142,7 +142,7 @@ impl JoinInfo {
     pub fn dimension_type(&self) -> Result<&'static DimensionType> {
         let types = self.registry("minecraft:dimension_type")?;
         let name = types
-            .get(self.login.dimension_type as usize)
+            .get(self.login.spawn.dimension_type as usize)
             .context("the join packet names a dimension type that was not sent")?;
         DIMENSION_TYPES
             .iter()
@@ -1678,6 +1678,16 @@ impl Bot {
                 self.was_told(|state| (state.location, state.look) = (location, look));
                 self.position = Some(packet);
             }
+            // Another level, or the same anew: the client drops what it shows and waits
+            // for the new level's chunks (`docs/groundwork/p-plan.md`, section 4.2).
+            ClientboundPlay::Respawn(packet) => {
+                self.info.login.spawn = packet.spawn;
+                self.chunks.clear();
+                self.chunks_came.clear();
+                self.light_since.clear();
+                self.block_changes.clear();
+                self.entities.clear();
+            }
             ClientboundPlay::SetCenterChunk(packet) => {
                 self.center = Some((packet.chunk_x, packet.chunk_z));
             }
@@ -2088,8 +2098,8 @@ impl JoinInfo {
             self.entries_with_data,
             self.tags.len(),
             self.login.entity_id,
-            self.login.game_mode,
-            self.login.dimension_name,
+            self.login.spawn.game_mode,
+            self.login.spawn.dimension_name,
             self.login.view_distance,
         )
     }

@@ -117,7 +117,7 @@ impl Scene {
             feet: bot.location,
             look: bot.look,
             registries: bot.info.registries.clone(),
-            hashed_seed: bot.info.login.hashed_seed,
+            hashed_seed: bot.info.login.spawn.hashed_seed,
             log: Vec::new(),
             times: bot.times.clone(),
             blocks: BTreeMap::new(),

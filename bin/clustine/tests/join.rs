@@ -46,8 +46,8 @@ async fn bot_joins_and_is_placed_in_the_world() {
     assert_eq!(info.tags.len(), TAGS.len());
 
     assert_ne!(info.login.entity_id, 0);
-    assert_eq!(info.login.game_mode, game_mode::CREATIVE);
-    assert_eq!(info.login.dimension_name, "minecraft:overworld");
+    assert_eq!(info.login.spawn.game_mode, game_mode::CREATIVE);
+    assert_eq!(info.login.spawn.dimension_name, "minecraft:overworld");
     assert!(!info.login.online_mode);
 
     let position = bot.position.as_ref().unwrap();

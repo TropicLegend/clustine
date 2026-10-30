@@ -45,6 +45,17 @@ pub struct Login {
     pub reduced_debug_info: bool,
     pub enable_respawn_screen: bool,
     pub limited_crafting: bool,
+    /// The level the player spawns in.
+    pub spawn: SpawnInfo,
+    /// Whether the connection was authenticated; false on an offline-mode server.
+    pub online_mode: bool,
+    pub enforces_secure_chat: bool,
+}
+
+/// What a client is told of the level it enters, at the login and at every respawn
+/// (the game's `CommonPlayerSpawnInfo`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnInfo {
     /// Id in the `minecraft:dimension_type` registry as sent during configuration.
     pub dimension_type: i32,
     /// The dimension the player spawns in.
@@ -59,26 +70,10 @@ pub struct Login {
     pub death_location: Option<DeathLocation>,
     pub portal_cooldown: i32,
     pub sea_level: i32,
-    /// Whether the connection was authenticated; false on an offline-mode server.
-    pub online_mode: bool,
-    pub enforces_secure_chat: bool,
 }
 
-impl Packet for Login {
-    const ID: i32 = clientbound::LOGIN;
-}
-
-impl Encode for Login {
+impl Encode for SpawnInfo {
     fn encode(&self, w: &mut Writer) {
-        w.put_i32(self.entity_id);
-        w.put_bool(self.hardcore);
-        w.put_array(&self.dimension_names, |w, name| w.put_string(name));
-        w.put_var_int(self.max_players);
-        w.put_var_int(self.view_distance);
-        w.put_var_int(self.simulation_distance);
-        w.put_bool(self.reduced_debug_info);
-        w.put_bool(self.enable_respawn_screen);
-        w.put_bool(self.limited_crafting);
         w.put_var_int(self.dimension_type);
         w.put_string(&self.dimension_name);
         w.put_i64(self.hashed_seed);
@@ -93,23 +88,12 @@ impl Encode for Login {
         });
         w.put_var_int(self.portal_cooldown);
         w.put_var_int(self.sea_level);
-        w.put_bool(self.online_mode);
-        w.put_bool(self.enforces_secure_chat);
     }
 }
 
-impl Decode for Login {
+impl Decode for SpawnInfo {
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
-            entity_id: r.i32()?,
-            hardcore: r.bool()?,
-            dimension_names: r.array(Reader::identifier)?,
-            max_players: r.var_int()?,
-            view_distance: r.var_int()?,
-            simulation_distance: r.var_int()?,
-            reduced_debug_info: r.bool()?,
-            enable_respawn_screen: r.bool()?,
-            limited_crafting: r.bool()?,
             dimension_type: r.var_int()?,
             dimension_name: r.identifier()?,
             hashed_seed: r.i64()?,
@@ -128,6 +112,82 @@ impl Decode for Login {
             })?,
             portal_cooldown: r.var_int()?,
             sea_level: r.var_int()?,
+        })
+    }
+}
+
+/// Puts the client into another level, or the same one anew after a death: it drops
+/// what it shows of the old level and waits for the new one's chunks (the game's
+/// `ClientboundRespawnPacket`, `docs/groundwork/p-brief.md`, section 3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Respawn {
+    pub spawn: SpawnInfo,
+    /// What of the player's own entity the client keeps: [`Respawn::KEEP_ALL_DATA`]
+    /// through a portal, the attribute modifiers alone after the credits, nothing after
+    /// a death.
+    pub data_to_keep: u8,
+}
+
+impl Respawn {
+    pub const KEEP_ATTRIBUTE_MODIFIERS: u8 = 1;
+    pub const KEEP_ENTITY_DATA: u8 = 2;
+    pub const KEEP_ALL_DATA: u8 = Self::KEEP_ATTRIBUTE_MODIFIERS | Self::KEEP_ENTITY_DATA;
+}
+
+impl Packet for Respawn {
+    const ID: i32 = clientbound::RESPAWN;
+}
+
+impl Encode for Respawn {
+    fn encode(&self, w: &mut Writer) {
+        self.spawn.encode(w);
+        w.put_u8(self.data_to_keep);
+    }
+}
+
+impl Decode for Respawn {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            spawn: SpawnInfo::decode(r)?,
+            data_to_keep: r.u8()?,
+        })
+    }
+}
+
+impl Packet for Login {
+    const ID: i32 = clientbound::LOGIN;
+}
+
+impl Encode for Login {
+    fn encode(&self, w: &mut Writer) {
+        w.put_i32(self.entity_id);
+        w.put_bool(self.hardcore);
+        w.put_array(&self.dimension_names, |w, name| w.put_string(name));
+        w.put_var_int(self.max_players);
+        w.put_var_int(self.view_distance);
+        w.put_var_int(self.simulation_distance);
+        w.put_bool(self.reduced_debug_info);
+        w.put_bool(self.enable_respawn_screen);
+        w.put_bool(self.limited_crafting);
+        self.spawn.encode(w);
+        w.put_bool(self.online_mode);
+        w.put_bool(self.enforces_secure_chat);
+    }
+}
+
+impl Decode for Login {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            entity_id: r.i32()?,
+            hardcore: r.bool()?,
+            dimension_names: r.array(Reader::identifier)?,
+            max_players: r.var_int()?,
+            view_distance: r.var_int()?,
+            simulation_distance: r.var_int()?,
+            reduced_debug_info: r.bool()?,
+            enable_respawn_screen: r.bool()?,
+            limited_crafting: r.bool()?,
+            spawn: SpawnInfo::decode(r)?,
             online_mode: r.bool()?,
             enforces_secure_chat: r.bool()?,
         })
@@ -4207,6 +4267,7 @@ packet_set! {
     /// Packets a server can send in the play state.
     pub enum ClientboundPlay in crate::packet_ids::play::clientbound {
         Login,
+        Respawn,
         PlayerAbilities,
         SynchronizePlayerPosition,
         GameEvent,
@@ -4539,16 +4600,18 @@ mod tests {
             reduced_debug_info: false,
             enable_respawn_screen: true,
             limited_crafting: false,
-            dimension_type: 0,
-            dimension_name: "minecraft:overworld".to_owned(),
-            hashed_seed: 0x1234_5678_9ABC_DEF0,
-            game_mode: game_mode::CREATIVE,
-            previous_game_mode: None,
-            is_debug: false,
-            is_flat: true,
-            death_location: None,
-            portal_cooldown: 0,
-            sea_level: 63,
+            spawn: SpawnInfo {
+                dimension_type: 0,
+                dimension_name: "minecraft:overworld".to_owned(),
+                hashed_seed: 0x1234_5678_9ABC_DEF0,
+                game_mode: game_mode::CREATIVE,
+                previous_game_mode: None,
+                is_debug: false,
+                is_flat: true,
+                death_location: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+            },
             online_mode: false,
             enforces_secure_chat: false,
         }
@@ -4627,6 +4690,20 @@ mod tests {
         use ClientboundPlay as Set;
         assert_round_trip(login(), Set::decode, Set::Login);
         assert_round_trip(
+            Respawn {
+                spawn: SpawnInfo {
+                    dimension_type: 3,
+                    dimension_name: "minecraft:the_nether".to_owned(),
+                    sea_level: 32,
+                    portal_cooldown: 300,
+                    ..login().spawn
+                },
+                data_to_keep: Respawn::KEEP_ALL_DATA,
+            },
+            Set::decode,
+            Set::Respawn,
+        );
+        assert_round_trip(
             LevelEvent {
                 event: level_event::BLOCK_BROKEN,
                 position: Position {
@@ -4670,11 +4747,14 @@ mod tests {
         );
         assert_round_trip(
             Login {
-                previous_game_mode: Some(game_mode::SURVIVAL),
-                death_location: Some(DeathLocation {
-                    dimension: "minecraft:the_nether".to_owned(),
-                    position: Position { x: -5, y: 70, z: 9 },
-                }),
+                spawn: SpawnInfo {
+                    previous_game_mode: Some(game_mode::SURVIVAL),
+                    death_location: Some(DeathLocation {
+                        dimension: "minecraft:the_nether".to_owned(),
+                        position: Position { x: -5, y: 70, z: 9 },
+                    }),
+                    ..login().spawn
+                },
                 ..login()
             },
             Set::decode,
@@ -5437,11 +5517,32 @@ mod tests {
         assert_eq!(angle(450.0), 64);
     }
 
+    /// `ClientboundRespawnPacket.STREAM_CODEC`: the spawn info as the login has it, then
+    /// the data kept as one byte, 3 through a portal.
+    #[test]
+    fn a_respawn_is_the_logins_spawn_info_and_a_byte() {
+        let info = login().spawn;
+        let respawn = Respawn {
+            spawn: info.clone(),
+            data_to_keep: Respawn::KEEP_ALL_DATA,
+        };
+        let mut expected = Writer::new();
+        info.encode(&mut expected);
+        expected.put_u8(3);
+        let mut written = Writer::new();
+        respawn.encode(&mut written);
+        assert_eq!(written.into_bytes(), expected.into_bytes());
+        assert_eq!(Respawn::ID, 84);
+    }
+
     #[test]
     fn previous_game_mode_is_shifted_by_one() {
         let none = crate::packets::encode(&login());
         let survival = crate::packets::encode(&Login {
-            previous_game_mode: Some(game_mode::SURVIVAL),
+            spawn: SpawnInfo {
+                previous_game_mode: Some(game_mode::SURVIVAL),
+                ..login().spawn
+            },
             ..login()
         });
         // The two encodings differ in exactly that one byte: 0 for none, 1 for survival.

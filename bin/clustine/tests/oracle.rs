@@ -78,10 +78,13 @@ async fn join_matches_the_official_server() {
     // The same world as far as the join packet describes it.
     let (our_login, their_login) = (&ours.login, &theirs.login);
     assert_eq!(our_login.dimension_names, their_login.dimension_names[..1]);
-    assert_eq!(our_login.dimension_name, their_login.dimension_name);
-    assert_eq!(our_login.game_mode, their_login.game_mode);
-    assert_eq!(our_login.is_flat, their_login.is_flat);
-    assert_eq!(our_login.sea_level, their_login.sea_level);
+    assert_eq!(
+        our_login.spawn.dimension_name,
+        their_login.spawn.dimension_name
+    );
+    assert_eq!(our_login.spawn.game_mode, their_login.spawn.game_mode);
+    assert_eq!(our_login.spawn.is_flat, their_login.spawn.is_flat);
+    assert_eq!(our_login.spawn.sea_level, their_login.spawn.sea_level);
     assert_eq!(our_login.online_mode, their_login.online_mode);
     assert_eq!(our_login.hardcore, their_login.hardcore);
     let dimension_type = |info: &clustine_botswarm::JoinInfo| {
@@ -90,7 +93,7 @@ async fn join_matches_the_official_server() {
             .iter()
             .find(|(name, _)| name == "minecraft:dimension_type")
             .unwrap();
-        types[info.login.dimension_type as usize].clone()
+        types[info.login.spawn.dimension_type as usize].clone()
     };
     assert_eq!(dimension_type(ours), dimension_type(theirs));
 
