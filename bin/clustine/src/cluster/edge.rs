@@ -304,7 +304,17 @@ pub(crate) async fn keep_linked(
                     // The table has moved on meanwhile; the link is closed by dropping it.
                     Some(_) if !current => {}
                     Some(end) => {
-                        if !relinks.replace(RegionLink { region, epoch, end }).await {
+                        // The region's dimension, as the table that routed to it says.
+                        let dimension = table
+                            .route(region)
+                            .map_or(clustine_world::Dimension::Overworld, |route| route.dimension);
+                        let link = RegionLink {
+                            dimension,
+                            region,
+                            epoch,
+                            end,
+                        };
+                        if !relinks.replace(link).await {
                             return;
                         }
                         info!(%region, epoch, %address, "linked to a region");

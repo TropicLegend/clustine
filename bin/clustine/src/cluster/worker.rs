@@ -1763,6 +1763,7 @@ mod tests {
             ticked: Instant::now(),
         };
         let link = RegionLink {
+            dimension: Default::default(),
             region: RegionId(region),
             epoch,
             end,
@@ -2501,6 +2502,7 @@ mod tests {
         let (end, worker_end) = link::framed(LINK_CAPACITY);
         links.attach(worker_end);
         RegionLink {
+            dimension: Default::default(),
             region: hello.region,
             epoch: hello.epoch,
             end,

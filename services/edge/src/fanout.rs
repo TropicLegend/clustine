@@ -46,8 +46,8 @@ use clustine_sim::api::{
     WorldClock,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkPos, EntityData, EntityId, InChunk, Light, PlayerId, SectionLight, Vec3,
-    light_tells_apart, sky_light,
+    BlockPos, Chunk, ChunkPos, Dimension, EntityData, EntityId, InChunk, LevelChunk, Light,
+    PlayerId, SectionLight, Vec3, light_tells_apart, sky_light,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -301,16 +301,16 @@ enum Queued {
 /// the next job: a turn costs what it touched.
 #[derive(Default)]
 struct LightQueues {
-    waiting: BTreeSet<(i64, u64, ChunkPos)>,
-    unawaited: BTreeSet<(i64, u64, ChunkPos)>,
+    waiting: BTreeSet<(i64, u64, LevelChunk)>,
+    unawaited: BTreeSet<(i64, u64, LevelChunk)>,
     /// The entries of `unawaited` again, by since when their light is not right.
-    oldest: BTreeSet<(Instant, u64, ChunkPos)>,
-    later: BTreeSet<(Instant, ChunkPos)>,
+    oldest: BTreeSet<(Instant, u64, LevelChunk)>,
+    later: BTreeSet<(Instant, LevelChunk)>,
 }
 
 impl LightQueues {
     /// Takes the entry at `position` out of the set it is in.
-    fn take_out(&mut self, position: ChunkPos, entry: &mut ReplicaChunk) {
+    fn take_out(&mut self, position: LevelChunk, entry: &mut ReplicaChunk) {
         match entry.queued.take() {
             Some(Queued::Waiting { rank, since, .. }) => {
                 self.waiting.remove(&(rank, since, position));
@@ -331,7 +331,7 @@ impl LightQueues {
     }
 
     /// Puts the entry at `position`, which is in no set, into the one `queued` says.
-    fn put_in(&mut self, position: ChunkPos, entry: &mut ReplicaChunk, queued: Queued) {
+    fn put_in(&mut self, position: LevelChunk, entry: &mut ReplicaChunk, queued: Queued) {
         match queued {
             Queued::Waiting { rank, since, .. } => {
                 self.waiting.insert((rank, since, position));
@@ -355,7 +355,7 @@ impl LightQueues {
     /// always; otherwise the oldest of the others if it is overdue; otherwise the
     /// nearest of them. Nothing nobody waits for ever comes before a chunk
     /// someone does.
-    fn next(&self, now: Instant, overdue: Duration) -> Option<ChunkPos> {
+    fn next(&self, now: Instant, overdue: Duration) -> Option<LevelChunk> {
         if let Some((_, _, position)) = self.waiting.first() {
             return Some(*position);
         }
@@ -545,6 +545,10 @@ struct PlayerView {
     /// The region the player is in, as far as this task has been told. The region itself
     /// may already have let the player go, with the message saying so still on its way.
     region: RegionId,
+    /// The dimension the client shows: what every chunk of the view is of. It changes
+    /// with the first half of a change of dimension (`docs/groundwork/p-plan.md`,
+    /// section 4.2).
+    dimension: Dimension,
     /// How often a region has sent the player on because it believes another to hold
     /// the chunk they stand in, since a region last applied something of theirs.
     passed_on: u32,
@@ -643,6 +647,10 @@ struct Link {
 #[derive(Default)]
 struct RegionPort {
     link: Option<Link>,
+    /// The dimension whose chunks the region holds, for its whole life: what every
+    /// `ChunkPos` it sends and every one of `subscriptions` is of
+    /// (`docs/groundwork/p-plan.md`, section 15.1).
+    dimension: Dimension,
     /// The number of the last numbered message made for the region.
     numbered: u64,
     /// The numbered messages the region has not reported as applied and durable, to be
@@ -754,7 +762,7 @@ type FromLink = (RegionId, u64, Option<WorkerToEdge>);
 
 /// The blocks a tick changed, by chunk and section (its y in sections), each with its
 /// last state.
-type Changed = BTreeMap<(ChunkPos, i32), BTreeMap<BlockPos, BlockState>>;
+type Changed = BTreeMap<(LevelChunk, i32), BTreeMap<BlockPos, BlockState>>;
 
 /// How far a level event is seen, as the game's `ServerLevel.levelEvent` sends it.
 const LEVEL_EVENTS_WITHIN: f64 = 64.0;
@@ -823,7 +831,8 @@ pub(crate) struct Fanout {
     /// report it, as come (an arrival it takes in only now) or as moved, after the
     /// edge has hidden it, and none of that may show it again.
     ended: BTreeMap<PlayerId, EntityId>,
-    replica: BTreeMap<ChunkPos, ReplicaChunk>,
+    /// The chunks the edge's players see, of every dimension.
+    replica: BTreeMap<LevelChunk, ReplicaChunk>,
     /// A counter for the whole edge, raised by one every time it is read: what came
     /// later has the greater moment, whatever was removed from the replica and made
     /// anew in between.
@@ -831,7 +840,7 @@ pub(crate) struct Fanout {
     /// The entries whose light is not right for the chunks as they are: those that
     /// cannot be sent, and those that can and are a little old. Each has a job under
     /// way or gets one when a slot is free.
-    marked: BTreeSet<ChunkPos>,
+    marked: BTreeSet<LevelChunk>,
     /// Those of them that have no job under way, in the order they get one.
     queues: LightQueues,
     /// The jobs a thread has said it took, with the thread and when: a job is
@@ -848,7 +857,7 @@ pub(crate) struct Fanout {
     /// The jobs under way, by their moment, with the chunk each is for. One that its
     /// entry has forgotten stays here until it is answered, which bounds how many
     /// there are.
-    jobs: BTreeMap<u64, ChunkPos>,
+    jobs: BTreeMap<u64, LevelChunk>,
     /// Where jobs go: threads of the edge's own, or, in the edge's tests, the turn
     /// that dispatches them.
     lighting: Lighting,
@@ -982,6 +991,9 @@ impl WireIds {
 struct Shown {
     state: EntityState,
     from: RegionId,
+    /// The dimension `from` holds, which the entity is in: shown only to the views of
+    /// that dimension (`docs/groundwork/p-plan.md`, section 4.1).
+    dimension: Dimension,
     /// What the edge sends of it as it moves, for an entity other than a player.
     tracker: Option<Tracker>,
     /// For an entity other than a player that its region sent across a line, the changes
@@ -1165,7 +1177,7 @@ impl Fanout {
         // someone who waits (`docs/adr/0023-light-at-the-edge.md`, sections 1 and 4).
         for (position, entry) in &self.replica {
             let pending = |(player, view): (&PlayerId, &PlayerView)| {
-                view.pending.contains(position).then_some(*player)
+                view.has_pending(*position).then_some(*player)
             };
             let waiting: BTreeSet<PlayerId> = self.players.iter().filter_map(pending).collect();
             assert_eq!(entry.waiters, waiting, "the waiters of {position:?}");
@@ -1210,7 +1222,8 @@ impl Fanout {
                 Queued::Waiting { rank, since, by } => {
                     assert!(waited_for, "{position:?} is among the waited-for");
                     assert!(self.queues.waiting.contains(&(rank, since, *position)));
-                    let near = |waiter: &PlayerId| apart(*position, self.players[waiter].center);
+                    let near =
+                        |waiter: &PlayerId| apart(position.position, self.players[waiter].center);
                     let nearest = entry.waiters.iter().map(near).min();
                     assert_eq!(Some(rank), nearest, "the rank of {position:?}");
                     assert_eq!(near(&by), rank, "{position:?} is ranked by {by:?}");
@@ -1261,7 +1274,7 @@ impl Fanout {
                 // G: a guest's subscription only for a chunk that someone sees.
                 let watched = self
                     .replica
-                    .get(chunk)
+                    .get(&LevelChunk::new(port.dimension, *chunk))
                     .is_some_and(|entry| entry.viewers > 0);
                 assert!(
                     subscription.kind == Kind::Viewer || watched,
@@ -1320,12 +1333,20 @@ impl Fanout {
     /// region is sent once the region has answered; see [`Fanout::welcomed`].
     async fn take_link(&mut self, link: RegionLink) {
         self.changed = true;
-        let RegionLink { region, epoch, end } = link;
+        let RegionLink {
+            region,
+            dimension,
+            epoch,
+            end,
+        } = link;
         if self.stands_for.contains_key(&region) {
             debug!(%region, epoch, "not taking a link to a region that is no more");
             return;
         }
         let port = self.regions.entry(region).or_default();
+        // A region's dimension is its for life; the link says it as the routing table
+        // has it.
+        port.dimension = dimension;
         if port
             .link
             .as_ref()
@@ -1630,6 +1651,10 @@ impl Fanout {
                         under_way: BTreeSet::new(),
                         acknowledged: None,
                         view_distance,
+                        // The overworld's until a region places the player: a stay in
+                        // another dimension is placed by its dimension's home, which
+                        // sends it there (`docs/groundwork/p-plan.md`, section 4.2).
+                        dimension: Dimension::Overworld,
                         wanted: BTreeSet::new(),
                         center: ChunkPos::new(0, 0),
                         pending: BTreeSet::new(),
@@ -1850,8 +1875,17 @@ impl Fanout {
                 player,
                 event: PlayerEvent::BlockShown { position, state },
             } => {
-                let packet = self.shown_block(position, state);
-                self.send_to_player(player, [packet]).await;
+                // A block of another dimension than the one the client shows now is
+                // not shown (`docs/groundwork/p-plan.md`, section 4.1).
+                let dimension = self.dimension_of(from);
+                let shows = self
+                    .players
+                    .get(&player)
+                    .is_some_and(|view| view.dimension == dimension);
+                if shows {
+                    let packet = self.shown_block(dimension, position, state);
+                    self.send_to_player(player, [packet]).await;
+                }
             }
             WorkerToEdge::ToPlayer {
                 player,
@@ -2029,9 +2063,11 @@ impl Fanout {
                             state,
                             seen,
                         } => {
-                            if self.change_block(position, state) {
+                            let dimension = self.dimension_of(from);
+                            if self.change_block(dimension, position, state) {
                                 let into = if begun { &mut later } else { &mut changed };
-                                let section = (position.chunk(), position.y.div_euclid(16));
+                                let chunk = LevelChunk::new(dimension, position.chunk());
+                                let section = (chunk, position.y.div_euclid(16));
                                 if seen {
                                     into.entry(section).or_default().insert(position, state);
                                 } else if let Some(waiting) = into
@@ -2146,7 +2182,8 @@ impl Fanout {
                 // this edge the chunk does, as a client can only have clicked a block
                 // of a chunk some region sent it.
                 let chunk = action.step.concerns().chunk();
-                let serves = self.replica.get(&chunk).and_then(|entry| entry.served_by);
+                let serves = (self.replica.get(&self.level_of(from, chunk)))
+                    .and_then(|entry| entry.served_by);
                 let back = !own || to.is_some_and(|to| to != from);
                 let to = to.map(|to| self.living(to)).or(serves);
                 self.pass_on(from, to, action, back).await;
@@ -2200,10 +2237,16 @@ impl Fanout {
             } => {
                 if self.has_stay(player, entity) {
                     // The blocks of a click first, as the game sends them before it
-                    // acknowledges the click (`handleUseItemOn`).
+                    // acknowledges the click (`handleUseItemOn`); none of another
+                    // dimension than the client shows now, whose answer is taken all
+                    // the same (`docs/groundwork/p-plan.md`, section 4.1, R N6).
+                    let dimension = self.dimension_of(from);
+                    let shows =
+                        (self.players.get(&player)).is_some_and(|view| view.dimension == dimension);
                     let packets: Vec<_> = shown
                         .iter()
-                        .map(|(position, state)| self.shown_block(*position, *state))
+                        .filter(|_| shows)
+                        .map(|(position, state)| self.shown_block(dimension, *position, *state))
                         .collect();
                     if !packets.is_empty() {
                         self.send_to_player(player, packets).await;
@@ -2287,7 +2330,7 @@ impl Fanout {
         let chunk = action.step.concerns().chunk();
         let watched = self
             .replica
-            .get(&chunk)
+            .get(&self.level_of(to, chunk))
             .is_some_and(|entry| entry.viewers > 0);
         let port = self.regions.entry(to).or_default();
         if watched && !port.subscriptions.contains_key(&chunk) {
@@ -2469,6 +2512,20 @@ impl Fanout {
     /// this.
     fn living(&self, region: RegionId) -> RegionId {
         self.stands_for.get(&region).copied().unwrap_or(region)
+    }
+
+    /// The dimension of `region`, as its link said: a region's never changes, and a
+    /// merge is of two regions of one dimension. The overworld's for a region the edge
+    /// has had no link to.
+    fn dimension_of(&self, region: RegionId) -> Dimension {
+        self.regions
+            .get(&self.living(region))
+            .map_or(Dimension::Overworld, |port| port.dimension)
+    }
+
+    /// The chunk `chunk` of `region`'s dimension: what every chunk a region names is of.
+    fn level_of(&self, region: RegionId, chunk: ChunkPos) -> LevelChunk {
+        LevelChunk::new(self.dimension_of(region), chunk)
     }
 
     /// Makes `absorbed` stand for `into` from now on. Its link, if the port still has
@@ -2671,7 +2728,7 @@ impl Fanout {
         for chunk in left {
             let watched = self
                 .replica
-                .get(&chunk)
+                .get(&self.level_of(into, chunk))
                 .is_some_and(|entry| entry.viewers > 0);
             let survivor = self.regions.entry(into).or_default();
             if watched && !survivor.subscriptions.contains_key(&chunk) {
@@ -2758,6 +2815,7 @@ impl Fanout {
     /// from now on, and what they did that no region has reported applied is sent
     /// there. There is no arrival: the region has the player whole.
     async fn move_stay(&mut self, player: PlayerId, to: RegionId) {
+        let dimension = self.dimension_of(to);
         let Some(view) = self.players.get_mut(&player) else {
             return;
         };
@@ -2776,6 +2834,7 @@ impl Fanout {
         // about one it no longer has.
         if let Some(shown) = self.entities.get_mut(&entity) {
             shown.from = to;
+            shown.dimension = dimension;
         }
         let again: Vec<_> = view
             .kept_inputs
@@ -3374,6 +3433,8 @@ impl Fanout {
 
     /// Handles something that happened in the region `from`.
     async fn handle_event(&mut self, from: RegionId, event: RegionEvent) {
+        // What the region says is of its dimension.
+        let dimension = self.dimension_of(from);
         match event {
             RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state, true).await,
             // An entity that came into a chunk the edge watches from one it was shown at
@@ -3394,14 +3455,16 @@ impl Fanout {
                 state,
                 seen,
             } => {
-                if self.change_block(position, state) && seen {
-                    let section = (position.chunk(), position.y.div_euclid(16));
+                let dimension = self.dimension_of(from);
+                if self.change_block(dimension, position, state) && seen {
+                    let chunk = LevelChunk::new(dimension, position.chunk());
+                    let section = (chunk, position.y.div_euclid(16));
                     let changed = Changed::from([(section, BTreeMap::from([(position, state)]))]);
                     self.show_changes(changed).await;
                 }
             }
             RegionEvent::BlockEntityChanged { position, data, .. } => {
-                self.change_block_entity(position, data);
+                self.change_block_entity(self.dimension_of(from), position, data);
             }
             RegionEvent::BlockEvent {
                 position,
@@ -3421,7 +3484,8 @@ impl Fanout {
                     block: i32::from(block),
                 });
                 let at = block_centre(position);
-                self.send_near(position.chunk(), at, BLOCK_EVENTS_WITHIN, None, packet)
+                let chunk = LevelChunk::new(dimension, position.chunk());
+                self.send_near(chunk, at, BLOCK_EVENTS_WITHIN, None, packet)
                     .await;
             }
             RegionEvent::Sound {
@@ -3446,7 +3510,8 @@ impl Fanout {
                 // `ServerLevel.playSeededSound`: within 16 blocks, or 16 times the volume.
                 let range = 16.0 * f64::from(volume.max(1.0));
                 let at = (position.x, position.y, position.z);
-                let chunk = ChunkPos::containing(position.x, position.z);
+                let chunk =
+                    LevelChunk::new(dimension, ChunkPos::containing(position.x, position.z));
                 self.send_near(chunk, at, range, except, packet).await;
             }
             RegionEvent::LevelEvent {
@@ -3454,7 +3519,7 @@ impl Fanout {
                 position,
                 data,
             } => {
-                self.show_near(position, kind, data, None).await;
+                self.show_near(dimension, position, kind, data, None).await;
             }
             // A region's changes after it are taken where its tick's are.
             RegionEvent::BlockEventsBegin => {}
@@ -3464,11 +3529,17 @@ impl Fanout {
                 breaker,
             } => {
                 let data = state.0.into();
-                self.show_near(position, level_event::BLOCK_BROKEN, data, breaker)
-                    .await;
+                self.show_near(
+                    dimension,
+                    position,
+                    level_event::BLOCK_BROKEN,
+                    data,
+                    breaker,
+                )
+                .await;
             }
             RegionEvent::Fizzed { position } => {
-                self.show_near(position, level_event::LAVA_FIZZ, 0, None)
+                self.show_near(dimension, position, level_event::LAVA_FIZZ, 0, None)
                     .await;
             }
             RegionEvent::ArmSwung {
@@ -3608,7 +3679,7 @@ impl Fanout {
                     .await;
             }
             RegionEvent::TransientBlock { position, state } => {
-                self.show_transient(position, state).await;
+                self.show_transient(dimension, position, state).await;
             }
             RegionEvent::Vibration { from, to, ticks } => {
                 self.show_vibration(from, to, ticks).await;
@@ -3691,7 +3762,11 @@ impl Fanout {
     /// known. The entity is that region's from now on. `spawned` where the region
     /// reported it as come into existence: made just now unless it came over a line.
     async fn upsert_entity(&mut self, from: RegionId, state: EntityState, spawned: bool) {
-        if !self.replica.contains_key(&state.chunk()) {
+        let dimension = self.dimension_of(from);
+        if !self
+            .replica
+            .contains_key(&LevelChunk::new(dimension, state.chunk()))
+        {
             // Nobody watches where it is; this can be a snapshot that arrives late. An
             // entity shown here that its new holder took in out there has left the
             // viewers' sight, though, and is taken off them as a move out would be.
@@ -3704,6 +3779,7 @@ impl Fanout {
                 let entity = state.entity;
                 shown.state = state;
                 shown.from = from;
+                shown.dimension = dimension;
                 shown.handed_on = None;
                 self.refresh_entity(entity, true).await;
             }
@@ -3797,6 +3873,7 @@ impl Fanout {
                 let shown = Shown {
                     state,
                     from,
+                    dimension: self.dimension_of(from),
                     tracker: Some(tracker),
                     handed_on: None,
                     living,
@@ -3826,6 +3903,7 @@ impl Fanout {
         let shown = Shown {
             state,
             from,
+            dimension: self.dimension_of(from),
             tracker: None,
             handed_on: None,
             living: LivingShown::default(),
@@ -3952,6 +4030,7 @@ impl Fanout {
     /// for its viewers to change where it moved into or out of their view. One the edge
     /// does not show is covered by the snapshot of its chunk, which is on its way.
     async fn track_entity(&mut self, from: RegionId, tracked: Tracked) {
+        let dimension = self.dimension_of(from);
         let entity = tracked.entity;
         if self.was_gone(entity, tracked.hops) || !self.takes_word_of(from, entity, tracked.hops) {
             return;
@@ -3994,6 +4073,7 @@ impl Fanout {
             shown.handed_on = None;
         }
         shown.from = from;
+        shown.dimension = dimension;
         self.refresh_entity(entity, false).await;
     }
 
@@ -4034,7 +4114,7 @@ impl Fanout {
     /// once and then for a moment, as the game's `FallingBlockEntity` does: its
     /// `BlockUpdate`, then `AddTransientBlock`. The change of the block itself goes with
     /// the tick's other changes as well.
-    async fn show_transient(&mut self, position: BlockPos, state: u16) {
+    async fn show_transient(&mut self, dimension: Dimension, position: BlockPos, state: u16) {
         let chunk = position.chunk();
         let at = Position {
             x: position.x,
@@ -4055,8 +4135,7 @@ impl Fanout {
             .players
             .iter()
             .filter(|(_, view)| {
-                view.entity.is_some()
-                    && (view.sent.contains(&chunk) || view.replace.contains(&chunk))
+                view.entity.is_some() && view.holds(LevelChunk::new(dimension, chunk))
             })
             .map(|(player, _)| *player)
             .collect();
@@ -4230,7 +4309,10 @@ impl Fanout {
                 outgoing.push((*player, packets));
             }
         }
-        if !self.replica.contains_key(&state.chunk()) {
+        if !self
+            .replica
+            .contains_key(&self.level_of(shown.from, state.chunk()))
+        {
             // It went where this edge does not watch.
             self.entities.remove(&entity);
             self.release_wire(entity);
@@ -4630,7 +4712,10 @@ impl Fanout {
         let unwatched: Vec<_> = self
             .entities
             .iter()
-            .filter(|(_, shown)| !self.replica.contains_key(&shown.state.chunk()))
+            .filter(|(_, shown)| {
+                let chunk = self.level_of(shown.from, shown.state.chunk());
+                !self.replica.contains_key(&chunk)
+            })
             .map(|(entity, _)| *entity)
             .collect();
         for entity in unwatched {
@@ -4920,9 +5005,11 @@ impl Fanout {
         })];
 
         let region = view.region;
+        let dimension = view.dimension;
         let mut left = Vec::new();
         for position in view.wanted.difference(&wanted) {
             left.push(*position);
+            let at = LevelChunk::new(dimension, *position);
             let waited = view.pending.remove(position);
             // What the client has: sent, or sent before and waiting to be replaced.
             let replaced = view.replace.remove(position);
@@ -4934,16 +5021,16 @@ impl Fanout {
             }
             let chunk = self
                 .replica
-                .get_mut(position)
+                .get_mut(&at)
                 .expect("viewed chunks are in the replica");
             if waited {
                 chunk.waits_no_more(player);
             }
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
-                self.queues.take_out(*position, chunk);
-                self.replica.remove(position);
-                self.marked.remove(position);
+                self.queues.take_out(at, chunk);
+                self.replica.remove(&at);
+                self.marked.remove(&at);
             }
         }
         let mut entered = Vec::new();
@@ -4951,7 +5038,7 @@ impl Fanout {
             entered.push(*position);
             let chunk = self
                 .replica
-                .entry(*position)
+                .entry(LevelChunk::new(dimension, *position))
                 .or_insert_with(ReplicaChunk::awaited);
             chunk.viewers += 1;
             if chunk.chunk.is_some() {
@@ -4986,10 +5073,10 @@ impl Fanout {
         // between the sets of light and sends or dispatches nothing.
         let pending: Vec<ChunkPos> = view.pending.iter().copied().collect();
         for position in &left {
-            self.requeue(*position);
+            self.requeue(LevelChunk::new(dimension, *position));
         }
         for position in pending {
-            self.rerank(position, player);
+            self.rerank(LevelChunk::new(dimension, position), player);
         }
         self.forget_unwatched_entities();
 
@@ -5023,7 +5110,8 @@ impl Fanout {
         chunk: Chunk,
         entities: Vec<EntityState>,
     ) {
-        let Some(entry) = self.replica.get_mut(&position) else {
+        let at = self.level_of(from, position);
+        let Some(entry) = self.replica.get_mut(&at) else {
             // Nobody has the chunk in view any more.
             return;
         };
@@ -5042,11 +5130,13 @@ impl Fanout {
             // the entry keeps the chunk and the light it has, whichever region the
             // snapshot is from.
         } else {
-            self.arrive(position, chunk);
+            self.arrive(at, chunk);
             let viewers: Vec<_> = self
                 .players
                 .iter_mut()
-                .filter(|(_, view)| view.wanted.contains(&position))
+                .filter(|(_, view)| {
+                    view.dimension == at.dimension && view.wanted.contains(&position)
+                })
                 .map(|(player, view)| {
                     // A client that has the chunk keeps it until the new one goes
                     // out, behind an unload. One that is waiting to have it replaced
@@ -5058,10 +5148,10 @@ impl Fanout {
                     *player
                 })
                 .collect();
-            if let Some(entry) = self.replica.get_mut(&position) {
+            if let Some(entry) = self.replica.get_mut(&at) {
                 entry.waiters.extend(viewers.iter().copied());
             }
-            self.requeue(position);
+            self.requeue(at);
             for player in viewers {
                 self.send_chunks(player).await;
             }
@@ -5096,6 +5186,7 @@ impl Fanout {
                 .filter_map(|(id, shown)| {
                     let hops = shown.handed_on?;
                     (shown.state.chunk() == position
+                        && shown.dimension == at.dimension
                         && shown.from != from
                         && entities.iter().all(|present| present.entity != *id))
                     .then_some((*id, hops))
@@ -5119,8 +5210,11 @@ impl Fanout {
 
     /// The eight chunks around `position`: north-west, north, north-east, west, east,
     /// south-west, south, south-east, which is the order the light rules have them in.
-    fn around(position: ChunkPos) -> [ChunkPos; 8] {
-        let at = |dx, dz| ChunkPos::new(position.x + dx, position.z + dz);
+    fn around(position: LevelChunk) -> [LevelChunk; 8] {
+        let at = |dx, dz| {
+            let around = ChunkPos::new(position.position.x + dx, position.position.z + dz);
+            LevelChunk::new(position.dimension, around)
+        };
         [
             at(-1, -1),
             at(0, -1),
@@ -5144,9 +5238,9 @@ impl Fanout {
     /// takes, beside chunks of one generator's version, and every chunk around it
     /// that the replica has is still, as light sees it, as that version made it. A
     /// neighbour that is not there passes: when it comes, this is asked again.
-    fn carried_light_holds(&self, position: ChunkPos, light: &Light) -> bool {
+    fn carried_light_holds(&self, position: LevelChunk, light: &Light) -> bool {
         let taken = light.made_by == clustine_light::VERSION || light.made_by == Light::IMPORTED;
-        let beside = |around: &ChunkPos| match self.replica.get(around) {
+        let beside = |around: &LevelChunk| match self.replica.get(around) {
             Some(entry) if entry.chunk.is_some() => entry.as_made == Some(light.beside),
             _ => true,
         };
@@ -5157,9 +5251,9 @@ impl Fanout {
     /// its light is taken out and kept if it passes the test, and the chunks around
     /// it are asked again whether theirs still holds beside this one. What does not
     /// hold may not be sent, and is marked for a job.
-    fn arrive(&mut self, position: ChunkPos, mut chunk: Chunk) {
+    fn arrive(&mut self, position: LevelChunk, mut chunk: Chunk) {
         let mut carried = chunk.take_light();
-        if self.config.light.takes_as_changed(position) {
+        if self.config.light.takes_as_changed(position.position) {
             carried = None;
             chunk.mark_generated(0, false);
         }
@@ -5260,7 +5354,7 @@ impl Fanout {
     /// Where the marked entry at `position`, which has no job under way, belongs
     /// now (`docs/adr/0023-light-at-the-edge.md`, section 4). The moment it is
     /// put in is left for [`Fanout::requeue`] to say.
-    fn place_of(&self, position: ChunkPos, entry: &ReplicaChunk, now: Instant) -> Queued {
+    fn place_of(&self, position: LevelChunk, entry: &ReplicaChunk, now: Instant) -> Queued {
         let settings = self.config.light;
         if !entry.sendable() {
             // Held while a chunk beside it is wanted and has not come, for as long
@@ -5268,7 +5362,7 @@ impl Fanout {
             let until = entry
                 .unsendable_since
                 .map_or(now, |since| since + settings.latest);
-            let awaited = |at: &ChunkPos| {
+            let awaited = |at: &LevelChunk| {
                 self.replica
                     .get(at)
                     .is_some_and(|beside| beside.chunk.is_none())
@@ -5278,7 +5372,7 @@ impl Fanout {
             }
             let nearest = |waiter: &PlayerId| {
                 let view = self.players.get(waiter)?;
-                Some((apart(position, view.center), *waiter))
+                Some((apart(position.position, view.center), *waiter))
             };
             if let Some((rank, by)) = entry.waiters.iter().filter_map(nearest).min() {
                 return Queued::Waiting { rank, since: 0, by };
@@ -5292,8 +5386,12 @@ impl Fanout {
             return Queued::Later { until };
         }
         let viewers = self.players.values();
-        let viewers = viewers.filter(|view| view.wanted.contains(&position));
-        let nearest = viewers.map(|view| apart(position, view.center)).min();
+        let viewers = viewers.filter(|view| {
+            view.dimension == position.dimension && view.wanted.contains(&position.position)
+        });
+        let nearest = viewers
+            .map(|view| apart(position.position, view.center))
+            .min();
         Queued::Unawaited {
             rank: nearest.unwrap_or(0),
             since: 0,
@@ -5304,7 +5402,7 @@ impl Fanout {
     /// Puts the entry at `position` into the set it belongs in now, or takes it out
     /// of them if it is not marked or has a job under way. Called wherever what
     /// that turns on has changed; it changes nothing where nothing has.
-    fn requeue(&mut self, position: ChunkPos) {
+    fn requeue(&mut self, position: LevelChunk) {
         let now = Instant::now();
         let Some(entry) = self.replica.get(&position) else {
             return;
@@ -5348,11 +5446,11 @@ impl Fanout {
     /// distance to its nearest waiter as the views now stand. It is found anew over
     /// all who wait only if the mover was the one it was ranked by; otherwise it is
     /// the lesser of what it was and the mover's distance now.
-    fn rerank(&mut self, position: ChunkPos, mover: PlayerId) {
+    fn rerank(&mut self, position: LevelChunk, mover: PlayerId) {
         let Some(view) = self.players.get(&mover) else {
             return;
         };
-        let mine = apart(position, view.center);
+        let mine = apart(position.position, view.center);
         let Some(entry) = self.replica.get_mut(&position) else {
             return;
         };
@@ -5391,7 +5489,7 @@ impl Fanout {
         self.light_ticked = now;
         let ended = self.queues.later.iter();
         let ended = ended.take_while(|(until, _)| *until <= now);
-        let ended: Vec<ChunkPos> = ended.map(|(_, position)| *position).collect();
+        let ended: Vec<LevelChunk> = ended.map(|(_, position)| *position).collect();
         for position in ended {
             self.requeue(position);
         }
@@ -5415,7 +5513,7 @@ impl Fanout {
             };
             let failed = FromThread::Done {
                 basis,
-                position,
+                position: position.position,
                 outcome,
             };
             self.take_light(failed).await;
@@ -5425,7 +5523,7 @@ impl Fanout {
     /// Counts a failed job, and says so where an operator reads it, with how many
     /// have failed and how many chunks have light that is not right for it now: a
     /// line a second at most, whatever fails how often.
-    fn say_failure(&mut self, position: ChunkPos, why: &str) {
+    fn say_failure(&mut self, position: LevelChunk, why: &str) {
         self.failed_jobs += 1;
         self.failed_unsaid += 1;
         let now = Instant::now();
@@ -5473,9 +5571,9 @@ impl Fanout {
 
     /// Hands the threads a job for the entry at `position`: the chunk and the eight
     /// around it as they are now, which nobody changes while the job has them.
-    async fn dispatch(&mut self, position: ChunkPos) {
+    async fn dispatch(&mut self, position: LevelChunk) {
         let basis = self.next_moment();
-        let chunk_at = |at: ChunkPos| self.replica.get(&at).and_then(|entry| entry.chunk.clone());
+        let chunk_at = |at: LevelChunk| self.replica.get(&at).and_then(|entry| entry.chunk.clone());
         let [nw, n, ne, w, e, sw, south, se] = Self::around(position).map(chunk_at);
         let entry = self.replica.get_mut(&position).expect("a marked entry");
         entry.job = Some(basis);
@@ -5487,10 +5585,10 @@ impl Fanout {
         self.queues.take_out(position, entry);
         let job = LightJob {
             basis,
-            position,
+            position: position.position,
             nine: [nw, n, ne, w, entry.chunk.clone(), e, sw, south, se],
-            // The one dimension an edge serves yet has a sky.
-            sky: true,
+            // The Nether has no sky, and its sections no sky light.
+            sky: position.dimension.rules().has_skylight,
             old: entry.light.clone(),
             // Those who are owed the light hold one from before the entry's last:
             // the sections that differ from the entry's would not be all of theirs.
@@ -5506,7 +5604,7 @@ impl Fanout {
             };
             let failed = FromThread::Done {
                 basis,
-                position,
+                position: position.position,
                 outcome,
             };
             self.take_light(failed).await;
@@ -5516,12 +5614,7 @@ impl Fanout {
     /// Takes what a thread says. A result is taken if its job is still the entry's:
     /// one for a chunk that was replaced, has left, or left and came again is dropped.
     async fn take_light(&mut self, said: FromThread) {
-        let FromThread::Done {
-            basis,
-            position,
-            outcome,
-        } = said
-        else {
+        let FromThread::Done { basis, outcome, .. } = said else {
             // From here the job's time runs: a thread has it.
             if let FromThread::Started { basis, thread } = said
                 && self.jobs.contains_key(&basis)
@@ -5531,9 +5624,11 @@ impl Fanout {
             return;
         };
         self.started.remove(&basis);
-        if self.jobs.remove(&basis).is_none() {
+        // The job's chunk, of the dimension it was dispatched in: the thread names the
+        // position alone.
+        let Some(position) = self.jobs.remove(&basis) else {
             return;
-        }
+        };
         let Some(entry) = self.replica.get_mut(&position) else {
             return;
         };
@@ -5599,12 +5694,10 @@ impl Fanout {
         // the official client always has, and the official server sends them nothing.
         let entry = &self.replica[&position];
         let everyone = entry.reshaped;
-        let lacks_one_beside = |view: &PlayerView| {
-            let has = |at: &ChunkPos| view.sent.contains(at) || view.replace.contains(at);
-            !Self::around(position).iter().all(has)
-        };
+        let lacks_one_beside =
+            |view: &PlayerView| !Self::around(position).iter().all(|at| view.holds(*at));
         let owed_it = |(player, view): (&PlayerId, &PlayerView)| {
-            let has = view.sent.contains(&position);
+            let has = view.was_sent(position);
             (has && (everyone || lacks_one_beside(view))).then_some(*player)
         };
         let holders: Vec<PlayerId> = self.players.iter().filter_map(owed_it).collect();
@@ -5644,8 +5737,11 @@ impl Fanout {
     /// Keeps a block entity's new data in the replica, so that the chunk's packet
     /// carries it from now on (`docs/adr/0026-redstone.md`, section 6). Whether a
     /// client is told of it at once is the game's to say, block by block.
-    fn change_block_entity(&mut self, position: BlockPos, data: Vec<u8>) {
-        let Some(entry) = self.replica.get_mut(&position.chunk()) else {
+    fn change_block_entity(&mut self, dimension: Dimension, position: BlockPos, data: Vec<u8>) {
+        let Some(entry) = self
+            .replica
+            .get_mut(&LevelChunk::new(dimension, position.chunk()))
+        else {
             return;
         };
         let Some(chunk) = &mut entry.chunk else {
@@ -5667,11 +5763,11 @@ impl Fanout {
     /// changed the block again. So it is shown as the edge has it, which is what every
     /// client of the chunk is told, and as the region read it only where the edge does
     /// not have the chunk.
-    fn shown_block(&self, position: BlockPos, state: BlockState) -> Bytes {
+    fn shown_block(&self, dimension: Dimension, position: BlockPos, state: BlockState) -> Bytes {
         let (x, z) = position.in_chunk();
         let state = self
             .replica
-            .get(&position.chunk())
+            .get(&LevelChunk::new(dimension, position.chunk()))
             .and_then(|entry| entry.chunk.as_ref())
             .and_then(|chunk| chunk.get(x, position.y, z))
             .unwrap_or(state);
@@ -5685,8 +5781,13 @@ impl Fanout {
         })
     }
 
-    fn change_block(&mut self, position: BlockPos, state: BlockState) -> bool {
-        let chunk_position = position.chunk();
+    fn change_block(
+        &mut self,
+        dimension: Dimension,
+        position: BlockPos,
+        state: BlockState,
+    ) -> bool {
+        let chunk_position = LevelChunk::new(dimension, position.chunk());
         let Some(entry) = self.replica.get_mut(&chunk_position) else {
             return false;
         };
@@ -5741,7 +5842,8 @@ impl Fanout {
     /// the section. Players who have not been sent the chunk yet get it with the changes
     /// in it.
     async fn show_changes(&mut self, changed: Changed) {
-        for ((chunk_position, section), blocks) in changed {
+        for ((chunk, section), blocks) in changed {
+            let chunk_position = chunk.position;
             let packet = if let [(position, state)] = blocks.iter().collect::<Vec<_>>()[..] {
                 encoded(&BlockUpdate {
                     position: Position {
@@ -5767,10 +5869,8 @@ impl Fanout {
             let viewers: Vec<_> = self
                 .players
                 .iter()
-                .filter(|(_, view)| {
-                    // Also one whose client still shows the chunk of before.
-                    view.sent.contains(&chunk_position) || view.replace.contains(&chunk_position)
-                })
+                // Also one whose client still shows the chunk of before.
+                .filter(|(_, view)| view.holds(chunk))
                 .map(|(player, _)| *player)
                 .collect();
             for player in viewers {
@@ -5785,6 +5885,7 @@ impl Fanout {
     /// event to players within 64 blocks (`PlayerList.broadcast`).
     async fn show_near(
         &mut self,
+        dimension: Dimension,
         position: BlockPos,
         event: i32,
         data: i32,
@@ -5801,7 +5902,8 @@ impl Fanout {
             global: false,
         });
         let at = block_centre(position);
-        self.send_near(position.chunk(), at, LEVEL_EVENTS_WITHIN, except, packet)
+        let chunk = LevelChunk::new(dimension, position.chunk());
+        self.send_near(chunk, at, LEVEL_EVENTS_WITHIN, except, packet)
             .await;
     }
 
@@ -5809,7 +5911,7 @@ impl Fanout {
     /// `range` of `at`, but `except`.
     async fn send_near(
         &mut self,
-        chunk: ChunkPos,
+        chunk: LevelChunk,
         at: (f64, f64, f64),
         range: f64,
         except: Option<PlayerId>,
@@ -5821,7 +5923,7 @@ impl Fanout {
             .iter()
             .filter(|(player, view)| {
                 Some(**player) != except
-                    && (view.sent.contains(&chunk) || view.replace.contains(&chunk))
+                    && view.holds(chunk)
                     && view
                         .entity
                         .and_then(|entity| self.entities.get(&entity))
@@ -5848,11 +5950,12 @@ impl Fanout {
             return true;
         }
         let center = view.center;
+        let dimension = view.dimension;
         // Only chunks that may be sent: those with light as recent as the chunks it
         // was made from. The others wait for their light, and nothing is sent for a
         // player who has none to be sent: no start and no end of a batch.
         let sendable = |position: &&ChunkPos| {
-            let entry = self.replica.get(*position);
+            let entry = self.replica.get(&LevelChunk::new(dimension, **position));
             entry.is_some_and(ReplicaChunk::sendable)
         };
         let mut batch: Vec<_> = view.pending.iter().filter(sendable).copied().collect();
@@ -5884,7 +5987,7 @@ impl Fanout {
         for position in &batch {
             view.pending.remove(position);
             view.sent.insert(*position);
-            let chunk = self.replica.get_mut(position);
+            let chunk = self.replica.get_mut(&LevelChunk::new(dimension, *position));
             let chunk = chunk.expect("pending chunks are in the replica");
             let packet = chunk.packet(*position);
             packets.push(packet.expect("a pending chunk has come"));
@@ -5965,11 +6068,9 @@ impl Fanout {
     /// nobody sees the chunk any more, every subscription to it is ended, at every
     /// region.
     fn unwant(&mut self, region: RegionId, chunk: ChunkPos) {
+        let at = self.level_of(region, chunk);
         self.changed = true;
-        let watched = self
-            .replica
-            .get(&chunk)
-            .is_some_and(|entry| entry.viewers > 0);
+        let watched = self.replica.get(&at).is_some_and(|entry| entry.viewers > 0);
         let port = self.regions.entry(region).or_default();
         let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
             error!(%region, ?chunk, "a viewer saw a chunk that nothing was asked for");
@@ -6005,12 +6106,13 @@ impl Fanout {
 
     /// Ends the edge's subscription to `chunk` at `region`.
     fn end(&mut self, region: RegionId, chunk: ChunkPos) {
+        let at = self.level_of(region, chunk);
         let port = self.regions.entry(region).or_default();
         if port.subscriptions.remove(&chunk).is_some() {
             self.asking
                 .push((region, Asking::Unsubscribe, chunk, false));
         }
-        if let Some(entry) = self.replica.get_mut(&chunk)
+        if let Some(entry) = self.replica.get_mut(&at)
             && entry.served_by == Some(region)
         {
             entry.served_by = None;
@@ -6075,6 +6177,7 @@ impl Fanout {
     /// for already is not answered, and the snapshot in flight carries the number from
     /// before.
     fn served(&mut self, region: RegionId, chunk: ChunkPos, ask: u64) -> bool {
+        let at = self.level_of(region, chunk);
         let port = self.regions.entry(region).or_default();
         let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
             return false;
@@ -6084,7 +6187,7 @@ impl Fanout {
         }
         subscription.condition = Condition::Served;
         subscription.again_due = false;
-        if let Some(entry) = self.replica.get_mut(&chunk) {
+        if let Some(entry) = self.replica.get_mut(&at) {
             entry.served_by = Some(region);
         }
         true
@@ -6095,6 +6198,7 @@ impl Fanout {
     /// already. The viewer's subscription stays, as it is why `from` goes on knowing
     /// who holds the chunk.
     async fn elsewhere(&mut self, from: RegionId, chunk: ChunkPos, ask: u64, holder: RegionId) {
+        let at = self.level_of(from, chunk);
         self.changed = true;
         let port = self.regions.entry(from).or_default();
         let Some(subscription) = port.subscriptions.get_mut(&chunk) else {
@@ -6111,7 +6215,7 @@ impl Fanout {
         }
         subscription.condition = Condition::Elsewhere(holder);
         subscription.again_due = false;
-        if let Some(entry) = self.replica.get_mut(&chunk)
+        if let Some(entry) = self.replica.get_mut(&at)
             && entry.served_by == Some(from)
         {
             entry.served_by = None;
@@ -6144,6 +6248,7 @@ impl Fanout {
     /// subscription, which is over with that. Whoever was told that `from` holds the
     /// chunk is asked again.
     async fn not_mine(&mut self, from: RegionId, chunk: ChunkPos, ask: u64) {
+        let at = self.level_of(from, chunk);
         self.changed = true;
         let port = self.regions.entry(from).or_default();
         let current = port.subscriptions.get(&chunk).is_some_and(|subscription| {
@@ -6153,7 +6258,7 @@ impl Fanout {
             return;
         }
         port.subscriptions.remove(&chunk);
-        if let Some(entry) = self.replica.get_mut(&chunk)
+        if let Some(entry) = self.replica.get_mut(&at)
             && entry.served_by == Some(from)
         {
             entry.served_by = None;
@@ -6281,25 +6386,26 @@ impl Fanout {
         // a player whose queue is full, in the middle of whatever was being fanned
         // out (`docs/adr/0023-light-at-the-edge.md`, section 4, rule R1).
         for position in &view.pending {
-            if let Some(chunk) = self.replica.get_mut(position) {
+            if let Some(chunk) = self.replica.get_mut(&view.level(*position)) {
                 chunk.waits_no_more(player);
             }
         }
         for position in &view.wanted {
+            let at = view.level(*position);
             let chunk = self
                 .replica
-                .get_mut(position)
+                .get_mut(&at)
                 .expect("viewed chunks are in the replica");
             chunk.viewers -= 1;
             if chunk.viewers == 0 {
-                self.queues.take_out(*position, chunk);
-                self.replica.remove(position);
-                self.marked.remove(position);
+                self.queues.take_out(at, chunk);
+                self.replica.remove(&at);
+                self.marked.remove(&at);
             }
         }
         // Those that keep viewers and have lost a waiter may belong in another set.
         for position in &view.pending {
-            self.requeue(*position);
+            self.requeue(view.level(*position));
         }
         self.forget_unwatched_entities();
         for position in &view.wanted {
@@ -6364,6 +6470,27 @@ impl Fanout {
 }
 
 impl PlayerView {
+    /// `chunk` of the dimension the client shows.
+    fn level(&self, chunk: ChunkPos) -> LevelChunk {
+        LevelChunk::new(self.dimension, chunk)
+    }
+
+    /// Whether the client was sent `at`, and has not been told to replace it.
+    fn was_sent(&self, at: LevelChunk) -> bool {
+        at.dimension == self.dimension && self.sent.contains(&at.position)
+    }
+
+    /// Whether the client shows `at`: sent, or sent before and waiting to be replaced.
+    fn holds(&self, at: LevelChunk) -> bool {
+        at.dimension == self.dimension
+            && (self.sent.contains(&at.position) || self.replace.contains(&at.position))
+    }
+
+    /// Whether the client is to be sent `at`, which it waits for.
+    fn has_pending(&self, at: LevelChunk) -> bool {
+        at.dimension == self.dimension && self.pending.contains(&at.position)
+    }
+
     /// Works out what the client has to be told about `state` and records it: the
     /// packets that show the entity if it came into view, move it if `moved`, or hide it
     /// if it left the view. `me` is the player whose view this is. A player is never
@@ -6385,7 +6512,10 @@ impl PlayerView {
         let in_world = self.entity.is_some();
         let own = self.entity == Some(state.entity)
             || matches!(&state.kind, EntityKind::Player { player: of, .. } if *of == me);
-        let in_view = in_world && !own && self.wanted.contains(&state.chunk());
+        let in_view = in_world
+            && !own
+            && shown.dimension == self.dimension
+            && self.wanted.contains(&state.chunk());
         let shown = self.visible.contains_key(&state.entity);
         match (in_view, shown) {
             (true, false) => {
@@ -7034,7 +7164,15 @@ mod tests {
     /// A link to `region` whose owner has `epoch`, and the worker's end of it.
     fn link_to(region: RegionId, epoch: u64) -> (RegionLink, WorkerEnd) {
         let (end, worker) = link::in_process(1024);
-        (RegionLink { region, epoch, end }, worker)
+        (
+            RegionLink {
+                dimension: Default::default(),
+                region,
+                epoch,
+                end,
+            },
+            worker,
+        )
     }
 
     impl Harness {
@@ -9190,7 +9328,15 @@ mod scenarios {
     /// A link to `region` whose owner has `epoch`, and the worker's end of it.
     fn link_to(region: RegionId, epoch: u64) -> (RegionLink, WorkerEnd) {
         let (end, worker) = link::in_process(1024);
-        (RegionLink { region, epoch, end }, worker)
+        (
+            RegionLink {
+                dimension: Default::default(),
+                region,
+                epoch,
+                end,
+            },
+            worker,
+        )
     }
 
     impl Harness {
@@ -21601,7 +21747,8 @@ mod scenarios {
 
     /// The chunks beside `chunk`, sent to the client as empty ones.
     async fn sent_around(edge: &mut Harness, client: &mut Client, chunk: ChunkPos) {
-        for beside in Fanout::around(chunk) {
+        let around = Fanout::around(LevelChunk::new(Dimension::Overworld, chunk));
+        for beside in around.map(|at| at.position) {
             let ask = edge.ask(WEST, beside);
             edge.tell(WEST, snapshot(beside, ask));
             assert!(edge.shows(client, WEST, beside).await);
@@ -21668,7 +21815,8 @@ mod scenarios {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(lit, BTreeSet::from(Fanout::around(HOME)));
+        let around = Fanout::around(LevelChunk::new(Dimension::Overworld, HOME));
+        assert_eq!(lit, BTreeSet::from(around.map(|at| at.position)));
         edge.end().await;
     }
 

@@ -247,6 +247,8 @@ impl Relinks {
 #[derive(Debug)]
 pub struct RegionLink {
     pub region: RegionId,
+    /// The region's dimension, as the routing table says.
+    pub dimension: clustine_world::Dimension,
     pub epoch: u64,
     pub end: EdgeEnd,
 }

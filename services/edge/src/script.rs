@@ -906,7 +906,15 @@ pub(crate) struct Script {
 /// A link to `region` whose owner has `epoch`, and the worker's end of it.
 fn link_to(region: RegionId, epoch: u64) -> (RegionLink, WorkerEnd) {
     let (end, worker) = link::in_process(1024);
-    (RegionLink { region, epoch, end }, worker)
+    (
+        RegionLink {
+            dimension: Default::default(),
+            region,
+            epoch,
+            end,
+        },
+        worker,
+    )
 }
 
 impl Script {
