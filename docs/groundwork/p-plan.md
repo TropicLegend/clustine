@@ -858,3 +858,210 @@ As 15.2 to 15.5 say, with these notes:
 - **Versions.** `FORMAT_VERSION` is 19 (a place's dimension, travel, credits and
   cooldown, a respawn's dimension, an entity's portal state, a commit's travellers and
   their forward record), `STATE_FORMAT` 25.
+
+## 16. P9, the travel, at the level of the code (2026-10-30)
+
+Sections 5.1 and 5.2 say what P9 does; this is how, against the code after P2, P3, P7
+and P8 (`fbbb17b` and the edge's change, `44c1845`). P8 left one hook,
+`Region::portal_fired(who, kind, entry, output)`, which does nothing; P9 fills it, and
+the destination's half. For review before it is built.
+
+### 16.1 What the region needs that P2 did not give it
+
+- **The homes' ids.** A region that fires a player's portal sends them to the
+  destination dimension's home (0.6), and a region knows no other region's id.
+  `Restored` gains `homes: Vec<(Dimension, RegionId)>`, which the store has, and
+  `RegionConfig` gains it from the worker. `STATE_FORMAT` does not change (the config is
+  not state); the wire's `Restored` does, before any world exists outside the tests.
+- **The travel's target, worked out at the source.** The source knows the source
+  portal's block and its rectangle (its own blocks), and computes the travel: the
+  destination dimension (the Nether from the overworld, the overworld from the Nether),
+  the target `clamp(x × s, y, z × s)` inside the destination's border (G 2.2 item 2),
+  and the relative place in the source rectangle (G 2.2 item 6). A rectangle that
+  reaches into a chunk the region cannot read is read as far as it can be; the relative
+  place then is of what it read (named, rare: a portal across a region line).
+
+### 16.2 The firing tick, at the source (in `portal_fired`)
+
+In the tick a clock fires, after the cooldown is set (P8):
+
+- **A player** (not riding: P8 runs no clock for a rider):
+  1. Their transfer is made as at a hand-over (`into_transfer`), then put in the
+     destination's coordinates: `dimension` the destination, the pose at the target
+     (the block's bottom centre, the look kept), `travel` the travel (15.4).
+  2. They leave the region as a departing player does, in this tick, with a
+     `Durable::Departed` to the destination's home: the let-go `Has` keeps the place in
+     the destination's coordinates with the travel, and its face is the source's pose
+     (15.4, D1).
+  3. The region reports the player's removal to its edges (`EntityRemoved` at the
+     source's chunk), so that no client of the old dimension keeps them at the portal
+     (D2). Their own edge has the `Departed` and starts its change (P7).
+  4. A vehicle a player rides goes with them (5.1): not until P9b; the clock of a rider
+     does not run (P8), so a ridden vehicle's clock firing takes its riders, and that
+     waits for the unit's travel below.
+- **An entity other than a player**, with its riders that are not players (a unit with
+  a player in it is P9b):
+  1. Removed from the region with its riders, each reported `EntityGone { travelled:
+     true }` with its hops.
+  2. Filed: `TickOutput.travellers.push(Traveller { travel, chunk, entities })`, the
+     chunk being the target's `LevelChunk`, the entities as the tick left them, root
+     first, with their hops raised by one.
+- Both are in the tick's commit: the traveller is gone from here and filed there, or
+  neither (0.6).
+
+### 16.3 The destination: taking the traveller and the wait
+
+- **A player** arrives at the destination's home by `PlayerChange::Arrive` with a
+  transfer whose `travel` is set. `apply_arrival` is as for every arrival: a chunk the
+  store said is another's passes them on with `NotMine` (one hop more, the travel
+  kept); otherwise they are taken in, the chunk claimed if unknown. Taken in with a
+  travel, the player is **waiting**: in the region's state with `travel` set
+  (`PlayerState.travel`, durable with the commit), not in the world: no entity is
+  shown, their inputs are applied only where `has_no_place` would pass them, and
+  nothing moves them.
+- **A traveller** comes on the stream (`TickInputs.travellers`, P3), for a chunk the
+  region holds. It is taken into a waiting list of the region's, in memory (not
+  durable: the store still files it until the commit that takes it).
+- **The wait** (5.2 step 1), for each waiting traveller, every tick until it is placed:
+  1. The search's square of chunks (radius 16 blocks into the Nether, 128 out of it,
+     around the target) is asked to be loaded or copied: `TickOutput.travel_tickets`,
+     which the worker keeps as arrival tickets (the arrival region holds them, or claims
+     the unheld; another region's come as border copies). Loading a chunk the region
+     cannot hold or copy is not waited for: its blocks are taken on the index's word.
+  2. One `PortalQuery` per traveller (`QueryId { tick, index }`), asked once; its answer
+     comes on the stream behind the commits made before.
+  3. When the answer is in and every chunk it waits for is loaded or copied (or a
+     limit of 200 ticks has passed, after which it goes on with what it has), it is
+     placed, in the order the travellers came; two in one tick see each other's
+     portal.
+- **A take-over during the wait** restores waiting players from the state (their
+  `travel`), and the store files waiting travellers again at the hello: the wait starts
+  again (R N5).
+
+### 16.4 Placing (5.2 steps 2 to 6)
+
+1. **Candidates**: the index's answer, and the region's own `nether_portal` blocks within
+   the square found in its loaded chunks (its live points of interest: a portal it made
+   this tick or since the answer). A candidate in a chunk the region has loaded or
+   copied is kept only if its block is still a portal with a horizontal axis; one
+   beyond is taken on the index's word.
+2. **The choice**: nearest by `distSqr` to the target, then the lowest y (G 2.2 item 3).
+3. **Found**: its rectangle (`BlockUtil.getLargestRectangleAround`, 21 by 21, same
+   state) from the blocks the region can read.
+4. **Not found**: a portal made as `PortalForcer.createPortal` (G 2.3): the spiral over
+   the region's loaded and copied chunks; the frame and portal blocks set in the
+   region's own chunks, and filed as effects where another region holds the chunk
+   (`SetIf`, named in 5.2 step 4). In the overworld or the Nether only; a portal made
+   puts its blocks in the same commit as the traveller's placing.
+5. **The pose** (G 2.2 item 6): the destination rectangle and the relative place; the
+   yaw turned by 90 where the axes differ; velocity kept. `findCollisionFreePosition`
+   for an entity of at most 4 × 4, against the region's loaded blocks.
+6. **The traveller placed**:
+   - a player: their `travel` cleared, pose set, in the world from this tick
+     (introduced to watchers as an arrival is), `Durable::Placed { dimension, pose,
+     flying }` to their edge after the commit, and the effects they have reported
+     (`EffectAdded` for each), as the game resends them; the edge asks the inventory
+     (P7);
+   - an entity: each of the unit put into the world at the pose (the riders on their
+     seats), and the traveller's id among the tick's `arrivals_taken`, so that the store
+     drops it in the same commit.
+   - If the pose's chunk is another region's (rare: the portal found is beyond a line),
+     the traveller is handed on to it as a walk across a line is, placed.
+7. **The portal ticket** (radius 3 around the pose, G 2.2): kept by the region as an
+   arrival ticket for 300 ticks.
+
+### 16.5 What waits for later steps
+
+- A vehicle ridden by a player through a portal (5.1, R N7): P9b, with the unit in the
+  transfer and `Took` at the destination (15.5).
+- Zombified piglins from portals (G 4.2): P12.
+- The End's portal, the credits and gateways: P10.
+
+### 16.6 Tests
+
+- The region's tests of 16.2 to 16.4, tick by tick: a creative player standing in a
+  frame lit in the overworld is let go to the Nether's home in the tick the clock fires,
+  with the travel and the place in Nether coordinates; an item thrown in is filed as a
+  traveller; the destination finds the index's portal, or makes one, and places them as
+  the game would; a second traveller in the same tick uses the first's portal.
+- Kill tests at every step of a travel, as N3's: a region killed after the firing's
+  commit and before the destination's, the store restarted at every point, the
+  destination taken over during the wait: the traveller is placed once, never twice and
+  never lost.
+- End-to-end: a bot lights a portal in a flat world, walks in, is sent `Respawn` into
+  the Nether and placed beside a portal there, walks back, and is placed beside the one
+  it came through.
+
+### 16.7 The review of section 16 (2026-10-30), and what P9 builds instead
+
+An independent reviewer read 16.1 to 16.6 against the code at `7bd0b2a`. They found the
+firing during an edge's events, its resets and resumes, a logout after the firing, the
+source's removal against the edge's hand-over, the edge's hold during the change, and
+the numbering of travellers sound; and nine defects. What P9 builds instead:
+
+- **Travellers wait apart from the region's players and entities, durably** (their D1,
+  D2, D7, and the list of fifteen places that would have taken a waiting player for a
+  present one). A region keeps, in its state, `waiting: BTreeMap<PlayerId,
+  WaitingPlayer>` (the transfer and the edge, as `entering` keeps a joining stay) and
+  `waiting_travellers: Vec<(EffectId, Traveller)>`. A traveller off the stream is taken
+  in the tick it comes, its id among the commit's `arrivals_taken`, so the store files
+  it no more and sends it to nobody again; it is the region's state from that commit on.
+  None of the region's iterations over players or entities sees them: no physics, no
+  faces or stay notes but the waiting one's own, no mobs' view, no pickups, no portal
+  clock, no sleep or spawning counts. A split gives the part the waiting travellers and
+  players whose target chunk it takes, as it gives arrivals; a merge joins both; a
+  region gives back no chunk a traveller waits for (as an arrival ticket keeps one).
+  `STATE_FORMAT` rises to 26. A waiting player's inputs are counted applied and passed
+  over but for those `has_no_place` passes, which apply when they are placed.
+- **The search loads little** (their D3): the chosen candidate's chunks once the
+  index has answered, the 3 × 3 chunks of `createPortal`'s spiral around the target,
+  and the arrival's chunks; never the whole square. A traveller is **never placed
+  without the index's answer**; the limit of 200 ticks applies to loading only, after
+  which a chunk not loaded is taken on the index's word or, for the spiral, as
+  unsuitable.
+- **A returning player with a travel** (their D4, R N4): the overworld's home, given an
+  `Entered` whose place has a travel, lets the stay go to that dimension's home (or
+  the holder the store names), unplaced, with the travel in the transfer, as it lets a
+  stay go to a holder today. The destination takes it into `waiting`, and places it
+  with `Spawned` (not `Placed`), since the edge has never put that client into the
+  world: its login is then in the right dimension (P7b).
+- **The face and the menu at the firing** (their D5, D6): the let-go note's face is
+  the source's pose, and no departed face is kept for a portal's departure; the
+  player's menu is closed at the firing as at a leave (`menu_leaving`).
+- **No vehicle with a player in it fires** until P9b (their D8): its clock runs and
+  its cooldown is kept, and it does not fire.
+- **No second removal** (their D9): an edge's reset after a firing reports no removal
+  for a departure with a travel; the firing reported it, at the source's chunk.
+- **Named, rare** (their placing notes): a second traveller in the same tick whose
+  portal would be in another region's chunk makes a second portal, as the effects of
+  the first are not seen within the tick; and a neighbour update on a region's half of
+  a frame made across a line, before the other half's effect lands, breaks the half.
+
+### 16.8 The second reading of 16.7
+
+The reviewer found 16.7 answers D1, D3, D5 to D9, and the rule that nothing is placed
+without the index's answer sound; and that a waiting stay kept apart from `players` has
+to be met everywhere a stay is. What P9 builds besides:
+
+- **A waiting stay is a stay to every rule that ends or answers one** (their A1, A3):
+  the hello's presence answers say `Presence::Entering` for it (the edge waits on that);
+  a leave, an edge's reset, a dead stay and an edge gone end it as they end an entering
+  one, with a `Has` that keeps the travel (a leave) or a `Gone` (a reset).
+- **Reshaping** (their A2): a split gives the part the waiting stays whose target chunk
+  it takes, with their edges and in the `SplitOff` list, as it does a player; a merge
+  applies its edge resets and its later-stay rule to `waiting` as to `players`.
+- **The notes and faces of a waiting stay** (their A4, B2): it writes its `Has`, with
+  the travel and no face, when it is taken and in the first tick after a restore; the
+  let-go note of a stay that goes with a travel (a firing, or the home letting a
+  returning player go) keeps no departed face, and its face is the source's pose at a
+  firing, none at the home.
+- **Inputs while waiting** (their c): those `has_no_place` passes are kept in the
+  waiting stay, durably, and applied in order at the placing; every input of the stay
+  is reported applied, and the stay's `last_input` advances.
+- **A traveller taken twice** (their A5): a traveller whose id the region holds waiting
+  already is passed over; a lend that goes through while a traveller waits is
+  survivable (it is placed and handed on, its portal made by effects), and named.
+- **The returning player** (their B1, P7's): the edge's `enter_by_arrival`, for a
+  transfer with a travel, sends the arrival only, and does not put the client into the
+  world: the join's patience runs on, and the destination's `Spawned` puts them into
+  the world in its dimension (`tell_entered` takes it from the placing region).

@@ -1302,6 +1302,7 @@ mod in_a_region {
     /// in their chunks.
     fn region_with(entities: &[Entity]) -> Region {
         let config = RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(clustine_world::Vec3::new(0.5, FEET, 0.5)),
             starting_inventory: Inventory::with_hotbar([const { None }; HOTBAR_SLOTS]),

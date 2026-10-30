@@ -149,6 +149,9 @@ pub struct RegionConfig {
     /// Where players enter the world, in the overworld's regions; none in the others.
     /// See [`RegionConfig::home`].
     pub spawn: Option<Vec3>,
+    /// Each dimension's home region, which a portal sends a player to: a region knows
+    /// no other region's id but these (`docs/groundwork/p-plan.md`, section 16.1).
+    pub homes: Vec<(Dimension, RegionId)>,
     /// What players carry when they enter the world for the first time.
     pub starting_inventory: Inventory,
     /// How many ticks a chunk the region holds outside its pinned areas may be without
@@ -463,6 +466,12 @@ struct Journal {
     entering: BTreeSet<PlayerId>,
     /// The chunks whose ask for a lend began, was asked again or ended.
     lends_asked: BTreeSet<ChunkPos>,
+    /// The players whose waiting stay began, changed or ended.
+    waiting: BTreeSet<PlayerId>,
+    /// Whether the waiting travellers changed.
+    waiting_travellers: bool,
+    /// Whether the dragon fight changed.
+    dragon_fight: bool,
 }
 
 /// A stay that the tick lets go, kept until the departures are numbered at the end of
@@ -566,6 +575,9 @@ pub struct Region {
     clock: crate::api::WorldClock,
     /// [`RegionState::dragon_fight`].
     dragon_fight: Option<Box<clustine_world::dragon::DragonFight>>,
+    /// [`RegionState::waiting`] and [`RegionState::waiting_travellers`].
+    waiting: BTreeMap<PlayerId, crate::state::WaitingState>,
+    waiting_travellers: Vec<crate::state::WaitingTraveller>,
     /// The store's asks of lends of this tick, answered at its end (`lends.rs`); no
     /// part of the state, as the store calls a lend off at every hello.
     lends_to_answer: Vec<LendAsked>,
@@ -776,6 +788,8 @@ impl Region {
             lends_asked,
             clock: state.clock,
             dragon_fight: state.dragon_fight,
+            waiting: state.waiting,
+            waiting_travellers: state.waiting_travellers,
             lends_to_answer: Vec::new(),
             lend_tickets: BTreeMap::new(),
             letting_go: BTreeSet::new(),
@@ -876,6 +890,8 @@ impl Region {
             entering: self.entering.clone(),
             lends_asked: self.lends_asked.clone(),
             clock: self.clock,
+            waiting: self.waiting.clone(),
+            waiting_travellers: self.waiting_travellers.clone(),
             dragon_fight: self.dragon_fight.clone(),
         }
     }
@@ -2274,6 +2290,15 @@ impl Region {
                 .into_iter()
                 .map(|position| (position, self.lends_asked.get(&position).copied()))
                 .collect(),
+            waiting: journal
+                .waiting
+                .into_iter()
+                .map(|id| (id, self.waiting.get(&id).cloned()))
+                .collect(),
+            waiting_travellers: journal
+                .waiting_travellers
+                .then(|| self.waiting_travellers.clone()),
+            dragon_fight: journal.dragon_fight.then(|| self.dragon_fight.clone()),
         }
     }
 
@@ -4185,6 +4210,7 @@ mod tests {
     /// What a region is created with. It gives back at once what nothing uses.
     fn config() -> RegionConfig {
         RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(SPAWN),
             starting_inventory: Inventory::with_hotbar(hotbar()),

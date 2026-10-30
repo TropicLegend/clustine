@@ -95,6 +95,7 @@ fn stack(item: i32, count: i32) -> ItemStack {
 
 fn config_holding(inventory: Inventory) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(FEET),
         starting_inventory: inventory,

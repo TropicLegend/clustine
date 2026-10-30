@@ -54,6 +54,7 @@ fn config(return_after: u64) -> RegionConfig {
     let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(FEET),
         starting_inventory: Inventory::with_hotbar(hotbar),

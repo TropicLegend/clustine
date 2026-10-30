@@ -904,6 +904,9 @@ pub struct Restored {
     pub spawn: Option<BlockPos>,
     /// The dimension whose chunks the region holds.
     pub dimension: Dimension,
+    /// Each dimension's home region, which a portal sends a player to
+    /// (`docs/groundwork/p-plan.md`, section 16.1).
+    pub homes: Vec<(Dimension, RegionId)>,
     /// What the world's random ticks are drawn from: a number of the world's own, the
     /// same at every opening, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
@@ -989,6 +992,8 @@ pub enum StoreWelcome {
         spawn: Option<BlockPos>,
         /// [`Restored::dimension`].
         dimension: Dimension,
+        /// [`Restored::homes`].
+        homes: Vec<(Dimension, RegionId)>,
         /// [`Restored::world`].
         world: u64,
         /// [`Restored::seed`].

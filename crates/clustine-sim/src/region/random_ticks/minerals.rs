@@ -783,6 +783,7 @@ mod tests {
     /// floor at y = -61, so that the chunk at the origin ticks.
     fn region() -> Region {
         let config = RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
             starting_inventory: Inventory::default(),

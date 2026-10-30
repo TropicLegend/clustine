@@ -63,6 +63,7 @@ fn state(name: &str) -> BlockState {
 
 fn config(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar),

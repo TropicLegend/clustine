@@ -1005,8 +1005,11 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         };
         ticks.iter().map(of).collect()
     };
+    // Every region is told the homes a portal sends players to, as the list has them.
+    let homes = list.homes.clone();
     let expected = [
         Restored {
+            homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),
             spawn: Some(crate::tests::spawn_in(from.home)),
@@ -1033,6 +1036,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),
             spawn: Some(crate::tests::spawn_in(from.home)),
@@ -1054,6 +1058,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),
             spawn: Some(crate::tests::spawn_in(from.home)),

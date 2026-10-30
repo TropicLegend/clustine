@@ -56,6 +56,7 @@ fn chunk_of(position: ChunkPos, blocks: &dyn Fn(BlockPos) -> Option<BlockState>)
 
 fn config(seed: u64) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
         starting_inventory: Inventory::default(),

@@ -486,6 +486,7 @@ mod tests {
 
     fn config(return_after: u64) -> RegionConfig {
         RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(SPAWN),
             starting_inventory: Inventory::default(),
@@ -635,6 +636,8 @@ mod tests {
     ) -> RegionState {
         let entity_ids = EntityIds::block(block).unwrap();
         RegionState {
+            waiting: Default::default(),
+            waiting_travellers: Vec::new(),
             dragon_fight: None,
             tick,
             entity_ids,
@@ -1158,6 +1161,8 @@ mod tests {
             ..stay
         };
         let expected = RegionState {
+            waiting: Default::default(),
+            waiting_travellers: Vec::new(),
             dragon_fight: None,
             tick: 21,
             entity_ids: NO_ENTITY_IDS,

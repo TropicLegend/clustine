@@ -996,6 +996,7 @@ fn field_region(biome: Biome, floor: BlockState, structures: Vec<KeptStructure>)
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, f64::from(STANDING), 0.5)),
         starting_inventory: Default::default(),

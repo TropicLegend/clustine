@@ -601,6 +601,7 @@ impl World {
             .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
             .collect();
         let config = RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(SPAWN),
             starting_inventory: Inventory::default(),

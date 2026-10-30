@@ -39,6 +39,7 @@ fn config() -> RegionConfig {
     let mut starting_hotbar = [const { None }; HOTBAR_SLOTS];
     starting_hotbar[0] = Some(STONE);
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(starting_hotbar),

@@ -519,6 +519,7 @@ mod tests {
         };
 
         let restored = Restored {
+            homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
             held: Vec::new(),
@@ -560,6 +561,7 @@ mod tests {
         assert_eq!(restored.tick(), 9);
         let welcomes = [
             StoreWelcome::Accepted {
+                homes: Vec::new(),
                 dimension: Default::default(),
                 faces: Vec::new(),
                 entity_ids: restored.entity_ids,
@@ -679,6 +681,7 @@ mod tests {
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
+            homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
             held: Vec::new(),
@@ -848,6 +851,7 @@ mod tests {
         }
         for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
+                homes: Vec::new(),
                 dimension: Default::default(),
                 faces: Vec::new(),
                 entity_ids: EntityIds::block(3).unwrap(),
@@ -868,6 +872,7 @@ mod tests {
                 },
             });
             round_trip(Restored {
+                homes: Vec::new(),
                 dimension: Default::default(),
                 faces: Vec::new(),
                 held: Vec::new(),

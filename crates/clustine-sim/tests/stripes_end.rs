@@ -72,6 +72,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar()),
@@ -473,6 +474,8 @@ fn edges_before_a_split() -> [(EdgeId, EdgeState); 2] {
 /// holds it or not, and it gives nothing back while a test lasts.
 fn with_players(holdings: Holdings, players: &[(i32, EdgeId, ChunkPos)]) -> Region {
     let state = RegionState {
+        waiting: Default::default(),
+        waiting_travellers: Vec::new(),
         dragon_fight: None,
         tick: 40,
         entity_ids: ids(),
@@ -1576,6 +1579,7 @@ const START: u64 = 10;
 
 fn run_config() -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(ENTRANCE),
         starting_inventory: Inventory::with_hotbar(hotbar()),

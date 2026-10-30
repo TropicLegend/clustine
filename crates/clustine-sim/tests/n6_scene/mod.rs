@@ -59,6 +59,7 @@ pub fn inventory(slots: &[(usize, ItemStack)]) -> Inventory {
 
 pub fn config(inventory: Inventory) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: inventory,

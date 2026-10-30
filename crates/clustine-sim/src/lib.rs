@@ -56,5 +56,5 @@ pub use region::{
 };
 pub use state::{
     Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf, PlayerRiding, PlayerState,
-    RegionState, StateDelta, VehicleCheck,
+    RegionState, StateDelta, VehicleCheck, WaitingState, WaitingTraveller,
 };

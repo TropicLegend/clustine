@@ -5473,6 +5473,9 @@ fn lived_in(ids: clustine_world::EntityIds, tick: u64) -> RegionState {
 /// its first message, giving them `entity`.
 fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_sim::StateDelta {
     clustine_sim::StateDelta {
+        waiting: Vec::new(),
+        waiting_travellers: None,
+        dragon_fight: None,
         tick,
         clock: None,
         next_entity_id: Some(EntityId(entity.0 + 1)),
@@ -5498,6 +5501,9 @@ fn joining(tick: u64, edge: EdgeId, id: PlayerId, entity: EntityId) -> clustine_
 /// `since`, with its first outbox entry.
 fn answering(tick: u64, edge: EdgeId, since: u64) -> clustine_sim::StateDelta {
     clustine_sim::StateDelta {
+        waiting: Vec::new(),
+        waiting_travellers: None,
+        dragon_fight: None,
         tick,
         clock: None,
         next_entity_id: None,

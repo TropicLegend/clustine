@@ -36,10 +36,43 @@ pub struct RegionState {
     pub lends_asked: BTreeMap<ChunkPos, u64>,
     /// The world's clock as of the last tick.
     pub clock: crate::api::WorldClock,
+    /// The stays a portal sent here that wait to be placed: in the state, apart from
+    /// the players in the world (`docs/groundwork/p-plan.md`, sections 16.7 and 16.8).
+    pub waiting: BTreeMap<PlayerId, WaitingState>,
+    /// The entities a portal sent here that wait to be placed, each under the number it
+    /// was filed with, taken in the commit that put them here.
+    pub waiting_travellers: Vec<WaitingTraveller>,
     /// The End's dragon fight, kept by the End's home region
     /// (`docs/groundwork/p-plan.md`, section 15.2); boxed, as one region of a world
     /// has it.
     pub dragon_fight: Option<Box<clustine_world::dragon::DragonFight>>,
+}
+
+/// A stay a portal sent to this region that waits to be placed: what it arrived with,
+/// the edge it came through, and the inputs of it that have nothing to do with where the
+/// player is, kept to be applied at the placing (`docs/groundwork/p-plan.md`, section
+/// 16.8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaitingState {
+    pub transfer: crate::api::PlayerTransfer,
+    pub edge: EdgeId,
+    pub kept: Vec<crate::api::PlayerInput>,
+    /// The portal query of the wait, once asked, and its answer, once it came.
+    pub asked: Option<crate::api::QueryId>,
+    pub answer: Option<Vec<BlockPos>>,
+    /// The tick the wait began, for its limit on loading.
+    pub since: u64,
+}
+
+/// An entity a portal sent to this region that waits to be placed: its number, which
+/// the store filed it under, and its wait, as [`WaitingState`]'s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaitingTraveller {
+    pub id: clustine_world::EffectId,
+    pub traveller: clustine_world::Traveller,
+    pub asked: Option<crate::api::QueryId>,
+    pub answer: Option<Vec<BlockPos>>,
+    pub since: u64,
 }
 
 /// A stay the home region has given a joining player and holds as entering: the player
@@ -299,6 +332,8 @@ impl RegionState {
             entering: BTreeMap::new(),
             lends_asked: BTreeMap::new(),
             clock: Default::default(),
+            waiting: BTreeMap::new(),
+            waiting_travellers: Vec::new(),
             dragon_fight: None,
         }
     }
@@ -349,6 +384,22 @@ impl RegionState {
                     self.lends_asked.remove(position);
                 }
             }
+        }
+        for (id, waiting) in &delta.waiting {
+            match waiting {
+                Some(waiting) => {
+                    self.waiting.insert(*id, waiting.clone());
+                }
+                None => {
+                    self.waiting.remove(id);
+                }
+            }
+        }
+        if let Some(travellers) = &delta.waiting_travellers {
+            self.waiting_travellers.clone_from(travellers);
+        }
+        if let Some(fight) = &delta.dragon_fight {
+            self.dragon_fight.clone_from(fight);
         }
         for (id, change) in &delta.edges {
             let Some(change) = change else {
@@ -412,6 +463,14 @@ pub struct StateDelta {
     /// Each ask for a lend that changed, ascending, as it is after the tick: `None` for
     /// one that ended.
     pub lends_asked: Vec<(ChunkPos, Option<u64>)>,
+    /// Each waiting stay that changed, in the order of the players, as it is after the
+    /// tick: `None` for one that was placed or ended (`docs/groundwork/p-plan.md`,
+    /// section 16.7).
+    pub waiting: Vec<(PlayerId, Option<WaitingState>)>,
+    /// The waiting travellers whole, if they changed.
+    pub waiting_travellers: Option<Vec<WaitingTraveller>>,
+    /// The dragon fight, if it changed (none: the region keeps none).
+    pub dragon_fight: Option<Option<Box<clustine_world::dragon::DragonFight>>>,
 }
 
 impl StateDelta {
@@ -423,6 +482,9 @@ impl StateDelta {
             && self.edges.is_empty()
             && self.entering.is_empty()
             && self.lends_asked.is_empty()
+            && self.waiting.is_empty()
+            && self.waiting_travellers.is_none()
+            && self.dragon_fight.is_none()
     }
 }
 

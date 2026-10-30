@@ -4335,6 +4335,8 @@ fn a_split_closes_the_link_and_the_next_hello_is_told_who_went_and_where_the_chu
     assert_eq!(edge.sent, 2);
     assert_eq!(whole.a.region().state(), stays);
     let goes = RegionState {
+        waiting: Default::default(),
+        waiting_travellers: Vec::new(),
         dragon_fight: None,
         tick: m,
         entity_ids: EntityIds {

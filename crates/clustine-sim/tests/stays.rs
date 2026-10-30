@@ -99,6 +99,7 @@ fn kept() -> Inventory {
 
 fn config() -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(starting()),

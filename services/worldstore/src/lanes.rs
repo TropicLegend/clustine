@@ -3623,6 +3623,10 @@ impl Lanes {
             .dimension(region)
             .expect("a region the table has has a dimension");
         let restored = Restored {
+            homes: Dimension::ALL
+                .into_iter()
+                .map(|dimension| (dimension, self.table.home_region_of(dimension)))
+                .collect(),
             entity_ids,
             state: state.map(|StateFile { tick, state }| TickState { tick, state }),
             deltas,

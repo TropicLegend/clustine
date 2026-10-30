@@ -106,6 +106,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),
         starting_inventory: Inventory::with_hotbar(hotbar()),
@@ -2472,6 +2473,8 @@ fn a_state(
     edges: &[(EdgeId, EdgeState)],
 ) -> RegionState {
     RegionState {
+        waiting: Default::default(),
+        waiting_travellers: Vec::new(),
         dragon_fight: None,
         tick,
         entity_ids,
@@ -4984,6 +4987,7 @@ const START: u64 = 10;
 /// What the regions of a run are made with.
 fn run_config() -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(ENTRANCE),
         starting_inventory: Inventory::with_hotbar(hotbar()),

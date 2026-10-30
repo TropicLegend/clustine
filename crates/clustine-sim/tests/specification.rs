@@ -54,6 +54,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// Region A: every chunk with x below 1, with its spawn two blocks from region B.
 fn config_a() -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(14.5, 64.0, 8.5)),
         starting_inventory: Inventory::with_hotbar(hotbar()),
@@ -86,6 +87,7 @@ fn holdings_a() -> Holdings {
 /// Region B: the chunks with x equal to 1.
 fn config_b() -> RegionConfig {
     RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(24.5, 64.0, 8.5)),
         starting_inventory: Inventory::with_hotbar(hotbar()),

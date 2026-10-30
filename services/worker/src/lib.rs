@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 25;
+pub const STATE_FORMAT: u8 = 26;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -1059,9 +1059,28 @@ impl RegionSettings {
         self.of_region(Dimension::Overworld, Some(spawn), world, seed)
     }
 
+    /// The configuration of the region the store restored as `restored`: of its
+    /// dimension, with the world's spawn if it is the overworld's, and with the homes
+    /// a portal sends players to (`docs/groundwork/p-plan.md`, 16.1). A runner and
+    /// whatever else makes a region from what the store restored take it from here,
+    /// so that a region restored and a part split from it in memory are configured
+    /// alike.
+    pub fn of_restored(self, restored: &Restored) -> RegionConfig {
+        RegionConfig {
+            homes: restored.homes.clone(),
+            ..self.of_region(
+                restored.dimension,
+                restored.spawn,
+                restored.world,
+                restored.seed,
+            )
+        }
+    }
+
     /// The configuration of a region of `dimension`, which has the world's spawn if it
     /// is the overworld's ([`Restored::spawn`], [`Restored::dimension`]); otherwise as
-    /// [`RegionSettings::with_spawn`].
+    /// [`RegionSettings::with_spawn`]. It names no homes: see
+    /// [`RegionSettings::of_restored`].
     pub fn of_region(
         self,
         dimension: Dimension,
@@ -1071,6 +1090,8 @@ impl RegionSettings {
     ) -> RegionConfig {
         RegionConfig {
             dimension,
+            // The store's to say ([`Restored::homes`]), which the caller puts in.
+            homes: Vec::new(),
             spawn: spawn.map(Vec3::bottom_centre_of),
             starting_inventory: self.starting_inventory,
             return_after: self.return_after,
@@ -1208,12 +1229,7 @@ impl RegionRunner {
     ) -> Result<Self, RestoreError> {
         let holdings = holdings(&restored);
         let rings = settings.rings;
-        let config = settings.of_region(
-            restored.dimension,
-            restored.spawn,
-            restored.world,
-            restored.seed,
-        );
+        let config = settings.of_restored(&restored);
         let faces = mem::take(&mut restored.faces);
         let borders = Restored {
             deltas: Vec::new(),
@@ -1225,6 +1241,7 @@ impl RegionRunner {
             pinned: Vec::new(),
             lends: mem::take(&mut restored.lends),
             faces: Vec::new(),
+            homes: Vec::new(),
             ..restored
         };
         let state = restored_state(restored)?;
@@ -5512,12 +5529,7 @@ mod tests {
     ) -> (RegionRunner, Arc<GateControl>) {
         let (inner, restored) = store.open_region(hello).unwrap();
         let rings = settings.rings;
-        let config = settings.of_region(
-            restored.dimension,
-            restored.spawn,
-            restored.world,
-            restored.seed,
-        );
+        let config = settings.of_restored(&restored);
         let control = Arc::new(GateControl::default());
 
         let gate = Gate {
@@ -8155,6 +8167,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
             spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
@@ -8533,17 +8546,20 @@ mod tests {
     /// their travel, whether they saw the credits and whether they watch them, five
     /// bytes more a player where none is set, six more a transfer in an outbox (its
     /// dimension, travel, credits, portal state and unit), and the End's dragon fight,
-    /// a byte more a state (`docs/groundwork/p-plan.md`, section 15).
+    /// a byte more a state (`docs/groundwork/p-plan.md`, section 15). Format 26 keeps
+    /// the stays and the entities a portal sent that wait to be placed, two bytes more a
+    /// state where there are none, and a delta says them and the dragon fight, three
+    /// bytes more (section 16.7 of the same plan).
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 25);
+        assert_eq!(STATE_FORMAT, 26);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "001902018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "001a02018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
@@ -8558,13 +8574,13 @@ mod tests {
                 "00000000000000000000000000000000000000000000000101000000000000000000000000000000",
                 "00000000000000000100000000000000010405010406020103050609011000000000000000000000",
                 "0000000000034d0117060710000000000000000000000000000000034c0118011000000000000000",
-                "0000000000000000034e034a6562071901010609020200",
+                "0000000000000000034e034a65620719010106090202000000",
             )
         );
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "00190200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "001a0200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",
@@ -8580,7 +8596,7 @@ mod tests {
                 "01010000000000000000000000000000000000000000000000010000000000000001040501040602",
                 "01030506090110000000000000000000000000000000034d01170607100000000000000000000000",
                 "00000000034c01180310000000000000000000000000000000010010000000000000000000000000",
-                "00000002001000000000000000000000000000000003014e034a656207190101060109",
+                "00000002001000000000000000000000000000000003014e034a656207190101060109000000",
             )
         );
     }
@@ -8592,6 +8608,7 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
             spawn: Some(clustine_world::BlockPos::new(0, -60, 0)),
@@ -11797,10 +11814,11 @@ mod tests {
             let (handle, restored) = world.store.open_region(world.hello(new, 5)).unwrap();
             let holdings = holdings(&restored);
             let block = restored.entity_ids;
+            let config = settings(0).of_restored(&restored);
             let state = restored_state(restored).unwrap();
             // The part was made with no keys, and takes the block its hello gave, as a
             // runner restored with it does (`docs/adr/0028-entities.md`, section 1).
-            let mut region = Region::restore(config(0), state, holdings);
+            let mut region = Region::restore(config, state, holdings);
             region.take_keys(block);
             assert_eq!(region, with_keys_of_region(&part.region, block));
 
@@ -14158,10 +14176,11 @@ mod tests {
             assert_eq!(held, of_the_part);
             let holdings = holdings(&restored);
             let block = restored.entity_ids;
+            let config = settings(KEPT_FOR).of_restored(&restored);
             let state = restored_state(restored).unwrap();
             // The part was made with no keys, and takes the block its hello gave, as a
             // runner restored with it does (`docs/adr/0028-entities.md`, section 1).
-            let mut restored = Region::restore(config(KEPT_FOR), state, holdings);
+            let mut restored = Region::restore(config, state, holdings);
             restored.take_keys(block);
             assert_eq!(restored, with_keys_of_region(part, block));
         }

@@ -820,6 +820,7 @@ mod tests {
             .flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)))
             .collect();
         let config = RegionConfig {
+            homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(Vec3::new(0.5, -60.0, 0.5)),
             starting_inventory: Inventory::default(),

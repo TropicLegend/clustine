@@ -124,6 +124,7 @@ fn world_in(
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        homes: Vec::new(),
         dimension,
         spawn: None,
         starting_inventory: Inventory::default(),

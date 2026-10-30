@@ -126,6 +126,7 @@ fn region_at(day: u64, reach: i32, kept: Kept, beds: &[BlockPos]) -> Region {
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, FEET, 0.5)),
         starting_inventory: Default::default(),
