@@ -1196,3 +1196,25 @@ ten defects. What P11 builds instead:
   sky light; ice broken in creative leaves air; chorus fruit in the Nether at y 120 stays
   under 128. The comparisons need an oracle scene in the Nether, which a subagent of X
   builds explicitly.
+
+### 17.6 The second reading of 17.5
+
+The reviewer found nine of the ten answers sound, and the explosions' incomplete. What
+P11 builds besides:
+
+- **The day's tests have defaults** on the views, from `dimension()` and `sky_darken()`,
+  so that the tests' views change for none of it.
+- **A `Blast` written to the log reads as before.** Its new flags (fire, hurting,
+  decaying drops, no source) take free bits of the flags byte that `put_blast` writes, so
+  that an older record reads with all of them as TNT has them. The resistance kept at one
+  position needs no field: the exploding region works out every ray itself and files
+  effects for the blocks it breaks beyond its line, so the override is the exploding
+  region's alone.
+- **An explosion without a source entity has a key all the same**, drawn from the
+  region's entity ids as an entity's is, so that its drops are merged with no other
+  explosion's anywhere (`effects.rs`' rule, 116–120).
+- **`hurts` is the bed's and the anchor's, false until survival**; TNT's and every other
+  explosion's stay as they are.
+- The lead moves the dispenser's charging into `anchors.rs` before family A starts. The
+  pistons' top follows from `lowest_y` by dimension and is nobody's to change. D1 changes
+  `check_light`'s `sky` with `RegionLight`'s.
