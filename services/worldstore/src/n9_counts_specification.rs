@@ -252,13 +252,14 @@ fn split_off(goes: ChunkPos) -> (crate::Store, [StoreHandle; 4], Clock) {
     clock.tick += 1;
     checkpoint(&west, clock.tick);
     clock.tick += 1;
+    let id = crate::tests::first_part(&gap());
     assert_eq!(
-        split(&west, clock.tick, &[goes], 4, 3),
+        split(&west, clock.tick, &[goes], 4, id),
         StoreReply::Split {
-            region: clustine_region::RegionId(3)
+            region: clustine_region::RegionId(id)
         }
     );
-    let (part, _) = store.open_region(hello_of(&gap(), 3, 4)).unwrap();
+    let (part, _) = store.open_region(hello_of(&gap(), id, 4)).unwrap();
     (store, [west, east, home, part], clock)
 }
 

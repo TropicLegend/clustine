@@ -2559,12 +2559,21 @@ mod tests {
         let world = open_world();
         let alone = Alone::start(&world, opener_of(&world)).await;
 
-        // The coordinator reads the store's list and gives out its one region, at
-        // once; the loop shows it when it runs, with the hello it opened it with.
+        // The coordinator reads the store's list and gives out its regions, at once:
+        // the overworld's home and the homes of the Nether and of the End, which a
+        // world is made with (`docs/groundwork/p-plan.md`, decision 2). The loop shows
+        // each when it runs, with the hello it opened it with.
+        let homes = world.regions().expect("the store lists its regions").homes;
+        assert_eq!(homes.len(), 3, "{homes:?}");
+        for (_, home) in &homes {
+            let (hello, _) = alone.shown(&mut [], *home, 0).await;
+            assert_eq!(opened_with(&world, *home), hello.epoch);
+        }
         let (hello, links) = alone.shown(&mut [], HOME, 0).await;
         assert_eq!(hello.region, HOME);
-        assert_eq!(opened_with(&world, HOME), hello.epoch);
-        assert_eq!(alone.serving.borrow().len(), 1);
+        let served: Vec<RegionId> = alone.serving.borrow().keys().copied().collect();
+        let all: Vec<RegionId> = homes.iter().map(|(_, home)| *home).collect();
+        assert_eq!(served, all);
 
         // A link that is attached there is welcomed: as that of an edge the region
         // has not heard of.

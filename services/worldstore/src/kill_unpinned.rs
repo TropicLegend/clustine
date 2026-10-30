@@ -3,7 +3,8 @@
 //! builds on, and the home region absorbs it again; all on a simulated disk that stops
 //! for good at the `n`th change or sync, for every `n`. What each kind of crash leaves
 //! of that disk is then opened by a new store, which has to have one home region,
-//! region 0, and every claim and every commit that was answered.
+//! region 0, beside the homes of the Nether and the End, and every claim and every
+//! commit that was answered.
 //!
 //! `kill_regions.rs` does this, and more, with regions that are pinned and a home
 //! region that only looks on. Here the home region is the one that does everything,
@@ -14,11 +15,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::blocks;
 use clustine_rpc::SplitPart;
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityIds};
+use clustine_world::{BlockPos, Chunk, ChunkPos, Dimension, EntityIds, LevelChunk};
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
 use crate::regions::{SURVIVALS, hello_of, store_on};
+use crate::tests::{first_part, other_homes};
 use crate::unpinned::{HOME, answer, open_world, opened};
 
 /// The chunks the scenario works on besides the home chunk: one that stays the home
@@ -272,9 +274,11 @@ fn scenario(store: &Store, told: &mut Told) -> Option<()> {
     home.build(told, &[EAST_TOO])?;
     home.checkpoint(told)?;
 
-    // The first region that is made in such a world is region 1.
-    home.split(told, &[EAST, EAST_TOO], 1)?;
-    let mut part = Actor::open(store, 1, 1)?;
+    // The first region that is made in such a world is the one after the homes of the
+    // Nether and the End.
+    let id = first_part(&open_world());
+    home.split(told, &[EAST, EAST_TOO], id)?;
+    let mut part = Actor::open(store, id, 1)?;
     part.claim(told, &[GROWN, LEFT])?;
     part.build(told, &[EAST, GROWN, LEFT])?;
     home.build(told, &[NEAR, HOME])?;
@@ -283,7 +287,7 @@ fn scenario(store: &Store, told: &mut Told) -> Option<()> {
 
     part.checkpoint(told)?;
     home.checkpoint(told)?;
-    home.absorb(told, 1, part.epoch)?;
+    home.absorb(told, id, part.epoch)?;
     home.build(told, &[GROWN, EAST_TOO, LEFT])?;
 
     // Another owner of the home region goes on from what the store has of it.
@@ -316,11 +320,13 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
         assert!(given < Some(block.index()), "{case}: {block:?}");
         given = Some(block.index());
     }
-    // No chunk is two regions'.
-    let mut holders: BTreeMap<ChunkPos, u32> = BTreeMap::new();
+    // No chunk is two regions'. A region holds chunks of its own dimension: the homes
+    // of the Nether and the End hold their dimensions' chunks (0, 0).
+    let mut holders: BTreeMap<LevelChunk, u32> = BTreeMap::new();
     for (info, (_, restored)) in list.regions.iter().zip(&regions) {
         for (chunk, _) in &restored.held {
-            let other = holders.insert(*chunk, info.region.0);
+            let chunk = LevelChunk::new(info.dimension, *chunk);
+            let other = holders.insert(chunk, info.region.0);
             assert_eq!(other, None, "{case}: {chunk:?} is held twice");
         }
     }
@@ -328,12 +334,19 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     // A split that was answered has happened, and one that was never asked for has
     // not; either way the part is a region, or was one and has been absorbed, or
     // never was, and its id is used or not accordingly. The same for the merge.
-    let parted = living == [0, 1];
-    let merged = list.absorbed == [(RegionId(1), RegionId(0))];
-    assert!(parted || living == [0], "{case}: {living:?}");
+    // The home region and the homes of the Nether and the End are there whatever
+    // happened.
+    let [nether_home, end_home] = other_homes(&world);
+    let id = first_part(&world);
+    let parted = living == [0, nether_home, end_home, id];
+    let merged = list.absorbed == [(RegionId(id), RegionId(0))];
+    assert!(
+        parted || living == [0, nether_home, end_home],
+        "{case}: {living:?}"
+    );
     assert!(merged || list.absorbed.is_empty(), "{case}");
     assert!(!(parted && merged), "{case}");
-    let next = if parted || merged { 2 } else { 1 };
+    let next = if parted || merged { id + 1 } else { id };
     assert_eq!(list.next, RegionId(next), "{case}");
     match told.split {
         Some(true) => assert!(parted || merged, "{case}: an answered split is gone"),
@@ -346,7 +359,7 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
         None => assert!(!merged, "{case}: a merge nobody was to get"),
     }
     if merged {
-        let gone = store.open_region(hello_of(&world, 1, 2000));
+        let gone = store.open_region(hello_of(&world, id, 2000));
         assert!(
             matches!(gone, Err(StoreError::Absorbed { .. })),
             "{case}: {:?}",
@@ -358,7 +371,7 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     // region a split or a merge took it to.
     for chunk in &told.granted {
         assert!(
-            holders.contains_key(chunk),
+            holders.contains_key(&LevelChunk::new(Dimension::Overworld, *chunk)),
             "{case}: {chunk:?} was granted and is nobody's"
         );
     }

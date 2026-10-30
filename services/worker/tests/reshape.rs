@@ -53,7 +53,7 @@ use clustine_worker::{
     Ended, RegionRunner, RegionSettings, Reshape, Reshaped, Stage, Worker, absorbable,
 };
 use clustine_world::{
-    BlockPos, Chunk, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
+    BlockPos, Chunk, ChunkArea, ChunkPos, Dimension, EdgeId, EntityId, EntityIds, PlayerId, Vec3,
 };
 use clustine_worldgen::FlatGenerator;
 use clustine_worldstore::{Pins, Store, StoreError, StoreHandle};
@@ -76,6 +76,13 @@ const THREE_EAST: RegionId = RegionId(2);
 /// With the gap: the regions pinned to the west and to the east, and the home region.
 const GAP_EAST: RegionId = RegionId(1);
 const GAP_HOME: RegionId = RegionId(2);
+
+/// On stripes: the homes of the Nether and of the End, which every world is made with
+/// after the overworld's regions (`docs/groundwork/p-plan.md`, decision 2). They hold
+/// their dimensions' chunks (0, 0) and are never split, absorbed or run here, but they
+/// are in every list of regions, and a region made by a split gets an id after them.
+const NETHER_HOME: RegionId = RegionId(2);
+const END_HOME: RegionId = RegionId(3);
 
 /// The chunk players enter every world in.
 const HOME: ChunkPos = ChunkPos::new(0, 0);
@@ -196,6 +203,14 @@ impl Shape {
             Self::Gap => GAP_HOME,
         }
     }
+
+    /// The homes of the Nether and of the End, made after the overworld's regions.
+    fn other_homes(self) -> [RegionId; 2] {
+        match self {
+            Self::Stripes => [NETHER_HOME, END_HOME],
+            Self::Three | Self::Gap => [RegionId(3), RegionId(4)],
+        }
+    }
 }
 
 /// A world store and the epochs its regions have been opened with.
@@ -237,6 +252,19 @@ impl World {
                 Store::memory_divided(generator, division).expect("the areas do not overlap");
             (store, None)
         };
+        // The world is made with a home for each dimension, which the tests name.
+        let [nether, end] = shape.other_homes();
+        assert_eq!(
+            store
+                .regions()
+                .expect("the store can say what it has")
+                .homes,
+            [
+                (Dimension::Overworld, shape.home()),
+                (Dimension::Nether, nether),
+                (Dimension::End, end)
+            ]
+        );
         Self {
             store,
             shape,
@@ -326,6 +354,12 @@ impl World {
         self.store.regions().expect("the store can say what it has")
     }
 
+    /// The ids of the living regions, in order: the overworld's, then the homes of the
+    /// Nether and of the End, then those made by splits.
+    fn ids(&self) -> Vec<RegionId> {
+        ids(&self.list())
+    }
+
     /// Where a world on disk is.
     fn root(&self) -> &Path {
         self.directory
@@ -333,6 +367,11 @@ impl World {
             .expect("the world is on disk")
             .path()
     }
+}
+
+/// The ids of the regions `list` names, in order.
+fn ids(list: &RegionList) -> Vec<RegionId> {
+    list.regions.iter().map(|info| info.region).collect()
 }
 
 /// Runs a test in a world of `shape` on a store in memory, whose commits are confirmed
@@ -2842,14 +2881,7 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
     let mut pair = pair(world);
     let absorbed = pair.release_b();
     let before = pair.world.list();
-    assert_eq!(
-        before
-            .regions
-            .iter()
-            .map(|info| info.region)
-            .collect::<Vec<_>>(),
-        vec![A, B]
-    );
+    assert_eq!(ids(&before), vec![A, B, NETHER_HOME, END_HOME]);
     let theirs = absorbed.state.clone();
     assert_eq!(theirs.edges[&E].since, since(&pair.to_b.log));
     assert_eq!(theirs.edges[&E].applied, pair.to_b.sent);
@@ -2900,8 +2932,7 @@ fn a_merge_closes_the_survivors_link_and_the_next_hello_is_told_of_it_and_of_who
     assert_eq!(list.home, A);
     assert_eq!(list.absorbed, vec![(B, A)]);
     assert_eq!(list.next, before.next);
-    assert_eq!(list.regions.len(), 1);
-    assert_eq!(list.regions[0].region, A);
+    assert_eq!(ids(&list), vec![A, NETHER_HOME, END_HOME]);
     assert_eq!(list.regions[0].pinned, areas(Shape::Stripes));
     assert_eq!(list.regions[0].bounds, None);
 
@@ -3330,13 +3361,8 @@ fn with_three_stripes_what_the_survivor_believed_of_the_third_region_is_forgotte
     );
     let list = world.list();
     assert_eq!(list.absorbed, vec![(THREE_EAST, THREE_HOME)]);
-    assert_eq!(
-        list.regions
-            .iter()
-            .map(|info| info.region)
-            .collect::<Vec<_>>(),
-        vec![THREE_WEST, THREE_HOME]
-    );
+    let [nether, end] = Shape::Three.other_homes();
+    assert_eq!(ids(&list), vec![THREE_WEST, THREE_HOME, nether, end]);
 }
 
 /// Asks `runner` for a merge or a split of which nothing comes, and holds it to
@@ -3508,7 +3534,7 @@ fn the_home_region_is_not_absorbed() {
     assert!(!pair.to_b.closed);
     sync(&mut pair.b, &mut [&mut pair.to_b], 0);
     assert_eq!(pair.world.list().absorbed, list.absorbed);
-    assert_eq!(pair.world.list().regions.len(), 2);
+    assert_eq!(pair.world.ids(), vec![A, B, NETHER_HOME, END_HOME]);
 }
 
 /// Section 4, step 3, and ADR-0011, section 3.6: a region whose owner died instead of
@@ -4433,9 +4459,10 @@ fn after_a_split_the_list_has_the_new_region_and_a_crash_of_either_restores_the_
     assert_eq!(list.next, RegionId(n.0 + 1));
     assert_eq!(list.home, A);
     assert!(list.absorbed.is_empty());
-    assert_eq!(list.regions[..2], before.regions[..]);
-    assert_eq!(list.regions.len(), 3);
-    let new = &list.regions[2];
+    assert_eq!(ids(&before), vec![A, B, NETHER_HOME, END_HOME]);
+    assert_eq!(list.regions[..4], before.regions[..]);
+    assert_eq!(list.regions.len(), 5);
+    let new = &list.regions[4];
     assert_eq!((new.region, new.epoch), (n, as_epoch));
     assert_eq!(
         new.bounds.map(|bounds| (bounds.min, bounds.max)),
@@ -4587,6 +4614,7 @@ fn a_split_of_nobody_is_off_and_the_region_ticks_on_with_its_link() {
 
 fn a_split_of_nobody_is_off_and_the_region_ticks_on_with_its_link_in(world: World) {
     let mut whole = whole(world);
+    let next = whole.world.list().next;
     assert_eq!(whole.a.region().knowledge(BACK), Knowledge::Held);
     assert_eq!(whole.a.region().knowledge(OTHER), Knowledge::Unknown);
     for (step, chunks) in [
@@ -4601,7 +4629,7 @@ fn a_split_of_nobody_is_off_and_the_region_ticks_on_with_its_link_in(world: Worl
         let order = Reshape::SplitOff {
             chunks,
             as_epoch: whole.world.next_epoch(),
-            part: RegionId(2),
+            part: next,
         };
         assert_eq!(
             comes_to_nothing(
@@ -4615,9 +4643,9 @@ fn a_split_of_nobody_is_off_and_the_region_ticks_on_with_its_link_in(world: Worl
             Off::Nobody
         );
     }
-    // And then it can be split.
+    // And then it can be split, with the id that was next all along.
     let (n, _, _) = whole.split(vec![FAR]);
-    assert_eq!(n, RegionId(2));
+    assert_eq!(n, next);
 }
 
 /// R43, `NothingStays`: a region that holds no home chunk and is pinned to nothing is
@@ -4689,6 +4717,9 @@ fn a_split_that_names_a_wrong_id_is_made_with_the_one_the_store_has_next() {
 
 fn a_split_that_names_a_wrong_id_is_made_with_the_one_the_store_has_next_in(world: World) {
     let mut whole = whole(world);
+    // After the homes of the Nether and of the End, so not the 7 the order names.
+    let next = whole.world.list().next;
+    assert_eq!(next, RegionId(END_HOME.0 + 1));
     let as_epoch = whole.world.next_epoch();
     let outcome = ask(
         &mut whole.a,
@@ -4707,26 +4738,20 @@ fn a_split_that_names_a_wrong_id_is_made_with_the_one_the_store_has_next_in(worl
     else {
         panic!("no split: {reshaped:?}");
     };
-    assert_eq!((region, said), (RegionId(2), as_epoch));
+    assert_eq!((region, said), (next, as_epoch));
     let list = whole.world.list();
-    assert_eq!(
-        list.regions
-            .iter()
-            .map(|info| info.region)
-            .collect::<Vec<_>>(),
-        vec![A, B, RegionId(2)]
-    );
-    assert_eq!(list.next, RegionId(3));
+    assert_eq!(ids(&list), vec![A, B, NETHER_HOME, END_HOME, next]);
+    assert_eq!(list.next, RegionId(next.0 + 1));
     let state = whole.a.region().state();
     assert_eq!(
         state.edges[&E].outbox.values().last(),
         Some(&Durable::SplitOff {
-            region: RegionId(2),
+            region: next,
             players: vec![(player(2), whole.two, None)],
         })
     );
     assert_eq!(state.edges[&E].sent, 2);
-    // The part is the store's region 2: its worker's hello is answered, and it runs.
+    // The part is the store's next region: its worker's hello is answered, and it runs.
     let mut part_runner = whole.world.run_part(region, as_epoch, part);
     let to_n = greeted(&mut part_runner, greeting(E, 5));
     assert_eq!(presences(&to_n.log), vec![(player(2), Some(whole.two))]);
@@ -4745,6 +4770,7 @@ fn a_split_whose_second_id_is_taken_as_well_is_off_and_can_be_asked_for_again() 
 
 fn a_split_whose_second_id_is_taken_as_well_is_off_and_can_be_asked_for_again_in(world: World) {
     let mut whole = whole(world);
+    let next = whole.world.list().next;
     let mut b = whole.world.open(B);
     let theirs = ChunkPos::new(6, 0);
     let mut to_b = greeted(&mut b, greeting(F, 5).chunks(vec![theirs]));
@@ -4761,23 +4787,21 @@ fn a_split_whose_second_id_is_taken_as_well_is_off_and_can_be_asked_for_again_in
         },
     );
     run_to_stage(&mut whole.a, &mut [&mut whole.to_a], Stage::Committing);
-    // The store has declined that and named 2; the runner has not taken the answer.
-    // Region 1 is split meanwhile, and gets 2.
+    // The store has declined that and named `next`; the runner has not taken the
+    // answer. Region 1 is split meanwhile, and gets `next`.
     let other = ask(
         &mut b,
         Reshape::SplitOff {
             chunks: vec![theirs],
             as_epoch: whole.world.next_epoch(),
-            part: RegionId(2),
+            part: next,
         },
     );
     assert!(matches!(
         run_to_outcome(&mut b, &mut [&mut to_b], &other),
-        Reshaped::Split {
-            region: RegionId(2),
-            ..
-        }
+        Reshaped::Split { region, .. } if region == next
     ));
+    let after = RegionId(next.0 + 1);
     let list = whole.world.list();
 
     let state = whole.a.region().state();
@@ -4785,7 +4809,7 @@ fn a_split_whose_second_id_is_taken_as_well_is_off_and_can_be_asked_for_again_in
     assert_eq!(
         reshaped,
         Reshaped::Off {
-            why: Off::Declined(Decline::NotNext { next: RegionId(3) })
+            why: Off::Declined(Decline::NotNext { next: after })
         }
     );
     assert!(!whole.to_a.closed);
@@ -4794,8 +4818,8 @@ fn a_split_whose_second_id_is_taken_as_well_is_off_and_can_be_asked_for_again_in
     sync(&mut whole.a, &mut [&mut whole.to_a], 0);
 
     let (n, _, _) = whole.split(vec![FAR]);
-    assert_eq!(n, RegionId(3));
-    assert_eq!(whole.world.list().next, RegionId(4));
+    assert_eq!(n, after);
+    assert_eq!(whole.world.list().next, RegionId(after.0 + 1));
 }
 
 /// ADR-0011, section 3.7: a split whose part could never be opened is declined.
@@ -5006,7 +5030,10 @@ fn with_the_gap_what_reaches_the_split_region_for_a_chunk_of_the_part_is_sent_on
     // as near to the home chunk as to them, and stays.
     let mut whole = whole_with(world, vec![HOME, NEXT, FREE], SPAWN.x, 40.5);
     let (n, _, part) = whole.split(vec![FREE]);
-    assert_eq!(n, RegionId(3));
+    // The first id after the three regions of the gap and the homes of the Nether and
+    // of the End.
+    let [_, end] = Shape::Gap.other_homes();
+    assert_eq!(n, RegionId(end.0 + 1));
     assert_eq!(positions(&part.chunks), vec![FREE]);
     assert_eq!(whole.a.region().knowledge(NEXT), Knowledge::Held);
     assert_eq!(whole.a.region().knowledge(FREE), Knowledge::Unknown);
@@ -5269,14 +5296,8 @@ fn a_region_that_was_split_off_is_split_itself_and_the_second_part_serves_its_ch
     );
     assert_eq!(again.answers(distant), vec![(0, Answer::Elsewhere(region))]);
     assert_eq!(
-        whole
-            .world
-            .list()
-            .regions
-            .iter()
-            .map(|info| info.region)
-            .collect::<Vec<_>>(),
-        vec![A, B, n, region]
+        whole.world.ids(),
+        vec![A, B, NETHER_HOME, END_HOME, n, region]
     );
 }
 
@@ -5322,18 +5343,13 @@ fn a_region_that_merges_and_then_splits_says_at_every_hello_the_stays_its_state_
         one: pair.one,
         two: pair.two,
     };
+    let next = whole.world.list().next;
     let (n, as_epoch, part) = whole.split(vec![NEXT]);
-    assert_eq!(n, RegionId(2));
+    assert_eq!(n, next);
     assert_eq!(positions(&part.chunks), vec![NEXT]);
     let list = whole.world.list();
     assert_eq!(list.absorbed, vec![(B, A)]);
-    assert_eq!(
-        list.regions
-            .iter()
-            .map(|info| info.region)
-            .collect::<Vec<_>>(),
-        vec![A, n]
-    );
+    assert_eq!(ids(&list), vec![A, NETHER_HOME, END_HOME, n]);
 
     let again = greeted(
         &mut whole.a,
@@ -5411,7 +5427,7 @@ fn a_region_that_splits_and_absorbs_the_part_again_says_at_every_hello_the_stays
     assert!(again.closed);
     let list = whole.world.list();
     assert_eq!(list.absorbed, vec![(n, A)]);
-    assert_eq!(list.regions.len(), 2);
+    assert_eq!(ids(&list), vec![A, B, NETHER_HOME, END_HOME]);
     assert_eq!(list.next, RegionId(n.0 + 1));
     // The chunks are the region's again, by the grants that moved.
     for chunk in [FAR, FARTHER] {
@@ -5656,7 +5672,8 @@ fn a_merge_behind_a_merge_is_told_as_an_entry_among_the_entries_of_the_first_in(
         list.absorbed,
         vec![(THREE_WEST, THREE_EAST), (THREE_EAST, THREE_HOME)]
     );
-    assert_eq!(list.regions.len(), 1);
+    let [nether, end] = Shape::Three.other_homes();
+    assert_eq!(ids(&list), vec![THREE_HOME, nether, end]);
     assert_eq!(list.regions[0].pinned.len(), 3);
 
     let again = greeted(
@@ -6938,11 +6955,11 @@ fn a_merge_with_a_death(on_disk: bool, kill: Kill, descending: bool) {
     let done = kill.leaves_it_done();
     if done {
         assert_eq!(list.absorbed, vec![(B, A)], "{kill:?}");
-        assert_eq!(list.regions.len(), 1);
+        assert_eq!(ids(&list), vec![A, NETHER_HOME, END_HOME]);
         assert_eq!(list.regions[0].pinned, areas(Shape::Stripes));
     } else {
         assert!(list.absorbed.is_empty(), "{kill:?}");
-        assert_eq!(list.regions.len(), 2);
+        assert_eq!(ids(&list), vec![A, B, NETHER_HOME, END_HOME]);
         for (now, was) in list.regions.iter().zip(&before.regions) {
             assert_eq!(
                 (now.region, &now.bounds, &now.pinned),
@@ -7107,7 +7124,9 @@ fn a_split_with_a_death(on_disk: bool, kill: Kill, descending: bool) {
     let list = world.list();
     let done = kill.leaves_it_done();
     assert!(list.absorbed.is_empty());
-    // The two stripes are as they were, but for the epoch of another owner.
+    // The two stripes and the homes of the Nether and of the End are as they were,
+    // but for the epoch of another owner.
+    assert_eq!(ids(&before), vec![A, B, NETHER_HOME, END_HOME]);
     for (now, was) in list.regions.iter().zip(&before.regions) {
         assert_eq!(
             (now.region, &now.bounds, &now.pinned),
@@ -7115,16 +7134,16 @@ fn a_split_with_a_death(on_disk: bool, kill: Kill, descending: bool) {
         );
     }
     if done {
-        assert_eq!(list.regions.len(), 3, "{kill:?}");
+        assert_eq!(ids(&list), vec![A, B, NETHER_HOME, END_HOME, n], "{kill:?}");
         assert_eq!(list.next, RegionId(n.0 + 1));
-        let new = &list.regions[2];
+        let new = &list.regions[4];
         assert_eq!((new.region, new.epoch), (n, as_epoch));
         assert_eq!(
             new.bounds.map(|bounds| (bounds.min, bounds.max)),
             Some((FARTHER, FAR))
         );
     } else {
-        assert_eq!(list.regions.len(), 2, "{kill:?}");
+        assert_eq!(ids(&list), vec![A, B, NETHER_HOME, END_HOME], "{kill:?}");
         assert_eq!(list.next, n);
     }
     let mut runners = open_all(&mut world);
@@ -7138,7 +7157,11 @@ fn a_split_with_a_death(on_disk: bool, kill: Kill, descending: bool) {
     assert_eq!(the_one(&runners, player(2)), (theirs, 1, FAR_X), "{kill:?}");
     if done {
         // The part is restored from the record by whoever opens it, with its chunks.
-        assert_eq!(runners[2].1.region().knowledge(FAR), Knowledge::Held);
+        let (_, part) = runners
+            .iter()
+            .find(|(region, _)| *region == n)
+            .expect("the part is in the list");
+        assert_eq!(part.region().knowledge(FAR), Knowledge::Held);
         // The region split knows its pinned chunk the part holds, from the store
         // (`docs/adr/0027-lending-at-a-line.md`, section 1).
         assert_eq!(runners[0].1.region().knowledge(FAR), Knowledge::Foreign(n));
@@ -7605,7 +7628,12 @@ fn a_runner_that_is_told_to_stop_in_the_middle_of_a_merge_lets_go_of_the_region_
 
         let list = pair.world.list();
         let happened = list.absorbed == vec![(B, A)];
-        assert_eq!(list.regions.len(), if happened { 1 } else { 2 }, "{list:?}");
+        let living = if happened {
+            vec![A, NETHER_HOME, END_HOME]
+        } else {
+            vec![A, B, NETHER_HOME, END_HOME]
+        };
+        assert_eq!(ids(&list), living, "{list:?}");
         match said {
             // The store's answer was there when the runner looked a last time.
             Some(Reshaped::Absorbed { absorbed: B }) => {

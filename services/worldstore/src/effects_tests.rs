@@ -310,13 +310,14 @@ fn a_split_moves_the_use_of_the_parts_chunks_to_the_part() {
     flushed(&maker);
     flushed(&user);
 
+    let id = crate::tests::first_part(&gap());
     assert_eq!(
-        split(&user, 5, &[UNUSED], 1, 3),
+        split(&user, 5, &[UNUSED], 1, id),
         StoreReply::Split {
-            region: RegionId(3),
+            region: RegionId(id),
         }
     );
-    let (part, restored) = opened(&store, 3, 1);
+    let (part, restored) = opened(&store, id, 1);
     assert_eq!(restored.in_use, [UNUSED]);
     assert_eq!(places(&flushed(&part).1), [effect_in(UNUSED, 0).at]);
     commit(&maker, 2, &[effect_in(USED, 1), effect_in(UNUSED, 1)], &[]);

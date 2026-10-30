@@ -13,9 +13,9 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
 use clustine_data::{BlockState, blocks};
-use clustine_format::{RegionFile, TableFile, TableRegion};
+use clustine_format::{TableFile, TableRegion};
 use clustine_rpc::{ChunkBox, RegionInfo, RegionList, SplitPart, TickState};
-use clustine_world::{Chunk, ChunkArea, ChunkPos, EntityId, EntityIds};
+use clustine_world::{Chunk, ChunkArea, ChunkPos, Dimension, EntityId, EntityIds};
 use tracing::Level;
 
 use super::*;
@@ -24,7 +24,7 @@ use crate::regions::{
     SURVIVALS, absorb, give_back, hello_of, put, split, store_on, whole, world_of_today,
 };
 use crate::rest::{Rig, left_by};
-use crate::tests::{HELD, Switched, delta, generator, log, switched_for};
+use crate::tests::{HELD, Switched, delta, first_part, generator, log, other_homes, switched_for};
 use crate::unpinned::{Built, NO_ENTITY_IDS, logged};
 
 /// Where players enter the worlds of these tests: east of [`CUT`] and away from the
@@ -93,11 +93,12 @@ fn around(chunks: &[ChunkPos]) -> Option<ChunkBox> {
 
 /// The list of a world that has the regions of `told` and nothing else: one home
 /// region that holds the home chunk if `told` pins nothing, and else a region for
-/// each area, of which the one with the home chunk is home. `epochs` are the highest
-/// epochs of the regions by id, 0 for a region that has none.
+/// each area, of which the one with the home chunk is home; and after them the homes
+/// of the Nether and the End, each holding its dimension's chunk (0, 0). `epochs` are
+/// the highest epochs of the regions by id, 0 for a region that has none.
 fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
     let epoch = |id: usize| epochs.get(id).copied().unwrap_or(0);
-    if told.pinned.is_empty() {
+    let (home, mut regions) = if told.pinned.is_empty() {
         let home = RegionInfo {
             dimension: Default::default(),
             region: RegionId(0),
@@ -105,29 +106,39 @@ fn begun(told: &Division, epochs: &[u64], next: u32) -> RegionList {
             bounds: around(&[told.home]),
             pinned: Vec::new(),
         };
-        return RegionList {
-            homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
-            spawn: crate::tests::spawn_in(told.home),
-            home: RegionId(0),
-            regions: vec![home],
-            absorbed: Vec::new(),
-            next: RegionId(next),
+        (RegionId(0), vec![home])
+    } else {
+        let home = told.pinned.iter().position(|area| area.contains(told.home));
+        let home = home.expect("regions side by side cover the world");
+        let region = |(id, area): (usize, &ChunkArea)| RegionInfo {
+            dimension: Default::default(),
+            region: RegionId(id as u32),
+            epoch: epoch(id),
+            bounds: None,
+            pinned: vec![*area],
         };
-    }
-    let home = told.pinned.iter().position(|area| area.contains(told.home));
-    let home = home.expect("regions side by side cover the world");
-    let region = |(id, area): (usize, &ChunkArea)| RegionInfo {
-        dimension: Default::default(),
-        region: RegionId(id as u32),
-        epoch: epoch(id),
-        bounds: None,
-        pinned: vec![*area],
+        let regions = told.pinned.iter().enumerate().map(region).collect();
+        (RegionId(home as u32), regions)
     };
+    let [nether_home, end_home] = other_homes(told).map(RegionId);
+    for (dimension, region) in [(Dimension::Nether, nether_home), (Dimension::End, end_home)] {
+        regions.push(RegionInfo {
+            dimension,
+            region,
+            epoch: epoch(region.0 as usize),
+            bounds: around(&[ORIGIN]),
+            pinned: Vec::new(),
+        });
+    }
     RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(home as u32))],
+        homes: vec![
+            (Dimension::Overworld, home),
+            (Dimension::Nether, nether_home),
+            (Dimension::End, end_home),
+        ],
         spawn: crate::tests::spawn_in(told.home),
-        home: RegionId(home as u32),
-        regions: told.pinned.iter().enumerate().map(region).collect(),
+        home,
+        regions,
         absorbed: Vec::new(),
         next: RegionId(next),
     }
@@ -412,12 +423,14 @@ fn a_division_is_open_or_side_by_side_at_cuts_that_ascend() {
             .collect();
         assert_eq!((told.home, &told.pinned), (HOME, &stripes), "{cuts:?}");
         // And a store that is started with them has that many pinned regions, of
-        // which the one with the home chunk is home.
+        // which the one with the home chunk is home, and the homes of the Nether and
+        // the End after them.
         let store = Store::memory_told(generator(), told.clone()).unwrap();
         let regions = cuts.len() as u32 + 1;
+        assert_eq!(other_homes(&told), [regions, regions + 1]);
         assert_eq!(
             store.regions().unwrap(),
-            begun(&told, &[], regions),
+            begun(&told, &[], regions + 2),
             "{cuts:?}"
         );
     }
@@ -433,7 +446,8 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
     let store = store.unwrap();
     // T9: a new world is not one that was made over.
     assert!(!says(&lines, "a new world"));
-    assert_eq!(store.regions().unwrap(), begun(&told, &[], 1));
+    let first = first_part(&told);
+    assert_eq!(store.regions().unwrap(), begun(&told, &[], first));
 
     for survival in SURVIVALS {
         let table = table_of(&disk.crashed(survival));
@@ -441,16 +455,23 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         assert_eq!(table.division, Vec::new(), "{survival:?}");
         assert_eq!(
             (table.next_region, table.home_chunk, table.home_region),
-            (1, HOME, 0),
+            (first, HOME, 0),
             "{survival:?}"
         );
-        let home = TableRegion {
-            id: 0,
-            dimension: clustine_world::Dimension::Overworld,
+        let home = |id, dimension, chunk| TableRegion {
+            id,
+            dimension,
             pinned: Vec::new(),
-            grants: vec![(HOME, 0)],
+            grants: vec![(chunk, 0)],
         };
-        assert_eq!(table.regions, vec![home], "{survival:?}");
+        // The home region, and the homes of the Nether and the End.
+        let homes = vec![
+            home(0, Dimension::Overworld, HOME),
+            home(1, Dimension::Nether, ORIGIN),
+            home(2, Dimension::End, ORIGIN),
+        ];
+        assert_eq!(table.regions, homes, "{survival:?}");
+        assert_eq!((table.nether_home, table.end_home), (1, 2), "{survival:?}");
         assert_eq!(table.absorbed, Vec::new(), "{survival:?}");
     }
 
@@ -468,7 +489,10 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         holder: None,
     };
     assert!(next(&handle, "a chunk beside the home chunk") == not_held);
-    assert_eq!(store.regions().unwrap(), begun(&told, &[1], 1));
+    assert_eq!(
+        store.regions().unwrap(),
+        begun(&told, &[1], first_part(&told))
+    );
 }
 
 // T1, on the two kinds of store a process starts.
@@ -479,8 +503,9 @@ fn a_new_world_without_pins_is_the_same_in_memory_and_in_a_directory() {
     let in_memory = Store::memory_told(generator(), told.clone()).unwrap();
     let in_files = Store::local_told(directory.path(), generator(), told.clone()).unwrap();
     let mut issued = Vec::new();
+    let first = first_part(&told);
     for (kind, store) in [("in memory", &in_memory), ("in a directory", &in_files)] {
-        assert_eq!(store.regions().unwrap(), begun(&told, &[], 1), "{kind}");
+        assert_eq!(store.regions().unwrap(), begun(&told, &[], first), "{kind}");
         let (_, restored) = store.open_region(hello_of(&told, 0, 1)).unwrap();
         assert!(has_ids(restored.entity_ids), "{kind}");
         assert_eq!(restored.held, [(HOME, 0)], "{kind}");
@@ -494,7 +519,7 @@ fn a_new_world_without_pins_is_the_same_in_memory_and_in_a_directory() {
     let (again, lines) = logged(|| Store::local_told(directory.path(), generator(), told.clone()));
     let again = again.unwrap();
     assert!(!says(&lines, "a world without pins, started again"));
-    assert_eq!(again.regions().unwrap(), begun(&told, &[1], 1));
+    assert_eq!(again.regions().unwrap(), begun(&told, &[1], first));
     let (_, restored) = again.open_region(hello_of(&told, 0, 2)).unwrap();
     // A fresh block, above the one the first start gave.
     assert!(restored.entity_ids.index() > issued[1].index());
@@ -584,7 +609,7 @@ fn the_home_region_is_granted_the_twenty_chunks_it_claims_and_holds_them_after_a
                     assert_eq!(restored.held, held, "{case}");
                     assert_eq!(ticks(&restored), [1, 2, 3], "{case}");
                     let epoch = list.regions[0].epoch;
-                    let mut expected = begun(&told, &[epoch], 1);
+                    let mut expected = begun(&told, &[epoch], first_part(&told));
                     expected.regions[0].bounds = around(&grown);
                     assert_eq!(list, expected, "{case}");
                 } else {
@@ -597,8 +622,10 @@ fn the_home_region_is_granted_the_twenty_chunks_it_claims_and_holds_them_after_a
                         "{case}: {:?}",
                         restored.held
                     );
-                    assert_eq!((list.home, list.next), (RegionId(0), RegionId(1)), "{case}");
-                    assert_eq!(list.regions.len(), 1, "{case}");
+                    let next = RegionId(first_part(&told));
+                    assert_eq!((list.home, list.next), (RegionId(0), next), "{case}");
+                    // The home region and the homes of the Nether and the End.
+                    assert_eq!(list.regions.len(), 3, "{case}");
                     assert_eq!(list.regions[0].pinned, Vec::new(), "{case}");
                     assert_eq!(list.absorbed, Vec::new(), "{case}");
                 }
@@ -645,7 +672,7 @@ fn a_return_frees_the_nineteen_chunks_and_never_the_home_chunk() {
     }
     as_built(&handle, &Built::default(), HOME, case);
     as_built(&handle, &Built::default(), *kept, case);
-    let mut expected = begun(&told, &[1], 1);
+    let mut expected = begun(&told, &[1], first_part(&told));
     expected.regions[0].bounds = around(&[HOME, *kept]);
     assert_eq!(store.regions().unwrap(), expected);
 
@@ -666,11 +693,12 @@ fn a_return_frees_the_nineteen_chunks_and_never_the_home_chunk() {
         state: whole("state", 4),
     });
     let handle = flushed(handle);
+    let id = first_part(&told);
     let split_off = StoreReply::Split {
-        region: RegionId(1),
+        region: RegionId(id),
     };
-    assert_eq!(split(&handle, 5, &[*kept], 1, 1), split_off);
-    let (part, _) = store.open_region(hello_of(&told, 1, 1)).unwrap();
+    assert_eq!(split(&handle, 5, &[*kept], 1, id), split_off);
+    let (part, _) = store.open_region(hello_of(&told, id, 1)).unwrap();
     assert_eq!(
         claimed(&part, &back, case),
         (returned.to_vec(), vec![(HOME, RegionId(0))])
@@ -760,8 +788,10 @@ struct Before {
     built: Vec<(ChunkPos, Chunk)>,
     /// The next region id of its table; 0 if it had no table.
     next: u32,
-    /// What the region file of each of its regions said, by id.
-    files: Vec<RegionFile>,
+    /// The epoch the region file of each of its regions said, by id up to the last
+    /// that is living; 0 for a region that never had a file, as the homes of the
+    /// Nether and the End that nobody opened.
+    epochs: Vec<u64>,
     /// The first block of entity keys above every block a hello was given in it.
     given: u32,
 }
@@ -790,10 +820,12 @@ const EAST_LIVE: ChunkPos = ChunkPos::new(4, 9);
 /// them saved since and one not. A second part is split off the western stripe,
 /// builds, and is absorbed by it again, so that the world has an absorbed pair and a
 /// stripe that was granted a chunk. The stripes are opened with the epochs 3 and 4,
-/// the part that stays, region 2, with 5, and the one that goes, region 3, with 6.
+/// the part that stays with 5, and the one that goes with 6; they are the regions
+/// after the homes of the Nether and the End, which nobody opens.
 /// Every commit is confirmed when this returns.
 fn lives_on_stripes(store: &Store) -> Before {
     let told = stripes();
+    let (stays, goes) = (first_part(&told), first_part(&told) + 1);
     let mut built = Built::default();
     let (west, was_west) = store.open_region(hello_of(&told, 0, 3)).unwrap();
     let (east, was_east) = store.open_region(hello_of(&told, 1, 4)).unwrap();
@@ -814,10 +846,10 @@ fn lives_on_stripes(store: &Store) -> Before {
     });
     west.flush();
     let split_off = StoreReply::Split {
-        region: RegionId(2),
+        region: RegionId(stays),
     };
-    assert_eq!(split(&west, 2, &PART, 5, 2), split_off);
-    let (part, was_part) = store.open_region(hello_of(&told, 2, 5)).unwrap();
+    assert_eq!(split(&west, 2, &PART, 5, stays), split_off);
+    let (part, was_part) = store.open_region(hello_of(&told, stays, 5)).unwrap();
     // A part is given a block at its hello as any region is.
     assert!(has_ids(was_part.entity_ids));
     assert_eq!(was_part.held, [(PART[0], 2), (PART[1], 2)]);
@@ -825,10 +857,10 @@ fn lives_on_stripes(store: &Store) -> Before {
     // The part that is absorbed again, with what it built under a checkpoint, which
     // a merge needs of both regions.
     let split_off = StoreReply::Split {
-        region: RegionId(3),
+        region: RegionId(goes),
     };
-    assert_eq!(split(&west, 3, &[MERGED], 6, 3), split_off);
-    let (merged, was_merged) = store.open_region(hello_of(&told, 3, 6)).unwrap();
+    assert_eq!(split(&west, 3, &[MERGED], 6, goes), split_off);
+    let (merged, was_merged) = store.open_region(hello_of(&told, goes, 6)).unwrap();
     assert_eq!(was_merged.held, [(MERGED, 3)]);
     log(
         &merged,
@@ -842,7 +874,7 @@ fn lives_on_stripes(store: &Store) -> Before {
     });
     merged.flush();
     let absorbed = StoreReply::Absorbed {
-        absorbed: RegionId(3),
+        absorbed: RegionId(goes),
         chunks: vec![MERGED],
         pinned: Vec::new(),
         in_use: Vec::new(),
@@ -850,10 +882,10 @@ fn lives_on_stripes(store: &Store) -> Before {
         // section 1).
         lends: clustine_rpc::Lends {
             lent: Vec::new(),
-            lent_away: PART.iter().map(|chunk| (*chunk, RegionId(2))).collect(),
+            lent_away: PART.iter().map(|chunk| (*chunk, RegionId(stays))).collect(),
         },
     };
-    assert_eq!(absorb(&west, 3, 6, 5), absorbed);
+    assert_eq!(absorb(&west, goes, 6, 5), absorbed);
 
     // What stays in the log: of the western stripe, and of the part.
     let changes = [
@@ -891,15 +923,11 @@ fn lives_on_stripes(store: &Store) -> Before {
         handle.flush();
         assert!(!handle.is_lost());
     }
-    let file = |epoch, entity_ids| RegionFile { epoch, entity_ids };
+    assert_eq!(other_homes(&told), [2, 3]);
     Before {
         built: chunks_of(&built),
-        next: 4,
-        files: vec![
-            file(3, was_west.entity_ids),
-            file(4, was_east.entity_ids),
-            file(5, was_part.entity_ids),
-        ],
+        next: goes + 1,
+        epochs: vec![3, 4, 0, 0, 5],
         given: above(&[
             was_west.entity_ids,
             was_east.entity_ids,
@@ -926,24 +954,38 @@ fn world_of_stripes() -> (Arc<MemoryDisk>, Before) {
 /// divided as `from` says.
 fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &str) {
     let (west, east) = (area(None, Some(CUT)), area(Some(CUT), None));
-    let info = |region: usize, bounds, pinned| RegionInfo {
+    // The part that stays and the one that went, after the homes of the Nether and
+    // the End.
+    let [nether_home, end_home] = other_homes(from);
+    let (stays, goes) = (end_home + 1, end_home + 2);
+    let info = |region: u32, bounds, pinned| RegionInfo {
         dimension: Default::default(),
-        region: RegionId(region as u32),
-        epoch: before.files[region].epoch,
+        region: RegionId(region),
+        epoch: before.epochs[region as usize],
         bounds,
         pinned,
     };
+    let home_of = |dimension, region| RegionInfo {
+        dimension,
+        ..info(region, around(&[ORIGIN]), Vec::new())
+    };
     let expected = RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(1))],
+        homes: vec![
+            (Dimension::Overworld, RegionId(1)),
+            (Dimension::Nether, RegionId(nether_home)),
+            (Dimension::End, RegionId(end_home)),
+        ],
         spawn: crate::tests::spawn_in(from.home),
         home: RegionId(1),
         regions: vec![
             info(0, around(&[MERGED]), vec![west]),
             info(1, None, vec![east]),
-            info(2, around(&PART), Vec::new()),
+            home_of(Dimension::Nether, nether_home),
+            home_of(Dimension::End, end_home),
+            info(stays, around(&PART), Vec::new()),
         ],
-        absorbed: vec![(RegionId(3), RegionId(0))],
-        next: RegionId(4),
+        absorbed: vec![(RegionId(goes), RegionId(0))],
+        next: RegionId(goes + 1),
     };
     let list = store
         .regions()
@@ -986,7 +1028,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             // The part split off it holds chunks of its own area (ADR-0027, section 1).
             lends: clustine_rpc::Lends {
                 lent: Vec::new(),
-                lent_away: PART.iter().map(|chunk| (*chunk, RegionId(2))).collect(),
+                lent_away: PART.iter().map(|chunk| (*chunk, RegionId(stays))).collect(),
             },
             clock: Default::default(),
         },
@@ -1036,8 +1078,8 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     ];
     let mut handles = Vec::new();
     let mut given = before.given;
-    for (id, expected) in expected.iter().enumerate() {
-        let hello = hello_of(from, id as u32, before.files[id].epoch);
+    for (id, expected) in [0, 1, stays].into_iter().zip(&expected) {
+        let hello = hello_of(from, id, before.epochs[id as usize]);
         let (handle, mut restored) = store
             .open_region(hello)
             .unwrap_or_else(|error| panic!("{case}: region {id}: {error}"));
@@ -1051,18 +1093,19 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
         assert_eq!(&restored, expected, "{case}: region {id}");
         handles.push(handle);
     }
-    let refused = store.open_region(hello_of(from, 3, 1000)).err();
+    let refused = store.open_region(hello_of(from, goes, 1000)).err();
     assert!(
         matches!(
             &refused,
             Some(StoreError::Absorbed {
-                region: RegionId(3),
+                region,
                 into: RegionId(0)
-            })
+            }) if *region == RegionId(goes)
         ),
         "{case}: {refused:?}"
     );
-    // In ascending order, as the chunks that were built are kept.
+    // In ascending order, as the chunks that were built are kept; the holders by
+    // their places among the handles: region 0, region 1 and the part.
     let holders = [
         (MERGED, 0),
         (WEST_SAVED, 0),
@@ -1092,9 +1135,11 @@ const WEST_PART: [ChunkPos; 2] = [ChunkPos::new(-3, 2), ChunkPos::new(3, 2)];
 /// east of [`CUT`], which builds in its chunks and leaves that in the log. A second
 /// part is split off west of the cut, so that the world has used more ids than the
 /// two pinned regions it is given afterwards, and one of its parts has a state file.
-/// The parts are regions 1 and 2, with the epochs 5 and 6.
+/// The parts are the regions after the homes of the Nether and the End, which nobody
+/// opens, with the epochs 5 and 6.
 fn lives_without_pins(store: &Store) -> Before {
     let told = following();
+    let (east_id, west_id) = (first_part(&told), first_part(&told) + 1);
     let case = "the world without pins";
     let mut built = Built::default();
     let (home, was_home) = store.open_region(hello_of(&told, 0, 3)).unwrap();
@@ -1124,10 +1169,10 @@ fn lives_without_pins(store: &Store) -> Before {
     let split_off = |region| StoreReply::Split {
         region: RegionId(region),
     };
-    assert_eq!(split(&home, 2, &EAST_PART, 5, 1), split_off(1));
-    assert_eq!(split(&home, 3, &WEST_PART, 6, 2), split_off(2));
-    let (east, was_east) = store.open_region(hello_of(&told, 1, 5)).unwrap();
-    let (west, was_west) = store.open_region(hello_of(&told, 2, 6)).unwrap();
+    assert_eq!(split(&home, 2, &EAST_PART, 5, east_id), split_off(east_id));
+    assert_eq!(split(&home, 3, &WEST_PART, 6, west_id), split_off(west_id));
+    let (east, was_east) = store.open_region(hello_of(&told, east_id, 5)).unwrap();
+    let (west, was_west) = store.open_region(hello_of(&told, west_id, 6)).unwrap();
     // Every hello is given a block, a part's too (ADR-0028, section 1).
     assert!(has_ids(was_east.entity_ids) && has_ids(was_west.entity_ids));
 
@@ -1161,15 +1206,11 @@ fn lives_without_pins(store: &Store) -> Before {
         handle.flush();
         assert!(!handle.is_lost());
     }
-    let file = |epoch, entity_ids| RegionFile { epoch, entity_ids };
+    assert_eq!(other_homes(&told), [1, 2]);
     Before {
         built: chunks_of(&built),
-        next: 3,
-        files: vec![
-            file(3, was_home.entity_ids),
-            file(5, was_east.entity_ids),
-            file(6, was_west.entity_ids),
-        ],
+        next: west_id + 1,
+        epochs: vec![3, 0, 0, 5, 6],
         given: above(&[
             was_home.entity_ids,
             was_east.entity_ids,
@@ -1198,14 +1239,10 @@ fn world_from_before(layout: &[u8]) -> (Arc<MemoryDisk>, Before) {
     built.set(west, (13, -61, 4), blocks::AIR);
     built.set(ORIGIN, (3, -61, 4), blocks::AIR);
     built.set(ORIGIN, (3, 100, 4), blocks::GLASS);
-    let file = |epoch, block| RegionFile {
-        epoch,
-        entity_ids: EntityIds::block(block).expect("one of the first blocks"),
-    };
     let before = Before {
         built: chunks_of(&built),
         next: 0,
-        files: vec![file(3, 0), file(4, 1)],
+        epochs: vec![3, 4],
         given: 2,
     };
     (disk, before)
@@ -1241,30 +1278,30 @@ fn divisions() -> Vec<Division> {
 /// `told`, and nothing was opened in since:
 ///
 /// - the list is that of `told` alone (T1's, for a world without pins), with the
-///   epochs the region files of the same ids had, but for `next`, which is at least
-///   the old table's;
+///   homes of the Nether and the End, with the epochs the region files of the same
+///   ids had, but for `next`, which is at least the old table's;
 /// - a hello for a region the world had and has no more, living or absorbed, is
 ///   refused as for a region the table does not have (T9);
 /// - every region is opened with the epoch its id was last opened with (T9), and is
 ///   restored without a state, without commits and without grants but the home
-///   chunk, with a fresh block of entity keys above every block given before
-///   (ADR-0028, section 1);
+///   chunk of its dimension, with a fresh block of entity keys above every block
+///   given before (ADR-0028, section 1);
 /// - every block that was confirmed is in its chunk, as the region that holds the
 ///   chunk loads it: region 0 once it has claimed it, in a world without pins.
 fn begun_anew(store: &Store, told: &Division, before: &Before, case: &str) {
     let list = store
         .regions()
         .unwrap_or_else(|error| panic!("{case}: {error}"));
-    let made = told.pinned.len().max(1);
+    // The regions of the overworld and the homes of the Nether and the End.
+    let made = first_part(told) as usize;
     assert!(
         list.next.0 as usize >= made.max(before.next as usize),
         "{case}: the next region is {}",
         list.next
     );
-    let epochs: Vec<u64> = before.files.iter().map(|file| file.epoch).collect();
-    assert_eq!(list, begun(told, &epochs, list.next.0), "{case}");
+    assert_eq!(list, begun(told, &before.epochs, list.next.0), "{case}");
 
-    for gone in made..before.files.len().max(before.next as usize) {
+    for gone in made..before.epochs.len().max(before.next as usize) {
         let gone = RegionId(gone as u32);
         let refused = store.open_region(hello_of(told, gone.0, 1000)).err();
         assert!(
@@ -1286,7 +1323,9 @@ fn begun_anew(store: &Store, told: &Division, before: &Before, case: &str) {
             (&None, &Vec::new()),
             "{case}: region {id}"
         );
-        let held = if told.pinned.is_empty() {
+        let held = if info.dimension != Dimension::Overworld {
+            vec![(ORIGIN, 0)]
+        } else if told.pinned.is_empty() {
             vec![(told.home, 0)]
         } else {
             Vec::new()
@@ -1448,9 +1487,13 @@ fn after_stripes_are_made_over_a_hello_for_stripe_1_is_refused_and_one_for_strip
     let store = store.unwrap();
     assert!(says(&lines, case), "{case}: {lines:?}");
 
-    // The eastern stripe, the part that was split off the western one, and the
-    // part that it had absorbed again.
-    for gone in [1, 2, 3] {
+    // The part that was split off the western stripe, and the part that it had
+    // absorbed again. The eastern stripe's id, 1, is the Nether's home's now, and the
+    // id of the stripes' Nether home is the End's home's: the homes of the world
+    // without pins are made after its one region.
+    assert_eq!(other_homes(&told), [1, 2]);
+    let (stays, goes) = (first_part(&stripes()), first_part(&stripes()) + 1);
+    for gone in [3, stays, goes] {
         for epoch in [1, 4, 5, 6, 1000] {
             let refused = store.open_region(hello_of(&told, gone, epoch)).err();
             assert!(
@@ -1517,13 +1560,21 @@ fn a_world_without_pins_started_with_a_pin_is_two_pinned_regions_with_all_that_w
         .iter()
         .map(|info| (info.region, info.pinned.clone()))
         .collect();
+    // And the homes of the Nether and the End after them.
+    let [nether_home, end_home] = other_homes(&told).map(RegionId);
     let pinned = vec![
         (RegionId(0), vec![area(None, Some(CUT))]),
         (RegionId(1), vec![area(Some(CUT), None)]),
+        (nether_home, Vec::new()),
+        (end_home, Vec::new()),
     ];
     assert_eq!(regions, pinned);
-    assert_eq!((list.absorbed, list.next), (Vec::new(), RegionId(3)));
-    let refused = store.open_region(hello_of(&told, 1, 4)).err();
+    // The world without pins used the ids up to its second part.
+    let next = RegionId(first_part(&following()) + 2);
+    assert_eq!((list.absorbed, list.next), (Vec::new(), next));
+    // The End's home here, 3, has the id of the world's first part, and its epoch.
+    assert_eq!(end_home, RegionId(first_part(&following())));
+    let refused = store.open_region(hello_of(&told, end_home.0, 4)).err();
     assert!(
         matches!(&refused, Some(StoreError::EpochRefused { seen: 5, .. })),
         "{refused:?}"
@@ -1813,7 +1864,8 @@ fn a_part_that_is_split_off_after_stripes_were_made_over_has_an_id_the_world_nev
     let after = store_on(&Arc::new(left.crashed(Survival::Nothing)), &told).unwrap();
     let list = after.regions().unwrap();
     let regions: Vec<RegionId> = list.regions.iter().map(|info| info.region).collect();
-    assert_eq!(regions, [RegionId(0), part]);
+    let [nether_home, end_home] = other_homes(&told).map(RegionId);
+    assert_eq!(regions, [RegionId(0), nether_home, end_home, part]);
     assert_eq!(list.next, RegionId(part.0 + 1));
 }
 
@@ -1915,13 +1967,29 @@ fn a_store_that_is_told_no_division_has_one_region_pinned_to_the_whole_world() {
         bounds: None,
         pinned: vec![ChunkArea::EVERYWHERE],
     };
+    // Beside it, the homes of the Nether and the End.
+    let home_of = |dimension, region| RegionInfo {
+        dimension,
+        region: RegionId(region),
+        epoch: 0,
+        bounds: around(&[ORIGIN]),
+        pinned: Vec::new(),
+    };
     let expected = RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
+        homes: vec![
+            (Dimension::Overworld, RegionId(0)),
+            (Dimension::Nether, RegionId(1)),
+            (Dimension::End, RegionId(2)),
+        ],
         spawn: crate::tests::SPAWN,
         home: RegionId(0),
-        regions: vec![whole_world],
+        regions: vec![
+            whole_world,
+            home_of(Dimension::Nether, 1),
+            home_of(Dimension::End, 2),
+        ],
         absorbed: Vec::new(),
-        next: RegionId(1),
+        next: RegionId(3),
     };
     for (kind, store) in [("in memory", in_memory), ("in a directory", in_files)] {
         assert_eq!(store.regions().unwrap(), expected, "{kind}");
@@ -2039,7 +2107,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
             state: whole("part", 2),
         },
         as_epoch: 1,
-        region: RegionId(1),
+        region: RegionId(first_part(&told)),
     });
     drop(handle);
     at_rest(&rig.store).unwrap();
@@ -2052,14 +2120,11 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
         bounds: around(chunks),
         pinned: Vec::new(),
     };
-    let expected = RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
-        spawn: crate::tests::spawn_in(HOME),
-        home: RegionId(0),
-        regions: vec![info(0, &[HOME, stays]), info(1, &goes)],
-        absorbed: Vec::new(),
-        next: RegionId(2),
-    };
+    // The home region, the homes of the Nether and the End, and the part.
+    let id = first_part(&told);
+    let mut expected = begun(&told, &[], id + 1);
+    expected.regions[0] = info(0, &[HOME, stays]);
+    expected.regions.push(info(id, &goes));
     let state = |name: &str| {
         Some(TickState {
             tick: 2,
@@ -2069,13 +2134,10 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_durable_when_the_store_is
     for survival in SURVIVALS {
         let (list, restored) = left_by(&rig.disk, survival, &told, 2);
         assert_eq!(list, expected, "{survival:?}");
-        assert_eq!(
-            restored[1].held,
-            [(goes[0], 2), (goes[1], 2)],
-            "{survival:?}"
-        );
-        assert_eq!(restored[1].state, state("part"), "{survival:?}");
-        assert!(has_ids(restored[1].entity_ids), "{survival:?}");
+        let part = &restored[id as usize];
+        assert_eq!(part.held, [(goes[0], 2), (goes[1], 2)], "{survival:?}");
+        assert_eq!(part.state, state("part"), "{survival:?}");
+        assert!(has_ids(part.entity_ids), "{survival:?}");
         assert_eq!(restored[0].held, [(HOME, 0), (stays, 0)], "{survival:?}");
         assert_eq!(restored[0].state, state("rest"), "{survival:?}");
     }
@@ -2442,9 +2504,10 @@ fn wherever_the_disk_fails_the_store_comes_to_rest_and_has_all_that_it_answered(
 
 // T8: "A hello is a region and an epoch; one for a region the table does not have,
 // for one that was absorbed, and with a lower epoch is refused as today." The world
-// of stripes has all three: its table has no region 4 or beyond, region 3 was
-// absorbed by region 0, and regions 0, 1 and 2 were opened with the epochs 3, 4 and
-// 5. "As today" is read as: with the error that names what is wrong, with nothing
+// of stripes has all three: its table has no region 6 or beyond, region 5 was
+// absorbed by region 0, and regions 0, 1 and 4 were opened with the epochs 3, 4 and
+// 5 (2 and 3 are its homes of the Nether and the End). "As today" is read as: with
+// the error that names what is wrong, with nothing
 // written for it, the same over a connection, and without taking the region from
 // whoever has it.
 #[test]
@@ -2475,7 +2538,8 @@ fn a_hello_is_a_region_and_an_epoch_and_is_refused_for_what_it_was_refused_for_b
     };
 
     // A region the table does not have. Over a connection that is said in words.
-    for region in [4, 5, u32::MAX] {
+    let (stays, goes) = (first_part(&told), first_part(&told) + 1);
+    for region in [goes + 1, goes + 2, u32::MAX] {
         for epoch in [0, 1, 1000] {
             let (here, there, case) = both(region, epoch);
             assert!(
@@ -2490,22 +2554,22 @@ fn a_hello_is_a_region_and_an_epoch_and_is_refused_for_what_it_was_refused_for_b
     }
     // One that was absorbed, whatever the epoch: it is told which region it went into.
     for epoch in [0, 6, 7, 1000] {
-        let (here, there, case) = both(3, epoch);
+        let (here, there, case) = both(goes, epoch);
         for refused in [here, there] {
             assert!(
                 matches!(
                     refused,
                     StoreError::Absorbed {
-                        region: RegionId(3),
+                        region,
                         into: RegionId(0)
-                    }
+                    } if region == RegionId(goes)
                 ),
                 "{case}"
             );
         }
     }
     // A lower epoch than the region was last opened with: it is told the epoch.
-    for (region, seen) in [(0, 3), (1, 4), (2, 5)] {
+    for (region, seen) in [(0, 3), (1, 4), (stays, 5)] {
         for offered in [0, seen - 1] {
             let (here, there, case) = both(region, offered);
             for refused in [here, there] {
@@ -2536,7 +2600,7 @@ fn a_hello_is_a_region_and_an_epoch_and_is_refused_for_what_it_was_refused_for_b
             "{case}"
         );
     }
-    let (_, _, case) = both(4, 9);
+    let (_, _, case) = both(goes + 1, 9);
     owner.request(StoreRequest::Flush);
     assert_eq!(next(&owner, &case), StoreReply::Flushed, "{case}");
     assert!(!owner.is_lost(), "{case}");

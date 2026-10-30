@@ -45,6 +45,7 @@ use tokio::process::Command;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use common::homes::{assert_other_homes_untouched, overworld_ids};
 use common::processes::{Asked, Cluster, Turn, ask, turn, worker_name};
 
 /// How long anything may take that is merely waited for. It only ever runs out when
@@ -200,6 +201,14 @@ impl Reshapes {
     /// The living regions of `list`, in ascending order.
     fn living(list: &RegionList) -> Vec<Region> {
         list.regions.iter().map(|info| info.region.0).collect()
+    }
+
+    /// The overworld's living regions of `list`, in ascending order: those that are
+    /// merged, split and moved here. The homes of the Nether and of the End, which
+    /// nothing here touches, are to be as the world made them.
+    fn overworld(list: &RegionList) -> Vec<Region> {
+        assert_other_homes_untouched(list);
+        overworld_ids(list).iter().map(|region| region.0).collect()
     }
 
     /// The last routing table the coordinator logged in its present life, as the line
@@ -473,7 +482,7 @@ async fn two_stripes_are_merged_when_somebody_asks_and_the_home_region_is_never_
     let mut reshapes = Reshapes::start("merge", "3", 2).await;
     let before = reshapes.list().await;
     let routes = reshapes.routes();
-    if (before.home.0, Reshapes::living(&before)) != (0, vec![0, 1]) {
+    if (before.home.0, Reshapes::overworld(&before)) != (0, vec![0, 1]) {
         reshapes.fail(&format!(
             "the world did not begin as two stripes: {before:?}"
         ));
@@ -541,7 +550,11 @@ async fn two_stripes_are_merged_when_somebody_asks_and_the_home_region_is_never_
         .iter()
         .map(|(gone, into)| (gone.0, into.0))
         .collect();
-    if Reshapes::living(&list) != [0] || pinned != both || both.len() != 2 || absorbed != [(1, 0)] {
+    if Reshapes::overworld(&list) != [0]
+        || pinned != both
+        || both.len() != 2
+        || absorbed != [(1, 0)]
+    {
         reshapes.fail(&format!(
             "after the merge the list does not have one region pinned to both areas: {list:?}"
         ));
@@ -680,7 +693,7 @@ async fn a_move_and_a_merge_refuse_each_other_and_the_survivor_of_a_merge_is_mov
     let mut reshapes = Reshapes::start("move and merge", "0,4", 2).await;
     let before = reshapes.list().await;
     let home = before.home.0;
-    if (home, Reshapes::living(&before)) != (1, vec![0, 1, 2]) {
+    if (home, Reshapes::overworld(&before)) != (1, vec![0, 1, 2]) {
         reshapes.fail(&format!(
             "the world did not begin as three stripes: {before:?}"
         ));
@@ -690,16 +703,22 @@ async fn a_move_and_a_merge_refuse_each_other_and_the_survivor_of_a_merge_is_mov
     // owner is stopped and so cannot release it. It is one of the two regions of the
     // worker that has two, so that the move leaves nothing for the coordinator to
     // even out.
+    // The two workers share the three stripes and the homes of the Nether and of the
+    // End, five regions: the one that is moved is a stripe of the worker that has
+    // three.
+    let stripes = Reshapes::overworld(&before);
     let loads = reshapes.loads();
-    let Some(busy) = loads.iter().position(|regions| regions.len() == 2) else {
+    let busy = loads.iter().position(|regions| regions.len() == 3);
+    let moved = busy.and_then(|busy| {
+        let mut theirs = loads[busy].iter();
+        theirs.find(|region| **region != home && stripes.contains(region))
+    });
+    let (Some(busy), Some(&moved)) = (busy, moved) else {
         reshapes.fail(&format!(
-            "no worker runs two of the three regions: {loads:?}"
+            "no worker runs three of the five regions, a stripe that is not home among \
+             them: {loads:?}"
         ));
     };
-    let moved = *loads[busy]
-        .iter()
-        .find(|region| **region != home)
-        .expect("one of two is not home");
     let begun = reshapes.coordinator_said("a move has begun");
     reshapes.signal(busy, "STOP", "stopped").await;
     let moving = reshapes.moving(moved);
@@ -777,7 +796,7 @@ async fn a_move_and_a_merge_refuse_each_other_and_the_survivor_of_a_merge_is_mov
         .iter()
         .find(|info| info.region.0 == home)
         .map(|info| info.pinned.len());
-    if Reshapes::living(&list) != [home.min(moved), home.max(moved)] || pinned != Some(2) {
+    if Reshapes::overworld(&list) != [home.min(moved), home.max(moved)] || pinned != Some(2) {
         reshapes.fail(&format!(
             "after the merge the list is not two regions, one of two areas: {list:?}"
         ));
@@ -869,7 +888,7 @@ async fn a_worker_is_killed_while_it_absorbs(test: &str, moment: &str) {
         .iter()
         .map(|(gone, into)| (gone.0, into.0))
         .collect();
-    let found = match (Reshapes::living(&list).as_slice(), absorbed.as_slice()) {
+    let found = match (Reshapes::overworld(&list).as_slice(), absorbed.as_slice()) {
         ([0, 1], []) => "the regions as they were before the merge",
         ([0], [(1, 0)]) => "the merge done",
         _ => reshapes.fail(&format!(
@@ -937,6 +956,10 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
     let Some(owner) = reshapes.owner(0) else {
         reshapes.fail("the home region has no owner");
     };
+    // The parts are the next regions made: after the stripes and the homes of the
+    // Nether and of the End.
+    let first = reshapes.list().await.next.0;
+    let (part, again) = (first, first + 1);
 
     // The region hears of the bot's last steps a moment after the bot has made them,
     // so a split may find nobody there at first.
@@ -951,7 +974,7 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
             reshapes.fail("no split ever found the bot in its chunk");
         }
     };
-    if !split.says("region 2 has been split off region 0") {
+    if !split.says(&format!("region {part} has been split off region 0")) {
         let outcome = split.outcome();
         reshapes.fail(&format!(
             "the split did not print the new region: {outcome}"
@@ -963,15 +986,15 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
         split.took.as_millis()
     ));
     let list = reshapes.everything_runs().await;
-    if (Reshapes::living(&list), list.next.0) != (vec![0, 1, 2], 3) {
+    if (Reshapes::overworld(&list), list.next.0) != (vec![0, 1, part], part + 1) {
         reshapes.fail(&format!(
             "after the split the list does not have the new region: {list:?}"
         ));
     }
     // The worker that split the region runs the part, with the epoch it was told, and
     // edges are let in to it under that epoch.
-    let with = reshapes.split_off_with(owner, 0, 2);
-    if reshapes.owner(2) != Some(owner) || reshapes.epoch(2) != with || with.is_none() {
+    let with = reshapes.split_off_with(owner, 0, part);
+    if reshapes.owner(part) != Some(owner) || reshapes.epoch(part) != with || with.is_none() {
         let routes = reshapes.routes();
         reshapes.fail(&format!(
             "the new region is not run by the worker that made it, with the epoch {with:?}: {routes:?}"
@@ -979,7 +1002,7 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
     }
     reshapes
         .until("the edge has linked to the new region", |reshapes| {
-            reshapes.links_to(2) > 0
+            reshapes.links_to(part) > 0
         })
         .await;
 
@@ -988,7 +1011,7 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
     reshapes.kill_coordinator().await;
     reshapes.start_coordinator();
     reshapes.everything_runs().await;
-    if (reshapes.owner(2), reshapes.epoch(2)) != (Some(owner), with) {
+    if (reshapes.owner(part), reshapes.epoch(part)) != (Some(owner), with) {
         let routes = reshapes.routes();
         reshapes.fail(&format!(
             "under a new coordinator the new region is not its worker's as it was: {routes:?}"
@@ -997,13 +1020,13 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
 
     // The part goes back into the region it came from, which the same worker runs:
     // it releases the one and opens it again to have the other absorb it.
-    let merged = reshapes.merge(0, 2).await;
-    if !merged.says("region 0 has absorbed region 2") {
+    let merged = reshapes.merge(0, part).await;
+    if !merged.says(&format!("region 0 has absorbed region {part}")) {
         let outcome = merged.outcome();
         reshapes.fail(&format!("the part could not be absorbed again: {outcome}"));
     }
     let list = reshapes.everything_runs().await;
-    if (Reshapes::living(&list), list.next.0) != (vec![0, 1], 3) {
+    if (Reshapes::overworld(&list), list.next.0) != (vec![0, 1], part + 1) {
         reshapes.fail(&format!(
             "after the merge the list still has the part: {list:?}"
         ));
@@ -1026,20 +1049,20 @@ async fn the_part_of_a_split_is_run_by_the_worker_that_made_it_whatever_the_coor
     let unanswered = reshapes.answer(splitting).await;
     reshapes
         .until("the worker has made the split", |reshapes| {
-            reshapes.split_off_with(owner, 0, 3).is_some()
+            reshapes.split_off_with(owner, 0, again).is_some()
         })
         .await;
     reshapes.start_coordinator();
     let list = reshapes.everything_runs().await;
-    let with = reshapes.split_off_with(owner, 0, 3);
-    if Reshapes::living(&list) != [0, 1, 3] || with.is_none() {
+    let with = reshapes.split_off_with(owner, 0, again);
+    if Reshapes::overworld(&list) != [0, 1, again] || with.is_none() {
         let outcome = unanswered.outcome();
         reshapes.fail(&format!(
             "the split that the coordinator did not live to see was not made: {list:?}; the \
              command: {outcome}"
         ));
     }
-    if (reshapes.owner(3), reshapes.epoch(3)) != (Some(owner), with) {
+    if (reshapes.owner(again), reshapes.epoch(again)) != (Some(owner), with) {
         let routes = reshapes.routes();
         reshapes.fail(&format!(
             "the region that was split off while the coordinator died is not its worker's, \
@@ -1097,7 +1120,7 @@ async fn every_region_is_run_again_when_the_world_store_is_killed_in_the_middle_
         .iter()
         .map(|(gone, into)| (gone.0, into.0))
         .collect();
-    let found = match (Reshapes::living(&list).as_slice(), absorbed.as_slice()) {
+    let found = match (Reshapes::overworld(&list).as_slice(), absorbed.as_slice()) {
         ([0, 1], []) => "the regions as they were before the merge",
         ([0], [(1, 0)]) => "the merge done",
         _ => reshapes.fail(&format!(
@@ -1300,7 +1323,7 @@ async fn a_worker_that_is_given_a_region_that_was_absorbed_drops_it_and_says_so(
     }
     let gone = |list: &RegionList| {
         let absorbed = list.absorbed.iter().map(|(gone, into)| (gone.0, into.0));
-        Reshapes::living(list) == [0] && absorbed.collect::<Vec<_>>() == [(1, 0)]
+        Reshapes::overworld(list) == [0] && absorbed.collect::<Vec<_>>() == [(1, 0)]
     };
     let list = cluster.regions().await;
     if !list.as_ref().is_ok_and(gone) {

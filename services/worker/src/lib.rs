@@ -4800,13 +4800,13 @@ mod tests {
     use std::time::Duration;
 
     use clustine_region::RegionId;
-    use clustine_rpc::RegionHello;
     use clustine_rpc::link::{self, EdgeEnd, LinkError};
+    use clustine_rpc::{RegionHello, RegionList};
     use clustine_sim::api::{
         EntityKind, EntityState, Inventory, PlayerInput, PlayerJoin, Pose, RegionEvent,
     };
     use clustine_sim::{PlayerTransfer, RemoteAction};
-    use clustine_world::{ChunkArea, EntityIds, Vec3};
+    use clustine_world::{ChunkArea, Dimension, EntityIds, Vec3};
     use clustine_worldgen::FlatGenerator;
     use clustine_worldstore::{Pins, Store, StoreHandle};
     use tokio::time::timeout;
@@ -9340,6 +9340,53 @@ mod tests {
     /// The home region of [`Divided::gap`].
     const HOME: RegionId = RegionId(2);
 
+    /// The homes of the Nether and of the End in [`Divided::stripes`]. Every world is
+    /// made with them after the overworld's regions (`docs/groundwork/p-plan.md`,
+    /// decision 2); they hold their dimensions' chunks (0, 0) and are never run here,
+    /// but they are in every list of regions.
+    const NETHER_HOME: RegionId = RegionId(2);
+    const END_HOME: RegionId = RegionId(3);
+
+    /// The id the store of [`Divided::stripes`] gives the first region a split makes:
+    /// the first after the homes.
+    const FIRST_PART: RegionId = RegionId(4);
+
+    /// The same for [`Divided::gap`], whose three regions come before the homes, which
+    /// are 3 and 4.
+    const GAP_FIRST_PART: RegionId = RegionId(5);
+
+    /// The ids of the regions `list` names, in order.
+    fn ids(list: &RegionList) -> Vec<RegionId> {
+        list.regions.iter().map(|info| info.region).collect()
+    }
+
+    /// What the constants above say of the worlds the tests make is what their stores
+    /// say.
+    #[test]
+    fn the_homes_of_the_nether_and_the_end_come_after_the_regions_of_the_overworld() {
+        let stripes = Divided::stripes().store.regions().unwrap();
+        assert_eq!(
+            stripes.homes,
+            [
+                (Dimension::Overworld, RegionId(0)),
+                (Dimension::Nether, NETHER_HOME),
+                (Dimension::End, END_HOME)
+            ]
+        );
+        assert_eq!(ids(&stripes), [RegionId(0), EAST, NETHER_HOME, END_HOME]);
+        assert_eq!(stripes.next, FIRST_PART);
+        let gap = Divided::gap().store.regions().unwrap();
+        assert_eq!(
+            gap.homes,
+            [
+                (Dimension::Overworld, HOME),
+                (Dimension::Nether, RegionId(3)),
+                (Dimension::End, RegionId(4))
+            ]
+        );
+        assert_eq!(gap.next, GAP_FIRST_PART);
+    }
+
     /// A world that is divided, in memory unless said otherwise, of which a test runs
     /// one region and plays another through a handle of its own.
     struct Divided {
@@ -11189,12 +11236,13 @@ mod tests {
             assert_eq!(west.status().players.load(Ordering::Relaxed), 3);
             assert_eq!(west.status().chunks.load(Ordering::Relaxed), 0);
 
-            // Both regions' players, and the store's list has one region.
+            // Both regions' players, and the store's list has one region of the
+            // overworld, beside the homes of the other dimensions.
             let players: Vec<_> = merged.players.keys().copied().collect();
             assert_eq!(players, [player(), other_player(), third_player()]);
             let list = world.store.regions().unwrap();
             assert_eq!(list.absorbed, [(EAST, RegionId(0))]);
-            assert_eq!(list.regions.len(), 1);
+            assert_eq!(ids(&list), [RegionId(0), NETHER_HOME, END_HOME]);
             assert_eq!(list.regions[0].pinned.len(), 2);
 
             // The links are closed, and nothing was said on them of the merge.
@@ -11660,7 +11708,7 @@ mod tests {
         Reshape::SplitOff {
             chunks: chunks.to_vec(),
             as_epoch: 5,
-            part: RegionId(2),
+            part: FIRST_PART,
         }
     }
 
@@ -11695,7 +11743,7 @@ mod tests {
             else {
                 panic!("no split");
             };
-            assert_eq!((new, as_epoch), (RegionId(2), 5));
+            assert_eq!((new, as_epoch), (FIRST_PART, 5));
             let tick = west.region().tick_number();
             assert_eq!(
                 asked_beside_commits(&gate),
@@ -11733,7 +11781,16 @@ mod tests {
                 .iter()
                 .map(|info| (info.region, info.epoch))
                 .collect();
-            assert_eq!(listed, [(RegionId(0), 1), (EAST, 0), (new, 5)]);
+            assert_eq!(
+                listed,
+                [
+                    (RegionId(0), 1),
+                    (EAST, 0),
+                    (NETHER_HOME, 0),
+                    (END_HOME, 0),
+                    (new, 5)
+                ]
+            );
             let (handle, restored) = world.store.open_region(world.hello(new, 5)).unwrap();
             let holdings = holdings(&restored);
             let block = restored.entity_ids;
@@ -11829,7 +11886,7 @@ mod tests {
         let Reshaped::Split { region, part, .. } = reshaped(&mut west, &outcome) else {
             panic!("no split");
         };
-        assert_eq!(region, RegionId(2));
+        assert_eq!(region, FIRST_PART);
         assert_eq!(part.region.player_count(), 1);
         let tick = west.region().tick_number();
         let asked = gate.asked();
@@ -11841,18 +11898,21 @@ mod tests {
             splits,
             [
                 &Asked::Split(tick, RegionId(9)),
-                &Asked::Split(tick, RegionId(2))
+                &Asked::Split(tick, FIRST_PART)
             ]
         );
         let state = west.region().edge(edge.edge).unwrap();
         let went = Durable::SplitOff {
-            region: RegionId(2),
+            region: FIRST_PART,
             players: vec![(other_player(), EntityId(2), None)],
         };
         assert_eq!(state.outbox.values().collect::<Vec<_>>(), [&went]);
         let list = world.store.regions().unwrap();
-        assert_eq!(list.regions.len(), 3);
-        assert_eq!(list.next, RegionId(3));
+        assert_eq!(
+            ids(&list),
+            [RegionId(0), EAST, NETHER_HOME, END_HOME, FIRST_PART]
+        );
+        assert_eq!(list.next, RegionId(FIRST_PART.0 + 1));
     }
 
     /// Nothing comes of a split that nobody stands in the chunks of, nor of a merge or
@@ -12650,7 +12710,10 @@ mod tests {
         let absorbed = Reshaped::Absorbed { absorbed: EAST };
         let patience = Duration::from_secs(10);
         assert_eq!(outcome.recv_timeout(patience), Ok(absorbed));
-        assert_eq!(world.store.regions().unwrap().regions.len(), 1);
+        assert_eq!(
+            ids(&world.store.regions().unwrap()),
+            [RegionId(0), NETHER_HOME, END_HOME]
+        );
         // It ticks on.
         let tick = status.tick.load(Ordering::Relaxed);
         for _ in 0..20_000 {
@@ -12810,16 +12873,17 @@ mod tests {
         let mut first = RegionRunner::of_part(part, handle).without_rings();
 
         let (done, outcome) = self::outcome();
+        let second = RegionId(FIRST_PART.0 + 1);
         let again = Reshape::SplitOff {
             chunks: vec![further],
             as_epoch: 6,
-            part: RegionId(3),
+            part: second,
         };
         first.reshape(again, done);
         let Reshaped::Split { region, part, .. } = reshaped(&mut first, &outcome) else {
             panic!("no second split");
         };
-        assert_eq!(region, RegionId(3));
+        assert_eq!(region, second);
         assert_eq!(positions(&part), [further]);
         assert_eq!(part.region.player(third_player()).unwrap().0, EntityId(3));
         let warm: Vec<_> = first.warm.keys().copied().collect();
@@ -13108,7 +13172,7 @@ mod tests {
         Reshape::SplitOff {
             chunks: chunks.to_vec(),
             as_epoch: 5,
-            part: RegionId(3),
+            part: GAP_FIRST_PART,
         }
     }
 
@@ -13196,14 +13260,19 @@ mod tests {
 
         // The id named is the home region's own.
         let (done, outcome) = outcome();
-        runner.reshape(split_off(&[OUT_EAST]), done);
+        let own = Reshape::SplitOff {
+            chunks: vec![OUT_EAST],
+            as_epoch: 5,
+            part: HOME,
+        };
+        runner.reshape(own, done);
         step_to(&mut runner, Stage::Settling);
         gate.release_claims();
         gate.asked();
         let Reshaped::Split { region, part, .. } = reshaped(&mut runner, &outcome) else {
             panic!("no split");
         };
-        assert_eq!(region, RegionId(3));
+        assert_eq!(region, GAP_FIRST_PART);
         let tick = runner.region().tick_number();
         let asked = gate.asked();
         let splits: Vec<_> = asked
@@ -14194,7 +14263,9 @@ mod tests {
 
         /// Opens every region the list of `world` has with a higher epoch than any
         /// before, and holds what each is restored holding to what the list grants
-        /// it. No chunk is held by two.
+        /// it. No chunk is held by two. A chunk is its dimension's, as the store keys
+        /// it: the homes of the Nether and of the End hold their chunks (0, 0), which
+        /// are not the overworld's.
         fn opened_anew(world: &Divided) -> BTreeMap<RegionId, Anew> {
             let list = world.store.regions().unwrap();
             let mut all = BTreeMap::new();
@@ -14205,7 +14276,8 @@ mod tests {
                 let bounds = info.bounds.map(|bounds| (bounds.min, bounds.max));
                 assert_eq!(bounds, corners(&held), "{}", info.region);
                 for chunk in &held {
-                    assert!(seen.insert(*chunk), "{chunk:?} is held by two regions");
+                    let chunk = clustine_world::LevelChunk::new(info.dimension, *chunk);
+                    assert!(seen.insert(chunk), "{chunk:?} is held by two regions");
                 }
                 let holdings = holdings(&restored);
                 let state = restored_state(restored).unwrap();
@@ -14285,7 +14357,22 @@ mod tests {
             let anew = opened_anew(&world);
             let has_the_part = matches!(kill, Kill::At(Stage::Committing) | Kill::Done);
             assert_eq!(anew.contains_key(&next), has_the_part, "{context}");
-            assert_eq!(anew.len(), 1 + usize::from(has_the_part), "{context}");
+            // The region, the homes of the Nether and of the End, each holding its
+            // dimension's chunk (0, 0) and nothing else, and the part if it was made.
+            let homes = world.store.regions().unwrap().homes;
+            let mut regions: Vec<RegionId> = homes.iter().map(|(_, region)| *region).collect();
+            assert_eq!(regions[0], home, "{context}");
+            for (_, other) in &homes[1..] {
+                assert_eq!(anew[other].held, [ORIGIN], "{context}");
+            }
+            if has_the_part {
+                regions.push(next);
+            }
+            assert_eq!(
+                anew.keys().copied().collect::<Vec<_>>(),
+                regions,
+                "{context}"
+            );
             let region = &anew[&home];
             let everything = both(&both(&around(ORIGIN), &around(P_AT)), &seven);
             let both_players = [player(), other_player()];

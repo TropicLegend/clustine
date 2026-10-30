@@ -15,12 +15,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_data::{BlockState, blocks};
 use clustine_rpc::{RegionList, SplitPart};
-use clustine_world::{BlockPos, Chunk, ChunkPos, EntityId, EntityIds};
+use clustine_world::{BlockPos, Chunk, ChunkPos, Dimension, EntityId, EntityIds, LevelChunk};
 
 use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival};
 use crate::regions::{SURVIVALS, gap, hello_of, store_on};
-use crate::tests::generator;
+use crate::tests::{first_part, generator};
 
 /// The chunks the scenario works on: one in each pinned area, a second one in the
 /// western area, and two in the gap, which nobody holds until they are claimed.
@@ -438,8 +438,9 @@ fn scenario(store: &Store, seen: &mut dyn FnMut(&Told, u32)) -> Told {
             state: encode(&one.ledger),
         },
         as_epoch: 1,
-        // The world began with three regions, and none was made since.
-        region: RegionId(3),
+        // The world began with three regions of the overworld and the homes of the
+        // Nether and the End, and none was made since.
+        region: RegionId(first_part(&gap())),
     });
     told.split = Some(Split {
         answered: None,
@@ -463,7 +464,10 @@ fn scenario(store: &Store, seen: &mut dyn FnMut(&Told, u32)) -> Told {
     seen(&told, 6);
     // The worker that made the part says hello for it with the epoch it named. A split
     // that was not answered may have happened all the same; its part is the next id.
-    let made = told.split.as_ref().map(|split| split.answered.unwrap_or(3));
+    let made = told
+        .split
+        .as_ref()
+        .map(|split| split.answered.unwrap_or(first_part(&gap())));
     if !ensure(store, &mut first, 0) {
         return told;
     }
@@ -587,11 +591,20 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
         .map(|(absorbed, into)| (absorbed.0, into.0))
         .collect();
 
-    // No chunk is two regions', and no region that was absorbed can be opened.
-    let mut holders: BTreeMap<ChunkPos, u32> = BTreeMap::new();
+    // No chunk is two regions', and no region that was absorbed can be opened. A
+    // region holds chunks of its own dimension: the homes of the Nether and the End
+    // hold their dimensions' chunks (0, 0), which are not the overworld's.
+    let dimensions: BTreeMap<RegionId, Dimension> = found
+        .list
+        .regions
+        .iter()
+        .map(|info| (info.region, info.dimension))
+        .collect();
+    let mut holders: BTreeMap<LevelChunk, u32> = BTreeMap::new();
     for (region, restored) in &found.restored {
         for (chunk, _) in &restored.held {
-            let other = holders.insert(*chunk, region.0);
+            let chunk = LevelChunk::new(dimensions[region], *chunk);
+            let other = holders.insert(chunk, region.0);
             assert_eq!(other, None, "{case}: {chunk:?} is held twice");
         }
     }
@@ -633,11 +646,13 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
     assert_eq!(merged, !living.contains(&1), "{case}");
     assert!(absorbed.keys().all(|gone| *gone == 1), "{case}");
 
-    // The same for the split, with the part in the list or not.
+    // The same for the split, with the part in the list or not: the regions made
+    // after the world, whose ids are above those of its three regions of the
+    // overworld and of the homes of the Nether and the End.
     let parts: Vec<u32> = living
         .iter()
         .copied()
-        .filter(|region| *region > 2)
+        .filter(|region| *region >= first_part(&gap()))
         .collect();
     match &told.split {
         Some(split) => {
@@ -653,7 +668,7 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
                 let held: BTreeSet<ChunkPos> = holders
                     .iter()
                     .filter(|(_, holder)| **holder == made)
-                    .map(|(chunk, _)| *chunk)
+                    .map(|(chunk, _)| chunk.position)
                     .collect();
                 assert_eq!(held, split.chunks.iter().copied().collect(), "{case}");
             } else {
@@ -669,7 +684,9 @@ fn check(told: &Told, disk: &MemoryDisk, survival: Survival, case: &str) {
         if told.returned.contains(&(*region, *chunk)) {
             continue;
         }
-        let holder = holders.get(chunk).copied();
+        let holder = holders
+            .get(&LevelChunk::new(Dimension::Overworld, *chunk))
+            .copied();
         let moved = holder
             .is_some_and(|holder| absorbed.get(region) == Some(&holder) || parts.contains(&holder));
         assert!(
@@ -830,7 +847,7 @@ fn operations() -> u64 {
     let told = scenario(&store, &mut |_, _| {});
     assert!(told.merge.as_ref().is_some_and(|merge| merge.answered));
     let split = told.split.as_ref().expect("the split is asked for");
-    assert_eq!(split.answered, Some(3), "{told:?}");
+    assert_eq!(split.answered, Some(first_part(&gap())), "{told:?}");
     assert_eq!(split.chunks, [WEST, FREE_TOO], "{told:?}");
     let granted = [(0, FREE), (1, FREE), (1, FREE_TOO)];
     assert_eq!(told.granted, BTreeSet::from(granted), "{told:?}");
@@ -843,7 +860,10 @@ fn operations() -> u64 {
         .unwrap();
     let table = clustine_format::TableFile::decode(&table).unwrap();
     assert!(table.from > 1, "{table:?}");
-    assert_eq!((table.next_region, table.absorbed), (4, vec![(1, 0)]));
+    assert_eq!(
+        (table.next_region, table.absorbed),
+        (first_part(&gap()) + 1, vec![(1, 0)])
+    );
     let segments = disk.list(Path::new("/world/log")).unwrap();
     assert!(
         segments

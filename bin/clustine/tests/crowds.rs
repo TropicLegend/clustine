@@ -58,7 +58,7 @@ use clustine_rpc::RegionList;
 
 use common::wandering::{
     Begun, PATIENCE, Region, Setup, TICK, WRITING, Wandering, Wanders, a_repetition, absorbed_by,
-    bounds, chunk_of, has_chunk, living, number_from, seconds, spread, within,
+    bounds, chunk_of, has_chunk, number_from, overworld, seconds, spread, within,
 };
 
 /// How many bots a ledger of the crowd has.
@@ -174,7 +174,7 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         wanders.arrives(name).await;
     }
     let list = wanders.whole().await;
-    if living(&list) != [0] {
+    if overworld(&list) != [0] {
         wanders.fail(&format!(
             "the crowd and the two were to be one region: {list:?}"
         ));
@@ -193,13 +193,13 @@ async fn a_crowd_at_the_spawn_point_stands_still_briefly_when_two_leave_it_and_c
         wanders.arrives("Far").await;
         let list = wanders
             .until_the_list_within(PATIENCE, "those who go far are split off", |list| {
-                living(list).len() == 2
+                overworld(list).len() == 2
             })
             .await;
-        far_region = living(&list).into_iter().find(|region| *region != 0);
+        far_region = overworld(&list).into_iter().find(|region| *region != 0);
     }
     let ours = |list: &RegionList| -> Vec<Region> {
-        let living = living(list);
+        let living = overworld(list);
         living
             .into_iter()
             .filter(|region| Some(*region) != far_region)
@@ -385,7 +385,7 @@ async fn measured_two_regions_whose_players_walk_outward_are_merged_on_the_way()
     // The region with the chunk a wanderer is in, if the list has one.
     let region_of = |list: &RegionList, noted: &Wandering| {
         let (cx, cz) = (chunk_of(noted.x), chunk_of(noted.z));
-        living(list)
+        overworld(list)
             .into_iter()
             .find(|region| has_chunk(bounds(list, *region), cx, cz))
     };

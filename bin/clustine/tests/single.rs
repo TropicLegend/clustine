@@ -36,6 +36,7 @@ use clustine_rpc::{ChunkBox, RegionHello, RegionInfo, RegionList, StoreRequest};
 use clustine_world::ChunkPos;
 use clustine_worldstore::{Pins, Store};
 
+use common::homes::{assert_other_homes_untouched, other_homes, overworld, overworld_ids};
 use common::{VIEW_DISTANCE, config, free_address, spawn_server_with_log, view_area};
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -130,10 +131,12 @@ fn list(server: &Server) -> RegionList {
         .unwrap_or_else(|error| panic!("the list of regions cannot be read: {error:#}"))
 }
 
-/// The regions that live, in the order of their ids.
+/// The overworld's regions that live, in the order of their ids. The homes of the
+/// Nether and of the End, which nothing here goes to, are checked as they were made.
 fn living(server: &Server) -> Vec<RegionId> {
-    let regions = list(server).regions;
-    regions.iter().map(|info| info.region).collect()
+    let list = list(server);
+    assert_other_homes_untouched(&list);
+    overworld_ids(&list)
 }
 
 /// What the list says of `region`, which lives.
@@ -378,9 +381,13 @@ async fn a_new_world_is_one_home_region_that_runs_as_soon_as_the_start_has_retur
         // Nothing is waited for between the start and this.
         let list = list(&server);
         assert_eq!(list.home, HOME, "{list:?}");
-        assert_eq!(list.next, RegionId(1), "{list:?}");
+        // The homes of the Nether and of the End are made with it, after it, and
+        // nothing else.
+        assert_eq!(other_homes(&list), [RegionId(1), RegionId(2)], "{list:?}");
+        assert_other_homes_untouched(&list);
+        assert_eq!(list.next, RegionId(3), "{list:?}");
         assert!(list.absorbed.is_empty(), "{list:?}");
-        let [home] = list.regions.as_slice() else {
+        let [home] = overworld(&list)[..] else {
             panic!("a new world is one region: {list:?}");
         };
         assert_eq!(home.region, HOME);
@@ -607,11 +614,13 @@ async fn a_pinned_world_is_two_regions_and_who_walks_across_and_back_is_one_enti
         .await;
 
         let list = list(&server);
-        let regions: Vec<RegionId> = list.regions.iter().map(|info| info.region).collect();
-        assert_eq!(regions, [RegionId(0), RegionId(1)], "{list:?}");
-        assert_eq!((list.home, list.next), (HOME, RegionId(2)), "{list:?}");
+        assert_eq!(overworld_ids(&list), [RegionId(0), RegionId(1)], "{list:?}");
+        // The homes of the Nether and of the End come after the pinned regions.
+        assert_eq!(other_homes(&list), [RegionId(2), RegionId(3)], "{list:?}");
+        assert_other_homes_untouched(&list);
+        assert_eq!((list.home, list.next), (HOME, RegionId(4)), "{list:?}");
         assert!(list.absorbed.is_empty(), "{list:?}");
-        for info in &list.regions {
+        for info in overworld(&list) {
             assert!(!info.pinned.is_empty(), "both are pinned: {list:?}");
             assert!(info.epoch > 0, "both run: {list:?}");
         }
@@ -752,7 +761,8 @@ async fn taking_over_a_region_the_world_does_not_have_is_an_error() {
     told.places(&mut builder, (2, FLOOR, 1)).await;
 
     let before = list(&server);
-    for region in [RegionId(1), RegionId(7)] {
+    // The next region's id, which no region has yet, and one far beyond it.
+    for region in [before.next, RegionId(7)] {
         let error = match server.take_over(region).await {
             Ok(()) => panic!("region {region}, which the world does not have, was taken over"),
             Err(error) => format!("{error:#}"),
@@ -801,7 +811,7 @@ async fn a_part_is_taken_over_as_soon_as_the_list_has_it_and_its_player_stays_an
             until("the second bot was split off", &mut both, has_the_part).await;
         }
         let split = list(&server);
-        let part = split.regions[1].region;
+        let part = overworld(&split)[1].region;
 
         // At once: nothing is waited for between the list and this.
         let mut last = info(&split, part).epoch;
@@ -923,7 +933,8 @@ async fn a_world_that_was_divided_otherwise_is_made_over_and_keeps_what_was_buil
     // one the world had.
     let (server, address) = start(on_disk(&[])).await;
     let open_now = list(&server);
-    let [home] = open_now.regions.as_slice() else {
+    assert_other_homes_untouched(&open_now);
+    let [home] = overworld(&open_now)[..] else {
         panic!("a world that is made over without pins is one region: {open_now:?}");
     };
     assert_eq!((open_now.home, home.region), (HOME, HOME), "{open_now:?}");
@@ -950,10 +961,14 @@ async fn a_world_that_was_divided_otherwise_is_made_over_and_keeps_what_was_buil
     // With the pin again: two pinned regions, both running.
     let (server, address) = start(on_disk(&[1])).await;
     let again = list(&server);
-    let regions: Vec<RegionId> = again.regions.iter().map(|info| info.region).collect();
-    assert_eq!(regions, [RegionId(0), RegionId(1)], "{again:?}");
+    assert_eq!(
+        overworld_ids(&again),
+        [RegionId(0), RegionId(1)],
+        "{again:?}"
+    );
+    assert_other_homes_untouched(&again);
     assert_eq!(again.home, HOME, "{again:?}");
-    for info in &again.regions {
+    for info in overworld(&again) {
         assert!(!info.pinned.is_empty() && info.epoch > 0, "{again:?}");
     }
     let mut builder = told.audit(&address, "Builder", &far).await;
@@ -964,7 +979,8 @@ async fn a_world_that_was_divided_otherwise_is_made_over_and_keeps_what_was_buil
     // And once more, the same: found as it was, with every region opened anew.
     let (server, address) = start(on_disk(&[1])).await;
     let found = list(&server);
-    assert_eq!(found.regions.len(), 2, "{found:?}");
+    assert_eq!(overworld(&found).len(), 2, "{found:?}");
+    assert_eq!(other_homes(&found), other_homes(&again), "{found:?}");
     assert_eq!((found.next, &found.absorbed), (again.next, &again.absorbed));
     for (now, before) in found.regions.iter().zip(&again.regions) {
         assert_eq!((now.region, &now.pinned), (before.region, &before.pinned));
@@ -1021,8 +1037,8 @@ async fn a_world_that_was_stopped_with_three_parts_starts_with_all_four_regions_
         assert_eq!(bot.stats.teleports_confirmed, 1);
     }
     let stopped_with = list(&server);
-    assert_eq!(stopped_with.regions.len(), 4, "{stopped_with:?}");
-    let parts: Vec<RegionId> = stopped_with.regions[1..]
+    assert_eq!(overworld(&stopped_with).len(), 4, "{stopped_with:?}");
+    let parts: Vec<RegionId> = overworld(&stopped_with)[1..]
         .iter()
         .map(|info| info.region)
         .collect();
@@ -1301,7 +1317,7 @@ async fn fifty_lives_in_which_somebody_is_split_off_and_some_are_stopped_in_the_
             assert_eq!(rover.stats.teleports_confirmed, 1);
         }
         let leaves = list(&server);
-        let had_its_part = leaves.regions.len() == 2;
+        let had_its_part = overworld(&leaves).len() == 2;
         // While both are still there.
         let asked = Instant::now();
         server.stop().await;
@@ -1729,16 +1745,17 @@ async fn four_regions_are_pinned_at_negative_and_positive_cuts(pins: &[&str]) {
     assert_eq!(builder.stats.teleports_confirmed, 1);
     let stands = [(-24.5, 0.5), (-56.5, 0.5), (88.5, 0.5)];
     told.audit(&process.address, "Auditor", &stands).await;
-    // Four regions were given out, and no other.
+    // Four regions were given out, and after them the homes of the Nether and of the
+    // End (4 and 5), and no other.
     let assigned = process.lines_with("a region was assigned");
-    for region in 0..4 {
+    for region in 0..6 {
         let field = format!("region={region}");
         let of_it = assigned
             .iter()
             .filter(|line| line.split_whitespace().any(|word| word == field));
         assert_eq!(of_it.count(), 1, "{field}:\n{}", assigned.join("\n"));
     }
-    assert_eq!(assigned.len(), 4, "{}", assigned.join("\n"));
+    assert_eq!(assigned.len(), 6, "{}", assigned.join("\n"));
 }
 
 // Sections 2.1 and 8.

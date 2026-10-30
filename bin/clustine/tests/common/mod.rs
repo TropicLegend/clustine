@@ -8,6 +8,9 @@ pub mod processes;
 pub mod following;
 #[allow(dead_code)]
 pub mod wandering;
+// Nor does every one read the list of regions.
+#[allow(dead_code)]
+pub mod homes;
 // Nor does every one compare entities with the official server's.
 #[allow(dead_code)]
 pub mod shown;

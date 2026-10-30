@@ -1192,10 +1192,12 @@ mod tests {
                 );
                 assert!(error.to_string().ends_with(&reason.to_string()), "{error}");
             };
+            // The world has its two stripes and the homes of the Nether and the End, 2
+            // and 3, and no region 4.
             let reason = StoreError::UnknownRegion {
-                region: RegionId(2),
+                region: RegionId(4),
             };
-            refused(hello(2, 1), reason);
+            refused(hello(4, 1), reason);
 
             // The owner is none the worse for it, and no region was taken by a hello
             // that was refused.

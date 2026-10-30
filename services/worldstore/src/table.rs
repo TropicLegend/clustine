@@ -180,6 +180,11 @@ pub(crate) struct Table {
     /// The chunk players enter the world in: the overworld's home chunk.
     pub(crate) home_chunk: ChunkPos,
     pub(crate) home_region: RegionId,
+    /// The homes of the Nether and of the End, made with the world, never absorbed,
+    /// each holding its dimension's chunk (0, 0) (`docs/groundwork/p-plan.md`, decision 2
+    /// and section 3.3).
+    pub(crate) nether_home: RegionId,
+    pub(crate) end_home: RegionId,
     /// The areas of the division the table was made from.
     division: Vec<ChunkArea>,
     /// The living regions.
@@ -200,9 +205,10 @@ impl Table {
     /// The table of a world that is divided as `division` says and has nothing else:
     /// region `i` pinned to area `i`, and the home chunk held by the pinned region
     /// whose area it is in or, if there is none, granted to a region made after them.
-    /// Every one of them is the overworld's. The next region id is at least
-    /// `next_region`, so that an id the world has used is not used again for a region
-    /// made later.
+    /// Every one of them is the overworld's. Then the homes of the Nether and of the End,
+    /// in that order, each granted its dimension's chunk (0, 0). The next region id is
+    /// at least `next_region`, so that an id the world has used is not used again for a
+    /// region made later.
     pub(crate) fn made_from(division: &Division, next_region: u32, from: u64) -> Self {
         let mut regions: BTreeMap<RegionId, Holding> = (0..)
             .map(RegionId)
@@ -234,11 +240,26 @@ impl Table {
             granted.insert(home, region);
             region
         });
+        let mut home_of = |dimension: Dimension| {
+            let region = RegionId(regions.len() as u32);
+            let chunk = LevelChunk::new(dimension, ChunkPos::new(0, 0));
+            let holding = Holding {
+                dimension,
+                pinned: Vec::new(),
+                grants: BTreeMap::from([(chunk, 0)]),
+            };
+            regions.insert(region, holding);
+            granted.insert(chunk, region);
+            region
+        };
+        let (nether_home, end_home) = (home_of(Dimension::Nether), home_of(Dimension::End));
         Self {
             from,
             next_region: next_region.max(regions.len() as u32),
             home_chunk: division.home,
             home_region,
+            nether_home,
+            end_home,
             division: division.pinned.clone(),
             regions,
             granted,
@@ -295,6 +316,8 @@ impl Table {
             next_region: file.next_region,
             home_chunk: file.home_chunk,
             home_region: RegionId(file.home_region),
+            nether_home: RegionId(file.nether_home),
+            end_home: RegionId(file.end_home),
             division: file.division,
             regions,
             granted,
@@ -320,13 +343,16 @@ impl Table {
                 )));
             }
         }
-        // The overworld's: the other dimensions' homes are made with the world by the
-        // step that makes them (`docs/groundwork/p-plan.md`, section 3.3, R N9).
-        if table.holder(table.home()) != Some(table.home_region) {
-            return Err(misfit(format!(
-                "the home region {} does not hold the home chunk",
-                table.home_region
-            )));
+        for dimension in Dimension::ALL {
+            let home = table.home_region_of(dimension);
+            if table.holder(table.home_of(dimension)) != Some(home)
+                || table.dimension(home) != Some(dimension)
+            {
+                return Err(misfit(format!(
+                    "the home region {home} of {} does not hold its home chunk",
+                    dimension.type_name()
+                )));
+            }
         }
         Ok(table)
     }
@@ -339,6 +365,8 @@ impl Table {
             next_region: self.next_region,
             home_chunk: self.home_chunk,
             home_region: self.home_region.0,
+            nether_home: self.nether_home.0,
+            end_home: self.end_home.0,
             division: self.division.clone(),
             regions: self
                 .regions
@@ -419,6 +447,22 @@ impl Table {
             Dimension::Overworld => self.home(),
             other => LevelChunk::new(other, ChunkPos::new(0, 0)),
         }
+    }
+
+    /// The home region of `dimension`.
+    pub(crate) fn home_region_of(&self, dimension: Dimension) -> RegionId {
+        match dimension {
+            Dimension::Overworld => self.home_region,
+            Dimension::Nether => self.nether_home,
+            Dimension::End => self.end_home,
+        }
+    }
+
+    /// Whether `region` is a dimension's home, which is never absorbed.
+    pub(crate) fn is_home_region(&self, region: RegionId) -> bool {
+        Dimension::ALL
+            .into_iter()
+            .any(|dimension| self.home_region_of(dimension) == region)
     }
 
     /// Whether `chunk` is its dimension's home chunk.
@@ -595,7 +639,10 @@ impl Table {
             .dimension(region)
             .zip(self.dimension(absorbed))
             .is_some_and(|(survivor, gone)| survivor != gone);
-        if region == absorbed || !self.has(region) || absorbed == self.home_region || two_dimensions
+        if region == absorbed
+            || !self.has(region)
+            || self.is_home_region(absorbed)
+            || two_dimensions
         {
             return Err(misfit(format!(
                 "region {absorbed} is absorbed by region {region}, which cannot be"
@@ -670,9 +717,10 @@ impl Table {
     pub(crate) fn list(&self, spawn: BlockPos, epoch: impl Fn(RegionId) -> u64) -> RegionList {
         RegionList {
             home: self.home_region,
-            // The overworld's home alone until the table makes one per dimension
-            // (`docs/groundwork/p-plan.md`, section 15.3).
-            homes: vec![(Dimension::Overworld, self.home_region)],
+            homes: Dimension::ALL
+                .into_iter()
+                .map(|dimension| (dimension, self.home_region_of(dimension)))
+                .collect(),
             spawn,
             regions: self
                 .regions
@@ -746,18 +794,17 @@ mod tests {
         }
     }
 
-    /// The table of [`gap`] with a region of the Nether besides, 3, granted the Nether's
-    /// chunk (0, 0) and one more, as the file of a later step would have it.
+    /// The homes of the Nether and of the End in the table of [`gap`]: made after its
+    /// three regions of the overworld, in that order.
+    const NETHER_HOME: RegionId = RegionId(3);
+    const END_HOME: RegionId = RegionId(4);
+
+    /// The table of [`gap`], whose Nether home holds the Nether's chunk (0, 0) and has
+    /// been granted one more, read from its file.
     fn with_the_nether() -> Table {
-        let mut file = Table::made_from(&gap(), 0, 1).file(1);
-        file.regions.push(TableRegion {
-            id: 3,
-            dimension: Dimension::Nether,
-            pinned: Vec::new(),
-            grants: vec![(ChunkPos::new(0, 0), 4), (ChunkPos::new(1, 0), 6)],
-        });
-        file.next_region = 4;
-        Table::read(TableFile::decode(&file.encode()).unwrap()).unwrap()
+        let mut table = Table::made_from(&gap(), 0, 1);
+        table.grant(NETHER_HOME, 6, &[n(1, 0)]).unwrap();
+        Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap()
     }
 
     #[test]
@@ -766,8 +813,13 @@ mod tests {
         let division = Division::side_by_side(ChunkPos::new(2, -7), &cuts).unwrap();
         division.check().unwrap();
         let table = Table::made_from(&division, 0, 1);
-        assert_eq!(table.next_region, 3);
+        // The three pinned regions, and then the homes of the Nether and the End.
+        assert_eq!(table.next_region, 5);
         assert_eq!(table.home_region, RegionId(1));
+        assert_eq!(
+            (table.nether_home, table.end_home),
+            (RegionId(3), RegionId(4))
+        );
         let areas = [
             area(None, Some(0)),
             area(Some(0), Some(4)),
@@ -790,14 +842,15 @@ mod tests {
         // One region pinned to the whole world.
         let single = Division::side_by_side(ChunkPos::new(0, 0), &[]).unwrap();
         let table = Table::made_from(&single, 0, 1);
-        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 3));
         assert_eq!(table.pinned(RegionId(0)), [ChunkArea::EVERYWHERE]);
     }
 
     #[test]
     fn a_home_chunk_in_no_area_is_granted_to_a_region_made_after_the_pinned_ones() {
         let table = Table::made_from(&gap(), 0, 1);
-        assert_eq!((table.home_region, table.next_region), (RegionId(2), 3));
+        // The homes of the Nether and the End are made after it.
+        assert_eq!((table.home_region, table.next_region), (RegionId(2), 5));
         assert_eq!(table.pinned(RegionId(2)), []);
         assert_eq!(table.holder(o(0, 0)), Some(RegionId(2)));
         assert_eq!(table.held_from(RegionId(2), o(0, 0)), Some(0));
@@ -815,7 +868,7 @@ mod tests {
             pinned: Vec::new(),
         };
         let table = Table::made_from(&alone, 0, 1);
-        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 3));
         assert_eq!(table.holder(o(3, 3)), Some(RegionId(0)));
         // An id that the world has used before is not given to a region made later.
         assert_eq!(Table::made_from(&alone, 7, 1).next_region, 7);
@@ -828,31 +881,66 @@ mod tests {
         assert_eq!((open.home, &open.pinned), (home, &vec![]));
         open.check().unwrap();
         let table = Table::made_from(&open, 0, 1);
-        assert_eq!((table.home_region, table.next_region), (RegionId(0), 1));
-        assert_eq!(table.regions().collect::<Vec<_>>(), [RegionId(0)]);
+        // Besides it, the homes of the Nether and the End, each holding its
+        // dimension's chunk (0, 0).
+        assert_eq!((table.home_region, table.next_region), (RegionId(0), 3));
+        let (nether_home, end_home) = (RegionId(1), RegionId(2));
+        assert_eq!((table.nether_home, table.end_home), (nether_home, end_home));
+        assert_eq!(
+            table.regions().collect::<Vec<_>>(),
+            [RegionId(0), nether_home, end_home]
+        );
         assert_eq!(table.pinned(RegionId(0)), []);
         assert_eq!(table.grants(RegionId(0)), [(o(3, -7), 0)]);
+        assert_eq!(table.grants(nether_home), [(n(0, 0), 0)]);
+        let end = LevelChunk::new(Dimension::End, ChunkPos::new(0, 0));
+        assert_eq!(table.grants(end_home), [(end, 0)]);
         // Every other chunk is nobody's.
         for chunk in [o(3, -6), o(0, 0), n(3, -7)] {
             assert_eq!(table.holder(chunk), None);
         }
+        let origin = ChunkPos::new(0, 0);
+        let at_origin = ChunkBox {
+            min: origin,
+            max: origin,
+        };
         let around = ChunkBox {
             min: home,
             max: home,
         };
         let expected = RegionList {
-            homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
+            homes: vec![
+                (Dimension::Overworld, RegionId(0)),
+                (Dimension::Nether, nether_home),
+                (Dimension::End, end_home),
+            ],
             spawn: crate::tests::SPAWN,
             home: RegionId(0),
-            regions: vec![RegionInfo {
-                dimension: Dimension::Overworld,
-                region: RegionId(0),
-                epoch: 0,
-                bounds: Some(around),
-                pinned: Vec::new(),
-            }],
+            regions: vec![
+                RegionInfo {
+                    dimension: Dimension::Overworld,
+                    region: RegionId(0),
+                    epoch: 0,
+                    bounds: Some(around),
+                    pinned: Vec::new(),
+                },
+                RegionInfo {
+                    dimension: Dimension::Nether,
+                    region: nether_home,
+                    epoch: 0,
+                    bounds: Some(at_origin),
+                    pinned: Vec::new(),
+                },
+                RegionInfo {
+                    dimension: Dimension::End,
+                    region: end_home,
+                    epoch: 0,
+                    bounds: Some(at_origin),
+                    pinned: Vec::new(),
+                },
+            ],
             absorbed: Vec::new(),
-            next: RegionId(1),
+            next: RegionId(3),
         };
         assert_eq!(table.list(crate::tests::SPAWN, |_| 0), expected);
 
@@ -957,13 +1045,18 @@ mod tests {
         let table = Table::made_from(&gap(), 0, 4);
         let file = table.file(table.from);
         assert_eq!(file.from, 4);
-        assert_eq!(file.regions.len(), 3);
+        // The three regions of the overworld, and the homes of the Nether and the End,
+        // each holding its dimension's chunk (0, 0).
+        assert_eq!(file.regions.len(), 5);
         assert_eq!(file.regions[2].grants, [(ChunkPos::new(0, 0), 0)]);
-        assert!(
-            file.regions
-                .iter()
-                .all(|region| region.dimension == Dimension::Overworld)
-        );
+        assert_eq!((file.nether_home, file.end_home), (3, 4));
+        let dimensions: Vec<_> = file.regions.iter().map(|region| region.dimension).collect();
+        let (overworld, others) = dimensions.split_at(3);
+        assert!(overworld.iter().all(|d| *d == Dimension::Overworld));
+        assert_eq!(others, [Dimension::Nether, Dimension::End]);
+        for home in &file.regions[3..] {
+            assert_eq!(home.grants, [(ChunkPos::new(0, 0), 0)]);
+        }
         let read = Table::read(TableFile::decode(&file.encode()).unwrap()).unwrap();
         assert_eq!(read, table);
         assert!(read.is_of(&gap()));
@@ -1002,6 +1095,11 @@ mod tests {
         // The home region of another dimension than the overworld's does not hold the
         // overworld's home chunk, whatever position it holds.
         refused(|file| file.regions[2].dimension = Dimension::Nether);
+        // Nor do the homes of the Nether and the End hold each other's chunk, or the
+        // overworld's, and a home that is none holds nothing.
+        refused(|file| file.nether_home = 4);
+        refused(|file| file.end_home = 2);
+        refused(|file| file.nether_home = 9);
     }
 
     #[test]
@@ -1068,9 +1166,10 @@ mod tests {
         table.grant(RegionId(1), 7, &[second, first]).unwrap();
         table.grant(RegionId(0), 2, &[o(9, 9)]).unwrap();
 
-        // What cannot be: with itself, with or by a region that is none, and of home.
+        // What cannot be: with itself, with or by a region that is none, and of a home,
+        // the overworld's or another dimension's.
         let before = table.clone();
-        for (region, absorbed) in [(0, 0), (0, 9), (9, 1), (0, 2)] {
+        for (region, absorbed) in [(0, 0), (0, 9), (9, 1), (0, 2), (3, 3), (3, 4)] {
             let merged = table.absorb(RegionId(region), RegionId(absorbed), 9);
             assert!(matches!(merged, Err(StoreError::Table(_))), "{merged:?}");
             assert_eq!(table, before);
@@ -1093,11 +1192,15 @@ mod tests {
         assert_eq!(table.holder(o(20, 0)), Some(RegionId(0)));
         assert_eq!(table.held_from(RegionId(0), o(20, 0)), Some(0));
         // Its id is not used again, and it is still the division it was made from.
-        assert_eq!(table.next_region, 3);
+        assert_eq!(table.next_region, 5);
         assert!(table.is_of(&gap()));
         let list = table.list(crate::tests::SPAWN, |_| 0);
         assert_eq!(list.absorbed, [(RegionId(1), RegionId(0))]);
-        assert_eq!(list.regions.len(), 2);
+        let listed = list.regions.iter().map(|info| info.region);
+        assert_eq!(
+            listed.collect::<Vec<_>>(),
+            [RegionId(0), RegionId(2), NETHER_HOME, END_HOME]
+        );
         let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
         assert_eq!(read, table);
 
@@ -1105,7 +1208,7 @@ mod tests {
         // remembered, the latest.
         assert_eq!(table.absorb(RegionId(2), RegionId(0), 10).unwrap().len(), 3);
         assert_eq!(table.absorbed_into(RegionId(0)), Some(RegionId(2)));
-        for part in 3..3 + ABSORBED_KEPT as u32 {
+        for part in 5..5 + ABSORBED_KEPT as u32 {
             table
                 .split(RegionId(2), RegionId(part), 11, &[first])
                 .unwrap();
@@ -1116,7 +1219,7 @@ mod tests {
             ABSORBED_KEPT
         );
         assert_eq!(table.absorbed_into(RegionId(1)), None);
-        assert_eq!(table.absorbed_into(RegionId(3)), Some(RegionId(2)));
+        assert_eq!(table.absorbed_into(RegionId(5)), Some(RegionId(2)));
     }
 
     #[test]
@@ -1126,15 +1229,16 @@ mod tests {
         let pinned = o(-4, 0);
         table.grant(RegionId(0), 7, &[granted]).unwrap();
 
-        // What cannot be: an id that has been used, a region that is none, and a chunk
-        // the region does not hold.
+        // What cannot be: an id that has been used (a home's among them), a region that
+        // is none, and a chunk the region does not hold.
         let before = table.clone();
         let origin = o(0, 0);
         for (region, part, chunk) in [
             (0, 2, granted),
             (0, 1, granted),
-            (9, 3, granted),
-            (0, 3, origin),
+            (0, 4, granted),
+            (9, 5, granted),
+            (0, 5, origin),
         ] {
             let split = table.split(RegionId(region), RegionId(part), 9, &[granted, chunk]);
             assert!(matches!(split, Err(StoreError::Table(_))), "{split:?}");
@@ -1143,20 +1247,20 @@ mod tests {
 
         // A chunk the region was granted and one it holds by being pinned.
         table
-            .split(RegionId(0), RegionId(3), 9, &[pinned, granted])
+            .split(RegionId(0), RegionId(5), 9, &[pinned, granted])
             .unwrap();
-        assert_eq!(table.next_region, 4);
-        assert_eq!(table.pinned(RegionId(3)), []);
-        assert_eq!(table.grants(RegionId(3)), [(pinned, 9), (granted, 9)]);
+        assert_eq!(table.next_region, 6);
+        assert_eq!(table.pinned(RegionId(5)), []);
+        assert_eq!(table.grants(RegionId(5)), [(pinned, 9), (granted, 9)]);
         assert_eq!(table.grants(RegionId(0)), []);
         for chunk in [pinned, granted] {
-            assert_eq!(table.holder(chunk), Some(RegionId(3)));
+            assert_eq!(table.holder(chunk), Some(RegionId(5)));
             assert_eq!(table.held_from(RegionId(0), chunk), None);
         }
         // The rest of the area is the pinned region's still, and the chunk that was
         // split off is its own again, from tick 0, once it is given back.
         assert_eq!(table.held_from(RegionId(0), o(-4, 1)), Some(0));
-        assert_eq!(table.release(RegionId(3), pinned), Some(9));
+        assert_eq!(table.release(RegionId(5), pinned), Some(9));
         assert_eq!(table.held_from(RegionId(0), pinned), Some(0));
         let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
         assert_eq!(read, table);
@@ -1170,6 +1274,14 @@ mod tests {
         let table = Table::made_from(&gap(), 0, 1);
         let list = table.list(crate::tests::SPAWN, |region| u64::from(region.0) * 10);
         assert_eq!(list.home, RegionId(2));
+        assert_eq!(
+            list.homes,
+            [
+                (Dimension::Overworld, RegionId(2)),
+                (Dimension::Nether, NETHER_HOME),
+                (Dimension::End, END_HOME),
+            ]
+        );
         assert_eq!(list.absorbed, []);
         let origin = ChunkPos::new(0, 0);
         let expected = [
@@ -1183,9 +1295,30 @@ mod tests {
                     max: origin,
                 }),
             ),
+            // The homes of the Nether and the End, each at its dimension's origin.
+            (
+                3,
+                Vec::new(),
+                Some(ChunkBox {
+                    min: origin,
+                    max: origin,
+                }),
+            ),
+            (
+                4,
+                Vec::new(),
+                Some(ChunkBox {
+                    min: origin,
+                    max: origin,
+                }),
+            ),
         ]
         .map(|(region, pinned, bounds)| RegionInfo {
-            dimension: Dimension::Overworld,
+            dimension: match region {
+                3 => Dimension::Nether,
+                4 => Dimension::End,
+                _ => Dimension::Overworld,
+            },
             region: RegionId(region),
             epoch: u64::from(region) * 10,
             bounds,
@@ -1205,10 +1338,10 @@ mod tests {
     #[test]
     fn a_region_keeps_its_dimension_in_the_file_the_list_and_its_split_parts() {
         let mut table = with_the_nether();
-        assert_eq!(table.dimension(RegionId(3)), Some(Dimension::Nether));
-        assert_eq!(table.grants(RegionId(3)), [(n(0, 0), 4), (n(1, 0), 6)]);
+        assert_eq!(table.dimension(NETHER_HOME), Some(Dimension::Nether));
+        assert_eq!(table.grants(NETHER_HOME), [(n(0, 0), 0), (n(1, 0), 6)]);
         let list = table.list(crate::tests::SPAWN, |_| 0);
-        let info = list.regions.iter().find(|info| info.region == RegionId(3));
+        let info = list.regions.iter().find(|info| info.region == NETHER_HOME);
         let info = info.expect("the Nether's region is listed");
         assert_eq!(info.dimension, Dimension::Nether);
         let origin = ChunkPos::new(0, 0);
@@ -1222,27 +1355,27 @@ mod tests {
         );
         // Its file names the dimension, and its grants by their positions.
         let file = table.file(1);
+        assert_eq!(file.regions[3].id, NETHER_HOME.0);
         assert_eq!(file.regions[3].dimension, Dimension::Nether);
-        assert_eq!(file.regions[3].grants, [(origin, 4), (east, 6)]);
+        assert_eq!(file.regions[3].grants, [(origin, 0), (east, 6)]);
         // A split's part is of its region's dimension.
-        table
-            .split(RegionId(3), RegionId(4), 8, &[n(1, 0)])
-            .unwrap();
-        assert_eq!(table.dimension(RegionId(4)), Some(Dimension::Nether));
-        assert_eq!(table.holder(n(1, 0)), Some(RegionId(4)));
+        let part = RegionId(table.next_region);
+        table.split(NETHER_HOME, part, 8, &[n(1, 0)]).unwrap();
+        assert_eq!(table.dimension(part), Some(Dimension::Nether));
+        assert_eq!(table.holder(n(1, 0)), Some(part));
         let read = Table::read(TableFile::decode(&table.file(1).encode()).unwrap()).unwrap();
         assert_eq!(read, table);
-        assert_eq!(read.dimension(RegionId(4)), Some(Dimension::Nether));
+        assert_eq!(read.dimension(part), Some(Dimension::Nether));
     }
 
     #[test]
     fn the_same_position_in_two_dimensions_is_two_chunks_and_pins_are_the_overworld_s() {
         let mut table = with_the_nether();
-        // The overworld's (0, 0) is the home region's, the Nether's region 3's.
+        // The overworld's (0, 0) is the home region's, the Nether's its home's.
         assert_eq!(table.holder(o(0, 0)), Some(RegionId(2)));
-        assert_eq!(table.holder(n(0, 0)), Some(RegionId(3)));
+        assert_eq!(table.holder(n(0, 0)), Some(NETHER_HOME));
         assert_eq!(table.held_from(RegionId(2), n(0, 0)), None);
-        assert_eq!(table.held_from(RegionId(3), o(0, 0)), None);
+        assert_eq!(table.held_from(NETHER_HOME, o(0, 0)), None);
         // Within a pinned area of the overworld, a Nether chunk is nobody's: neither
         // `holder` nor `pinned_holder` nor `held_from` looks at areas outside the
         // overworld (`docs/groundwork/p-plan.md`, section 3.3, R D3).
@@ -1256,36 +1389,33 @@ mod tests {
         let before = table.clone();
         let granted = table.grant(RegionId(2), 9, &[n(-5, 2)]);
         assert!(matches!(granted, Err(StoreError::Table(_))), "{granted:?}");
-        let granted = table.grant(RegionId(3), 9, &[o(5, 5)]);
+        let granted = table.grant(NETHER_HOME, 9, &[o(5, 5)]);
         assert!(matches!(granted, Err(StoreError::Table(_))), "{granted:?}");
         assert_eq!(table, before);
-        table.grant(RegionId(3), 9, &[n(-5, 2)]).unwrap();
-        assert_eq!(table.holder(n(-5, 2)), Some(RegionId(3)));
+        table.grant(NETHER_HOME, 9, &[n(-5, 2)]).unwrap();
+        assert_eq!(table.holder(n(-5, 2)), Some(NETHER_HOME));
         // Nothing of the Nether is lent or borrowed: lends are at the overworld's pins.
         assert_eq!(table.lends(RegionId(0)), (Vec::new(), Vec::new()));
-        assert_eq!(table.lends(RegionId(3)), (Vec::new(), Vec::new()));
+        assert_eq!(table.lends(NETHER_HOME), (Vec::new(), Vec::new()));
     }
 
     #[test]
     fn no_merge_joins_two_dimensions() {
         let mut table = with_the_nether();
+        // A region of the Nether that is not its home, and so may be absorbed.
+        let part = RegionId(table.next_region);
+        table.split(NETHER_HOME, part, 8, &[n(1, 0)]).unwrap();
         let before = table.clone();
-        for (region, absorbed) in [(0, 3), (3, 1)] {
-            let merged = table.absorb(RegionId(region), RegionId(absorbed), 9);
+        for (region, absorbed) in [(RegionId(0), part), (part, RegionId(1))] {
+            let merged = table.absorb(region, absorbed, 9);
             assert!(matches!(merged, Err(StoreError::Table(_))), "{merged:?}");
             assert_eq!(table, before);
         }
         // Within the Nether a merge is as any other, and an absorbed region is of the
         // dimension of the region it went into.
-        table
-            .split(RegionId(3), RegionId(4), 8, &[n(1, 0)])
-            .unwrap();
-        assert_eq!(
-            table.absorb(RegionId(3), RegionId(4), 9).unwrap(),
-            [n(1, 0)]
-        );
-        assert_eq!(table.dimension(RegionId(4)), None);
-        assert_eq!(table.dimension_ever(RegionId(4)), Some(Dimension::Nether));
+        assert_eq!(table.absorb(NETHER_HOME, part, 9).unwrap(), [n(1, 0)]);
+        assert_eq!(table.dimension(part), None);
+        assert_eq!(table.dimension_ever(part), Some(Dimension::Nether));
         assert_eq!(
             table.dimension_ever(RegionId(0)),
             Some(Dimension::Overworld)

@@ -67,6 +67,7 @@ use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
+use common::homes::{other_homes_are_untouched, overworld_ids};
 use common::processes::{Asked, Cluster, Table, Turn, ask, turn, turn_alone, worker_name};
 
 /// How long anything may take that is merely waited for. It only ever runs out when
@@ -629,6 +630,13 @@ impl Merges {
         list.regions.iter().map(|info| info.region.0).collect()
     }
 
+    /// The overworld's living regions of `list`, in ascending order: those that are
+    /// merged and split here, without the homes of the Nether and of the End, which
+    /// [`Self::whole`] checks are as the world made them.
+    fn overworld(list: &RegionList) -> Vec<Region> {
+        overworld_ids(list).iter().map(|region| region.0).collect()
+    }
+
     /// The regions of the world as the world store has them, which is what decides.
     async fn list(&mut self) -> RegionList {
         match self.cluster.regions().await {
@@ -678,6 +686,9 @@ impl Merges {
     /// was so. Returns the list of regions.
     async fn whole(&mut self) -> RegionList {
         let list = self.everything_runs().await;
+        if let Err(error) = other_homes_are_untouched(&list) {
+            self.fail(&error);
+        }
         self.served().await;
         self.note(format!(
             "the cluster is whole, with the regions {:?}",
@@ -1328,7 +1339,7 @@ async fn players_of_two_regions_keep_playing_when_one_region_absorbs_the_other()
     ));
     let noticed = merges.merge_and_notice(0, 1).await;
     let list = merges.list().await;
-    if Merges::living(&list) != [0] || list.regions[0].pinned.len() != 2 {
+    if Merges::overworld(&list) != [0] || list.regions[0].pinned.len() != 2 {
         merges.fail(&format!(
             "after the merge the list is not one region pinned to both stripes: {list:?}"
         ));
@@ -1388,7 +1399,7 @@ async fn players_keep_playing_when_a_region_is_split_and_the_part_is_moved_and_m
 
     let merged = merges.merge_and_notice(0, part).await;
     let list = merges.list().await;
-    if Merges::living(&list) != [0] {
+    if Merges::overworld(&list) != [0] {
         merges.fail(&format!(
             "after the part was merged back the list has other regions than region 0: {list:?}"
         ));
@@ -1492,7 +1503,7 @@ async fn players_keep_playing_while_a_region_is_split_and_merged_back_twenty_tim
         in_the_middle_and_at_worst(&at_once)
     ));
     let list = merges.list().await;
-    if Merges::living(&list) != [0] {
+    if Merges::overworld(&list) != [0] {
         merges.fail(&format!(
             "after every part was merged back the list has other regions than region 0: {list:?}"
         ));
@@ -1781,7 +1792,7 @@ impl Merges {
         lease: Duration,
         harm: Harm,
     ) -> (RegionList, Found) {
-        let living = Self::living(list);
+        let living = Self::overworld(list);
         let beside = living.iter().copied().find(|region| *region != 0);
         let other = if self.random.one_in(2) {
             Victim::Store
@@ -1813,7 +1824,7 @@ impl Merges {
                 .absorbed
                 .iter()
                 .any(|(gone, into)| (gone.0, into.0) == (absorbed, 0));
-            let found = match Self::living(&now).as_slice() {
+            let found = match Self::overworld(&now).as_slice() {
                 [0] if gone => Found::AsAfter,
                 both if both == living && !gone => Found::AsBefore,
                 _ => self.fail(&format!(
@@ -1851,7 +1862,7 @@ impl Merges {
                 .kill_at(&asking, owner, (moment, before), then, victim)
                 .await;
             let (asked, now) = self.got_over(asking, killed, lease).await;
-            let found = match Self::living(&now).as_slice() {
+            let found = match Self::overworld(&now).as_slice() {
                 [0] if now.next == list.next => Found::AsBefore,
                 [0, new] if *new == part && now.next.0 == part + 1 => Found::AsAfter,
                 _ => self.fail(&format!(
@@ -2040,7 +2051,7 @@ async fn players_keep_playing_when_the_edge_stands_still_across_merges_and_split
         merges.note(format!("the edge stood still for {}", seconds(stood)));
         let carried_on = Instant::now();
         let list = merges.whole().await;
-        if Merges::living(&list) != [0, part] {
+        if Merges::overworld(&list) != [0, part] {
             merges.fail(&format!(
                 "the list does not have region 0 and the part that was split off last: {list:?}"
             ));
@@ -2553,7 +2564,7 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
         };
         match (
             Merges::split_off(&asked, 0),
-            Merges::living(&list).as_slice(),
+            Merges::overworld(&list).as_slice(),
         ) {
             // The worker had the store's answer before the store died.
             (Some(part), _) => {

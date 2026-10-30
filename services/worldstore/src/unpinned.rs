@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use clustine_data::{BlockState, blocks};
 use clustine_format::{LogRecord, TableFile};
 use clustine_rpc::{ChunkBox, Decline, RegionInfo, RegionList};
-use clustine_world::{Chunk, ChunkPos, EntityId, EntityIds};
+use clustine_world::{Chunk, ChunkPos, Dimension, EntityId, EntityIds};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Dispatch, Event, Level, Metadata, Subscriber};
@@ -21,7 +21,7 @@ use crate::regions::{
     SURVIVALS, absorb, claim, give_back, hello_of, listed, put, split, state_of, store_on,
     table_file, whole, world_of_today,
 };
-use crate::tests::{generator, load, log, open, reply, save};
+use crate::tests::{first_part, generator, load, log, open, other_homes, reply, save};
 
 /// Where players enter the worlds of these tests: not at the origin, so that nothing
 /// here rests on its being there.
@@ -58,8 +58,8 @@ fn around(chunks: &[ChunkPos]) -> Option<ChunkBox> {
 /// The list of a world that is one home region which holds the home chunk at `home`
 /// and nothing else, with `next` as the next region id and without its epoch.
 fn alone(home: ChunkPos, next: u32) -> RegionList {
-    RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
+    let list = RegionList {
+        homes: vec![(Dimension::Overworld, RegionId(0))],
         spawn: crate::tests::spawn_in(home),
         home: RegionId(0),
         regions: vec![RegionInfo {
@@ -71,7 +71,27 @@ fn alone(home: ChunkPos, next: u32) -> RegionList {
         }],
         absorbed: Vec::new(),
         next: RegionId(next),
+    };
+    with_other_homes(&Division::open(home), list)
+}
+
+/// `list` with the homes of the Nether and the End of a world made from `told`, as a
+/// list without its epochs has them: after the regions of the overworld the world was
+/// made with, each holding its dimension's chunk (0, 0).
+fn with_other_homes(told: &Division, mut list: RegionList) -> RegionList {
+    let [nether_home, end_home] = other_homes(told).map(RegionId);
+    for (dimension, region) in [(Dimension::Nether, nether_home), (Dimension::End, end_home)] {
+        list.homes.push((dimension, region));
+        list.regions.push(RegionInfo {
+            dimension,
+            region,
+            epoch: 0,
+            bounds: around(&[ORIGIN]),
+            pinned: Vec::new(),
+        });
     }
+    list.regions.sort_by_key(|info| info.region);
+    list
 }
 
 /// What a test has built: the blocks it set, chunk by chunk and in the order it set
@@ -313,9 +333,18 @@ fn as_built(
     let StoreReply::Claimed { granted, .. } = answer(home, case) else {
         panic!("{case}: a claim is answered as one");
     };
+    // What was built is the overworld's: the homes of the Nether and the End hold
+    // chunks of their own dimensions at the same positions.
+    let overworld: Vec<&StoreHandle> = list
+        .regions
+        .iter()
+        .zip(regions)
+        .filter(|(info, _)| info.dimension == Dimension::Overworld)
+        .map(|(_, (handle, _))| handle)
+        .collect();
     for position in built.positions() {
         let mut loaded = Vec::new();
-        for (handle, _) in regions {
+        for handle in &overworld {
             handle.request(StoreRequest::Load { position });
             match answer(handle, case) {
                 StoreReply::Loaded { chunk, .. } => loaded.push(chunk),
@@ -371,10 +400,14 @@ fn as_made_over(
         );
         assert_eq!(restored.pinned, info.pinned, "{case}");
         // The home region of a world without pins holds the home chunk from the
-        // start, and nobody holds anything else that is not pinned.
-        let held = match info.pinned.is_empty() {
-            true => vec![(told.home, 0)],
-            false => Vec::new(),
+        // start, the homes of the Nether and the End their dimensions' chunks (0, 0),
+        // and nobody holds anything else that is not pinned.
+        let held = if info.dimension != Dimension::Overworld {
+            vec![(ORIGIN, 0)]
+        } else if info.pinned.is_empty() {
+            vec![(told.home, 0)]
+        } else {
+            Vec::new()
         };
         assert_eq!(restored.held, held, "{case}");
     }
@@ -412,10 +445,12 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         Store::local_told(directory.path(), generator(), told.clone()).unwrap(),
         store_on(&disk, &told).unwrap(),
     ];
+    // The home region, and the homes of the Nether and the End.
+    let first = first_part(&told);
     for store in stores {
-        assert_eq!(store.regions().unwrap(), alone(HOME, 1));
+        assert_eq!(store.regions().unwrap(), alone(HOME, first));
         // A hello makes no region, also where there is one only.
-        for region in [1, 2] {
+        for region in [first, first + 1] {
             let refused = store.open_region(hello_of(&told, region, 1));
             assert!(
                 matches!(refused, Err(StoreError::UnknownRegion { .. })),
@@ -430,7 +465,7 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         assert_eq!(restored.held, [(HOME, 0)]);
         assert_eq!(restored.pinned, []);
         assert_eq!(store.regions().unwrap().regions[0].epoch, 5);
-        assert_eq!(store.regions().unwrap().next, RegionId(1));
+        assert_eq!(store.regions().unwrap().next, RegionId(first));
         // A hello is a region and an epoch: said again, it is the same owner come back.
         let (home, restored) = store.open_region(hello_of(&told, 0, 5)).unwrap();
         assert_eq!(restored.held, [(HOME, 0)]);
@@ -456,12 +491,16 @@ fn a_new_world_without_pins_is_one_home_region_that_holds_the_home_chunk() {
         .into_iter()
         .chain([TableFile::decode(&in_the_directory).unwrap()]);
     for file in tables {
-        assert_eq!((file.from, file.next_region), (1, 1));
+        assert_eq!((file.from, file.next_region), (1, first));
         assert_eq!((file.home_chunk, file.home_region), (HOME, 0));
         assert_eq!(file.division, []);
-        assert_eq!(file.regions.len(), 1);
+        assert_eq!(file.regions.len(), 3);
         assert_eq!((file.regions[0].id, &file.regions[0].pinned), (0, &vec![]));
         assert_eq!(file.regions[0].grants, [(HOME, 0)]);
+        assert_eq!([file.nether_home, file.end_home], other_homes(&told));
+        for home in &file.regions[1..] {
+            assert_eq!(home.grants, [(ORIGIN, 0)]);
+        }
         assert_eq!(file.absorbed, []);
     }
 }
@@ -570,6 +609,7 @@ fn the_home_region_is_granted_what_it_claims_and_never_gives_the_home_chunk_back
 /// absorbs it again. Every answer is looked at. Returns what was built.
 fn life(store: &Store) -> Built {
     let told = open_world();
+    let id = first_part(&told);
     let (home, restored) = store.open_region(hello_of(&told, 0, 1)).unwrap();
     assert_eq!(restored.entity_ids, EntityIds::block(0).unwrap());
     let free = [NEAR, EAST, EAST_TOO, LEFT];
@@ -595,36 +635,37 @@ fn life(store: &Store) -> Built {
     let uncovered = Decline::Uncheckpointed {
         region: RegionId(0),
     };
-    assert_eq!(split(&home, 2, &[EAST], 4, 1), declined(uncovered));
+    assert_eq!(split(&home, 2, &[EAST], 4, id), declined(uncovered));
     home.request(StoreRequest::Checkpoint {
         tick: 1,
         state: whole("home", 1),
     });
     home.flush();
     assert_eq!(
-        split(&home, 2, &[EAST, HOME], 4, 1),
+        split(&home, 2, &[EAST, HOME], 4, id),
         declined(Decline::Home)
     );
-    // The first part of such a world is region 1.
+    // The first part of such a world is the region after the homes of the Nether
+    // and the End.
     let made = StoreReply::Split {
-        region: RegionId(1),
+        region: RegionId(id),
     };
-    assert_eq!(split(&home, 2, &[EAST, EAST_TOO], 4, 1), made);
+    assert_eq!(split(&home, 2, &[EAST, EAST_TOO], 4, id), made);
     let list = store.regions().unwrap();
-    assert_eq!((list.home, list.next), (RegionId(0), RegionId(2)));
+    assert_eq!((list.home, list.next), (RegionId(0), RegionId(id + 1)));
     assert_eq!(list.regions[0].bounds, around(&[HOME, NEAR]));
     let part = RegionInfo {
         dimension: Default::default(),
-        region: RegionId(1),
+        region: RegionId(id),
         epoch: 4,
         bounds: around(&[EAST, EAST_TOO]),
         pinned: Vec::new(),
     };
-    assert_eq!(list.regions[1], part);
+    assert_eq!(list.regions.last(), Some(&part));
 
     // The part is given the next block of entity keys at its hello, as any region
     // is, and is pinned to nothing.
-    let (part, restored) = store.open_region(hello_of(&told, 1, 4)).unwrap();
+    let (part, restored) = store.open_region(hello_of(&told, id, 4)).unwrap();
     assert_eq!(restored.entity_ids, EntityIds::block(1).unwrap());
     assert_eq!(state_of(&restored), Some((2, whole("part", 2))));
     assert_eq!(restored.held, [(EAST, 2), (EAST_TOO, 2)]);
@@ -641,7 +682,7 @@ fn life(store: &Store) -> Built {
     );
     assert_eq!(
         claim(&home, &[EAST, LEFT]),
-        (Vec::new(), vec![(EAST, RegionId(1)), (LEFT, RegionId(1))])
+        (Vec::new(), vec![(EAST, RegionId(id)), (LEFT, RegionId(id))])
     );
     assert_eq!(load(&part, LEFT), built.chunk(LEFT));
     log(
@@ -659,7 +700,7 @@ fn life(store: &Store) -> Built {
     let uncovered = Decline::Uncheckpointed {
         region: RegionId(0),
     };
-    assert_eq!(absorb(&home, 1, 4, 4), declined(uncovered));
+    assert_eq!(absorb(&home, id, 4, 4), declined(uncovered));
     for (handle, name, chunks) in [
         (&part, "part", [EAST, GROWN]),
         (&home, "home", [NEAR, HOME]),
@@ -674,13 +715,13 @@ fn life(store: &Store) -> Built {
         handle.flush();
     }
     let merged = StoreReply::Absorbed {
-        absorbed: RegionId(1),
+        absorbed: RegionId(id),
         chunks: vec![LEFT, GROWN, EAST, EAST_TOO],
         pinned: Vec::new(),
         in_use: vec![LEFT, GROWN, EAST, EAST_TOO],
         lends: clustine_rpc::Lends::default(),
     };
-    assert_eq!(absorb(&home, 1, 4, 4), merged);
+    assert_eq!(absorb(&home, id, 4, 4), merged);
     assert!(part.is_lost());
     for position in [EAST, GROWN, LEFT] {
         assert_eq!(load(&home, position), built.chunk(position));
@@ -690,24 +731,15 @@ fn life(store: &Store) -> Built {
 }
 
 /// The world [`life`] leaves, as a store says that is started on it: the home region
-/// alone again, with everything the part held and with the state of the merge.
+/// alone again beside the homes of the Nether and the End, with everything the part
+/// held and with the state of the merge.
 fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
     let told = open_world();
+    let id = first_part(&told);
     let (list, regions) = opened(store, &told, epoch, case);
-    let expected = RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
-        spawn: crate::tests::spawn_in(told.home),
-        home: RegionId(0),
-        regions: vec![RegionInfo {
-            dimension: Default::default(),
-            region: RegionId(0),
-            epoch: 0,
-            bounds: around(&[HOME, NEAR, EAST, EAST_TOO, LEFT, GROWN]),
-            pinned: Vec::new(),
-        }],
-        absorbed: vec![(RegionId(1), RegionId(0))],
-        next: RegionId(2),
-    };
+    let mut expected = alone(HOME, id + 1);
+    expected.regions[0].bounds = around(&[HOME, NEAR, EAST, EAST_TOO, LEFT, GROWN]);
+    expected.absorbed = vec![(RegionId(id), RegionId(0))];
     assert_eq!(list, expected, "{case}");
     let restored = &regions[0].1;
     // A fresh block, above the two that [`life`] gave.
@@ -725,7 +757,7 @@ fn as_after_a_life(store: &Store, built: &Built, epoch: u64, case: &str) {
     ];
     assert_eq!(restored.held, held, "{case}");
     assert_eq!(restored.pinned, [], "{case}");
-    let gone = store.open_region(hello_of(&told, 1, epoch));
+    let gone = store.open_region(hello_of(&told, id, epoch));
     assert!(
         matches!(
             gone,
@@ -759,8 +791,10 @@ fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
         .collect();
     // The part's state went with the merge; its region file names the block its
     // hello was given, and is kept.
-    assert!(!files.iter().any(|name| name == "1.state"), "{files:?}");
-    assert!(files.iter().any(|name| name == "1.region"), "{files:?}");
+    let id = first_part(&open_world());
+    let (state, region) = (format!("{id}.state"), format!("{id}.region"));
+    assert!(!files.contains(&state), "{files:?}");
+    assert!(files.contains(&region), "{files:?}");
 
     // And on a disk that crashes, with a store killed at every point of its start.
     let disk = Arc::new(MemoryDisk::default());
@@ -772,16 +806,16 @@ fn a_world_without_pins_lives_through_claims_a_split_and_a_merge() {
         // The part's id is not used again.
         let home = open(&store, hello_of(&open_world(), 0, epoch + 1));
         let made = StoreReply::Split {
-            region: RegionId(2),
+            region: RegionId(id + 1),
         };
-        assert_eq!(split(&home, 9, &[EAST], 1, 2), made, "{survival:?}");
+        assert_eq!(split(&home, 9, &[EAST], 1, id + 1), made, "{survival:?}");
     }
     started_at_every_kill_point(&disk, &open_world(), |store, left, epoch, case| {
         as_after_a_life(store, &built, epoch, case);
         // The part's state went with the merge; its region file names its block.
         let files = region_files(left);
-        assert!(!files.iter().any(|name| name == "1.state"), "{files:?}");
-        assert!(files.iter().any(|name| name == "1.region"), "{files:?}");
+        assert!(!files.contains(&state), "{files:?}");
+        assert!(files.contains(&region), "{files:?}");
     });
 }
 
@@ -794,7 +828,8 @@ fn a_world_without_pins_is_served_over_a_connection() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = serve(store.clone(), listener).unwrap();
     let address = server.local_addr().to_string();
-    assert_eq!(regions(&address).unwrap(), alone(HOME, 1));
+    let id = first_part(&told);
+    assert_eq!(regions(&address).unwrap(), alone(HOME, id));
 
     let (home, restored) = StoreHandle::connect(&address, hello_of(&told, 0, 1)).unwrap();
     assert_eq!(restored.entity_ids, EntityIds::block(0).unwrap());
@@ -806,21 +841,21 @@ fn a_world_without_pins_is_served_over_a_connection() {
     assert_eq!(load(&home, EAST), generator().generate(EAST));
     crate::regions::checkpoint(&home, 1);
     let made = StoreReply::Split {
-        region: RegionId(1),
+        region: RegionId(id),
     };
-    assert_eq!(split(&home, 2, &[EAST], 3, 1), made);
+    assert_eq!(split(&home, 2, &[EAST], 3, id), made);
     let list = regions(&address).unwrap();
     assert_eq!(list, store.regions().unwrap());
-    assert_eq!((list.home, list.next), (RegionId(0), RegionId(2)));
-    let (_, restored) = StoreHandle::connect(&address, hello_of(&told, 1, 3)).unwrap();
+    assert_eq!((list.home, list.next), (RegionId(0), RegionId(id + 1)));
+    let (_, restored) = StoreHandle::connect(&address, hello_of(&told, id, 3)).unwrap();
     assert_eq!(restored.entity_ids, EntityIds::block(1).unwrap());
     assert_eq!(
         (restored.held, restored.pinned),
         (vec![(EAST, 2)], Vec::new())
     );
-    let refused = StoreHandle::connect(&address, hello_of(&told, 2, 1));
+    let refused = StoreHandle::connect(&address, hello_of(&told, id + 1, 1));
     let reason = StoreError::UnknownRegion {
-        region: RegionId(2),
+        region: RegionId(id + 1),
     };
     assert!(
         matches!(&refused, Err(StoreError::Refused(given)) if *given == reason.to_string()),
@@ -870,12 +905,13 @@ fn without_pins_lived_in(disk: &Arc<MemoryDisk>) -> Built {
         state: whole("home", 1),
     });
     home.flush();
+    let id = first_part(&told);
     let made = StoreReply::Split {
-        region: RegionId(1),
+        region: RegionId(id),
     };
-    assert_eq!(split(&home, 2, &[EAST, EAST_TOO], 5, 1), made);
+    assert_eq!(split(&home, 2, &[EAST, EAST_TOO], 5, id), made);
 
-    let part = open(&store, hello_of(&told, 1, 5));
+    let part = open(&store, hello_of(&told, id, 5));
     assert_eq!(claim(&part, &[GROWN]).0, [GROWN]);
     log(
         &part,
@@ -925,22 +961,16 @@ fn as_without_pins_lived_in(store: &Store, built: &Built, epoch: u64, case: &str
         bounds: around(held),
         pinned: Vec::new(),
     };
-    let expected = RegionList {
-        homes: vec![(clustine_world::Dimension::Overworld, RegionId(0))],
-        spawn: crate::tests::spawn_in(HOME),
-        home: RegionId(0),
-        regions: vec![
-            region(0, &[HOME, NEAR]),
-            region(1, &[EAST, EAST_TOO, GROWN]),
-        ],
-        absorbed: Vec::new(),
-        next: RegionId(2),
-    };
+    // The part after the homes of the Nether and the End.
+    let id = first_part(&told);
+    let mut expected = alone(HOME, id + 1);
+    expected.regions[0] = region(0, &[HOME, NEAR]);
+    expected.regions.push(region(id, &[EAST, EAST_TOO, GROWN]));
     assert_eq!(list, expected, "{case}");
     let ticks = |restored: &Restored| -> Vec<u64> {
         restored.deltas.iter().map(|delta| delta.tick).collect()
     };
-    let (home, part) = (&regions[0].1, &regions[1].1);
+    let (home, part) = (&regions[0].1, &regions[id as usize].1);
     // Fresh blocks, above the two the world was given before.
     assert!(home.entity_ids.index() >= 2, "{case}");
     assert!(part.entity_ids.index() > home.entity_ids.index(), "{case}");
@@ -1010,12 +1040,13 @@ fn side_by_side_lived_in(disk: &Arc<MemoryDisk>, told: &Division, cut: i32) -> B
         state: whole("east", 1),
     });
     east.flush();
+    let id = first_part(told);
     let made = StoreReply::Split {
-        region: RegionId(2),
+        region: RegionId(id),
     };
-    assert_eq!(split(&east, 2, &[first, second], 6, 2), made);
+    assert_eq!(split(&east, 2, &[first, second], 6, id), made);
 
-    let part = open(&store, hello_of(told, 2, 6));
+    let part = open(&store, hello_of(told, id, 6));
     log(&part, 3, &[built.set(first, (4, 100, 4), blocks::GLASS)]);
     save(&part, first, &built.chunk(first));
     part.request(StoreRequest::Checkpoint {
@@ -1049,11 +1080,13 @@ fn as_side_by_side_lived_in(
     case: &str,
 ) {
     let (list, regions) = opened(store, told, epoch, case);
+    // The two regions, the homes of the Nether and the End, and the part.
+    let id = first_part(told);
     let mut expected =
-        table::Table::made_from(told, 3, 1).list(crate::tests::spawn_in(told.home), |_| 0);
+        table::Table::made_from(told, id + 1, 1).list(crate::tests::spawn_in(told.home), |_| 0);
     expected.regions.push(RegionInfo {
         dimension: Default::default(),
-        region: RegionId(2),
+        region: RegionId(id),
         epoch: 0,
         bounds: around(&of_the_part(cut)),
         pinned: Vec::new(),
@@ -1062,7 +1095,7 @@ fn as_side_by_side_lived_in(
     let ticks = |restored: &Restored| -> Vec<u64> {
         restored.deltas.iter().map(|delta| delta.tick).collect()
     };
-    let [west, east, part] = [0, 1, 2].map(|region: usize| &regions[region].1);
+    let [west, east, part] = [0, 1, id as usize].map(|region| &regions[region].1);
     assert_eq!((state_of(west), ticks(west)), (None, vec![1]), "{case}");
     assert_eq!(state_of(east), Some((2, whole("rest", 2))), "{case}");
     assert_eq!(ticks(east), [3], "{case}");
@@ -1140,10 +1173,15 @@ fn a_world_of_stripes_started_without_pins_is_made_over_into_one_home_region() {
 
         let left = Arc::new(disk.crashed(Survival::Nothing));
         let store = started(&left, &told, true, "at once");
-        // The list is that of a new world, but for the ids that were used before.
-        assert_eq!(listed(&store.regions().unwrap()), alone(HOME, 3));
-        // The regions that are no more are refused as regions that never were.
-        for region in [1, 2] {
+        // The list is that of a new world, but for the ids that were used before:
+        // those of the stripes, of their homes of the Nether and the End, and of the
+        // part.
+        let used = first_part(&pinned_at(&[cut])) + 1;
+        assert_eq!(listed(&store.regions().unwrap()), alone(HOME, used));
+        // The regions that are no more are refused as regions that never were. The
+        // ids of the eastern stripe and of the stripes' Nether home are those of the
+        // homes of the Nether and the End now.
+        for region in first_part(&told)..used {
             let refused = store.open_region(hello_of(&told, region, 100));
             assert!(
                 matches!(refused, Err(StoreError::UnknownRegion { .. })),
@@ -1164,41 +1202,45 @@ fn a_world_of_stripes_started_without_pins_is_made_over_into_one_home_region() {
         assert_eq!(restored.held, [(HOME, 0)]);
 
         made_over(&disk, &told, cut == 0, |store, left, epoch, case| {
-            let regions = as_made_over(store, &told, 3, &built, epoch, case);
+            let regions = as_made_over(store, &told, used, &built, epoch, case);
             // A fresh block, above the three the stripes and the part were given.
             assert!(regions[0].entity_ids.index() >= 3, "{case}");
             // No state is left. Every region that was opened has a block, and the
             // region files of those that are gone are kept, naming blocks that are
-            // not to be given again whatever becomes of the file of blocks.
+            // not to be given again whatever becomes of the file of blocks: the
+            // stripes', the part's, and those of the homes of the Nether and the
+            // End, which were opened now.
             let files = region_files(left);
+            let part = format!("{}.region", used - 1);
             assert_eq!(
                 files,
-                ["0.region", "1.region", "2.region", "blocks", "table"],
+                ["0.region", "1.region", "2.region", &part, "blocks", "table"],
                 "{case}"
             );
         });
     }
 }
 
-/// T4: the other way round. The part that was region 1 is gone as the stripes were,
-/// and region 1 is the eastern of two pinned regions.
+/// T4: the other way round. The part is gone as the stripes were, and region 1 is
+/// the eastern of two pinned regions.
 #[test]
 fn a_world_without_pins_started_with_pins_is_made_over_into_pinned_regions() {
     let disk = Arc::new(MemoryDisk::default());
     let built = without_pins_lived_in(&disk);
+    // The home region, the homes of the Nether and the End, and the part.
+    let used = first_part(&open_world()) + 1;
     let two = pinned_at(&[4]);
     for told in [two.clone(), pinned_at(&[]), pinned_at(&[-8, 2, 5])] {
-        let pinned = told.pinned.len() as u32;
         let left = Arc::new(disk.crashed(Survival::Nothing));
         let store = started(&left, &told, true, "at once");
         let list = store.regions().unwrap();
         let home = told.pinned.iter().position(|area| area.contains(HOME));
         assert_eq!(list.home, RegionId(home.unwrap() as u32));
-        assert_eq!(list.next, RegionId(pinned.max(2)));
+        assert_eq!(list.next, RegionId(first_part(&told).max(used)));
         assert_eq!(list.absorbed, []);
 
         made_over(&disk, &told, told == two, |store, left, epoch, case| {
-            let regions = as_made_over(store, &told, 2, &built, epoch, case);
+            let regions = as_made_over(store, &told, used, &built, epoch, case);
             // Every region is given a fresh block, above the two the home region and
             // the part were given before, also the one whose id was the part's.
             assert!(regions[0].entity_ids.index() >= 2, "{case}");
@@ -1215,7 +1257,7 @@ fn a_world_without_pins_started_with_pins_is_made_over_into_pinned_regions() {
     let disk = Arc::new(MemoryDisk::default());
     let built = life(&store_on(&disk, &open_world()).unwrap());
     made_over(&disk, &two, false, |store, _, epoch, case| {
-        as_made_over(store, &two, 2, &built, epoch, case);
+        as_made_over(store, &two, used, &built, epoch, case);
         assert_eq!(store.regions().unwrap().absorbed, [], "{case}");
     });
 }
@@ -1226,19 +1268,31 @@ fn a_world_without_pins_started_with_pins_is_made_over_into_pinned_regions() {
 fn a_world_without_pins_started_with_another_home_chunk_is_made_over() {
     let disk = Arc::new(MemoryDisk::default());
     let built = without_pins_lived_in(&disk);
+    // The home region, the homes of the Nether and the End, and the part.
+    let used = first_part(&open_world()) + 1;
     // A chunk that nobody held, one of the part's, and one that the part had claimed.
     for home in [ORIGIN, EAST, GROWN] {
         let told = Division::open(home);
         made_over(&disk, &told, home == ORIGIN, |store, left, epoch, case| {
             if epoch == 100 {
-                assert_eq!(listed(&store.regions().unwrap()), alone(home, 2), "{case}");
+                assert_eq!(
+                    listed(&store.regions().unwrap()),
+                    alone(home, used),
+                    "{case}"
+                );
             }
-            let regions = as_made_over(store, &told, 2, &built, epoch, case);
+            let regions = as_made_over(store, &told, used, &built, epoch, case);
             // A fresh block, above the two the home region and the part were given.
             assert!(regions[0].entity_ids.index() >= 2, "{case}");
             // No state is left; the part's region file names its block, and is kept.
+            // The homes of the Nether and the End have theirs since they were opened.
             let files = region_files(left);
-            assert_eq!(files, ["0.region", "1.region", "blocks", "table"], "{case}");
+            let part = format!("{}.region", used - 1);
+            assert_eq!(
+                files,
+                ["0.region", "1.region", "2.region", &part, "blocks", "table"],
+                "{case}"
+            );
         });
     }
 }
@@ -1331,7 +1385,8 @@ fn a_world_that_cannot_be_read_is_not_made_over() {
         // Counted from here on.
         (Arc::new(damaged.with(Fault::Fail(u64::MAX))), path)
     };
-    for name in ["regions/table", "regions/1.region", "regions/2.state"] {
+    let part_state = format!("regions/{}.state", first_part(&pinned_at(&[4])));
+    for name in ["regions/table", "regions/1.region", &part_state] {
         for told in [open_world(), pinned_at(&[0]), pinned_at(&[4])] {
             let (left, path) = damaged(name);
             let (refused, lines) = logged(|| store_on(&left, &told));
@@ -1367,7 +1422,9 @@ fn a_world_whose_regions_had_nothing_says_that_they_begin_anew_all_the_same() {
     drop(started(&disk, &pinned_at(&[4]), false, "a new world"));
     let left = Arc::new(disk.crashed(Survival::Nothing));
     let store = started(&left, &open_world(), true, "never opened");
-    assert_eq!(store.regions().unwrap(), alone(HOME, 2));
+    // Above the ids of the stripes and of their homes of the Nether and the End.
+    let used = first_part(&pinned_at(&[4]));
+    assert_eq!(store.regions().unwrap(), alone(HOME, used));
 
     // One whose regions were opened and did nothing. Their owners are those who find
     // their regions gone.
@@ -1419,12 +1476,21 @@ fn a_world_in_a_directory_is_made_over_for_other_pins() {
         assert_eq!(state_of(&restored), Some((1, whole("east", 1))));
     }
     // No pins, and then pins again: made over each time, and found as it is after.
+    // The ids of the stripes and of their homes of the Nether and the End.
+    let used = first_part(&pinned_at(&[4]));
     for (told, epoch) in [(open_world(), 10), (pinned_at(&[4]), 12)] {
         let store = start(&told, true, "other pins");
-        as_made_over(&store, &told, 2, &built, epoch, "other pins");
+        as_made_over(&store, &told, used, &built, epoch, "other pins");
         drop(store);
         let store = start(&told, false, "the same pins again");
-        as_made_over(&store, &told, 2, &built, epoch + 1, "the same pins again");
+        as_made_over(
+            &store,
+            &told,
+            used,
+            &built,
+            epoch + 1,
+            "the same pins again",
+        );
         let state = directory.path().join("regions/1.state");
         assert!(!state.exists());
     }

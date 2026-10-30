@@ -419,6 +419,14 @@ pub fn living(list: &RegionList) -> Vec<Region> {
     list.regions.iter().map(|info| info.region.0).collect()
 }
 
+/// The overworld's living regions of `list`, in ascending order: those players
+/// wander in, without the homes of the Nether and of the End, which
+/// [`Wanders::whole`] checks are as the world made them.
+pub fn overworld(list: &RegionList) -> Vec<Region> {
+    let ids = super::homes::overworld_ids(list);
+    ids.iter().map(|region| region.0).collect()
+}
+
 /// The region that `list` has `region` absorbed by, if it has it absorbed.
 pub fn absorbed_by(list: &RegionList, region: Region) -> Option<Region> {
     let pair = list.absorbed.iter().find(|(gone, _)| gone.0 == region);
@@ -1149,6 +1157,9 @@ impl Wanders {
     /// sent after that was so. Returns the list of regions.
     pub async fn whole(&mut self) -> RegionList {
         let list = self.everything_runs().await;
+        if let Err(error) = super::homes::other_homes_are_untouched(&list) {
+            self.fail(&error);
+        }
         self.served().await;
         let loads = self.a_cluster().map(Cluster::loads);
         self.note(format!(

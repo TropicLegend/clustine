@@ -13,7 +13,7 @@ use std::sync::Arc;
 use clustine_region::RegionId;
 use clustine_rpc::{ChunkBox, RegionHello, RegionList, Restored, StoreRequest};
 use clustine_world::generation::GeneratorSettings;
-use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkGenerator, ChunkPos};
+use clustine_world::{BlockPos, Chunk, ChunkArea, ChunkGenerator, ChunkPos, Dimension};
 use clustine_worldgen::{FlatGenerator, TerrainGenerator};
 
 use crate::chunks::FileChunks;
@@ -76,13 +76,19 @@ fn lists_chunk(list: &RegionList, region: RegionId, chunk: ChunkPos) -> bool {
     in_bounds || info.pinned.iter().any(|area| area.contains(chunk))
 }
 
-/// Holds the store to the home region being the one, and the only one, that has the
-/// spawn's chunk, and returns the list and what the home region is opened with.
+/// Holds the store to the home region being the one, and the only one of the
+/// overworld, that has the spawn's chunk, and returns the list and what the home region
+/// is opened with. The homes of the Nether and the End hold their dimensions' chunk
+/// (0, 0), which is not the spawn's even where its position is.
 fn home_holds_the_spawn(store: &Store, spawn: BlockPos) -> (RegionList, Restored) {
     let list = store.regions().unwrap();
     assert_eq!(list.spawn, spawn);
     let chunk = spawn.chunk();
-    for info in &list.regions {
+    let overworld = list
+        .regions
+        .iter()
+        .filter(|info| info.dimension == Dimension::Overworld);
+    for info in overworld {
         assert_eq!(
             lists_chunk(&list, info.region, chunk),
             info.region == list.home,
@@ -262,7 +268,9 @@ fn with_no_pins_the_home_region_is_granted_the_spawns_chunk() {
     let memory = Store::memory_divided(flat_at(spawn), Pins::none()).unwrap();
     for store in [memory, local] {
         let (list, restored) = home_holds_the_spawn(&store, spawn);
-        assert_eq!(list.regions.len(), 1, "{list:?}");
+        // The home region, and the homes of the Nether and the End.
+        let dimensions: Vec<_> = list.regions.iter().map(|info| info.dimension).collect();
+        assert_eq!(dimensions, Dimension::ALL, "{list:?}");
         let home = &list.regions[0];
         assert!(home.pinned.is_empty(), "{list:?}");
         assert_eq!(
@@ -298,8 +306,9 @@ fn with_pins_the_home_region_is_the_pinned_one_that_holds_the_spawns_chunk() {
         for store in [memory, local] {
             let (list, restored) = home_holds_the_spawn(&store, spawn);
             assert_eq!(list.home, home, "{spawn:?}");
-            // No region is made for the home chunk beside the pinned ones.
-            assert_eq!(list.regions.len(), 3, "{spawn:?}: {list:?}");
+            // No region is made for the home chunk beside the pinned ones: there are
+            // the three of them and the homes of the Nether and the End.
+            assert_eq!(list.regions.len(), 3 + 2, "{spawn:?}: {list:?}");
             assert!(
                 restored
                     .pinned
@@ -358,14 +367,16 @@ fn a_spawn_in_a_gap_between_pinned_areas_is_granted_to_a_region_of_its_own() {
     let store = Store::memory_divided(flat_at(spawn), pins).unwrap();
     let (list, restored) = home_holds_the_spawn(&store, spawn);
     assert_eq!(list.home, RegionId(2));
-    assert_eq!(list.regions.len(), 3);
+    // The two pinned regions, the home region, and the homes of the Nether and the End.
+    assert_eq!(list.regions.len(), 3 + 2);
     assert!(restored.pinned.is_empty());
     assert_eq!(restored.held, [(chunk, 0)]);
 }
 
 /// T8c: "The store tells each region the spawn when it opens it (in `StoreWelcome`)":
-/// every region, the home one and the others, in the store's process and over TCP; and
-/// the list says it too.
+/// every region of the overworld, the home one and the others, in the store's process
+/// and over TCP; and the list says it too. The homes of the Nether and the End are told
+/// none, the spawn being the overworld's (`docs/groundwork/p-plan.md`, section 15.2).
 #[test]
 fn every_region_is_told_the_spawn_when_opened_in_memory_and_over_tcp() {
     let directory = tempfile::tempdir().unwrap();
@@ -375,24 +386,33 @@ fn every_region_is_told_the_spawn_when_opened_in_memory_and_over_tcp() {
     for store in [memory, local] {
         let list = store.regions().unwrap();
         assert_eq!(list.spawn, AWAY);
-        let regions: Vec<RegionId> = list.regions.iter().map(|info| info.region).collect();
-        assert_eq!(regions.len(), 3);
-        for region in &regions {
+        // The three pinned regions and the homes of the Nether and the End, with the
+        // spawn each is told.
+        let regions: Vec<(RegionId, Option<BlockPos>)> = list
+            .regions
+            .iter()
+            .map(|info| {
+                let spawn = (info.dimension == Dimension::Overworld).then_some(AWAY);
+                (info.region, spawn)
+            })
+            .collect();
+        assert_eq!(regions.len(), 3 + 2);
+        for (region, spawn) in &regions {
             let (handle, restored) = store.open_region(first(*region)).unwrap();
-            assert_eq!(restored.spawn, Some(AWAY), "{region:?}");
+            assert_eq!(restored.spawn, *spawn, "{region:?}");
             drop(handle);
         }
 
         let server = crate::serve(store, TcpListener::bind("127.0.0.1:0").unwrap()).unwrap();
         let address = server.local_addr().to_string();
         assert_eq!(crate::regions(&address).unwrap().spawn, AWAY);
-        for region in &regions {
+        for (region, spawn) in &regions {
             let hello = RegionHello {
                 region: *region,
                 epoch: 2,
             };
             let (handle, restored) = StoreHandle::connect(&address, hello).unwrap();
-            assert_eq!(restored.spawn, Some(AWAY), "{region:?} over TCP");
+            assert_eq!(restored.spawn, *spawn, "{region:?} over TCP");
             drop(handle);
         }
         server.stop();

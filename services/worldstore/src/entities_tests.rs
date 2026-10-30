@@ -604,14 +604,15 @@ fn a_split_gives_the_part_the_entities_of_its_chunks() {
     commit(&old, 1, &[], vec![(FREE, EntityChange::Whole(in_free()))]);
     save_parts(&old, FREE, 1, &free_with_its_item(), Parts::ALL);
     checkpoint(&old, 2);
+    let id = crate::tests::first_part(&gap());
     assert_eq!(
-        split(&old, 7, &[FREE], 4, 3),
+        split(&old, 7, &[FREE], 4, id),
         StoreReply::Split {
-            region: RegionId(3)
+            region: RegionId(id)
         }
     );
     old.flush();
-    let (part, _) = store.open_region(hello_of(&gap(), 3, 4)).unwrap();
+    let (part, _) = store.open_region(hello_of(&gap(), id, 4)).unwrap();
     assert_eq!(load(&part, FREE), free_with_its_item());
     part.flush();
     drop((part, old, store));
@@ -619,7 +620,7 @@ fn a_split_gives_the_part_the_entities_of_its_chunks() {
     for (epoch, survival) in (5..).zip(SURVIVALS) {
         let left = Arc::new(disk.crashed(survival));
         let store = store_on(&left, &gap()).unwrap();
-        let (part, _) = store.open_region(hello_of(&gap(), 3, epoch)).unwrap();
+        let (part, _) = store.open_region(hello_of(&gap(), id, epoch)).unwrap();
         assert_eq!(load(&part, FREE), free_with_its_item(), "{survival:?}");
         part.flush();
     }

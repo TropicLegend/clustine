@@ -55,6 +55,7 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use common::homes::{other_homes_are_untouched, overworld, overworld_list};
 use common::processes::{Cluster, Turn, ask, turn, turn_alone};
 use common::{VIEW_DISTANCE, config, free_address, spawn_server, start, start_with};
 
@@ -1286,9 +1287,10 @@ fn has_chunk(list: &RegionList, region: RegionId, chunk: (i32, i32)) -> bool {
     })
 }
 
-/// The region other than the home region whose land has `chunk`, if one has.
+/// The overworld's region other than the home region whose land has `chunk`, if one
+/// has.
 fn holder_away_from_home(list: &RegionList, chunk: (i32, i32)) -> Option<RegionId> {
-    let mut others = list.regions.iter().map(|info| info.region);
+    let mut others = overworld(list).into_iter().map(|info| info.region);
     others.find(|region| *region != list.home && has_chunk(list, *region, chunk))
 }
 
@@ -1317,7 +1319,9 @@ fn in_short(list: &RegionList) -> String {
 }
 
 /// Waits until the store's list of regions is as `state` wants it, while the bots
-/// stay connected, and returns it.
+/// stay connected, and returns it. `state` is given the overworld's regions alone:
+/// the homes of the Nether and of the End, which nothing here goes to, are to stay
+/// as the world made them.
 async fn until_the_regions(
     server: &Server,
     bots: &mut [&mut Bot],
@@ -1327,7 +1331,10 @@ async fn until_the_regions(
     let waiting = Instant::now();
     loop {
         let list = server.regions().unwrap();
-        if state(&list) {
+        if let Err(error) = other_homes_are_untouched(&list) {
+            panic!("{error}");
+        }
+        if state(&overworld_list(&list)) {
             return list;
         }
         assert!(
@@ -2631,7 +2638,11 @@ async fn rows_6_and_7_a_second_login_in_the_moment_the_region_of_the_first_is_ab
     // Row 6: split off a moment ago. Whatever the merge came to, the twin's chunk is
     // split off the region that has it now.
     let list = stage.cluster.regions().await.unwrap();
-    let region = if list.regions.len() == 1 { HOME } else { OTHER };
+    let region = if overworld(&list).len() == 1 {
+        HOME
+    } else {
+        OTHER
+    };
     // Somebody who stays, so that the region is not all in the part: the friend at
     // the spawn point for the home region, and for the east a settler further out.
     let mut settler = join(&stage.first, "Settler").await;

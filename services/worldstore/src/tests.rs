@@ -116,6 +116,26 @@ pub(crate) fn division() -> Division {
     Division::side_by_side(ChunkPos::new(0, 0), &[0]).unwrap()
 }
 
+/// The ids of the homes of the Nether and of the End in a world made from `division`:
+/// they are made after its regions of the overworld, which are one for each pinned
+/// area and the home region if no area holds the home chunk
+/// (`docs/groundwork/p-plan.md`, decision 2).
+pub(crate) fn other_homes(division: &Division) -> [u32; 2] {
+    let pinned = division.pinned.len() as u32;
+    let home_pinned = division
+        .pinned
+        .iter()
+        .any(|area| area.contains(division.home));
+    let overworld = pinned + u32::from(!home_pinned);
+    [overworld, overworld + 1]
+}
+
+/// The id of the first region that a world made from `division` makes after it was
+/// made, by a split: the next after the homes of the Nether and of the End.
+pub(crate) fn first_part(division: &Division) -> u32 {
+    other_homes(division)[1] + 1
+}
+
 /// A store in memory for the two regions of [`division`].
 pub(crate) fn memory() -> Store {
     Store::memory_told(generator(), division()).unwrap()
@@ -742,7 +762,8 @@ fn a_world_opened_with_another_division_has_what_the_regions_of_the_old_one_comm
     let (_, restored) = store.open_region(hello(1, 4)).unwrap();
     assert_eq!((restored.state, restored.deltas), (None, Vec::new()));
     // The world is divided as the store was told when it started: the list has the two
-    // regions side by side, and there is no file `layout`.
+    // regions side by side and the homes of the Nether and the End, pinned to nothing,
+    // and there is no file `layout`.
     let list = store.regions().unwrap();
     let area = |min_x, max_x| ChunkArea { min_x, max_x };
     let listed: Vec<_> = list
@@ -754,7 +775,9 @@ fn a_world_opened_with_another_division_has_what_the_regions_of_the_old_one_comm
         listed,
         [
             (RegionId(0), vec![area(None, Some(0))]),
-            (RegionId(1), vec![area(Some(0), None)])
+            (RegionId(1), vec![area(Some(0), None)]),
+            (RegionId(2), Vec::new()),
+            (RegionId(3), Vec::new()),
         ]
     );
     assert_eq!(list.home, RegionId(1));
@@ -1995,7 +2018,8 @@ fn nobody_is_served_while_the_log_cannot_be_cut_back_for_good() {
     assert_eq!(list, None);
 
     disk.failing_syncs.store(false, Ordering::SeqCst);
-    assert_eq!(store.regions().unwrap().regions.len(), 2);
+    // The two stripes and the homes of the Nether and the End.
+    assert_eq!(store.regions().unwrap().regions.len(), 4);
     assert_eq!(regions(&address).unwrap(), store.regions().unwrap());
     let (remote, restored) = StoreHandle::connect(&address, hello(1, 2)).unwrap();
     assert_eq!(restored.state, None);

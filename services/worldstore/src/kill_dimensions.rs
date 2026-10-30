@@ -7,14 +7,14 @@
 //! leaves is opened by a new store, and each region is restored with its own chunks and
 //! its own grants, and the Nether's with every traveller filed and not taken, once.
 //!
-//! Until the homes of the other dimensions are made with the world, the test plants a
-//! table with a Nether region before the store starts, as the table of a later step
-//! will have it.
+//! The regions of the Nether and the End are their homes, which are made with the
+//! world; the test makes the table before the store starts, so that the faults fall on
+//! what the store does after.
 
 use std::path::Path;
 
 use clustine_data::blocks;
-use clustine_format::{LogRecord, TableFile, TableRegion, read_log};
+use clustine_format::{LogRecord, TableFile, read_log};
 use clustine_world::{
     BlockPos, Change, Chunk, ChunkPos, Dimension, EffectId, LevelChunk, Travel, Traveller, Way,
 };
@@ -23,7 +23,7 @@ use super::*;
 use crate::disk::{Fault, MemoryDisk, Survival, replace};
 use crate::entities_tests::item;
 use crate::table::Table;
-use crate::tests::{generator, hello};
+use crate::tests::{generator, hello, other_homes};
 
 const ROOT: &str = "/world";
 const ORIGIN: ChunkPos = ChunkPos::new(0, 0);
@@ -34,10 +34,10 @@ const NOBODYS: ChunkPos = ChunkPos::new(9, 9);
 
 /// The overworld's home region, which holds the overworld's chunk at the origin.
 const OVERWORLD: RegionId = RegionId(0);
-/// The Nether's region, which holds the Nether's chunk at the origin: the Nether's
-/// home chunk.
+/// The Nether's home, which holds the Nether's chunk at the origin: the Nether's home
+/// chunk.
 const NETHER: RegionId = RegionId(1);
-/// A region of the End, which holds nothing.
+/// The End's home, which holds the End's chunk at the origin and nothing else.
 const END: RegionId = RegionId(2);
 
 /// The chunks are saved, and the regions checkpoint, as of the last tick, so that the
@@ -46,24 +46,13 @@ const TICKS: u64 = 4;
 const SAVED_AS_OF: u64 = TICKS;
 const CHECKPOINT: u64 = TICKS;
 
-/// The world of one home region in the overworld, with the regions of the Nether and of
-/// the End planted in its table, on a disk that gets `fault` from then on.
+/// The world of one home region in the overworld and the homes of the Nether and of
+/// the End, with its table in place, on a disk that gets `fault` from then on.
 fn planted(fault: Option<Fault>) -> Arc<MemoryDisk> {
     let disk = MemoryDisk::default();
-    let mut file = Table::made_from(&Division::open(ORIGIN), 0, 1).file(1);
-    file.regions.push(TableRegion {
-        id: NETHER.0,
-        dimension: Dimension::Nether,
-        pinned: Vec::new(),
-        grants: vec![(ORIGIN, 0)],
-    });
-    file.regions.push(TableRegion {
-        id: END.0,
-        dimension: Dimension::End,
-        pinned: Vec::new(),
-        grants: Vec::new(),
-    });
-    file.next_region = 3;
+    let division = Division::open(ORIGIN);
+    assert_eq!(other_homes(&division), [NETHER.0, END.0]);
+    let file = Table::made_from(&division, 0, 1).file(1);
     plant(&disk, &file);
     Arc::new(match fault {
         Some(fault) => disk.with(fault),
@@ -505,14 +494,19 @@ fn a_traveller_not_taken_is_written_forward_when_its_segment_goes_and_the_chunks
     }
 }
 
+/// A traveller into land nobody holds goes to the home of its dimension, which is
+/// granted the land (`docs/groundwork/p-plan.md`, section 3.3, R D12). Before the
+/// homes were made with the world, the End had none that held its home chunk, and
+/// the traveller waited, filed, for whoever claimed its chunk; a world has no such
+/// End any more, and its table is refused (`Table::read`).
 #[test]
-fn a_traveller_into_land_nobody_holds_waits_for_whoever_claims_it() {
+fn a_traveller_into_land_nobody_holds_goes_to_the_home_of_its_dimension() {
     let disk = planted(None);
     let store = store_on(Arc::clone(&disk)).unwrap();
     let (overworld, _) = store.open_region(hello(OVERWORLD.0, 1)).unwrap();
     let (end, _) = store.open_region(hello(END.0, 1)).unwrap();
-    // Nobody holds the End's home chunk, so the traveller is filed for its chunk and
-    // nobody's.
+    // Nobody holds the End's chunk the traveller goes to: the End's home holds the
+    // End's chunk at the origin alone.
     let far = ChunkPos::new(3, -3);
     let mut sent = traveller(77, far);
     sent.travel.to = Dimension::End;
@@ -525,10 +519,7 @@ fn a_traveller_into_land_nobody_holds_waits_for_whoever_claims_it() {
         Vec::new(),
     ));
     assert_eq!(settle(&overworld).0, [1]);
-    let (_, replies) = settle(&end);
-    assert_eq!(travellers_in(&replies), []);
-    // The End's region claims the chunk, and has the traveller behind the grant.
-    end.request(StoreRequest::Claim { chunks: vec![far] });
+    // The End's home is granted the chunk, and has the traveller behind the grant.
     let (_, replies) = settle(&end);
     assert!(granted(&replies, far), "{replies:?}");
     let travellers = travellers_in(&replies);
@@ -607,21 +598,16 @@ fn a_change_of_division_folds_each_region_s_changes_into_its_dimension_and_never
     });
     assert!(forward, "the traveller is written forward");
 
-    // A region of the Nether that holds the chunk again is handed it at its hello.
-    let mut file =
+    // The Nether's home of the world made over holds the chunk again, and is handed
+    // the traveller at its hello.
+    let file =
         TableFile::decode(&disk.read(&root.join("regions/table")).unwrap().unwrap()).unwrap();
-    let id = file.next_region;
-    file.regions.push(TableRegion {
-        id,
-        dimension: Dimension::Nether,
-        pinned: Vec::new(),
-        grants: vec![(ORIGIN, 0)],
-    });
-    file.next_region += 1;
-    plant(&disk, &file);
+    let [id, _] = other_homes(&pinned);
+    assert_eq!(file.nether_home, id);
     let chunks = FileChunks::new(disk.clone(), root);
     let store = start(disk.clone(), root, Box::new(chunks), generator(), &pinned).unwrap();
-    let (nether, _) = store.open_region(hello(id, 1)).unwrap();
+    let (nether, restored) = store.open_region(hello(id, 1)).unwrap();
+    assert_eq!(restored.held, [(ORIGIN, 0)]);
     let travellers = travellers_in(&settle(&nether).1);
     assert_eq!(travellers.len(), 1);
     assert_eq!(travellers[0].1, traveller(55, ORIGIN));

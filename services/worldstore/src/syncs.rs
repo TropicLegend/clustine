@@ -649,6 +649,7 @@ fn a_split_waits_for_four_syncs_of_its_own_behind_those_of_its_checkpoints() {
     let second = world.watch_checkpoint("a split: the second checkpoint", &west, 2, &[]);
     assert_eq!(second, seen(&[STATE, REGIONS], Some(2)));
 
+    let part = crate::tests::first_part(&gap());
     let split = world.watch_reply(
         "a split: the record",
         &west,
@@ -661,7 +662,7 @@ fn a_split_waits_for_four_syncs_of_its_own_behind_those_of_its_checkpoints() {
                     state: whole("part", 3),
                 },
                 as_epoch: 7,
-                region: RegionId(3),
+                region: RegionId(part),
             });
         },
         |reply| matches!(reply, StoreReply::Split { .. }),
@@ -672,7 +673,7 @@ fn a_split_waits_for_four_syncs_of_its_own_behind_those_of_its_checkpoints() {
 
     // The worker's hello for the part writes its file again, with the block of entity
     // keys it is given, before the answer, as any hello does (ADR-0028, section 1).
-    let hello = hello_of(&gap(), 3, 7);
+    let hello = hello_of(&gap(), part, 7);
     let (opened, _part, _) = world.watch_open("a split: the hello for the part", hello);
     assert_eq!(opened, seen(&[REGION_FILE, REGIONS, COMMIT], Some(2)));
 }

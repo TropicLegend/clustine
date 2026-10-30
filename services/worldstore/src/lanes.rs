@@ -3776,7 +3776,7 @@ impl Lanes {
         if absorbed == region {
             return Err(Decline::NoSuchRegion);
         }
-        if absorbed == self.table.home_region {
+        if self.table.is_home_region(absorbed) {
             return Err(Decline::Home);
         }
         // No merge joins two dimensions (`docs/groundwork/p-plan.md`, section 3.4): the

@@ -248,13 +248,21 @@ async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
 
     // The region is split there. Until the worker says what came of it, it names the
     // regions it had. A look that falls between the split and the loop's hearing of
-    // it may find the player gone already; none finds them back afterwards.
+    // it may find the player gone already; none finds them back afterwards. The part
+    // is named as a coordinator names it, by the store's next id: after the two
+    // stripes and the homes of the Nether and of the End, which this coordinator gives
+    // to nobody.
+    let list = cluster
+        .regions()
+        .await
+        .expect("the store lists its regions");
+    let part = list.next.0;
     let split = FromCoordinator::SplitOff {
         region: RegionId(0),
         epoch: 3,
         chunks: vec![APART],
         as_epoch: 9,
-        part: RegionId(2),
+        part: RegionId(part),
     };
     worker.send(split).await.unwrap();
     let ended = loop {
@@ -270,11 +278,11 @@ async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
     let split_off = ToCoordinator::SplitEnded {
         region: RegionId(0),
         as_epoch: 9,
-        outcome: Ok(RegionId(2)),
+        outcome: Ok(RegionId(part)),
     };
     assert_eq!(ended, split_off, "{}", cluster.all_logs());
     // The edge is told where the new region is, as a coordinator does.
-    let all = [both[0], both[1], assignment(2, 9)];
+    let all = [both[0], both[1], assignment(part, 9)];
     edge.send(played.table(2, &address, &all)).await.unwrap();
 
     // Every word behind that one is of after the split: the player is no longer in
@@ -287,8 +295,8 @@ async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
             break regions;
         }
     };
-    assert_eq!(named(&gone), [(0, 3), (1, 5), (2, 9)]);
-    assert!(sees(&gone, 2, &[(APART, 1)]), "{gone:?}");
+    assert_eq!(named(&gone), [(0, 3), (1, 5), (part, 9)]);
+    assert!(sees(&gone, part, &[(APART, 1)]), "{gone:?}");
     assert!(sees(&gone, 1, &[]), "{gone:?}");
 
     // The coordinator goes away and is back, knowing nothing of the split. The worker
@@ -296,12 +304,12 @@ async fn a_worker_says_where_the_players_of_the_regions_it_runs_are() {
     // and where its players are from then on as it did.
     drop(worker);
     let (mut worker, holding) = played.registers(&both).await;
-    assert_eq!(holding, [(0, 3), (1, 5), (2, 9)]);
+    assert_eq!(holding, [(0, 3), (1, 5), (part, 9)]);
     assert_eq!(said(&mut worker).await, split_off);
     let again = report(&mut worker).await;
-    assert_eq!(named(&again), [(0, 3), (1, 5), (2, 9)]);
+    assert_eq!(named(&again), [(0, 3), (1, 5), (part, 9)]);
     assert!(sees(&again, 0, &[]), "{again:?}");
-    assert!(sees(&again, 2, &[(APART, 1)]), "{again:?}");
+    assert!(sees(&again, part, &[(APART, 1)]), "{again:?}");
     for (now, then) in again.iter().zip(&gone) {
         assert!(now.tick > then.tick, "{again:?} after {gone:?}");
     }

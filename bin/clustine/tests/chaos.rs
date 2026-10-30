@@ -40,6 +40,7 @@ use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
 use common::following;
+use common::homes::OTHER_HOMES;
 use common::processes::{Cluster, Turn, turn, worker_name};
 use common::{VIEW_DISTANCE, config, start_with, view_area};
 
@@ -165,9 +166,10 @@ impl Chaos {
     /// of its own, every region runs and has rested, and nothing is under way.
     async fn start<'a>(test: &str, world: impl Into<World<'a>>, west: f64, east: f64) -> Self {
         let world = world.into();
-        // One worker for each region and one to spare.
+        // One worker for each region, the homes of the Nether and of the End among
+        // them, and one to spare.
         let workers = match world {
-            World::Pinned(boundaries) => boundaries.len() + 2,
+            World::Pinned(boundaries) => boundaries.len() + 2 + OTHER_HOMES,
             World::Following => following::WORKERS,
         };
         Self::start_with(test, world, workers, west, east).await
@@ -543,7 +545,9 @@ impl Chaos {
     /// store's list as last read, or the routing table's while the store is down.
     fn regions(&self) -> Vec<Region> {
         match &self.following {
-            None => (0..=self.lines.len()).collect(),
+            // A stripe on each side of every line, and after them the homes of the
+            // Nether and of the End.
+            None => (0..=self.lines.len() + OTHER_HOMES).collect(),
             Some(world) => match &world.list {
                 Some(list) => {
                     let regions = list.regions.iter();
@@ -1023,22 +1027,27 @@ async fn measured_how_long_players_stand_still_when_the_worker_of_their_region_o
     assert!(report.actions > 0, "{report}");
 }
 
-/// Two workers run three regions between them. One of the two is killed, again and
-/// again: the other then runs all three, and when the killed one is back it is given
-/// one of them again, so that neither runs everything for long.
+/// Two workers run three regions between them, and the homes of the Nether and of the
+/// End. One of the two is killed, again and again: the other then runs all five, and
+/// when the killed one is back it is given some of them again, so that neither runs
+/// everything for long.
 #[tokio::test(flavor = "multi_thread")]
 async fn players_keep_playing_on_fewer_workers_than_regions_while_one_is_killed() {
     if a_repetition() {
         return;
     }
     let mut chaos = Chaos::start_with("few workers", &[2, 3], 2, 20.5, 60.5).await;
-    let regions = 3;
+    let regions = chaos.regions();
     for _ in 0..rounds(3) {
         // Regions are evened out, so with both workers there neither runs everything.
         chaos
             .until("both workers run a region", |chaos| {
                 let first = chaos.owner(0);
-                (1..regions).any(|region| chaos.owner(region) != first) && chaos.every_region_runs()
+                let others = regions.iter().filter(|region| **region != 0);
+                others
+                    .into_iter()
+                    .any(|region| chaos.owner(*region) != first)
+                    && chaos.every_region_runs()
             })
             .await;
         let region = chaos.region_with_players();
@@ -1051,7 +1060,10 @@ async fn players_keep_playing_on_fewer_workers_than_regions_while_one_is_killed(
         // The one that is left runs all of them.
         chaos
             .until("the other worker runs every region", |chaos| {
-                (0..regions).all(|region| chaos.owner(region).is_some_and(|owner| owner != killed))
+                let owner = |region: &Region| chaos.owner(*region);
+                regions
+                    .iter()
+                    .all(|region| owner(region).is_some_and(|owner| owner != killed))
             })
             .await;
         chaos.whole().await;
@@ -1061,7 +1073,11 @@ async fn players_keep_playing_on_fewer_workers_than_regions_while_one_is_killed(
         chaos
             .until(
                 "the worker that came back is given a region again",
-                |chaos| (0..regions).any(|region| chaos.owner(region) == Some(killed)),
+                |chaos| {
+                    regions
+                        .iter()
+                        .any(|region| chaos.owner(*region) == Some(killed))
+                },
             )
             .await;
         chaos.whole().await;

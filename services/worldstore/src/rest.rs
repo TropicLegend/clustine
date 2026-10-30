@@ -25,7 +25,9 @@ use crate::disk::{Fault, MemoryDisk, Survival};
 use crate::regions::{
     SURVIVALS, claim, gap, give_back, hello_of, listed, state_of, store_on, whole,
 };
-use crate::tests::{HELD, Switched, committed, generator, load, log, save, switched_for};
+use crate::tests::{
+    HELD, Switched, committed, first_part, generator, load, log, other_homes, save, switched_for,
+};
 use crate::unpinned::Built;
 
 /// Generates what [`generator`] does, but stops before the chunk at [`HELD`], and at
@@ -259,6 +261,8 @@ fn a_return_behind_a_busy_thread_for_chunks_is_waited_for() {
 fn a_split_through_a_handle_that_is_dropped_at_once_is_done_when_the_store_is_at_rest() {
     let rig = Rig::new(&two());
     let (east, _) = rig.store.open_region(hello_of(&two(), 1, 1)).unwrap();
+    // The part is made after the two stripes and the homes of the Nether and the End.
+    let id = first_part(&two());
     east.request(StoreRequest::SplitCommit {
         tick: 1,
         state: whole("rest", 1),
@@ -267,7 +271,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_done_when_the_store_is_at
             state: whole("part", 1),
         },
         as_epoch: 5,
-        region: RegionId(2),
+        region: RegionId(id),
     });
     drop(east);
     rig.store.flush().unwrap();
@@ -275,7 +279,7 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_done_when_the_store_is_at
     let done = rig.disk.operations();
     let part = RegionInfo {
         dimension: Default::default(),
-        region: RegionId(2),
+        region: RegionId(id),
         epoch: 0,
         bounds: Some(ChunkBox {
             min: ChunkPos::new(NEAR.x, FAR.z),
@@ -286,14 +290,20 @@ fn a_split_through_a_handle_that_is_dropped_at_once_is_done_when_the_store_is_at
     for survival in SURVIVALS {
         let case = format!("{survival:?}");
         let (list, restored) = left_by(&rig.disk, survival, &two(), 5);
-        assert_eq!((list.regions.len(), list.next), (3, RegionId(3)), "{case}");
-        assert_eq!(list.regions[2], part, "{case}");
-        assert_eq!(restored[2].held, [(NEAR, 1), (FAR, 1)], "{case}");
-        assert_eq!(state_of(&restored[2]), Some((1, whole("part", 1))));
+        let at = id as usize;
+        assert_eq!(
+            (list.regions.len(), list.next),
+            (at + 1, RegionId(id + 1)),
+            "{case}"
+        );
+        assert_eq!(list.regions[at], part, "{case}");
+        assert_eq!(restored[at].held, [(NEAR, 1), (FAR, 1)], "{case}");
+        assert_eq!(state_of(&restored[at]), Some((1, whole("part", 1))));
         assert_eq!(state_of(&restored[1]), Some((1, whole("rest", 1))));
         // The file of the new region is there, with the epoch it was made with.
         let file = rig.disk.crashed(survival);
-        let file = file.read(Path::new("/world/regions/2.region")).unwrap();
+        let path = format!("/world/regions/{id}.region");
+        let file = file.read(Path::new(&path)).unwrap();
         let file = RegionFile::decode(&file.expect(&case)).unwrap();
         assert_eq!(file.epoch, 5, "{case}");
     }
@@ -323,7 +333,10 @@ fn a_merge_through_handles_that_are_dropped_at_once_is_done_when_the_store_is_at
         let case = format!("{survival:?}");
         let (list, restored) = left_by(&rig.disk, survival, &two(), 5);
         assert_eq!(list.absorbed, [(RegionId(0), RegionId(1))], "{case}");
-        assert_eq!(list.regions.len(), 1, "{case}");
+        // The survivor, and the homes of the Nether and the End.
+        let living: Vec<u32> = list.regions.iter().map(|info| info.region.0).collect();
+        let [nether_home, end_home] = other_homes(&two());
+        assert_eq!(living, [1, nether_home, end_home], "{case}");
         assert_eq!(restored[0].pinned.len(), 2, "{case}");
         assert_eq!(state_of(&restored[0]), Some((1, whole("merged", 1))));
     }
@@ -587,7 +600,7 @@ fn abandoned(store: &Store) {
                 state: whole("part", 1),
             },
             as_epoch: 1,
-            region: RegionId(3),
+            region: RegionId(first_part(&gap())),
         });
         let mut built = Built::default();
         for tick in 2..=4 {
@@ -619,13 +632,17 @@ fn a_store_on_a_disk_that_fails_at_any_point_comes_to_rest() {
         let rig = Rig::new(&gap());
         abandoned(&rig.store);
         rig.store.flush().unwrap();
-        // Without a fault all of it is done.
+        // Without a fault all of it is done: the part is made after the three regions
+        // of the overworld and the homes of the Nether and the End.
+        let part = first_part(&gap());
         let list = rig.store.regions().unwrap();
-        assert_eq!((list.regions.len(), list.next), (4, RegionId(4)));
+        let made = (part as usize + 1, RegionId(part + 1));
+        assert_eq!((list.regions.len(), list.next), made);
         let done = rig.disk.operations();
         for (epoch, survival) in (2..).zip(SURVIVALS) {
             let (list, restored) = left_by(&rig.disk, survival, &gap(), epoch);
-            assert_eq!(list.regions[3].region, RegionId(3), "{survival:?}");
+            let last = list.regions.last().map(|info| info.region);
+            assert_eq!(last, Some(RegionId(part)), "{survival:?}");
             assert_eq!(
                 list.regions[2].bounds.map(|bounds| bounds.max),
                 Some(ORIGIN)

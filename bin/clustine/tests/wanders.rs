@@ -7,8 +7,11 @@
 //! what they run: the first time regions that are not pinned run under players for
 //! longer than a join.
 //!
-//! **The world** is a cluster of two workers, a store that is told nothing of how the
-//! world is divided, an edge with a view distance of 2 and a coordinator that is told
+//! **The world** is a cluster of two workers and one more for each of the homes of the
+//! Nether and of the End, which every world has (`docs/groundwork/p-plan.md`, decision
+//! 2), so that each region of a new world has a worker of its own and one is to spare,
+//! as when the overworld's home was alone with two; a store that is told nothing of
+//! how the world is divided, an edge with a view distance of 2 and a coordinator that is told
 //! that view distance, a rest of 5 s and nothing else: it reshapes by itself because
 //! that is what a coordinator does when told nothing, with the distances the rule
 //! gives, 12 and 20 chunks. With a view distance of 2 a client is sent the 7 by 7
@@ -55,11 +58,12 @@ use clustine_protocol::packets::play::face;
 use clustine_rpc::RegionList;
 use tokio::task::JoinHandle;
 
+use common::homes::OTHER_HOMES;
 use common::processes::{Cluster, worker_name};
 use common::wandering::{
     Begun, Ended, LONGEST_PAUSE, MOMENT, PATIENCE, Region, Setup, SplitOff, Stands, WRITING,
-    Wanders, a_repetition, absorbed_by, between, bounds, has_chunk, info, is_box, living,
-    number_from, seconds, within,
+    Wanders, a_repetition, absorbed_by, between, bounds, has_chunk, info, is_box, number_from,
+    overworld, seconds, within,
 };
 
 /// The view distance of the edge, and what the coordinator is told it is.
@@ -121,12 +125,13 @@ const NOTHING_HAPPENS: Duration = Duration::from_secs(1);
 /// that after the next.
 const AGAIN: Duration = Duration::from_secs(180);
 
-/// The world of section 9.6: two workers, and the lease a coordinator has when it is
-/// told none, or `lease` seconds where processes are killed.
+/// The world of section 9.6: two workers and one for each of the homes of the Nether
+/// and of the End, and the lease a coordinator has when it is told none, or `lease`
+/// seconds where processes are killed.
 fn world(lease: Option<u64>) -> Setup {
     Setup {
         family: "wanders",
-        workers: 2,
+        workers: 2 + OTHER_HOMES,
         view: VIEW,
         lease,
         rest: REST,
@@ -180,7 +185,7 @@ impl Wanders {
     /// Fails unless the world is region 0 alone and runs. Returns the list.
     async fn region_0_is_alone(&mut self, what: &str) -> RegionList {
         let list = self.whole().await;
-        if living(&list) != [0] || list.home.0 != 0 {
+        if overworld(&list) != [0] || list.home.0 != 0 {
             self.fail(&format!(
                 "{what} the list was to have region 0 alone: {list:?}"
             ));
@@ -198,7 +203,7 @@ impl Wanders {
         let loads = self.a_cluster().map(Cluster::loads);
         self.note(format!(
             "the world is whole, with the regions {:?} shared evenly as {loads:?}",
-            living(&list)
+            overworld(&list)
         ));
         list
     }
@@ -365,7 +370,7 @@ impl Wanders {
     /// list named as its next. The part is pinned to nothing and holds what `B` sees
     /// and the near end of its trail; region 0 holds nothing east of chunk 10, the
     /// last that is nearer to `A` than to `B`. In a cluster the part is moved to the
-    /// other worker once, a rest or more after the split ended, and region 0 is not.
+    /// worker to spare once, a rest or more after the split ended, and region 0 is not.
     /// Returns the part.
     async fn b_is_split_off(&mut self) -> Region {
         let what = format!("to chunk {OUT}");
@@ -396,7 +401,7 @@ impl Wanders {
             // A `B` that walks up and down is in chunk 20 or 21 when it goes, and
             // sees chunk 20 from wherever it walks.
             let near = if stands { OUT } else { OUT - 1 };
-            let as_told = living(list) == [0, part]
+            let as_told = overworld(list) == [0, part]
                 && list.next.0 == part + 1
                 && info(list, part).is_some_and(|info| info.pinned.is_empty())
                 && has_chunk(theirs, near, 0)
@@ -447,11 +452,12 @@ impl Wanders {
         };
 
         // In a cluster the part is made by the worker of region 0, which then runs
-        // two regions and the other none.
+        // two regions and the one to spare none.
         let Some(made_by) = made_by else {
             return part;
         };
-        self.until("the new region is run by the other worker", |wanders| {
+        let elsewhere = |to: &str| to != worker_name(made_by);
+        self.until("the new region is run by another worker", |wanders| {
             let cluster = wanders.a_cluster().expect("it is a cluster");
             let owner = cluster.owner(part);
             owner.is_some_and(|owner| owner != made_by) && cluster.runs(part)
@@ -465,21 +471,23 @@ impl Wanders {
             .filter(|(_, begun)| !begun.reshapes())
             .collect();
         let new = moves.get(moves_before..).unwrap_or_default();
-        let the_move = Begun::Move {
-            region: part,
-            from: worker_name(made_by),
-            to: worker_name(1 - made_by),
+        let the_move = |moved: &Begun| {
+            matches!(
+                moved,
+                Begun::Move { region, from, to }
+                    if *region == part && *from == worker_name(made_by) && elsewhere(to)
+            )
         };
         let owner_of_0 = self.a_cluster().and_then(|cluster| cluster.owner(0));
         let [(moved_at, moved)] = new else {
             self.fail(&format!(
-                "the coordinator was to move region {part} to the other worker once, and \
+                "the coordinator was to move region {part} to another worker once, and \
                  nothing else: it moved {new:?}"
             ));
         };
-        if *moved != the_move || owner_of_0 != Some(made_by) {
+        if !the_move(moved) || owner_of_0 != Some(made_by) {
             self.fail(&format!(
-                "the coordinator was to move region {part} to the other worker, and not \
+                "the coordinator was to move region {part} to another worker, and not \
                  region 0: it began {moved:?}, and region 0 is run by {owner_of_0:?}"
             ));
         }
@@ -519,7 +527,7 @@ impl Wanders {
         let around = |chunk: i32| (chunk - REACH, chunk + REACH);
         let theirs = is_box(bounds(&list, part), around(FAR), around(0));
         let home = is_box(bounds(&list, 0), around(0), around(0));
-        if living(&list) != [0, part] || !theirs || !home {
+        if overworld(&list) != [0, part] || !theirs || !home {
             self.fail(&format!(
                 "35 s after B arrived in chunk {FAR}, region {part} was to hold exactly the \
                  chunks x = {} to {} and z = -{REACH} to {REACH}, and region 0 those within \
@@ -565,7 +573,7 @@ impl Wanders {
             .await;
         let list = self.whole().await;
         self.arrives("B").await;
-        if living(&list) != [0] || list.next.0 != part + 1 {
+        if overworld(&list) != [0] || list.next.0 != part + 1 {
             self.fail(&format!(
                 "after the merge the list was to have region 0 alone and {} as its next \
                  region: {list:?}",
@@ -852,7 +860,7 @@ async fn along_the_rim(mut wanders: Wanders) {
     let a_minute = Duration::from_secs(60);
     wanders.a_settles().await;
     wanders.b_settles().await;
-    wanders.region_0_is_alone("at the start").await;
+    let start = wanders.region_0_is_alone("at the start").await;
 
     let (rim_west, rim_east) = (MERGE_DISTANCE - 1, MERGE_DISTANCE + 1);
     let rim = between(rim_west, rim_east);
@@ -863,7 +871,7 @@ async fn along_the_rim(mut wanders: Wanders) {
     let alone = "while B walked along the rim in it";
     let list = wanders.region_0_is_alone(alone).await;
     wanders.has_begun(0, "nothing", &[]);
-    if list.next.0 != 1 {
+    if list.next != start.next {
         wanders.fail(&format!("no region was to be made yet: {list:?}"));
     }
 
@@ -888,7 +896,7 @@ async fn along_the_rim(mut wanders: Wanders) {
     let second = wanders.b_is_split_off_between(beyond_the_rim, &again).await;
     wanders.walks_for("B", a_minute).await;
     let list = wanders.whole().await;
-    if living(&list) != [0, second] || list.next.0 != second + 1 {
+    if overworld(&list) != [0, second] || list.next.0 != second + 1 {
         wanders.fail(&format!(
             "the list was to have region 0 and region {second} and no region more: {list:?}"
         ));
@@ -920,6 +928,9 @@ async fn a_group_that_walks_along_the_rim_is_split_and_merged_once_each_time_in_
     along_the_rim(Wanders::server("along the rim, in one process", world(None)).await).await;
 }
 
+/// (The record's regions 1 and 2 are the first two parts the world makes, which come
+/// after the homes of the Nether and of the End: regions 3 and 4.)
+///
 /// W3 on whatever serves the world. `A` stands in chunk 0. A wanderer walks to chunk
 /// (21, 0), is split off into region 1 and leaves the game. No absorption is begun,
 /// and the list keeps regions 0 and 1; region 1 holds nothing 35 s after it last
@@ -935,9 +946,12 @@ async fn a_group_that_walks_along_the_rim_is_split_and_merged_once_each_time_in_
 async fn regions_that_are_left(mut wanders: Wanders) {
     wanders.a_settles().await;
     let list = wanders.region_0_is_alone("at the start").await;
-    if list.next.0 != 1 {
+    // The parts are the next regions made: after the homes of the Nether and of the
+    // End, which a new world is made with after region 0.
+    let (one, two) = (list.next.0, list.next.0 + 1);
+    if one != 3 {
         wanders.fail(&format!(
-            "a new world's first part was to be region 1: {list:?}"
+            "a new world's first part was to be region 3, after the homes: {list:?}"
         ));
     }
     let above = wanders.calm("A").await;
@@ -948,30 +962,34 @@ async fn regions_that_are_left(mut wanders: Wanders) {
     wanders.wanderers[first].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(first, x, ON_FOOT).await;
     wanders
-        .until_the_list("the wanderer is split off into region 1", |list| {
-            living(list) == [0, 1]
-        })
+        .until_the_list(
+            &format!("the wanderer is split off into region {one}"),
+            |list| overworld(list) == [0, one],
+        )
         .await;
     let split = Instant::now();
     wanders.wanderer_leaves(first).await;
     let begun_before = wanders.reshapes().len();
 
-    // In a cluster region 1, which has nobody, is moved to the other worker when it
+    // In a cluster the first part, which has nobody, is moved to the other worker when it
     // has rested, and that restore begins its thirty seconds anew.
     let mut ran = None;
     if let Some(made_by) = made_by {
         wanders
-            .until("region 1 is run by the other worker", |wanders| {
-                let cluster = wanders.a_cluster().expect("it is a cluster");
-                cluster.owner(1).is_some_and(|owner| owner != made_by) && cluster.runs(1)
-            })
+            .until(
+                &format!("region {one} is run by the other worker"),
+                |wanders| {
+                    let cluster = wanders.a_cluster().expect("it is a cluster");
+                    cluster.owner(one).is_some_and(|owner| owner != made_by) && cluster.runs(one)
+                },
+            )
             .await;
-        ran = wanders.last_ran(1);
+        ran = wanders.last_ran(one);
     }
     let fifty = Duration::from_secs(50);
     wanders
-        .until_the_list_within(fifty, "region 1 holds nothing", |list| {
-            living(list) == [0, 1] && bounds(list, 1).is_none()
+        .until_the_list_within(fifty, &format!("region {one} holds nothing"), |list| {
+            overworld(list) == [0, one] && bounds(list, one).is_none()
         })
         .await;
     let emptied = wanders.now_at();
@@ -981,13 +999,13 @@ async fn regions_that_are_left(mut wanders: Wanders) {
         None => since_the_split.as_secs_f64(),
     };
     wanders.note(format!(
-        "region 1 held nothing {} after it was split off, and {since:.3} s after it last \
+        "region {one} held nothing {} after it was split off, and {since:.3} s after it last \
          began to run",
         seconds(since_the_split)
     ));
     if since > GIVEN_BACK.as_secs_f64() + WRITING || since_the_split > fifty {
         wanders.fail(&format!(
-            "region 1 was to hold nothing 35 s after it last began to run, and no later than \
+            "region {one} was to hold nothing 35 s after it last began to run, and no later than \
              50 s after the split: it took {since:.3} s, and {} since the split",
             seconds(since_the_split)
         ));
@@ -995,31 +1013,36 @@ async fn regions_that_are_left(mut wanders: Wanders) {
     // That took thirty seconds and more, in which the list kept regions 0 and 1 at
     // every reading and nothing was begun.
     let kept = wanders.readings.iter().filter(|(at, _)| *at >= split);
-    let mut kept = kept.map(|(_, list)| living(list));
-    if let Some(other) = kept.find(|living| living != &[0, 1]) {
+    let mut kept = kept.map(|(_, list)| overworld(list));
+    if let Some(other) = kept.find(|living| living != &[0, one]) {
         wanders.fail(&format!(
-            "the list was to keep regions 0 and 1 while region 1 was empty; it had {other:?}"
+            "the list was to keep regions 0 and {one} while region {one} was empty; it had \
+             {other:?}"
         ));
     }
-    wanders.has_begun(begun_before, "no absorption while region 1 was empty", &[]);
+    let what = format!("no absorption while region {one} was empty");
+    wanders.has_begun(begun_before, &what, &[]);
 
     let second = wanders.wanders("Rover2").await;
     let (x, z) = middle_of(-OUT, 0);
     wanders.wanderers[second].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(second, -x, ON_FOOT).await;
     wanders
-        .until_the_list("the wanderer is split off into region 2", |list| {
-            living(list) == [0, 1, 2]
-        })
+        .until_the_list(
+            &format!("the wanderer is split off into region {two}"),
+            |list| overworld(list) == [0, one, two],
+        )
         .await;
     wanders.wanderer_leaves(second).await;
     let left = Instant::now();
     let begun_before = wanders.reshapes().len();
     let thirty = Duration::from_secs(30);
     wanders
-        .until_the_list_within(thirty + MOMENT, "region 1 absorbs region 2", |list| {
-            absorbed_by(list, 2) == Some(1)
-        })
+        .until_the_list_within(
+            thirty + MOMENT,
+            &format!("region {one} absorbs region {two}"),
+            |list| absorbed_by(list, two) == Some(one),
+        )
         .await;
     // By the coordinator's line where there is one, and else by when the list
     // showed it, which is a fraction of a second later.
@@ -1028,12 +1051,12 @@ async fn regions_that_are_left(mut wanders: Wanders) {
         let absorption = |begun: &Begun| {
             *begun
                 == Begun::Absorption {
-                    survivor: 1,
-                    absorbed: 2,
+                    survivor: one,
+                    absorbed: two,
                 }
         };
-        let what = "one absorption, of region 2 by region 1";
-        wanders.has_begun(begun_before, what, &[&absorption]);
+        let what = format!("one absorption, of region {two} by region {one}");
+        wanders.has_begun(begun_before, &what, &[&absorption]);
         let (at, begun) = wanders.reshapes_at().pop().expect("it was begun");
         begun_at = wanders.instant_of(at);
         if let Some((ended, _)) = wanders.end_of(at, &begun) {
@@ -1042,13 +1065,13 @@ async fn regions_that_are_left(mut wanders: Wanders) {
     }
     let after = begun_at.saturating_duration_since(left);
     wanders.note(format!(
-        "region 1 absorbed region 2 {} after the second wanderer left",
+        "region {one} absorbed region {two} {} after the second wanderer left",
         seconds(after)
     ));
     let early = after + Duration::from_secs_f64(WRITING) < EMPTY_FOR && wanders.has_logs();
     if early || after > thirty {
         wanders.fail(&format!(
-            "region 1 was to absorb region 2 fifteen seconds and no more than thirty after \
+            "region {one} was to absorb region {two} fifteen seconds and no more than thirty after \
              the second wanderer left; it was {}",
             seconds(after)
         ));
@@ -1068,18 +1091,18 @@ async fn regions_that_are_left(mut wanders: Wanders) {
         ));
     }
     let list = wanders.whole().await;
-    if living(&list) != [0, 1] {
+    if overworld(&list) != [0, one] {
         wanders.fail(&format!(
-            "the list was to have regions 0 and 1 after the absorption: {list:?}"
+            "the list was to have regions 0 and {one} after the absorption: {list:?}"
         ));
     }
 
     // `A` ends, and its auditor comes and goes; then nobody is in region 0, and it
-    // takes region 1.
+    // takes the first part.
     wanders.leaves("A").await;
     let list = wanders
-        .until_the_list_within(AGAIN, "region 0 absorbs region 1", |list| {
-            absorbed_by(list, 1) == Some(0) && living(list) == [0]
+        .until_the_list_within(AGAIN, &format!("region 0 absorbs region {one}"), |list| {
+            absorbed_by(list, one) == Some(0) && overworld(list) == [0]
         })
         .await;
     wanders.note(format!("the list has region 0 alone: {list:?}"));
@@ -1087,11 +1110,11 @@ async fn regions_that_are_left(mut wanders: Wanders) {
         let last = wanders.reshapes().pop();
         let home = Begun::Absorption {
             survivor: 0,
-            absorbed: 1,
+            absorbed: one,
         };
         if last != Some(home) {
             wanders.fail(&format!(
-                "region 0 was to absorb region 1 for being empty; the last thing begun was \
+                "region 0 was to absorb region {one} for being empty; the last thing begun was \
                  {last:?}"
             ));
         }
@@ -1118,6 +1141,8 @@ async fn regions_that_their_players_left_give_their_land_back_and_are_absorbed_i
     regions_that_are_left(wanders).await;
 }
 
+/// (As in W3, regions 1 and 2 are the first two parts the world makes.)
+///
 /// W3b. Two parts meet. One wanderer walks to chunk (21, 0) and is region 1; another
 /// walks to (0, 21) and is region 2, then to (21, 21), then towards (21, 0), as far
 /// as (21, 8). When it has been within 12 chunks of the first, the two regions are
@@ -1129,7 +1154,10 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
         return;
     }
     let mut wanders = Wanders::cluster("two parts meet", world(None)).await;
-    wanders.region_0_is_alone("at the start").await;
+    let list = wanders.region_0_is_alone("at the start").await;
+    // The parts are the next regions made: after the homes of the Nether and of the
+    // End.
+    let (one, two) = (list.next.0, list.next.0 + 1);
     let from = wanders.now_at();
 
     let first = wanders.wanders("Rover1").await;
@@ -1137,8 +1165,8 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
     wanders.wanderers[first].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(first, x, ON_FOOT).await;
     wanders
-        .until_the_list("the first wanderer is region 1", |list| {
-            living(list) == [0, 1] && has_chunk(bounds(list, 1), OUT, 0)
+        .until_the_list(&format!("the first wanderer is region {one}"), |list| {
+            overworld(list) == [0, one] && has_chunk(bounds(list, one), OUT, 0)
         })
         .await;
 
@@ -1147,8 +1175,8 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
     wanders.wanderers[second].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(second, z, ON_FOOT).await;
     wanders
-        .until_the_list("the second wanderer is region 2", |list| {
-            living(list) == [0, 1, 2] && has_chunk(bounds(list, 2), 0, OUT)
+        .until_the_list(&format!("the second wanderer is region {two}"), |list| {
+            overworld(list) == [0, one, two] && has_chunk(bounds(list, two), 0, OUT)
         })
         .await;
     wanders.everything_runs().await;
@@ -1171,25 +1199,26 @@ async fn two_parts_whose_players_meet_are_merged_and_the_home_region_is_in_no_me
         .await;
     let entered = wanders.now_at();
     wanders
-        .until_the_list("region 1 absorbs region 2", |list| {
-            absorbed_by(list, 2) == Some(1)
+        .until_the_list(&format!("region {one} absorbs region {two}"), |list| {
+            absorbed_by(list, two) == Some(one)
         })
         .await;
     wanders.wanderer_arrives(second, x, ON_FOOT).await;
     let list = wanders.everything_runs().await;
-    if living(&list) != [0, 1] {
+    if overworld(&list) != [0, one] {
         wanders.fail(&format!(
-            "the list was to have regions 0 and 1 after the two parts met: {list:?}"
+            "the list was to have regions 0 and {one} after the two parts met: {list:?}"
         ));
     }
     let merge = |begun: &Begun| {
         matches!(
             begun,
-            Begun::Merge { survivor: 1, absorbed: 2, gap } if *gap <= MERGE_DISTANCE as u32
+            Begun::Merge { survivor, absorbed, gap }
+                if (*survivor, *absorbed) == (one, two) && *gap <= MERGE_DISTANCE as u32
         )
     };
-    let what = "two splits of region 0 and one merge, of region 2 into region 1";
-    wanders.has_begun(0, what, &[&split, &split, &merge]);
+    let what = format!("two splits of region 0 and one merge, of region {two} into region {one}");
+    wanders.has_begun(0, &what, &[&split, &split, &merge]);
     let (merge_at, _) = wanders.reshapes_at().pop().expect("a merge was begun");
     if merge_at + WRITING < entered {
         wanders.fail(&format!(
@@ -1485,7 +1514,7 @@ impl Wanders {
         self.note(format!(
             "every region ran again {} after {victim:?} was killed: {:?}",
             seconds(took),
-            living(&list)
+            overworld(&list)
         ));
         let may = 2 * self.lease + MOMENT;
         if took > may {
@@ -1522,7 +1551,7 @@ impl Wanders {
     /// out of still holds its land, the one that was made last.
     fn part_of_b(list: &RegionList) -> Option<Region> {
         let home = bounds(list, 0)?;
-        let parts = living(list).into_iter().filter(|region| *region != 0);
+        let parts = overworld(list).into_iter().filter(|region| *region != 0);
         let theirs = parts.filter(|part| has_chunk(bounds(list, *part), OUT, 0));
         theirs.max().filter(|_| home.max.x < HALFWAY)
     }
@@ -1725,7 +1754,7 @@ const APART: i32 = 16 * OUT;
 fn regions_of_their_own(list: &RegionList, theirs: &[i32]) -> Option<Vec<Region>> {
     let mut regions = Vec::new();
     for z in theirs {
-        let holders = living(list).into_iter();
+        let holders = overworld(list).into_iter();
         let mut holders = holders.filter(|region| has_chunk(bounds(list, *region), 0, *z));
         let region = holders.next().filter(|_| holders.next().is_none())?;
         if regions.contains(&region) {
@@ -1740,7 +1769,8 @@ fn regions_of_their_own(list: &RegionList, theirs: &[i32]) -> Option<Vec<Region>
 /// middle one on z = 0, all in the column of chunks x = 0: ten of them are more
 /// than 20 chunks from the home chunk and from each other. Within three minutes of
 /// the last one's arrival the list has eleven regions, each bot's chunk in the
-/// `bounds` of a region of its own, and the two workers run six and five; nobody was
+/// `bounds` of a region of its own, and the four workers run four, three, three and
+/// three of those and the homes of the Nether and of the End; nobody was
 /// stood still more than once in a rest but by a move. Then they end: within three
 /// minutes of the last leaving the list has region 0 alone.
 ///
@@ -1778,23 +1808,24 @@ async fn lone_players(test: &str, to_the_lane: f64) {
     let what = "there are eleven regions, each bot's chunk in a region of its own";
     let list = wanders
         .until_the_list_within(three_minutes, what, |list| {
-            living(list).len() == LONE as usize && regions_of_their_own(list, &theirs).is_some()
+            overworld(list).len() == LONE as usize && regions_of_their_own(list, &theirs).is_some()
         })
         .await;
     let regions = regions_of_their_own(&list, &theirs).expect("the list showed it");
-    let what = "the two workers run six and five";
+    // Eleven regions and the homes of the Nether and of the End.
+    let what = "the four workers run four, three, three and three";
     wanders
         .until_within(three_minutes, what, |wanders| {
             let cluster = wanders.a_cluster().expect("it is a cluster");
             let mut loads: Vec<usize> = cluster.loads().iter().map(Vec::len).collect();
             loads.sort_unstable();
-            loads == [5, 6] && regions.iter().all(|region| cluster.runs(*region))
+            loads == [3, 3, 3, 4] && regions.iter().all(|region| cluster.runs(*region))
         })
         .await;
     let took = arrived.elapsed();
     wanders.note(format!(
-        "every lone player had a region of its own, {regions:?}, and the workers ran six and \
-         five, {} after the last one arrived",
+        "every lone player had a region of its own, {regions:?}, and the workers ran four, \
+         three, three and three, {} after the last one arrived",
         seconds(took)
     ));
     if took > three_minutes {
@@ -1875,8 +1906,8 @@ async fn lone_players(test: &str, to_the_lane: f64) {
             (z - REACH, z + REACH),
         )
     });
-    if !islands || living(&list).len() != LONE as usize {
-        let held: Vec<_> = living(&list)
+    if !islands || overworld(&list).len() != LONE as usize {
+        let held: Vec<_> = overworld(&list)
             .into_iter()
             .map(|region| {
                 let held = bounds(&list, region);
@@ -1896,7 +1927,7 @@ async fn lone_players(test: &str, to_the_lane: f64) {
     let left = Instant::now();
     wanders
         .until_the_list_within(three_minutes, "the list has region 0 alone", |list| {
-            living(list) == [0]
+            overworld(list) == [0]
         })
         .await;
     wanders.note(format!(
@@ -2381,19 +2412,24 @@ async fn an_edge_is_idle_again_after_a_region_was_absorbed() {
         "before any merge the edge uses {before:.2} of a processor"
     ));
 
+    // The wanderer's region is the next made, after the homes of the Nether and of
+    // the End.
+    let part = wanders.list().await.next.0;
     let wanderer = wanders.wanders("Rover").await;
     let (x, z) = east_along_the_row(OUT);
     wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
     wanders.wanderer_arrives(wanderer, x, ON_FOOT).await;
     wanders
-        .until_the_list("the wanderer is split off", |list| living(list) == [0, 1])
+        .until_the_list("the wanderer is split off", |list| {
+            overworld(list) == [0, part]
+        })
         .await;
     wanders.walks_for("A", GIVEN_BACK).await;
     let (x, z) = east_along_the_row(BACK);
     wanders.wanderers[wanderer].walks_to(x, z, ON_FOOT);
     let merged = "the wanderer's region is merged into region 0";
     wanders
-        .until_the_list(merged, |list| absorbed_by(list, 1) == Some(0))
+        .until_the_list(merged, |list| absorbed_by(list, part) == Some(0))
         .await;
     wanders.wanderer_arrives(wanderer, x, ON_FOOT).await;
     wanders.wanderer_leaves(wanderer).await;

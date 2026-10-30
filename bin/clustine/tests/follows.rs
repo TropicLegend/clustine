@@ -58,6 +58,7 @@ use tempfile::TempDir;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
+use common::homes::{is_other_home, other_homes_are_untouched, overworld_ids};
 use common::processes::{Cluster, Table, Turn, turn, worker_name};
 
 /// How long anything may take that is merely waited for, as in the tests of merges by
@@ -641,6 +642,13 @@ impl Follows {
         list.regions.iter().map(|info| info.region.0).collect()
     }
 
+    /// The overworld's living regions of `list`, in ascending order: those the bots
+    /// walk in, without the homes of the Nether and of the End, which [`Self::whole`]
+    /// checks are as the world made them.
+    fn overworld(list: &RegionList) -> Vec<Region> {
+        overworld_ids(list).iter().map(|region| region.0).collect()
+    }
+
     /// The region that `list` has `region` absorbed by, if it has it absorbed.
     fn absorbed_by(list: &RegionList, region: Region) -> Option<Region> {
         let pair = list.absorbed.iter().find(|(gone, _)| gone.0 == region);
@@ -720,6 +728,9 @@ impl Follows {
     /// was so. Returns the list of regions.
     async fn whole(&mut self) -> RegionList {
         let list = self.everything_runs().await;
+        if let Err(error) = other_homes_are_untouched(&list) {
+            self.fail(&error);
+        }
         self.served().await;
         self.note(format!(
             "the cluster is whole, with the regions {:?} shared as {:?}",
@@ -1081,7 +1092,8 @@ impl Follows {
     async fn stripes(&mut self) {
         let list = self.whole().await;
         let known = self.table().map(|table| table.known());
-        if Self::living(&list) != [0, 1] || !list.absorbed.is_empty() || known != Some(vec![0, 1]) {
+        let stripes = Self::overworld(&list) == [0, 1] && list.absorbed.is_empty();
+        if !stripes || known != Some(Self::living(&list)) {
             self.fail(&format!(
                 "the list and the routing table were to have the two stripes: {list:?}, {known:?}"
             ));
@@ -1101,7 +1113,7 @@ impl Follows {
         let list = self.whole().await;
         self.arrives("A").await;
         // Both stripes are region 0's, which is how it holds every chunk.
-        if Self::living(&list) != [0] || list.regions[0].pinned.len() != 2 {
+        if Self::overworld(&list) != [0] || list.regions[0].pinned.len() != 2 {
             self.fail(&format!(
                 "after step 1 the list is not region 0 pinned to both stripes: {list:?}"
             ));
@@ -1152,7 +1164,7 @@ impl Follows {
             .await;
         let list = self.whole().await;
         let part = before.next.0;
-        if Self::living(&list) != [0, part] || list.next.0 != part + 1 {
+        if Self::overworld(&list) != [0, part] || list.next.0 != part + 1 {
             self.fail(&format!(
                 "after step 2 the list was to have region 0 and the new region {part}: {list:?}"
             ));
@@ -1189,7 +1201,7 @@ impl Follows {
             .await;
         let list = self.whole().await;
         self.arrives("A").await;
-        if Self::living(&list) != [0] {
+        if Self::overworld(&list) != [0] {
             self.fail(&format!(
                 "after step 3 the list has other regions than region 0: {list:?}"
             ));
@@ -1502,13 +1514,17 @@ async fn two_stripes_are_merged_when_a_group_of_the_one_comes_within_three_chunk
 
 /// E2. After the start and step 1, step 2: `A` walks back to chunk 0 and stands, and
 /// `B` in chunk 6 is split off region 0, into a new region with the chunks from x = 4
-/// on. Then the new region is moved to the other worker and region 0 is not, no sooner
-/// than a rest after the split ended.
+/// on. Then one region of the worker that made the part is moved to the other worker,
+/// to even out, and region 0 is not: the new region no sooner than a rest after the
+/// split ended, or a home of the Nether or of the End, which had rested long before.
 ///
 /// The lease is 3 s and the rest 5 s, which is what this is about: evening out as it
 /// was before the coordinator decided by itself moved a region a lease after any
 /// merge or split, and would move the part two seconds too soon here. Which of the
-/// two regions is moved does not tell the two apart, as the record says.
+/// two regions is moved does not tell the two apart, as the record says. Since every
+/// world has the homes of the Nether and of the End (`docs/groundwork/p-plan.md`,
+/// decision 2), the worker that made the part may run one of them, which nobody
+/// stands in and which the coordinator may move at once instead.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_group_that_is_left_behind_is_split_off_and_its_region_is_moved_only_after_a_rest() {
     if a_repetition() {
@@ -1523,10 +1539,14 @@ async fn a_group_that_is_left_behind_is_split_off_and_its_region_is_moved_only_a
     };
     let moves_before = follows.begun().len() - follows.reshapes().len();
     let part = follows.step_2(Some(1)).await;
+    let moved_one = |follows: &Follows| {
+        let begun = follows.begun();
+        let moves = begun.iter().filter(|(_, begun)| !begun.reshapes()).count();
+        moves > moves_before
+    };
     follows
-        .until("the new region is run by the other worker", |follows| {
-            let owner = follows.cluster.owner(part);
-            owner.is_some_and(|owner| owner != made_by) && follows.cluster.runs(part)
+        .until("a region is moved to even out", |follows| {
+            moved_one(follows) && follows.cluster.even()
         })
         .await;
     follows.whole().await;
@@ -1534,31 +1554,44 @@ async fn a_group_that_is_left_behind_is_split_off_and_its_region_is_moved_only_a
     follows.is_in("A", 0);
     follows.is_in("B", 6);
 
-    // One release to even out, of the part, from the worker that made it.
+    // One release to even out, of the part or of a home of another dimension, from
+    // the worker that made the part.
+    let list = follows.list().await;
     let begun = follows.begun();
     let moves: Vec<&(f64, Begun)> = begun
         .iter()
         .filter(|(_, begun)| !begun.reshapes())
         .collect();
     let (from, to) = (worker_name(made_by), worker_name(1 - made_by));
-    let the_move = Begun::Move {
-        region: part,
-        from,
-        to,
-    };
     let last = moves.last().map(|(at, begun)| (*at, begun.clone()));
     let Some((moved_at, moved)) = last else {
-        follows.fail("the coordinator's log has no line for the move of the new region");
+        follows.fail("the coordinator's log has no line for the move to even out");
     };
-    if moves.len() != moves_before + 1
-        || moved != the_move
-        || follows.cluster.owner(0) != Some(made_by)
-    {
+    let region = match &moved {
+        Begun::Move {
+            region,
+            from: moved_from,
+            to: moved_to,
+        } if (moved_from, moved_to) == (&from, &to) => Some(*region),
+        _ => None,
+    };
+    let as_wanted =
+        region.is_some_and(|region| region == part || is_other_home(&list, RegionId(region)));
+    if moves.len() != moves_before + 1 || !as_wanted || follows.cluster.owner(0) != Some(made_by) {
         let loads = follows.cluster.loads();
         follows.fail(&format!(
-            "the coordinator was to move region {part} to the other worker, and nothing else: \
-             it moved {moves:?}, and the workers run {loads:?}"
+            "the coordinator was to move region {part} or a home of another dimension to the \
+             other worker, and nothing else: it moved {moves:?}, and the workers run {loads:?}"
         ));
+    }
+    if region != Some(part) {
+        follows.note(format!(
+            "the coordinator evened out with {moved:?}, a home of another dimension"
+        ));
+        follows.plays("A").await;
+        follows.plays("B").await;
+        follows.finish().await;
+        return;
     }
     let ended = follows.ended();
     let said = ended.iter().rev().find(|(_, ended)| {
@@ -1612,6 +1645,8 @@ async fn regions_follow_two_groups_through_ten_rounds_and_stand_nobody_still_twi
     follows.the_start().await;
     follows.step_1(0).await;
     let mut part = follows.step_2(Some(1)).await;
+    // Every part after it is the next region made.
+    let first_part = part;
 
     // What is counted begins here. `B` was handed over to region 1 on its way to
     // chunk 6 and has been in region 0 since step 1, and in the part since step 2.
@@ -1665,9 +1700,9 @@ async fn regions_follow_two_groups_through_ten_rounds_and_stand_nobody_still_twi
     ));
     let list = follows.list().await;
     if (merges, splits) != (rounds + 1, rounds)
-        || Follows::living(&list) != [0]
+        || Follows::overworld(&list) != [0]
         || list.absorbed.len() as u32 != rounds + 2
-        || list.next.0 != rounds + 3
+        || list.next.0 != first_part + rounds + 1
     {
         follows.fail(&format!(
             "from step 3 on, {} merges and {rounds} splits were to end well and no more: \
@@ -1735,7 +1770,7 @@ async fn groups_that_walk_along_each_other_are_merged_once_and_never_split() {
     follows.joins("A", 2, 0, within(0));
     follows.arrives("A").await;
     follows.plays("A").await;
-    follows.settled().await;
+    let start = follows.settled().await;
     follows.joins("B", 1, 8, between(5, 6));
     follows.arrives("B").await;
     follows.plays("B").await;
@@ -1764,7 +1799,7 @@ async fn groups_that_walk_along_each_other_are_merged_once_and_never_split() {
     follows.walks_for_a_minute("A").await;
     let list = follows.whole().await;
     follows.has_begun(1, "nothing more", &[]);
-    if Follows::living(&list) != [0] || list.next.0 != 2 {
+    if Follows::overworld(&list) != [0] || list.next != start.next {
         follows.fail(&format!(
             "the one region was to stay one region, and none was to be made: {list:?}"
         ));
@@ -1800,18 +1835,21 @@ async fn a_region_that_its_players_left_is_absorbed_by_a_region_without_players(
     follows.joins("A", 2, 0, within(0));
     follows.arrives("A").await;
     follows.plays("A").await;
-    follows.settled().await;
+    let start = follows.settled().await;
+    // The part is the next region made: after the stripes and the homes of the
+    // Nether and of the End.
+    let part = start.next.0;
 
     follows.joins("B", 1, 8, within(-6));
     follows
-        .until_the_list("there is a new region", |list| list.next.0 != 2)
+        .until_the_list("there is a new region", |list| list.next != start.next)
         .await;
     let list = follows.whole().await;
     follows.arrives("B").await;
     // The chunks nearer to chunk -6 than to chunk 0: chunk -3 is 3 from both and
     // stays.
-    let part = list.regions.iter().find(|info| info.region.0 == 2);
-    let bounds = part.and_then(|info| info.bounds);
+    let made = list.regions.iter().find(|info| info.region.0 == part);
+    let bounds = made.and_then(|info| info.bounds);
     let as_told = bounds.is_some_and(|bounds| {
         let widest = -bounds.min.x - 1;
         bounds.max.x == -4
@@ -1819,10 +1857,10 @@ async fn a_region_that_its_players_left_is_absorbed_by_a_region_without_players(
             && -widest <= bounds.min.z
             && bounds.max.z <= widest
     });
-    if Follows::living(&list) != [0, 1, 2] || !as_told {
+    if Follows::overworld(&list) != [0, 1, part] || !as_told {
         follows.fail(&format!(
-            "region 2 was to be split off with the chunks up to x = -4 that are nearer to \
-             chunk -6 than to chunk 0: {list:?}"
+            "region {part} was to be split off with the chunks up to x = -4 that are nearer \
+             to chunk -6 than to chunk 0: {list:?}"
         ));
     }
     let split = |begun: &Begun| {
@@ -1847,8 +1885,8 @@ async fn a_region_that_its_players_left_is_absorbed_by_a_region_without_players(
     follows.plays("C").await;
 
     let list = follows
-        .until_the_list("region 2 is absorbed", |list| {
-            Follows::absorbed_by(list, 2).is_some()
+        .until_the_list(&format!("region {part} is absorbed"), |list| {
+            Follows::absorbed_by(list, part).is_some()
         })
         .await;
     // By where the test knows its bots to be, neither of the two has a bot in it.
@@ -1858,20 +1896,22 @@ async fn a_region_that_its_players_left_is_absorbed_by_a_region_without_players(
         *begun
             == Begun::Absorption {
                 survivor: 1,
-                absorbed: 2,
+                absorbed: part,
             }
     };
-    follows.has_begun(1, "one absorption, of region 2 by region 1", &[&absorption]);
+    let what = format!("one absorption, of region {part} by region 1");
+    follows.has_begun(1, &what, &[&absorption]);
     let of_region_0 = follows.ended().into_iter().any(|(_, ended)| {
         matches!(ended, Ended::Merge { survivor, absorbed, .. } if survivor == 0 || absorbed == 0)
     });
-    if Follows::absorbed_by(&list, 2) != Some(1) || of_region_0 {
+    if Follows::absorbed_by(&list, part) != Some(1) || of_region_0 {
         follows.fail(&format!(
-            "region 2 was to be absorbed by region 1, and region 0 to be in no merge: {list:?}"
+            "region {part} was to be absorbed by region 1, and region 0 to be in no merge: \
+             {list:?}"
         ));
     }
     let list = follows.whole().await;
-    if Follows::living(&list) != [0, 1] {
+    if Follows::overworld(&list) != [0, 1] {
         follows.fail(&format!(
             "the list was to have the regions 0 and 1 and no other: {list:?}"
         ));
@@ -2037,7 +2077,7 @@ impl Follows {
         self.walks_to("A", 0);
         let killed = self.kills_at(owner, said, then, victim).await;
         let now = self.gets_over(victim, killed).await;
-        let found = match Self::living(&now).as_slice() {
+        let found = match Self::overworld(&now).as_slice() {
             [0] if now.next == before.next => Found::AsBefore,
             [0, new] if *new == part && now.next.0 == part + 1 => Found::AsAfter,
             _ => self.fail(&format!(
@@ -2059,7 +2099,7 @@ impl Follows {
         self.arrives("A").await;
         self.is_in("A", 0);
         self.is_in("B", 6);
-        if Self::living(&list) != [0, part] {
+        if Self::overworld(&list) != [0, part] {
             self.fail(&format!(
                 "after step 2 the list was to have region 0 and the new region {part}: {list:?}"
             ));
@@ -2094,7 +2134,7 @@ impl Follows {
         let killed = self.kills_at(watched, said, None, victim).await;
         let now = self.gets_over(victim, killed).await;
         let gone = Self::absorbed_by(&now, part) == Some(0);
-        let found = match Self::living(&now).as_slice() {
+        let found = match Self::overworld(&now).as_slice() {
             [0] if gone => Found::AsAfter,
             [0, other] if *other == part && !gone => Found::AsBefore,
             _ => self.fail(&format!(
@@ -2117,7 +2157,7 @@ impl Follows {
         self.arrives("A").await;
         self.is_in("A", 3);
         self.is_in("B", 6);
-        if Self::living(&list) != [0] {
+        if Self::overworld(&list) != [0] {
             self.fail(&format!(
                 "after step 3 the list has other regions than region 0: {list:?}"
             ));

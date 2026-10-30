@@ -44,6 +44,7 @@ use tokio::process::Child;
 use tokio::task::JoinHandle;
 
 use common::following;
+use common::homes::OTHER_HOMES;
 use common::processes::{Cluster, Turn, turn, turn_alone, worker_name};
 use common::{VIEW_DISTANCE, free_address, view_area};
 
@@ -129,11 +130,12 @@ struct Setup {
     east: f64,
 }
 
-/// Two regions that meet at block x = 48, three workers, the bots side by side and
-/// walking a good way to either side of the boundary.
+/// Two regions that meet at block x = 48, a worker for each and for each of the homes
+/// of the Nether and of the End and one to spare, the bots side by side and walking a
+/// good way to either side of the boundary.
 const SMALL: Setup = Setup {
     world: World::Pinned(&[3]),
-    workers: 3,
+    workers: 3 + OTHER_HOMES,
     wide: false,
     west: 33.5,
     east: 62.5,
@@ -771,7 +773,9 @@ impl Moves {
     /// store's list as last read, or the routing table's while the store is down.
     fn regions(&self) -> Vec<Region> {
         match &self.following {
-            None => (0..=self.lines.len()).collect(),
+            // A stripe on each side of every line, and after them the homes of the
+            // Nether and of the End.
+            None => (0..=self.lines.len() + OTHER_HOMES).collect(),
             Some(world) => match &world.list {
                 Some(list) => {
                     let regions = list.regions.iter();
@@ -2320,7 +2324,7 @@ async fn a_worker_that_is_told_to_stop_hands_the_regions_that_follow_players_ove
 }
 
 /// Y5, the twin of `players_keep_playing_while_every_worker_is_replaced_in_turn` on a
-/// world that follows its players: all five workers are replaced in turn, as a
+/// world that follows its players: all seven workers are replaced in turn, as a
 /// rolling restart on Kubernetes does it. Nobody is disconnected, the ledger holds,
 /// nobody waits as long as the lease, and every region is run at the end by a
 /// process that was started meanwhile.

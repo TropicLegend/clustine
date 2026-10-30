@@ -227,6 +227,10 @@ pub struct TableFile {
     pub home_chunk: ChunkPos,
     /// The region that holds the home chunk.
     pub home_region: u32,
+    /// The homes of the Nether and of the End, made with the world, each holding its
+    /// dimension's chunk (0, 0) (`docs/groundwork/p-plan.md`, decision 2).
+    pub nether_home: u32,
+    pub end_home: u32,
     /// The areas of the pinned regions the store was started with when the table was
     /// made, which need not be what the regions are pinned to now.
     pub division: Vec<ChunkArea>,
@@ -269,6 +273,8 @@ impl TableFile {
         out.extend_from_slice(&self.home_chunk.x.to_be_bytes());
         out.extend_from_slice(&self.home_chunk.z.to_be_bytes());
         out.extend_from_slice(&self.home_region.to_be_bytes());
+        out.extend_from_slice(&self.nether_home.to_be_bytes());
+        out.extend_from_slice(&self.end_home.to_be_bytes());
         put_areas(&mut out, &self.division);
         out.extend_from_slice(&(self.regions.len() as u32).to_be_bytes());
         for region in &self.regions {
@@ -306,6 +312,7 @@ impl TableFile {
         let next_region = input.u32()?;
         let home_chunk = ChunkPos::new(input.i32()?, input.i32()?);
         let home_region = input.u32()?;
+        let (nether_home, end_home) = (input.u32()?, input.u32()?);
         let division = take_areas(&mut input)?;
 
         let count = input.u32()? as usize;
@@ -354,6 +361,8 @@ impl TableFile {
             next_region,
             home_chunk,
             home_region,
+            nether_home,
+            end_home,
             division,
             regions,
             absorbed,
@@ -811,6 +820,8 @@ mod tests {
             next_region: 4,
             home_chunk: ChunkPos::new(0, -1),
             home_region: 1,
+            nether_home: 3,
+            end_home: 2,
             division: vec![
                 ChunkArea {
                     min_x: None,
@@ -907,6 +918,14 @@ mod tests {
             0,
             0,
             1, // the home region
+            0,
+            0,
+            0,
+            3, // the Nether's home
+            0,
+            0,
+            0,
+            2, // the End's home
             0,
             0,
             0,
@@ -1069,6 +1088,8 @@ mod tests {
             next_region: 0,
             home_chunk: ChunkPos::new(0, 0),
             home_region: 0,
+            nether_home: 1,
+            end_home: 2,
             division: Vec::new(),
             regions: Vec::new(),
             absorbed: Vec::new(),
@@ -1077,7 +1098,7 @@ mod tests {
         };
         assert_eq!(
             empty.encode().len(),
-            2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 16 + 1 + 4
+            2 + 8 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 16 + 1 + 4
         );
         assert_eq!(TableFile::decode(&empty.encode()), Ok(empty));
     }
@@ -1440,15 +1461,15 @@ mod tests {
     #[test]
     fn a_table_that_checks_out_but_makes_no_sense_is_an_error() {
         let bytes = table().encode();
-        // The flags of the first area of the division are at byte 30, its western end,
-        // which it has not, from byte 31 on.
-        assert_eq!(bytes[30], 2);
-        let flags = resealed(bytes.clone(), |body| body[30] = 4);
+        // The flags of the first area of the division are at byte 38, its western end,
+        // which it has not, from byte 39 on.
+        assert_eq!(bytes[38], 2);
+        let flags = resealed(bytes.clone(), |body| body[38] = 4);
         assert_eq!(
             TableFile::decode(&flags),
             Err(FormatError::Corrupt("area flags"))
         );
-        let end = resealed(bytes.clone(), |body| body[34] = 1);
+        let end = resealed(bytes.clone(), |body| body[42] = 1);
         assert_eq!(
             TableFile::decode(&end),
             Err(FormatError::Corrupt("an end of an area that has none"))
@@ -1478,12 +1499,12 @@ mod tests {
             body[count..count + 4].fill(0xFF);
         });
         assert_eq!(TableFile::decode(&forged), Err(FormatError::Truncated));
-        let forged = resealed(bytes.clone(), |body| body[26..30].fill(0xFF));
+        let forged = resealed(bytes.clone(), |body| body[34..38].fill(0xFF));
         assert!(TableFile::decode(&forged).is_err());
         // A region of a dimension there is none of: the first region's dimension is
-        // at byte 56, behind the division's two areas, the count and its id.
-        assert_eq!(bytes[56], 0);
-        let nowhere = resealed(bytes, |body| body[56] = 3);
+        // at byte 64, behind the division's two areas, the count and its id.
+        assert_eq!(bytes[64], 0);
+        let nowhere = resealed(bytes, |body| body[64] = 3);
         assert_eq!(
             TableFile::decode(&nowhere),
             Err(FormatError::Corrupt("a dimension"))
@@ -1555,6 +1576,8 @@ mod tests {
             next_region: u32,
             home in (any::<i32>(), any::<i32>()),
             home_region: u32,
+            nether_home: u32,
+            end_home: u32,
             division in areas(),
             regions in prop::collection::btree_map(
                 any::<u32>(),
@@ -1572,6 +1595,8 @@ mod tests {
                 next_region,
                 home_chunk: ChunkPos::new(home.0, home.1),
                 home_region,
+                nether_home,
+                end_home,
                 division,
                 regions: regions
                     .into_iter()

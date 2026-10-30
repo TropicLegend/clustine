@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clustine_rpc::RegionList;
 
-use super::wandering::{Begun, Ended, bounds, has_chunk, living, time_of};
+use super::wandering::{Begun, Ended, bounds, has_chunk, living, overworld, time_of};
 
 /// The view distance of the edge, and what the coordinator is told it is: the
 /// distances that follow from it are 12 and 20 chunks (`Policy::for_view_distance`).
@@ -28,10 +28,10 @@ pub const REST: Duration = Duration::from_secs(5);
 pub const BOTS: usize = 4;
 pub const LANE_TO_LANE: i32 = 21 * 16;
 
-/// One worker for each region there will be and one to spare, so that while all of
-/// them live no worker runs two more than another and the coordinator moves nothing
-/// by itself under the test.
-pub const WORKERS: usize = BOTS + 1;
+/// One worker for each region there will be, the homes of the Nether and of the End
+/// among them, and one to spare, so that while all of them live no worker runs two
+/// more than another and the coordinator moves nothing by itself under the test.
+pub const WORKERS: usize = BOTS + super::homes::OTHER_HOMES + 1;
 
 /// Blocks a tick on the way to the lanes, of which the farthest is 912 blocks from
 /// where players enter, for the bots and for their auditor after them: sixty blocks
@@ -65,9 +65,9 @@ pub fn chunk_of(number: usize, x: f64) -> (i32, i32) {
     ((x.floor() as i32).div_euclid(16), lane.div_euclid(16))
 }
 
-/// The region of `list` whose `bounds` have `chunk`, if exactly one has.
+/// The overworld's region of `list` whose `bounds` have `chunk`, if exactly one has.
 pub fn region_of(list: &RegionList, chunk: (i32, i32)) -> Option<u32> {
-    let holders = living(list).into_iter();
+    let holders = overworld(list).into_iter();
     let mut holders = holders.filter(|region| has_chunk(bounds(list, *region), chunk.0, chunk.1));
     holders.next().filter(|_| holders.next().is_none())
 }
@@ -83,7 +83,7 @@ pub fn regions_of_their_own(list: &RegionList, bots: &[f64]) -> Option<Vec<u32>>
         }
         regions.push(region);
     }
-    (living(list).len() == bots.len()).then_some(regions)
+    (overworld(list).len() == bots.len()).then_some(regions)
 }
 
 /// The time of the logs now, in seconds since 1970.

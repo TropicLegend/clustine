@@ -669,11 +669,12 @@ fn a_split_moves_the_use_of_the_parts_chunks_and_their_effects_to_the_part() {
     east.commit(&[], &[before.clone(), staying.clone()], &[]);
     west.effect(before.clone());
     west.effect(staying.clone());
-    match west.split(5, &[parted], 7, 3) {
-        StoreReply::Split { region, .. } => assert_eq!(region, RegionId(3)),
+    let id = crate::tests::first_part(&gap());
+    match west.split(5, &[parted], 7, id) {
+        StoreReply::Split { region, .. } => assert_eq!(region, RegionId(id)),
         other => panic!("expected the split, got {other:?}"),
     }
-    let (mut part, restored) = Played::open(&store, 3, 7);
+    let (mut part, restored) = Played::open(&store, id, 7);
     assert!(restored.in_use.contains(&parted), "{:?}", restored.in_use);
     assert!(!restored.in_use.contains(&WEST), "{:?}", restored.in_use);
     part.load(parted);

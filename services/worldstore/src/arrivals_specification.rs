@@ -1235,14 +1235,15 @@ fn a_splits_part_is_sent_the_arrivals_of_its_chunks_and_the_rest_of_the_region_n
     flushed(&east);
     assert_eq!(keys(&arrivals_in(&flushed(&old))), [KEY]);
     crate::regions::checkpoint(&old, 2);
+    let id = crate::tests::first_part(&gap());
     assert_eq!(
-        split(&old, 7, &[FREE], 4, 3),
+        split(&old, 7, &[FREE], 4, id),
         StoreReply::Split {
-            region: RegionId(3)
+            region: RegionId(id)
         }
     );
     flushed(&old);
-    let (part, _) = opened(&store, 3, 4);
+    let (part, _) = opened(&store, id, 4);
     let sent = arrivals_in(&flushed(&part));
     assert_eq!(keys(&sent), [KEY]);
     assert_eq!(sent[0].due, Due::FromTaking);
