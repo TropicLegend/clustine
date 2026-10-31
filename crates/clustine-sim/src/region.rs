@@ -1477,7 +1477,7 @@ impl Region {
                     travel: transfer.travel,
                     seen_credits: transfer.seen_credits,
                     portal_cooldown: transfer.portal.cooldown,
-                    respawn: None,
+                    respawn: transfer.respawn,
                     pose: transfer.pose,
                     flying: transfer.flying,
                     inventory: transfer.inventory.clone(),
@@ -2040,7 +2040,8 @@ impl Region {
     fn player_of(&self, edge: EdgeId, transfer: &PlayerTransfer) -> Player {
         Player {
             sleeping: None,
-            respawn: None,
+            // The bed or anchor they wake at goes with them wherever they go.
+            respawn: transfer.respawn,
             entity_id: transfer.entity_id,
             name: transfer.name.clone(),
             pose: transfer.pose,
@@ -2216,7 +2217,7 @@ impl Region {
                         health,
                         dead,
                         sleeping: None,
-                        respawn: None,
+                        respawn: place.respawn,
                         entity_id,
                         name,
                         pose: place.pose,
@@ -2268,9 +2269,11 @@ impl Region {
             }
         };
         let riding = returning;
+        // A bed or anchor set before they left is theirs still, below the world too.
+        let respawn = kept.and_then(|(place, _)| place.respawn);
         let player = Player {
             sleeping: None,
-            respawn: None,
+            respawn,
             entity_id,
             name,
             pose,
@@ -4404,6 +4407,7 @@ mod tests {
     mod rails_and_bulbs;
     mod redstone;
     mod redstone_ground;
+    mod respawn_kept;
     mod riding;
     mod scheduled_ticks;
     mod sculk;
