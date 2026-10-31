@@ -99,6 +99,7 @@ fn kept() -> Inventory {
 
 fn config() -> RegionConfig {
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),

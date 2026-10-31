@@ -334,6 +334,18 @@ impl Structures {
         })
     }
 
+    /// The chunks of the `minecraft:strongholds` set, the rings an eye of ender looks
+    /// among (`findNearestMapStructure` of `#eye_of_ender_located`); none where the
+    /// dimension has none.
+    #[must_use]
+    pub fn strongholds(&self) -> &[(i32, i32)] {
+        STRUCTURE_SETS
+            .iter()
+            .position(|set| set.name == "minecraft:strongholds")
+            .and_then(|set| self.rings().get(set))
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Whether any set of the dimension is placed in rings, which
     /// [`Self::is_structure_chunk`] then needs.
     fn has_rings(&self) -> bool {

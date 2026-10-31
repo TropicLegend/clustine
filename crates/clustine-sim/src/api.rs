@@ -531,6 +531,37 @@ pub struct VillageReport {
     /// where they did not (`docs/groundwork/n10-plan.md`, section 9.2). An empty list
     /// says it has none now.
     pub raids: Option<Vec<RaidSeen>>,
+    /// The dragon fight's bar as the End's home has it, where it changed since its last
+    /// report (`docs/groundwork/p-plan.md`, sections 19.5 item 7 and 19.6).
+    pub fight: Option<FightSeen>,
+    /// Whether one of the region's players is within the fight's reach, 192 blocks of
+    /// (0, 128, 0) in the End, where that changed since its last report (19.6): the home
+    /// loads the arena while any is.
+    pub in_arena: Option<bool>,
+    /// The global level events the region's tick made (`globalLevelEvent`: a portal
+    /// opened, the dragon's death), which every player of the world is told (19.5 item 8).
+    pub global_events: Vec<GlobalLevelEvent>,
+}
+
+/// The dragon fight's bar as other regions read it (`docs/groundwork/p-plan.md`, section
+/// 19.6): its UUID, whether it is shown, and its progress.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FightSeen {
+    pub bar: Uuid,
+    pub shown: bool,
+    pub progress: f32,
+}
+
+/// A level event every player of the world is told, wherever they are
+/// (`ServerLevel.globalLevelEvent`): its id, the dimension and place it was made at, and
+/// its data. A player of another level, or of the same one beyond 32 blocks, hears it
+/// from 32 blocks towards it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlobalLevelEvent {
+    pub event: i32,
+    pub dimension: Dimension,
+    pub position: BlockPos,
+    pub data: i32,
 }
 
 /// A raid as other regions read it from the world's table (section 9.2): where its
@@ -564,17 +595,33 @@ pub struct PublishedVillage {
     pub dropped: Vec<ChunkPos>,
     /// Every region's raids but the receiver's own, whole each time, by id.
     pub raids: Vec<RaidSeen>,
+    /// The dragon fight's bar as the End's home last said it, to the End's other regions;
+    /// none where it said none.
+    pub fight: Option<FightSeen>,
+    /// To the End's home: whether another region of the End has a player within the
+    /// fight's reach.
+    pub arena_wanted: bool,
+    /// The global level events made since the last publication to the region's owner,
+    /// each with its number, which a region tells each of its players once.
+    pub global_events: Vec<(u64, GlobalLevelEvent)>,
 }
 
 impl PublishedVillage {
     /// `later` taken after this one, as one publication: a whole one replaces it, and
     /// changes are laid over it.
-    pub fn then(&mut self, later: PublishedVillage) {
+    pub fn then(&mut self, mut later: PublishedVillage) {
+        // Global events are each told once, whatever else the later one replaces.
+        let mut global_events = std::mem::take(&mut self.global_events);
+        global_events.append(&mut later.global_events);
         if later.whole {
             *self = later;
+            self.global_events = global_events;
             return;
         }
+        self.global_events = global_events;
         self.raids = later.raids;
+        self.fight = later.fight;
+        self.arena_wanted = later.arena_wanted;
         let mut pois: std::collections::BTreeMap<ChunkPos, Vec<PoiSeen>> =
             std::mem::take(&mut self.pois).into_iter().collect();
         let mut dropped: std::collections::BTreeSet<ChunkPos> =
@@ -1376,6 +1423,8 @@ pub struct TickInputs {
     pub travellers: Vec<(EffectId, Traveller)>,
     /// The world store's answers to the region's [`PortalQuery`]s.
     pub portal_answers: Vec<PortalAnswer>,
+    /// The world store's answers to the region's [`GatewayExitQuery`]s.
+    pub gateway_exits: Vec<GatewayExitAnswer>,
     /// The world store's answers to the region's [`StayNote::Entering`] notes, in the
     /// order they came. An answer is taken only for the very stay the region still
     /// holds as entering for the player, and passed over otherwise. Whatever the case,
@@ -2286,6 +2335,30 @@ pub struct TickOutput {
     /// What the region asks the store's portal index, answered in a later tick's
     /// [`TickInputs::portal_answers`].
     pub portal_queries: Vec<PortalQuery>,
+    /// What the region asks the store of a gateway's exit, answered in a later tick's
+    /// [`TickInputs::gateway_exits`].
+    pub gateway_queries: Vec<GatewayExitQuery>,
+}
+
+/// A question to the store: where the End gateway at `from`, in the region's own
+/// dimension, leads (`TheEndGatewayBlockEntity.findOrCreateValidTeleportPos`;
+/// `docs/groundwork/p-plan.md`, sections 19.5 item 9 and 19.6). The store finds it in
+/// each chunk's committed form, 1024 blocks out along the gateway's direction. Not
+/// durable: a region asks again after a hello, and the gateway's clock does not fire
+/// while it is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayExitQuery {
+    pub id: QueryId,
+    pub from: BlockPos,
+}
+
+/// The store's answer to a [`GatewayExitQuery`]: the block the exit gateway is to stand
+/// at, and whether an island is to be made there first (`end_island`, of the position's
+/// random); none where the store cannot say yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayExitAnswer {
+    pub id: QueryId,
+    pub exit: Option<(BlockPos, bool)>,
 }
 
 /// A question to the store's portal index: the Nether portals within `radius` blocks

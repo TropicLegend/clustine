@@ -263,6 +263,9 @@ fn the_margin_is_read_occupied_but_never_with_space_and_counts_for_the_village()
     let far = BlockPos::new(40, Y, 8);
     let bell = BlockPos::new(41, Y, 9);
     region.take_margin(&crate::api::PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![(
             ChunkPos::new(2, 0),
@@ -289,6 +292,9 @@ fn the_margin_is_read_occupied_but_never_with_space_and_counts_for_the_village()
 
     // A later publication's changes are laid over it.
     region.take_margin(&crate::api::PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: false,
         pois: Vec::new(),
         dropped: vec![ChunkPos::new(2, 0)],
@@ -313,12 +319,18 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
         )
     };
     let mut folded = PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: false,
         pois: vec![one(1)],
         dropped: vec![chunk(2)],
         raids: Vec::new(),
     };
     folded.then(PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: false,
         pois: vec![one(2)],
         dropped: vec![chunk(1), chunk(3)],
@@ -327,6 +339,9 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
     assert_eq!(
         folded,
         PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: false,
             pois: vec![one(2)],
             dropped: vec![chunk(1), chunk(3)],
@@ -335,12 +350,18 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
     );
     // A whole one replaces what came before, and changes after it stay whole.
     folded.then(PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![one(4)],
         dropped: Vec::new(),
         raids: Vec::new(),
     });
     folded.then(PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: false,
         pois: vec![one(5)],
         dropped: vec![chunk(4)],
@@ -349,6 +370,9 @@ fn publications_folded_before_a_tick_are_their_changes_in_order() {
     assert_eq!(
         folded,
         PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: true,
             pois: vec![one(5)],
             dropped: Vec::new(),

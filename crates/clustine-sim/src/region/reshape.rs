@@ -303,7 +303,8 @@ impl Region {
     /// and than to the home chunk if the region holds it, counted in chunks along the
     /// longer of the two axes. A chunk that is as near to the one as to the other
     /// stays. Chunks of the region's own pinned areas go like any other; the region
-    /// stays pinned to its areas.
+    /// stays pinned to its areas. In the End, the fight's arena stays, and so do those
+    /// who stand in it.
     ///
     /// A grant that waits goes by the same rule, and is not left to the region for
     /// want of a tick that was told of it. A player who walks on has the row of chunks
@@ -327,10 +328,17 @@ impl Region {
         let held = self.held_with(granted);
         let standing: BTreeSet<ChunkPos> =
             self.players.values().map(|player| player.chunk()).collect();
+        // The End's arena stays with the End's home, and so do the players in it
+        // (`docs/groundwork/p-plan.md`, section 19.5 item 6).
+        let arena =
+            |position: ChunkPos| self.land.end && clustine_world::dragon::in_arena(position);
         let seeds: BTreeSet<ChunkPos> = named
             .iter()
             .filter(|position| {
-                held.contains(*position) && **position != home && standing.contains(*position)
+                held.contains(*position)
+                    && **position != home
+                    && !arena(**position)
+                    && standing.contains(*position)
             })
             .copied()
             .collect();
@@ -356,7 +364,7 @@ impl Region {
         // chunks in any case, and the home chunk never is.
         let chunks: Vec<ChunkPos> = held
             .into_iter()
-            .filter(|position| sides.goes(*position))
+            .filter(|position| sides.goes(*position) && !arena(*position))
             .collect();
 
         let mut state = self.state();
@@ -536,6 +544,7 @@ mod tests {
 
     fn config(return_after: u64) -> RegionConfig {
         RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(SPAWN),
@@ -1092,6 +1101,33 @@ mod tests {
             .map(|(number, chunk)| (*number, stay(*number as i32, E, *chunk)))
             .collect();
         region(state(20, 0, 9, players, vec![(E, quiet(1))]), held, pinned)
+    }
+
+    /// The plan, section 19.5 item 6: in the End, the fight's arena stays with the region
+    /// that holds it, and so do those who stand in it; a player beyond it goes with the
+    /// chunks nearer them, but never one of the arena's.
+    #[test]
+    fn the_end_s_arena_and_those_in_it_stay_when_a_region_is_split() {
+        let state = standing(&[(1, at(2, 0)), (2, at(12, 0))], &[], &[]).state();
+        let held = [row(0, 13, 0), vec![HOME]].concat();
+        let config = RegionConfig {
+            dimension: clustine_world::Dimension::End,
+            ..config(3)
+        };
+        let region = Region::restore(config, state, holdings(&held, &[]));
+        assert_eq!(
+            region.split(&[at(2, 0)], PART, &[]).unwrap_err(),
+            NoSplit::Nobody,
+            "a player in the arena stays"
+        );
+        let split = region.split(&[at(12, 0)], PART, &[]).unwrap();
+        assert_eq!(split.part.players.len(), 1);
+        assert!(
+            split.chunks.iter().all(|chunk| chunk.x > 8),
+            "no chunk of the arena goes: {:?}",
+            split.chunks
+        );
+        assert!(split.chunks.contains(&at(12, 0)));
     }
 
     #[test]

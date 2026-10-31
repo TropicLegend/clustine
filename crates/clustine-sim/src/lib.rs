@@ -39,14 +39,14 @@ pub mod time;
 mod trading;
 
 pub use api::{
-    CountsReport, PoiSeen, PublishedCounts, PublishedVillage, RaidSeen, SPAWN_CATEGORIES,
-    SpawnCounts, VillageReport,
+    CountsReport, FightSeen, GlobalLevelEvent, PoiSeen, PublishedCounts, PublishedVillage,
+    RaidSeen, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
 };
 pub use api::{
-    Durable, EdgeEvent, Entered, FaceChange, FaceSeq, Keys, LendAnswer, LendAsked, Misdirected,
-    Place, PlayerChange, PlayerEvent, PlayerFace, PlayerJoin, PlayerTransfer, PortalAnswer,
-    PortalQuery, QueryId, RemoteAction, RemoteStep, StayNote, TickInputs, TickOutput, Ticket, Unit,
-    VehicleMove, WorldClock, WorldPlayer,
+    Durable, EdgeEvent, Entered, FaceChange, FaceSeq, GatewayExitAnswer, GatewayExitQuery, Keys,
+    LendAnswer, LendAsked, Misdirected, Place, PlayerChange, PlayerEvent, PlayerFace, PlayerJoin,
+    PlayerTransfer, PortalAnswer, PortalQuery, QueryId, RemoteAction, RemoteStep, StayNote,
+    TickInputs, TickOutput, Ticket, Unit, VehicleMove, WorldClock, WorldPlayer,
 };
 /// What the edge needs to show a cloud's radius and a potion's colour (part S12b).
 pub use region::clouds::{arrow_colour, potion_colour, radius_at as cloud_radius_at};

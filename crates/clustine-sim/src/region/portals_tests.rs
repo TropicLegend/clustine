@@ -130,6 +130,7 @@ pub(in crate::region) fn world_in(
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension,
         spawn: None,

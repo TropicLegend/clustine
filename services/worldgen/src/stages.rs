@@ -18,6 +18,11 @@ pub trait Stages: Send + Sync + 'static {
     fn origin(&self) -> ChunkPos {
         ChunkPos::new(0, 0)
     }
+    /// [`ChunkGenerator::strongholds`](clustine_world::ChunkGenerator::strongholds) of
+    /// the stages' world: none by default.
+    fn strongholds(&self) -> Vec<ChunkPos> {
+        Vec::new()
+    }
     /// The structure starts whose source chunk is `source`, as made.
     fn starts(&self, source: ChunkPos) -> Starts;
     /// The chunk after carving. `starts` answers for every source chunk within 8.

@@ -89,6 +89,7 @@ impl Scene {
             inventory.set(slot, Some(stack(*item)));
         }
         let config = RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension,
             spawn: Some(feet),

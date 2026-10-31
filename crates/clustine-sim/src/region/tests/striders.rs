@@ -499,6 +499,7 @@ fn nether_sea() -> Region {
     };
     let rules = clustine_world::Dimension::Nether.rules();
     let config = RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: clustine_world::Dimension::Nether,
         spawn: Some(Vec3::new(0.5, f64::from(SEA_TOP + 1), 0.5)),

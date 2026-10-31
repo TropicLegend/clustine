@@ -4,7 +4,20 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockPos, EntityId};
+use crate::{BlockPos, ChunkPos, EntityId};
+
+/// How far from the End's chunk (0, 0), in chunks along either axis, the fight's arena
+/// reaches: the chunks its ticket of radius 9 holds (`docs/groundwork/p-plan.md`,
+/// sections 7.13 and 19.5 item 6).
+pub const ARENA_REACH: i32 = 8;
+
+/// Whether the End's chunk `position` is of the fight's arena, which the End's home
+/// keeps: the store grants it to no other region, the home never gives it back, and no
+/// split takes it.
+#[must_use]
+pub fn in_arena(position: ChunkPos) -> bool {
+    position.x.abs() <= ARENA_REACH && position.z.abs() <= ARENA_REACH
+}
 
 /// What the game saves of the fight, with its defaults in [`DragonFight::default`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

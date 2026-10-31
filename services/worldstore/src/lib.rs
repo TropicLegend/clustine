@@ -917,6 +917,10 @@ fn begin_clocked(
     clock: Option<lanes::Clock>,
 ) -> Result<Store, StoreError> {
     let division = pins.with_home(spawn.chunk());
+    // Kept in a local world's `meta`; worked out once here where the store keeps none.
+    let strongholds = chunks
+        .strongholds()
+        .unwrap_or_else(|| generators.overworld.strongholds());
     let identity = generators.identity();
     let world = world_number(&identity);
     let seed = world_seed(&identity);
@@ -932,7 +936,9 @@ fn begin_clocked(
         .name("worldstore-chunks".to_owned())
         .spawn(move || service.run(queued))?;
     let prepare = jobs.clone();
-    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?.of_world(world, seed);
+    let lanes = Lanes::load(disk, root, Jobs::new(jobs), &division, spawn)?
+        .of_world(world, seed)
+        .with_strongholds(strongholds);
     let lanes = match clock {
         Some(clock) => lanes.with_clock(clock),
         None => lanes,

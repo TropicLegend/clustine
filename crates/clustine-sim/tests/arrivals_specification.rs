@@ -54,6 +54,7 @@ fn config(return_after: u64) -> RegionConfig {
     let mut hotbar = [const { None }; HOTBAR_SLOTS];
     hotbar[0] = Some(ItemStack::new(items::STONE, 64));
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(FEET),

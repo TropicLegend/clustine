@@ -311,6 +311,7 @@ fn clock(day: u64) -> WorldClock {
 fn config(options: &Options) -> RegionConfig {
     let rules = options.dimension.rules();
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: options.dimension,
         spawn: Some(ORIGIN),

@@ -326,6 +326,9 @@ fn a_take_is_the_first_in_order_with_space_that_passes_its_test_and_only_in_the_
 fn a_record_known_only_from_the_margin_is_never_taken() {
     let mut region = region_of(WESTERN, &land(&[], &[]), &[]);
     region.take_margin(&PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![(
             chunk_at(1, 0),
@@ -646,6 +649,9 @@ fn only_an_occupied_record_of_village_makes_a_village() {
     // record of `#village`, so no village, whatever it says.
     let mut region = whole(&blocks, &[]);
     region.take_margin(&PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![(
             chunk_at(4, 0),
@@ -680,6 +686,9 @@ fn the_village_is_read_from_the_land_the_copies_and_the_margin() {
     // An occupied bell known from the margin, four chunks beyond the copy.
     let mut region = region_of(WESTERN, &land(&[], &[]), &[chunk_at(1, 0)]);
     region.take_margin(&PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![(
             chunk_at(5, 1),
@@ -734,6 +743,9 @@ fn a_copy_and_the_land_are_read_never_the_margin_for_their_chunks() {
     let mut region = region_of(WESTERN, &land, &[chunk_at(1, 0)]);
     // A margin that says otherwise of a copied chunk and of the land.
     region.take_margin(&PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![
             (chunk_at(0, 0), vec![seen(own_bed, PoiType::Home, true)]),
@@ -766,6 +778,9 @@ fn the_type_at_a_place_is_read_from_the_margin_too() {
     let mut region = region_of(WESTERN, &land(&[], &[]), &[]);
     let far = at(40, Y, 8);
     region.take_margin(&PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![(chunk_at(2, 0), vec![seen(far, PoiType::Home, true)])],
         dropped: Vec::new(),
@@ -788,6 +803,9 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
     tick_with(
         &mut region,
         Some(PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: true,
             pois: vec![
                 (chunk_at(2, 0), vec![bed_at(40)]),
@@ -808,6 +826,9 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
     tick_with(
         &mut region,
         Some(PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: false,
             pois: vec![
                 (
@@ -827,6 +848,9 @@ fn the_margin_is_kept_across_ticks_and_each_publication_laid_over_it_in_order() 
     tick_with(
         &mut region,
         Some(PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: true,
             pois: Vec::new(),
             dropped: Vec::new(),
@@ -854,6 +878,9 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
         folded
     };
     let delta = |pois, dropped| PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: false,
         pois,
         dropped,
@@ -862,6 +889,9 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
 
     // Applied to a margin, the fold is what the publications one after the other are.
     let start = PublishedVillage {
+        fight: None,
+        arena_wanted: false,
+        global_events: Vec::new(),
         whole: true,
         pois: vec![one(1, true), one(2, true), one(3, true)],
         dropped: Vec::new(),
@@ -897,6 +927,9 @@ fn publications_folded_before_a_tick_are_one_publication_in_order() {
     let folded = fold(vec![
         delta(vec![one(1, true)], Vec::new()),
         PublishedVillage {
+            fight: None,
+            arena_wanted: false,
+            global_events: Vec::new(),
             whole: true,
             pois: vec![one(2, true)],
             dropped: Vec::new(),

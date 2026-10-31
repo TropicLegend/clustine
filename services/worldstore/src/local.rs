@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use clustine_data::DATA_VERSION;
 use clustine_format::FORMAT_VERSION;
-use clustine_world::{BlockPos, ChunkGenerator, Dimension};
+use clustine_world::{BlockPos, ChunkGenerator, ChunkPos, Dimension};
 use tracing::info;
 
 use crate::StoreError;
@@ -47,6 +47,12 @@ fn version_line(dimension: Dimension) -> String {
 /// when the world was made (`docs/groundwork/t8-plan.md`, T8c).
 const SPAWN: &str = "spawn";
 
+/// The line of `meta` that holds the chunks of the world's strongholds, `x,z` each,
+/// parted by `;`: worked out by the generator once when the world is made, so that a
+/// region finds the nearest without asking (`docs/groundwork/p-plan.md`, section 19.2
+/// P10-0). Empty for a world without them.
+const STRONGHOLDS: &str = "strongholds";
+
 /// A world's `meta` as the store keeps it, to raise its `generator-version` when the
 /// first chunk of a newer generator is about to be stored (ADR-0021, section 6).
 pub(crate) struct Meta {
@@ -58,6 +64,8 @@ pub(crate) struct Meta {
     pub(crate) versions: [u16; 3],
     /// The world's spawn, which the file holds.
     pub(crate) spawn: BlockPos,
+    /// The chunks of the world's strongholds, which the file holds.
+    pub(crate) strongholds: Vec<ChunkPos>,
 }
 
 impl Meta {
@@ -223,11 +231,25 @@ pub(crate) fn prepare(
                     spawn
                 }
             };
+            // They are the generator's for the seed: a file without them has them
+            // worked out again, which gives the same.
+            let strongholds = match text
+                .lines()
+                .find_map(|line| line.strip_prefix(STRONGHOLDS)?.strip_prefix('='))
+            {
+                Some(strongholds) => parse_strongholds(strongholds).ok_or_else(|| {
+                    StoreError::MalformedMeta(format!(
+                        "{STRONGHOLDS} is not pairs of whole numbers"
+                    ))
+                })?,
+                None => generator.strongholds(),
+            };
             Ok(Meta {
                 path,
                 lines,
                 versions,
                 spawn,
+                strongholds,
             })
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -243,6 +265,8 @@ pub(crate) fn prepare(
                 lines.push(format!("{}={version}", version_line(dimension)));
             }
             lines.push(spawn_line(spawn));
+            let strongholds = generator.strongholds();
+            lines.push(strongholds_line(&strongholds));
             let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
             replace(disk.as_ref(), &path, text.as_bytes())?;
             disk.sync_directory(root)?;
@@ -251,6 +275,7 @@ pub(crate) fn prepare(
                 lines,
                 versions: server,
                 spawn,
+                strongholds,
             })
         }
         Err(error) => Err(error.into()),
@@ -259,6 +284,26 @@ pub(crate) fn prepare(
 
 fn spawn_line(spawn: BlockPos) -> String {
     format!("{SPAWN}={},{},{}", spawn.x, spawn.y, spawn.z)
+}
+
+fn strongholds_line(strongholds: &[ChunkPos]) -> String {
+    let pairs: Vec<String> = strongholds
+        .iter()
+        .map(|chunk| format!("{},{}", chunk.x, chunk.z))
+        .collect();
+    format!("{STRONGHOLDS}={}", pairs.join(";"))
+}
+
+fn parse_strongholds(text: &str) -> Option<Vec<ChunkPos>> {
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    text.split(';')
+        .map(|pair| {
+            let (x, z) = pair.split_once(',')?;
+            Some(ChunkPos::new(x.parse().ok()?, z.parse().ok()?))
+        })
+        .collect()
 }
 
 fn parse_spawn(text: &str) -> Option<BlockPos> {
@@ -424,6 +469,9 @@ mod tests {
         assert_eq!(store.regions().unwrap().spawn, somewhere);
         drop(store);
         assert!(meta(directory.path()).contains("\nspawn=-37,70,1204\n"));
+        // The flat world has no strongholds, and says so (`docs/groundwork/p-plan.md`,
+        // section 19.5 item 15).
+        assert!(meta(directory.path()).ends_with("\nstrongholds=\n"));
 
         // A server whose generator would put the spawn elsewhere opens the world with
         // the spawn it was made with, and the home chunk is that spawn's.
@@ -729,6 +777,7 @@ mod tests {
             disk.sync_directory(root).unwrap();
             let disk = Arc::new(disk.with(Fault::Stop(stop)));
             let meta = Meta {
+                strongholds: Vec::new(),
                 spawn: crate::tests::SPAWN,
                 path: root.join("meta"),
                 lines: text.lines().map(str::to_owned).collect(),

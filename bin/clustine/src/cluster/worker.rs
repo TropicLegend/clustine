@@ -265,10 +265,10 @@ enum Outcome {
 
 /// What a worker waited for and got; see [`settled`].
 enum Settled {
-    Opened(Result<(StoreHandle, Restored), StoreError>),
+    Opened(Box<Result<(StoreHandle, Restored), StoreError>>),
     Released(Ended),
     /// The region that this one is to absorb has been opened and read, or cannot be.
-    Fetched(Fetched),
+    Fetched(Box<Fetched>),
 }
 
 /// Resolves when what the worker waits for with one of its regions has come about: the
@@ -292,14 +292,14 @@ async fn settled(regions: &mut Regions, reshapes: &mut Reshapes) -> (RegionId, S
                 if let Phase::Opening { opening, .. } | Phase::Starting { opening, .. } = phase
                     && let Poll::Ready(opened) = opening.as_mut().poll(context)
                 {
-                    return Poll::Ready((*region, Settled::Opened(opened)));
+                    return Poll::Ready((*region, Settled::Opened(Box::new(opened))));
                 }
             }
             for (region, reshaping) in reshapes.iter_mut() {
                 if let Doing::Fetching { fetching, .. } = &mut reshaping.doing
                     && let Poll::Ready(fetched) = fetching.as_mut().poll(context)
                 {
-                    return Poll::Ready((*region, Settled::Fetched(fetched)));
+                    return Poll::Ready((*region, Settled::Fetched(Box::new(fetched))));
                 }
             }
             Poll::Pending
@@ -977,7 +977,7 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                         Some(Phase::Starting { held, part, .. }) => (held, Some(part)),
                         _ => unreachable!("only an opening resolves"),
                     };
-                    match opened {
+                    match *opened {
                         Ok((store, restored)) => {
                             let runner = match part {
                                 // What the store says of the region is not looked at
@@ -1090,6 +1090,7 @@ pub(crate) async fn run(setup: Setup, outside: Outside) -> Result<()> {
                     declined.push(held.assignment);
                 }
                 Settled::Fetched(fetched) => {
+                    let fetched = *fetched;
                     let Some(Reshaping {
                         number,
                         held,

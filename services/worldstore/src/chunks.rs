@@ -57,6 +57,11 @@ fn directory(dimension: Dimension) -> &'static str {
 
 /// Where chunks are kept.
 pub(crate) trait Chunks: Send {
+    /// The chunks of the world's strongholds, where the store keeps them (a local
+    /// world's `meta`); `None` where the generator is to work them out.
+    fn strongholds(&self) -> Option<Vec<ChunkPos>> {
+        None
+    }
     /// The stored chunk, or `None` if it was never stored.
     fn load(&mut self, position: LevelChunk) -> Result<Option<Chunk>, StoreError>;
     /// Whether a chunk is stored at `position`, as [`Chunks::load`] would find it.
@@ -378,6 +383,10 @@ impl FileChunks {
 }
 
 impl Chunks for FileChunks {
+    fn strongholds(&self) -> Option<Vec<ChunkPos>> {
+        self.meta.as_ref().map(|meta| meta.strongholds.clone())
+    }
+
     /// Without reading the file: a store that starts asks it of the chunks around the
     /// spawn.
     fn has(&mut self, position: LevelChunk) -> Result<bool, StoreError> {

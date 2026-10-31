@@ -79,6 +79,7 @@ mod tests {
     fn region() -> Region {
         Region::new(
             RegionConfig {
+                strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
                 spawn: Some(Vec3::new(0.5, 64.0, 0.5)),

@@ -1169,6 +1169,13 @@ pub trait ChunkGenerator: Send + Sync {
         crate::spawn::place_to_stand(self.origin(), |position| self.generate(position))
     }
 
+    /// The chunks the world's strongholds are in, which an eye of ender looks for
+    /// (`docs/groundwork/p-plan.md`, section 19.2 P10-0): none for a world without
+    /// them, as the flat world is.
+    fn strongholds(&self) -> Vec<ChunkPos> {
+        Vec::new()
+    }
+
     /// Makes these chunks ahead of any request, in this order, where the generator
     /// keeps what it makes for a while: what a later request costs changes, never what
     /// it gets. A world store asks it for the chunks around the spawn when it starts,

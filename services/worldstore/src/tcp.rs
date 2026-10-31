@@ -322,6 +322,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         spawn,
         dimension,
         homes,
+        strongholds,
         world,
         seed,
         in_use,
@@ -342,6 +343,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         spawn,
         dimension,
         homes,
+        strongholds,
         world,
         seed,
         offset,
@@ -506,6 +508,7 @@ impl Arriving {
         Self {
             restored: Restored {
                 homes: Vec::new(),
+                strongholds: Vec::new(),
                 faces: Vec::new(),
                 held: Vec::new(),
                 pinned,
@@ -745,6 +748,7 @@ fn welcomed(
             spawn,
             dimension,
             homes,
+            strongholds,
             world,
             seed,
             offset,
@@ -759,6 +763,7 @@ fn welcomed(
             let mut arriving = Arriving::new(entity_ids, pinned, issued, spawn, dimension, world);
             let restored = &mut arriving.restored;
             restored.homes = homes;
+            restored.strongholds = strongholds;
             restored.seed = seed;
             restored.clock = clock;
             restored.faces = faces;
@@ -1030,6 +1035,7 @@ mod tests {
             refused.err()
         );
         let mut expected = Restored {
+            strongholds: Vec::new(),
             // The homes a portal sends players to, as the store's list has them.
             homes: store.regions().unwrap().homes,
             dimension: Default::default(),
@@ -1592,6 +1598,7 @@ mod tests {
             let said: Option<StoreHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
+                strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
                 faces: Vec::new(),
@@ -1825,6 +1832,7 @@ mod tests {
     fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -2047,6 +2055,7 @@ mod tests {
             },
         ];
         let expected = Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -2263,6 +2272,7 @@ mod tests {
                 assert!(block.index() > given.index(), "{block:?} after {given:?}");
                 given = block;
                 let accepted = StoreWelcome::Accepted {
+                    strongholds: Vec::new(),
                     homes: store.regions().unwrap().homes,
                     dimension: Default::default(),
                     faces: Vec::new(),
@@ -2311,6 +2321,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -2404,6 +2415,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let restored = Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),

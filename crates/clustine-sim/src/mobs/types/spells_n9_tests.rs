@@ -1303,6 +1303,7 @@ mod in_a_region {
     /// in their chunks.
     fn region_with(entities: &[Entity]) -> Region {
         let config = RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(clustine_world::Vec3::new(0.5, FEET, 0.5)),

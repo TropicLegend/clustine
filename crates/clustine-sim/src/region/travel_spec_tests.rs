@@ -183,6 +183,7 @@ fn nether_about(
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Dimension::Nether,
         spawn: None,

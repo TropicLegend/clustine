@@ -150,6 +150,10 @@ impl Stages for FeatureStages {
         ChunkGenerator::origin(&*self.terrain)
     }
 
+    fn strongholds(&self) -> Vec<ChunkPos> {
+        ChunkGenerator::strongholds(&*self.terrain)
+    }
+
     fn starts(&self, source: ChunkPos) -> Starts {
         let starts = self.terrain.starts(source);
         Starts {

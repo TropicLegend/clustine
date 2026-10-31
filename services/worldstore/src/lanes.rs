@@ -129,6 +129,8 @@ pub(crate) struct Lanes {
     table: Table,
     /// The world's spawn ([`Restored::spawn`]). The table's home chunk is its chunk.
     spawn: BlockPos,
+    /// The chunks of the world's strongholds ([`Restored::strongholds`]).
+    strongholds: Vec<ChunkPos>,
     /// The world's number ([`Restored::world`]).
     world: u64,
     /// Where the `nether_portal` blocks of each dimension are, kept from every commit
@@ -424,6 +426,12 @@ impl Lanes {
     pub(crate) fn of_world(mut self, world: u64, seed: Option<i64>) -> Self {
         self.world = world;
         self.seed = seed;
+        self
+    }
+
+    /// The lanes with the world's strongholds, which every region is restored with.
+    pub(crate) fn with_strongholds(mut self, strongholds: Vec<ChunkPos>) -> Self {
+        self.strongholds = strongholds;
         self
     }
 
@@ -866,6 +874,7 @@ impl Lanes {
         let used = stored.as_ref().map_or(0, |table| table.next_region);
         let mut lanes = Self {
             portals,
+            strongholds: Vec::new(),
             counts: Default::default(),
             village: Default::default(),
             disk,
@@ -1357,6 +1366,18 @@ impl Lanes {
             StoreRequest::Commit { travellers, .. } => self.homes_of(travellers),
             _ => BTreeMap::new(),
         };
+        // In the End, the home that keeps the fight's arena, with its tick, where the
+        // asking region is another: an arena chunk nobody holds that the region claims
+        // or sends an arrival into is granted to the home, which keeps it
+        // (`docs/groundwork/p-plan.md`, section 19.5 item 6).
+        let arena_home = (dimension == Dimension::End)
+            .then(|| self.table.holder(self.table.home_of(Dimension::End)))
+            .flatten()
+            .filter(|home| *home != session.region)
+            .and_then(|home| Some((home, self.regions.get(&home)?.latest)));
+        let to_arena_home = |chunk: LevelChunk| {
+            arena_home.filter(|_| clustine_world::dragon::in_arena(chunk.position))
+        };
         let Some(lane) = self.regions.get_mut(&session.region) else {
             return;
         };
@@ -1400,6 +1421,20 @@ impl Lanes {
                     })
                     .collect();
                 self.answer_in_group(session.region, StoreReply::Portals { answers });
+                return;
+            }
+            // Answered with the group, as the portal index's are: where each gateway
+            // leads is P10e's search (`docs/groundwork/p-plan.md`, sections 19.5 and
+            // 19.6); until it is built the store cannot say, and no region asks.
+            StoreRequest::GatewayExits { queries } => {
+                let answers = queries
+                    .into_iter()
+                    .map(|query| clustine_rpc::GatewayExitAnswer {
+                        id: query.id,
+                        exit: None,
+                    })
+                    .collect();
+                self.answer_in_group(session.region, StoreReply::GatewayExits { answers });
                 return;
             }
             // Written to the log and kept with the table: the world's, published with
@@ -1502,11 +1537,11 @@ impl Lanes {
                 // the sender before the commit is appended, so that a restart that reads
                 // the log, or keeps the first part of a torn group, files the arrival
                 // against its holder (ADR-0028, section 5).
-                let mut nobodys: Vec<LevelChunk> = arrivals
+                let (arena, mut nobodys): (Vec<LevelChunk>, Vec<LevelChunk>) = arrivals
                     .iter()
                     .map(|(chunk, _)| level(*chunk))
                     .filter(|chunk| self.table.holder(*chunk).is_none())
-                    .collect();
+                    .partition(|chunk| to_arena_home(*chunk).is_some());
                 nobodys.sort_unstable();
                 nobodys.dedup();
                 if !nobodys.is_empty() {
@@ -1583,6 +1618,46 @@ impl Lanes {
                     self.table
                         .grant(home, at, &[chunk])
                         .expect("a chunk nobody holds is granted to the home of its dimension");
+                    self.group.changed.push(Change::Granted {
+                        region: home,
+                        chunks: vec![chunk],
+                    });
+                    if self.uses.begin(home, chunk) {
+                        tell_copiers(
+                            &self.uses,
+                            &self.couplings,
+                            &self.copies,
+                            &mut self.group,
+                            chunk,
+                        );
+                    }
+                    to_homes.entry(home).or_default().push(chunk);
+                }
+                // An arrival sent into the End's arena where nobody holds it goes to the
+                // End's home, which is granted the chunk as a traveller's home is.
+                let mut arena = arena;
+                arena.sort_unstable();
+                arena.dedup();
+                for chunk in arena {
+                    let Some((home, at)) = to_arena_home(chunk) else {
+                        continue;
+                    };
+                    let record = LogRecord::Granted {
+                        region: home.0,
+                        tick: at,
+                        chunks: vec![chunk.position],
+                    };
+                    match self.log.append(&record.encode()) {
+                        Ok((segment, _)) => self.table_last = Some(segment),
+                        Err(error) => {
+                            error!(%home, %error, "a grant could not be written to the log");
+                            self.fail_log();
+                            return;
+                        }
+                    }
+                    self.table
+                        .grant(home, at, &[chunk])
+                        .expect("an arena chunk nobody holds is granted to the End's home");
                     self.group.changed.push(Change::Granted {
                         region: home,
                         chunks: vec![chunk],
@@ -2035,10 +2110,37 @@ impl Lanes {
                             granted.push(chunk);
                         }
                         Some(holder) => foreign.push((chunk.position, holder)),
-                        None => {
-                            new.push(chunk);
-                            granted.push(chunk);
-                        }
+                        None => match to_arena_home(chunk) {
+                            // The End's home's, which learns it holds the chunk when it
+                            // next asks for it.
+                            Some((home, at)) => {
+                                let record = LogRecord::Granted {
+                                    region: home.0,
+                                    tick: at,
+                                    chunks: vec![chunk.position],
+                                };
+                                match self.log.append(&record.encode()) {
+                                    Ok((segment, _)) => self.table_last = Some(segment),
+                                    Err(error) => {
+                                        error!(%home, %error, "a grant could not be written to the log");
+                                        self.fail_log();
+                                        return;
+                                    }
+                                }
+                                self.table.grant(home, at, &[chunk]).expect(
+                                    "an arena chunk nobody holds is granted to the End's home",
+                                );
+                                self.group.changed.push(Change::Granted {
+                                    region: home,
+                                    chunks: vec![chunk],
+                                });
+                                foreign.push((chunk.position, home));
+                            }
+                            None => {
+                                new.push(chunk);
+                                granted.push(chunk);
+                            }
+                        },
                     }
                 }
                 // The tick is the store's, not the region's own, which runs ahead of
@@ -3641,6 +3743,7 @@ impl Lanes {
             // The world's spawn is the overworld's, and so is the chunk players enter
             // by (`docs/groundwork/p-plan.md`, section 15.2).
             spawn: (dimension == Dimension::Overworld).then_some(self.spawn),
+            strongholds: self.strongholds.clone(),
             dimension,
             world: self.world,
             seed: self.seed,

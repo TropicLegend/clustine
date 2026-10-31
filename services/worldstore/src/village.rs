@@ -26,11 +26,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clustine_region::RegionId;
-use clustine_rpc::{PoiSeen, PublishedVillage, RaidSeen, VillageReport};
+use clustine_rpc::{
+    FightSeen, GlobalLevelEvent, PoiSeen, PublishedVillage, RaidSeen, VillageReport,
+};
 use clustine_world::{ChunkPos, Dimension, LevelChunk};
 
 /// How far beyond a region's land, in chunks, it is published points of interest.
 const MARGIN: i32 = 5;
+
+/// How many of the latest global level events the store keeps to publish: a region's
+/// owner published less often than that many are made misses the oldest.
+const GLOBAL_EVENTS_KEPT: usize = 256;
 
 /// The chunks a region's owner of `session` holds, by its reports.
 #[derive(Debug, Default)]
@@ -47,6 +53,10 @@ struct Published {
     session: u64,
     chunks: BTreeMap<LevelChunk, Vec<PoiSeen>>,
     raids: Vec<RaidSeen>,
+    fight: Option<FightSeen>,
+    arena_wanted: bool,
+    /// The number of the last global level event published to the session.
+    last_global: u64,
 }
 
 /// A region's raids as it last reported them, and the order of that report among all,
@@ -70,6 +80,15 @@ pub(crate) struct Village {
     /// Each region's raids (`docs/groundwork/n10-plan.md`, section 9.2).
     raids: BTreeMap<RegionId, Raids>,
     reports: u64,
+    /// The dragon fight's bar as a region of the End last said it, with the region and
+    /// its owner's session (`docs/groundwork/p-plan.md`, section 19.6).
+    fight: Option<(RegionId, u64, FightSeen)>,
+    /// Whether each region of the End, by its owner's session, has a player within the
+    /// fight's reach.
+    in_arena: BTreeMap<RegionId, (u64, bool)>,
+    /// The latest global level events, each with its number, oldest first.
+    global_events: Vec<(u64, GlobalLevelEvent)>,
+    last_global: u64,
 }
 
 impl Village {
@@ -105,6 +124,18 @@ impl Village {
         {
             return;
         }
+        if let Some(fight) = report.fight {
+            self.fight = Some((region, session, fight));
+        }
+        if let Some(in_arena) = report.in_arena {
+            self.in_arena.insert(region, (session, in_arena));
+        }
+        for event in report.global_events {
+            self.last_global += 1;
+            self.global_events.push((self.last_global, event));
+        }
+        let excess = self.global_events.len().saturating_sub(GLOBAL_EVENTS_KEPT);
+        self.global_events.drain(..excess);
         if let Some(raids) = report.raids {
             self.reports += 1;
             self.raids.insert(
@@ -186,10 +217,31 @@ impl Village {
             }
         }
         let raids: Vec<RaidSeen> = by_id.into_values().map(|(_, raid)| raid.clone()).collect();
+        // The End's: the fight's bar to its other regions, as its holder's owner now
+        // said it; and whether another region of the End has a player in its reach.
+        let end = dimension == Dimension::End;
+        let fight = self
+            .fight
+            .filter(|(holder, kept, _)| {
+                end && *holder != region && owners.get(holder) == Some(kept)
+            })
+            .map(|(_, _, fight)| fight);
+        let arena_wanted = end
+            && self.in_arena.iter().any(|(other, (kept, wanted))| {
+                *other != region && *wanted && owners.get(other) == Some(kept)
+            });
         let earlier = self
             .published
             .get(&region)
             .filter(|published| published.session == session);
+        // A session is told the global events made from its first publication on.
+        let since = earlier.map_or(self.last_global, |earlier| earlier.last_global);
+        let global_events: Vec<(u64, GlobalLevelEvent)> = self
+            .global_events
+            .iter()
+            .filter(|(number, _)| *number > since)
+            .copied()
+            .collect();
         let publication = match earlier {
             None => PublishedVillage {
                 whole: true,
@@ -199,6 +251,9 @@ impl Village {
                     .collect(),
                 dropped: Vec::new(),
                 raids: raids.clone(),
+                fight,
+                arena_wanted,
+                global_events,
             },
             Some(earlier) => {
                 let pois: Vec<(ChunkPos, Vec<PoiSeen>)> = wanted
@@ -212,7 +267,13 @@ impl Village {
                     .filter(|chunk| !wanted.contains_key(chunk))
                     .map(|chunk| chunk.position)
                     .collect();
-                if pois.is_empty() && dropped.is_empty() && earlier.raids == raids {
+                if pois.is_empty()
+                    && dropped.is_empty()
+                    && earlier.raids == raids
+                    && earlier.fight == fight
+                    && earlier.arena_wanted == arena_wanted
+                    && global_events.is_empty()
+                {
                     return None;
                 }
                 PublishedVillage {
@@ -220,6 +281,9 @@ impl Village {
                     pois,
                     dropped,
                     raids: raids.clone(),
+                    fight,
+                    arena_wanted,
+                    global_events,
                 }
             }
         };
@@ -229,6 +293,9 @@ impl Village {
                 session,
                 chunks: wanted,
                 raids,
+                fight,
+                arena_wanted,
+                last_global: self.last_global,
             },
         );
         Some(publication)
@@ -255,6 +322,9 @@ mod tests {
 
     fn full(chunks: &[(i32, Vec<PoiSeen>)]) -> VillageReport {
         VillageReport {
+            fight: None,
+            in_arena: None,
+            global_events: Vec::new(),
             full: true,
             pois: chunks
                 .iter()
@@ -287,6 +357,104 @@ mod tests {
         village
     }
 
+    /// The End's two regions, a home and another, each of session 1, and an overworld
+    /// region.
+    fn the_end_and_the_overworld() -> (Village, BTreeMap<RegionId, u64>) {
+        let mut village = Village::default();
+        village.report(WEST, 1, Dimension::End, full(&[(0, Vec::new())]));
+        village.report(EAST, 1, Dimension::End, full(&[(40, Vec::new())]));
+        village.report(
+            RegionId(2),
+            1,
+            Dimension::Overworld,
+            full(&[(0, Vec::new())]),
+        );
+        let owners = [(WEST, 1), (EAST, 1), (RegionId(2), 1)]
+            .into_iter()
+            .collect();
+        (village, owners)
+    }
+
+    /// The plan, sections 19.5 and 19.6: the fight's bar as the End's home says it is
+    /// published to the End's other regions only, and the home is told when another
+    /// region of the End has a player in the fight's reach.
+    #[test]
+    fn the_fight_s_bar_goes_to_the_end_s_other_regions_and_the_arena_s_players_to_the_home() {
+        let (mut village, owners) = the_end_and_the_overworld();
+        let bar = FightSeen {
+            bar: uuid::Uuid::from_u128(7),
+            shown: true,
+            progress: 0.5,
+        };
+        let report = |fight, in_arena| VillageReport {
+            fight,
+            in_arena,
+            ..VillageReport::default()
+        };
+        village.report(WEST, 1, Dimension::End, report(Some(bar), None));
+        village.report(EAST, 1, Dimension::End, report(None, Some(true)));
+        let to = |village: &mut Village, region| {
+            village
+                .publication(region, 1, nothing_copied, &owners)
+                .expect("a first publication")
+        };
+        let east = to(&mut village, EAST);
+        assert_eq!((east.fight, east.arena_wanted), (Some(bar), false));
+        let home = to(&mut village, WEST);
+        assert_eq!((home.fight, home.arena_wanted), (None, true));
+        let overworld = to(&mut village, RegionId(2));
+        assert_eq!((overworld.fight, overworld.arena_wanted), (None, false));
+        // Nothing new for the home until the other region's player leaves the reach.
+        assert_eq!(village.publication(WEST, 1, nothing_copied, &owners), None);
+        village.report(EAST, 1, Dimension::End, report(None, Some(false)));
+        let home = village.publication(WEST, 1, nothing_copied, &owners);
+        assert_eq!(home.map(|home| home.arena_wanted), Some(false));
+    }
+
+    /// The plan, section 19.5 item 8 and 19.6: a global level event is published to
+    /// every region, of every dimension, numbered, once to each owner, from that owner's
+    /// first publication on.
+    #[test]
+    fn a_global_level_event_is_published_once_to_every_region_with_its_number() {
+        let (mut village, owners) = the_end_and_the_overworld();
+        for region in [WEST, EAST, RegionId(2)] {
+            village.publication(region, 1, nothing_copied, &owners);
+        }
+        let opened = GlobalLevelEvent {
+            event: 1038,
+            dimension: Dimension::Overworld,
+            position: BlockPos::new(1, 30, -700),
+            data: 0,
+        };
+        village.report(
+            RegionId(2),
+            1,
+            Dimension::Overworld,
+            VillageReport {
+                global_events: vec![opened],
+                ..VillageReport::default()
+            },
+        );
+        for region in [WEST, EAST, RegionId(2)] {
+            let published = village
+                .publication(region, 1, nothing_copied, &owners)
+                .expect("the event is news");
+            assert_eq!(published.global_events, [(1, opened)], "{region}");
+            assert_eq!(
+                village.publication(region, 1, nothing_copied, &owners),
+                None
+            );
+        }
+        // A new owner of a region is told what is made from its first publication on.
+        let mut owners = owners;
+        owners.insert(EAST, 2);
+        village.report(EAST, 2, Dimension::End, full(&[(40, Vec::new())]));
+        let anew = village
+            .publication(EAST, 2, nothing_copied, &owners)
+            .unwrap();
+        assert!(anew.global_events.is_empty());
+    }
+
     #[test]
     fn a_region_is_published_whole_first_then_only_what_changed() {
         let mut village = two_regions();
@@ -305,6 +473,9 @@ mod tests {
             1,
             Dimension::Overworld,
             VillageReport {
+                fight: None,
+                in_arena: None,
+                global_events: Vec::new(),
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), vec![bed(20, false)])],
                 let_go: Vec::new(),
@@ -322,6 +493,9 @@ mod tests {
             1,
             Dimension::Overworld,
             VillageReport {
+                fight: None,
+                in_arena: None,
+                global_events: Vec::new(),
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), Vec::new())],
                 let_go: Vec::new(),
@@ -393,6 +567,9 @@ mod tests {
             1,
             Dimension::Overworld,
             VillageReport {
+                fight: None,
+                in_arena: None,
+                global_events: Vec::new(),
                 full: false,
                 pois: vec![(ChunkPos::new(-4, 0), vec![bed(-60, true)])],
                 let_go: Vec::new(),
@@ -442,6 +619,9 @@ mod tests {
             1,
             Dimension::Overworld,
             VillageReport {
+                fight: None,
+                in_arena: None,
+                global_events: Vec::new(),
                 full: false,
                 pois: Vec::new(),
                 let_go: vec![ChunkPos::new(1, 0)],
@@ -458,6 +638,9 @@ mod tests {
             1,
             Dimension::Overworld,
             VillageReport {
+                fight: None,
+                in_arena: None,
+                global_events: Vec::new(),
                 full: false,
                 pois: vec![(ChunkPos::new(1, 0), vec![bed(20, true)])],
                 let_go: Vec::new(),
@@ -491,6 +674,9 @@ mod tests {
         let _ = region;
         let _ = session;
         VillageReport {
+            fight: None,
+            in_arena: None,
+            global_events: Vec::new(),
             full: false,
             pois: Vec::new(),
             let_go: Vec::new(),

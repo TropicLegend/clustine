@@ -1831,6 +1831,7 @@ fn restored_with(
 ) -> Restored {
     let tick_state = |tick: u64, state: Vec<u8>| clustine_rpc::TickState { tick, state };
     Restored {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         faces: Vec::new(),

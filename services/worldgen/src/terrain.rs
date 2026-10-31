@@ -358,6 +358,20 @@ impl ChunkGenerator for TerrainGenerator {
         ChunkPos::new(x >> 4, z >> 4)
     }
 
+    /// The strongholds of the concentric rings, in the overworld of a world with
+    /// structures (`docs/groundwork/p-plan.md`, section 19.2 P10-0): every chunk the
+    /// `minecraft:strongholds` set places one in.
+    fn strongholds(&self) -> Vec<ChunkPos> {
+        if !self.with_structures || self.level != Dimension::Overworld {
+            return Vec::new();
+        }
+        self.structures
+            .strongholds()
+            .iter()
+            .map(|&(x, z)| ChunkPos::new(x, z))
+            .collect()
+    }
+
     /// As every generator's, from the chunks before they are lit: the light changes
     /// nothing the spawn is chosen by.
     fn spawn(&self) -> BlockPos {

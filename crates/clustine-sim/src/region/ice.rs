@@ -141,6 +141,7 @@ mod tests {
     fn region_in(dimension: Dimension) -> Region {
         let rules = dimension.rules();
         let config = RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension,
             spawn: Some(Vec3::new(0.5, f64::from(FLOOR + 1), 0.5)),

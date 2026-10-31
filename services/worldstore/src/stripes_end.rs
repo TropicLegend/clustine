@@ -1009,6 +1009,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     let homes = list.homes.clone();
     let expected = [
         Restored {
+            strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -1036,6 +1037,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -1058,6 +1060,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
             faces: Vec::new(),

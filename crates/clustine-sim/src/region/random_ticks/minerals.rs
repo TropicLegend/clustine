@@ -793,6 +793,7 @@ mod tests {
         let lowest_y = dimension.rules().min_y;
         let floor = lowest_y + 3;
         let config = RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension,
             spawn: Some(Vec3::new(0.5, f64::from(floor + 1), 0.5)),

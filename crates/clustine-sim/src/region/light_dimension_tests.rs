@@ -68,6 +68,7 @@ fn chunk_of(dimension: Dimension, position: ChunkPos, placed: &[(BlockPos, Block
 fn config(dimension: Dimension) -> RegionConfig {
     let rules = dimension.rules();
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension,
         spawn: (dimension == Dimension::Overworld)
@@ -208,7 +209,12 @@ fn a_region_lights_the_sky_of_the_overworld_and_the_end_and_none_in_the_nether()
 
 #[test]
 fn a_region_split_off_lights_no_sky_in_the_nether_and_the_sky_elsewhere() {
-    for dimension in DIMENSIONS {
+    // Not the End: its land here is the fight's arena, which no split takes
+    // (`docs/groundwork/p-plan.md`, section 19.5 item 6); the overworld is the sky's.
+    for dimension in DIMENSIONS
+        .into_iter()
+        .filter(|dimension| *dimension != Dimension::End)
+    {
         let mut region = lit_world(dimension);
         let floor = f64::from(floor_y(dimension) + 1);
         // The player's edge, which the split tells of who went.

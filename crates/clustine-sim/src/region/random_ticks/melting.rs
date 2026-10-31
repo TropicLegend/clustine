@@ -98,6 +98,7 @@ mod tests {
     /// floor under `ICE`, ice there and a torch `away` blocks off along x, lit.
     fn lit_ice(dimension: Dimension, away: usize) -> Region {
         let config = RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension,
             spawn: Some(Vec3::new(0.5, 66.0, 0.5)),

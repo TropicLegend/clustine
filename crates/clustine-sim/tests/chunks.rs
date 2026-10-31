@@ -88,6 +88,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),

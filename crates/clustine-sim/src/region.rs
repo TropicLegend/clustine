@@ -162,6 +162,10 @@ pub struct RegionConfig {
     /// Each dimension's home region, which a portal sends a player to: a region knows
     /// no other region's id but these (`docs/groundwork/p-plan.md`, section 16.1).
     pub homes: Vec<(Dimension, RegionId)>,
+    /// The chunks of the world's strongholds, the nearest of which an eye of ender
+    /// flies towards (`docs/groundwork/p-plan.md`, section 19.2 P10-0); none in a world
+    /// without them.
+    pub strongholds: Vec<ChunkPos>,
     /// What players carry when they enter the world for the first time.
     pub starting_inventory: Inventory,
     /// How many ticks a chunk the region holds outside its pinned areas may be without
@@ -327,6 +331,9 @@ struct Land {
     pinned: Vec<ChunkArea>,
     /// [`RegionConfig::home`].
     home: ChunkPos,
+    /// Whether the land is the End's, whose fight's arena a region keeps
+    /// (`clustine_world::dragon::in_arena`).
+    end: bool,
     /// The chunks the region knows something of. A chunk is in one condition at a
     /// time, which is why this is one collection and not three.
     known: BTreeMap<ChunkPos, Known>,
@@ -363,9 +370,13 @@ impl Land {
         self.pinned.iter().any(|area| area.contains(position))
     }
 
-    /// Whether the region never gives `position` back once it holds it.
+    /// Whether the region never gives `position` back once it holds it: the home chunk,
+    /// its pinned land, and in the End the fight's arena, which only the End's home is
+    /// granted (`docs/groundwork/p-plan.md`, section 19.5 item 6).
     fn keeps(&self, position: ChunkPos) -> bool {
-        position == self.home || self.is_pinned(position)
+        position == self.home
+            || self.is_pinned(position)
+            || (self.end && clustine_world::dragon::in_arena(position))
     }
 }
 
@@ -538,6 +549,8 @@ pub struct Region {
     /// The world's table of raids, what the region last reported of its own, its raids'
     /// draws in this tick and each player's bar (`raids.rs`); in memory only.
     raid_memory: raids::RaidMemory,
+    /// What the store published of the End (`end_entities.rs`).
+    published_end: end_entities::PublishedEnd,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -751,6 +764,7 @@ impl Region {
         let mut land = Land {
             pinned: holdings.pinned,
             home: config.home(),
+            end: config.dimension == clustine_world::Dimension::End,
             known: BTreeMap::new(),
             lent: BTreeSet::new(),
             lent_away: BTreeMap::new(),
@@ -811,6 +825,7 @@ impl Region {
             margin: BTreeMap::new(),
             bell_rings: bells::Rings::new(),
             raid_memory: raids::RaidMemory::default(),
+            published_end: end_entities::PublishedEnd::default(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
@@ -4424,6 +4439,7 @@ mod tests {
     /// What a region is created with. It gives back at once what nothing uses.
     fn config() -> RegionConfig {
         RegionConfig {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             spawn: Some(SPAWN),

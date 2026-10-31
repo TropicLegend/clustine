@@ -179,6 +179,10 @@ impl<S: Stages> ChunkGenerator for Scheduler<S> {
         self.shared.stages.origin()
     }
 
+    fn strongholds(&self) -> Vec<ChunkPos> {
+        self.shared.stages.strongholds()
+    }
+
     /// Lit chunks, made after whatever a request wants and kept in the cache.
     fn prepare(&self, positions: &[ChunkPos]) {
         let mut graph = self.shared.lock();

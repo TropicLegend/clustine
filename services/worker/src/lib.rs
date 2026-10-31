@@ -1068,6 +1068,7 @@ impl RegionSettings {
     pub fn of_restored(self, restored: &Restored) -> RegionConfig {
         RegionConfig {
             homes: restored.homes.clone(),
+            strongholds: restored.strongholds.clone(),
             ..self.of_region(
                 restored.dimension,
                 restored.spawn,
@@ -1090,8 +1091,10 @@ impl RegionSettings {
     ) -> RegionConfig {
         RegionConfig {
             dimension,
-            // The store's to say ([`Restored::homes`]), which the caller puts in.
+            // The store's to say ([`Restored::homes`], [`Restored::strongholds`]), which
+            // the caller puts in.
             homes: Vec::new(),
+            strongholds: Vec::new(),
             spawn: spawn.map(Vec3::bottom_centre_of),
             starting_inventory: self.starting_inventory,
             return_after: self.return_after,
@@ -1254,6 +1257,7 @@ impl RegionRunner {
             lends: mem::take(&mut restored.lends),
             faces: Vec::new(),
             homes: Vec::new(),
+            strongholds: Vec::new(),
             ..restored
         };
         let state = restored_state(restored)?;
@@ -1653,6 +1657,9 @@ impl RegionRunner {
                 }
                 StoreReply::Portals { answers } => {
                     self.inputs.portal_answers.extend(answers);
+                }
+                StoreReply::GatewayExits { answers } => {
+                    self.inputs.gateway_exits.extend(answers);
                 }
                 // Lends (`docs/adr/0027-lending-at-a-line.md`): into the coming tick, as
                 // a claim's answer goes. An ask answered in any way is no longer under way.
@@ -3036,6 +3043,11 @@ impl RegionRunner {
         if !output.portal_queries.is_empty() {
             self.store.request(StoreRequest::Portals {
                 queries: output.portal_queries,
+            });
+        }
+        if !output.gateway_queries.is_empty() {
+            self.store.request(StoreRequest::GatewayExits {
+                queries: output.gateway_queries,
             });
         }
         // The counts of its mobs the tick reported, behind its commit
@@ -5311,6 +5323,7 @@ mod tests {
                 | StoreRequest::Counts(_)
                 | StoreRequest::Village(_)
                 | StoreRequest::TraderChance { .. }
+                | StoreRequest::GatewayExits { .. }
                 | StoreRequest::Portals { .. } => return None,
             })
         }
@@ -8196,6 +8209,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),
@@ -8641,6 +8655,7 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
             faces: Vec::new(),

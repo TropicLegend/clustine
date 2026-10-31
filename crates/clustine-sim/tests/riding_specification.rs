@@ -87,6 +87,7 @@ fn config() -> RegionConfig {
     hotbar[BOAT_SLOT as usize] = Some(ItemStack::new(items::OAK_BOAT, 1));
     hotbar[CUSHION_SLOT as usize] = Some(ItemStack::new(items::WHITE_CUSHION, 1));
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(FEET),

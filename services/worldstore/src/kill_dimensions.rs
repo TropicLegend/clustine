@@ -612,3 +612,69 @@ fn a_change_of_division_folds_each_region_s_changes_into_its_dimension_and_never
     assert_eq!(travellers.len(), 1);
     assert_eq!(travellers[0].1, traveller(55, ORIGIN));
 }
+
+/// The plan, section 19.5 item 6: the End's fight's arena is the End's home's. Another
+/// region of the End that claims an arena chunk nobody holds is answered that the home
+/// holds it, and the home is granted it; a chunk beyond the arena is the region's own.
+#[test]
+fn an_arena_chunk_another_region_of_the_end_claims_is_granted_to_the_end_s_home() {
+    let disk = planted(None);
+    let store = store_on(Arc::clone(&disk)).unwrap();
+    let (end, _) = store.open_region(hello(END.0, 1)).unwrap();
+    // The home takes a chunk beyond the arena and splits it off as a region of its own.
+    let beyond = ChunkPos::new(20, 0);
+    end.request(StoreRequest::Claim {
+        chunks: vec![beyond],
+    });
+    end.request(commit(1, END, Vec::new(), Vec::new(), Vec::new()));
+    end.request(StoreRequest::Checkpoint {
+        tick: 1,
+        state: b"end".to_vec(),
+    });
+    let (committed, replies) = settle(&end);
+    assert_eq!(committed, [1]);
+    assert!(granted(&replies, beyond), "{replies:?}");
+    let part = store.regions().unwrap().next;
+    end.request(StoreRequest::SplitCommit {
+        tick: 2,
+        state: crate::regions::whole("rest", 2),
+        part: clustine_rpc::SplitPart {
+            chunks: vec![beyond],
+            state: crate::regions::whole("part", 2),
+        },
+        as_epoch: 1,
+        region: part,
+    });
+    let (_, split) = settle(&end);
+    assert!(
+        split
+            .iter()
+            .any(|reply| matches!(reply, StoreReply::Split { .. })),
+        "{split:?}"
+    );
+    let (other, _) = store.open_region(hello(part.0, 1)).unwrap();
+    let (edge, outside) = (ChunkPos::new(8, 0), ChunkPos::new(9, 0));
+    other.request(StoreRequest::Claim {
+        chunks: vec![edge, outside],
+    });
+    let (_, replies) = settle(&other);
+    let claimed = replies.iter().find_map(|reply| match reply {
+        StoreReply::Claimed { granted, foreign } => Some((granted.clone(), foreign.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        claimed,
+        Some((vec![outside], vec![(edge, END)])),
+        "{replies:?}"
+    );
+    let table = store.regions().unwrap();
+    let home = table
+        .regions
+        .iter()
+        .find(|info| info.region == END)
+        .expect("the End's home");
+    assert!(
+        home.bounds.is_some_and(|bounds| bounds.max.x >= edge.x),
+        "the home is granted the arena's chunk: {home:?}"
+    );
+}

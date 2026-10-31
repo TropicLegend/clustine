@@ -100,6 +100,7 @@ fn region_with(day: u64, blocks: impl Fn(BlockPos) -> Option<BlockState>, villag
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(Vec3::new(0.5, FEET, 0.5)),

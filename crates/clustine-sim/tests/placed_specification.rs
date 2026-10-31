@@ -63,6 +63,7 @@ fn state(name: &str) -> BlockState {
 
 fn config(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> RegionConfig {
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
         spawn: Some(SPAWN),

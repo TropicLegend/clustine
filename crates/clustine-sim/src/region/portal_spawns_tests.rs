@@ -55,6 +55,7 @@ fn chunk_of(
 fn config(dimension: Dimension) -> RegionConfig {
     let rules = dimension.rules();
     RegionConfig {
+        strongholds: Vec::new(),
         homes: Vec::new(),
         dimension,
         spawn: Some(Vec3::new(0.5, f64::from(floor(dimension) + 1), 0.5)),

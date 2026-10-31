@@ -429,6 +429,12 @@ pub enum StoreRequest {
     Portals {
         queries: Vec<clustine_sim::PortalQuery>,
     },
+    /// Questions of the tick of the commit sent just before about where gateways lead
+    /// (`docs/groundwork/p-plan.md`, sections 19.5 and 19.6): answered on the stream with
+    /// [`StoreReply::GatewayExits`].
+    GatewayExits {
+        queries: Vec<clustine_sim::GatewayExitQuery>,
+    },
     /// Answer with [`StoreReply::Flushed`] once everything requested before is done.
     Flush,
     /// Grant the region these chunks. Each is granted unless another region holds it,
@@ -685,6 +691,10 @@ pub enum StoreReply {
     Portals {
         answers: Vec<clustine_sim::PortalAnswer>,
     },
+    /// On the stream: the answers to [`StoreRequest::GatewayExits`].
+    GatewayExits {
+        answers: Vec<clustine_sim::GatewayExitAnswer>,
+    },
     /// On the stream: the committed form of `position`, which the region copies, as of
     /// the group of `sequence`; `last_change` is the sequence of the chunk's last change
     /// up to it. No chunk where the stored chunk cannot be read: the copy counts as
@@ -907,6 +917,9 @@ pub struct Restored {
     /// Each dimension's home region, which a portal sends a player to
     /// (`docs/groundwork/p-plan.md`, section 16.1).
     pub homes: Vec<(Dimension, RegionId)>,
+    /// The chunks of the world's strongholds, which an eye of ender looks for
+    /// (`docs/groundwork/p-plan.md`, section 19.2 P10-0); none in a world without them.
+    pub strongholds: Vec<ChunkPos>,
     /// What the world's random ticks are drawn from: a number of the world's own, the
     /// same at every opening, so that two worlds differ
     /// (`docs/adr/0024-block-behaviour-in-a-region.md`, step B7).
@@ -994,6 +1007,8 @@ pub enum StoreWelcome {
         dimension: Dimension,
         /// [`Restored::homes`].
         homes: Vec<(Dimension, RegionId)>,
+        /// [`Restored::strongholds`].
+        strongholds: Vec<ChunkPos>,
         /// [`Restored::world`].
         world: u64,
         /// [`Restored::seed`].

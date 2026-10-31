@@ -555,6 +555,9 @@ fn occupied_bed(x: i32, z: i32, occupied: bool) -> PoiSeen {
 /// A report of `chunks`, each with one bed (occupied as said) or none.
 fn report(full: bool, chunks: &[(i32, i32, Option<bool>)], let_go: &[(i32, i32)]) -> VillageReport {
     VillageReport {
+        fight: None,
+        in_arena: None,
+        global_events: Vec::new(),
         full,
         pois: chunks
             .iter()
@@ -720,6 +723,9 @@ fn after_the_first_publication_only_changes_are_published_and_nothing_when_none(
         1,
         Dimension::Overworld,
         VillageReport {
+            fight: None,
+            in_arena: None,
+            global_events: Vec::new(),
             full: false,
             pois: vec![
                 (ChunkPos::new(2, 0), vec![occupied_bed(2, 0, false)]),
