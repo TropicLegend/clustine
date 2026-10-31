@@ -201,8 +201,8 @@ fn the_end_s_home_makes_the_platform_and_places_the_player_on_it_without_the_ind
 }
 
 /// The brief's 2.4 (`EndPortalBlock.entityInside`): in the End, a player who has not
-/// seen the credits is not marked inside the portal (the credits are theirs instead,
-/// P10c's), and is not sent anywhere.
+/// seen the credits is not marked inside the portal and is not sent anywhere: the
+/// credits are theirs instead (`respawning.rs`, whose tests follow them on).
 #[test]
 fn in_the_end_a_player_who_has_not_seen_the_credits_is_not_sent_through_the_portal() {
     let portal = at(2, 41, 2);
@@ -213,10 +213,8 @@ fn in_the_end_a_player_who_has_not_seen_the_credits_is_not_sent_through_the_port
     for _ in 0..3 {
         let output = idle(&mut end);
         assert!(departed(&output, id).is_none());
-        assert!(
-            end.players[&id].portal.is_idle(),
-            "{:?}",
-            end.players[&id].portal
-        );
     }
+    assert!(end.player(id).is_none(), "in the credits, out of the world");
+    let waiting = end.waiting_state(id).expect("their stay waits to be asked");
+    assert!(waiting.until_asked);
 }

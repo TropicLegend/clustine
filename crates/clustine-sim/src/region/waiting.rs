@@ -26,6 +26,8 @@ impl Region {
             asked: None,
             answer: None,
             since: self.tick,
+            until_asked: false,
+            forwards: 0,
         };
         self.waiting.insert(id, waiting);
         self.journal.waiting.insert(id);
@@ -131,6 +133,15 @@ impl Region {
         }
         waiting.transfer.last_input = number;
         waiting.transfer.attempt = None;
+        self.journal.waiting.insert(id);
+        // A stay in the credits or dead takes only the ask for its respawn
+        // (`respawning.rs`).
+        if self.asked_input(id, input) {
+            return true;
+        }
+        let Some(waiting) = self.waiting.get_mut(&id) else {
+            return true;
+        };
         if input.has_no_place() {
             waiting.kept.push(input.clone());
         }
@@ -151,12 +162,16 @@ impl Region {
 
     /// The chunks the waiting stays and travellers are at, which the region holds for
     /// them as it does a chunk a player stands in: it gives back no chunk one of them
-    /// waits in.
+    /// waits in. A stay in the credits or dead waits at its respawn's target, perhaps in
+    /// another dimension, which is no chunk of this region's (`respawning.rs`).
     pub(super) fn waiting_chunks(&self) -> Vec<ChunkPos> {
-        let stays = self.waiting.values().map(|waiting| {
-            let position = waiting.transfer.pose.position;
-            ChunkPos::containing(position.x, position.z)
-        });
+        let dimension = self.config.dimension;
+        let stays = (self.waiting.values())
+            .filter(move |waiting| waiting.transfer.dimension == dimension)
+            .map(|waiting| {
+                let position = waiting.transfer.pose.position;
+                ChunkPos::containing(position.x, position.z)
+            });
         let travellers =
             (self.waiting_travellers.iter()).map(|waiting| waiting.traveller.chunk.position);
         stays.chain(travellers).collect()

@@ -114,7 +114,9 @@ impl Region {
             return;
         }
         self.ask(output);
+        // A stay in the credits or dead waits to be asked (`respawning.rs`).
         let mut order: Vec<(u64, Waiter)> = (self.waiting.iter())
+            .filter(|(_, waiting)| !waiting.until_asked)
             .map(|(id, waiting)| (waiting.since, Waiter::Stay(*id)))
             .chain(
                 (self.waiting_travellers.iter())
@@ -148,6 +150,14 @@ impl Region {
                 continue;
             }
             match waiter {
+                Waiter::Stay(id)
+                    if self
+                        .waiting
+                        .get(&id)
+                        .is_some_and(super::respawning::waits_for_respawn) =>
+                {
+                    self.place_respawn(id, output);
+                }
                 Waiter::Stay(id) => self.place_stay(id, &travel, candidate, output),
                 Waiter::Traveller(id) => self.place_traveller(id, &travel, candidate, output),
             }
@@ -311,7 +321,7 @@ impl Region {
     /// Sets a block of a portal made: in the region's own chunk with its updates, or as
     /// an effect for the region that holds the chunk, if the block is still what the
     /// region read in its copy.
-    fn set_for_travel(
+    pub(super) fn set_for_travel(
         &mut self,
         at: BlockPos,
         state: BlockState,
@@ -358,6 +368,20 @@ impl Region {
     ) -> ([f64; 3], [f64; 3], f32) {
         if travel.way == Way::EndPortal && travel.to == Dimension::End {
             return self.end_arrival(travel.target, player, velocity, output);
+        }
+        if travel.way == Way::EndPortal {
+            // Out of the End, an entity comes out on the top of the world spawn's column
+            // (the plan, section 19.2 P10b), with the velocity and look it had.
+            let target = travel.target;
+            let y = self
+                .motion_blocking_height(target.x, target.z)
+                .unwrap_or(target.y);
+            let at = [
+                f64::from(target.x) + 0.5,
+                f64::from(y),
+                f64::from(target.z) + 0.5,
+            ];
+            return (at, velocity, yaw);
         }
         let (relative, source_axis) = match travel.way {
             Way::NetherPortal { axis, relative } => {
@@ -471,6 +495,22 @@ impl Region {
             ([0.0; 3], pose.yaw),
             output,
         );
+        self.put_stay(id, position, yaw, None, None, output);
+    }
+
+    /// Puts a waiting stay into the world at `position` with `yaw`, and `pitch` where
+    /// one is given (a respawn's), else the look it had: the inputs it kept applied,
+    /// and its edge told, by `Placed` with what a respawn owes the client, or by the
+    /// join's `Spawned` where the stay never was in the world.
+    pub(super) fn put_stay(
+        &mut self,
+        id: PlayerId,
+        position: [f64; 3],
+        yaw: f32,
+        pitch: Option<f32>,
+        respawn: Option<crate::api::Respawned>,
+        output: &mut TickOutput,
+    ) {
         let Some(waiting) = self.waiting.remove(&id) else {
             return;
         };
@@ -481,6 +521,9 @@ impl Region {
         transfer.pose.position.y = position[1];
         transfer.pose.position.z = position[2];
         transfer.pose.yaw = yaw;
+        if let Some(pitch) = pitch {
+            transfer.pose.pitch = pitch;
+        }
         let mut player = self.player_of(waiting.edge, &transfer);
         player.travel = None;
         // The inputs kept while they waited are theirs before anything is told of the
@@ -505,9 +548,18 @@ impl Region {
                     dimension: self.config.dimension,
                     pose: player.pose,
                     flying: player.flying,
-                    // A respawn's placing says what it owes from P10c on.
-                    respawn: None,
+                    respawn,
                 };
+                // `PlayerList.respawn` tells the respawned player their health, after
+                // the `Respawn` (the edge holds it until then).
+                if respawn.is_some() {
+                    output.player_events.push((
+                        id,
+                        crate::api::PlayerEvent::Health {
+                            health: player.health,
+                        },
+                    ));
+                }
                 output
                     .events
                     .push(RegionEvent::EntitySpawned(player.entity_state(id)));

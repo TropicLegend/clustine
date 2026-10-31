@@ -114,6 +114,7 @@ mod orbs;
 mod redstone;
 mod reshape;
 mod respawn_block;
+mod respawning;
 mod riders;
 pub(crate) mod riding;
 mod sculk;
@@ -145,6 +146,7 @@ mod using;
 mod vehicles;
 mod vibrations;
 mod villagers_across;
+mod void;
 mod waiting;
 mod water_creatures;
 mod wind_bursts;
@@ -478,6 +480,8 @@ struct Player {
     /// See [`PlayerState::health`] and [`PlayerState::dead`].
     health: f32,
     dead: bool,
+    /// Their hurt cooldown and the tick they died in, in memory only (`void.rs`).
+    hurting: void::Hurting,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1359,6 +1363,7 @@ impl Region {
         // step on blocks (`pressed.rs`), and the others tick in ascending key
         // (`entities.rs`); then the block entities tick (`docs/adr/0026-redstone.md`,
         // sections 3 and 5). Then the chunks keep the events still queued.
+        self.void_tick(&mut output);
         self.players_portal_tick(&mut output);
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
@@ -2040,6 +2045,7 @@ impl Region {
     /// The player a transfer through `edge` makes, as a region takes them in.
     fn player_of(&self, edge: EdgeId, transfer: &PlayerTransfer) -> Player {
         Player {
+            hurting: Default::default(),
             sleeping: None,
             // The bed or anchor they wake at goes with them wherever they go.
             respawn: transfer.respawn,
@@ -2273,6 +2279,7 @@ impl Region {
         // A bed or anchor set before they left is theirs still, below the world too.
         let respawn = kept.and_then(|(place, _)| place.respawn);
         let player = Player {
+            hurting: Default::default(),
             sleeping: None,
             respawn,
             entity_id,
@@ -2535,6 +2542,10 @@ impl Region {
     /// Does what a player's input says, counted applied already: an input of the tick,
     /// or one a waiting stay kept for its placing (`waiting.rs`).
     fn act(&mut self, id: PlayerId, input: &PlayerInput, output: &mut TickOutput) {
+        // A dead player asks for their respawn and does nothing else (`void.rs`).
+        if self.dead_input(id, input, output) {
+            return;
+        }
         let Some(player) = self.players.get_mut(&id) else {
             return;
         };
@@ -4037,6 +4048,7 @@ impl Player {
     /// The player of `state`, the state of the region's tick `tick`.
     fn from_state(state: PlayerState) -> Self {
         Self {
+            hurting: Default::default(),
             entity_id: state.entity_id,
             name: state.name,
             pose: state.pose,

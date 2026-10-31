@@ -57,7 +57,18 @@ impl Region {
         let to = match kind {
             PortalKind::Nether => nether_portal_destination(self.config.dimension),
             PortalKind::End if self.config.dimension != Dimension::End => Dimension::End,
-            PortalKind::End | PortalKind::Gateway => return,
+            // Out of the End: a player to their respawn (`respawning.rs`), an entity to
+            // the top of the world spawn's column.
+            PortalKind::End => {
+                match who {
+                    PortalUser::Player(id) => self.end_portal_out(id, output),
+                    PortalUser::Entity(key) => {
+                        self.entity_travels(key, kind, Dimension::Overworld, entry, output);
+                    }
+                }
+                return;
+            }
+            PortalKind::Gateway => return,
         };
         let Some(home) = self.home_of(to) else {
             // A world without the dimension's home: nowhere to go.
@@ -81,9 +92,16 @@ impl Region {
         size: (f32, f32),
     ) -> Travel {
         match kind {
-            PortalKind::End => Travel {
+            PortalKind::End if to == Dimension::End => Travel {
                 to,
                 target: END_PLATFORM,
+                way: Way::EndPortal,
+            },
+            // `EndPortalBlock.getPortalDestination` out of the End for an entity: the
+            // world spawn, placed on the top of its column (`arriving.rs`).
+            PortalKind::End => Travel {
+                to,
+                target: self.config.world_spawn,
                 way: Way::EndPortal,
             },
             PortalKind::Nether | PortalKind::Gateway => {

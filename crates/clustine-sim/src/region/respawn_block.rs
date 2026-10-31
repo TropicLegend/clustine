@@ -103,10 +103,6 @@ const ANCHOR_OFFSETS: [(i32, i32, i32); 25] = {
 /// `respawn` in `dimension`, whose rules say where beds and anchors set the spawn: the
 /// place the player stands up at beside the anchor or bed at `respawn.pos`, and, for an
 /// anchor where `use_spawn_block`, the anchor with one charge less.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the respawn's placing, P10c")
-)]
 pub(crate) fn respawn_block<W: World + ?Sized>(
     world: &W,
     dimension: Dimension,

@@ -153,6 +153,7 @@ pub(in crate::region) fn add_player(
     let id = PlayerId(Uuid::from_u128(number));
     let entity_id = EntityId(1_000_000 + u64::try_from(number).expect("a small number"));
     let player = Player {
+        hurting: Default::default(),
         health: 20.0,
         dead: false,
         sleeping: None,

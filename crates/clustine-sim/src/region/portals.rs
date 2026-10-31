@@ -449,6 +449,7 @@ impl Region {
     /// here). Their state is journalled where it changed.
     pub(crate) fn players_portal_tick(&mut self, output: &mut TickOutput) {
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+        let mut to_the_credits = Vec::new();
         for id in ids {
             let Some(player) = self.players.get(&id) else {
                 continue;
@@ -470,15 +471,17 @@ impl Region {
             let bounds = Aabb::new([body[0], body[1], body[2]], [body[3], body[4], body[5]]);
             let met = self.portal_met(at, at, bounds).filter(|_| allowed);
             // `EndPortalBlock.entityInside`: in the End, a player who has not seen the
-            // credits is shown them instead of the portal (the plan, section 5.3), which
-            // is P10c's; until it is built, nothing.
+            // credits is shown them instead of the portal (the plan, section 19.7), at
+            // once, after the tick's portals.
             let to_credits =
                 self.config.dimension == clustine_world::Dimension::End && !player.seen_credits;
             let credits = |kind| kind == PortalKind::End && to_credits;
-            if let Some((entry, kind)) = met
-                && !credits(kind)
-            {
-                set_as_inside_portal(&mut portal, kind, entry, PLAYER_DIMENSION_CHANGING_DELAY);
+            match met {
+                Some((_, kind)) if credits(kind) => to_the_credits.push(id),
+                Some((entry, kind)) => {
+                    set_as_inside_portal(&mut portal, kind, entry, PLAYER_DIMENSION_CHANGING_DELAY);
+                }
+                None => {}
             }
             if portal != before {
                 if let Some(player) = self.players.get_mut(&id) {
@@ -489,6 +492,9 @@ impl Region {
             if let Some(clock) = fired {
                 self.portal_fired(PortalUser::Player(id), clock.kind, clock.entry, output);
             }
+        }
+        for id in to_the_credits {
+            self.show_end_credits(id, output);
         }
     }
 
