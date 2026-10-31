@@ -277,6 +277,7 @@ impl Options {
 fn config(options: &Options) -> RegionConfig {
     let rules = options.dimension.rules();
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: options.dimension,

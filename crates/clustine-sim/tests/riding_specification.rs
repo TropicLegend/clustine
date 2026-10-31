@@ -87,6 +87,7 @@ fn config() -> RegionConfig {
     hotbar[BOAT_SLOT as usize] = Some(ItemStack::new(items::OAK_BOAT, 1));
     hotbar[CUSHION_SLOT as usize] = Some(ItemStack::new(items::WHITE_CUSHION, 1));
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

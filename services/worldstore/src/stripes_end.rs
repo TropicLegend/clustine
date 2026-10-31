@@ -1009,6 +1009,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
     let homes = list.homes.clone();
     let expected = [
         Restored {
+            world_spawn: crate::tests::spawn_in(from.home),
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
@@ -1037,6 +1038,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            world_spawn: crate::tests::spawn_in(from.home),
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),
@@ -1060,6 +1062,7 @@ fn as_lived_on_stripes(store: &Store, from: &Division, before: &Before, case: &s
             clock: Default::default(),
         },
         Restored {
+            world_spawn: crate::tests::spawn_in(from.home),
             strongholds: Vec::new(),
             homes: homes.clone(),
             dimension: Default::default(),

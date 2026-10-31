@@ -320,6 +320,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         deltas,
         issued,
         spawn,
+        world_spawn,
         dimension,
         homes,
         strongholds,
@@ -341,6 +342,7 @@ fn welcome(stream: &TcpStream, patience: Duration, restored: Restored) -> io::Re
         pinned,
         issued,
         spawn,
+        world_spawn,
         dimension,
         homes,
         strongholds,
@@ -509,6 +511,7 @@ impl Arriving {
             restored: Restored {
                 homes: Vec::new(),
                 strongholds: Vec::new(),
+                world_spawn: spawn.unwrap_or(BlockPos::new(0, 0, 0)),
                 faces: Vec::new(),
                 held: Vec::new(),
                 pinned,
@@ -746,6 +749,7 @@ fn welcomed(
             pinned,
             issued,
             spawn,
+            world_spawn,
             dimension,
             homes,
             strongholds,
@@ -764,6 +768,7 @@ fn welcomed(
             let restored = &mut arriving.restored;
             restored.homes = homes;
             restored.strongholds = strongholds;
+            restored.world_spawn = world_spawn;
             restored.seed = seed;
             restored.clock = clock;
             restored.faces = faces;
@@ -1035,6 +1040,7 @@ mod tests {
             refused.err()
         );
         let mut expected = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             // The homes a portal sends players to, as the store's list has them.
             homes: store.regions().unwrap().homes,
@@ -1598,6 +1604,7 @@ mod tests {
             let said: Option<StoreHello> = wire::blocking::read(&mut connection).unwrap();
             assert_eq!(said, Some(StoreHello::Region(hello(1, 1))));
             let welcome = StoreWelcome::Accepted {
+                world_spawn: clustine_world::BlockPos::new(0, -60, 0),
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -1832,6 +1839,7 @@ mod tests {
     fn what_a_region_is_restored_with_is_cut_into_bounded_parts_that_fit_together_again() {
         let entity_ids = EntityIds::block(2).unwrap();
         let restored = |state: Option<usize>, deltas: &[usize]| Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2055,6 +2063,7 @@ mod tests {
             },
         ];
         let expected = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2272,6 +2281,7 @@ mod tests {
                 assert!(block.index() > given.index(), "{block:?} after {given:?}");
                 given = block;
                 let accepted = StoreWelcome::Accepted {
+                    world_spawn: clustine_world::BlockPos::new(0, -60, 0),
                     strongholds: Vec::new(),
                     homes: store.regions().unwrap().homes,
                     dimension: Default::default(),
@@ -2321,6 +2331,7 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         // Far more than the system takes for a connection that nobody reads from.
         let restored = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -2415,6 +2426,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let restored = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),

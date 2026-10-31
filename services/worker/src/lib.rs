@@ -1069,6 +1069,7 @@ impl RegionSettings {
         RegionConfig {
             homes: restored.homes.clone(),
             strongholds: restored.strongholds.clone(),
+            world_spawn: restored.world_spawn,
             ..self.of_region(
                 restored.dimension,
                 restored.spawn,
@@ -1095,6 +1096,9 @@ impl RegionSettings {
             // the caller puts in.
             homes: Vec::new(),
             strongholds: Vec::new(),
+            // The overworld's spawn where this is one of its regions; the store's to
+            // say otherwise ([`Restored::world_spawn`]), which the caller puts in.
+            world_spawn: spawn.unwrap_or(BlockPos::new(0, 0, 0)),
             spawn: spawn.map(Vec3::bottom_centre_of),
             starting_inventory: self.starting_inventory,
             return_after: self.return_after,
@@ -8209,6 +8213,7 @@ mod tests {
     #[test]
     fn a_region_whose_stored_state_cannot_be_read_is_not_restored() {
         let restored = |state, deltas| Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -8655,6 +8660,7 @@ mod tests {
     fn what_an_earlier_build_stored_of_a_region_is_dropped_and_the_rest_applied() {
         let ids = EntityIds::block(0).unwrap();
         let restored = |state, deltas| Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),

@@ -996,6 +996,7 @@ fn field_region(biome: Biome, floor: BlockState, structures: Vec<KeptStructure>)
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

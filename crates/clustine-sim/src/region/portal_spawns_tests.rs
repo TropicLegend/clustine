@@ -55,6 +55,7 @@ fn chunk_of(
 fn config(dimension: Dimension) -> RegionConfig {
     let rules = dimension.rules();
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension,

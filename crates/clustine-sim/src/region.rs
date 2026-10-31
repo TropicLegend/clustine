@@ -162,6 +162,11 @@ pub struct RegionConfig {
     /// Where players enter the world, in the overworld's regions; none in the others.
     /// See [`RegionConfig::home`].
     pub spawn: Option<Vec3>,
+    /// The world's spawn, the block a player's feet are in where they enter the world,
+    /// in every region: a region out of the overworld sends a player who respawns, and
+    /// an entity out of the End, there (`docs/groundwork/p-plan.md`, sections 5.3 and
+    /// 19.2).
+    pub world_spawn: BlockPos,
     /// Each dimension's home region, which a portal sends a player to: a region knows
     /// no other region's id but these (`docs/groundwork/p-plan.md`, section 16.1).
     pub homes: Vec<(Dimension, RegionId)>,
@@ -4442,6 +4447,7 @@ mod tests {
     /// What a region is created with. It gives back at once what nothing uses.
     fn config() -> RegionConfig {
         RegionConfig {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),

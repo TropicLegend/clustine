@@ -54,6 +54,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 /// Region A: every chunk with x below 1, with its spawn two blocks from region B.
 fn config_a() -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
@@ -88,6 +89,7 @@ fn holdings_a() -> Holdings {
 /// Region B: the chunks with x equal to 1.
 fn config_b() -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

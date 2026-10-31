@@ -63,6 +63,7 @@ fn state(name: &str) -> BlockState {
 
 fn config(hotbar: [Option<ItemStack>; HOTBAR_SLOTS]) -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

@@ -3743,6 +3743,7 @@ impl Lanes {
             // The world's spawn is the overworld's, and so is the chunk players enter
             // by (`docs/groundwork/p-plan.md`, section 15.2).
             spawn: (dimension == Dimension::Overworld).then_some(self.spawn),
+            world_spawn: self.spawn,
             strongholds: self.strongholds.clone(),
             dimension,
             world: self.world,

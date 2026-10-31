@@ -89,6 +89,7 @@ impl Scene {
             inventory.set(slot, Some(stack(*item)));
         }
         let config = RegionConfig {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension,

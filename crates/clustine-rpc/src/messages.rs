@@ -912,6 +912,10 @@ pub struct Restored {
     /// the home chunk, which the region that holds it never gives back. The overworld's
     /// regions' alone (`docs/groundwork/p-plan.md`, section 15.2).
     pub spawn: Option<BlockPos>,
+    /// The world's spawn in every region, of whatever dimension: where a player who
+    /// leaves the End or dies without a bed or anchor respawns, and what an entity out
+    /// of the End is sent to (`docs/groundwork/p-plan.md`, sections 5.3 and 19.2).
+    pub world_spawn: BlockPos,
     /// The dimension whose chunks the region holds.
     pub dimension: Dimension,
     /// Each dimension's home region, which a portal sends a player to
@@ -1003,6 +1007,8 @@ pub enum StoreWelcome {
         issued: EntityId,
         /// [`Restored::spawn`].
         spawn: Option<BlockPos>,
+        /// [`Restored::world_spawn`].
+        world_spawn: BlockPos,
         /// [`Restored::dimension`].
         dimension: Dimension,
         /// [`Restored::homes`].

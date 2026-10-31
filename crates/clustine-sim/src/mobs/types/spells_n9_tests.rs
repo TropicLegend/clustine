@@ -1303,6 +1303,7 @@ mod in_a_region {
     /// in their chunks.
     fn region_with(entities: &[Entity]) -> Region {
         let config = RegionConfig {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),

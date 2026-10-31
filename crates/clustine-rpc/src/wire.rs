@@ -519,6 +519,7 @@ mod tests {
         };
 
         let restored = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -562,6 +563,7 @@ mod tests {
         assert_eq!(restored.tick(), 9);
         let welcomes = [
             StoreWelcome::Accepted {
+                world_spawn: clustine_world::BlockPos::new(0, -60, 0),
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -683,6 +685,7 @@ mod tests {
         // A region that has never committed anything is restored up to tick 0, and one
         // with a state and no commits after it up to the state's tick.
         let mut fresh = Restored {
+            world_spawn: clustine_world::BlockPos::new(0, -60, 0),
             strongholds: Vec::new(),
             homes: Vec::new(),
             dimension: Default::default(),
@@ -858,6 +861,7 @@ mod tests {
         }
         for issued in [EntityId(0), EntityId(41), EntityId(u64::MAX)] {
             round_trip(StoreWelcome::Accepted {
+                world_spawn: clustine_world::BlockPos::new(0, -60, 0),
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),
@@ -880,6 +884,7 @@ mod tests {
                 },
             });
             round_trip(Restored {
+                world_spawn: clustine_world::BlockPos::new(0, -60, 0),
                 strongholds: Vec::new(),
                 homes: Vec::new(),
                 dimension: Default::default(),

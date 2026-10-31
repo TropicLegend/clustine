@@ -59,6 +59,7 @@ pub fn inventory(slots: &[(usize, ItemStack)]) -> Inventory {
 
 pub fn config(inventory: Inventory) -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

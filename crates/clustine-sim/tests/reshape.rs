@@ -106,6 +106,7 @@ fn hotbar() -> [Option<ItemStack>; HOTBAR_SLOTS] {
 
 fn config(return_after: u64) -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),
@@ -4996,6 +4997,7 @@ const START: u64 = 10;
 /// What the regions of a run are made with.
 fn run_config() -> RegionConfig {
     RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: Vec::new(),
         dimension: Default::default(),

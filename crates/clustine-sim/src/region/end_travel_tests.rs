@@ -63,6 +63,7 @@ fn world(
         lent_away: Vec::new(),
     };
     let config = RegionConfig {
+        world_spawn: clustine_world::BlockPos::new(0, -60, 0),
         strongholds: Vec::new(),
         homes: vec![
             (Dimension::Overworld, RegionId(0)),
