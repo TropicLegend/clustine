@@ -316,6 +316,72 @@ fn a_camp_s_cushion_is_attached_to_its_moved_block_of_its_colour_and_draws_nothi
 }
 
 #[test]
+fn an_end_city_ship_s_frame_holds_its_elytra_on_its_block_and_facing_and_draws_nothing() {
+    let item = nbt::payload(&[nbt::string("id", "minecraft:elytra"), nbt::int("count", 1)]);
+    let tag = nbt::compound(&[
+        nbt::string("id", "minecraft:item_frame"),
+        nbt::entry(11, "block_pos", &{
+            let mut payload = 3i32.to_be_bytes().to_vec();
+            for value in [1130, 92, 2335] {
+                payload.extend_from_slice(&i32::to_be_bytes(value));
+            }
+            payload
+        }),
+        nbt::entry(10, "Item", &item),
+        nbt::byte("ItemRotation", 0),
+        nbt::entry(5, "ItemDropChance", &1.0f32.to_be_bytes()),
+        nbt::byte("Facing", 4),
+        nbt::byte("Invisible", 0),
+        nbt::byte("Fixed", 0),
+    ]);
+    let mut makings = makings();
+    let mut level = Counting::default();
+    let made = template_entity(
+        WORLD,
+        &tag,
+        false,
+        placed(&mut makings, &mut level, 90.0, None),
+    );
+    assert!(level.calls.is_empty(), "a frame is no mob");
+    assert_eq!(made.len(), 1);
+    let frame = &made[0];
+    assert_eq!(frame.kind, entity_types::ITEM_FRAME as u16);
+    assert_eq!(frame.key, making(0));
+    assert_eq!(frame.yaw, 90.0);
+    assert_eq!(
+        frame.data,
+        EntityData::ItemFrame {
+            attached: clustine_world::Attached {
+                block: BlockPos::new(1130, 92, 2335),
+                direction: 4,
+            },
+            item: Some(clustine_world::ItemStack::new(items::ELYTRA, 1)),
+            rotation: 0,
+            drop_chance: clustine_world::Float(1.0),
+            fixed: false,
+            invisible: false,
+        }
+    );
+}
+
+#[test]
+fn a_frame_s_tag_without_a_direction_makes_nothing() {
+    let tag = nbt::compound(&[
+        nbt::string("id", "minecraft:item_frame"),
+        nbt::entry(11, "block_pos", &{
+            let mut payload = 3i32.to_be_bytes().to_vec();
+            for value in [0, 64, 0] {
+                payload.extend_from_slice(&i32::to_be_bytes(value));
+            }
+            payload
+        }),
+        nbt::byte("Facing", 9),
+    ]);
+    let (made, calls) = finalised(&tag);
+    assert!(made.is_empty() && calls.is_empty());
+}
+
+#[test]
 fn the_taiga_armourer_s_stand_wears_its_helmet_in_its_pose_and_draws_nothing() {
     let pose = |name: &str, angles: [f32; 3]| {
         let mut payload = vec![5u8];

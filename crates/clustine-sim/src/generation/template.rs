@@ -229,6 +229,11 @@ pub(crate) fn template_entity(
         entity_types::END_CRYSTAL => end_crystal::end_crystal(world, kind, &parsed, placed)
             .into_iter()
             .collect(),
+        entity_types::ITEM_FRAME | entity_types::GLOW_ITEM_FRAME => {
+            item_frame(world, kind, &parsed, placed)
+                .into_iter()
+                .collect()
+        }
         _ => make_mob(world, kind, Some(tag), false, finalise, placed),
     }
 }
@@ -600,6 +605,81 @@ const COLOURS: [&str; 16] = [
 /// cushion's, attached to its `block_pos` (which the placing set to its template block,
 /// moved), of its `color`. Not a mob: nothing is finalised. `None` for a tag without
 /// its block.
+/// The item frame `tag` describes, as `ItemFrame.readAdditionalSaveData` reads it: its
+/// block (`block_pos`), its facing as a three-dimensional value (`Facing`), the item it
+/// holds with its count, the item's turn, its drop chance (1 where missing), and
+/// whether it is fixed or invisible. An End city's ship has one holding an elytra
+/// (`EndCityPieces$EndCityPiece.handleDataMarker`'s `Elytra`). A tag without a block or
+/// with a facing that is no direction makes nothing.
+fn item_frame(world: u64, kind: u16, tag: &Tag, placed: Placed<'_>) -> Option<Entity> {
+    let block: Vec<i32> = tag
+        .get("block_pos")
+        .map(Tag::list)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| value.number().map(|value| value as i32))
+        .collect();
+    let [x, y, z] = block[..] else {
+        return None;
+    };
+    let direction = tag.get("Facing").and_then(Tag::number)? as i64;
+    let direction = u8::try_from(direction).ok().filter(|value| *value < 6)?;
+    let item = tag.get("Item").and_then(|stack| {
+        let item = stack
+            .get("id")
+            .and_then(Tag::text)
+            .and_then(item_id_by_name)?;
+        let count = stack
+            .get("count")
+            .and_then(Tag::number)
+            .map_or(1, |count| count as i32);
+        Some(ItemStack::new(item, count))
+    });
+    let number = |name: &str| tag.get(name).and_then(Tag::number);
+    let rotation = number("ItemRotation").map_or(0, |value| (value as i64).rem_euclid(8) as u8);
+    let drop_chance = number("ItemDropChance").map_or(1.0, |value| value as f32);
+    let fixed = number("Fixed").is_some_and(|value| value != 0.0);
+    let invisible = number("Invisible").is_some_and(|value| value != 0.0);
+    let Placed {
+        position,
+        yaw,
+        pitch,
+        makings,
+        ..
+    } = placed;
+    let key = makings.next()?.key()?;
+    let mut own = Random::of_generated(world, key);
+    let uuid = insecure_uuid(own.next_u64(), own.next_u64());
+    Some(Entity {
+        portal: Default::default(),
+        key,
+        kind,
+        uuid,
+        position,
+        motion: [0.0; 3],
+        yaw,
+        pitch,
+        on_ground: false,
+        hops: 0,
+        lived: 0,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: EntityData::ItemFrame {
+            attached: Attached {
+                block: clustine_world::BlockPos::new(x, y, z),
+                direction,
+            },
+            item,
+            rotation,
+            drop_chance: Float(drop_chance),
+            fixed,
+            invisible,
+        },
+    })
+}
+
 fn cushion(world: u64, kind: u16, tag: &Tag, placed: Placed<'_>) -> Option<Entity> {
     let block: Vec<i32> = tag
         .get("block_pos")

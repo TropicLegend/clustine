@@ -37,7 +37,7 @@ pub use run::{decorate, decorate_with};
 pub const GENERATION: u16 = 6;
 /// Raised whenever the blocks the structures' placers make change: part of the
 /// generator's identity where they are placed. 1 since servers place them (S3,
-/// 2026-10-26).
-pub const STRUCTURES_GENERATION: u16 = 1;
+/// 2026-10-26); 2 since the End cities are placed (P10a, 2026-10-31).
+pub const STRUCTURES_GENERATION: u16 = 2;
 pub use clustine_terrain::biome::Dimension;
 pub use settings::{FeatureSettings, STEPS};
