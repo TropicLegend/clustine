@@ -311,6 +311,7 @@ impl Region {
             EntityData::Cushion { .. } => self.cushion_used(&entity, chunk, by, output),
             EntityData::LeashKnot { .. } => self.knot_used(&entity, chunk, by, output),
             EntityData::Fireball(_) => self.fireball_used(&entity, chunk, by, output),
+            EntityData::EndCrystal(_) => self.end_crystal_used(&entity, chunk, by, output),
             // A mob's uses and hits are its body's (`mob_bodies.rs`).
             EntityData::Mob { .. } => self.mob_used(&entity, chunk, by, output),
             EntityData::Item { .. }
@@ -322,7 +323,9 @@ impl Region {
             | EntityData::Spit(_)
             | EntityData::Firework(_)
             | EntityData::Cloud(_)
-            | EntityData::Fangs(_) => {}
+            | EntityData::Fangs(_)
+            | EntityData::EyeOfEnder(_)
+            | EntityData::ShulkerBullet(_) => {}
         }
         self.using_across = outer;
     }
@@ -359,6 +362,9 @@ impl Region {
             EntityData::Cloud(_) => self.tick_cloud(entity, position, output),
             EntityData::Fangs(_) => self.tick_fangs(entity, position, output),
             EntityData::Fireball(_) => self.tick_fireball(entity, position, output),
+            EntityData::EyeOfEnder(_) => self.tick_eye_of_ender(entity, position, output),
+            EntityData::EndCrystal(_) => self.tick_end_crystal(entity, position, output),
+            EntityData::ShulkerBullet(_) => self.tick_shulker_bullet(entity, position, output),
         }
         self.ticking = before;
     }

@@ -157,7 +157,13 @@ fn use_on(region: &mut Region, key: EntityId, sneaking: bool) -> TickOutput {
 }
 
 fn attack(target: EntityId) -> TickInputs {
-    moves(vec![numbered(1, PlayerInput::Attack { entity: target })])
+    moves(vec![numbered(
+        1,
+        PlayerInput::Attack {
+            part: None,
+            entity: target,
+        },
+    )])
 }
 
 fn sounds_of(output: &TickOutput) -> Vec<(i32, Option<PlayerId>)> {

@@ -331,7 +331,13 @@ fn a_hurt_animal_panics_at_its_panic_speed() {
     lay(&mut region, &cow_at(ONE, 2.5, 0.5, &Animal::default()));
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     // A knocked-back cow makes no path until it lands (`canUpdatePath`), so the panic's
     // speed shows only once it is down, some ticks after the hit.
@@ -1315,7 +1321,13 @@ fn every_farm_animal_follows_its_food_panics_when_hurt_and_breeds_when_fed_in_pa
         );
         checked(
             &mut region,
-            &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+            &moves(vec![numbered(
+                1,
+                PlayerInput::Attack {
+                    part: None,
+                    entity: ONE,
+                },
+            )]),
         );
         // It makes no path until it lands from the knock-back (`canUpdatePath`).
         let panicked = (0..40).any(|_| {

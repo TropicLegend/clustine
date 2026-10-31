@@ -594,14 +594,57 @@ impl PublishedVillage {
     }
 }
 
-/// A change of a raid's bar for one player (section 9.4): shown with its name and progress,
-/// taken away, or a new progress or name while shown.
+/// A change of a boss bar for one player (`docs/groundwork/n10-plan.md`, section 9.4;
+/// `docs/groundwork/p-plan.md`, section 19.5 item 7): shown with its name, progress and
+/// style, taken away, or a new progress or name while shown.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum RaidBarChange {
-    Add { name: RaidBarName, progress: f32 },
+pub enum BarChange {
+    Add {
+        name: BarName,
+        progress: f32,
+        style: BarStyle,
+    },
     Remove,
     Progress(f32),
-    Name(RaidBarName),
+    Name(BarName),
+}
+
+/// What a boss bar says: a raid's, or the dragon's (`entity.minecraft.ender_dragon`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BarName {
+    Raid(RaidBarName),
+    Dragon,
+}
+
+/// How a boss bar looks (`ServerBossEvent`'s colour, overlay and its three flags): by
+/// the ordinals of `BossEvent$BossBarColor` and `BossEvent$BossBarOverlay`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BarStyle {
+    pub colour: u8,
+    pub overlay: u8,
+    pub darken_screen: bool,
+    pub play_music: bool,
+    pub create_fog: bool,
+}
+
+impl BarStyle {
+    /// A raid's: red, notched in ten, no flag (`Raid`'s `ServerBossEvent`).
+    pub const RAID: Self = Self {
+        colour: 2,
+        overlay: 2,
+        darken_screen: false,
+        play_music: false,
+        create_fog: false,
+    };
+    /// The dragon's: pink, a plain bar, with the boss music and the fog
+    /// (`EnderDragonFight`'s `dragonEvent`).
+    pub const DRAGON: Self = Self {
+        colour: 0,
+        overlay: 0,
+        darken_screen: false,
+        play_music: true,
+        create_fog: true,
+    };
 }
 
 pub use clustine_world::raid::RaidBarName;
@@ -825,8 +868,10 @@ pub enum PlayerInput {
         location: [f64; 3],
         sneaking: bool,
     },
-    /// The player hit the entity `entity` (`attack`).
-    Attack { entity: EntityId },
+    /// The player hit the entity `entity` (`attack`), at its part `part` where it is an
+    /// entity of several parts and the client named one (the edge knows by the wire id;
+    /// `docs/groundwork/p-plan.md`, section 19.5 item 10).
+    Attack { entity: EntityId, part: Option<u8> },
     /// Where the player's client put the vehicle it drives (`move_vehicle`).
     MoveVehicle(VehicleMove),
     /// Which of a driven boat's paddles move (`paddle_boat`).
@@ -1601,10 +1646,9 @@ pub enum PlayerEvent {
         show_progress: bool,
         can_restock: bool,
     },
-    /// A raid's bar for the player (`ServerBossEvent`, `boss_event`; section 9.4): the
-    /// bar's UUID, which stays the raid's wherever it is held, and its change. Always red
-    /// and notched in ten (`Raid`'s `ServerBossEvent`).
-    RaidBar { id: Uuid, change: RaidBarChange },
+    /// A boss bar for the player (`ServerBossEvent`, `boss_event`): the bar's UUID,
+    /// which stays its raid's or fight's wherever it is held, and its change.
+    BossBar { id: Uuid, change: BarChange },
     /// A sentence of the game by its key, with numbers for its arguments, in their chat
     /// or, with `overlay`, on their action bar (`sendSystemMessage`, `sendOverlayMessage`).
     Message {

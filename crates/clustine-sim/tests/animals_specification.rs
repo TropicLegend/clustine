@@ -798,7 +798,10 @@ fn a_hurt_animal_falls_out_of_love() {
     let mut scene = holding(&World::default(), &[items::COW_SPAWN_EGG, items::WHEAT]);
     let cow = hatch(&mut scene, 0, floor_at(2, 2)).expect("a cow");
     assert_eq!(hearts(&use_on(&mut scene, 1, &[cow]), cow), 1);
-    scene.input(PlayerInput::Attack { entity: cow });
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: cow,
+    });
     assert!(health(&scene, cow) < COW.health, "the hit hurt it");
     assert_eq!(
         hearts(&use_on(&mut scene, 1, &[cow]), cow),

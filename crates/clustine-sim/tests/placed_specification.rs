@@ -381,7 +381,7 @@ impl Scene {
     }
 
     fn attack(&mut self, entity: EntityId) -> TickOutput {
-        self.input(PlayerInput::Attack { entity })
+        self.input(PlayerInput::Attack { part: None, entity })
     }
 
     fn walk_to(&mut self, feet: Vec3) -> TickOutput {

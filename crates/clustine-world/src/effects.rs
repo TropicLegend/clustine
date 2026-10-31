@@ -159,6 +159,10 @@ pub enum EntityUse {
         /// The attacking player's UUID, whom a fireball they deflect names as its owner
         /// and its kill as the killer; none in an attack stored before.
         player: Option<uuid::Uuid>,
+        /// The part of an entity of several parts the attack hit, by its place in the
+        /// entity's run of wire ids less one (the dragon's head is 0); none for the
+        /// entity itself (`docs/groundwork/p-plan.md`, section 19.5 item 10).
+        part: Option<u8>,
     },
     /// `interact`: the player, whether creative, what they hold in the hand used, where
     /// on the entity the click landed, whether they sneak, and where they stand; and

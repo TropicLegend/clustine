@@ -51,6 +51,7 @@ pub(crate) mod dolphin;
 pub(crate) mod donkey;
 pub(crate) mod drowned;
 pub(crate) mod elder_guardian;
+pub(crate) mod ender_dragon;
 pub(crate) mod enderman;
 pub(crate) mod endermite;
 pub(crate) mod equine;
@@ -125,6 +126,7 @@ mod ranged_n9_tests;
 pub(crate) mod ravager;
 pub(crate) mod salmon;
 pub(crate) mod sheep;
+pub(crate) mod shulker;
 pub(crate) mod silverfish;
 pub(crate) mod skeleton;
 pub(crate) mod skeleton_horse;
@@ -1551,6 +1553,8 @@ fn built(kind: u16) -> Option<&'static dyn MobType> {
         entity_types::GHAST if ghast::BUILT => &ghast::Ghast,
         entity_types::WITHER_SKELETON if wither_skeleton::BUILT => &wither_skeleton::WitherSkeleton,
         entity_types::BLAZE if blaze::BUILT => &blaze::Blaze,
+        entity_types::SHULKER if shulker::BUILT => &shulker::Shulker,
+        entity_types::ENDER_DRAGON if ender_dragon::BUILT => &ender_dragon::EnderDragon,
         entity_types::STRIDER if strider::BUILT => &strider::Strider,
         entity_types::PIGLIN if piglin::BUILT => &piglin::Piglin,
         entity_types::PIGLIN_BRUTE if piglin_brute::BUILT => &piglin_brute::PiglinBrute,

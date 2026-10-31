@@ -217,6 +217,7 @@ fn hit(target: &Entity, sequence: u64, damage: f32, creative: bool) -> TickInput
                 what: Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(1),
@@ -773,6 +774,7 @@ fn five_full_hits_break_a_cart_which_drops_itself_and_the_fourth_does_not() {
     lay(&mut region, &target);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        part: None,
         look: [Float(0.0); 2],
         player: None,
         attacker: EntityId(1),
@@ -924,6 +926,7 @@ fn a_chest_carts_contents_spill_by_the_games_draws_in_creative_too() {
     lay(&mut region, &chest);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        part: None,
         look: [Float(0.0); 2],
         player: None,
         attacker: EntityId(1),
@@ -973,6 +976,7 @@ fn a_chest_cart_broken_in_survival_spills_then_drops_itself_then_draws_its_empty
     lay(&mut region, &chest);
     let mut output = TickOutput::default();
     let attack = EntityUse::Attack {
+        part: None,
         look: [Float(0.0); 2],
         player: None,
         attacker: EntityId(1),
@@ -1156,7 +1160,10 @@ fn a_push_breaks_a_block_attached_entity_and_moves_anything_else() {
 fn attack(target: &Entity) -> TickInputs {
     moves(vec![numbered(
         1,
-        PlayerInput::Attack { entity: target.key },
+        PlayerInput::Attack {
+            part: None,
+            entity: target.key,
+        },
     )])
 }
 

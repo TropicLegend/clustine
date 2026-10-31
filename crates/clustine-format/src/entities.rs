@@ -84,10 +84,10 @@
 //! A chunk without entities has no such file.
 
 use clustine_world::{
-    Arrow, ArrowKind, Attached, BlockPos, ChunkPos, Cloud, Contents, Double, EdgeId, Entity,
-    EntityChange, EntityData, EntityField, EntityId, Entry, Fangs, Fireball, Firework, Float, Hurt,
-    InGround, Leash, LeashHolder, Pending, Pickup, PortalClock, PortalKind, PortalState,
-    ProjectileOwner, Riding, Seat, Spit, TypeState,
+    Arrow, ArrowKind, Attached, BlockPos, ChunkPos, Cloud, Contents, Double, EdgeId, EndCrystal,
+    Entity, EntityChange, EntityData, EntityField, EntityId, Entry, EyeOfEnder, Fangs, Fireball,
+    Firework, Float, Hurt, InGround, Leash, LeashHolder, Pending, Pickup, PortalClock, PortalKind,
+    PortalState, ProjectileOwner, Riding, Seat, ShulkerBullet, Spit, TypeState,
 };
 use uuid::Uuid;
 
@@ -128,6 +128,9 @@ const DATA_FIREWORK: u8 = 16;
 const DATA_CLOUD: u8 = 17;
 const DATA_FANGS: u8 = 18;
 const DATA_FIREBALL: u8 = 19;
+const DATA_EYE_OF_ENDER: u8 = 20;
+const DATA_END_CRYSTAL: u8 = 21;
+const DATA_SHULKER_BULLET: u8 = 22;
 
 const SEAT_PLAYER: u8 = 1;
 const SEAT_PENDING: u8 = 2;
@@ -639,16 +642,50 @@ fn put_data(out: &mut Vec<u8>, data: &EntityData) {
             out.push(DATA_FIREBALL);
             put_fireball(out, fireball);
         }
+        EntityData::EyeOfEnder(eye) => {
+            out.push(DATA_EYE_OF_ENDER);
+            put_stack(out, &eye.item);
+            for value in eye.target {
+                out.extend_from_slice(&value.0.to_be_bytes());
+            }
+            out.push(u8::from(eye.survives));
+        }
+        EntityData::EndCrystal(crystal) => {
+            out.push(DATA_END_CRYSTAL);
+            match crystal.beam_target {
+                None => out.push(0),
+                Some(at) => {
+                    out.push(1);
+                    for coordinate in [at.x, at.y, at.z] {
+                        out.extend_from_slice(&coordinate.to_be_bytes());
+                    }
+                }
+            }
+            out.push(u8::from(crystal.show_bottom));
+        }
+        EntityData::ShulkerBullet(bullet) => {
+            out.push(DATA_SHULKER_BULLET);
+            put_projectile_owner(out, bullet.owner);
+            put_owner(out, bullet.target);
+            out.extend_from_slice(&bullet.steps.to_be_bytes());
+            match bullet.direction {
+                None => out.push(0),
+                Some(direction) => {
+                    out.push(1);
+                    out.push(direction);
+                }
+            }
+            for value in bullet.target_delta {
+                out.extend_from_slice(&value.0.to_be_bytes());
+            }
+        }
     }
 }
 
-/// A fireball: the item it shows, its owner (u8 0, or u8 1 followed by the key u64,
-/// the type u16 and the player, u8 0 or u8 1 followed by the UUID u128), flags u8
-/// (bit 0 it has left its owner, bit 1 it has been shot), its acceleration power f64
-/// and its explosion power u8.
-fn put_fireball(out: &mut Vec<u8>, fireball: &Fireball) {
-    put_stack(out, &fireball.item);
-    match fireball.owner {
+/// An owner that a region may not see (u8 0, or u8 1 followed by the key u64, the type
+/// u16 and the player, u8 0 or u8 1 followed by the UUID u128).
+fn put_projectile_owner(out: &mut Vec<u8>, owner: Option<ProjectileOwner>) {
+    match owner {
         None => out.push(0),
         Some(owner) => {
             out.push(1);
@@ -663,6 +700,32 @@ fn put_fireball(out: &mut Vec<u8>, fireball: &Fireball) {
             }
         }
     }
+}
+
+fn take_projectile_owner(
+    input: &mut Input<'_>,
+    what: &'static str,
+) -> Result<Option<ProjectileOwner>, FormatError> {
+    if !take_flag(input, what)? {
+        return Ok(None);
+    }
+    let key = EntityId(input.u64()?);
+    let kind = input.u16()?;
+    let player = if take_flag(input, "a projectile owner's player flag")? {
+        Some(Uuid::from_u128(input.u128()?))
+    } else {
+        None
+    };
+    Ok(Some(ProjectileOwner { key, kind, player }))
+}
+
+/// A fireball: the item it shows, its owner (u8 0, or u8 1 followed by the key u64,
+/// the type u16 and the player, u8 0 or u8 1 followed by the UUID u128), flags u8
+/// (bit 0 it has left its owner, bit 1 it has been shot), its acceleration power f64
+/// and its explosion power u8.
+fn put_fireball(out: &mut Vec<u8>, fireball: &Fireball) {
+    put_stack(out, &fireball.item);
+    put_projectile_owner(out, fireball.owner);
     out.push(shot_flags(fireball.left_owner, fireball.has_been_shot));
     out.extend_from_slice(&fireball.acceleration_power.0.to_be_bytes());
     out.push(fireball.explosion_power);
@@ -670,18 +733,7 @@ fn put_fireball(out: &mut Vec<u8>, fireball: &Fireball) {
 
 fn take_fireball(input: &mut Input<'_>) -> Result<Fireball, FormatError> {
     let item = take_stack(input)?;
-    let owner = if take_flag(input, "a fireball's owner flag")? {
-        let key = EntityId(input.u64()?);
-        let kind = input.u16()?;
-        let player = if take_flag(input, "a fireball's player flag")? {
-            Some(Uuid::from_u128(input.u128()?))
-        } else {
-            None
-        };
-        Some(ProjectileOwner { key, kind, player })
-    } else {
-        None
-    };
+    let owner = take_projectile_owner(input, "a fireball's owner flag")?;
     let flags = input.u8()?;
     if flags & !(LEFT_OWNER | HAS_BEEN_SHOT) != 0 {
         return Err(FormatError::Corrupt("a fireball's flags"));
@@ -1192,6 +1244,58 @@ fn take_data(input: &mut Input<'_>) -> Result<EntityData, FormatError> {
             warmup: input.i32()?,
         })),
         DATA_FIREBALL => Ok(EntityData::Fireball(Box::new(take_fireball(input)?))),
+        DATA_EYE_OF_ENDER => {
+            let item = take_stack(input)?;
+            let target = [
+                Double(input.f64()?),
+                Double(input.f64()?),
+                Double(input.f64()?),
+            ];
+            let survives = take_flag(input, "an eye of ender's survival flag")?;
+            Ok(EntityData::EyeOfEnder(Box::new(EyeOfEnder {
+                item,
+                target,
+                survives,
+            })))
+        }
+        DATA_END_CRYSTAL => {
+            let beam_target = if take_flag(input, "an end crystal's beam flag")? {
+                Some(BlockPos::new(input.i32()?, input.i32()?, input.i32()?))
+            } else {
+                None
+            };
+            let show_bottom = take_flag(input, "an end crystal's base flag")?;
+            Ok(EntityData::EndCrystal(EndCrystal {
+                beam_target,
+                show_bottom,
+            }))
+        }
+        DATA_SHULKER_BULLET => {
+            let owner = take_projectile_owner(input, "a shulker bullet's owner flag")?;
+            let target = take_owner(input, "a shulker bullet's target flag")?;
+            let steps = input.i32()?;
+            let direction = if take_flag(input, "a shulker bullet's direction flag")? {
+                let direction = input.u8()?;
+                if direction > 5 {
+                    return Err(FormatError::Corrupt("a shulker bullet's direction"));
+                }
+                Some(direction)
+            } else {
+                None
+            };
+            let target_delta = [
+                Double(input.f64()?),
+                Double(input.f64()?),
+                Double(input.f64()?),
+            ];
+            Ok(EntityData::ShulkerBullet(Box::new(ShulkerBullet {
+                owner,
+                target,
+                steps,
+                direction,
+                target_delta,
+            })))
+        }
         _ => Err(FormatError::Corrupt("entity data tag")),
     }
 }
@@ -2039,6 +2143,42 @@ pub(crate) mod tests {
             owner: None,
             warmup: -3,
         }));
+    }
+
+    /// The End's entities that are not mobs (`docs/groundwork/p-plan.md`, section 19.2):
+    /// an eye of ender, an end crystal with its beam and without, a shulker's bullet with
+    /// an owner, a target and a direction and with none.
+    #[test]
+    fn the_end_s_eye_crystal_and_bullet_read_as_they_were_written() {
+        round_trip(&EntityData::EyeOfEnder(Box::new(EyeOfEnder {
+            item: ItemStack::new(0x0405, 1),
+            target: [Double(1.5), Double(80.0), Double(-1024.25)],
+            survives: true,
+        })));
+        for beam_target in [Some(BlockPos::new(0, 128, 0)), None] {
+            round_trip(&EntityData::EndCrystal(EndCrystal {
+                beam_target,
+                show_bottom: beam_target.is_none(),
+            }));
+        }
+        round_trip(&EntityData::ShulkerBullet(Box::new(ShulkerBullet {
+            owner: Some(ProjectileOwner {
+                key: EntityId(7),
+                kind: 0x0102,
+                player: None,
+            }),
+            target: Some(EntityId(9)),
+            steps: 3,
+            direction: Some(5),
+            target_delta: [Double(0.25), Double(-0.5), Double(0.0)],
+        })));
+        round_trip(&EntityData::ShulkerBullet(Box::new(ShulkerBullet {
+            owner: None,
+            target: None,
+            steps: 0,
+            direction: None,
+            target_delta: [Double(0.0); 3],
+        })));
     }
 
     /// A fireball, with an owner who is a player, one who is a mob and none, and its

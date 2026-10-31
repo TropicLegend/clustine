@@ -18,7 +18,7 @@ use clustine_world::{
 };
 
 use super::*;
-use crate::api::{RaidBarChange, RaidSeen, WorldPlayer};
+use crate::api::{BarChange, BarName, RaidSeen, WorldPlayer};
 use crate::mobs::Mob;
 use crate::mobs::body::effects::{Effect, Layer};
 use crate::mobs::body::hurt::{self, Causer, DamageSource, DamageType};
@@ -232,12 +232,12 @@ fn by_player(hero: uuid::Uuid) -> DamageSource {
 }
 
 /// What the region told its players of raids' bars.
-fn bars(output: &TickOutput, to: PlayerId) -> Vec<RaidBarChange> {
+fn bars(output: &TickOutput, to: PlayerId) -> Vec<BarChange> {
     output
         .player_events
         .iter()
         .filter_map(|(player, event)| match event {
-            PlayerEvent::RaidBar { change, .. } if *player == to => Some(*change),
+            PlayerEvent::BossBar { change, .. } if *player == to => Some(*change),
             _ => None,
         })
         .collect()
@@ -653,7 +653,9 @@ fn the_bar_names_the_raiders_left_on_a_twentieth_active_tick_where_one_or_two_ar
         assert_eq!(kept.bar_name, RaidBarName::Raid, "{}", kept.ticks_active);
     }
     assert!(
-        told.contains(&RaidBarChange::Name(RaidBarName::RaidersRemaining(2))),
+        told.contains(&BarChange::Name(BarName::Raid(
+            RaidBarName::RaidersRemaining(2)
+        ))),
         "{told:?}"
     );
     region.raid_news(
@@ -975,11 +977,11 @@ fn players_coming_near_a_raid_are_shown_its_bar_at_the_next_gathering_and_those_
     assert!(matches!(
         bars(&output, player(1))[..],
         [
-            RaidBarChange::Add {
-                name: RaidBarName::Raid,
+            BarChange::Add {
+                name: BarName::Raid(RaidBarName::Raid),
                 ..
             },
-            RaidBarChange::Progress(_)
+            BarChange::Progress(_)
         ]
     ));
     assert!(bars(&output, player(2)).is_empty(), "141 from the centre");
@@ -996,8 +998,7 @@ fn players_coming_near_a_raid_are_shown_its_bar_at_the_next_gathering_and_those_
             assert!(
                 matches!(
                     told[..],
-                    [RaidBarChange::Add { .. }]
-                        | [RaidBarChange::Add { .. }, RaidBarChange::Progress(_)]
+                    [BarChange::Add { .. }] | [BarChange::Add { .. }, BarChange::Progress(_)]
                 ),
                 "{told:?}"
             );
@@ -1012,10 +1013,10 @@ fn players_coming_near_a_raid_are_shown_its_bar_at_the_next_gathering_and_those_
         let output = step(&mut region);
         told.extend(bars(&output, player(1)));
     }
-    assert_eq!(told.last(), Some(&RaidBarChange::Remove));
+    assert_eq!(told.last(), Some(&BarChange::Remove));
     assert_eq!(
         told.iter()
-            .filter(|change| **change == RaidBarChange::Remove)
+            .filter(|change| **change == BarChange::Remove)
             .count(),
         1
     );
@@ -1347,7 +1348,7 @@ fn a_player_across_the_line_from_a_raid_is_shown_its_bar_from_the_table_and_its_
                 .player_events
                 .iter()
                 .filter_map(|(player, event)| match event {
-                    PlayerEvent::RaidBar { id, change } if *player == east_player => {
+                    PlayerEvent::BossBar { id, change } if *player == east_player => {
                         Some((*id, *change))
                     }
                     _ => None,
@@ -1355,12 +1356,12 @@ fn a_player_across_the_line_from_a_raid_is_shown_its_bar_from_the_table_and_its_
         );
     }
     assert!(
-        matches!(told.first(), Some((shown, RaidBarChange::Add { .. })) if *shown == bar),
+        matches!(told.first(), Some((shown, BarChange::Add { .. })) if *shown == bar),
         "{told:?}"
     );
     assert!(
         told.iter()
-            .any(|(shown, change)| *shown == bar && matches!(change, RaidBarChange::Progress(_))),
+            .any(|(shown, change)| *shown == bar && matches!(change, BarChange::Progress(_))),
         "the countdown's progress follows: {told:?}"
     );
 }

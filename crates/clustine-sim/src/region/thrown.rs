@@ -759,6 +759,8 @@ impl Region {
                 self.hurt_attached(target, Breaker::of_owner(player), output);
             }
             EntityData::Fireball(_) => self.fireball_hit(&record, hit, output),
+            EntityData::EndCrystal(_) => self.end_crystal_hit(&record, hit, output),
+            EntityData::ShulkerBullet(_) => self.shulker_bullet_hurt(&record, output),
             EntityData::FallingBlock { .. } => {
                 // `markHurt`: its motion is sent.
                 let mut report = tracked(&record, Tracked::SYNC_VELOCITY, false);
@@ -774,7 +776,8 @@ impl Region {
             | EntityData::Spit(_)
             | EntityData::Firework(_)
             | EntityData::Cloud(_)
-            | EntityData::Fangs(_) => {}
+            | EntityData::Fangs(_)
+            | EntityData::EyeOfEnder(_) => {}
         }
     }
 

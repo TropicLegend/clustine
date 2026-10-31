@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::Random;
 use super::Region;
-use crate::api::{PlayerEvent, RaidBarChange, RaidSeen, TickOutput};
+use crate::api::{BarChange, BarName, BarStyle, PlayerEvent, RaidSeen, TickOutput};
 
 /// `Raids.getNearbyRaid`'s reach: a raid within 96 blocks of the place asked of
 /// (`distSqr < 9216`).
@@ -558,35 +558,36 @@ impl Region {
                 let then = gathered.get(&now.bar).copied().unwrap_or(now);
                 let mut changes = vec![(
                     Some(now.bar),
-                    RaidBarChange::Add {
-                        name: then.name,
+                    BarChange::Add {
+                        name: BarName::Raid(then.name),
                         progress: then.progress,
+                        style: BarStyle::RAID,
                     },
                 )];
                 if then.progress != now.progress {
-                    changes.push((Some(now.bar), RaidBarChange::Progress(now.progress)));
+                    changes.push((Some(now.bar), BarChange::Progress(now.progress)));
                 }
                 if then.name != now.name {
-                    changes.push((Some(now.bar), RaidBarChange::Name(now.name)));
+                    changes.push((Some(now.bar), BarChange::Name(BarName::Raid(now.name))));
                 }
                 changes
             };
             let change = match (kept, wanted) {
                 (None, None) => continue,
-                (Some(_), None) => vec![(kept.map(|k| k.bar), RaidBarChange::Remove)],
+                (Some(_), None) => vec![(kept.map(|k| k.bar), BarChange::Remove)],
                 (None, Some(now)) => added(now),
                 (Some(was), Some(now)) if was.bar != now.bar => {
-                    let mut changes = vec![(Some(was.bar), RaidBarChange::Remove)];
+                    let mut changes = vec![(Some(was.bar), BarChange::Remove)];
                     changes.extend(added(now));
                     changes
                 }
                 (Some(was), Some(now)) => {
                     let mut changes = Vec::new();
                     if was.progress != now.progress {
-                        changes.push((Some(now.bar), RaidBarChange::Progress(now.progress)));
+                        changes.push((Some(now.bar), BarChange::Progress(now.progress)));
                     }
                     if was.name != now.name {
-                        changes.push((Some(now.bar), RaidBarChange::Name(now.name)));
+                        changes.push((Some(now.bar), BarChange::Name(BarName::Raid(now.name))));
                     }
                     changes
                 }
@@ -595,7 +596,7 @@ impl Region {
                 if let Some(bar) = bar {
                     output
                         .player_events
-                        .push((id, PlayerEvent::RaidBar { id: bar, change }));
+                        .push((id, PlayerEvent::BossBar { id: bar, change }));
                 }
             }
             match wanted {

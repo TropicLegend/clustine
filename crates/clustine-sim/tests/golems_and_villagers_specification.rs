@@ -730,7 +730,10 @@ fn small_pen() -> Vec<(BlockPos, clustine_data::BlockState)> {
 /// Player 1 hits `key` with what they hold, after time enough for a full swing.
 fn hit(scene: &mut Scene, key: EntityId) -> TickOutput {
     scene.idle_for(20);
-    scene.input(PlayerInput::Attack { entity: key })
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: key,
+    })
 }
 
 #[test]
@@ -1381,7 +1384,10 @@ fn a_villager_hit_by_a_player_runs_from_them() {
     );
     let villager = hatch(&mut scene, 0, bp(7, -61, 7), entity_types::VILLAGER);
     scene.select(5);
-    let output = scene.input(PlayerInput::Attack { entity: villager });
+    let output = scene.input(PlayerInput::Attack {
+        part: None,
+        entity: villager,
+    });
     assert!(heard(&output, sounds::ENTITY_VILLAGER_HURT));
     let from = [7.5, FLOOR, 4.5];
     let mut seen = Vec::new();

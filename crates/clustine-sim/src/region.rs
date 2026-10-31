@@ -51,6 +51,7 @@ mod dried_ghasts;
 mod drops;
 mod eating;
 mod effect_deaths;
+mod end_entities;
 mod entities;
 mod entity_effects;
 mod experience;
@@ -2662,7 +2663,7 @@ impl Region {
             }
             // N5's inputs, answered by the steps that bring what they use
             // (`docs/groundwork/n5-plan.md`); until then passed over.
-            PlayerInput::Attack { entity } => {
+            PlayerInput::Attack { entity, part } => {
                 let user = uses::User {
                     feet: [
                         player.pose.position.x,
@@ -2679,6 +2680,7 @@ impl Region {
                 let look = [Float(player.pose.yaw), Float(player.pose.pitch)];
                 let damage = self.attack_of(id).map_or(1.0, |attack| attack.amount);
                 let by = EntityUse::Attack {
+                    part: *part,
                     attacker,
                     creative: true,
                     sprinting: false,

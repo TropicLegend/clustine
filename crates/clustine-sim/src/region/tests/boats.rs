@@ -888,6 +888,7 @@ fn a_broken_boat_drops_itself_and_a_chest_boat_broken_in_creative_spills_its_che
                 what: clustine_world::Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(1),

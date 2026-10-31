@@ -349,6 +349,7 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
             from,
             look,
             player,
+            part,
         } => {
             out.push(USE_ATTACK_SEEN);
             out.extend_from_slice(&attacker.0.to_be_bytes());
@@ -362,6 +363,13 @@ fn put_use(out: &mut Vec<u8>, by: &EntityUse) {
                 Some(player) => {
                     out.push(1);
                     out.extend_from_slice(&player.as_u128().to_be_bytes());
+                }
+            }
+            match part {
+                None => out.push(0),
+                Some(part) => {
+                    out.push(1);
+                    out.push(part);
                 }
             }
         }
@@ -629,16 +637,21 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
             let (creative, sprinting) = take_two_flags(input)?;
             let damage = Float(input.f32()?);
             let from = take_doubles(input)?;
-            let (look, player) = if use_kind == USE_ATTACK_SEEN {
+            let (look, player, part) = if use_kind == USE_ATTACK_SEEN {
                 let look = [Float(input.f32()?), Float(input.f32()?)];
                 let player = match input.u8()? {
                     0 => None,
                     1 => Some(Uuid::from_u128(input.u128()?)),
                     _ => return Err(FormatError::Corrupt("an attack's player flag")),
                 };
-                (look, player)
+                let part = match input.u8()? {
+                    0 => None,
+                    1 => Some(input.u8()?),
+                    _ => return Err(FormatError::Corrupt("an attack's part flag")),
+                };
+                (look, player, part)
             } else {
-                ([Float(0.0); 2], None)
+                ([Float(0.0); 2], None, None)
             };
             EntityUse::Attack {
                 attacker,
@@ -648,6 +661,7 @@ fn take_use(input: &mut Input<'_>) -> Result<EntityUse, FormatError> {
                 from,
                 look,
                 player,
+                part,
             }
         }
         USE_INTERACT | USE_INTERACT_FROM_EDGE => {
@@ -1436,6 +1450,7 @@ mod entity_uses {
             what: Effected::OnEntity {
                 key: EntityId(9 << 32 | 4),
                 by: EntityUse::Attack {
+                    part: None,
                     look: [Float(-45.5), Float(12.0)],
                     player: Some(Uuid::from_u128(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10)),
                     attacker: EntityId(2 << 32),
@@ -1476,6 +1491,7 @@ mod entity_uses {
         put_use(
             &mut out,
             &EntityUse::Attack {
+                part: None,
                 look: [Float(0.0); 2],
                 player: None,
                 attacker: EntityId(2 << 32),
@@ -1492,6 +1508,7 @@ mod entity_uses {
         assert_eq!(
             read,
             EntityUse::Attack {
+                part: None,
                 look: [Float(0.0); 2],
                 player: None,
                 attacker: EntityId(2 << 32),
@@ -1534,6 +1551,7 @@ mod entity_uses {
                 what: Effected::OnEntity {
                     key: EntityId(1),
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(2),

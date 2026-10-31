@@ -195,7 +195,13 @@ fn a_creative_player_s_hit_makes_no_target_and_a_player_as_its_target_is_never_s
     let before = mob(&region, ONE).body.vitals.health;
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     assert!(mob(&region, ONE).body.vitals.health < before, "it is hurt");
     for _ in 0..60 {

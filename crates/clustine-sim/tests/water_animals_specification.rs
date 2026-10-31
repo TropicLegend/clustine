@@ -430,7 +430,10 @@ fn use_on(scene: &mut Scene, slot: u8, keys: &[EntityId]) -> TickOutput {
 }
 
 fn hit(scene: &mut Scene, key: EntityId) -> TickOutput {
-    scene.input(PlayerInput::Attack { entity: key })
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: key,
+    })
 }
 
 fn entity_of(scene: &Scene, key: EntityId) -> Option<Entity> {

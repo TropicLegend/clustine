@@ -1007,7 +1007,13 @@ fn a_player_s_hit_raises_the_prices_by_the_floor_of_the_reputation_s_share() {
     let key = put(&mut region, [2.5, -60.0, 1.5], &made);
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: key })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
+        )]),
     );
     assert_eq!(own(&region, key).gossips.reputation(player(1).0), -25);
     let opened = checked(

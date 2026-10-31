@@ -229,7 +229,10 @@ fn use_on(scene: &mut Scene, slot: u8, keys: &[EntityId]) -> TickOutput {
 }
 
 fn hit(scene: &mut Scene, key: EntityId) -> TickOutput {
-    scene.input(PlayerInput::Attack { entity: key })
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: key,
+    })
 }
 
 fn keys(sprint: bool) -> PlayerInput {
@@ -467,7 +470,10 @@ fn an_armadillo_hit_unrolls_eighty_ticks_after_the_hit_by_the_games_countdown() 
     let mut seen = vec![scene.inputs_of(
         0,
         vec![
-            PlayerInput::Attack { entity: key },
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
             moved_to(Vec3::new(at[0] - 9.0, -60.0, at[2])),
         ],
     )];
@@ -1455,7 +1461,10 @@ fn a_rolled_up_armadillo_takes_no_spider_eye() {
     scene.inputs_of(
         0,
         vec![
-            PlayerInput::Attack { entity: armadillo },
+            PlayerInput::Attack {
+                part: None,
+                entity: armadillo,
+            },
             moved_to(Vec3::new(at[0] - 9.0, -60.0, at[2])),
         ],
     );

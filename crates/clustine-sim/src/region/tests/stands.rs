@@ -507,6 +507,7 @@ fn a_creative_players_hit_breaks_a_stand_at_once_and_drops_nothing_not_even_what
         &moves(vec![numbered(
             1,
             PlayerInput::Attack {
+                part: None,
                 entity: dressed.key,
             },
         )]),
@@ -534,6 +535,7 @@ fn hit(target: &Entity, sequence: u64, creative: bool) -> TickInputs {
                 what: Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(77),

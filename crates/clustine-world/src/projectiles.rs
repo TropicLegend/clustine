@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::components::PotionContents;
-use crate::{Double, EntityId, Float, ItemStack};
+use crate::{BlockPos, Double, EntityId, Float, ItemStack};
 
 /// `AbstractArrow.Pickup`, in the game's order of ids (n9 AbstractArrow$Pickup 81–96).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +131,36 @@ pub struct Fireball {
     pub acceleration_power: Double,
     /// `ExplosionPower`, the large fireball's (1 by default); none of the small one's.
     pub explosion_power: u8,
+}
+
+/// A thrown eye of ender (`EyeOfEnder`; `docs/groundwork/p-brief.md`, section 4.3): the
+/// item it shows and drops, the point it flies towards (`signalTo`'s), whether it
+/// survives its flight (four times in five), and its age is `lived`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EyeOfEnder {
+    pub item: ItemStack,
+    pub target: [Double; 3],
+    pub survives: bool,
+}
+
+/// An end crystal (`EndCrystal`; the brief's 6.3): the block its beam points at, if
+/// any, and whether it shows its bedrock base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndCrystal {
+    pub beam_target: Option<BlockPos>,
+    pub show_bottom: bool,
+}
+
+/// A shulker's bullet (`ShulkerBullet`): who shot it, what it flies at, the steps left
+/// before it turns again, the direction it goes by its id (`Direction`'s 0 to 5, none
+/// before its first turn), and its aim's offset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShulkerBullet {
+    pub owner: Option<ProjectileOwner>,
+    pub target: Option<EntityId>,
+    pub steps: i32,
+    pub direction: Option<u8>,
+    pub target_delta: [Double; 3],
 }
 
 /// An area effect cloud (`AreaEffectCloud`, D9 2.5). Its age is `lived`. Its radius

@@ -1562,7 +1562,13 @@ fn a_creative_hit_on_a_boat_across_the_line_is_an_effect_that_breaks_it_in_its_h
     let rider = joined(&mut west);
     let mut hands = Hands::new();
     let output = west.tick(&TickInputs {
-        inputs: hands.inputs(rider, vec![PlayerInput::Attack { entity: beyond.key }]),
+        inputs: hands.inputs(
+            rider,
+            vec![PlayerInput::Attack {
+                part: None,
+                entity: beyond.key,
+            }],
+        ),
         ..TickInputs::default()
     });
     let effect = output

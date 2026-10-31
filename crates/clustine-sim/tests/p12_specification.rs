@@ -1325,7 +1325,10 @@ fn a_player_s_hit_sends_a_fireball_along_their_look_and_makes_it_theirs() {
         kept.acceleration_power = Double(0.05);
     }
     scene.arrive(ball);
-    scene.input(PlayerInput::Attack { entity: key });
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: key,
+    });
     let after = scene.record(key).expect("the fireball flies on");
     let kept = fireball_of(&after);
     assert_eq!(
@@ -1383,7 +1386,10 @@ fn a_ghast_killed_by_its_own_fireball_deflected_by_a_player_drops_its_experience
         [1.5, f64::from(FEET) + 1.5, 0.5],
         Some(mob_owner(ghast, entity_types::GHAST)),
     ));
-    scene.input(PlayerInput::Attack { entity: key });
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: key,
+    });
     let died = scene
         .idle_until(40, |scene, _| {
             scene
@@ -1631,7 +1637,16 @@ fn a_fireball_deflected_from_across_a_line_kills_its_ghast_for_the_player() {
         rotation: Some((yaw, pitch)),
         on_ground: true,
     };
-    let (west_out, _) = line.step(vec![turn, PlayerInput::Attack { entity: key }], Vec::new());
+    let (west_out, _) = line.step(
+        vec![
+            turn,
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
+        ],
+        Vec::new(),
+    );
     let sent: Vec<&Effect> = west_out
         .effects
         .iter()

@@ -505,7 +505,13 @@ fn a_tamed_wolf_attacks_what_its_owner_hits_and_bites_it() {
     lay(&mut region, &sheep_at(PREY, [2.5, -60.0, 0.5]));
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: PREY })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: PREY,
+            },
+        )]),
     );
     let mut targeted = false;
     let mut bitten = false;
@@ -591,6 +597,7 @@ fn hit_from_beyond(key: EntityId, sequence: u64) -> TickInputs {
                 what: Effected::OnEntity {
                     key,
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(900),

@@ -1176,7 +1176,13 @@ fn a_cushion_is_not_laid_where_another_lies() {
 #[test]
 fn one_creative_hit_breaks_a_cushion_and_drops_nothing() {
     let (mut scene, seat) = on_a_cushion(1);
-    let output = scene.tick(vec![(1, PlayerInput::Attack { entity: seat })]);
+    let output = scene.tick(vec![(
+        1,
+        PlayerInput::Attack {
+            part: None,
+            entity: seat,
+        },
+    )]);
     assert!(scene.entity(seat).is_none(), "broken");
     assert!(gone(&output, seat), "reported gone");
     for _ in 0..3 {
@@ -1594,7 +1600,13 @@ fn a_creative_hit_discards_a_cart_and_drops_nothing() {
             vec![cart(1, RAIL_AT, [0.0; 3])],
         ),
     );
-    let output = scene.tick(vec![(1, PlayerInput::Attack { entity: key(1) })]);
+    let output = scene.tick(vec![(
+        1,
+        PlayerInput::Attack {
+            part: None,
+            entity: key(1),
+        },
+    )]);
     assert!(scene.entity(key(1)).is_none());
     assert!(gone(&output, key(1)));
     for _ in 0..3 {
@@ -1615,7 +1627,13 @@ fn a_rider_whose_cart_is_broken_rides_nothing_and_is_told() {
         ),
     );
     scene.tick(vec![(1, use_entity(key(1)))]);
-    let output = scene.tick(vec![(2, PlayerInput::Attack { entity: key(1) })]);
+    let output = scene.tick(vec![(
+        2,
+        PlayerInput::Attack {
+            part: None,
+            entity: key(1),
+        },
+    )]);
     assert!(scene.entity(key(1)).is_none());
     assert_eq!(scene.rides(1), None);
     let told = rides_told(&output, 1);

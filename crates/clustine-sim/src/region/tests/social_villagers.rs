@@ -115,7 +115,13 @@ fn a_player_s_hit_is_gossiped_about_by_the_villager_hit() {
     );
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     assert_eq!(
         own(&region, ONE).gossips.entries,
@@ -193,7 +199,13 @@ fn a_murder_is_gossiped_about_by_the_villagers_that_saw_it_and_not_one_behind_a_
     idle(&mut region);
     checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     assert!(mob(&region, ONE).body.vitals.dying(), "it died");
     assert_eq!(

@@ -572,7 +572,13 @@ fn a_hurt_squid_squirts_its_ink_and_a_glow_squid_goes_dark_for_100_ticks() {
     );
     let output = checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     assert!(sounds_of(&output).contains(&(sounds::ENTITY_GLOW_SQUID_SQUIRT, None)));
     // Dark for 100 from the hit, one less already at the end of the tick it came in.

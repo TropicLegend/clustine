@@ -1275,7 +1275,10 @@ fn a_drowning_keeps_the_baby_flag_and_not_the_health() {
         .find(|zombie| !before.contains(&zombie.key))
         .expect("an egg used on a zombie makes a baby zombie");
     assert!(flag(&baby, ZOMBIE_BABY), "a baby");
-    scene.input(PlayerInput::Attack { entity: parent });
+    scene.input(PlayerInput::Attack {
+        part: None,
+        entity: parent,
+    });
     scene.idle_for(3);
     let hurt = the(&scene, parent);
     assert!(health(&hurt) < 20.0, "the hit hurt it");
@@ -1830,7 +1833,10 @@ fn the_undead_sound_from_the_hostile_source() {
     );
     let (_, made) = hatch(&mut scene, 0, 2, 2);
     scene.idle_for(2);
-    let output = scene.input(PlayerInput::Attack { entity: made[0] });
+    let output = scene.input(PlayerInput::Attack {
+        part: None,
+        entity: made[0],
+    });
     assert_eq!(
         sounds_of(&output, sounds::ENTITY_ZOMBIE_HURT),
         vec![HOSTILE],

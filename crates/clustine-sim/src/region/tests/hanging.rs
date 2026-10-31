@@ -196,7 +196,10 @@ fn interact(target: &Entity) -> TickInputs {
 fn attack(target: &Entity) -> TickInputs {
     moves(vec![numbered(
         1,
-        PlayerInput::Attack { entity: target.key },
+        PlayerInput::Attack {
+            part: None,
+            entity: target.key,
+        },
     )])
 }
 
@@ -211,6 +214,7 @@ fn hit_from_afar(target: &Entity, sequence: u64, creative: bool) -> TickInputs {
                 what: Effected::OnEntity {
                     key: target.key,
                     by: EntityUse::Attack {
+                        part: None,
                         look: [Float(0.0); 2],
                         player: None,
                         attacker: EntityId(1),

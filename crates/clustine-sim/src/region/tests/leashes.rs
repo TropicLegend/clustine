@@ -102,7 +102,13 @@ fn interact(target: EntityId, sneaking: bool) -> TickInputs {
 }
 
 fn attack(target: EntityId) -> TickInputs {
-    moves(vec![numbered(1, PlayerInput::Attack { entity: target })])
+    moves(vec![numbered(
+        1,
+        PlayerInput::Attack {
+            part: None,
+            entity: target,
+        },
+    )])
 }
 
 fn walk_to(x: f64, z: f64) -> TickInputs {

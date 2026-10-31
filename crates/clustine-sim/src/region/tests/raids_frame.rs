@@ -6,7 +6,7 @@ use clustine_world::raid::{RaidBarName, RaidStatus};
 use clustine_world::{EntityUse, Float, RaidNews, RaiderUse};
 
 use super::*;
-use crate::api::{RaidBarChange, RaidSeen};
+use crate::api::{BarChange, BarName, BarStyle, RaidSeen};
 use crate::region::raids::RaidAt;
 
 /// Where the raids of these tests are: in the home chunk, by the player who joined.
@@ -240,11 +240,11 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
     let id = region.own_raids()[0].1.id;
     region.clock.game_time = 20;
     region.tick_raids(&mut output);
-    let bars: Vec<RaidBarChange> = output
+    let bars: Vec<BarChange> = output
         .player_events
         .iter()
         .filter_map(|(to, event)| match event {
-            PlayerEvent::RaidBar { change, .. } if *to == player => Some(*change),
+            PlayerEvent::BossBar { change, .. } if *to == player => Some(*change),
             _ => None,
         })
         .collect();
@@ -253,11 +253,12 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
     assert_eq!(
         bars,
         [
-            RaidBarChange::Add {
-                name: RaidBarName::Raid,
-                progress: 0.0
+            BarChange::Add {
+                name: BarName::Raid(RaidBarName::Raid),
+                progress: 0.0,
+                style: BarStyle::RAID,
             },
-            RaidBarChange::Progress(1.0 / 300.0)
+            BarChange::Progress(1.0 / 300.0)
         ],
         "its countdown's first tick"
     );
@@ -266,7 +267,7 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
     region.tick_raids(&mut output);
     assert!(output.player_events.iter().any(|(_, event)| matches!(
         event,
-        PlayerEvent::RaidBar { change: RaidBarChange::Progress(progress), .. }
+        PlayerEvent::BossBar { change: BarChange::Progress(progress), .. }
             if *progress == 2.0 / 300.0
     )));
     let mut output = TickOutput::default();
@@ -279,8 +280,8 @@ fn a_player_near_a_raid_is_shown_its_bar_and_its_changes_and_loses_it_when_it_st
     );
     assert!(output.player_events.iter().any(|(_, event)| matches!(
         event,
-        PlayerEvent::RaidBar {
-            change: RaidBarChange::Remove,
+        PlayerEvent::BossBar {
+            change: BarChange::Remove,
             ..
         }
     )));

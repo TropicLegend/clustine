@@ -388,7 +388,10 @@ fn a_player_s_hit_sends_a_large_fireball_along_their_look_owned_by_them_at_once(
             id,
             player,
             1,
-            PlayerInput::Attack { entity: key },
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
         )],
         ..TickInputs::default()
     };
@@ -441,6 +444,7 @@ fn a_small_fireball_is_not_sent_back_by_a_hit() {
     );
     lay(&mut region, &ball);
     let by = EntityUse::Attack {
+        part: None,
         attacker: EntityId(5),
         creative: true,
         sprinting: false,
@@ -483,7 +487,10 @@ fn a_fireball_a_player_sends_back_from_across_a_line_kills_the_ghast_by_that_pla
             id,
             player,
             1,
-            PlayerInput::Attack { entity: key },
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
         )],
         ..TickInputs::default()
     };

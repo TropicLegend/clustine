@@ -47,7 +47,8 @@ pub use position::{
     BlockPos, ChunkArea, ChunkPos, EdgeId, EntityId, EntityIds, Generated, PlayerId, RegionId, Vec3,
 };
 pub use projectiles::{
-    Arrow, ArrowKind, Cloud, Fangs, Fireball, Firework, InGround, Pickup, ProjectileOwner, Spit,
+    Arrow, ArrowKind, Cloud, EndCrystal, EyeOfEnder, Fangs, Fireball, Firework, InGround, Pickup,
+    ProjectileOwner, ShulkerBullet, Spit,
 };
 pub use section::{BIOME_CELLS, Biome, Section};
 pub use travel::{

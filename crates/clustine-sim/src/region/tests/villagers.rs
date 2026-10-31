@@ -451,7 +451,13 @@ fn a_villager_hit_by_a_player_is_angry_and_runs_from_them() {
     );
     let output = checked(
         &mut region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: ONE })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: ONE,
+            },
+        )]),
     );
     assert!(entity_events(&output, ONE).contains(&13), "angry particles");
     let from = region.players[&player(1)].pose.position;

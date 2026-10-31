@@ -148,7 +148,13 @@ fn holding(region: &mut Region, stack: ItemStack) {
 }
 
 fn attack(target: EntityId) -> TickInputs {
-    moves(vec![numbered(1, PlayerInput::Attack { entity: target })])
+    moves(vec![numbered(
+        1,
+        PlayerInput::Attack {
+            part: None,
+            entity: target,
+        },
+    )])
 }
 
 /// The entity of player 1.

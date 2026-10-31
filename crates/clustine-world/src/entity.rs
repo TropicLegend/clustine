@@ -432,8 +432,15 @@ pub enum EntityData {
     Cloud(Box<Cloud>),
     /// The evoker's fangs (4.8).
     Fangs(Fangs),
-    /// A fireball, large or small (`docs/groundwork/p-plan.md`, section 18).
+    /// A fireball, large or small, or the dragon's (`docs/groundwork/p-plan.md`,
+    /// sections 18 and 19).
     Fireball(Box<crate::Fireball>),
+    /// A thrown eye of ender (the same plan, section 19.2 P10b).
+    EyeOfEnder(Box<crate::EyeOfEnder>),
+    /// An end crystal (19.2, E7).
+    EndCrystal(crate::EndCrystal),
+    /// A shulker's bullet (19.2, E8).
+    ShulkerBullet(Box<crate::ShulkerBullet>),
 }
 
 /// A part of a mob's body or mind: an id that the code of that part gives it and keeps

@@ -178,7 +178,10 @@ fn used(key: EntityId) -> PlayerInput {
 }
 
 fn attack(key: EntityId) -> PlayerInput {
-    PlayerInput::Attack { entity: key }
+    PlayerInput::Attack {
+        part: None,
+        entity: key,
+    }
 }
 
 /// A use of the held item in the air, looking along `yaw` and `pitch`.

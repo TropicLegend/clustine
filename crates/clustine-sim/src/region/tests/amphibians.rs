@@ -624,7 +624,13 @@ fn sensed(region: &Region, key: EntityId, kind: MemoryKind) -> Option<Value> {
 fn attack(region: &mut Region, key: EntityId) -> TickOutput {
     checked(
         region,
-        &moves(vec![numbered(1, PlayerInput::Attack { entity: key })]),
+        &moves(vec![numbered(
+            1,
+            PlayerInput::Attack {
+                part: None,
+                entity: key,
+            },
+        )]),
     )
 }
 

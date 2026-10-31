@@ -688,7 +688,13 @@ impl Region {
             }
             // It cannot be hurt, and is pushed from its feet. Neither can a cloud nor
             // the fangs (their `hurtServer` hurts nothing).
-            EntityData::PrimedTnt { .. } | EntityData::Cloud(_) | EntityData::Fangs(_) => {}
+            EntityData::PrimedTnt { .. }
+            | EntityData::Cloud(_)
+            | EntityData::Fangs(_)
+            | EntityData::EyeOfEnder(_) => {}
+            // The End's own (`end_entities.rs`).
+            EntityData::EndCrystal(_) => self.end_crystal_blasted(record, explosion, output),
+            EntityData::ShulkerBullet(_) => self.shulker_bullet_hurt(record, output),
             // A fireball's own (`fireballs.rs`).
             EntityData::Fireball(_) => {
                 flags |= self.fireball_blasted(record, explosion.owner, output)

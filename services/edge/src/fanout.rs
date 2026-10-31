@@ -982,6 +982,9 @@ struct WireIds {
     of: BTreeMap<EntityId, i32>,
     /// The other way round, for what a client says of an entity.
     by_id: BTreeMap<i32, EntityId>,
+    /// The ids of the parts of an entity of several parts, each with the entity and the
+    /// part's number (`docs/groundwork/p-plan.md`, section 19.5 item 10).
+    parts: BTreeMap<i32, (EntityId, u8)>,
     last: i32,
     #[cfg(test)]
     ledger: WireLedger,
@@ -1007,9 +1010,35 @@ impl WireIds {
         self.last
     }
 
+    /// The id of the entity `key` of `parts` parts, given now with the ids of its parts
+    /// right after it if it has none: the game numbers a dragon's parts from its own id
+    /// on (`EnderDragon.setId`), and the client finds them so.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the dragon's step (E9) shows the first entity of parts"
+        )
+    )]
+    fn run(&mut self, key: EntityId, parts: u8) -> i32 {
+        if let Some(id) = self.of.get(&key) {
+            return *id;
+        }
+        let id = self.of(key);
+        for part in 0..parts {
+            self.last = self
+                .last
+                .checked_add(1)
+                .expect("an edge shows fewer than 2^31 entities in its life");
+            self.parts.insert(self.last, (key, part));
+        }
+        id
+    }
+
     fn forget(&mut self, key: EntityId) {
         if let Some(id) = self.of.remove(&key) {
             self.by_id.remove(&id);
+            self.parts.retain(|_, (whose, _)| *whose != key);
         }
     }
 
@@ -1018,6 +1047,15 @@ impl WireIds {
     /// passes over a use of an entity it does not find.
     fn key_of(&self, id: i32) -> Option<EntityId> {
         self.by_id.get(&id).copied()
+    }
+
+    /// The entity clients know by `id`, with the part `id` names of it where it is one
+    /// of its parts' ids.
+    fn part_of(&self, id: i32) -> Option<(EntityId, Option<u8>)> {
+        match self.parts.get(&id) {
+            Some((key, part)) => Some((*key, Some(*part))),
+            None => self.key_of(id).map(|key| (key, None)),
+        }
     }
 }
 
@@ -1732,11 +1770,11 @@ impl Fanout {
                 id,
                 what,
             } => {
-                let Some(entity) = self.wire.key_of(id) else {
+                let Some((entity, part)) = self.wire.part_of(id) else {
                     return;
                 };
                 let input = match what {
-                    OnEntity::Attack => PlayerInput::Attack { entity },
+                    OnEntity::Attack => PlayerInput::Attack { part, entity },
                     OnEntity::Pick => PlayerInput::PickItemFromEntity { entity },
                     OnEntity::Interact {
                         location,
@@ -1996,9 +2034,9 @@ impl Fanout {
             }
             WorkerToEdge::ToPlayer {
                 player,
-                event: PlayerEvent::RaidBar { id, change },
+                event: PlayerEvent::BossBar { id, change },
             } => {
-                if let Some(packet) = crate::boss_bars::raid_bar(id, change) {
+                if let Some(packet) = crate::boss_bars::boss_bar(id, change) {
                     self.send_to_player(player, [packet]).await;
                 }
             }
@@ -7587,6 +7625,27 @@ mod tests {
         assert_eq!(wire.key_of(one), None);
         // An id is not given again: the entity shown anew has another.
         assert_ne!(wire.of(first), one);
+    }
+
+    /// The plan, section 19.5 item 10: an entity of several parts is given its parts'
+    /// ids right after its own, as the game numbers a dragon's, and a client's hit on a
+    /// part's id names the entity and the part, until the edge forgets the entity.
+    #[test]
+    fn an_entity_of_parts_has_its_parts_ids_after_its_own_and_a_hit_on_one_names_the_part() {
+        let mut wire = WireIds::default();
+        let (dragon, after) = (EntityId(9), EntityId(10));
+        let id = wire.run(dragon, 8);
+        assert_eq!(wire.run(dragon, 8), id, "given once");
+        assert_eq!(wire.part_of(id), Some((dragon, None)));
+        assert_eq!(wire.part_of(id + 1), Some((dragon, Some(0))));
+        assert_eq!(wire.part_of(id + 8), Some((dragon, Some(7))));
+        assert_eq!(
+            wire.of(after),
+            id + 9,
+            "the next entity comes after the parts"
+        );
+        wire.forget(dragon);
+        assert_eq!(wire.part_of(id + 3), None);
     }
 
     use super::*;

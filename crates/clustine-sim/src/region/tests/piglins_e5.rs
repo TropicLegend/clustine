@@ -632,7 +632,10 @@ fn a_player_s_hit_ends_the_admiring_without_a_barter_and_refuses_gold_after() {
     acting(
         &mut region,
         1,
-        vec![PlayerInput::Attack { entity: PIGLIN_KEY }],
+        vec![PlayerInput::Attack {
+            part: None,
+            entity: PIGLIN_KEY,
+        }],
     );
     assert_eq!(off_hand(&region), None, "the ingot is gone");
     assert!(
