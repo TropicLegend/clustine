@@ -9942,6 +9942,7 @@ mod scenarios {
     mod physics_specification;
     mod projectiles;
     mod redstone;
+    mod respawn_specification;
     mod riding;
     mod riding_specification;
     mod tracking;

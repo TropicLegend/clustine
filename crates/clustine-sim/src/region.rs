@@ -4430,6 +4430,7 @@ mod tests {
     mod redstone;
     mod redstone_ground;
     mod respawn_kept;
+    mod respawn_specification;
     mod riding;
     mod scheduled_ticks;
     mod sculk;
