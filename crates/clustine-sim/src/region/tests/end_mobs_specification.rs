@@ -900,7 +900,6 @@ fn a_later_dragon_s_death_gives_500_and_no_egg_and_the_next_gateway() {
 /// destruction of the crystal the fight's dragon heals from hurts its head by 10 of
 /// explosion caused by that player (2854–2906), which a head takes whole.
 #[test]
-#[ignore = "finding: the brief's 6.3 (EnderDragonFight.txt 1365-1402, EnderDragon.txt 2854-2906) has the destruction of the dragon's nearest crystal hurt its head by 10; `end_crystal_destroyed` tells no fight, and `dragon_crystal_destroyed` is called by nothing, so the dragon loses nothing"]
 fn destroying_the_crystal_the_dragon_heals_from_hurts_its_head_by_ten() {
     let (mut home, _) = arena(0);
     let dragon = fight_s_dragon(&mut home);
@@ -931,7 +930,6 @@ fn destroying_the_crystal_the_dragon_heals_from_hurts_its_head_by_ten() {
 /// `EnderDragonFight.onCrystalDestroyed`: a crystal on a spike destroyed is taken from
 /// the fight's count at once (`updateCrystalCount`), not at the next hundredth tick.
 #[test]
-#[ignore = "finding: the brief's 6.3 (EnderDragonFight.txt 1380-1381) counts the crystals again when one is destroyed; the fight's count waits for the next hundredth tick, so the dragon's landing draws (1 in crystals + 3) and its strafe read a crystal that is gone for up to 99 ticks"]
 fn a_crystal_destroyed_on_a_spike_is_counted_off_at_once() {
     let (mut home, _) = arena(0);
     let dragon = fight_s_dragon(&mut home);
@@ -1366,7 +1364,6 @@ fn a_scanning_dragon_that_finds_no_player_it_may_fight_takes_off_at_the_hundredt
 /// The roar (DragonSittingAttackingPhase.txt 45–61): `attackingTicks++ >= 40`, a test of
 /// the count before its rise, so the flame comes at its 41st tick.
 #[test]
-#[ignore = "finding: DragonSittingAttackingPhase.doServerTick (45-61) tests `attackingTicks++ >= 40`, the count before it rises, so the flame begins at the roar's 41st tick; the code tests the risen count and begins it at the 40th (one tick early; no player would see it)"]
 fn a_roaring_dragon_flames_at_its_forty_first_tick() {
     let mut region = world(SEED, nothing);
     let key = EntityId(962);
@@ -1478,7 +1475,6 @@ fn a_dragon_taking_off_holds_its_pattern_once_ten_from_the_podium() {
 /// rises once on the first tick and twice on each after (`timeSinceCharge++ >= 10`, then
 /// the nearness's rise), so the holding pattern comes at its seventh tick.
 #[test]
-#[ignore = "finding: DragonChargePlayerPhase.doServerTick (31-49) tests `timeSinceCharge++ >= 10`, the count before it rises, so a charge whose target is near ends at its 7th tick; the code tests the risen count and ends it at the 6th (one tick early; no player would see it)"]
 fn a_charge_at_a_near_point_ends_in_the_holding_pattern_at_its_seventh_tick() {
     let mut region = world(SEED, nothing);
     let key = EntityId(966);

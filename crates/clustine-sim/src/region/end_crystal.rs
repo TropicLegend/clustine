@@ -247,7 +247,7 @@ impl Region {
         &mut self,
         crystal: &Entity,
         cause: Option<CrystalCause>,
-        _output: &mut TickOutput,
+        output: &mut TickOutput,
     ) {
         if self.config.dimension != Dimension::End {
             return;
@@ -259,7 +259,8 @@ impl Region {
                 cause,
             });
         });
-        let _ = (crystal, cause);
+        let player = cause.and_then(|cause| Some((cause.key?, cause.player?)));
+        self.fight_crystal_destroyed(crystal, player, output);
     }
 
     /// `EnderDragonFight.tryRespawn()`, which `EndCrystalItem.useOn` asks for after it

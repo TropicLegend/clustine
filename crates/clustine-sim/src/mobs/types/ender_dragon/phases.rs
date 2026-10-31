@@ -238,8 +238,11 @@ impl Step<'_, '_> {
             SITTING_FLAMING => self.flaming_tick(),
             SITTING_SCANNING => self.scanning_tick(),
             SITTING_ATTACKING => {
+                // `attackingTicks++ >= 40`: the count before it rises
+                // (DragonSittingAttackingPhase.txt 45–61).
+                let before = self.own.phases.attacking;
                 self.own.phases.attacking += 1;
-                if self.own.phases.attacking >= 40 {
+                if before >= 40 {
                     self.set_phase(SITTING_FLAMING);
                 }
             }
@@ -767,9 +770,12 @@ impl Step<'_, '_> {
             self.set_phase(HOLDING_PATTERN);
             return;
         };
+        // `timeSinceCharge > 0 && timeSinceCharge++ >= 10`: the count before it rises
+        // (DragonChargePlayerPhase.txt 31–49).
         if self.own.phases.charge.time > 0 {
+            let before = self.own.phases.charge.time;
             self.own.phases.charge.time += 1;
-            if self.own.phases.charge.time >= 10 {
+            if before >= 10 {
                 self.set_phase(HOLDING_PATTERN);
                 return;
             }

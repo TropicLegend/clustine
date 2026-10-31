@@ -479,6 +479,27 @@ impl Region {
         count
     }
 
+    /// `EnderDragonFight.onCrystalDestroyed` (1365–1402) of a crystal that was not a
+    /// respawn's (the respawn by crystals is not built): the crystals counted again at
+    /// once, and the fight's dragon told (`EnderDragon.onCrystalDestroyed`: 10 to its
+    /// head where it was its nearest crystal), with the player who destroyed it.
+    pub(super) fn fight_crystal_destroyed(
+        &mut self,
+        crystal: &Entity,
+        player: Option<(EntityId, Uuid)>,
+        output: &mut TickOutput,
+    ) {
+        if !self.is_home_of(Dimension::End) {
+            return;
+        }
+        self.fight_memory.crystals_alive = self.count_crystals();
+        let Some(dragon) = self.dragon_fight.as_ref().and_then(|fight| fight.dragon) else {
+            return;
+        };
+        let pos = crate::physics::containing(crystal.position);
+        self.dragon_crystal_destroyed(dragon, crystal.key, pos, player, output);
+    }
+
     /// What the dragon `key` reads of its fight: none outside the End's home, or for a
     /// dragon that is not the fight's own.
     pub(crate) fn fight_view(&self, key: EntityId) -> Option<FightView> {

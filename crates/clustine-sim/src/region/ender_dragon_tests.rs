@@ -417,7 +417,8 @@ fn the_landing_sits_to_scan_which_takes_off_after_100_ticks_with_only_creative_p
         idle(&mut region);
         ticks += 1;
     }
-    assert_eq!(ticks, 40);
+    // `attackingTicks++ >= 40` compares the count before it rises: the roar lasts 41.
+    assert_eq!(ticks, 41);
     let state = own(&region, other);
     assert_eq!(state.phase, phases::SITTING_FLAMING);
     assert_eq!(state.phases.flaming.count, 1);

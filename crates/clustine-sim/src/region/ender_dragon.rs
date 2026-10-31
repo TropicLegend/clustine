@@ -242,13 +242,6 @@ impl Region {
     /// (`DragonHoldingPatternPhase.onCrystalDestroyed`) is not made, as no creative player
     /// can be attacked (`canAttack`), and the nearest player within 64 of the crystal
     /// that it asks for where no player destroyed it is never one for the same reason.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the fight's step calls it from `onCrystalDestroyed`, the lead's"
-        )
-    )]
     pub(crate) fn dragon_crystal_destroyed(
         &mut self,
         dragon: EntityId,
