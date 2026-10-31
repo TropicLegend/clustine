@@ -839,6 +839,8 @@ fn applied_is_noted_for_edges_the_region_knows() {
 fn nothing_through_an_unknown_edge_is_taken_on() {
     let mut region = populated();
     let transfer = PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -1235,7 +1237,11 @@ impl Seen {
                     ..
                 } => self.not_mine += 1,
                 Durable::Ended { .. } => self.ended += 1,
-                Durable::Absorbed { .. } | Durable::SplitOff { .. } | Durable::Placed { .. } => {
+                Durable::Absorbed { .. }
+                | Durable::SplitOff { .. }
+                | Durable::Placed { .. }
+                | Durable::Died { .. }
+                | Durable::WonGame { .. } => {
                     panic!("a region made {entry:?}, which no tick does")
                 }
             }

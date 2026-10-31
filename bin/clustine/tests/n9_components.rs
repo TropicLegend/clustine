@@ -235,6 +235,8 @@ fn place() -> LoggedPlace {
         std::array::from_fn(|_| None);
     ender[26] = Some(with_every_component(items::CROSSBOW));
     LoggedPlace {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,

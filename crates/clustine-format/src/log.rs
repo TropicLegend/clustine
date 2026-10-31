@@ -295,6 +295,10 @@ pub struct LoggedPlace {
     pub travel: Option<Travel>,
     pub seen_credits: bool,
     pub portal_cooldown: u32,
+    /// Their health, and whether they are dead and shown the respawn screen
+    /// (`docs/groundwork/p-plan.md`, sections 19.5 and 19.6).
+    pub health: f32,
+    pub dead: bool,
 }
 
 impl PartialEq for LoggedPlace {
@@ -322,6 +326,8 @@ impl PartialEq for LoggedPlace {
             && self.travel == other.travel
             && self.seen_credits == other.seen_credits
             && self.portal_cooldown == other.portal_cooldown
+            && self.health.to_bits() == other.health.to_bits()
+            && self.dead == other.dead
     }
 }
 
@@ -1302,6 +1308,8 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     out.push(u8::from(place.seen_credits));
     out.extend_from_slice(&place.portal_cooldown.to_be_bytes());
     crate::travel::put_optional_travel(out, place.travel.as_ref());
+    out.extend_from_slice(&place.health.to_be_bytes());
+    out.push(u8::from(place.dead));
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1348,11 +1356,15 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
     let seen_credits = take_bool(input, "a place's seen credits flag")?;
     let portal_cooldown = input.u32()?;
     let travel = crate::travel::take_optional_travel(input)?;
+    let health = input.f32()?;
+    let dead = take_bool(input, "a place's dead flag")?;
     Ok(LoggedPlace {
         dimension,
         seen_credits,
         portal_cooldown,
         travel,
+        health,
+        dead,
         position,
         yaw,
         pitch,
@@ -3008,6 +3020,8 @@ mod tests {
         let mut ender = [const { None }; ENDER_SLOTS];
         ender[0] = Some(ItemStack::new(6, 1));
         LoggedPlace {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,
@@ -3325,6 +3339,9 @@ mod tests {
         payload.push(0);
         payload.extend_from_slice(&[0; 4]);
         payload.push(0);
+        // Full health, 20, and not dead.
+        payload.extend_from_slice(&20.0_f32.to_be_bytes());
+        payload.push(0);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3473,12 +3490,13 @@ mod tests {
     /// Records of format 13, written before stacks had components, of 14, before
     /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
     /// kept claims, of 17, before they kept raids, of 18, before places named their
-    /// dimension, and of 19, before the records written forward named theirs, are
-    /// refused as any record of another format is.
+    /// dimension, of 19, before the records written forward named theirs, and of 20,
+    /// before a place carried the player's health, are refused as any record of another
+    /// format is.
     #[test]
-    fn records_of_formats_13_to_19_are_refused() {
-        assert_eq!(FORMAT_VERSION, 20);
-        for earlier in [13, 14, 15, 16, 17, 18, 19] {
+    fn records_of_formats_13_to_20_are_refused() {
+        assert_eq!(FORMAT_VERSION, 21);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3588,7 +3606,7 @@ mod tests {
         (
             dimensions(),
             any::<(i32, i32, i32)>(),
-            0..6u8,
+            0..7u8,
             any::<[f64; 3]>(),
             any::<(i32, i32, i32)>(),
             any::<bool>(),
@@ -3605,7 +3623,8 @@ mod tests {
                         from: BlockPos::new(fx, fy, fz),
                         exact,
                     },
-                    _ => Way::Credits,
+                    5 => Way::Credits,
+                    _ => Way::Respawn,
                 };
                 Travel {
                     to,
@@ -3644,6 +3663,7 @@ mod tests {
                 proptest::option::of(travels()),
                 any::<(bool, u32)>(),
                 proptest::option::of((any::<[i32; 3]>(), any::<(f32, f32)>(), dimensions())),
+                any::<(f32, bool)>(),
             ),
         )
             .prop_map(
@@ -3654,13 +3674,15 @@ mod tests {
                     inventory,
                     ender,
                     experience,
-                    (dimension, travel, (seen_credits, portal_cooldown), respawn),
+                    (dimension, travel, (seen_credits, portal_cooldown), respawn, (health, dead)),
                 )| {
                     LoggedPlace {
                         dimension,
                         travel,
                         seen_credits,
                         portal_cooldown,
+                        health,
+                        dead,
                         respawn: respawn
                             .map(|(pos, (yaw, pitch), dimension)| (pos, yaw, pitch, dimension)),
                         position,

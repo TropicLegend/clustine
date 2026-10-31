@@ -116,6 +116,12 @@ pub struct Place {
     pub seen_credits: bool,
     /// Their portal cooldown (`PortalCooldown`), which the game saves with them.
     pub portal_cooldown: u32,
+    /// Their health, which only the void takes yet (`docs/groundwork/p-plan.md`,
+    /// sections 19.5 and 19.6).
+    pub health: f32,
+    /// Whether they are dead, shown the respawn screen, and are to enter through the
+    /// respawn.
+    pub dead: bool,
 }
 
 /// A player asleep in a bed: its head, and the game time of their region they lay down
@@ -465,6 +471,9 @@ pub struct PlayerTransfer {
     /// Where a portal sends them, until a region has placed them.
     pub travel: Option<Travel>,
     pub seen_credits: bool,
+    /// Their health and whether they are dead, which go with them (the plan, 19.5).
+    pub health: f32,
+    pub dead: bool,
     /// Their portal clock and cooldown, which the next region counts on from.
     pub portal: PortalState,
     /// The vehicle they go through a portal on, with all its passengers, root first
@@ -860,6 +869,10 @@ pub enum PlayerInput {
     /// [`PlayerEvent::NoMenu`] (section 7 item 7). An input, so that the region stays a
     /// function of its inputs.
     MenuResync,
+    /// The player asked to respawn from the respawn screen or after the credits
+    /// (`ServerboundClientCommandPacket`'s `PERFORM_RESPAWN`;
+    /// `docs/groundwork/p-plan.md`, sections 5.3 and 19.2).
+    PerformRespawn,
     /// The player swung their arm at nothing they hit (`punch`): at air, or at a block
     /// they begin to break. Everyone else near sees the arm swing.
     Punch,
@@ -1157,6 +1170,19 @@ pub enum Durable {
         pose: Pose,
         flying: bool,
     },
+    /// The player died, with `message` the game's death message for them: their edge
+    /// shows them the respawn screen (`PlayerCombatKill`), and the region keeps their
+    /// stay, dead, until they ask to respawn (`docs/groundwork/p-plan.md`, sections
+    /// 19.5 and 19.6). In the outbox before the respawn's [`Durable::Departed`].
+    Died {
+        player: PlayerId,
+        entity: EntityId,
+        message: String,
+    },
+    /// The player went through the End's exit portal without having seen the credits:
+    /// their edge sends `GameEvent(WIN_GAME, 0)`, and the client shows the credits and
+    /// asks to respawn after (the same plan, section 5.3).
+    WonGame { player: PlayerId, entity: EntityId },
 }
 
 /// What a [`Durable::NotMine`] sends on its way again.
@@ -1539,6 +1565,9 @@ pub enum PlayerEvent {
         pose: Pose,
         flying: bool,
     },
+    /// The player's health changed (`ClientboundSetHealthPacket`, with the food and
+    /// saturation a creative player keeps full).
+    Health { health: f32 },
     /// The region changed a slot of the player's inventory of its own accord, as the
     /// game's server does where the client does not foresee it (the swap of the hands),
     /// and the client is to be told what it holds now. `slot` is numbered as

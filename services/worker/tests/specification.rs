@@ -983,6 +983,7 @@ impl Witness {
                 PlayerEvent::InventorySlot { .. }
                 | PlayerEvent::BlockShown { .. }
                 | PlayerEvent::HeldSlot { .. }
+                | PlayerEvent::Health { .. }
                 | PlayerEvent::Experience(_)
                 | PlayerEvent::Message { .. }
                 | PlayerEvent::Teleported { .. }
@@ -5393,6 +5394,8 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,

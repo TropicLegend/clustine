@@ -17,7 +17,8 @@ use crate::api::{
 };
 use crate::placement::{self, Click, Clicked, ItemUse};
 use crate::state::{
-    EdgeDelta, EdgeState, EnteringState, PlayerRiding, PlayerState, RegionState, StateDelta,
+    EdgeDelta, EdgeState, EnteringState, PLAYER_MAX_HEALTH, PlayerRiding, PlayerState, RegionState,
+    StateDelta,
 };
 
 mod anchors;
@@ -452,6 +453,9 @@ struct Player {
     travel: Option<clustine_world::Travel>,
     seen_credits: bool,
     in_credits: bool,
+    /// See [`PlayerState::health`] and [`PlayerState::dead`].
+    health: f32,
+    dead: bool,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1442,6 +1446,8 @@ impl Region {
                 entity: transfer.entity_id,
                 hops: transfer.hops,
                 place: Place {
+                    health: transfer.health,
+                    dead: transfer.dead,
                     dimension: transfer.dimension,
                     travel: transfer.travel,
                     seen_credits: transfer.seen_credits,
@@ -2047,6 +2053,8 @@ impl Region {
             travel: transfer.travel,
             seen_credits: transfer.seen_credits,
             in_credits: false,
+            health: transfer.health,
+            dead: transfer.dead,
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2128,13 +2136,20 @@ impl Region {
                 )
             })
             .unwrap_or_default();
-        // What the game saves with them: whether they saw the credits, and their portal
-        // cooldown.
+        // What the game saves with them: whether they saw the credits, their portal
+        // cooldown, their health and whether they are dead; a new player's health is
+        // full.
         let (seen_credits, portal_cooldown) = answer
             .place
             .as_ref()
             .map(|place| (place.seen_credits, place.portal_cooldown))
             .unwrap_or_default();
+        let (health, dead) = answer
+            .place
+            .as_ref()
+            .map_or((PLAYER_MAX_HEALTH, false), |place| {
+                (place.health, place.dead)
+            });
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
         // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). They wait at
@@ -2170,6 +2185,8 @@ impl Region {
                     // arrival and their departure are in this tick's commit, and meet
                     // in its holder in either order, as a crossing's do (N5).
                     let transfer = PlayerTransfer {
+                        health,
+                        dead,
                         sleeping: None,
                         respawn: None,
                         entity_id,
@@ -2264,6 +2281,8 @@ impl Region {
             travel: kept.and_then(|(place, below)| place.travel.filter(|_| !below)),
             seen_credits,
             in_credits: false,
+            health,
+            dead,
         };
         self.enter(id, player, attempt, output);
     }
@@ -2727,6 +2746,10 @@ impl Region {
             PlayerInput::LeaveBed => self.stop_sleep(id, false, true, output),
             PlayerInput::RidingJump { power } => self.riding_jump(id, *power, output),
             PlayerInput::MenuResync => self.menu_resync(id, output),
+            // The respawn after a death or the credits: P10c and P10d's
+            // (`docs/groundwork/p-plan.md`, section 19.2); a player who is neither
+            // dead nor in the credits asks for nothing.
+            PlayerInput::PerformRespawn => {}
             // `handlePunch`: the main hand swings with the attack animation of what it
             // holds, for everyone tracking the player.
             PlayerInput::Punch => {
@@ -3944,6 +3967,8 @@ impl Player {
     /// The player as of the end of a tick.
     fn to_state(&self) -> PlayerState {
         PlayerState {
+            health: self.health,
+            dead: self.dead,
             entity_id: self.entity_id,
             name: self.name.clone(),
             pose: self.pose,
@@ -4010,6 +4035,8 @@ impl Player {
             travel: state.travel,
             seen_credits: state.seen_credits,
             in_credits: state.in_credits,
+            health: state.health,
+            dead: state.dead,
             sleeping: state.sleeping,
             respawn: state.respawn,
             last_level_up: None,
@@ -4054,6 +4081,8 @@ impl Player {
     /// tick `tick`.
     fn place(&self, tick: u64, dimension: clustine_world::Dimension) -> Place {
         Place {
+            health: self.health,
+            dead: self.dead,
             dimension,
             // A player who waits to be placed keeps their travel in what the store keeps
             // (`docs/groundwork/p-plan.md`, section 15.4).
@@ -4080,6 +4109,8 @@ impl Player {
         let effects = crate::mobs::body::effects::instances(&self.effects, tick + 1);
         let time_since_rest = self.time_since_rest(tick + 1);
         PlayerTransfer {
+            health: self.health,
+            dead: self.dead,
             entity_id: self.entity_id,
             name: self.name,
             pose: self.pose,
@@ -6468,6 +6499,8 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,
@@ -7058,6 +7091,8 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        health: 20.0,
+                        dead: false,
                         dimension: Default::default(),
                         travel: None,
                         seen_credits: false,
@@ -7387,6 +7422,8 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,

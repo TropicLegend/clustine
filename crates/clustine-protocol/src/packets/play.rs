@@ -422,8 +422,108 @@ impl Decode for ConfirmTeleportation {
 
 /// Game event ids as used in [`GameEvent`].
 pub mod game_event {
+    /// The bed or anchor of a respawn was gone, and the player respawned at the world
+    /// spawn.
+    pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
+    /// The client shows the End poem and the credits, then asks to respawn.
+    pub const WIN_GAME: u8 = 4;
+    /// The client skips the respawn screen (`doImmediateRespawn`); with value 0, it shows
+    /// it.
+    pub const IMMEDIATE_RESPAWN: u8 = 11;
     /// The client may leave the loading screen once the chunk it stands in has arrived.
     pub const START_WAITING_FOR_LEVEL_CHUNKS: u8 = 13;
+}
+
+/// A player's health, food and saturation (`ClientboundSetHealthPacket`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetHealth {
+    pub health: f32,
+    pub food: i32,
+    pub saturation: f32,
+}
+
+impl Packet for SetHealth {
+    const ID: i32 = clientbound::SET_HEALTH;
+}
+
+impl Encode for SetHealth {
+    fn encode(&self, w: &mut Writer) {
+        w.put_f32(self.health);
+        w.put_var_int(self.food);
+        w.put_f32(self.saturation);
+    }
+}
+
+impl Decode for SetHealth {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            health: r.f32()?,
+            food: r.var_int()?,
+            saturation: r.f32()?,
+        })
+    }
+}
+
+/// The player's own death, with its message, which shows the respawn screen
+/// (`ClientboundPlayerCombatKillPacket`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerCombatKill {
+    pub player_id: i32,
+    pub message: Nbt,
+}
+
+impl Packet for PlayerCombatKill {
+    const ID: i32 = clientbound::PLAYER_COMBAT_KILL;
+}
+
+impl Encode for PlayerCombatKill {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.player_id);
+        w.put_nbt(&self.message);
+    }
+}
+
+impl Decode for PlayerCombatKill {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        let player_id = r.var_int()?;
+        let message = r.nbt()?.ok_or(DecodeError::InvalidValue {
+            what: "text component",
+            value: 0,
+        })?;
+        Ok(Self { player_id, message })
+    }
+}
+
+/// What a client asks of the server by `ServerboundClientCommandPacket`: its action.
+pub mod client_command {
+    /// The respawn, from the respawn screen or after the credits.
+    pub const PERFORM_RESPAWN: i32 = 0;
+    /// The statistics.
+    pub const REQUEST_STATS: i32 = 1;
+}
+
+/// A client's command (`ServerboundClientCommandPacket`): one of [`client_command`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientCommand {
+    pub action: i32,
+}
+
+impl Packet for ClientCommand {
+    const ID: i32 = serverbound::CLIENT_COMMAND;
+}
+
+impl Encode for ClientCommand {
+    fn encode(&self, w: &mut Writer) {
+        w.put_var_int(self.action);
+    }
+}
+
+impl Decode for ClientCommand {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            action: r.var_int()?,
+        })
+    }
 }
 
 /// A state change that is not tied to an entity or block.
@@ -3537,6 +3637,7 @@ packet_set! {
         ContainerClick,
         ServerboundContainerClose,
         SelectTrade,
+        ClientCommand,
     }
 }
 
@@ -4342,6 +4443,8 @@ packet_set! {
         Cooldown,
         UpdateMobEffect,
         RemoveMobEffect,
+        SetHealth,
+        PlayerCombatKill,
     }
 }
 
@@ -4942,6 +5045,37 @@ mod tests {
             },
             ClientboundPlay::decode,
             ClientboundPlay::LevelParticles,
+        );
+    }
+
+    #[test]
+    fn health_a_death_and_a_client_s_command_round_trip() {
+        assert_round_trip(
+            SetHealth {
+                health: 12.5,
+                food: 20,
+                saturation: 5.0,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::SetHealth,
+        );
+        assert_round_trip(
+            PlayerCombatKill {
+                player_id: 42,
+                message: Nbt::Compound(vec![(
+                    "translate".to_owned(),
+                    Nbt::String("death.attack.outOfWorld".to_owned()),
+                )]),
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::PlayerCombatKill,
+        );
+        assert_round_trip(
+            ClientCommand {
+                action: client_command::PERFORM_RESPAWN,
+            },
+            ServerboundPlay::decode,
+            ServerboundPlay::ClientCommand,
         );
     }
 

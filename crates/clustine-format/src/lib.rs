@@ -63,8 +63,10 @@ pub use region::{
 /// their time since rest (sections 9.1 and 9.5 of the same plan); 19 since a place, a
 /// respawn, an entity and a commit carry what the Nether and the End need of them
 /// (`docs/groundwork/p-plan.md`, section 15.6); 20 since each region of the table names
-/// its dimension (section 3.3 of the same plan).
-pub const FORMAT_VERSION: u8 = 20;
+/// its dimension (section 3.3 of the same plan); 21 since a place carries the player's
+/// health and death and a travel may be a respawn, with what else the End's contracts
+/// change (section 19.6 of the same plan).
+pub const FORMAT_VERSION: u8 = 21;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

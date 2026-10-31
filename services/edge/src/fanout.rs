@@ -26,14 +26,14 @@ use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
     ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
     Cooldown, DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
-    PlayerAbilities, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, PositionPath,
-    RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk,
+    PlayerAbilities, PlayerCombatKill, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
+    PositionPath, RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk,
     SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
-    SetExperience, SetHeadRotation, SetHeldSlot, SetPassengers, SetPlayerInventory, SetTime, Sound,
-    SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition, SynchronizePlayerPosition,
-    SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes, UpdateMobEffect, abilities, angle,
-    entity_data, game_event, game_mode, inventory as protocol_inventory, level_event, player_info,
-    pose, relative,
+    SetExperience, SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers, SetPlayerInventory,
+    SetTime, Sound, SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition,
+    SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes,
+    UpdateMobEffect, abilities, angle, entity_data, game_event, game_mode,
+    inventory as protocol_inventory, level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -1945,6 +1945,18 @@ impl Fanout {
             } => self.held_slot(player, slot).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event: PlayerEvent::Health { health },
+            } => {
+                // A creative player's food and saturation stay as a new player's.
+                let packet = encoded(&SetHealth {
+                    health,
+                    food: 20,
+                    saturation: 5.0,
+                });
+                self.send_to_player(player, [packet]).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::Message { key, args, overlay },
             } => {
                 let packet = encoded(&SystemChat::translated(&key, &args, overlay));
@@ -2218,6 +2230,24 @@ impl Fanout {
             } => {
                 if self.has_stay(player, entity) {
                     self.placed(player, dimension, pose, flying).await;
+                }
+            }
+            Durable::Died {
+                player,
+                entity,
+                message,
+            } => {
+                if self.has_stay(player, entity) {
+                    self.died(player, entity, &message).await;
+                }
+            }
+            Durable::WonGame { player, entity } => {
+                if self.has_stay(player, entity) {
+                    let packet = encoded(&GameEvent {
+                        event: game_event::WIN_GAME,
+                        value: 0.0,
+                    });
+                    self.send_to_player(player, [packet]).await;
                 }
             }
             Durable::Refused { player, attempt } => {
@@ -3518,6 +3548,30 @@ impl Fanout {
         // Normally the view has followed the move already; this covers a player who was
         // let go without having been seen to move, such as one who joined right there.
         self.move_view(player, chunk).await;
+    }
+
+    /// Shows the player whose stay is `entity` their death: the death message, the game's
+    /// sentence `message` with their name, and the respawn screen it opens
+    /// (`PlayerCombatKill`; `docs/groundwork/p-plan.md`, sections 19.5 and 19.6).
+    async fn died(&mut self, player: PlayerId, entity: EntityId, message: &str) {
+        let Some(view) = self.players.get(&player) else {
+            return;
+        };
+        let name = view.name.clone();
+        let packet = encoded(&PlayerCombatKill {
+            player_id: self.wire.of(entity),
+            message: Nbt::Compound(vec![
+                ("translate".to_owned(), Nbt::String(message.to_owned())),
+                (
+                    "with".to_owned(),
+                    Nbt::List(vec![Nbt::Compound(vec![(
+                        "text".to_owned(),
+                        Nbt::String(name),
+                    )])]),
+                ),
+            ]),
+        });
+        self.send_to_player(player, [packet]).await;
     }
 
     /// The second half of a change of dimension, or a travel within one (a gateway): the
@@ -7812,6 +7866,8 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,
@@ -10808,6 +10864,8 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,

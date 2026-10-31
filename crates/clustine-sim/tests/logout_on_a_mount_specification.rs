@@ -211,6 +211,8 @@ fn join_of(n: u128, attempt: u64) -> PlayerChange {
 /// The place a player stands at `at`, holding nothing.
 fn place_at(at: [f64; 3]) -> Place {
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -701,6 +703,8 @@ fn an_arrival_over_a_seated_stay_takes_no_unit_and_keeps_both_notes() {
 /// Player 1, walking, handed over in the stay `entity` at `at`.
 fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,

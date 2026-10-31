@@ -158,6 +158,8 @@ fn join_in(scene: &mut Scene, dimension: Dimension, n: u128, feet: Vec3) {
             player: player(n),
             entity: entering,
             place: Some(Place {
+                health: 20.0,
+                dead: false,
                 dimension,
                 travel: None,
                 seen_credits: false,

@@ -146,6 +146,8 @@ fn middle(chunk: ChunkPos) -> Vec3 {
 fn place_in(chunk: ChunkPos) -> Place {
     let ground = middle(chunk);
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -209,6 +211,8 @@ fn stays(output: &TickOutput) -> Vec<StayNote> {
 /// Where a player is and what they hold, as a region's state has it.
 fn place_of(state: &PlayerState) -> Place {
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -229,6 +233,8 @@ fn place_of(state: &PlayerState) -> Place {
 /// Where a transfer has a player be and hold.
 fn place_from(transfer: &PlayerTransfer) -> Place {
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -336,6 +342,8 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -652,6 +660,8 @@ fn spawned(place: &Place) -> (PlayerId, PlayerEvent) {
 /// Where a player is who enters the world for the first time.
 fn at_spawn() -> Place {
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -758,6 +768,8 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -809,6 +821,8 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -861,6 +875,8 @@ fn a_place_below_the_world_counts_as_no_place_whoever_holds_it() {
     };
     // With what they held, at the spawn point, looking ahead and not flying.
     let back = Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -1110,6 +1126,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     other.tick = 9;
     other.edges = region.state().edges;
     let theirs = PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,
@@ -1575,6 +1593,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let region = entering();
     let mut state = region.state();
     let earlier = PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,
@@ -1675,6 +1695,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
 #[test]
 fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
     let copy = |hops: u32, edge: EdgeId, position: Vec3| PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,
@@ -1841,6 +1863,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     tick(&mut region, &changes(stays));
     let mut state = region.state();
     let earlier = PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,

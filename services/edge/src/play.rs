@@ -16,8 +16,8 @@ use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::configuration::ClientInformation;
 use clustine_protocol::packets::play::{
     ClientboundKeepAlive, ConfirmTeleportation, Disconnect, LevelChunkWithLight, LightUpdate,
-    PlayerAction, ServerboundPlay, ServerboundUseItem, UseItemOn, face, movement_flags,
-    player_action, player_command, player_input,
+    PlayerAction, ServerboundPlay, ServerboundUseItem, UseItemOn, client_command, face,
+    movement_flags, player_action, player_command, player_input,
 };
 use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove};
 use clustine_world::{BlockPos, PlayerId, Vec3};
@@ -301,6 +301,13 @@ async fn pump(
                     }
                     ServerboundPlay::Punch(_) => {
                         send_input(shared, client, PlayerInput::Punch).await?;
+                    }
+                    // The respawn the player's region waits for after a death or the
+                    // credits; a request for the statistics is not answered.
+                    ServerboundPlay::ClientCommand(command) => {
+                        if command.action == client_command::PERFORM_RESPAWN {
+                            send_input(shared, client, PlayerInput::PerformRespawn).await?;
+                        }
                     }
                     ServerboundPlay::PickItemFromEntity(packet) => {
                         // Answered by the player's own region from the entity as it has

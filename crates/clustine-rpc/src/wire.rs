@@ -733,6 +733,8 @@ mod tests {
         inventory.set(39, Some(ItemStack::new(7, 1)));
         inventory.set(OFF_HAND, Some(ItemStack::new(9, 3)));
         let place = Place {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,
@@ -754,6 +756,8 @@ mod tests {
             raid_omen_position: None,
         };
         let standing = Place {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,

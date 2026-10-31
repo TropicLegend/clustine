@@ -49,6 +49,7 @@ pub(crate) fn put_travel(out: &mut Vec<u8>, travel: &Travel) {
             out.push(u8::from(exact));
         }
         Way::Credits => out.push(5),
+        Way::Respawn => out.push(6),
     }
 }
 
@@ -74,6 +75,7 @@ pub(crate) fn take_travel(input: &mut Input<'_>) -> Result<Travel, FormatError> 
             },
         },
         5 => Way::Credits,
+        6 => Way::Respawn,
         _ => return Err(FormatError::Corrupt("a travel's way")),
     };
     Ok(Travel { to, target, way })

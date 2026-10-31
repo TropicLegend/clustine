@@ -403,6 +403,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        health: 20.0,
+        dead: false,
         portal: Default::default(),
         travel: None,
         seen_credits: false,

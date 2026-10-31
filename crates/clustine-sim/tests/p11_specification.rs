@@ -424,6 +424,8 @@ impl Scene {
                 player: player(n),
                 entity: entering,
                 place: Some(Place {
+                    health: 20.0,
+                    dead: false,
                     dimension: self.options.dimension,
                     travel: None,
                     seen_credits: false,

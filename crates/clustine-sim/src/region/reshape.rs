@@ -576,6 +576,8 @@ mod tests {
         let mut hotbar = [const { None }; HOTBAR_SLOTS];
         hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack::new(1, entity));
         PlayerState {
+            health: 20.0,
+            dead: false,
             portal: Default::default(),
             travel: None,
             seen_credits: false,
@@ -622,6 +624,8 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            health: 20.0,
+            dead: false,
             dimension: Default::default(),
             travel: None,
             seen_credits: false,

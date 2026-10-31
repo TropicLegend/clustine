@@ -968,6 +968,8 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
 
 fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
     PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,

@@ -53,6 +53,9 @@ pub enum Way {
     Gateway { from: BlockPos, exact: bool },
     /// The respawn after the credits (the plan, section 5.3).
     Credits,
+    /// The respawn after a death (the plan, sections 19.2 P10d and 19.5): to the bed,
+    /// the anchor or the world spawn the target names.
+    Respawn,
 }
 
 /// The horizontal axis a Nether portal lies along.

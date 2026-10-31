@@ -145,6 +145,8 @@ pub(super) fn entering_place(
     time_since_rest: u32,
 ) -> Place {
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,

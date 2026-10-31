@@ -234,6 +234,8 @@ fn has_of(id: PlayerId, transfer: &PlayerTransfer) -> StayNote {
 /// dimension, with the travel.
 pub(super) fn waiting_place(transfer: &PlayerTransfer) -> Place {
     Place {
+        health: transfer.health,
+        dead: transfer.dead,
         pose: transfer.pose,
         flying: transfer.flying,
         inventory: transfer.inventory.clone(),

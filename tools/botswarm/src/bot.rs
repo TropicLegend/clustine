@@ -385,6 +385,10 @@ pub struct Bot {
     pub attribute_updates: Vec<clustine_protocol::packets::play::UpdateAttributes>,
     /// The experience the server last told.
     pub experience: Option<clustine_protocol::packets::play::SetExperience>,
+    /// The health the server last told.
+    pub health: Option<clustine_protocol::packets::play::SetHealth>,
+    /// Each death the server told, with its message, in order.
+    pub deaths: Vec<clustine_protocol::packets::play::PlayerCombatKill>,
     /// Every message of the server, in chat or on the action bar, in order.
     pub messages: Vec<clustine_protocol::packets::play::SystemChat>,
     /// Every packet of a menu's window the server sent, in order: openings, a window's
@@ -619,6 +623,8 @@ impl Bot {
             damage_events: Vec::new(),
             attribute_updates: Vec::new(),
             experience: None,
+            health: None,
+            deaths: Vec::new(),
             messages: Vec::new(),
             menu_log: Vec::new(),
             difficulty: None,
@@ -1962,6 +1968,8 @@ impl Bot {
             ClientboundPlay::DamageEvent(packet) => self.damage_events.push(packet),
             ClientboundPlay::UpdateAttributes(packet) => self.attribute_updates.push(packet),
             ClientboundPlay::SetExperience(packet) => self.experience = Some(packet),
+            ClientboundPlay::SetHealth(packet) => self.health = Some(packet),
+            ClientboundPlay::PlayerCombatKill(packet) => self.deaths.push(packet),
             ClientboundPlay::SystemChat(packet) => self.messages.push(packet),
             // The bots use no item that has a cooldown.
             ClientboundPlay::Cooldown(_) => {}

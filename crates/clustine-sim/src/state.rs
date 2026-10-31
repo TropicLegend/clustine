@@ -90,6 +90,9 @@ pub struct EnteringState {
     pub attempt: u64,
 }
 
+/// A player's most health (`Player`'s `MAX_HEALTH` of 20).
+pub const PLAYER_MAX_HEALTH: f32 = 20.0;
+
 /// A player in the region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerState {
@@ -166,6 +169,12 @@ pub struct PlayerState {
     pub seen_credits: bool,
     /// Whether they watch the credits, hidden and still (the plan, section 5.3).
     pub in_credits: bool,
+    /// Their health, which only the void takes yet (the plan, sections 19.5 and 19.6),
+    /// [`PLAYER_MAX_HEALTH`] at most.
+    pub health: f32,
+    /// Whether they are dead and shown the respawn screen, their stay kept until they
+    /// ask to respawn.
+    pub dead: bool,
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,

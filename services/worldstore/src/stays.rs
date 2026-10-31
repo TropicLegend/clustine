@@ -55,6 +55,8 @@ pub(crate) fn place(x: f64, z: f64) -> Place {
     let mut ender = clustine_world::EnderChest::default();
     ender.set(26, Some(ItemStack::new(6, 3)));
     Place {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
@@ -169,6 +171,8 @@ pub(crate) fn on_disk(place: &Place) -> LoggedPlace {
     let ender: [_; clustine_format::ENDER_SLOTS] = (*place.ender.0).clone();
     let experience = place.experience;
     LoggedPlace {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,

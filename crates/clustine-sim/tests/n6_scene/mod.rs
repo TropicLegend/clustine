@@ -366,6 +366,8 @@ impl Scene {
                 player: player(n),
                 entity: entering,
                 place: Some(Place {
+                    health: 20.0,
+                    dead: false,
                     dimension: Default::default(),
                     travel: None,
                     seen_credits: false,

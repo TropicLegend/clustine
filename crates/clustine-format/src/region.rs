@@ -1185,6 +1185,8 @@ mod tests {
                     stay: 258,
                     hops: 4,
                     place: Some(LoggedPlace {
+                        health: 20.0,
+                        dead: false,
                         dimension: Default::default(),
                         travel: None,
                         seen_credits: false,
@@ -1381,6 +1383,9 @@ mod tests {
         body.push(0);
         body.push(0);
         body.extend_from_slice(&[0; 4]);
+        body.push(0);
+        // Full health, 20, and not dead.
+        body.extend_from_slice(&20.0_f32.to_be_bytes());
         body.push(0);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -1725,7 +1730,7 @@ mod tests {
                                 inventory,
                                 ender,
                             )| {
-                                LoggedPlace { dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
+                                LoggedPlace { health: 20.0, dead: false, dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
                                     respawn: None,
                                     experience: (0, 0.0, 0),
                                     position,

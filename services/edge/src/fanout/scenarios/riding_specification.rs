@@ -281,6 +281,8 @@ async fn riding_by_the_line() -> (Harness, Client, Client) {
 /// the east holds in `EASTERN` by then.
 fn riding_transfer() -> PlayerTransfer {
     PlayerTransfer {
+        health: 20.0,
+        dead: false,
         dimension: Default::default(),
         travel: None,
         seen_credits: false,
