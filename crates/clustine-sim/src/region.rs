@@ -55,7 +55,7 @@ mod end_crystal;
 mod end_crystal_item;
 pub(crate) mod end_fight;
 mod end_world;
-mod ender_dragon;
+pub(crate) mod ender_dragon;
 mod entities;
 mod entity_effects;
 mod experience;

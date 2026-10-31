@@ -50,6 +50,7 @@ pub use api::{
 };
 /// What the edge needs to show a cloud's radius and a potion's colour (part S12b).
 pub use region::clouds::{arrow_colour, potion_colour, radius_at as cloud_radius_at};
+pub use region::ender_dragon::is_breath as is_dragon_breath;
 pub use region::{
     Features, Holdings, KeptLight, Knowledge, LightChecks, LightSettings, NoSplit, Part,
     RANDOM_TICK_SPEED, Region, RegionConfig, Sides, Splitting,

@@ -3115,11 +3115,19 @@ pub mod particle {
     pub const INFESTED: i32 = 40;
     pub const ITEM_SLIME: i32 = 62;
     pub const ITEM_COBWEB: i32 = 63;
+    /// The dragon's breath, of its clouds (`PowerParticleOption`).
+    pub const DRAGON_BREATH: i32 = 15;
 
     /// Whether particles of the type `kind` carry a colour: `entity_effect` alone of
     /// those Clustine writes in entity data (`ColorParticleOption`).
     pub fn with_colour(kind: i32) -> bool {
         kind == ENTITY_EFFECT
+    }
+
+    /// Whether particles of the type `kind` carry a power: `dragon_breath` alone of those
+    /// Clustine writes in entity data (`PowerParticleOption`).
+    pub fn with_power(kind: i32) -> bool {
+        kind == DRAGON_BREATH
     }
 }
 
@@ -3771,12 +3779,13 @@ pub mod entity_data_serializer {
 }
 
 /// A particle of [`EntityDataValue::Particles`]: one without options, by its type's id
-/// in the `particle_type` registry, or one with a colour (`ColorParticleOption`, its
-/// ARGB as an int).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// in the `particle_type` registry, one with a colour (`ColorParticleOption`, its ARGB
+/// as an int), or one with a power (`PowerParticleOption`, a float).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EffectParticle {
     Simple(i32),
     Colour { kind: i32, argb: i32 },
+    Power { kind: i32, power: f32 },
 }
 
 /// The most particles Clustine reads in a list: the game sets no bound, and a living
@@ -3921,6 +3930,10 @@ impl Encode for SetEntityData {
                             w.put_var_int(kind);
                             w.put_i32(argb);
                         }
+                        EffectParticle::Power { kind, power } => {
+                            w.put_var_int(kind);
+                            w.put_f32(power);
+                        }
                     });
                 }
                 EntityDataValue::Particle(particle) => {
@@ -3930,6 +3943,10 @@ impl Encode for SetEntityData {
                         EffectParticle::Colour { kind, argb } => {
                             w.put_var_int(kind);
                             w.put_i32(argb);
+                        }
+                        EffectParticle::Power { kind, power } => {
+                            w.put_var_int(kind);
+                            w.put_f32(power);
                         }
                     }
                 }
@@ -4005,6 +4022,11 @@ impl Decode for SetEntityData {
                             kind,
                             argb: r.i32()?,
                         }
+                    } else if particle::with_power(kind) {
+                        EffectParticle::Power {
+                            kind,
+                            power: r.f32()?,
+                        }
                     } else {
                         EffectParticle::Simple(kind)
                     })
@@ -4018,6 +4040,11 @@ impl Decode for SetEntityData {
                             EffectParticle::Colour {
                                 kind,
                                 argb: r.i32()?,
+                            }
+                        } else if particle::with_power(kind) {
+                            EffectParticle::Power {
+                                kind,
+                                power: r.f32()?,
                             }
                         } else {
                             EffectParticle::Simple(kind)
@@ -4625,6 +4652,31 @@ mod tests {
         // Index, serializer, value; then the end of the list (0xFF).
         let bytes = crate::packets::encode(&data);
         assert_eq!(bytes[bytes.len() - 7..], [9, 19, 0, 8, 19, 42, 0xFF]);
+        assert_round_trip(
+            data,
+            ClientboundPlay::decode,
+            ClientboundPlay::SetEntityData,
+        );
+    }
+
+    /// The dragon's breath is a particle with a power (`PowerParticleOption`): its type,
+    /// then its power as a float.
+    #[test]
+    fn a_particle_with_a_power_round_trips_in_entity_data() {
+        let breath = EffectParticle::Power {
+            kind: particle::DRAGON_BREATH,
+            power: 1.0,
+        };
+        let data = SetEntityData {
+            entity_id: 3,
+            values: vec![(10, EntityDataValue::Particle(breath))],
+        };
+        let bytes = crate::packets::encode(&data);
+        let kind = u8::try_from(particle::DRAGON_BREATH).unwrap();
+        assert_eq!(
+            bytes[bytes.len() - 8..],
+            [10, 16, kind, 0x3F, 0x80, 0x00, 0x00, 0xFF]
+        );
         assert_round_trip(
             data,
             ClientboundPlay::decode,

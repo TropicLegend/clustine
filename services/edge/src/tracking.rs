@@ -205,10 +205,19 @@ fn projectile_values(kind: u16, data: &EntityData, age: u32) -> Vec<ProjectileVa
                 ),
                 (
                     at::CLOUD_PARTICLE,
-                    EntityDataValue::Particle(EffectParticle::Colour {
-                        kind: particle::ENTITY_EFFECT,
-                        // `ARGB.opaque`.
-                        argb: colour | (0xFF00_0000_u32 as i32),
+                    // The dragon's breath shows its own (`setCustomParticle` of
+                    // `PowerParticleOption.create(DRAGON_BREATH, 1.0)`).
+                    EntityDataValue::Particle(if clustine_sim::is_dragon_breath(cloud) {
+                        EffectParticle::Power {
+                            kind: particle::DRAGON_BREATH,
+                            power: 1.0,
+                        }
+                    } else {
+                        EffectParticle::Colour {
+                            kind: particle::ENTITY_EFFECT,
+                            // `ARGB.opaque`.
+                            argb: colour | (0xFF00_0000_u32 as i32),
+                        }
                     }),
                     None,
                 ),
