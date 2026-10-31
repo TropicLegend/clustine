@@ -2383,13 +2383,22 @@ pub struct GatewayExitQuery {
     pub from: BlockPos,
 }
 
-/// The store's answer to a [`GatewayExitQuery`]: the block the exit gateway is to stand
-/// at, and whether an island is to be made there first (`end_island`, of the position's
-/// random); none where the store cannot say yet.
+/// The store's answer to a [`GatewayExitQuery`], for the gateway at `from`: where its
+/// exit is, none where the store cannot say (`docs/groundwork/p-plan.md`, section 19.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayExitAnswer {
     pub id: QueryId,
-    pub exit: Option<(BlockPos, bool)>,
+    pub from: BlockPos,
+    pub exit: Option<GatewayExit>,
+}
+
+/// Where a gateway leads (`findOrCreateValidTeleportPos(…).above(10)`): the exit, and
+/// the centre of the island to make about it first where none was found (`end_island`
+/// of that position's random).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayExit {
+    pub exit: BlockPos,
+    pub island: Option<BlockPos>,
 }
 
 /// A question to the store's portal index: the Nether portals within `radius` blocks

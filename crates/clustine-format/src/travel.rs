@@ -43,10 +43,21 @@ pub(crate) fn put_travel(out: &mut Vec<u8>, travel: &Travel) {
             }
         }
         Way::EndPortal => out.push(3),
-        Way::Gateway { from, exact } => {
+        Way::Gateway {
+            from,
+            exact,
+            island,
+        } => {
             out.push(4);
             put_block(out, from);
             out.push(u8::from(exact));
+            match island {
+                None => out.push(0),
+                Some(island) => {
+                    out.push(1);
+                    put_block(out, island);
+                }
+            }
         }
         Way::Credits => out.push(5),
         Way::Respawn => out.push(6),
@@ -72,6 +83,11 @@ pub(crate) fn take_travel(input: &mut Input<'_>) -> Result<Travel, FormatError> 
                 0 => false,
                 1 => true,
                 _ => return Err(FormatError::Corrupt("a gateway's exact flag")),
+            },
+            island: match input.u8()? {
+                0 => None,
+                1 => Some(take_block(input)?),
+                _ => return Err(FormatError::Corrupt("a gateway's island flag")),
             },
         },
         5 => Way::Credits,

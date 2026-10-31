@@ -1431,6 +1431,7 @@ impl Lanes {
                     .into_iter()
                     .map(|query| clustine_rpc::GatewayExitAnswer {
                         id: query.id,
+                        from: query.from,
                         exit: None,
                     })
                     .collect();

@@ -49,8 +49,15 @@ pub enum Way {
     /// Through the End's portal: into the End, or out of it to the respawn.
     EndPortal,
     /// Through a gateway, within the End: the gateway gone through, and whether its exit
-    /// is exact, which the game writes back to the gateway with the exit.
-    Gateway { from: BlockPos, exact: bool },
+    /// is exact, which the game writes back to the gateway with the exit. A traveller
+    /// with no entities that the source files with the exit's write carries `island`,
+    /// the centre of the island to make there where one is wanted, and its holder makes
+    /// the island and the return gateway (`docs/groundwork/p-plan.md`, section 19.8).
+    Gateway {
+        from: BlockPos,
+        exact: bool,
+        island: Option<BlockPos>,
+    },
     /// The respawn after the credits (the plan, section 5.3).
     Credits,
     /// The respawn after a death (the plan, sections 19.2 P10d and 19.5): to the bed,

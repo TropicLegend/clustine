@@ -3490,13 +3490,13 @@ mod tests {
     /// Records of format 13, written before stacks had components, of 14, before
     /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
     /// kept claims, of 17, before they kept raids, of 18, before places named their
-    /// dimension, of 19, before the records written forward named theirs, and of 20,
-    /// before a place carried the player's health, are refused as any record of another
-    /// format is.
+    /// dimension, of 19, before the records written forward named theirs, of 20,
+    /// before a place carried the player's health, and of 21, before a gateway's travel
+    /// carried its island, are refused as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_20_are_refused() {
-        assert_eq!(FORMAT_VERSION, 21);
-        for earlier in [13, 14, 15, 16, 17, 18, 19, 20] {
+    fn records_of_formats_13_to_21_are_refused() {
+        assert_eq!(FORMAT_VERSION, 22);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3622,6 +3622,8 @@ mod tests {
                     4 => Way::Gateway {
                         from: BlockPos::new(fx, fy, fz),
                         exact,
+                        // Some and none, of what is drawn.
+                        island: (!exact).then(|| BlockPos::new(fz, fy, fx)),
                     },
                     5 => Way::Credits,
                     _ => Way::Respawn,
