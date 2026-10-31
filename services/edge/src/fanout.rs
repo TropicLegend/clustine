@@ -9970,6 +9970,7 @@ mod scenarios {
     mod block_destroyed;
     mod crossing_specification;
     mod dragon;
+    mod end_mobs_specification;
     mod explosions;
     mod hanging;
     mod items;

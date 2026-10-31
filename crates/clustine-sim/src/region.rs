@@ -4402,6 +4402,7 @@ mod tests {
     mod daylight_detector;
     mod diodes;
     mod effects;
+    mod end_mobs_specification;
     mod entities;
     mod entity_effects;
     mod evaporation;
