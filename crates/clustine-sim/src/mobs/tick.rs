@@ -273,6 +273,16 @@ pub(crate) enum Local {
         direction: crate::physics::Vec3,
         explosion_power: u8,
     },
+    /// `new ShulkerBullet(level, the mob, target, axis)` and `addFreshEntity` (a
+    /// shulker's attack, `mobs/types/shulker.rs`): a bullet owned by the mob at `at`, the
+    /// middle of its box, flying at the entity `target`, its first turn away from the axis
+    /// `axis` of the mob's face (0 x, 1 y, 2 z); made by `Region::shoot_shulker_bullet`
+    /// (`region/shulker_bullet.rs`).
+    ShootShulkerBullet {
+        target: EntityId,
+        axis: u8,
+        at: crate::physics::Vec3,
+    },
     /// `setBlockAndUpdate(pos, state)` and `gameEvent(BLOCK_PLACE, pos, Context.of(the
     /// mob, state))` of a block the mob read as air and `state` can stand at (a snow
     /// golem's trail, `region/golems.rs`): set with every update in the region's own

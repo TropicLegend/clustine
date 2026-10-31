@@ -381,6 +381,9 @@ impl Region {
                     direction,
                     explosion_power,
                 } => self.shoot_fireball(key, kind, at, direction, explosion_power, output),
+                Local::ShootShulkerBullet { target, axis, at } => {
+                    self.shoot_shulker_bullet(key, target, axis, at, output);
+                }
                 Local::PlaceBlock { pos, state } => self.mob_places_block(key, pos, state, output),
                 Local::GiveFlower { key: given } => self.give_golem_flower(given, output),
                 Local::Fangs { at, yaw, warmup } => {

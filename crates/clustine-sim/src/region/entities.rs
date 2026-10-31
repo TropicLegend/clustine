@@ -324,8 +324,8 @@ impl Region {
             | EntityData::Firework(_)
             | EntityData::Cloud(_)
             | EntityData::Fangs(_)
-            | EntityData::EyeOfEnder(_)
-            | EntityData::ShulkerBullet(_) => {}
+            | EntityData::EyeOfEnder(_) => {}
+            EntityData::ShulkerBullet(_) => self.shulker_bullet_used(&entity, by, output),
         }
         self.using_across = outer;
     }

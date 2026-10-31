@@ -56,6 +56,9 @@ pub enum DataShown {
     /// A block or none (`OPTIONAL_BLOCK_POS`): the bed a villager sleeps in
     /// (`LivingEntity.SLEEPING_POS_ID`).
     OptionalBlockPos(Option<clustine_world::BlockPos>),
+    /// A direction by its 3D value, down 0 to east 5 (`DIRECTION`): the face a shulker
+    /// clings to (`Shulker.DATA_ATTACH_FACE_ID`).
+    Direction(u8),
 }
 
 /// A particle of a [`DataShown::Particles`] list: `entity_effect` with a colour, or a

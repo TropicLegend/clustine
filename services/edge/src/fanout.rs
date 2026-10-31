@@ -7210,8 +7210,8 @@ fn attribute_snapshot(shown: AttributeShown) -> AttributeSnapshot {
 }
 
 /// The owner of a projectile `state` shows, if it has one: a thrown item's, an arrow's
-/// or a trident's, the llama's spit's or a rocket's (each a `Projectile`, whose add
-/// packet carries its owner). A cloud and the fangs are not projectiles.
+/// or a trident's, the llama's spit's, a rocket's, a fireball's or a shulker's bullet's
+/// (each a `Projectile`, whose add packet carries its owner). A cloud and the fangs are not projectiles.
 fn owner_of(state: &EntityState) -> Option<EntityId> {
     match &state.kind {
         EntityKind::Other { data, .. } => match data {
@@ -7220,6 +7220,7 @@ fn owner_of(state: &EntityState) -> Option<EntityId> {
             EntityData::Spit(spit) => spit.owner,
             EntityData::Firework(rocket) => rocket.owner,
             EntityData::Fireball(fireball) => fireball.owner.map(|owner| owner.key),
+            EntityData::ShulkerBullet(bullet) => bullet.owner.map(|owner| owner.key),
             _ => None,
         },
         _ => None,
@@ -7272,7 +7273,8 @@ fn spawn_packets(
             | EntityData::Arrow(_)
             | EntityData::Spit(_)
             | EntityData::Firework(_)
-            | EntityData::Fireball(_) => owner,
+            | EntityData::Fireball(_)
+            | EntityData::ShulkerBullet(_) => owner,
             // An end crystal's is nothing (`new ClientboundAddEntityPacket(this, entity)`
             // of `Entity.getAddEntityPacket`); its beam and base come in its data.
             EntityData::EndCrystal(_) => 0,
@@ -23231,5 +23233,103 @@ mod scenarios {
             );
         }
         assert_eq!(owner_of(&state), None);
+    }
+
+    /// A shulker's bullet is a projectile: its spawn carries its owner's wire id
+    /// (`Projectile.getAddEntityPacket`) and its motion, and it has no data of its own
+    /// (`ShulkerBullet.defineSynchedData` defines none), so nothing follows.
+    #[test]
+    fn a_shulker_s_bullet_is_spawned_with_its_owner_and_nothing_after() {
+        let data = EntityData::ShulkerBullet(Box::new(clustine_world::ShulkerBullet {
+            owner: Some(clustine_world::projectiles::ProjectileOwner {
+                key: EntityId(3),
+                kind: entity_types::SHULKER as u16,
+                player: None,
+            }),
+            target: Some(EntityId(5)),
+            steps: 20,
+            direction: Some(3),
+            target_delta: [
+                clustine_world::Double(0.0),
+                clustine_world::Double(0.0),
+                clustine_world::Double(0.15),
+            ],
+        }));
+        let motion = [0.0, 0.0, 0.03];
+        let kind = entity_types::SHULKER_BULLET as u16;
+        let state = EntityState {
+            entity: EntityId(9),
+            kind: EntityKind::Other {
+                kind,
+                uuid: Uuid::from_u128(9),
+                motion,
+                hops: 0,
+                lived: 1,
+                data: data.clone(),
+                riding: Default::default(),
+            },
+            pose: Pose {
+                position: Vec3::new(0.5, -59.0, 0.5),
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+        };
+        let seen = Seen {
+            kind,
+            position: [0.5, -59.0, 0.5],
+            motion,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let pairing =
+            Tracker::new(seen, &data, 0, &mut |key| i32::try_from(key.0).unwrap()).pairing();
+        let packets: Vec<ClientboundPlay> =
+            spawn_packets(&state, 4, Some(&pairing), 7, &mut |key| {
+                i32::try_from(key.0).unwrap()
+            })
+            .iter()
+            .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
+            .collect();
+        let [ClientboundPlay::SpawnEntity(spawn)] = &packets[..] else {
+            panic!("{packets:?}");
+        };
+        assert_eq!(spawn.kind, entity_types::SHULKER_BULLET);
+        assert_eq!(spawn.data, 7);
+        for (sent, made) in spawn.velocity.iter().zip(motion) {
+            assert!((sent - made).abs() < 1.0e-3, "{:?}", spawn.velocity);
+        }
+        assert_eq!(owner_of(&state), Some(EntityId(3)));
+    }
+
+    /// A shulker shows the face it clings to as a direction (`DATA_ATTACH_FACE_ID`, 16),
+    /// its peek (17) and its colour (18) as bytes, each paired only where it is not the
+    /// default (down, 0 and 16).
+    #[test]
+    fn a_shulker_shows_its_face_as_a_direction_and_its_peek_and_colour_as_bytes() {
+        let mut ids = |key: EntityId| i32::try_from(key.0).unwrap();
+        let kind = entity_types::SHULKER as u16;
+        let values = crate::tracking::living_values(
+            kind,
+            &EntityData::Mob {
+                body: Vec::new(),
+                mind: Vec::new(),
+                state: Default::default(),
+            },
+            &mut ids,
+        );
+        let own: Vec<_> = values
+            .into_iter()
+            .filter(|(index, _, _)| (16..=18).contains(index))
+            .collect();
+        assert_eq!(
+            own,
+            [
+                (16, EntityDataValue::Direction(0), true),
+                (17, EntityDataValue::Byte(0), true),
+                (18, EntityDataValue::Byte(16), true),
+            ]
+        );
     }
 }

@@ -598,6 +598,7 @@ pub(crate) fn data_value(value: DataShown, ids: WireIds<'_>) -> Option<EntityDat
                 z: pos.z,
             }))
         }
+        DataShown::Direction(face) => EntityDataValue::Direction(i32::from(face)),
         // The guardian's beam: its target's wire id, 0 for none (`Guardian.DATA_ID_ATTACK_TARGET`).
         DataShown::Entity(key) => EntityDataValue::Int(key.map_or(0, ids)),
     })

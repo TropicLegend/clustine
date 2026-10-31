@@ -51,6 +51,9 @@ impl Region {
         if let Some(bounds) = self.attached_box(entity) {
             return bounds;
         }
+        if let Some(bounds) = crate::mobs::types::shulker::bounds_of(entity) {
+            return bounds;
+        }
         if let Some((width, height)) = super::stands::own_size(entity) {
             return Aabb::of_entity(entity.position, width, height);
         }

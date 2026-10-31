@@ -112,13 +112,19 @@ pub(crate) fn of(kind: u16) -> Family {
 /// `Monster.getSoundSource()`'s `HOSTILE` for a monster's own sounds; `NEUTRAL`, `Mob`'s,
 /// for every other mob's.
 pub(crate) fn sound_source(kind: u16) -> i32 {
-    // The cubes', the phantom's, the ghast's and the hoglin's own `getSoundSource()` is
-    // hostile too.
+    // The cubes', the phantom's, the ghast's, the hoglin's and the shulker's own
+    // `getSoundSource()` is hostile too.
     match (of(kind), i32::from(kind)) {
         (Family::Monster, _)
-        | (_, types::SLIME | types::PHANTOM | types::MAGMA_CUBE | types::GHAST | types::HOGLIN) => {
-            SOUND_SOURCE_HOSTILE
-        }
+        | (
+            _,
+            types::SLIME
+            | types::PHANTOM
+            | types::MAGMA_CUBE
+            | types::GHAST
+            | types::HOGLIN
+            | types::SHULKER,
+        ) => SOUND_SOURCE_HOSTILE,
         _ => crate::physics::item::SOUND_SOURCE_NEUTRAL,
     }
 }

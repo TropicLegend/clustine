@@ -444,9 +444,9 @@ fn a_spawn_egg_of_a_type_not_built_yet_makes_nothing() {
     // The plan's named difference of the first half (`docs/groundwork/n7-plan.md`,
     // section 11.6): a mob of a type without its AI would stand like a statue.
     let mut region = on_ticking_floor_with(&[(BlockPos::new(3, -60, 0), blocks::WATER)]);
-    holding(&mut region, ItemStack::new(items::SHULKER_SPAWN_EGG, 1));
+    holding(&mut region, ItemStack::new(items::BREEZE_SPAWN_EGG, 1));
     checked(&mut region, &moves(vec![place(1, 1, -61, 1, Face::Top)]));
-    assert!(mobs_of(&region, entity_types::SHULKER).is_empty());
+    assert!(mobs_of(&region, entity_types::BREEZE).is_empty());
 }
 
 #[test]
