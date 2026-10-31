@@ -31,10 +31,10 @@ pub mod values;
 pub use run::{decorate, decorate_with};
 
 /// How many of the plan's steps that build kinds of features are in (section 3: F1b,
-/// F2, F3, F4, F5 and the overworld's last in F6), raised by each. It is part of the
-/// identity of what the features' stages make, so that a world made with fewer is
-/// refused rather than continued with more.
-pub const GENERATION: u16 = 5;
+/// F2, F3, F4, F5 and the overworld's last in F6, and 6 for the End's in P10a), raised
+/// by each. It is part of the identity of what the features' stages make, so that a
+/// world made with fewer is refused rather than continued with more.
+pub const GENERATION: u16 = 6;
 /// Raised whenever the blocks the structures' placers make change: part of the
 /// generator's identity where they are placed. 1 since servers place them (S3,
 /// 2026-10-26).
