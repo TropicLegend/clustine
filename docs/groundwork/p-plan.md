@@ -1579,3 +1579,43 @@ builds instead:
     other players' chat is left out (there is no chat), named; the strongholds in `meta`
     and `Way::Respawn` change the format; the flat world has no strongholds, so an eye
     thrown there does nothing, as the game's.
+
+### 19.6 The second reading of 19.5
+
+The reviewer found points 1, 2, 4, 5 and 10 to 15 answered soundly, and 3, 6, 7, 8 and 9
+not yet. What the End builds besides:
+
+- **Order of a death and its respawn:** `Durable::Died` goes into the outbox before the
+  respawn's `Departed`, so that a resumed link replays them in that order.
+- **A home places what it takes:** a region that is its dimension's home and would take
+  an unheld target claims it and places the traveller itself, with no `Departed` to
+  itself (a gateway in an End of one region, whose exit 1024 out is unheld). A gateway's
+  traveller placed by another region moves the client's view to the exit, as a
+  same-level teleport does, and the old view's chunks are not asked of the new region.
+- **The gateway's exit:** the clock of a gateway whose exit is unknown does not fire; its
+  region asks the store `GatewayExit { from }` (not durable, asked again after a
+  take-over, as `PortalQuery` is). The store answers from each chunk's committed form
+  (its stored chunk with its holder's commits replayed, as a copy's base is), places the
+  island in memory where one is needed before it finds the tallest block, and says where
+  the exit is and whether an island is to be made. The source writes the exit into its
+  gateway when the answer comes, and only then fires; that write is what a second
+  traveller finds. **The region that places the first traveller makes the island and the
+  return gateway in its placing commit**, as the platform is made, with
+  `RandomSource.create(pos.asLong())`, and makes nothing where the return gateway stands
+  already; no effect carries them.
+- **Published to regions, told by regions:** the fight's record and the global level
+  events are published to every region (as `take_raid_table` publishes raids), and each
+  region tells its own players. A region sends the bar's `Remove` in the tick its
+  player departs, travels, dies or enters the credits. Each global event has a number;
+  a region tells it to the players it holds and to the stays it holds as waiting or in
+  the credits, once each by the number; one who is in a hand-over at that tick is told
+  by the region that receives them, which reads the same record. The sound is heard at
+  the player's own position in another level, and 32 blocks towards the source in the
+  same level beyond that distance (`ServerLevel` lambda 4653ff).
+- **When the arena is loaded:** while one of the home's own players is within 192 blocks
+  of (0, 128, 0), or any End region reports one in its sighting (a field the sighting
+  gains).
+- **One raise of the formats:** P10-0 raises `FORMAT_VERSION` and `STATE_FORMAT` once for
+  all of it: the strongholds in `meta`, `Way::Respawn`, the kept area's grant, health and
+  death in the stay and the place, the published records, the gateway's exit; no later
+  step raises them again.
