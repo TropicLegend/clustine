@@ -1503,3 +1503,79 @@ The wither (section 14); the dragon's respawn may slip past the milestone if it 
 last; survival's other harms (a player hurt by anything but the void); a creative
 player's drops at death if the dump says the game drops them (then they are dropped
 where they fell, which in the void is nowhere).
+
+### 19.5 The review of section 19 (2026-10-31), and what the End builds instead
+
+An independent reviewer read 19.1 to 19.4 against the code at `68ea5e2` and the dumps.
+They found the End portal's destinations and poses, the credits' order, the void
+reaching creative players, the fight kept in the home's state, the strongholds worked
+out once with `ring_positions`, the eye's draw and level events, and the spikes',
+platform's, podium's and experience's facts right, and fifteen defects. What the End
+builds instead:
+
+1. **Death drops what the player carries** (`ServerPlayer.die` → `dropAllDeathLoot`;
+   `Player.dropEquipment` → `Inventory.dropAll` without `keepInventory`): the inventory
+   and the experience are dropped where the player died (in the void, nowhere), the
+   effects cleared, and the respawn sends the empty inventory and `SetExperience`
+   (brief 3.2). 19.4's hedge is gone.
+2. **The void's hurt is the game's:** 4 each tick it is asked, taken only when the hurt
+   cooldown allows (`LivingEntity.hurtServer`: past 10 of its 20 ticks, and then only
+   what exceeds the last hurt), so five hits about 40 ticks apart in all; not while the
+   player changes dimension or within the 60 ticks after a respawn before the client has
+   loaded (`ServerPlayer.isInvulnerableTo`); each hit broadcasts its `DamageEvent` (the
+   hurt sound and the camera's shake); death broadcasts entity event 3, and the body is
+   removed 20 ticks later with event 60.
+3. **A travel to the region the player is already in is placed there**, with a
+   `Durable::Placed` and no `Departed`, since the edge refuses a hand-over to the same
+   region (`fanout.rs` `hand_over`): a gateway in an End of one region, a respawn at a
+   spawn the dead player's region holds. The edge sends `Respawn` for `Way::Respawn`
+   (keep 0) and `Way::Credits` (keep 1) whatever the dimension; a gateway gets no
+   `Respawn`, no level information and no wait for chunks, only the teleport the client
+   must accept (`DELTA ∪ ROTATION`), the view moved as any teleport moves it.
+4. **Death and the credits are durable:** `Durable::Died { message }` and
+   `Durable::WonGame`, in the outbox like `Placed`, so that a crash or a resumed link does
+   not leave a client alive whom the region holds dead, or a player hidden in the End.
+5. **Health and death go with the stay:** `PlayerTransfer`, `Place` and `LoggedPlace`
+   carry `health` and `dead` (`FORMAT_VERSION` rises). A place below a level's floor, or
+   a dead player's, enters through the respawn's path, not the "no place" rule.
+6. **The arena is a kept area, not a pin:** the store grants the arena's chunks (−8 to 8
+   on both axes) only to the End's home, which claims them when it is made and never
+   returns them, and loads them while the fight's bar has a player. No other region's
+   claim, lend or split takes them; the coordinator never moves them in a split and never
+   merges the home away.
+7. **The fight's bar is published as a raid's is** (`region/raids.rs`): a world record
+   the edges read, shown to each of their players within 192 blocks of (0, 128, 0) in the
+   End, taken away as they leave the range, travel, die or enter the credits. P10-0 makes
+   the bar a general type (colour, overlay, the darken, music and fog flags), which the
+   raid's then uses: the dragon's is pink, `PROGRESS`, with music and fog.
+8. **Global level events go to every player** (1038 a portal opened, 1028 the dragon's
+   death; `ServerLevel.globalLevelEvent`): published as records through the store, each
+   with its number, and shown once by every edge to every player whatever their
+   dimension.
+9. **Gateways' exits are found once:** a store query `GatewayExit { from }`, answered by
+   the store from generated chunks (the emptiness of the 32 chunks along the line, the
+   valid spawn, the tallest block) with the exit and whether an island is to be made.
+   The source region holds the gateway's travellers until the answer, writes the exit to
+   the gateway's block entity in the commit that sends them, and files the island and the
+   return gateway as an effect to the exit's holder in that commit; `Way::Gateway` carries
+   the exit. A second traveller finds the exit known.
+10. **The dragon's parts are in the contract:** `EntityUse::Attack` gains `part:
+    Option<u8>`, the edge maps the run's wire id to the dragon's key and the part, and the
+    region judges the reach by the part's box.
+11. `GameEvent(WIN_GAME)`'s value is always 0: `PlayerEvent::WonGame` has no `seen`.
+12. **The eye after 80 ticks** always plays `ender_eye_death` and is discarded; then it
+    drops its item if it survives, or level event 2003 if not.
+13. **The end crystal:** hurt by any explosion it is removed without exploding; the
+    dragon's hurt is ignored; anything else removes it with an explosion of power 6. Its
+    item needs the block above the obsidian or bedrock empty and no entity in the 1 × 2 × 1
+    box above.
+14. **What targets a player does not target a creative one:** a shulker's bullet levitates
+    only where its hurt is taken, the dragon's strafe and charge and the shulker's attack
+    choose by `forCombat`: none of it reaches a creative player, and the tests expect
+    that; that the dragon stays over the arena today rests on it, named.
+15. **Smaller:** the default spawn sent is the overworld's for every level, as the edge
+    already does; an End arrival is placed without the index, once chunks (6, 0) and
+    (6, −1), over which the platform lies, are loaded and settled; the death message to
+    other players' chat is left out (there is no chat), named; the strongholds in `meta`
+    and `Way::Respawn` change the format; the flat world has no strongholds, so an eye
+    thrown there does nothing, as the game's.
