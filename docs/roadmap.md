@@ -537,31 +537,37 @@ index kept from every commit or makes one; old worlds are refused; **the Nether 
 (portals and travel, its land, its rules and its mobs), **then the End** (its portal,
 platform, gateways, mobs and the dragon's first fight, and the void that kills).
 
-**Where P stands** (2026-10-30, late): pushed are **P1** (the dimensions as one type
-with the game's rules), **P2** (the contracts, `p-plan.md` section 15), **P3** (the
-store by dimension, the homes of the Nether and the End made with the world, the portal
-index kept from every commit), **P4** (merges and splits within one dimension), **P5a**
-and **P6** (the Nether's terrain, features and structures), **P7** (the edge keyed by
-dimension; a change of dimension in two halves, `Respawn` and then the placing), **P8**
-(the portal's blocks and clock) and **P9** (the travel through a Nether portal,
-`p-plan.md` section 16), each with tests from its specification by someone who did not
-write it. Built and committed on the lead's machine, being checked whole before they
-are pushed: **P11** (the rules that differ by dimension, section 17: day and night,
-fast lava, water, ice, beds and respawn anchors, the Nether's sky light, the spawn
-light), **P12** (the Nether's mobs, section 18: the zombified piglin and its spawn from
-portal blocks, the magma cube, the ghast and its fireballs, the blaze, the wither
-skeleton, the strider, the piglin with its bartering and its anger, the piglin brute,
-the hoglin and the zoglin, zombification outside the Nether), and the generation of
-what is made with chunks raised to 4, so a world made before is refused. A comparison
-agent found that a second player coming into the Nether while another was there made
-the edge end the Nether's subscription of a chunk at the same position as an
-overworld chunk nobody saw any more; mended, with a test of two bots one after the
-other. Next: the comparisons of the change of dimension and of the rules by dimension
-with the official server (`dimensions_oracle.rs`), and what they find mended; tests of
-P12 from its specification (being written); comparisons of the Nether's mobs; then
-P10 and the End.
+**Where P stands** (2026-10-31): the Nether's milestone is on `main`: **P1** (the
+dimensions as one type with the game's rules), **P2** (the contracts, `p-plan.md`
+section 15), **P3** (the store by dimension, the homes of the Nether and the End made
+with the world, the portal index kept from every commit), **P4** (merges and splits
+within one dimension), **P5a** and **P6** (the Nether's terrain, features and
+structures), **P7** (the edge keyed by dimension; a change of dimension in two halves,
+`Respawn` and then the placing), **P8** (the portal's blocks and clock), **P9** (the
+travel through a Nether portal, section 16), **P11** (the rules that differ by
+dimension, section 17: day and night, fast lava, water and its smoke, ice, beds and
+respawn anchors, the Nether's sky light, the spawn light) and **P12** (the Nether's
+mobs, section 18: the zombified piglin and its spawn from portal blocks, the magma
+cube, the ghast and its fireballs, the blaze, the wither skeleton, the strider, the
+piglin with its bartering and its anger, the piglin brute, the hoglin and the zoglin,
+zombification outside the Nether), each with tests from its specification by someone
+who did not write it; the generation of what is made with chunks is 4, so a world made
+before is refused. The comparisons with the official server of the change of dimension
+and of the rules by dimension (`dimensions_oracle.rs`, six scenes) pass, after what
+they found was mended: the `Respawn`'s portal cooldown and flatness, the placing's look
+told as a turn, the clocks told before the wait for chunks, and the smoke of water that
+evaporates, which the official server sends and Clustine had read as the client's own.
+What the official server sends in a change of dimension and Clustine sends at no time
+(the permission level and commands, the border, the tick rate, post effects) is named
+in the comparison. The cluster test passes on GitHub again, for the first time since
+2026-10-16: its scenarios were brought up to the split distance of B4d and to the
+homes a world now begins with. Named, found on the way: a sculk sensor does not hear
+what happens across a region line (`region/vibrations.rs`, decision 10 of N6), which
+a world pinned near where players enter shows. Next: comparisons of the Nether's mobs
+with the official server (a ghast's fireball, a blaze's volley, bartering, a strider on
+lava); then P10 and the End.
 
-**What to try with a real client, once P11 and P12 are pushed**: start a new world
+**What to try with a real client** (the Nether, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), build a Nether
 portal of obsidian and light it, and walk in: the Nether's land and a portal back
 should be there, the sky dark and lava fast. Bring a second player through after the
