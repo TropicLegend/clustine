@@ -4410,6 +4410,7 @@ mod tests {
     mod farm;
     mod fliers;
     mod fluids;
+    mod gateways_specification;
     mod golems;
     mod growth;
     mod hanging;

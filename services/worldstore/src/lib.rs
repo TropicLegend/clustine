@@ -64,6 +64,8 @@ mod faces_tests;
 #[cfg(test)]
 mod gateway_answers;
 #[cfg(test)]
+mod gateways_specification;
+#[cfg(test)]
 mod generation_tests;
 #[cfg(test)]
 mod kill;

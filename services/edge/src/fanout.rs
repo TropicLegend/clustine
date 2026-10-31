@@ -9972,6 +9972,7 @@ mod scenarios {
     mod dragon;
     mod end_mobs_specification;
     mod explosions;
+    mod gateways_specification;
     mod hanging;
     mod items;
     mod items_specification;
