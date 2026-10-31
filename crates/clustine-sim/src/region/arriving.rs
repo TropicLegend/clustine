@@ -137,6 +137,14 @@ impl Region {
             };
             let candidate = self.choose(&travel, &answer);
             let mut needed = chunks_about(travel.target);
+            // A gateway's exit to make reads about its island too.
+            if let Way::Gateway {
+                island: Some(island),
+                ..
+            } = travel.way
+            {
+                needed.extend(chunks_about(island));
+            }
             if let Some(candidate) = candidate {
                 needed.extend(chunks_about(candidate));
             }
@@ -368,6 +376,10 @@ impl Region {
     ) -> ([f64; 3], [f64; 3], f32) {
         if travel.way == Way::EndPortal && travel.to == Dimension::End {
             return self.end_arrival(travel.target, player, velocity, output);
+        }
+        // Through a gateway, with the velocity and the look it had (`gateways.rs`).
+        if matches!(travel.way, Way::Gateway { .. }) {
+            return (self.gateway_exit_place(travel), velocity, yaw);
         }
         if travel.way == Way::EndPortal {
             // Out of the End, an entity comes out on the top of the world spawn's column
@@ -606,8 +618,10 @@ impl Region {
             return;
         };
         let Some(root) = self.waiting_travellers[index].traveller.entities.first() else {
+            // A traveller with no entities is a gateway's exit to make (`gateways.rs`).
             self.waiting_travellers.remove(index);
             self.journal.waiting_travellers = true;
+            self.make_gateway_exit(travel, output);
             return;
         };
         let size = self.entity_box(root).size();

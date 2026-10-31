@@ -378,6 +378,11 @@ impl Region {
                 (portal_box(pos, portal::axis_of(state)), PortalKind::Nether)
             } else if is_block(state, blocks::END_PORTAL) {
                 (end_portal_box(pos), PortalKind::End)
+            } else if is_block(state, blocks::END_GATEWAY) && self.gateway_open(pos) {
+                // A gateway takes in only what it can send on (`gateways.rs`).
+                let corner = [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)];
+                let far = [corner[0] + 1.0, corner[1] + 1.0, corner[2] + 1.0];
+                (Aabb::new(corner, far), PortalKind::Gateway)
             } else {
                 return true;
             };
@@ -441,6 +446,10 @@ impl Region {
         if portal != before {
             self.commit_entity(chunk, key, vec![EntityField::Portal(portal)], output);
         }
+        // `EndGatewayBlock.entityInside`: the gateway cools down as it takes one in.
+        if kind == PortalKind::Gateway {
+            self.trigger_gateway_cooldown(entry, output);
+        }
     }
 
     /// The players' portals, in the order of their ids: each one's `handlePortal`, then
@@ -450,6 +459,7 @@ impl Region {
     pub(crate) fn players_portal_tick(&mut self, output: &mut TickOutput) {
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         let mut to_the_credits = Vec::new();
+        let mut gateways_entered = Vec::new();
         for id in ids {
             let Some(player) = self.players.get(&id) else {
                 continue;
@@ -480,6 +490,9 @@ impl Region {
                 Some((_, kind)) if credits(kind) => to_the_credits.push(id),
                 Some((entry, kind)) => {
                     set_as_inside_portal(&mut portal, kind, entry, PLAYER_DIMENSION_CHANGING_DELAY);
+                    if kind == PortalKind::Gateway {
+                        gateways_entered.push(entry);
+                    }
                 }
                 None => {}
             }
@@ -495,6 +508,10 @@ impl Region {
         }
         for id in to_the_credits {
             self.show_end_credits(id, output);
+        }
+        // `EndGatewayBlock.entityInside`: a gateway cools down as it takes one in.
+        for entry in gateways_entered {
+            self.trigger_gateway_cooldown(entry, output);
         }
     }
 

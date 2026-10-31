@@ -232,10 +232,8 @@ impl GatewaySearch {
             ISLAND_Y.floor() as i32,
             (self.point.1 + 0.5).floor() as i32,
         );
-        let mut random = LegacyRandom::from_seed(as_long(origin) as u64);
-        // `EndIslandFeature` sets each block whatever stood there.
-        for (x, y, z) in island_blocks(&mut random) {
-            self.laid.insert(origin.offset(x, y, z), blocks::END_STONE);
+        for (pos, state) in island_writes(origin) {
+            self.laid.insert(pos, state);
         }
         self.island = Some(origin);
         origin
@@ -254,6 +252,18 @@ impl GatewaySearch {
             .get(x, pos.y, z)
             .unwrap_or(blocks::AIR)
     }
+}
+
+/// The blocks of the island a gateway's exit is made on, about `origin`, in the order
+/// `EndIslandFeature` sets them, each whatever stood there: its random is
+/// `RandomSource.create(origin.asLong())`, a `LegacyRandomSource` of the seed. The
+/// search lays them in its reading, and the region that holds the exit sets them.
+pub fn island_writes(origin: BlockPos) -> Vec<(BlockPos, BlockState)> {
+    let mut random = LegacyRandom::from_seed(as_long(origin) as u64);
+    island_blocks(&mut random)
+        .into_iter()
+        .map(|(x, y, z)| (origin.offset(x, y, z), blocks::END_STONE))
+        .collect()
 }
 
 /// `Vec3.normalize` of `(x, 0, z)` (`n7-javap` Vec3, offsets 0-66): divided by its

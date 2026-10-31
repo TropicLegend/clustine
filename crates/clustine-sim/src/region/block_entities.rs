@@ -57,6 +57,9 @@ pub(crate) enum Typed {
     /// `DaylightDetectorBlockEntity`, which keeps nothing but ticks
     /// (`daylight_detector.rs`, N8).
     Detector,
+    /// `TheEndGatewayBlockEntity`'s age and cooldown, in memory; its exit is in the data
+    /// (`gateways.rs`, P10e).
+    Gateway(super::gateways::GatewayClock),
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -104,6 +107,13 @@ impl Typed {
         if is_class(state, BlockClass::DaylightDetectorBlock) {
             return Some(Typed::Detector);
         }
+        if is_class(state, BlockClass::EndGatewayBlock) {
+            let age = super::gateways::read_gateway(data).age;
+            return Some(Typed::Gateway(super::gateways::GatewayClock {
+                age,
+                cooldown: 0,
+            }));
+        }
         None
     }
 
@@ -115,7 +125,8 @@ impl Typed {
             | Typed::ShulkerBox(_)
             | Typed::Hopper(_)
             | Typed::Sensor(_)
-            | Typed::Detector => true,
+            | Typed::Detector
+            | Typed::Gateway(_) => true,
             Typed::Comparator(_) => false,
         }
     }
@@ -125,6 +136,7 @@ pub(super) const TAG_END: u8 = 0;
 pub(super) const TAG_BYTE: u8 = 1;
 pub(super) const TAG_INT: u8 = 3;
 pub(super) const TAG_LONG: u8 = 4;
+pub(super) const TAG_INT_ARRAY: u8 = 11;
 pub(super) const TAG_FLOAT: u8 = 5;
 pub(super) const TAG_DOUBLE: u8 = 6;
 pub(super) const TAG_STRING: u8 = 8;
@@ -667,10 +679,40 @@ impl Region {
                 Some(Typed::Detector) if is_class(state, BlockClass::DaylightDetectorBlock) => {
                     self.daylight_detector_tick(pos, state, output);
                 }
+                Some(Typed::Gateway(_)) if is_class(state, BlockClass::EndGatewayBlock) => {
+                    self.gateway_tick(pos, output);
+                }
                 _ => {}
             }
         }
         self.block_entities.ticking = false;
+    }
+
+    /// The age and cooldown of the gateway at `pos`, if its block entity is there.
+    pub(super) fn gateway_clock(&self, pos: BlockPos) -> Option<super::gateways::GatewayClock> {
+        match self.block_entities.typed.get(&pos) {
+            Some(Typed::Gateway(clock)) => Some(*clock),
+            _ => None,
+        }
+    }
+
+    /// Sets the age and cooldown of the gateway at `pos`, where there is one.
+    pub(super) fn set_gateway_clock(
+        &mut self,
+        pos: BlockPos,
+        clock: super::gateways::GatewayClock,
+    ) {
+        if let Some(Typed::Gateway(kept)) = self.block_entities.typed.get_mut(&pos) {
+            *kept = clock;
+        }
+    }
+
+    /// The gateways of the region's loaded chunks, in the order of their positions.
+    pub(super) fn gateway_positions(&self) -> Vec<BlockPos> {
+        (self.block_entities.typed.iter())
+            .filter(|(_, typed)| matches!(typed, Typed::Gateway(_)))
+            .map(|(pos, _)| *pos)
+            .collect()
     }
 
     /// The bell at `pos`, if its block entity is there, for the tests.
@@ -683,7 +725,8 @@ impl Region {
             | Typed::ShulkerBox(_)
             | Typed::Hopper(_)
             | Typed::Sensor(_)
-            | Typed::Detector => None,
+            | Typed::Detector
+            | Typed::Gateway(_) => None,
         }
     }
 
@@ -700,7 +743,8 @@ impl Region {
                 | Typed::ShulkerBox(_)
                 | Typed::Hopper(_)
                 | Typed::Sensor(_)
-                | Typed::Detector => 0,
+                | Typed::Detector
+                | Typed::Gateway(_) => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {

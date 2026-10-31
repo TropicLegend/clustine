@@ -68,7 +68,15 @@ impl Region {
                 }
                 return;
             }
-            PortalKind::Gateway => return,
+            // Through a gateway, within the End, where it knows its exit
+            // (`gateways.rs`).
+            PortalKind::Gateway => {
+                let known = self.gateway_at(entry).and_then(|gateway| gateway.exit);
+                if self.config.dimension != Dimension::End || known.is_none() {
+                    return;
+                }
+                Dimension::End
+            }
         };
         let Some(home) = self.home_of(to) else {
             // A world without the dimension's home: nowhere to go.
@@ -104,9 +112,19 @@ impl Region {
                 target: self.config.world_spawn,
                 way: Way::EndPortal,
             },
-            PortalKind::Nether | PortalKind::Gateway => {
-                self.nether_travel(to, entry, position, size)
+            PortalKind::Gateway => {
+                let gateway = self.gateway_at(entry).unwrap_or_default();
+                Travel {
+                    to,
+                    target: gateway.exit.unwrap_or(entry),
+                    way: Way::Gateway {
+                        from: entry,
+                        exact: gateway.exact,
+                        island: None,
+                    },
+                }
             }
+            PortalKind::Nether => self.nether_travel(to, entry, position, size),
         }
     }
 
@@ -214,6 +232,13 @@ impl Region {
         // the edge has them in the world, to finish the change with `Placed`
         // (`arriving.rs`), where a join's stay that was never in it keeps it.
         transfer.attempt = None;
+        // A travel into the region's own dimension, of which it is the home (a gateway in
+        // an End of one region), is placed here, with no departure to itself
+        // (`docs/groundwork/p-plan.md`, sections 19.5 item 3 and 19.6).
+        if to == self.config.dimension && self.is_home_of(to) {
+            self.take_waiting_stay(edge, id, &transfer);
+            return;
+        }
         self.travelled.push(((edge, id, transfer, home), face));
     }
 

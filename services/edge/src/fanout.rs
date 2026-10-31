@@ -3577,6 +3577,23 @@ impl Fanout {
             let _ = self.shift_view(player, chunk).await;
             self.flush_asking().await;
         } else if to != from {
+            // A gateway's traveller, within one level: its moves are held until it is
+            // placed, and its look is told then as the turn from the one it left with
+            // (`docs/groundwork/p-plan.md`, section 19.8, the review's sixth point).
+            if let Some(travel) = transfer.travel
+                && matches!(travel.way, clustine_world::Way::Gateway { .. })
+                && let Some(view) = self.players.get_mut(&player)
+            {
+                view.travelling = Some(Travelling {
+                    since: Instant::now(),
+                    way: Some(travel.way),
+                    look: (transfer.pose.yaw, transfer.pose.pitch),
+                });
+                view.awaiting_teleport.store(TRAVELLING, Ordering::Relaxed);
+            }
+            let Some(view) = self.players.get(&player) else {
+                return;
+            };
             let seen: Vec<ChunkPos> = view.wanted.iter().copied().collect();
             for chunk in &seen {
                 self.unwant(from, *chunk);
@@ -3778,7 +3795,11 @@ impl Fanout {
             return;
         }
         let mut packets = Vec::new();
-        if travelling.is_some() {
+        // A gateway changes no level: no level's information and no wait for chunks.
+        let gateway = travelling.as_ref().is_some_and(|travelling| {
+            matches!(travelling.way, Some(clustine_world::Way::Gateway { .. }))
+        });
+        if travelling.is_some() && !gateway {
             // The level's information (`PlayerList.sendLevelInfo`): its clocks, where a
             // compass points, and the wait for its chunks.
             self.tell_time(player, region, true).await;

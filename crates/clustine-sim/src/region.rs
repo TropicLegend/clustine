@@ -69,6 +69,7 @@ mod fireballs;
 mod fireworks;
 mod fluids;
 mod frogspawn;
+mod gateways;
 mod given;
 pub(crate) mod golem_chests;
 mod golem_patterns;
@@ -569,6 +570,9 @@ pub struct Region {
     published_end: end_world::PublishedEnd,
     /// What the region keeps in memory of the dragon fight (`end_fight.rs`).
     fight_memory: end_fight::FightMemory,
+    /// The gateways the region asked the store about in its run (`gateways.rs`): in
+    /// memory only, so that a restore asks again.
+    gateways_asked: BTreeSet<BlockPos>,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -845,6 +849,7 @@ impl Region {
             raid_memory: raids::RaidMemory::default(),
             published_end: end_world::PublishedEnd::default(),
             fight_memory: end_fight::FightMemory::default(),
+            gateways_asked: BTreeSet::new(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
@@ -1343,6 +1348,10 @@ impl Region {
         // The waits of the travellers, which place those that are ready
         // (`arriving.rs`).
         self.tick_waits(&inputs.portal_answers, &mut output);
+        // The End's gateways: the store's answers written, and the gateways without an
+        // exit asked about (`gateways.rs`).
+        self.take_gateway_answers(&inputs.gateway_exits, &mut output);
+        self.ask_gateways(&mut output);
         self.run_block_ticks(&mut output);
         self.run_fluid_ticks(&mut output);
         // The raids, between the fluid ticks and the chunk source (`raids.rs`).
