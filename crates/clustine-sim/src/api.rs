@@ -1662,6 +1662,14 @@ pub enum PlayerEvent {
     /// The player's health changed (`ClientboundSetHealthPacket`, with the food and
     /// saturation a creative player keeps full).
     Health { health: f32 },
+    /// A global level event (`ServerLevel.globalLevelEvent`: an end portal opened, the
+    /// dragon's death), heard at `position`, which the region worked out for the player
+    /// (`end_world.rs`). Sent with the packet's `global` set.
+    GlobalLevelEvent {
+        event: i32,
+        position: BlockPos,
+        data: i32,
+    },
     /// The region changed a slot of the player's inventory of its own accord, as the
     /// game's server does where the client does not foresee it (the swap of the hands),
     /// and the client is to be told what it holds now. `slot` is numbered as

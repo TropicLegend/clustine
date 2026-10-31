@@ -984,6 +984,7 @@ impl Witness {
                 | PlayerEvent::BlockShown { .. }
                 | PlayerEvent::HeldSlot { .. }
                 | PlayerEvent::Health { .. }
+                | PlayerEvent::GlobalLevelEvent { .. }
                 | PlayerEvent::Experience(_)
                 | PlayerEvent::Message { .. }
                 | PlayerEvent::Teleported { .. }

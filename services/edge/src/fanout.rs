@@ -1983,6 +1983,27 @@ impl Fanout {
             } => self.held_slot(player, slot).await,
             WorkerToEdge::ToPlayer {
                 player,
+                event:
+                    PlayerEvent::GlobalLevelEvent {
+                        event,
+                        position,
+                        data,
+                    },
+            } => {
+                let packet = encoded(&LevelEvent {
+                    event,
+                    position: Position {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z,
+                    },
+                    data,
+                    global: true,
+                });
+                self.send_to_player(player, [packet]).await;
+            }
+            WorkerToEdge::ToPlayer {
+                player,
                 event: PlayerEvent::Health { health },
             } => {
                 // A creative player's food and saturation stay as a new player's.

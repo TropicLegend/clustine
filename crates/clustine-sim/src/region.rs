@@ -1518,6 +1518,9 @@ impl Region {
             };
             self.send(edge, departed, &mut output);
         }
+        // The world's sounds after the tick's departures: one who left is told where
+        // they arrive (`end_world.rs`).
+        self.tell_global_events(&mut output);
         self.settle_chunks(&mut output);
         self.show_changed_equipment(&equipment, &mut output);
         // One change of each entity that the tick changed several times, of what it
