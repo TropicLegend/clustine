@@ -42,6 +42,8 @@
 //! same position in two dimensions is two chunks (`docs/groundwork/p-plan.md`,
 //! sections 3.3 and 15.1).
 
+mod gateways;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::mem;
@@ -182,6 +184,8 @@ pub(crate) struct Lanes {
     /// Who copies which chunk (the same record, section 3). Not in the log: a region
     /// asks for its copies again after every hello.
     copies: Copies,
+    /// The gateways' searches under way, by their numbers (`gateways.rs`).
+    gateway_searches: gateways::Searches,
     /// Lockstep between regions (the same record, section 8), kept in
     /// `regions/couplings`.
     couplings: Couplings,
@@ -900,6 +904,7 @@ impl Lanes {
             filed,
             arrivals,
             copies: Copies::default(),
+            gateway_searches: gateways::Searches::default(),
             couplings: Couplings::default(),
             clock: real_clock(),
             lends: Lends::default(),
@@ -1120,9 +1125,17 @@ impl Lanes {
             Message::Copied {
                 session,
                 position,
+                chunk,
+                search: Some(search),
+                ..
+            } => self.gateway_search_fed(search, session, position, chunk),
+            Message::Copied {
+                session,
+                position,
                 sequence,
                 last_change,
                 chunk,
+                search: None,
             } => {
                 // On the stream as of now, with who uses the chunk now: what the store
                 // put on it since the base's group is before it, and the runner applies
@@ -1427,15 +1440,26 @@ impl Lanes {
             // leads is P10e's search (`docs/groundwork/p-plan.md`, sections 19.5 and
             // 19.6); until it is built the store cannot say, and no region asks.
             StoreRequest::GatewayExits { queries } => {
-                let answers = queries
-                    .into_iter()
-                    .map(|query| clustine_rpc::GatewayExitAnswer {
-                        id: query.id,
-                        from: query.from,
-                        exit: None,
-                    })
-                    .collect();
-                self.answer_in_group(session.region, StoreReply::GatewayExits { answers });
+                let dimension = self
+                    .table
+                    .dimension(session.region)
+                    .unwrap_or(Dimension::Overworld);
+                if dimension != Dimension::End {
+                    // Outside the End a gateway leads nowhere (`getPortalPosition`).
+                    let answers = queries
+                        .into_iter()
+                        .map(|query| clustine_rpc::GatewayExitAnswer {
+                            id: query.id,
+                            from: query.from,
+                            exit: None,
+                        })
+                        .collect();
+                    self.answer_in_group(session.region, StoreReply::GatewayExits { answers });
+                    return;
+                }
+                for query in queries {
+                    self.start_gateway_search(session, query);
+                }
                 return;
             }
             // Written to the log and kept with the table: the world's, published with
@@ -2589,6 +2613,7 @@ impl Lanes {
                 sequence: through,
                 last_change,
                 peer,
+                search: None,
             });
         }
         // The floors of the group are durable: every region that has an owner is

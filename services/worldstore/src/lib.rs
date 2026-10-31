@@ -62,6 +62,8 @@ mod entities_tests;
 #[cfg(test)]
 mod faces_tests;
 #[cfg(test)]
+mod gateway_answers;
+#[cfg(test)]
 mod generation_tests;
 #[cfg(test)]
 mod kill;
@@ -360,6 +362,9 @@ enum Message {
         sequence: u64,
         last_change: u64,
         chunk: Option<clustine_world::Chunk>,
+        /// The gateway's search the base was read for, which takes it in place of a
+        /// copier (`docs/groundwork/p-plan.md`, section 19.8).
+        search: Option<u64>,
     },
     /// Someone wants the list of regions.
     Regions {

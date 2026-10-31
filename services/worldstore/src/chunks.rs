@@ -666,6 +666,8 @@ pub(crate) enum Job {
         sequence: u64,
         last_change: u64,
         peer: Arc<Peer>,
+        /// The gateway's search it is read for, if it is (`Message::Copied`).
+        search: Option<u64>,
     },
     /// Has the generator make ahead the chunks within `radius` of `around` that are not
     /// stored, nearest first: the spawn's, when the store starts (T8f of
@@ -772,6 +774,7 @@ enum Entry {
 
 struct Copying {
     position: LevelChunk,
+    search: Option<u64>,
     changes: Vec<Replayed>,
     sequence: u64,
     last_change: u64,
@@ -1096,9 +1099,11 @@ impl ChunkService {
                 sequence,
                 last_change,
                 peer,
+                search,
             } => {
                 let copying = Copying {
                     position,
+                    search,
                     changes: Vec::new(),
                     sequence,
                     last_change,
@@ -1765,6 +1770,7 @@ fn copied(copying: &Copying, chunk: Option<Chunk>) {
         sequence: copying.sequence,
         last_change: copying.last_change,
         chunk,
+        search: copying.search,
     });
 }
 

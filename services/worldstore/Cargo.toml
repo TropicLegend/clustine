@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 clustine-data.workspace = true
+# The End gateways' exit search, run a chunk at a time (`lanes/gateways.rs`).
+clustine-features.workspace = true
 clustine-format.workspace = true
 clustine-region.workspace = true
 clustine-rpc.workspace = true

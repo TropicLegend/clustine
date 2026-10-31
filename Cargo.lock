@@ -519,6 +519,7 @@ name = "clustine-worldstore"
 version = "0.0.0"
 dependencies = [
  "clustine-data",
+ "clustine-features",
  "clustine-format",
  "clustine-region",
  "clustine-rpc",
