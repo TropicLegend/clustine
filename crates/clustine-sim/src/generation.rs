@@ -33,8 +33,8 @@ pub use spawning::SpawnRandom;
 /// type built (N7l's D3); 3 since a chunk's wolves are made with the most health their
 /// load from the chunk gives them (2026-10-29); 4 since the Nether's chunks are made
 /// with their striders and a bastion's templates with their piglins, brutes and
-/// hoglins (P12); 5 since the End's spikes are made with their crystals and an End
-/// city's ship with its elytra's frame (P10a).
+/// hoglins (P12); 5 since the End's spikes are made with their crystals, and an End
+/// city with its sentry shulkers and its ship's elytra in a frame (P10a, E8).
 pub const ENTITIES_GENERATION: u16 = 5;
 
 /// What the spawning of a chunk reads (section 3.2): the lit chunk's blocks, its two
