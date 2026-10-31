@@ -49,7 +49,8 @@ const AIR: i32 = blocks::AIR.0 as i32;
 /// their distance, as the game sets them; sugar cane that has aged); and water and lava
 /// flowing where generation left them able to, as in a cave with a spring; and what
 /// light lets grow or die since N8: grass and mycelium dying to dirt under a block,
-/// spreading onto dirt, and mushrooms and bamboo growing into air.
+/// spreading onto dirt, and mushrooms and bamboo growing into air; and fire that lava set
+/// and leaves that decayed.
 fn as_ticked(made: BlockState, sent: i32) -> bool {
     let Ok(sent) = u16::try_from(sent).map(BlockState) else {
         return false;
@@ -67,10 +68,21 @@ fn as_ticked(made: BlockState, sent: i32) -> bool {
             .iter()
             .any(|block| block.block_id() == state.block_id())
     };
+    // Fire that lava set, and leaves that decayed, are the random ticks' too: the
+    // longer the world runs before it is looked at, the likelier (a busy machine let
+    // both through within the test's few seconds).
+    let fire = |state: BlockState| state.block_id() == blocks::FIRE.block_id();
+    let leaves = |state: BlockState| {
+        state
+            .block()
+            .is_some_and(|block| block.name.ends_with("_leaves"))
+    };
     made.block_id() == sent.block_id()
         || (is_fluid_or_air(made) && is_fluid_or_air(sent))
         || (ground(made) && ground(sent))
         || (made.props().is_air() && grown(sent))
+        || (made.props().is_air() && fire(sent))
+        || (leaves(made) && sent.props().is_air())
 }
 
 /// Air, or a block that holds a fluid.
