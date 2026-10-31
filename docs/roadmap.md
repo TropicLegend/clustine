@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-30)
+## Where the work stands (2026-10-31)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -563,9 +563,24 @@ in the comparison. The cluster test passes on GitHub again, for the first time s
 2026-10-16: its scenarios were brought up to the split distance of B4d and to the
 homes a world now begins with. Named, found on the way: a sculk sensor does not hear
 what happens across a region line (`region/vibrations.rs`, decision 10 of N6), which
-a world pinned near where players enter shows. Next: comparisons of the Nether's mobs
-with the official server (a ghast's fireball, a blaze's volley, bartering, a strider on
-lava); then P10 and the End.
+a world pinned near where players enter shows. The comparisons of the Nether's mobs
+with the official server (`nether_mobs_oracle.rs`: a ghast's fireball, a blaze's
+volley, bartering, a strider on lava) pass.
+
+**The End** is planned in `p-plan.md` section 19, reviewed (19.5) and read a second
+time (19.6). Built (2026-10-31): **P10-0**, the contracts (a player's health and death,
+`Way::Respawn`, the End's entities' records, an attack's part, boss bars with a style,
+the fight's bar, the arena's players and the global level events published to every
+region, the world's strongholds, the gateway's query, the arena kept by the End's home,
+every region given the world's spawn); **P10a**, the End's features (the spikes with
+their crystals, the islands, chorus, the gateways and the platforms), the generations
+raised so that a world made before is refused; **P10b**, the End portal's frames and
+eyes of ender (an eye fills a frame, the last opens the portal with its sound heard by
+every player, a thrown eye flies towards the nearest stronghold) and the travel into
+the End onto its platform; **E7**, the end crystal and its item. Being built: the
+shulker and its bullet (E8) and the End cities. Next: the way out of the End, the
+credits and the respawn after a death in the void (P10c, P10d; their design, 19.7, is
+under review), the gateways (P10e) and the dragon's first fight (E9).
 
 **What to try with a real client** (the Nether, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), build a Nether
