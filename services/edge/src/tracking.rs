@@ -603,14 +603,21 @@ pub(crate) fn data_value(value: DataShown, ids: WireIds<'_>) -> Option<EntityDat
     })
 }
 
+/// The values of a living entity's data, or of an end crystal's, ascending by index, each
+/// with whether it is the type's default (which a client being paired is not sent).
 pub(crate) fn living_values(
     kind: u16,
     data: &EntityData,
     ids: WireIds<'_>,
 ) -> Vec<(u8, EntityDataValue, bool)> {
-    // A mob's are read from its record by the sim, which knows its parts.
-    if let EntityData::Mob { .. } = data {
-        let values = clustine_sim::shown::mob_values(kind, data).into_iter();
+    // A mob's are read from its record by the sim, which knows its parts, and so are
+    // an end crystal's (its beam and its base).
+    if let EntityData::Mob { .. } | EntityData::EndCrystal(_) = data {
+        let values = match data {
+            EntityData::EndCrystal(_) => clustine_sim::shown::end_crystal_values(data),
+            _ => clustine_sim::shown::mob_values(kind, data),
+        }
+        .into_iter();
         return values
             .filter_map(|(index, value, default)| {
                 Some((index, data_value(value, &mut *ids)?, default))
@@ -1971,6 +1978,64 @@ mod tests {
     }
 
     const HELMET: ItemStack = ItemStack::new(1100, 1);
+
+    /// `EndCrystal.defineSynchedData` (d EndCrystal.txt 46–59): a crystal its item placed
+    /// is paired with its base hidden (index 9) and no beam, the defaults left out; the
+    /// beam the fight points (index 8) is sent at the next update as its block, the
+    /// crystal having no interval of its own (`updateInterval(Integer.MAX_VALUE)`).
+    #[test]
+    fn a_placed_crystal_is_paired_without_its_base_and_its_beam_is_sent_as_it_is_set() {
+        use clustine_world::{BlockPos, EndCrystal};
+        let seen = Seen {
+            kind: entity_types::END_CRYSTAL as u16,
+            position: [3.5, -60.0, 3.5],
+            motion: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let placed = EntityData::EndCrystal(EndCrystal {
+            beam_target: None,
+            show_bottom: false,
+        });
+        let mut tracker = Tracker::new(seen, &placed, 0, &mut ids());
+        assert_eq!(
+            tracker.pairing().values,
+            [(9, EntityDataValue::Boolean(false))]
+        );
+        // Nothing reported: nothing is sent, ever.
+        for _ in 0..100 {
+            assert!(tracker.send_changes(ID, &placed, &mut ids()).is_empty());
+        }
+        let beamed = EntityData::EndCrystal(EndCrystal {
+            beam_target: Some(BlockPos::new(0, 128, 0)),
+            show_bottom: false,
+        });
+        let mut report = tick([3.5, -60.0, 3.5], [0.0; 3], false, 0);
+        report.yaw = 0.0;
+        report.data = Some(beamed.clone());
+        tracker.report(&report, &placed);
+        let data: Vec<Sent> = tracker
+            .send_changes(ID, &beamed, &mut ids())
+            .into_iter()
+            .filter(|sent| matches!(sent, Sent::Data(_)))
+            .collect();
+        let target = Position { x: 0, y: 128, z: 0 };
+        assert_eq!(
+            data,
+            [Sent::Data(SetEntityData {
+                entity_id: ID,
+                values: vec![(8, EntityDataValue::OptionalBlockPos(Some(target)))],
+            })]
+        );
+        assert_eq!(
+            tracker.pairing().values,
+            [
+                (8, EntityDataValue::OptionalBlockPos(Some(target))),
+                (9, EntityDataValue::Boolean(false)),
+            ]
+        );
+    }
 
     #[test]
     fn a_stand_is_paired_with_its_health_alone_and_what_it_wears_is_sent_as_it_changes() {

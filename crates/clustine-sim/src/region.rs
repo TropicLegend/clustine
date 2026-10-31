@@ -52,6 +52,7 @@ mod drops;
 mod eating;
 mod effect_deaths;
 mod end_crystal;
+mod end_crystal_item;
 mod end_world;
 mod entities;
 mod entity_effects;

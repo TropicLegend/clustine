@@ -321,9 +321,75 @@ pub fn head_yaw(data: &EntityData) -> Option<f32> {
         .map(|(yaw, _)| yaw)
 }
 
+/// The indices of an end crystal's own values (`EndCrystal`'s, after the entity's eight).
+pub mod crystal_index {
+    /// `DATA_BEAM_TARGET`, an `OPTIONAL_BLOCK_POS`.
+    pub const BEAM_TARGET: u8 = 8;
+    /// `DATA_SHOW_BOTTOM`, a `BOOLEAN`.
+    pub const SHOW_BOTTOM: u8 = 9;
+}
+
+/// The synced values of an end crystal whose record is `data` (d EndCrystal.txt 46–59,
+/// `defineSynchedData`), ascending by index, each with whether it is the default: its
+/// beam's target, none by default, and whether it shows its base, true by default (so a
+/// crystal its item placed is paired with `false`). None for a record that is not a
+/// crystal's.
+pub fn end_crystal_values(data: &EntityData) -> Vec<(u8, DataShown, bool)> {
+    let EntityData::EndCrystal(crystal) = data else {
+        return Vec::new();
+    };
+    vec![
+        (
+            crystal_index::BEAM_TARGET,
+            DataShown::OptionalBlockPos(crystal.beam_target),
+            crystal.beam_target.is_none(),
+        ),
+        (
+            crystal_index::SHOW_BOTTOM,
+            DataShown::Boolean(crystal.show_bottom),
+            crystal.show_bottom,
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `defineSynchedData`: no beam and a base shown are the defaults, which a client is
+    /// not sent at pairing; a crystal placed by its item hides its base, and the fight's
+    /// beam names its block.
+    #[test]
+    fn a_crystal_shows_its_beam_and_its_base_and_its_defaults_are_marked() {
+        use clustine_world::{BlockPos, EndCrystal};
+        let spike = EntityData::EndCrystal(EndCrystal {
+            beam_target: None,
+            show_bottom: true,
+        });
+        assert_eq!(
+            end_crystal_values(&spike),
+            vec![
+                (8, DataShown::OptionalBlockPos(None), true),
+                (9, DataShown::Boolean(true), true),
+            ]
+        );
+        let placed = EntityData::EndCrystal(EndCrystal {
+            beam_target: Some(BlockPos::new(0, 128, 0)),
+            show_bottom: false,
+        });
+        assert_eq!(
+            end_crystal_values(&placed),
+            vec![
+                (
+                    8,
+                    DataShown::OptionalBlockPos(Some(BlockPos::new(0, 128, 0))),
+                    false
+                ),
+                (9, DataShown::Boolean(false), false),
+            ]
+        );
+        assert!(end_crystal_values(&Mob::fresh().encode()).is_empty());
+    }
 
     #[test]
     fn a_mob_shows_its_health_air_and_flags_and_only_those_not_the_defaults_are_paired() {

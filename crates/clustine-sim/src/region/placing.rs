@@ -41,6 +41,11 @@ impl Region {
         if self.bone_meal_used_on(click, player, output) {
             return true;
         }
+        // An end crystal on obsidian or bedrock (`EndCrystalItem.useOn`,
+        // `end_crystal_item.rs`), which makes its own game event.
+        if self.place_end_crystal(click, player, output) {
+            return true;
+        }
         let spawned = output.events.len();
         let placed = self.place_minecart(click, player, output)
             || self.place_armor_stand(click, player, output)

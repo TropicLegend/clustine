@@ -7252,6 +7252,9 @@ fn spawn_packets(
             | EntityData::Spit(_)
             | EntityData::Firework(_)
             | EntityData::Fireball(_) => owner,
+            // An end crystal's is nothing (`new ClientboundAddEntityPacket(this, entity)`
+            // of `Entity.getAddEntityPacket`); its beam and base come in its data.
+            EntityData::EndCrystal(_) => 0,
             // What N5's other kinds send here comes with the steps that bring them.
             _ => 0,
         };
@@ -7348,14 +7351,17 @@ fn entity_data_packet(
     ids: crate::tracking::WireIds<'_>,
 ) -> SetEntityData {
     match data {
-        EntityData::ArmorStand { .. } | EntityData::Mob { .. } => SetEntityData {
-            entity_id: id,
-            values: crate::tracking::living_values(kind, data, ids)
-                .into_iter()
-                .filter(|(_, _, default)| !default)
-                .map(|(index, value, _)| (index, value))
-                .collect(),
-        },
+        // An end crystal's beam and base where they are not the defaults.
+        EntityData::ArmorStand { .. } | EntityData::Mob { .. } | EntityData::EndCrystal(_) => {
+            SetEntityData {
+                entity_id: id,
+                values: crate::tracking::living_values(kind, data, ids)
+                    .into_iter()
+                    .filter(|(_, _, default)| !default)
+                    .map(|(index, value, _)| (index, value))
+                    .collect(),
+            }
+        }
         EntityData::Item { stack, .. } | EntityData::Thrown { stack, .. } => SetEntityData {
             entity_id: id,
             values: vec![(
