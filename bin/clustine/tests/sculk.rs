@@ -90,7 +90,9 @@ async fn run(address: &str) -> Ran {
             )
         });
     let particle = bot.particles[0];
-    let Particle::Vibration { to, .. } = particle.particle;
+    let Particle::Vibration { to, .. } = particle.particle else {
+        panic!("the first particle shown is not a vibration: {particle:?}");
+    };
     let start_in_block = [
         particle.position[0] - f64::from(placed.0),
         particle.position[1] - f64::from(placed.1),
@@ -116,7 +118,9 @@ async fn a_block_placed_near_a_sensor_sets_it_off_and_its_vibration_is_shown() {
     let ran = run(&address).await;
     assert!(ran.active, "{ran:?}");
     assert_eq!(ran.to_in_offsets, (0, 0, 0), "it travels to the sensor");
-    let Particle::Vibration { arrival, .. } = ran.particle.particle;
+    let Particle::Vibration { arrival, .. } = ran.particle.particle else {
+        panic!("a vibration was shown: {ran:?}");
+    };
     assert_eq!(arrival, 5, "floor of the distance, five blocks");
 }
 
@@ -140,6 +144,7 @@ async fn a_vibration_is_sent_as_on_the_official_server() {
                 to: clustine_protocol::codec::Position { x: 0, y: 0, z: 0 },
                 arrival,
             },
+            other => other,
         },
         ..particle
     };

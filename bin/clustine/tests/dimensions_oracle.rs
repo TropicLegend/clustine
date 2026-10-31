@@ -31,7 +31,9 @@ use anyhow::Result;
 use clustine_botswarm::Bot;
 use clustine_data::{BlockState, blocks, items, sounds};
 use clustine_protocol::packet_ids::play::clientbound;
-use clustine_protocol::packets::play::{ClientboundPlay, Explode, SOUND_SOURCE_BLOCKS, face};
+use clustine_protocol::packets::play::{
+    ClientboundPlay, Explode, LevelParticles, SOUND_SOURCE_BLOCKS, face,
+};
 
 use dimensions::{
     GRASS, HeardSound, PATIENCE, ROOF, block_name, click, describe, drain, empty_hand, feet, is,
@@ -137,6 +139,26 @@ const NOT_OF_THE_CHANGE: &[&str] = &[
     "minecraft:bundle_delimiter",
     "minecraft:chunks_biomes",
     "minecraft:forget_level_chunk",
+];
+
+/// What the official server sends in a change of dimension and Clustine sends at no
+/// time, not at a join either, named: the permission level (`EntityEvent` 24 to 28)
+/// and the command tree it is sent with, which a server without commands has no use
+/// for; a line of its console's chat; the world border, which is the default one a
+/// client makes with a level; the tick rate, which is the default 20 a second; the
+/// post effects (`ServerPlayer.sendPostEffects`), which no Clustine player has.
+/// Clustine sends the inventory and
+/// the held slot as the destination answers for them, after the portal's sound.
+const NOT_SENT_BY_CLUSTINE: &[&str] = &[
+    "EntityEvent",
+    "minecraft:commands",
+    "SystemChat",
+    "minecraft:initialize_border",
+    "minecraft:ticking_state",
+    "minecraft:ticking_step",
+    "minecraft:post_effects",
+    "SetContainerContent",
+    "SetHeldSlot",
 ];
 
 fn registry_name(bot: &Bot, registry: &str, id: i32) -> String {
@@ -260,7 +282,13 @@ async fn a_change_of_dimension_through_a_nether_portal_is_sent_as_on_the_officia
     let (theirs, ours) = on_both(change_of_dimension).await;
     let (theirs, ours) = both(theirs, ours);
     let mut differences = Differences::default();
-    differences.differ("the kinds and their order", theirs.kinds == ours.kinds);
+    let sent: Vec<String> = theirs
+        .kinds
+        .iter()
+        .filter(|kind| !NOT_SENT_BY_CLUSTINE.contains(&kind.as_str()))
+        .cloned()
+        .collect();
+    differences.differ("the kinds and their order", sent == ours.kinds);
     differences.differ("the Respawn's fields", theirs.respawn == ours.respawn);
     differences.differ("the difficulty", theirs.difficulty == ours.difficulty);
     differences.differ("the placing's flags", theirs.placing == ours.placing);
@@ -516,14 +544,23 @@ struct Blast {
 
 /// Clicks `at` with an empty hand and waits for the explosion and for `used` to be
 /// air.
+/// How far from what explodes a bed's or an anchor's blast of power 5 can change a
+/// block: a ray starts with at most 1.3 times the power, 6.5, and loses 0.225 at least
+/// with each step of 0.3 (`ServerExplosion.calculateExplodedPositions`), so it ends
+/// within 8.7 blocks.
+const BLAST_REACH: i32 = 9;
+
 async fn blow_up(bot: &mut Bot, at: (i32, i32, i32), used: &[(i32, i32, i32)]) -> Result<Blast> {
     empty_hand(bot).await?;
     let from = mark(bot);
     let before = bot.explosions.len();
     click(bot, &mut [], at, face::TOP).await?;
+    // Air, or the fire the blast may have set where the block stood.
     let gone = |bot: &Bot| {
-        used.iter()
-            .all(|place| dimensions::is_air(bot.block_at(place.0, place.1, place.2).ok().flatten()))
+        used.iter().all(|place| {
+            let state = bot.block_at(place.0, place.1, place.2).ok().flatten();
+            dimensions::is_air(state) || dimensions::is(state, blocks::FIRE)
+        })
     };
     let _ = wait(
         bot,
@@ -543,8 +580,15 @@ async fn blow_up(bot: &mut Bot, at: (i32, i32, i32), used: &[(i32, i32, i32)]) -
             z - f64::from(at.2),
         ]
     });
+    // Only what changed within the blast's reach: on the official server the bot sees
+    // the land of a Nether of a random seed below the roof, where lava flows of its own
+    // accord.
+    let near = |(x, y, z): (i32, i32, i32)| {
+        (x - at.0).abs().max((y - at.1).abs()).max((z - at.2).abs()) <= BLAST_REACH
+    };
     let left = dimensions::changes(bot, from)
         .into_iter()
+        .filter(|(_, position, _)| near(*position))
         .map(|(_, _, state)| block_name(state))
         .collect();
     Ok(Blast {
@@ -827,6 +871,9 @@ struct WaterInTheNether {
     listener_heard: Vec<HeardSound>,
     /// The blocks either was sent from the pouring on, by name.
     changed: BTreeSet<String>,
+    /// The particles each was shown from the pouring on, with their place relative to
+    /// the water's block: the evaporation's smoke.
+    smoke: (Vec<LevelParticles>, Vec<LevelParticles>),
     /// What each shows where the water would go.
     shown: (Option<String>, Option<String>),
 }
@@ -859,6 +906,7 @@ async fn water_in_the_nether(address: &str) -> Result<WaterInTheNether> {
     let floor = (stand.0 + 3, ROOF, stand.2);
     let water = (floor.0, floor.1 + 1, floor.2);
     let (pourer_from, listener_from) = (mark(&pourer), mark(&listener));
+    let particles_from = (pourer.particles.len(), listener.particles.len());
     pour(
         &mut pourer,
         std::slice::from_mut(&mut listener),
@@ -890,9 +938,19 @@ async fn water_in_the_nether(address: &str) -> Result<WaterInTheNether> {
             .map(|(_, sound)| sound)
             .collect()
     };
+    // Only what changed at the water's place and around it: each bot sees the land of
+    // its Nether below the roof, where lava flows of its own accord.
+    let near = |(x, y, z): (i32, i32, i32)| {
+        (x - water.0)
+            .abs()
+            .max((y - water.1).abs())
+            .max((z - water.2).abs())
+            <= 1
+    };
     let changed = dimensions::changes(&pourer, pourer_from)
         .into_iter()
         .chain(dimensions::changes(&listener, listener_from))
+        .filter(|(_, position, _)| near(*position))
         .map(|(_, _, state)| block_name(state))
         .collect();
     let shown_by = |bot: &Bot| {
@@ -901,9 +959,26 @@ async fn water_in_the_nether(address: &str) -> Result<WaterInTheNether> {
             .flatten()
             .map(describe)
     };
+    let shown_particles = |bot: &Bot, from: usize| -> Vec<LevelParticles> {
+        bot.particles[from.min(bot.particles.len())..]
+            .iter()
+            .map(|particles| LevelParticles {
+                position: [
+                    particles.position[0] - f64::from(water.0),
+                    particles.position[1] - f64::from(water.1),
+                    particles.position[2] - f64::from(water.2),
+                ],
+                ..*particles
+            })
+            .collect()
+    };
     Ok(WaterInTheNether {
         pourer_heard: sounds_of(&pourer, pourer_from),
         listener_heard: sounds_of(&listener, listener_from),
+        smoke: (
+            shown_particles(&pourer, particles_from.0),
+            shown_particles(&listener, particles_from.1),
+        ),
         changed,
         shown: (shown_by(&pourer), shown_by(&listener)),
     })
@@ -944,6 +1019,7 @@ async fn water_poured_in_the_nether_hisses_for_others_and_leaves_none_as_on_the_
     );
     differences.differ("the blocks changed", theirs.changed == ours.changed);
     differences.differ("the blocks shown", theirs.shown == ours.shown);
+    differences.differ("the smoke", theirs.smoke == ours.smoke);
     differences.differ(
         "the listener heard a hiss of blocks",
         hisses(&theirs.listener_heard)

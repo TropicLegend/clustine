@@ -20,6 +20,9 @@ use crate::api::{RegionEvent, SOUND_SOURCE_BLOCKS, TickOutput};
 /// (`BlockTags.ICE_MELTS_WHEN_DESTROYED_ABOVE`).
 const ICE_MELTS_WHEN_DESTROYED_ABOVE: &str = "minecraft:ice_melts_when_destroyed_above";
 
+/// The id of the `minecraft:large_smoke` particle type in the game's registry.
+pub(crate) const LARGE_SMOKE: i32 = 65;
+
 impl Region {
     /// Whether water evaporates in the region's level (`EnvironmentAttributes.WATER_EVAPORATES`,
     /// which the dimension's type sets for the whole level).
@@ -31,11 +34,11 @@ impl Region {
     /// `emptyContents` where `water_evaporates` holds): `fire_extinguish` of the blocks'
     /// source at the block's centre, at volume 0.5 and a pitch of `2.6 + (a − b) × 0.8`
     /// from two floats of the level's random, heard by all but `except` (the player who
-    /// emptied it, whose client plays its own). The eight `large_smoke` the game adds
-    /// after are `Level.addParticle`, which a server level leaves empty (read from the
-    /// 26.3 jar): only the emptying player's client, which runs the use itself, shows
-    /// them, and nothing is sent for them. No game event: `playEmptySound`, which posts
-    /// `fluid_place`, is not reached.
+    /// emptied it, whose client plays its own); then eight `large_smoke` at the block's
+    /// corner, spread by 1 along each axis without speed and scattered `ALTERNATIVE`
+    /// (`ServerLevel.sendParticles`, n6 BucketItem.txt 279-318), which every player near
+    /// sees, the one who emptied it too: the official server sends them. No game event:
+    /// `playEmptySound`, which posts `fluid_place`, is not reached.
     pub(crate) fn evaporate_water(
         &mut self,
         pos: BlockPos,
@@ -55,6 +58,14 @@ impl Region {
             volume: 0.5,
             pitch,
             except,
+        });
+        output.events.push(RegionEvent::Particles {
+            particle: LARGE_SMOKE,
+            position: [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)],
+            spread: [1.0; 3],
+            speed: 0.0,
+            count: 8,
+            alternative: true,
         });
     }
 
@@ -275,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn evaporating_water_fizzes_with_the_fire_s_hiss_at_half_volume_and_a_high_pitch() {
+    fn evaporating_water_fizzes_with_the_fire_s_hiss_at_half_volume_and_a_high_pitch_and_smokes() {
         let mut region = region_in(Dimension::Nether);
         let mut random = Random::of_section(3, ChunkPos::new(0, 0), 0, 9);
         let start = random.clone();
@@ -286,14 +297,24 @@ mod tests {
         assert_eq!(random.draws_since(&start), 2, "two floats drawn");
         assert_eq!(
             output.events,
-            [RegionEvent::Sound {
-                sound: sounds::BLOCK_FIRE_EXTINGUISH,
-                source: SOUND_SOURCE_BLOCKS,
-                position: Vec3::new(8.5, f64::from(FLOOR) + 2.5, 8.5),
-                volume: 0.5,
-                pitch,
-                except: Some(player(7)),
-            },]
+            [
+                RegionEvent::Sound {
+                    sound: sounds::BLOCK_FIRE_EXTINGUISH,
+                    source: SOUND_SOURCE_BLOCKS,
+                    position: Vec3::new(8.5, f64::from(FLOOR) + 2.5, 8.5),
+                    volume: 0.5,
+                    pitch,
+                    except: Some(player(7)),
+                },
+                RegionEvent::Particles {
+                    particle: LARGE_SMOKE,
+                    position: [8.0, f64::from(FLOOR) + 2.0, 8.0],
+                    spread: [1.0; 3],
+                    speed: 0.0,
+                    count: 8,
+                    alternative: true,
+                }
+            ]
         );
         assert!((1.8..=3.4).contains(&pitch));
     }

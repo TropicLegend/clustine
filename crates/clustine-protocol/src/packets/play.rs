@@ -3140,14 +3140,19 @@ impl Decode for Explode {
 /// position source a vibration travels to.
 pub const PARTICLE_VIBRATION: i32 = 58;
 pub const POSITION_SOURCE_BLOCK: i32 = 0;
+/// The id of the `minecraft:large_smoke` particle type, which has no options.
+pub const PARTICLE_LARGE_SMOKE: i32 = 65;
 
-/// A particle a `level_particles` packet shows, with its options. Only the vibration a
-/// sculk sensor takes up is sent.
+/// A particle a `level_particles` packet shows, with its options: the vibration a sculk
+/// sensor takes up, and the smoke of water that evaporates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Particle {
     /// `VibrationParticleOption`: travelling to the block `to` (a `BlockPositionSource`)
     /// and arriving in `arrival` ticks.
     Vibration { to: Position, arrival: i32 },
+    /// A `SimpleParticleType`, which is its id alone: of those, the codec reads
+    /// [`PARTICLE_LARGE_SMOKE`].
+    Simple { id: i32 },
 }
 
 /// Particles shown at a point (`level_particles`, read from
@@ -3179,6 +3184,7 @@ impl Encode for LevelParticles {
                 w.put_position(to);
                 w.put_var_int(arrival);
             }
+            Particle::Simple { id } => w.put_var_int(id),
         }
         w.put_bool(self.override_limiter);
         w.put_bool(self.always_show);
@@ -3194,26 +3200,31 @@ impl Encode for LevelParticles {
 }
 
 impl Decode for LevelParticles {
-    /// Reads what [`LevelParticles::encode`] writes: a vibration to a block, which is the
-    /// one particle a server sends here.
+    /// Reads what [`LevelParticles::encode`] writes: a vibration to a block or large
+    /// smoke, the particles a server sends here.
     fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
         let kind = r.var_int()?;
-        if kind != PARTICLE_VIBRATION {
-            return Err(DecodeError::InvalidValue {
-                what: "vibration particle",
-                value: i64::from(kind),
-            });
-        }
-        let source = r.var_int()?;
-        if source != POSITION_SOURCE_BLOCK {
-            return Err(DecodeError::InvalidValue {
-                what: "block position source",
-                value: i64::from(source),
-            });
-        }
-        let particle = Particle::Vibration {
-            to: r.position()?,
-            arrival: r.var_int()?,
+        let particle = match kind {
+            PARTICLE_LARGE_SMOKE => Particle::Simple { id: kind },
+            PARTICLE_VIBRATION => {
+                let source = r.var_int()?;
+                if source != POSITION_SOURCE_BLOCK {
+                    return Err(DecodeError::InvalidValue {
+                        what: "block position source",
+                        value: i64::from(source),
+                    });
+                }
+                Particle::Vibration {
+                    to: r.position()?,
+                    arrival: r.var_int()?,
+                }
+            }
+            _ => {
+                return Err(DecodeError::InvalidValue {
+                    what: "particle the codec reads",
+                    value: i64::from(kind),
+                });
+            }
         };
         Ok(Self {
             particle,
@@ -4928,6 +4939,26 @@ mod tests {
                 max_speed: [0.0; 3],
                 count: 1,
                 randomization: 0,
+            },
+            ClientboundPlay::decode,
+            ClientboundPlay::LevelParticles,
+        );
+    }
+
+    #[test]
+    fn large_smoke_round_trips_with_its_spread_and_alternative_randomisation() {
+        assert_round_trip(
+            LevelParticles {
+                particle: Particle::Simple {
+                    id: PARTICLE_LARGE_SMOKE,
+                },
+                override_limiter: false,
+                always_show: false,
+                position: [3.0, 40.0, -7.0],
+                spread: [1.0; 3],
+                max_speed: [0.0; 3],
+                count: 8,
+                randomization: 1,
             },
             ClientboundPlay::decode,
             ClientboundPlay::LevelParticles,

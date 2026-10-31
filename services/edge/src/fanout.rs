@@ -614,12 +614,31 @@ struct PlayerView {
 struct Travelling {
     since: Instant,
     way: Option<clustine_world::Way>,
+    /// The look the departing stay had, from which the placing's look is told as a
+    /// turn: the game's portals place a player with their look relative.
+    look: (f32, f32),
 }
 
 /// The teleport a travelling client is said to await: no teleport has this id, so
 /// that its moves are held back until the teleport that places it
 /// (`docs/groundwork/p-plan.md`, section 4.2, R N3).
 const TRAVELLING: i32 = i32::MIN;
+
+/// `degrees` brought into [-180, 180) (`Mth.wrapDegrees`).
+fn wrap_degrees(degrees: f32) -> f32 {
+    let wrapped = degrees % 360.0;
+    if wrapped >= 180.0 {
+        wrapped - 360.0
+    } else if wrapped < -180.0 {
+        wrapped + 360.0
+    } else {
+        wrapped
+    }
+}
+
+/// The ticks a player waits after a portal before another takes them
+/// (`Player.getDimensionChangingDelay`), which the `Respawn` of their travel tells.
+const PLAYER_PORTAL_COOLDOWN: i32 = 10;
 
 /// Whether `input` has nothing to do with where the player is, so that it is taken
 /// across a change of dimension: a held slot, a creative slot, a swap of hands and
@@ -3089,10 +3108,17 @@ impl Fanout {
         }
     }
 
-    /// Shows a vibration a sculk sensor took up to every player of this edge whose block's
-    /// centre is within 32 blocks of where it starts, whatever region they are in
-    /// (`ServerLevel.sendParticles`; `docs/groundwork/n6-brief.md`, section 9.6).
-    async fn show_vibration(&mut self, from: [f64; 3], to: BlockPos, ticks: i32) {
+    /// Shows a vibration a sculk sensor took up in `dimension` to every player of this
+    /// edge in that dimension whose block's centre is within 32 blocks of where it
+    /// starts, whatever region they are in (`ServerLevel.sendParticles`;
+    /// `docs/groundwork/n6-brief.md`, section 9.6).
+    async fn show_vibration(
+        &mut self,
+        dimension: Dimension,
+        from: [f64; 3],
+        to: BlockPos,
+        ticks: i32,
+    ) {
         use clustine_protocol::packets::play::{LevelParticles, Particle};
         let packet = encoded(&LevelParticles {
             particle: Particle::Vibration {
@@ -3111,13 +3137,24 @@ impl Fanout {
             count: 1,
             randomization: 0,
         });
+        self.show_particles(dimension, from, packet).await;
+    }
+
+    /// Sends `packet`, a `level_particles` at `position` in `dimension`, to every player
+    /// of this edge in that dimension whose block's centre is within 32 blocks of it
+    /// (`ServerLevel.sendParticles` for a player, `closerToCenterThan`), whatever region
+    /// they are in.
+    async fn show_particles(&mut self, dimension: Dimension, position: [f64; 3], packet: Bytes) {
         let near: Vec<PlayerId> = self
             .players
             .iter()
+            .filter(|(_, view)| view.dimension == dimension)
             .filter_map(|(player, view)| {
                 let at = self.entities.get(&view.entity?)?.state.pose.position;
                 let centre = [at.x.floor() + 0.5, at.y.floor() + 0.5, at.z.floor() + 0.5];
-                let distance: f64 = (0..3).map(|axis| (centre[axis] - from[axis]).powi(2)).sum();
+                let distance: f64 = (0..3)
+                    .map(|axis| (centre[axis] - position[axis]).powi(2))
+                    .sum();
                 (distance < 32.0 * 32.0).then_some(*player)
             })
             .collect();
@@ -3397,6 +3434,7 @@ impl Fanout {
         // back from a `NotMine` in the same dimension is none (R D10).
         let changes_level = transfer.dimension != view.dimension;
         let level = transfer.dimension;
+        let through_a_portal = transfer.travel.is_some();
         let again: Vec<_> = view
             .kept_inputs
             .iter()
@@ -3421,6 +3459,7 @@ impl Fanout {
                 view.travelling = Some(Travelling {
                     since: Instant::now(),
                     way: transfer.travel.map(|travel| travel.way),
+                    look: (transfer.pose.yaw, transfer.pose.pitch),
                 });
                 view.awaiting_teleport.store(TRAVELLING, Ordering::Relaxed);
             }
@@ -3457,9 +3496,15 @@ impl Fanout {
         if changes_level {
             // Step 7: only now the client, after the region has been told. It drops its
             // level and its entities, keeping its own entity's data (`Respawn`, keep 3).
+            // A portal sets the traveller's cooldown before the `Respawn` is made
+            // (`Entity.setPortalCooldown`, a player's `getDimensionChangingDelay` of 10).
+            let mut spawn = spawn_info(&self.config, level);
+            if through_a_portal {
+                spawn.portal_cooldown = PLAYER_PORTAL_COOLDOWN;
+            }
             let respawn = [
                 encoded(&Respawn {
-                    spawn: spawn_info(&self.config, level),
+                    spawn,
                     data_to_keep: Respawn::KEEP_ALL_DATA,
                 }),
                 encoded(&ChangeDifficulty {
@@ -3502,7 +3547,22 @@ impl Fanout {
         } else {
             CREATIVE_ABILITIES
         };
-        let mut packets = vec![
+        // A travel's look is told as the turn from the look the stay departed with, so
+        // that the client keeps its own look turned as the portal turns it, and its
+        // velocity turned with it (`Relative.DELTA` with `ROTATE_DELTA`, and
+        // `Relative.ROTATION`, as a portal's `TeleportTransition` has them).
+        let (yaw, pitch, rotation) = match &travelling {
+            Some(travelling) => {
+                let (yaw, pitch) = travelling.look;
+                (
+                    wrap_degrees(pose.yaw - yaw),
+                    pose.pitch - pitch,
+                    relative::ROTATION | relative::ROTATE_DELTA,
+                )
+            }
+            None => (pose.yaw, pose.pitch, 0),
+        };
+        let placing = [
             // The game keeps the velocity the client has (`Relative.DELTA`).
             encoded(&SynchronizePlayerPosition {
                 teleport_id,
@@ -3512,9 +3572,12 @@ impl Fanout {
                 velocity_x: 0.0,
                 velocity_y: 0.0,
                 velocity_z: 0.0,
-                yaw: pose.yaw,
-                pitch: pose.pitch,
-                relative_flags: relative::DELTA_X | relative::DELTA_Y | relative::DELTA_Z,
+                yaw,
+                pitch,
+                relative_flags: relative::DELTA_X
+                    | relative::DELTA_Y
+                    | relative::DELTA_Z
+                    | rotation,
             }),
             encoded(&PlayerAbilities {
                 flags,
@@ -3522,7 +3585,15 @@ impl Fanout {
                 field_of_view_modifier: 0.1,
             }),
         ];
+        let region = view.region;
+        if !self.send_to_player(player, placing).await {
+            return;
+        }
+        let mut packets = Vec::new();
         if travelling.is_some() {
+            // The level's information (`PlayerList.sendLevelInfo`): its clocks, where a
+            // compass points, and the wait for its chunks.
+            self.tell_time(player, region, true).await;
             packets.extend([
                 encoded(&SetDefaultSpawnPosition {
                     dimension: OVERWORLD.to_owned(),
@@ -3920,7 +3991,28 @@ impl Fanout {
                 self.show_transient(dimension, position, state).await;
             }
             RegionEvent::Vibration { from, to, ticks } => {
-                self.show_vibration(from, to, ticks).await;
+                self.show_vibration(dimension, from, to, ticks).await;
+            }
+            RegionEvent::Particles {
+                particle,
+                position,
+                spread,
+                speed,
+                count,
+                alternative,
+            } => {
+                use clustine_protocol::packets::play::{LevelParticles, Particle};
+                let packet = encoded(&LevelParticles {
+                    particle: Particle::Simple { id: particle },
+                    override_limiter: false,
+                    always_show: false,
+                    position,
+                    spread,
+                    max_speed: [speed; 3],
+                    count,
+                    randomization: i32::from(alternative),
+                });
+                self.show_particles(dimension, position, packet).await;
             }
             RegionEvent::EntityMoved { entity, pose, .. } => {
                 if !self.is_of(entity, from) {
@@ -7404,9 +7496,10 @@ fn spawn_info(config: &FanoutConfig, dimension: Dimension) -> SpawnInfo {
         game_mode: game_mode::CREATIVE,
         previous_game_mode: None,
         is_debug: false,
-        // Only the flat world's overworld is flat: its Nether and End are those of
-        // seed 0 (`docs/groundwork/p-plan.md`, decision 9).
-        is_flat: config.login.flat && dimension == Dimension::Overworld,
+        // The world's, in every dimension, as the game's `ServerLevel.isFlat` is: the
+        // flat world's Nether and End are those of seed 0
+        // (`docs/groundwork/p-plan.md`, decision 9) and still said to be flat.
+        is_flat: config.login.flat,
         death_location: None,
         portal_cooldown: 0,
         sea_level: match dimension {
@@ -11928,8 +12021,8 @@ mod scenarios {
         assert_eq!(respawn.spawn.dimension_name, "minecraft:the_nether");
         assert_eq!(respawn.data_to_keep, Respawn::KEEP_ALL_DATA);
         assert!(
-            !respawn.spawn.is_flat,
-            "only the flat world's overworld is flat"
+            respawn.spawn.is_flat,
+            "a flat world is flat in every dimension, as the official server says"
         );
         assert_eq!(respawn.spawn.sea_level, 32);
         assert!(client.chunks.is_empty() && client.entities.is_empty());

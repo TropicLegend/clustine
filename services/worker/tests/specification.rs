@@ -953,6 +953,7 @@ impl Witness {
                         | RegionEvent::EntityEvent { .. }
                         | RegionEvent::Explosion { .. }
                         | RegionEvent::Vibration { .. }
+                        | RegionEvent::Particles { .. }
                         | RegionEvent::DamageEvent { .. }
                         | RegionEvent::AttributesChanged { .. }
                         | RegionEvent::EquipmentChanged { .. }

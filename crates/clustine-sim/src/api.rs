@@ -1874,6 +1874,20 @@ pub enum RegionEvent {
         to: BlockPos,
         ticks: i32,
     },
+    /// Particles of the type of id `particle` in the game's registry, one without
+    /// options, sent by `ServerLevel.sendParticles` as `level_particles`: `count` of them
+    /// at `position`, spread by `spread` along each axis with the most speed `speed`,
+    /// scattered as `RandomizationType.ALTERNATIVE` has it where `alternative`. Every
+    /// edge shows them to each of its players in the region's level whose block's
+    /// centre is within 32 blocks of `position`, whatever region they are in.
+    Particles {
+        particle: i32,
+        position: [f64; 3],
+        spread: [f32; 3],
+        speed: f32,
+        count: i32,
+        alternative: bool,
+    },
     /// A living entity in `chunk` took a hurt that counts (`broadcastDamageEvent`,
     /// `docs/groundwork/n7-brief.md`, section 9.1): of the damage type of id
     /// `damage_type` in the registry the server sends (Clustine's sorted order),
@@ -2009,6 +2023,7 @@ impl RegionEvent {
             // The chunk where it starts: a player within 32 blocks of it has the chunk in
             // view unless their view reaches less than two chunks.
             Self::Vibration { from, .. } => [ChunkPos::containing(from[0], from[2]); 2],
+            Self::Particles { position, .. } => [ChunkPos::containing(position[0], position[2]); 2],
             // No place: see the variant.
             Self::BlockEventsBegin => [ChunkPos::new(0, 0); 2],
             Self::EntityMoved {
