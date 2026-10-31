@@ -26,6 +26,8 @@ use crate::mobs::making;
 use crate::mobs::types::{self, Companion, CompanionSeat, Companions, SpawnReason, Spawning};
 use crate::region::{Random, insecure_uuid};
 
+mod end_crystal;
+
 /// A tag's value, as far as a template's entity is read: numbers of every kind as a
 /// double, strings, lists and compounds (members in their order), and the arrays read
 /// as lists of numbers.
@@ -224,6 +226,9 @@ pub(crate) fn template_entity(
             .into_iter()
             .collect(),
         entity_types::CUSHION => cushion(world, kind, &parsed, placed).into_iter().collect(),
+        entity_types::END_CRYSTAL => end_crystal::end_crystal(world, kind, &parsed, placed)
+            .into_iter()
+            .collect(),
         _ => make_mob(world, kind, Some(tag), false, finalise, placed),
     }
 }

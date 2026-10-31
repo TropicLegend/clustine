@@ -74,8 +74,20 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The dimension judged: `CLUSTINE_GAME_FEATURES_DIMENSION`, the overworld unless said.
+thread_local! {
+    /// The dimension a test of one dimension judges, over the environment's: the
+    /// End's tests set it on their own thread, where every question of the judge's
+    /// about the dimension is asked.
+    static JUDGED: std::cell::Cell<Option<clustine_world::Dimension>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The dimension judged: the test's own, else `CLUSTINE_GAME_FEATURES_DIMENSION`, the
+/// overworld unless said.
 fn dimension() -> clustine_world::Dimension {
+    if let Some(judged) = JUDGED.get() {
+        return judged;
+    }
     let Ok(name) = std::env::var("CLUSTINE_GAME_FEATURES_DIMENSION") else {
         return clustine_world::Dimension::Overworld;
     };
@@ -826,13 +838,6 @@ fn differences(at: ChunkPos, game: &Written, ours: &Written) -> Vec<String> {
 #[test]
 #[ignore = "runs the official server; needs a JDK 25, the jar and the EULA accepted"]
 fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() {
-    assert_eq!(
-        std::env::var("CLUSTINE_ACCEPT_MINECRAFT_EULA").as_deref(),
-        Ok("true"),
-        "the official server runs only where its EULA is accepted"
-    );
-    let seed: i64 = std::env::var("CLUSTINE_GAME_FEATURES_SEED")
-        .map_or(13579, |seed| seed.parse().expect("a seed is a number"));
     let area = std::env::var("CLUSTINE_GAME_FEATURES_AREA")
         .unwrap_or_else(|_| "100 100 123 123".to_owned());
     let corners: Vec<i32> = area
@@ -843,7 +848,78 @@ fn features_are_placed_as_the_games_own_server_places_them_in_clustines_order() 
         min: ChunkPos::new(corners[0], corners[1]),
         max: ChunkPos::new(corners[2], corners[3]),
     };
+    judge(judged_seed(), area);
+}
 
+/// The seed judged: `CLUSTINE_GAME_FEATURES_SEED`, 13579 unless said.
+fn judged_seed() -> i64 {
+    std::env::var("CLUSTINE_GAME_FEATURES_SEED")
+        .map_or(13579, |seed| seed.parse().expect("a seed is a number"))
+}
+
+/// The area of `radius` chunks each way about `centre`.
+fn area_about(centre: ChunkPos, radius: i32) -> Area {
+    Area {
+        min: ChunkPos::new(centre.x - radius, centre.z - radius),
+        max: ChunkPos::new(centre.x + radius, centre.z + radius),
+    }
+}
+
+/// The End's arena (P10a, `docs/groundwork/p-plan.md` section 19.2): the ten spikes
+/// with their obsidian, bars, bedrock and fire, and the platform at (100, 49, 0), in
+/// the chunks from −7 to 7 each way and those about the platform. The crystals are
+/// entities, which the judge does not compare; `tests/end.rs` checks them.
+///
+/// ```text
+/// CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --release -p clustine-worldgen \
+///     --test game_features -- --ignored --nocapture the_end_s_arena
+/// ```
+///
+/// The program fails if the game made a chunk whole before it asked; should the End's
+/// dragon fight have loaded the arena first, that is where to look.
+#[test]
+#[ignore = "runs the official server; needs a JDK 25, the jar and the EULA accepted"]
+fn the_end_s_arena_is_decorated_as_the_games_own_server_decorates_it() {
+    JUDGED.set(Some(clustine_world::Dimension::End));
+    judge(judged_seed(), area_about(ChunkPos::new(0, 0), 7));
+    judge(judged_seed(), area_about(ChunkPos::new(6, 0), 4));
+}
+
+/// The End's outer islands about the first chunk of the highlands out from the
+/// middle: the return gateways (one chunk in 700), chorus, the small islands and
+/// their biomes' neighbours.
+#[test]
+#[ignore = "runs the official server; needs a JDK 25, the jar and the EULA accepted"]
+fn the_end_s_outer_islands_are_decorated_as_the_games_own_server_decorates_them() {
+    JUDGED.set(Some(clustine_world::Dimension::End));
+    let seed = judged_seed();
+    let names = clustine_data::synced_registry("minecraft:worldgen/biome")
+        .expect("the biomes are a synchronised registry")
+        .entries;
+    let source = clustine_terrain::biome::BiomeSource::new(seed, dimension());
+    let highlands = (70i32..200)
+        .flat_map(|x| {
+            [
+                ChunkPos::new(x, 0),
+                ChunkPos::new(0, x),
+                ChunkPos::new(-x, 0),
+            ]
+        })
+        .find(|at| {
+            let found = source.found(at.x * 4 + 2, 16, at.z * 4 + 2);
+            names[usize::from(found.biome.0)] == "minecraft:end_highlands"
+        })
+        .expect("highlands out from the middle");
+    judge(seed, area_about(highlands, 10));
+}
+
+/// Judges the features of `area` in the world of `seed`, in the dimension judged.
+fn judge(seed: i64, area: Area) {
+    assert_eq!(
+        std::env::var("CLUSTINE_ACCEPT_MINECRAFT_EULA").as_deref(),
+        Ok("true"),
+        "the official server runs only where its EULA is accepted"
+    );
     let work = tempfile::Builder::new()
         .prefix("game-features")
         .tempdir()

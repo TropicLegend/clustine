@@ -10,6 +10,7 @@ use crate::feature::Feature;
 use crate::reader::Reader;
 
 pub mod caves;
+pub mod end;
 pub mod frame;
 pub mod ground;
 pub mod nether_and_end;

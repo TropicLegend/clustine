@@ -27,7 +27,7 @@ use clustine_sim::api::{HOTBAR_SLOTS, Inventory, ItemStack};
 use clustine_structures::template_blocks::TemplateLibrary;
 use clustine_world::{ChunkGenerator, Dimension};
 use clustine_worldgen::scheduler::{Options, Scheduler};
-use clustine_worldgen::{FeatureStages, FlatGenerator, PreviewStages, TerrainGenerator};
+use clustine_worldgen::{FeatureStages, FlatGenerator, TerrainGenerator};
 use clustine_worldstore::{Generators, Pins, Store, StoreError};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -65,18 +65,6 @@ pub(crate) fn starting_inventory() -> Inventory {
 /// What makes the chunks nobody has changed in the flat world.
 pub(crate) fn generator() -> Arc<dyn ChunkGenerator> {
     Arc::new(FlatGenerator::classic())
-}
-
-/// The bare land of `dimension` of the world with `seed`, made on the scheduler's pool
-/// of its own: the End's, until the End's milestone builds its kinds of feature
-/// (`docs/groundwork/p-plan.md`, section 14). Nobody enters it before then, so the pool
-/// idles and its cache stays empty meanwhile.
-fn bare_land(seed: i64, dimension: Dimension) -> Arc<dyn ChunkGenerator> {
-    let terrain = Arc::new(TerrainGenerator::new(seed, dimension));
-    Arc::new(Scheduler::new(
-        PreviewStages::new(terrain),
-        Options::for_processors(processors()),
-    ))
 }
 
 /// The land of `dimension` of the world with `seed` with its features, made in
@@ -119,7 +107,7 @@ impl Land {
             generators: Generators::new(
                 generator(),
                 featured_land(0, Dimension::Nether, None),
-                bare_land(0, Dimension::End),
+                featured_land(0, Dimension::End, None),
             ),
             login: login_of(None),
         }
@@ -144,8 +132,8 @@ impl Land {
             login: login_of(Some(seed)),
             generators: Generators::new(
                 featured_land(seed, Dimension::Overworld, templates.clone()),
-                featured_land(seed, Dimension::Nether, templates),
-                bare_land(seed, Dimension::End),
+                featured_land(seed, Dimension::Nether, templates.clone()),
+                featured_land(seed, Dimension::End, templates),
             ),
         }
     }

@@ -103,6 +103,7 @@ pub fn read(kind: &'static str, reader: &Reader) -> Read<Box<dyn Feature>> {
         Batch::Trees => features::trees::read(kind, reader),
         Batch::Plants => features::plants::read(kind, reader),
         Batch::Caves => features::caves::read(kind, reader),
+        Batch::NetherAndEnd if features::end::reads(kind) => features::end::read(kind, reader),
         Batch::NetherAndEnd => features::nether_and_end::read(kind, reader),
     }
 }
