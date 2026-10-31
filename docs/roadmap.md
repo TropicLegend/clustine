@@ -44,7 +44,7 @@ across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, plates pressed by mobs; commands; the End; survival
+sensors, crafters, plates pressed by mobs; commands; the End's gateways; survival
 mode and crafting.
 
 **Built since M3:**
@@ -567,20 +567,37 @@ a world pinned near where players enter shows. The comparisons of the Nether's m
 with the official server (`nether_mobs_oracle.rs`: a ghast's fireball, a blaze's
 volley, bartering, a strider on lava) pass.
 
-**The End** is planned in `p-plan.md` section 19, reviewed (19.5) and read a second
-time (19.6). Built (2026-10-31): **P10-0**, the contracts (a player's health and death,
-`Way::Respawn`, the End's entities' records, an attack's part, boss bars with a style,
-the fight's bar, the arena's players and the global level events published to every
-region, the world's strongholds, the gateway's query, the arena kept by the End's home,
-every region given the world's spawn); **P10a**, the End's features (the spikes with
-their crystals, the islands, chorus, the gateways and the platforms), the generations
-raised so that a world made before is refused; **P10b**, the End portal's frames and
-eyes of ender (an eye fills a frame, the last opens the portal with its sound heard by
-every player, a thrown eye flies towards the nearest stronghold) and the travel into
-the End onto its platform; **E7**, the end crystal and its item. Being built: the
-shulker and its bullet (E8) and the End cities. Next: the way out of the End, the
-credits and the respawn after a death in the void (P10c, P10d; their design, 19.7, is
-under review), the gateways (P10e) and the dragon's first fight (E9).
+**The End** is planned in `p-plan.md` section 19, reviewed (19.5), read a second time
+(19.6), and its respawn designed and reviewed (19.7). Built (2026-10-31): **P10-0**, the
+contracts; **P10a**, the End's features and cities (the spikes with their crystals, the
+islands, chorus, the gateways, the platforms, the cities with their chests, sentry
+shulkers and the ship's elytra in its frame), the generations raised so that a world made
+before is refused; **P10b**, the End portal's frames and eyes of ender (the last eye opens
+the portal with its sound heard by every player; a thrown eye flies towards the nearest
+stronghold) and the travel onto the platform; **P10c**, the credits and the way out of the
+End; **P10d**, the void that kills and the respawn, at a bed or anchor wherever its chunk
+is held, or at the world spawn; **E7**, the end crystal and its item; **E8**, the shulker
+and its bullet; **E9**, the ender dragon with its eight parts and eleven phases, its
+fireball and breath; and the fight: its bar shown to the players near the island in every
+End region, the arena kept loaded, the podium placed at the first look, the dragon made,
+and at its death the exit portal opened, a gateway placed and the egg put on the podium.
+The respawn's tests from the specification by someone who did not write it found eight
+differences, mended. Named, left for now: arrows hit the dragon's whole box rather than
+its parts; the respawn's spread over `respawn_radius` (the join has none either); the
+dragon's respawn by four crystals. Next: the gateways' travel (P10e), comparisons with
+the official server (the End's features, the platform's arrival, the credits, the void's
+death, the dragon's first moves), and tests of the End's mobs from the specification.
+
+**What to try with a real client** (the End, since 2026-10-31): start a new world
+(`cargo run --release -p clustine`; a world made before is refused), find a stronghold
+with eyes of ender (thrown, they fly towards it), fill its portal's frames and step in.
+On the platform the dragon's bar should show; the dragon circles the island, lands on the
+podium and breathes; crystals on the pillars heal it and explode when hit. Every player is
+creative, so the dragon does not attack, but it can be fought: hit its head or wings, or
+blow up its crystals. When it dies the portal in the podium opens, a gateway appears and
+the egg sits on top; step into the portal for the credits, then out to your bed or the
+world spawn. Jump off the island to see the void's death and the respawn screen. A city
+far out has shulkers that peek and shoot at other mobs, and a ship with an elytra.
 
 **What to try with a real client** (the Nether, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), build a Nether
