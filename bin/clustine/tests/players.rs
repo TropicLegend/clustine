@@ -82,7 +82,9 @@ async fn a_walking_player_is_seen_moving() {
     sees_at(&mut watcher, "Walker", (10.5, -60.0, 4.5)).await;
     assert!(watcher.seen_player("Walker").unwrap().position_syncs > 1);
 
-    // The walker's own view of the watcher did not change.
+    // The walker's own view of the watcher did not change: shown where they stand, which
+    // a slow machine may take a while to send, and never moved.
+    sees_at(&mut walker, "Watcher", SPAWN).await;
     walker.idle(Duration::from_millis(200)).await.unwrap();
     let seen = walker.seen_player("Watcher").unwrap();
     assert_eq!((seen.position, seen.position_syncs), (SPAWN, 0));
