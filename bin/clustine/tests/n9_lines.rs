@@ -128,9 +128,10 @@ fn own_speed(bot: &Bot) -> (Vec<(Instant, i32)>, Vec<Instant>) {
     (added, removed)
 }
 
-/// The ticks of a client's clock, twentieths of a second, from `from` to `to`.
-fn ticks(from: Instant, to: Instant) -> i64 {
-    i64::try_from(to.duration_since(from).as_millis()).expect("short") / 50
+/// The game time the server last told the client, which it tells every 20 ticks: a
+/// measure of ticks that a slow machine does not stretch, to within those 20.
+fn game_time(bot: &Bot) -> i64 {
+    bot.times.last().map_or(0, |time| time.game_time)
 }
 
 /// Drinks `potion` from the first hotbar slot, and waits until its speed is told.
@@ -154,7 +155,8 @@ async fn an_effect_goes_on_across_a_pinned_line_and_ends_when_its_duration_is_ov
     let (server, address) = start_with(pinned(directory.path())).await;
     let mut bot = join(&address, "Drinker").await;
     stand(&mut bot, 2.5, 0.5).await;
-    let (told, duration) = drink(&mut bot, speed_potion(items::POTION, 200)).await;
+    let (_, duration) = drink(&mut bot, speed_potion(items::POTION, 200)).await;
+    let told = game_time(&bot);
     assert_eq!(duration, 200);
     // Across the line into the western region, and on.
     stand(&mut bot, -2.5, 0.5).await;
@@ -164,12 +166,12 @@ async fn an_effect_goes_on_across_a_pinned_line_and_ends_when_its_duration_is_ov
         .unwrap_or_else(|error| panic!("{error:#}: the speed ends"));
     let (_, removed) = own_speed(&bot);
     assert_eq!(removed.len(), 1, "told once that it ended");
-    let lasted = ticks(told, removed[0]);
-    // Never short of its 200 ticks but by what the client's clock makes of them; a
-    // busy machine's slow ticks may stretch it.
+    let lasted = game_time(&bot) - told;
+    // Its 200 ticks, by the server's clock as the client was last told it either side,
+    // which is told every 20 ticks.
     assert!(
-        (195..=260).contains(&lasted),
-        "ended {lasted} ticks of the client's clock after it was told"
+        (180..=220).contains(&lasted),
+        "ended {lasted} ticks of the server's clock after it was told"
     );
     server.stop().await;
 }
@@ -228,13 +230,14 @@ async fn an_effect_comes_back_at_a_rejoin_with_the_ticks_it_had_left() {
     };
     let (server, address) = start_with(world).await;
     let mut bot = join(&address, "Leaver").await;
-    let (told, _) = drink(&mut bot, speed_potion(items::POTION, 600)).await;
+    let _ = drink(&mut bot, speed_potion(items::POTION, 600)).await;
+    let told = game_time(&bot);
     for _ in 0..3 {
         bot.idle(Duration::from_secs(1)).await.expect("idled");
         round_trip(&mut bot).await;
     }
     bot.idle(Duration::from_millis(700)).await.expect("idled");
-    let left = Instant::now();
+    let left = game_time(&bot);
     bot.close().await.expect("left");
     drop(bot);
     let mut back = join(&address, "Leaver").await;
@@ -242,12 +245,12 @@ async fn an_effect_comes_back_at_a_rejoin_with_the_ticks_it_had_left() {
         .await
         .unwrap_or_else(|error| panic!("{error:#}: the speed is told at the join"));
     let (added, _) = own_speed(&back);
-    let had_left = 600 - ticks(told, left);
+    let had_left = 600 - (left - told);
     let duration = i64::from(added[0].1);
-    // The second of the client's last word, and slow ticks of a busy machine, which run
-    // the effect down by fewer ticks than the client's clock counts.
+    // The second of the client's last word, and the 20 ticks between the times the
+    // server tells, on either side.
     assert!(
-        (had_left - 5..=had_left + 40).contains(&duration),
+        (had_left - 25..=had_left + 45).contains(&duration),
         "told {duration} ticks at the join, with {had_left} left at the leave"
     );
     server.stop().await;

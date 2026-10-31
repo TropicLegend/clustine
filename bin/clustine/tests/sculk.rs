@@ -37,6 +37,11 @@ fn phase(state: Option<i32>) -> Option<&'static str> {
 async fn run(address: &str) -> Ran {
     let mut bot = Bot::join(address, "Listener").await.unwrap();
     bot.wait_for_chunks(9, PATIENCE).await.unwrap();
+    // Away from where players enter, beside which a world pinned at chunk 0 has a line:
+    // a sensor does not hear what happens across one (`region/vibrations.rs`).
+    let (_, y, _) = bot.location;
+    bot.fly_to((20.5, y, 0.5), (0.0, 0.0), 1.0).await.unwrap();
+    bot.wait_for_chunks(9, PATIENCE).await.unwrap();
     let (x, z) = (
         bot.location.0.floor() as i32 + 2,
         bot.location.2.floor() as i32,
@@ -52,46 +57,55 @@ async fn run(address: &str) -> Ran {
     })
     .await
     .unwrap_or_else(|error| panic!("{error}: no sensor"));
-    // Once the server has handled the placing: if the sensor heard itself placed, it
-    // is let go through its cooldown first.
-    let sequence = bot.use_item_on(x - 1, -61, z - 1, face::TOP).await.unwrap();
-    bot.wait_until(PATIENCE, |bot| bot.acknowledged_sequence >= sequence)
+    // Anything the sensor heard of its own placing is over before the stone: the
+    // server tells its time every 20 ticks, and three tellings are 40 ticks at least,
+    // more than a vibration's travel and a sensor's active and cooldown phases.
+    let told = bot.times.len();
+    bot.wait_until(PATIENCE, |bot| bot.times.len() >= told + 3)
         .await
         .unwrap();
-    if !bot.particles.is_empty() {
-        bot.wait_until(PATIENCE, |bot| {
-            phase(bot.block_at(x, -60, z).unwrap()) == Some("cooldown")
-        })
-        .await
-        .unwrap();
-        bot.wait_until(PATIENCE, |bot| {
-            phase(bot.block_at(x, -60, z).unwrap()) == Some("inactive")
-        })
-        .await
-        .unwrap();
-    }
-    bot.particles.clear();
+    bot.wait_until(PATIENCE, |bot| {
+        phase(bot.block_at(x, -60, z).unwrap()) == Some("inactive")
+    })
+    .await
+    .unwrap();
     bot.take_from_creative_inventory(1, items::STONE)
         .await
         .unwrap();
     bot.select_slot(1).await.unwrap();
+    bot.particles.clear();
     // Five blocks west of the sensor, three from the bot, within its reach.
     let placed = (x - 5, -60, z);
     bot.use_item_on(placed.0, placed.1 - 1, placed.2, face::TOP)
         .await
         .unwrap();
-    bot.wait_until(PATIENCE, |bot| !bot.particles.is_empty())
-        .await
-        .unwrap_or_else(|error| {
-            panic!(
-                "{error}: no vibration was shown; the sensor is {:?}, the stone {:?}",
-                phase(bot.block_at(x, -60, z).unwrap()),
-                bot.block_at(placed.0, placed.1, placed.2)
-            )
-        });
-    let particle = bot.particles[0];
+    // The vibration that starts in the stone's block: on a slow machine the one of the
+    // sensor's own placing can come after the list was cleared.
+    let from_the_stone = |particle: &&LevelParticles| {
+        matches!(particle.particle, Particle::Vibration { .. })
+            && particle.position[0].floor() as i32 == placed.0
+            && particle.position[2].floor() as i32 == placed.2
+    };
+    bot.wait_until(PATIENCE, |bot| {
+        bot.particles.iter().any(|p| from_the_stone(&p))
+    })
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "{error}: no vibration was shown from the stone; the sensor is {:?}, the \
+                 stone {:?}, shown {:?}",
+            phase(bot.block_at(x, -60, z).unwrap()),
+            bot.block_at(placed.0, placed.1, placed.2),
+            bot.particles
+        )
+    });
+    let particle = *bot
+        .particles
+        .iter()
+        .find(from_the_stone)
+        .expect("waited for");
     let Particle::Vibration { to, .. } = particle.particle else {
-        panic!("the first particle shown is not a vibration: {particle:?}");
+        unreachable!("only vibrations were looked for");
     };
     let start_in_block = [
         particle.position[0] - f64::from(placed.0),

@@ -195,10 +195,19 @@ async fn lay_farmland(bot: &mut Bot, x: i32, z: i32) {
 /// Plants wheat seeds in the tunnel at `x`, `z` and says whether they were taken: the
 /// region that holds the block decides by its light there.
 async fn seeds_taken(bot: &mut Bot, x: i32, z: i32) -> bool {
-    lay_farmland(bot, x, z).await;
-    place(bot, SEEDS_SLOT, (x, FLOOR_Y, z), face::TOP).await;
-    west_is_settled(bot).await;
-    let planted = bot.block_at(x, TUNNEL_Y, z).unwrap();
+    // Dry farmland without a crop turns to dirt at a random tick of its own: on a slow
+    // machine one can come between laying it and planting. It is laid again then.
+    let mut planted = None;
+    for _ in 0..3 {
+        lay_farmland(bot, x, z).await;
+        place(bot, SEEDS_SLOT, (x, FLOOR_Y, z), face::TOP).await;
+        west_is_settled(bot).await;
+        planted = bot.block_at(x, TUNNEL_Y, z).unwrap();
+        if planted == AIR && bot.block_at(x, FLOOR_Y, z).unwrap() == DIRT {
+            continue;
+        }
+        break;
+    }
     if planted == WHEAT {
         return true;
     }
