@@ -1619,3 +1619,151 @@ not yet. What the End builds besides:
   all of it: the strongholds in `meta`, `Way::Respawn`, the kept area's grant, health and
   death in the stay and the place, the published records, the gateway's exit; no later
   step raises them again.
+
+### 19.7 The respawn, the credits and the way out of the End (P10c, P10d)
+
+The game's rules are in [p-respawn-facts.md](p-respawn-facts.md) (read from the dumps on 2026-10-31; cited
+there). This section says how Clustine follows them across regions. It replaces the
+routing of 5.3 ("the Traveller goes to the region that holds the respawn block"), which
+named no way for a region to find that region: a region knows no region's id but the
+homes and the holders its land's knowledge names.
+
+**One path for three ways.** A respawn after a death (`Way::Respawn`, keep 0, the anchor's
+charge spent), the respawn after the credits (`Way::Credits`, keep 1, no charge spent),
+and the End portal out of the End for a player who has seen the credits
+(`Way::EndPortal` out, keep 3, no charge spent, the respawn kept when its block is gone)
+all make one travel: `Travel { to: respawn.dimension, target: respawn.pos }` where the
+player has a respawn, else `Travel { to: Overworld, target: world_spawn }`. The region
+the player is in removes them as `player_travels` does, and lets them go to
+`home_of(to)`; where it is that home itself, it takes them as a waiting stay with no
+`Departed` (19.5 item 3).
+
+**Who checks the block.** The stay waits, with `searches` false, until the chunk of the
+target is settled (`settled_for_travel`, loading or claiming it through
+`ticket_for_travel` as an arrival does). Then:
+1. The target is the world spawn (no respawn): placed as a first join is placed (the
+   same search: `respawn_radius`, facts 4), with the spawn's yaw and pitch.
+2. The region reads the respawn block (its own chunk or a copy): it checks it as
+   `findRespawnAndUseSpawnBlock` does (p-respawn-facts.md, 1, 3 to 5), and places the player at the
+   stand-up place facing the block (p-respawn-facts.md, 2), spending a charge of an anchor for
+   `Way::Respawn` only with `UPDATE_ALL`, and telling the player the anchor's
+   `respawn_anchor_deplete` sound where the block is still an anchor (p-respawn-facts.md, 5.4).
+3. The chunk is known to be another region's: the stay is let go to that holder, the
+   travel unchanged (one `hops` more; after 8 hops it is treated as case 4, so that a
+   holder that changes faster than the stay can follow cannot keep it moving).
+4. The block is not a valid respawn: for `Way::Respawn` and `Way::Credits` the
+   player's respawn is cleared; the travel is turned to the world spawn in the
+   overworld and goes on as above (placed here where this region is the overworld's
+   home, else let go to it). For the End portal's way out the respawn is kept.
+
+**`NO_RESPAWN_BLOCK_AVAILABLE`** is owed where a respawn existed and its block failed,
+whichever way. It is carried without a new field: the region that places the player
+knows it from the stay itself, since the travel's target is the world spawn while the
+transfer's respawn is `Some` (case 4 clears the respawn only when it places, not when it
+turns the travel). It sends `PlayerEvent::NoRespawnBlock` in the placing tick, before
+`Durable::Placed`.
+
+**The edge and the `Respawn` packet.** The edge keeps, per player, the keep it owes:
+`Durable::Died` sets 0, `Durable::WonGame` sets 1. A departure of such a player sends no
+`Respawn` at the hand-over (the client stays on its death or credits screen, which is
+what the game shows until its respawn); the next `Durable::Placed` sends
+`PlayerAbilities`, the `NO_RESPAWN_BLOCK_AVAILABLE` game event if the region said so,
+`Respawn(level of the place, keep)`, then what `placed()` sends now, whatever the
+dimension; the keep is then cleared. Since `Died` and `WonGame` are durable and come
+before the `Departed` and the `Placed` in the outbox (19.6), a resumed link replays the
+same order. The End portal's way out is an ordinary change of level (keep 3 at the
+hand-over, as now).
+
+**The credits** (`EndPortalBlock.entityInside`, `showEndCredits`): a player in the End
+inside an End portal who has not seen the credits is, in that tick, not marked inside
+the portal (as now) but taken out of the world: unridden, removed from every watcher
+(`EntityRemoved`), `in_credits` and `seen_credits` set, `Durable::WonGame` sent. While
+`in_credits` the player is not ticked, not hurt, not counted in the arena, not shown, and
+every input but `PerformRespawn` is dropped (`handleMovePlayer` returns early). On
+`PerformRespawn` the respawn's travel with `Way::Credits` is made. Health, inventory,
+experience and effects are kept (keep 1).
+
+**Death and its respawn** (P10d, as 19.5 items 1 and 2): `PerformRespawn` from a dead
+player makes the travel with `Way::Respawn`; at the placing health is the maximum,
+effects are gone, the inventory and experience are what the death left (nothing). A
+player who is neither dead nor in the credits asks for nothing.
+
+**Leaving while dead or in the credits — changed from 5.3 step 3.** The game saves a dead
+player dead, and a player who logs out in the credits where they stood in the End's
+portal (`removePlayerImmediately` does not move them; `wonGame` is not saved). So a join
+of a stay that is dead enters them dead (`Spawned`, then `Health` 0, which makes the
+client show its death screen) and waits for `PerformRespawn`; a join of a stay
+`in_credits` clears `in_credits` and enters them where they stood, in the portal, which,
+having seen the credits, sends them out by the portal's way. No join leads to a
+`Departed` before `Spawned`, which the edge's join does not handle.
+
+**Format.** No change: `Way::{Respawn, Credits}`, the respawn, health, dead, `in_credits`
+and `seen_credits` are in the formats since P10-0. `PlayerEvent::NoRespawnBlock` is a
+message of the link, not stored.
+
+**Tests**, from this section by someone who did not write the code: each way's travel
+from a region that is the destination's home and from one that is not; a bed in the
+home's chunk, in a copy, in another region's chunk (forwarded), gone (world spawn, the
+event, the respawn cleared for death and credits, kept for the portal); an anchor with
+charge (spent on death only, the sound), without; the stand-up places and the yaw
+against the facts' orders; the edge's packets in order for each way, and on a resumed
+link; the credits' hiding and dropped inputs; a dead and an in-credits join.
+
+**Questions for the reviewer.**
+1. Is the edge's ordering of a `PlayerEvent` and a `Durable` of one tick kept (the
+   event before `Placed`)? If not, the event belongs in the durable.
+2. Is the 8-hop bound right, and can a forwarded stay meet the region it left in a way
+   the edge refuses (a hand-over to the same region)?
+3. Does the first join's world-spawn placement already follow the radius search, or the
+   spawn's block exactly? The respawn is to do what the join does.
+4. Is anything in "leaving while dead or in the credits" wrong against the game?
+
+#### The review (2026-10-31), and what is built instead
+
+An independent reviewer read the above against the code at `c8f202b` and the dumps. They
+found the single path through the destination's home, the durable `Died` and `WonGame`
+ahead of `Departed` and `Placed`, the owed keep, the charge rule, the respawn kept on the
+portal's way and cleared on the respawn's, and the yaw and stand-up orders sound, and
+nine defects. What is built instead:
+
+1. **The respawn goes with the player.** `player_of`, the let-go note and the join set
+   the respawn to none (region.rs 2043, 1480, 2219, 2273), so a bed was forgotten at the
+   first hand-over, and always on the way into the End. They carry it. This is mended
+   first, alone, with tests: a bed kept across a line, through a portal and over a
+   leave and a join.
+2. **What the placing tells goes in `Placed`.** On a live link the worker sends a tick's
+   `ToPlayer` events before its durables, and on a resumed link only the outbox is sent
+   again. So `Durable::Placed` gains `respawn: Option<Respawned>`, with the `Respawn`'s
+   keep (0 after a death, 1 after the credits, 3 out of the End by its portal), whether
+   `NO_RESPAWN_BLOCK_AVAILABLE` is owed, and the anchor's sound where one is owed;
+   `STATE_FORMAT` rises once more. The edge owes a respawn from `Died`, `WonGame`, or a
+   `Departed` whose travel is a respawn's way (`Respawn`, `Credits`, or `EndPortal` from
+   the End): it sends no `Respawn` at that hand-over, holds the player's `ToPlayer`
+   events until the `Placed`, then sends `PlayerAbilities`, the game event, `Respawn`
+   with the keep, and what `placed()` sends, and then the held events. The way out of
+   the End by its portal thus sends the event before the `Respawn`, as the game does.
+3. **`placed()` for a respawn:** an absolute look, zero velocity, no portal sound, and
+   the level's information (with `START_WAITING_FOR_LEVEL_CHUNKS`) whatever the
+   dimension.
+4. **No hop bound.** A target known to be another region's is sent on by
+   `apply_arrival`'s `NotMine` already; a waiting stay whose wait finds the target's
+   chunk another region's (a claim's answer) is let go to it. A waiting stay counts its
+   own forwards, and at 16 is placed at the world spawn with its respawn kept and no
+   event; `hops` is left as it is.
+5. **Only the holder checks.** The block is checked, and the charge spent, only in the
+   region's own chunk; a copy is another region's chunk (case 3 before case 2). The
+   wait is for the 3 × 3 chunks about the target, own, copied or another's, which the
+   stand-up search reads.
+6. **The event is owed** when the travel's `(to, target)` is not the respawn's
+   `(dimension, pos)`, or when this region's own check failed; not merely because the
+   target is the world spawn.
+7. **The world spawn is the spawn's block** (`spawn_pose`), for the join and the respawn
+   alike; the game's `PlayerSpawnFinder.findSpawn` spreads both over `respawn_radius`
+   with an unseeded random. Named, for both.
+8. **The respawned body is made with the travel:** for `Way::Respawn` health is the
+   maximum, `dead` false and the effects cleared when the travel is made, so that a
+   stay let go while it waits is neither dead nor half-made.
+9. A join of a dead stay enters through the respawn's path (19.5 item 5): the region
+   makes the travel at once, and its placing, having the join's attempt, enters them
+   (`Spawned`), with no `Respawn`. `in_credits` is not in `Place`: a stay let go in the
+   credits joins in the portal, where they stood, and goes out of the End by it.
