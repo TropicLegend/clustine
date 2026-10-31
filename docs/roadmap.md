@@ -44,7 +44,7 @@ across several workers; a worker or the world store can die without anyone being
 disconnected or losing what they were shown.
 
 **What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, plates pressed by mobs; commands; the End's gateways; survival
+sensors, crafters, plates pressed by mobs; commands; survival
 mode and crafting.
 
 **Built since M3:**
@@ -581,12 +581,15 @@ and its bullet; **E9**, the ender dragon with its eight parts and eleven phases,
 fireball and breath; and the fight: its bar shown to the players near the island in every
 End region, the arena kept loaded, the podium placed at the first look, the dragon made,
 and at its death the exit portal opened, a gateway placed and the egg put on the podium.
-The respawn's tests from the specification by someone who did not write it found eight
-differences, mended. Named, left for now: arrows hit the dragon's whole box rather than
+**P10e**, the gateways: each asks the store once where it leads, which the store works
+out from the chunks out along its line (generating what was never made), the island and
+the return gateway made by the exit's holder, and travellers sent through and out on the
+tallest block. The tests from the specification of the respawn, the End's mobs and the
+fight, by someone who did not write them, found twelve differences, mended. Named, left for now: arrows hit the dragon's whole box rather than
 its parts; the respawn's spread over `respawn_radius` (the join has none either); the
-dragon's respawn by four crystals. Next: the gateways' travel (P10e), comparisons with
-the official server (the End's features, the platform's arrival, the credits, the void's
-death, the dragon's first moves), and tests of the End's mobs from the specification.
+dragon's respawn by four crystals. Next: the gateways' tests from the specification,
+and comparisons with the official server (the End's features, the platform's arrival,
+the credits, the void's death, the dragon's first moves).
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
@@ -595,8 +598,9 @@ On the platform the dragon's bar should show; the dragon circles the island, lan
 podium and breathes; crystals on the pillars heal it and explode when hit. Every player is
 creative, so the dragon does not attack, but it can be fought: hit its head or wings, or
 blow up its crystals. When it dies the portal in the podium opens, a gateway appears and
-the egg sits on top; step into the portal for the credits, then out to your bed or the
-world spawn. Jump off the island to see the void's death and the respawn screen. A city
+the egg sits on top; fly into the gateway that appears (an ender pearl through it is not
+built yet) to reach the outer islands, and back through the gateway there; step into the portal for the
+credits, then out to your bed or the world spawn. Jump off the island to see the void's death and the respawn screen. A city
 far out has shulkers that peek and shoot at other mobs, and a ship with an elytra.
 
 **What to try with a real client** (the Nether, since 2026-10-31): start a new world
