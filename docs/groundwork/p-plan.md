@@ -1367,3 +1367,139 @@ builds besides:
   code; `ENTITIES_GENERATION` rises in one lead commit after the three families.
 - **Tests** besides: a deflection by a player in another region than the fireball,
   with the ghast's tear and experience; a hoglin throwing a player.
+
+## 19. The End, at the level of the code (2026-10-31)
+
+The owner's second milestone of P (section 14): the End's portal, platform, credits and
+gateways (P10), the End's land, its mobs and the dragon's first fight (P12's End part),
+and the void that kills, with the respawn it needs (question 7). This is how, against
+the code at `9bd8709`. For review before it is built.
+
+### 19.1 What exists
+
+A survey found: P2's contracts (`Way::{EndPortal, Gateway { from, exact }, Credits}`,
+`PortalKind::{End, Gateway}`, `DragonFight` and `RegionState.dragon_fight`,
+`PlayerState.{seen_credits, in_credits}`, the End's home region made with the world),
+encoded and carried but used nowhere; the End's terrain and biomes, served bare
+(`bin/clustine/src/lib.rs`, `bare_land`); the End city's starts and pieces, not placed;
+the stronghold's portal room with its frames and eyes; the chorus flower's growth and the
+chorus fruit's teleport; the raid's boss bar at the edge (`boss_bars.rs`). Missing: the
+End's features; using an eye on a frame and throwing one; the End portal block's travel;
+the platform; the credits; gateways; a player's health, death and respawn; the shulker,
+its bullet, the end crystal, the dragon and its fight; an entity of several parts on the
+wire (`WireIds::run`). P9's travel assumes a Nether portal in `portals.rs` (`portal_met`,
+`entity_portal_inside`, `players_portal_tick`), `travel.rs` (`travel_fired` returns for
+any other kind) and `arriving.rs` (every waiter searches the portal index; `choose`
+keeps Nether portal blocks); the edge's change of dimension is wired for a change of
+level only, so a gateway takes a plain hand-over's path.
+
+### 19.2 The steps, in order
+
+**P10-0. The contracts, the lead's, one commit.** Everything the steps below share, so that
+no step reopens a type:
+- *Entities:* `EntityData::EyeOfEnder { target, life, survives, item }`,
+  `EntityData::EndCrystal { beam_target: Option<BlockPos>, show_bottom }`,
+  `EntityData::ShulkerBullet { owner, target, steps, direction, target_delta }` and the
+  dragon's fireball as a `Fireball` kind (P12's), with their codecs; stubs `BUILT = false`
+  for the shulker and the dragon with their arms in the shared tables, as 18.2 did.
+- *A player's life:* `PlayerState` gains `health` (20 at a join) and `dead` (the respawn
+  screen shown); `PlayerInput::PerformRespawn` (the client command 0) and
+  `PlayerEvent::{Health, Died { message }, WonGame { seen }}`; `Way::Respawn` beside
+  `Way::Credits`, for the respawn after a death, which carries nothing but where it was
+  asked from. The edge's packets: `SetHealth`, `PlayerCombatKill`,
+  `GameEvent(WIN_GAME)`, `GameEvent(IMMEDIATE_RESPAWN)` where the game sends it, and the
+  decoding of `ClientCommand`.
+- *The strongholds:* the positions of the 128 strongholds of the concentric rings are a
+  function of the seed and the overworld's biome source; the world store works them out
+  once when the world is made, keeps them in `meta`, and gives them to every region in
+  its configuration, so that an eye thrown anywhere finds the nearest without a question
+  across the cluster (`findNearestMapStructure` with radius 100 reads only those).
+- *Several parts on the wire:* `WireIds::run(key, n)`, n consecutive wire ids for one
+  entity, given back together; the dragon's eight.
+- *The fight's place:* the End's home region holds the arena, the chunks from −8 to 8 on
+  both axes (the game's ticket of radius 9 covers them), as a pinned area of its own
+  that no split takes from it and that is never merged away from the home
+  (`Region::split` and the coordinator's policy both read it).
+
+**P10a. The End's land** (subagents, files of their own; the comparisons of F and S).
+The End's features as the game's are placed (`end_spike`, with its crystals made as
+entities of the chunk and its iron bars where caged; `end_island`; `chorus_plant`;
+`end_gateway_return` in the highlands; `end_platform` at (100, 49, 0)); the End served
+with its features (`featured_land`); End cities placed with their markers: loot chests,
+sentry shulkers made where their type is built, the elytra in its item frame on the ship.
+`ENTITIES_GENERATION` and the features' generation rise once, after P10a and the
+shulker, in one lead commit. Compared with the official server's chunks of a seed, as
+the overworld's and the Nether's were.
+
+**P10b. The portal and the eyes** (a subagent for the eye and the frame; the travel the
+lead's). `EnderEyeItem.useOn` and the frame's eye, the 5 × 5 ring found, the 3 × 3 of
+`end_portal` made, level events 1503 and 1038 (global); the thrown eye (`EyeOfEnder`'s
+flight, 80 ticks, a draw of four in five, `ender_eye_death` or level event 2003, its
+item dropped). The End portal block: `PortalKind::End`, transition 0; into the End the
+traveller goes to the End's home with `Way::EndPortal`, and the region that holds
+(100, 49, 0) makes the platform (`createEndPlatform`, its blocks destroyed with drops
+first) in the commit that places them: a player at (100.5, 49, 0.5), any other entity at
+(100.5, 50, 0.5), yaw 90, the relatives of 2.4. No portal search and no index for the End.
+Out of the End: a player who has not seen the credits gets the credits (P10c); one who
+has, and any entity, goes to the overworld: a player to their bed or anchor without
+spending a charge, else the world spawn (5.3, R G8), any other entity to the top of the
+world spawn's column. The edge's placing tells the portal's sound (1032) where the
+game's transition plays it, and the default spawn of the level the client is in.
+
+**P10c. The credits** (the lead's): as 5.3 steps 1 to 4. `GameEvent(WIN_GAME, 0)`; the
+player hidden and still in the End's region, inputs but `PerformRespawn` ignored; then a
+departure with `Way::Credits` and `data_to_keep` 1 to where the respawn puts them.
+
+**P10d. Death and the respawn** (the lead's). Only the void kills: below the End's (and
+any level's) lowest y less 64, `fell_out_of_world` hurts a player by 4 a tick, creative
+or not (`bypasses_invulnerability`); health is sent; at 0 the player dies: the death
+message (`PlayerCombatKill`), the respawn screen, nothing dropped (every player is
+creative and the game's creative player drops what it carries — **to be checked in the
+dump before it is built**), the stay kept in the region, dead, until `PerformRespawn`;
+then a departure with `Way::Respawn` and `data_to_keep` 0 to the bed, the anchor (its
+charge spent) or the world spawn, `NO_RESPAWN_BLOCK_AVAILABLE` where the block is gone. A
+dead player who leaves enters next time at their respawn. Health comes back full at the
+respawn; nothing else hurts a player yet.
+
+**P10e. Gateways** (the gateway's block entity a subagent's; the travel the lead's). The
+block entity's age, cooldown and beam (block event 1), its exit found or made 1024 blocks
+out (the store's test for an empty chunk; the island made by the region that holds the
+exit, with `end_island` of the position's random), the return gateway placed; the travel
+a hand-over within the End with `Way::Gateway`, which the edge treats as the second half
+of a change of dimension does: moves held, the placing a teleport the client must
+accept (15.4's "on `Placed` whatever the dimension").
+
+**P12-End. The End's mobs** (subagents by family, as 18.3; the fight's record the
+lead's):
+- *E7. End crystal:* placed by its item on obsidian or bedrock where the two above are
+  air and empty; explodes (power 6) when hurt but by an explosion that is not its own,
+  removed at once; its beam; it fires the fight's respawn check where it is placed.
+- *E8. Shulker and its bullet:* attached to a face, its peek and its armour, teleporting
+  when hurt at low health, the bullet's flight by steps and levitation 200 ticks on a hit,
+  the duplication when a bullet hits a shulker, its colour; the sentries of the cities.
+- *E9. The dragon* (a subagent, against the contract): its eight parts and their hits,
+  its phases (holding pattern, strafe, approach and landing, sitting, take-off, charge,
+  death) as the dumps have them, its fireball and the dragon's breath cloud, the crystals'
+  healing, its death's experience (12000, then 500).
+- *The fight* (the lead's): `EnderDragonFight` ticked by the End's home region: the
+  scanning for an old portal, the dragon made, the boss bar shown to players within the
+  arena, the crystals counted, the death: the exit portal (`end_podium`), the egg where
+  it was never killed before, the next of twenty gateways. Its respawn by four crystals
+  last, and named if it slips (section 14).
+
+### 19.3 Tests and comparisons
+
+Each family's own tests; tests from the specification by someone who did not write the
+code, for P10b to P10e together and for the End's mobs; comparisons with the official
+server on a world of one seed on both (`OracleWorld` with the seed, so that the End is
+the same): an End chunk's features, the platform and the arrival's packets, the
+exit portal's credits (the `WIN_GAME` and the respawn's packets), an eye's flight and
+where it goes, a crystal's explosion, the void's death and respawn, and the dragon's first
+moves (its spawn, the boss bar, the first nodes of its path).
+
+### 19.4 What is left out, named
+
+The wither (section 14); the dragon's respawn may slip past the milestone if it comes
+last; survival's other harms (a player hurt by anything but the void); a creative
+player's drops at death if the dump says the game drops them (then they are dropped
+where they fell, which in the void is nowhere).
