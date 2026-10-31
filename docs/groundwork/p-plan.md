@@ -1767,3 +1767,157 @@ nine defects. What is built instead:
    makes the travel at once, and its placing, having the join's attempt, enters them
    (`Spawned`), with no `Respawn`. `in_credits` is not in `Place`: a stay let go in the
    credits joins in the portal, where they stood, and goes out of the End by it.
+
+### 19.8 The gateways (P10e)
+
+The game's rules are the brief's 2.6 (TheEndGatewayBlockEntity.txt, EndGatewayBlock.txt,
+EndGatewayFeature.txt). 19.5 item 9 and 19.6 ("The gateway's exit") settled that the
+exit is found once, by the store, and written into the gateway by its region; this
+section says how, against the code at `60e2e06`.
+
+**The gateway's block entity.** Its record keeps `Age` (a long), `exit_portal` (optional)
+and `ExactTeleport`, as the game saves them (P10a writes them for the return gateways it
+places). A region ticks every gateway it holds (`portalTick`): age + 1; a cooldown of 40
+counted down; at `age % 2400 == 0`, `triggerCooldown`, which tells the clients
+`BlockEvent(pos, end_gateway, 1, 0)` (they draw the beam). The cooldown and whether it is
+spawning (`age < 200`) are what the client is told of it in its update tag; the age is
+durable with the chunk, the cooldown in memory (a restart loses at most 40 ticks of it,
+named). A gateway the fight places (`end_gateway_delayed`) and one a placing makes have
+age 0 and no exit.
+
+**Entering** (`entityInside`): an entity in the gateway block's shape that may use a
+portal, the gateway not cooling down: marked inside the gateway (`PortalKind::Gateway`,
+transition 0, so it fires the next tick) and the gateway's cooldown triggered. When the
+clock fires (`travel.rs`, `travel_fired`), for a gateway:
+- with its exit known: the traveller goes with `Travel { to: End, target, way:
+  Way::Gateway { from, exact } }`, `target` being the exit;
+- with none: the region asks the store once per gateway (`GatewayExitQuery { from }`,
+  not durable, asked again after a take-over as the portal index's questions are) and
+  the traveller is not sent; its clock is set back to wait (it stays marked inside, and
+  fires again when the answer has come). Every traveller of that gateway waits on the
+  same question.
+
+**The store's answer.** The store works out the game's `findOrCreateValidTeleportPos`
+from each chunk's committed form (its stored chunk with its holder's commits replayed,
+as a copy's base is), generating where a chunk was never made, off the store's lanes on
+its generation pool, and answers when it has:
+1. `findExitPortalXZPosTentative`: from the gateway's xz normalised, 1024 out; back 16
+   at a time while the chunk there is not empty, at most 16 steps; then on 16 at a
+   time while it is empty, at most 16 steps ("empty": no section with a block that is
+   not air, `getHighestFilledSectionIndex() == -1`).
+2. `findValidSpawnInChunk` in that chunk: the end stone with two blocks above it that
+   have no full collision, nearest the origin by `distToCenterSqr(0, 0, 0)`.
+3. If none, an island is wanted at `(x + 0.5, 75, z + 0.5)` of the tentative place
+   (`end_island` with `RandomSource.create(pos.asLong())`): the store lays its blocks
+   over its reading, in memory only.
+4. `findTallestBlock(pos, 16, true)` over that reading; `exit = that.above(10)`.
+
+The answer becomes `GatewayExitAnswer { id, exit: Option<GatewayExit> }` with
+`GatewayExit { exit: BlockPos, island: Option<BlockPos> }` (the island's centre where
+one is to be made); the contract's `(BlockPos, bool)` cannot say where the island is.
+`None` stays the answer of a store that cannot say (the overworld, the Nether, a world
+with no End).
+
+**The source writes the exit.** When the answer comes, the source region writes the
+exit into its gateway's record (`exit_portal`, its `ExactTeleport` kept), and only then
+lets its waiting travellers fire; a second traveller finds the exit known. The write is
+a block entity change in the tick's commit, so a take-over keeps it.
+
+**Where the traveller comes out.** The traveller goes as a portal's does, to the End's
+home, which sends it on by the land's knowledge to the holder of the target's chunk
+(`apply_arrival`'s `NotMine`, `entity_travels`' traveller filed for the target's chunk).
+The region that places it:
+- where the travel's gateway had no exit before (the travel says so: `Way::Gateway`
+  gains `island: Option<BlockPos>` and `fresh: bool`), makes the island where one is
+  wanted (`end_island`'s blocks with `RandomSource.create(pos.asLong())`) and the return
+  gateway at the exit (`EndGatewayFeature.knownExit(from, false)`: the 3 × 5 × 3 cage
+  with the gateway's block entity whose exit is `from`, not exact), in its placing
+  commit, both only where its own chunks are and the return gateway's block is not a
+  gateway already (a second traveller's placing makes nothing);
+- places the traveller at the exit itself where `exact`, else at
+  `findTallestBlock(exit + (0, 2, 0), 5, false).above()`, the block's bottom centre; a
+  player with `DELTA ∪ ROTATION` (the client keeps its velocity and look), with no
+  `Respawn` (a gateway changes no level: 19.5 item 3), the view moved as a teleport
+  moves it; an ender pearl with its velocity cleared (absolute);
+- where the destination is the region the traveller is in (an End of one region), it is
+  placed there with a `Durable::Placed` and no `Departed` (19.5 item 3, 19.6 "A home
+  places what it takes").
+
+**Formats.** `Way::Gateway` gains `island` and `fresh` (the travel's codec in
+clustine-format and the state: `FORMAT_VERSION` rises once, `STATE_FORMAT` is 28 already
+in this unpushed batch). The answer is a message of the store's link only.
+
+**Tests** (each family's, then from this section by someone who did not write it): the
+gateway's tick, beam and cooldown; entering and the cooldown; the first traveller's wait
+on the question and its fire after the answer, the exit written, a second traveller
+finding it; the store's search over chunks it reads and generates (empty, not empty,
+stepping back and on, a spawn in the chunk, an island wanted, the tallest block); the
+placing with the island and the return gateway once, exact and not; a player's packets
+(no `Respawn`); an End of one region; a take-over while a question is out.
+
+**Questions for the reviewer.**
+1. Can the store generate chunks for the search off its lanes, and answer later, without
+   breaking the order its lanes keep? What does it read for a chunk a region holds but
+   has not committed the latest of?
+2. Is a gateway's clock held back correctly by the portal state (`PortalState`'s clock)
+   while the question is out, and what does a region do with travellers marked inside a
+   gateway when a take-over or a merge comes between the question and the answer?
+3. Is `fresh` needed, or can the placing region tell a first traveller from the return
+   gateway's block alone?
+4. What does the game do for an entity (not a player) going through, and for one riding
+   or ridden?
+
+#### The review (2026-10-31), and what is built instead
+
+An independent reviewer read the above against the bytecode and the code at `60e2e06`.
+They found the search's steps and constants, the island's place and random, the exit ten
+above the tallest block, `knownExit(from, false)`, the exact and inexact exits, entering
+and its block event, the relatives, and the exit written in the source's commit sound,
+and ten defects. What is built instead:
+
+1. **The question is asked ahead, not at the entry.** A region asks the store for every
+   gateway it holds that has no exit, as soon as it holds it: one the fight places, one a
+   placing makes, one in a chunk it loads or takes. The question is not kept in the
+   state: it is worked out each tick (a gateway with no exit not asked in this run), so a
+   restore, merge or split asks again by itself. The exit is then known long before
+   anyone reaches the gateway; a gateway whose exit is still unknown, or that the region
+   cannot read, takes nobody in (its entry neither marks the traveller nor starts the
+   cooldown), so no portal clock waits on an answer.
+2. **The island and the return gateway are made by the exit's holder, once.** In the
+   commit that writes the exit, the source files a traveller with no entities for the
+   exit's chunk (`Traveller { travel: Travel { to, target: exit, way: Way::Gateway {
+   from, exact, island } }, entities: [] }`): its holder makes the island where one is
+   wanted (`end_island` at `island` with `RandomSource.create(island.asLong())`) and
+   `knownExit(from, false)` at the exit, setting blocks in a neighbour's chunk with
+   `SetIf` as a portal's are. `Way::Gateway` gains `island: Option<BlockPos>`, which only
+   that traveller carries; `fresh` is not needed.
+3. **The answer is the question's.** `GatewayExitAnswer` carries `from`; the store
+   answers only the session that asked, dropping it where the region's owner changed;
+   the region writes the exit only where it holds the gateway still and the gateway has
+   none. An answer of none (outside the End, a store that cannot say) leaves the gateway
+   without an exit, which takes nobody in, and it is asked again after a restore.
+4. **What the client is told.** The update tag carries `Age`, `exit_portal` and
+   `ExactTeleport` (`saveCustomOnly`), not the cooldown, which goes only as the block
+   event (1, 0). `portalTick` starts the cooldown at `age % 2400 == 0` only where it is
+   not cooling down. The age counts each tick unseen and is committed where the game
+   calls `setChanged` (the spawning or cooling flips, the exit set) and with the chunk
+   when it is let go; a crash loses the ticks since, named. A loaded gateway shows the
+   beam of its spawning only while its age is under 200.
+5. **The search, exactly** (`findValidSpawnInChunk`: y from 30 to the top of the highest
+   section, `betweenClosed` order, the first strictly nearest wins; `findTallestBlock`:
+   dx outer, dz inner, a strictly taller block replaces, falling back to the position;
+   its radius of 16 reads the 3 × 3 chunks about the point). The store runs it as a chain
+   of chunk reads on its commit thread, as `Job::Copy` reads a chunk (its base and the
+   holder's commits since), generating what was never made and storing what it
+   generates, as `Load` does, so the arrival does not make it again. The answer comes
+   when the chain ends; it promises nothing about commits, so it may come late.
+6. **The edge in a travel within one level** (`Way::Gateway`): no `Respawn`, the moves
+   held while the traveller is between regions as for a change of level, the look told
+   as the turn from the look it departed with (`ROTATION`), the velocity kept (`DELTA`),
+   no level information, no wait for chunks and no portal sound.
+7. **The placing reads what it needs:** the chunks about the target, and for the
+   marker traveller the chunks about the island's centre too.
+8. **Riders,** named: a unit with a player in it does not go through a gateway (as at
+   any portal until step P9b); in the game it goes with its passengers.
+9. **The dimension:** `to` is the source's, the End; a gateway outside the End (placed by
+   a player in creative) is asked nothing and takes nobody, as the game's returns none.
