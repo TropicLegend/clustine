@@ -258,6 +258,8 @@ impl Region {
                 continue;
             };
             if self.own_block(answer.from).is_none() {
+                // Its chunk is not loaded now: asked again when it is.
+                self.gateways_asked.remove(&answer.from);
                 continue;
             }
             let Some(mut data) = self.gateway_at(answer.from) else {

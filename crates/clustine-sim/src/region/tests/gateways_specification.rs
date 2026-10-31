@@ -806,7 +806,6 @@ fn a_gateway_that_took_a_player_takes_the_next_forty_ticks_later() {
 /// `entityInside`'s `isCoolingDown`: the first player taken in starts the cooldown, so
 /// a second standing in the same gateway in the same tick is not taken in with them.
 #[test]
-#[ignore = "finding: entityInside (EndGatewayBlock 38-58) takes one in and starts the cooldown before the next entity's entityInside, so of two players in a gateway in one tick only the first goes; the region checks every player against the gateway before it starts any cooldown (portals.rs, gateways_entered), and both go"]
 fn of_two_players_in_a_gateway_in_one_tick_only_one_goes() {
     let mut end = end_with_an_open_gateway(true);
     let (one, _) = add_player(&mut end, 1, feet_in(GATEWAY), false);
@@ -1127,7 +1126,6 @@ fn the_exit_s_holder_makes_the_island_and_the_return_gateway_once_and_a_neighbou
 /// land's knowledge to the holder of the exit's chunk; only where the exit is its own
 /// does it place them itself.
 #[test]
-#[ignore = "finding: 19.8 has the End's home send a gateway's traveller on to the holder of the exit's chunk (apply_arrival's NotMine); a home that is itself the source (travel.rs, player_travels: to == its dimension and is_home_of) takes the player as its own waiting stay and places them in the other region's chunk, by blocks it cannot read (findTallestBlock over air: three above the exit)"]
 fn the_end_s_home_sends_a_gateway_s_traveller_on_to_the_holder_of_the_exit_s_chunk() {
     let mut land = Land::of(
         Dimension::End,

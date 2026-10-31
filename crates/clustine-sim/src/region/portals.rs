@@ -459,7 +459,6 @@ impl Region {
     pub(crate) fn players_portal_tick(&mut self, output: &mut TickOutput) {
         let ids: Vec<PlayerId> = self.players.keys().copied().collect();
         let mut to_the_credits = Vec::new();
-        let mut gateways_entered = Vec::new();
         for id in ids {
             let Some(player) = self.players.get(&id) else {
                 continue;
@@ -490,8 +489,10 @@ impl Region {
                 Some((_, kind)) if credits(kind) => to_the_credits.push(id),
                 Some((entry, kind)) => {
                     set_as_inside_portal(&mut portal, kind, entry, PLAYER_DIMENSION_CHANGING_DELAY);
+                    // `EndGatewayBlock.entityInside`: the gateway cools as it takes one in,
+                    // before the next player is looked at, so that one goes of two.
                     if kind == PortalKind::Gateway {
-                        gateways_entered.push(entry);
+                        self.trigger_gateway_cooldown(entry, output);
                     }
                 }
                 None => {}
@@ -508,10 +509,6 @@ impl Region {
         }
         for id in to_the_credits {
             self.show_end_credits(id, output);
-        }
-        // `EndGatewayBlock.entityInside`: a gateway cools down as it takes one in.
-        for entry in gateways_entered {
-            self.trigger_gateway_cooldown(entry, output);
         }
     }
 

@@ -236,7 +236,13 @@ impl Region {
         // an End of one region), is placed here, with no departure to itself
         // (`docs/groundwork/p-plan.md`, sections 19.5 item 3 and 19.6).
         if to == self.config.dimension && self.is_home_of(to) {
-            self.take_waiting_stay(edge, id, &transfer);
+            // Unless another region holds the target's chunk: the traveller goes on to it,
+            // as the home sends on those it is sent (19.8).
+            let target = ChunkPos::new(travel.target.x >> 4, travel.target.z >> 4);
+            match self.land.knowledge(target).holder() {
+                Some(holder) => self.travelled.push(((edge, id, transfer, holder), face)),
+                None => self.take_waiting_stay(edge, id, &transfer),
+            }
             return;
         }
         self.travelled.push(((edge, id, transfer, home), face));
