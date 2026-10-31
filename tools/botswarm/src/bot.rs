@@ -1167,6 +1167,33 @@ impl Bot {
         Ok(())
     }
 
+    /// Drops one of the held stack, as a client does at the drop key: the server throws
+    /// it from the eyes along where the bot last looked.
+    pub async fn drop_held_item(&mut self) -> Result<()> {
+        self.connection
+            .write(&PlayerAction {
+                status: player_action::DROP_ITEM,
+                position: Position { x: 0, y: 0, z: 0 },
+                face: 0,
+                sequence: 0,
+            })
+            .await?;
+        if let Some(held) = usize::try_from(self.own_slot)
+            .ok()
+            .and_then(|slot| self.own_hotbar.get_mut(slot))
+        {
+            let emptied = held.as_mut().is_some_and(|stack| {
+                stack.count -= 1;
+                stack.count <= 0
+            });
+            if emptied {
+                *held = None;
+            }
+        }
+        self.has_sent();
+        Ok(())
+    }
+
     pub async fn select_slot(&mut self, slot: i16) -> Result<()> {
         self.connection.write(&SetHeldItem { slot }).await?;
         self.own_slot = slot.into();

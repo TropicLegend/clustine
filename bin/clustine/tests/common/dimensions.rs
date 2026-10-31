@@ -85,7 +85,7 @@ pub async fn join(address: &str, name: &str, others: &mut [Bot]) -> Result<Bot> 
 }
 
 /// Whether the bot holds the nine chunks about where it is.
-fn around_is_held(bot: &Bot) -> bool {
+pub fn around_is_held(bot: &Bot) -> bool {
     let x = (bot.location.0.floor() as i32).div_euclid(16);
     let z = (bot.location.2.floor() as i32).div_euclid(16);
     (-1..=1).all(|dx| (-1..=1).all(|dz| bot.chunks.contains_key(&(x + dx, z + dz))))
