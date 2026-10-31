@@ -201,14 +201,14 @@ impl Region {
     /// records or occupancy changed, or that came into the land, whole; the chunks let
     /// go; or, in a region's first tick after it is made or restored, every chunk.
     pub(super) fn report_village(&mut self, full: bool, output: &mut TickOutput) {
+        // What the tick's steps put in: the global level events (`eye_of_ender.rs`), and
+        // the fight and the arena's sighting (`end_fight.rs`).
+        let made = output.village.take().unwrap_or_default();
         let mut report = VillageReport {
             full,
-            // The global level events the tick's steps put in (`eye_of_ender.rs`).
-            global_events: output
-                .village
-                .take()
-                .map(|made| made.global_events)
-                .unwrap_or_default(),
+            global_events: made.global_events,
+            fight: made.fight,
+            in_arena: made.in_arena,
             ..VillageReport::default()
         };
         if full {
@@ -238,6 +238,8 @@ impl Region {
             || !report.let_go.is_empty()
             || report.raids.is_some()
             || !report.global_events.is_empty()
+            || report.fight.is_some()
+            || report.in_arena.is_some()
         {
             output.village = Some(report);
         }

@@ -105,7 +105,12 @@ fn world_with_in(
             ..TickInputs::default()
         },
     );
-    assert_eq!(output.chunk_requests, [], "asked for again");
+    // None of the chunks it loaded is asked for again; the End's home asks for the
+    // fight's arena besides, while a player is near (`end_fight.rs`).
+    let again: Vec<&ChunkPos> = (output.chunk_requests.iter())
+        .filter(|chunk| chunk.x.abs() <= 2 && chunk.z.abs() <= 2)
+        .collect();
+    assert!(again.is_empty(), "asked for again: {again:?}");
     (region, output)
 }
 

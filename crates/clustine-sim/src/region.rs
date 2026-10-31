@@ -566,6 +566,8 @@ pub struct Region {
     raid_memory: raids::RaidMemory,
     /// What the store published of the End (`end_world.rs`).
     published_end: end_world::PublishedEnd,
+    /// What the region keeps in memory of the dragon fight (`end_fight.rs`).
+    fight_memory: end_fight::FightMemory,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -841,6 +843,7 @@ impl Region {
             bell_rings: bells::Rings::new(),
             raid_memory: raids::RaidMemory::default(),
             published_end: end_world::PublishedEnd::default(),
+            fight_memory: end_fight::FightMemory::default(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),
@@ -1368,6 +1371,10 @@ impl Region {
         self.players_portal_tick(&mut output);
         self.players_touch_blocks(&mut output);
         self.run_entities(&mut output);
+        // The dragon fight after its dragon (`EnderDragonFight.tick` runs in
+        // `ServerLevel.tick` before the entities; the dragon's word of this tick is then
+        // a tick late for the bar, named).
+        self.fight_tick(&mut output);
         self.run_block_entities(&mut output);
         // The hives let their bees out after the other block entities (`hives.rs`).
         self.run_hives(&mut output);
@@ -1536,6 +1543,7 @@ impl Region {
         // The counts of its mobs, all of them in the tick that names every stay
         // (`spawn_caps.rs`).
         self.report_counts(first, &mut output);
+        self.report_fight(&mut output);
         self.report_village(first, &mut output);
 
         // Riders who left the world, noted where they got off, and those let go.
