@@ -113,6 +113,7 @@ mod natural_spawning;
 mod orbs;
 mod redstone;
 mod reshape;
+mod respawn_block;
 mod riders;
 pub(crate) mod riding;
 mod sculk;
