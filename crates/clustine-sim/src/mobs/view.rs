@@ -264,6 +264,13 @@ pub(crate) trait MobWorld: Holds {
     /// light of blocks (the plan's 9.7.2, until N8). `None` where the chunk is not read.
     fn light(&self, pos: BlockPos) -> Option<LightAt>;
 
+    /// What the dragon `key` reads of its fight (`region/end_fight.rs`): none outside
+    /// the End's home, or for a dragon not the fight's own, or where a view knows none.
+    fn dragon_fight(&self, key: EntityId) -> Option<crate::region::end_fight::FightView> {
+        let _ = key;
+        None
+    }
+
     /// The name of the biome at `pos`, where the chunk is read: what the environment
     /// attributes of a place follow (a snow golem's melting). None where a view knows
     /// no biomes.

@@ -423,6 +423,7 @@ impl Region {
                 }
                 Local::VillagerDied { murderer } => self.villager_died(key, murderer, output),
                 Local::PricesAgain => self.prices_again(key, output),
+                Local::Dragon(local) => self.dragon_local(key, *local, output),
                 Local::Raider { key: about, news } => {
                     self.raider_news(key, about, news, output);
                 }
@@ -590,10 +591,11 @@ impl Region {
                 attacker,
                 damage,
                 from,
+                part,
                 ..
             } => match self.player_with_entity(attacker) {
                 Some(player) => {
-                    self.player_attack(player, entity.key, output);
+                    self.player_attack(player, entity.key, part, output);
                 }
                 None => {
                     let source = DamageSource::by(
@@ -606,7 +608,7 @@ impl Region {
                             living: true,
                         },
                     );
-                    self.hurt_mob(entity.key, &source, damage.0, output);
+                    self.hurt_mob_at(entity.key, part, &source, damage.0, output);
                 }
             },
             EntityUse::Interact { .. } => self.mob_interacted(entity, chunk, by, output),

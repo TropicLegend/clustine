@@ -42,10 +42,6 @@ const CRYSTALS_EVERY: u64 = 100;
 
 /// What a dragon reads of its fight (`EnderDragon.getDragonFight()` and what its phases
 /// ask of it), none where the dragon has no fight: outside the End's home.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the dragon (E9) calls this; remove when it does")
-)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FightView {
     /// `EnderDragonFight.getCrystalsAlive()`: the crystals on the spikes, as the fight
@@ -253,10 +249,6 @@ impl Region {
 
     /// What the dragon `key` reads of its fight: none outside the End's home, or for a
     /// dragon that is not the fight's own.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dragon (E9) calls this; remove when it does")
-    )]
     pub(crate) fn fight_view(&self, key: EntityId) -> Option<FightView> {
         if !self.is_home_of(Dimension::End) {
             return None;
@@ -274,10 +266,6 @@ impl Region {
 
     /// `EnderDragonFight.updateDragon`: the dragon `key`, of `health` out of `max`, as
     /// its `aiStep` tells it each tick; the bar shows it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dragon (E9) calls this; remove when it does")
-    )]
     pub(crate) fn fight_dragon_updated(&mut self, key: EntityId, health: f32, max: f32) {
         let ours = (self.dragon_fight.as_ref()).is_some_and(|fight| fight.dragon == Some(key));
         if ours && max > 0.0 {
@@ -288,10 +276,6 @@ impl Region {
     /// `EnderDragonFight.setDragonKilled`: the dragon `key` has finished dying (its
     /// `tickDeath` at 200) and is removed. The exit portal, the egg and the gateway come
     /// with the fight's next step.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dragon (E9) calls this; remove when it does")
-    )]
     pub(crate) fn fight_dragon_killed(&mut self, key: EntityId, output: &mut TickOutput) {
         let _ = output;
         let Some(fight) = self.dragon_fight.as_mut() else {
@@ -309,10 +293,6 @@ impl Region {
     /// The top of the podium's column at the fight's origin (0, 0): the highest block
     /// that stops movement, not counting leaves, and one above it; the floor of the
     /// level where the region cannot read it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the dragon (E9) calls this; remove when it does")
-    )]
     fn podium_top(&self) -> BlockPos {
         let y = (self.readable_chunk(ChunkPos::new(0, 0)))
             .map(|chunk| chunk.min_y() + i32::from(chunk.heights().motion_blocking_no_leaves[0]))

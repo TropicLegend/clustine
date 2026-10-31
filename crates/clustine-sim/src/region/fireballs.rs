@@ -39,7 +39,17 @@
 //! takes them as a burning projectile: TNT is primed (`projectile_hits.rs`) and an unlit
 //! campfire lit.
 //!
+//! **The dragon's** (`DragonFireball`, d DragonFireball.txt; family E9 of the End's
+//! milestone, section 19.2): it flies as the others do but does not burn
+//! (`shouldBurn`), nothing redirects it, and it is made facing nowhere (`snapTo(x, y,
+//! z, 0, 0)`). It flies on through its own owner (`ownedBy`); any other hit hurts
+//! nothing of itself, but bursts: level event 2006 and a cloud of the dragon's breath
+//! (instant damage II, radius 3 growing to 7 over 600 ticks) at the first living thing
+//! within 4 of it, else where it is (`region/ender_dragon.rs`).
+//!
 //! Named differences:
+//! - The dragon's fireball that meets its owner makes no `projectile_land` vibration
+//!   before it flies on.
 //! - An owner removed in another region (gone across a line and removed there) is not
 //!   noticed: the fireball flies on until it hits or reaches land nobody holds. One
 //!   whose owner dies here is gone at once, where the game's waits for the owner's
@@ -111,6 +121,11 @@ pub(crate) fn redirectable(kind: u16) -> bool {
     i32::from(kind) == entity_types::FIREBALL
 }
 
+/// The key of a fireball's owner, if it has one.
+fn owner_key_of(fireball: &Fireball) -> Option<EntityId> {
+    fireball.owner.map(|owner| owner.key)
+}
+
 /// `ProjectileUtil.rotateTowardsMovement(entity, 0.2f)` of a fireball that faced `yaw`
 /// and `pitch` as its tick began (`yRotO`, `xRotO`) and moves by `motion`: its pitch and
 /// yaw a fifth of the way from there towards its motion's, the old ones brought within
@@ -144,6 +159,11 @@ pub(crate) fn inertia(motion: Vec3, power: f64, in_water: bool) -> Vec3 {
     let kept = if in_water { LIQUID_INERTIA } else { INERTIA };
     let grown = physics::add(motion, physics::scale(physics::normalize(motion), power));
     physics::scale(grown, f64::from(kept))
+}
+
+/// Whether a fireball of the entity type `kind` is the dragon's.
+fn is_dragon_ball(kind: u16) -> bool {
+    kind == crate::mobs::types::ender_dragon::DRAGON_FIREBALL
 }
 
 /// What a fireball's tick reads of its record.
@@ -189,6 +209,11 @@ impl Region {
             fall_distance: entity.fall_distance,
         };
         let struck = self.hit_on_move(&flying, position, entity.position, motion);
+        // `DragonFireball.onHit`: its owner hit, it flies on.
+        let struck = struck.filter(|struck| {
+            !(is_dragon_ball(entity.kind)
+                && matches!(struck, Struck::Entity { target, .. } if Some(*target) == owner_key_of(&fireball)))
+        });
         let location = struck.map_or_else(
             || physics::add(entity.position, motion),
             |struck| struck.location(),
@@ -225,8 +250,12 @@ impl Region {
         if found.in_water() {
             fire = 0;
         }
-        // `shouldBurn()`: `igniteForSeconds(1)`.
-        let fire = fire.max(BURNING_TICKS);
+        // `shouldBurn()`: `igniteForSeconds(1)`; the dragon's does not burn.
+        let fire = if is_dragon_ball(entity.kind) {
+            fire
+        } else {
+            fire.max(BURNING_TICKS)
+        };
         let after = Entity {
             position: location,
             motion,
@@ -306,6 +335,10 @@ impl Region {
         };
         let key = fireball.key;
         let large = redirectable(fireball.kind);
+        if is_dragon_ball(fireball.kind) {
+            self.dragon_fireball_struck(fireball, &data, struck, output);
+            return;
+        }
         match struck {
             Struck::Entity { target, kind, at } => {
                 // `onRedirectProjectile` of a large fireball hit and its `onHitEntity`
@@ -344,6 +377,42 @@ impl Region {
         if large {
             self.fireball_explodes(fireball, &data, in_water, output);
         }
+    }
+
+    /// `DragonFireball.onHit` (d DragonFireball.txt 30–300) of a hit not on its owner:
+    /// `Projectile.onHit` (nothing of its own on an entity, the block's own on a block,
+    /// and `projectile_land`), then its burst. The caller removes it after.
+    fn dragon_fireball_struck(
+        &mut self,
+        fireball: &Entity,
+        data: &Fireball,
+        struck: Struck,
+        output: &mut TickOutput,
+    ) {
+        let key = fireball.key;
+        match struck {
+            Struck::Entity { at, .. } => self.vibrate(
+                Vibration::PROJECTILE_LAND,
+                at,
+                Context::of(Some(Source::of(key)), None),
+            ),
+            Struck::Block { hit, .. } => {
+                if let Some(state) = self.block(hit.pos) {
+                    self.projectile_hit(fireball, state, &hit, output);
+                }
+                self.vibrate_at(
+                    Vibration::PROJECTILE_LAND,
+                    hit.pos,
+                    Context::of(Some(Source::of(key)), self.block(hit.pos)),
+                );
+            }
+        }
+        // `getOwner() instanceof LivingEntity`: a mob's or a player's.
+        let owner = data
+            .owner
+            .filter(|owner| owner.player.is_some() || self.owner_is_mob(owner.key))
+            .map(|owner| owner.key);
+        self.dragon_fireball_bursts(fireball, owner, output);
     }
 
     /// `damageSources().fireball(fireball, owner)`'s hurt of `amount`, with fire for
@@ -648,10 +717,11 @@ impl Region {
 
     /// A fireball of the entity type `kind` that the mob `owner` shoots from `at` along
     /// `direction` (`Local::ShootFireball`; `new LargeFireball(level, mob, direction,
-    /// power)` or `new SmallFireball(level, mob, direction)`, then `setPos(at)` and
-    /// `addFreshEntity`): its UUID its only draws, its motion the direction made one long
-    /// at the power 0.1 (`assignDirectionalMovement`), turned as its owner is, showing a
-    /// fire charge, owned by the mob. Made in the region's own land, sent to the holder
+    /// power)`, `new SmallFireball(level, mob, direction)` or `new DragonFireball(level,
+    /// dragon, direction)`, then `setPos(at)` and `addFreshEntity`): its UUID its only
+    /// draws, its motion the direction made one long at the power 0.1
+    /// (`assignDirectionalMovement`), turned as its owner is (the dragon's facing nowhere),
+    /// showing a fire charge, owned by the mob. Made in the region's own land, sent to the holder
     /// of a chunk it copies, not made where it can read nothing (section 4.1's rule).
     pub(crate) fn shoot_fireball(
         &mut self,
@@ -681,6 +751,12 @@ impl Region {
             .map_or((0, 0.0, 0.0), |(_, record)| {
                 (record.kind, record.yaw, record.pitch)
             });
+        // The dragon's is set facing nowhere after it is made (`snapTo(x, y, z, 0, 0)`).
+        let (yaw, pitch) = if is_dragon_ball(kind) {
+            (0.0, 0.0)
+        } else {
+            (yaw, pitch)
+        };
         let data = Fireball {
             item: ItemStack::new(items::FIRE_CHARGE, 1),
             owner: Some(ProjectileOwner {

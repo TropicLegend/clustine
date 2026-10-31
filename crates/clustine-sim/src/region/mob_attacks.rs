@@ -150,6 +150,7 @@ impl Region {
         &mut self,
         player: PlayerId,
         target: EntityId,
+        part: Option<u8>,
         output: &mut TickOutput,
     ) {
         let Some(attack) = self.attack_of(player) else {
@@ -164,7 +165,7 @@ impl Region {
         if attack.sprint_knock {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_KNOCKBACK, attack.feet, output);
         }
-        let took = self.hurt_mob(target, &attack.source, attack.amount, output);
+        let took = self.hurt_mob_at(target, part, &attack.source, attack.amount, output);
         if !took {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_NODAMAGE, attack.feet, output);
             return;

@@ -263,6 +263,10 @@ impl MobWorld for View<'_> {
         self.region.motion_blocking_no_leaves_height(x, z)
     }
 
+    fn dragon_fight(&self, key: EntityId) -> Option<crate::region::end_fight::FightView> {
+        self.region.fight_view(key)
+    }
+
     fn light(&self, pos: BlockPos) -> Option<LightAt> {
         // The region's light as of its step (ADR-0029); `None` where the chunk is not lit.
         self.region.light_at(pos).map(|light| LightAt {

@@ -1018,13 +1018,6 @@ impl WireIds {
     /// The id of the entity `key` of `parts` parts, given now with the ids of its parts
     /// right after it if it has none: the game numbers a dragon's parts from its own id
     /// on (`EnderDragon.setId`), and the client finds them so.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the dragon's step (E9) shows the first entity of parts"
-        )
-    )]
     fn run(&mut self, key: EntityId, parts: u8) -> i32 {
         if let Some(id) = self.of.get(&key) {
             return *id;
@@ -1063,6 +1056,9 @@ impl WireIds {
         }
     }
 }
+
+/// The parts of an ender dragon, whose ids follow its own (`EnderDragon.subEntities`).
+const DRAGON_PARTS: u8 = 8;
 
 /// An entity the edge shows, and the region that last introduced it: reported it
 /// spawned, or had it in a snapshot. Moves and removals of the entity are taken from
@@ -4505,6 +4501,12 @@ impl Fanout {
                         tracker
                     }
                     None => {
+                        // The game numbers a dragon's eight parts after its own id
+                        // (`EnderDragon.setId`, `recreateFromPacket`): they are given
+                        // with it the first time it is met.
+                        if i32::from(*kind) == entity_types::ENDER_DRAGON {
+                            self.wire.run(entity, DRAGON_PARTS);
+                        }
                         let mut tracker =
                             Tracker::new(seen, data, start, &mut |key| self.wire.of(key));
                         // A cloud met after it was made is as old as it has lived.
@@ -9946,6 +9948,7 @@ mod scenarios {
 
     mod block_destroyed;
     mod crossing_specification;
+    mod dragon;
     mod explosions;
     mod hanging;
     mod items;

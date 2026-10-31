@@ -66,7 +66,7 @@ impl Region {
     ) {
         let reach = CREATIVE_ENTITY_REACH * CREATIVE_ENTITY_REACH;
         if let Some((_, entity)) = self.find_entity(key) {
-            if distance_to_sqr(self.entity_box(entity), user.eyes()) < reach {
+            if distance_to_sqr(self.used_box(entity, &by), user.eyes()) < reach {
                 self.entity_used(key, by, output);
             }
             return;
@@ -74,7 +74,8 @@ impl Region {
         let Some((chunk, entity)) = self.copied_entity(key) else {
             return;
         };
-        if distance_to_sqr(self.entity_box(&entity), user.eyes()) >= reach || !self.sends_to(chunk)
+        if distance_to_sqr(self.used_box(&entity, &by), user.eyes()) >= reach
+            || !self.sends_to(chunk)
         {
             return;
         }

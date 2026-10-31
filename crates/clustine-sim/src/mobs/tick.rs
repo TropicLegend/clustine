@@ -370,6 +370,10 @@ pub(crate) enum Local {
     /// points of interest given back, by what the region keeps of its sight
     /// (`region/villagers_across.rs`).
     VillagerDied { murderer: Option<EntityId> },
+    /// What the ender dragon's tick asks of the region beyond these
+    /// (`region/ender_dragon.rs`): its fight told, its death's global event and
+    /// experience, the sitting flame's cloud and its end.
+    Dragon(Box<crate::mobs::types::ender_dragon::DragonLocal>),
     /// `updateSpecialPrices(tradingPlayer)` of the merchant: its prices for the player
     /// it trades with worked out again, and, with their merchant window open on it, its
     /// payments' result too and its offers sent them (`sendMerchantOffers`).
