@@ -229,6 +229,13 @@ fn portal_box(pos: BlockPos, axis: PortalAxis) -> Aabb {
     }
 }
 
+/// The End portal's shape as a body meets it (`EndPortalBlock.SHAPE`,
+/// `Block.column(16, 6, 12)`): the whole block across, from 6 to 12 sixteenths up.
+fn end_portal_box(pos: BlockPos) -> Aabb {
+    let (x, y, z) = (f64::from(pos.x), f64::from(pos.y), f64::from(pos.z));
+    Aabb::new([x, y + 6.0 / 16.0, z], [x + 1.0, y + 12.0 / 16.0, z + 1.0])
+}
+
 /// The axis `getCounterClockWise().getAxis()` of a horizontal direction: north and
 /// south turn to west and east, along X; east and west to north and south, along Z.
 fn counter_clockwise_axis(direction: Face) -> Option<PortalAxis> {
@@ -348,8 +355,14 @@ impl Region {
 
     /// The first portal block, in the order of the walk, that a box `bounds` (where it
     /// ends, at `to`) meets on its way from `from` (`checkInsideBlocks`, with the
-    /// portal's own shape as `getEntityInsideCollisionShape`).
-    fn portal_met(&self, from: physics::Vec3, to: physics::Vec3, bounds: Aabb) -> Option<BlockPos> {
+    /// portal's own shape as `getEntityInsideCollisionShape`), with its kind: a Nether
+    /// portal or the End's.
+    fn portal_met(
+        &self,
+        from: physics::Vec3,
+        to: physics::Vec3,
+        bounds: Aabb,
+    ) -> Option<(BlockPos, PortalKind)> {
         let inside = bounds.deflate(f64::from(1.0e-5_f32));
         let delta = physics::sub(to, from);
         let moving = bounds.moved(physics::sub(from, to));
@@ -361,12 +374,15 @@ impl Region {
             let Some(state) = self.block(pos) else {
                 return true;
             };
-            if !is_block(state, blocks::NETHER_PORTAL) {
+            let (shape, kind) = if is_block(state, blocks::NETHER_PORTAL) {
+                (portal_box(pos, portal::axis_of(state)), PortalKind::Nether)
+            } else if is_block(state, blocks::END_PORTAL) {
+                (end_portal_box(pos), PortalKind::End)
+            } else {
                 return true;
-            }
-            let shape = portal_box(pos, portal::axis_of(state));
+            };
             if moving.collided_along_vector(delta, &[shape]) {
-                met = Some(pos);
+                met = Some((pos, kind));
                 return false;
             }
             true
@@ -413,7 +429,7 @@ impl Region {
             return;
         };
         let bounds = self.entity_box(entity);
-        let Some(entry) = self.portal_met(from, entity.position, bounds) else {
+        let Some((entry, kind)) = self.portal_met(from, entity.position, bounds) else {
             return;
         };
         if !entity_can_use_portal(entity) {
@@ -421,12 +437,7 @@ impl Region {
         }
         let before = entity.portal;
         let mut portal = before;
-        set_as_inside_portal(
-            &mut portal,
-            PortalKind::Nether,
-            entry,
-            dimension_changing_delay(entity),
-        );
+        set_as_inside_portal(&mut portal, kind, entry, dimension_changing_delay(entity));
         if portal != before {
             self.commit_entity(chunk, key, vec![EntityField::Portal(portal)], output);
         }
@@ -457,13 +468,17 @@ impl Region {
             let at = [feet.x, feet.y, feet.z];
             let body = crate::placement::body(feet, false);
             let bounds = Aabb::new([body[0], body[1], body[2]], [body[3], body[4], body[5]]);
-            if allowed && let Some(entry) = self.portal_met(at, at, bounds) {
-                set_as_inside_portal(
-                    &mut portal,
-                    PortalKind::Nether,
-                    entry,
-                    PLAYER_DIMENSION_CHANGING_DELAY,
-                );
+            let met = self.portal_met(at, at, bounds).filter(|_| allowed);
+            // `EndPortalBlock.entityInside`: in the End, a player who has not seen the
+            // credits is shown them instead of the portal (the plan, section 5.3), which
+            // is P10c's; until it is built, nothing.
+            let to_credits =
+                self.config.dimension == clustine_world::Dimension::End && !player.seen_credits;
+            let credits = |kind| kind == PortalKind::End && to_credits;
+            if let Some((entry, kind)) = met
+                && !credits(kind)
+            {
+                set_as_inside_portal(&mut portal, kind, entry, PLAYER_DIMENSION_CHANGING_DELAY);
             }
             if portal != before {
                 if let Some(player) = self.players.get_mut(&id) {

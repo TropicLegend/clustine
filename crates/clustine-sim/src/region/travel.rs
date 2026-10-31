@@ -36,10 +36,17 @@ fn nether_portal_destination(from: Dimension) -> Dimension {
     }
 }
 
+/// The block under the End's spawn point (`ServerLevel.END_SPAWN_POINT`, (100, 50, 0)),
+/// on which the platform is made: a traveller into the End is placed there (the brief,
+/// section 2.4).
+pub(super) const END_PLATFORM: BlockPos = BlockPos::new(100, 49, 0);
+
 impl Region {
     /// What a portal does as its clock fires for `who`, in the portal of `kind` it
-    /// entered at `entry`: the cooldown is set already. A Nether portal sends them on;
-    /// the End's portal and gateways are step P10's.
+    /// entered at `entry`: the cooldown is set already. A Nether portal sends them on,
+    /// and the End's portal into the End (`EndPortalBlock.getPortalDestination`). Out
+    /// of the End, which goes to the world spawn or a player's respawn, is P10c's, and
+    /// gateways are P10e's: until then they send nobody.
     pub(super) fn travel_fired(
         &mut self,
         who: PortalUser,
@@ -47,17 +54,41 @@ impl Region {
         entry: BlockPos,
         output: &mut TickOutput,
     ) {
-        if kind != PortalKind::Nether {
-            return;
-        }
-        let to = nether_portal_destination(self.config.dimension);
+        let to = match kind {
+            PortalKind::Nether => nether_portal_destination(self.config.dimension),
+            PortalKind::End if self.config.dimension != Dimension::End => Dimension::End,
+            PortalKind::End | PortalKind::Gateway => return,
+        };
         let Some(home) = self.home_of(to) else {
             // A world without the dimension's home: nowhere to go.
             return;
         };
         match who {
-            PortalUser::Player(id) => self.player_travels(id, to, home, entry, output),
-            PortalUser::Entity(key) => self.entity_travels(key, to, entry, output),
+            PortalUser::Player(id) => self.player_travels(id, kind, to, home, entry, output),
+            PortalUser::Entity(key) => self.entity_travels(key, kind, to, entry, output),
+        }
+    }
+
+    /// The travel through the portal of `kind` at `entry` to `to` of a traveller at
+    /// `position` of `size`: a Nether portal's by its rectangle, the End's to the
+    /// platform.
+    fn travel_of(
+        &self,
+        kind: PortalKind,
+        to: Dimension,
+        entry: BlockPos,
+        position: [f64; 3],
+        size: (f32, f32),
+    ) -> Travel {
+        match kind {
+            PortalKind::End => Travel {
+                to,
+                target: END_PLATFORM,
+                way: Way::EndPortal,
+            },
+            PortalKind::Nether | PortalKind::Gateway => {
+                self.nether_travel(to, entry, position, size)
+            }
         }
     }
 
@@ -111,6 +142,7 @@ impl Region {
     fn player_travels(
         &mut self,
         id: PlayerId,
+        kind: PortalKind,
         to: Dimension,
         home: clustine_world::RegionId,
         entry: BlockPos,
@@ -125,7 +157,7 @@ impl Region {
             return;
         }
         let feet = player.pose.position;
-        let travel = self.nether_travel(to, entry, [feet.x, feet.y, feet.z], PLAYER_SIZE);
+        let travel = self.travel_of(kind, to, entry, [feet.x, feet.y, feet.z], PLAYER_SIZE);
         self.stop_sleep(id, true, false, output);
         self.menu_leaving(id, true, output);
         let Some(player) = self.players.remove(&id) else {
@@ -174,6 +206,7 @@ impl Region {
     fn entity_travels(
         &mut self,
         key: EntityId,
+        kind: PortalKind,
         to: Dimension,
         entry: BlockPos,
         output: &mut TickOutput,
@@ -193,7 +226,8 @@ impl Region {
             return;
         }
         let size = self.entity_box(&root).size();
-        let travel = self.nether_travel(to, entry, root.position, (size[0] as f32, size[1] as f32));
+        let size = (size[0] as f32, size[1] as f32);
+        let travel = self.travel_of(kind, to, entry, root.position, size);
         let mut entities = Vec::with_capacity(members.len());
         for mut member in members {
             let at = self.find_entity(member.key).map_or(chunk, |(at, _)| at);
@@ -235,6 +269,10 @@ impl Region {
 #[cfg(test)]
 #[path = "travel_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "end_travel_tests.rs"]
+mod end_travel_tests;
 
 #[cfg(test)]
 #[path = "travel_spec_tests.rs"]

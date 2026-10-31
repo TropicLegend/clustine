@@ -81,6 +81,11 @@ fn search_radius(to: Dimension) -> i32 {
     }
 }
 
+/// Whether a travel asks the portal index: a Nether portal's alone.
+fn searches(travel: &Travel) -> bool {
+    matches!(travel.way, Way::NetherPortal { .. })
+}
+
 /// The chunks about a block that a search or a rectangle there reads: the 3 × 3 about
 /// its chunk, which reach at least 16 blocks from it.
 fn chunks_about(at: BlockPos) -> Vec<ChunkPos> {
@@ -121,8 +126,12 @@ impl Region {
             let Some((travel, answer)) = self.wait_of(waiter) else {
                 continue;
             };
-            let Some(answer) = answer else {
-                continue;
+            // Only a Nether portal's travel searches: the End's is placed on its
+            // platform, without the index (the plan, section 19.5 item 15).
+            let answer = match (answer, searches(&travel)) {
+                (Some(answer), true) => answer,
+                (None, true) => continue,
+                (_, false) => Vec::new(),
             };
             let candidate = self.choose(&travel, &answer);
             let mut needed = chunks_about(travel.target);
@@ -195,7 +204,7 @@ impl Region {
             if waiting.asked.is_some() {
                 continue;
             }
-            let Some(travel) = waiting.transfer.travel else {
+            let Some(travel) = waiting.transfer.travel.filter(searches) else {
                 continue;
             };
             let (asked, query) = next(&travel);
@@ -204,7 +213,7 @@ impl Region {
             self.journal.waiting.insert(*id);
         }
         for waiting in &mut self.waiting_travellers {
-            if waiting.asked.is_some() {
+            if waiting.asked.is_some() || !searches(&waiting.traveller.travel) {
                 continue;
             }
             let (asked, query) = next(&waiting.traveller.travel);
@@ -343,10 +352,13 @@ impl Region {
         travel: &Travel,
         candidate: Option<BlockPos>,
         size: (f32, f32),
-        velocity: [f64; 3],
-        yaw: f32,
+        player: bool,
+        (velocity, yaw): ([f64; 3], f32),
         output: &mut TickOutput,
     ) -> ([f64; 3], [f64; 3], f32) {
+        if travel.way == Way::EndPortal && travel.to == Dimension::End {
+            return self.end_arrival(travel.target, player, velocity, output);
+        }
         let (relative, source_axis) = match travel.way {
             Way::NetherPortal { axis, relative } => {
                 (relative.map(|value| value.0), axis.unwrap_or(PortalAxis::X))
@@ -392,6 +404,49 @@ impl Region {
         (position, velocity, yaw)
     }
 
+    /// The arrival in the End (`EndPortalBlock.getPortalDestination`, the brief's
+    /// section 2.4): the obsidian platform made under the spawn point `platform`
+    /// (`EndPlatformFeature.createEndPlatform` with its drops: for each block of the
+    /// 5 × 5 from one below to two above that is not what it is to be, the block is
+    /// destroyed with its drops and set, obsidian below and air above), and the place:
+    /// a player on the platform, anything else a block above it, facing west, with the
+    /// velocity it had. The platform's chunks are the End's home's, as is the arena's.
+    fn end_arrival(
+        &mut self,
+        platform: BlockPos,
+        player: bool,
+        velocity: [f64; 3],
+        output: &mut TickOutput,
+    ) -> ([f64; 3], [f64; 3], f32) {
+        for dy in -1..=2 {
+            let state = if dy == -1 {
+                blocks::OBSIDIAN
+            } else {
+                blocks::AIR
+            };
+            for dz in -2..=2 {
+                for dx in -2..=2 {
+                    let at = BlockPos::new(platform.x + dx, platform.y + dy, platform.z + dz);
+                    let Some(now) = self.block(at) else {
+                        continue;
+                    };
+                    if clustine_blocks::data::same_block(now, state) {
+                        continue;
+                    }
+                    if self.own_block(at).is_some() {
+                        self.destroy_block(at, true, UPDATE_LIMIT, output);
+                    }
+                    self.set_for_travel(at, state, UPDATE_ALL, output);
+                }
+            }
+        }
+        // `atBottomCenterOf(END_SPAWN_POINT)`, a player one lower, onto the floor;
+        // `Direction.WEST.toYRot()`.
+        let y = f64::from(platform.y) + if player { 0.0 } else { 1.0 };
+        let at = [f64::from(platform.x) + 0.5, y, f64::from(platform.z) + 0.5];
+        (at, velocity, 90.0)
+    }
+
     /// Places a waiting player: into the world at the exit, their travel done, the
     /// inputs they kept applied in order. A player the edge had in the world is told
     /// `Placed`, on which it finishes the change it began at their departure; one it
@@ -408,8 +463,14 @@ impl Region {
             return;
         };
         let pose = waiting.transfer.pose;
-        let (position, _, yaw) =
-            self.exit_place(travel, candidate, PLAYER_SIZE, [0.0; 3], pose.yaw, output);
+        let (position, _, yaw) = self.exit_place(
+            travel,
+            candidate,
+            PLAYER_SIZE,
+            true,
+            ([0.0; 3], pose.yaw),
+            output,
+        );
         let Some(waiting) = self.waiting.remove(&id) else {
             return;
         };
@@ -483,7 +544,8 @@ impl Region {
         let size = self.entity_box(root).size();
         let size = (size[0] as f32, size[1] as f32);
         let (motion, yaw) = (root.motion, root.yaw);
-        let (position, motion, yaw) = self.exit_place(travel, candidate, size, motion, yaw, output);
+        let (position, motion, yaw) =
+            self.exit_place(travel, candidate, size, false, (motion, yaw), output);
         let waiting = self.waiting_travellers.remove(index);
         self.journal.waiting_travellers = true;
         let chunk = ChunkPos::containing(position[0], position[2]);

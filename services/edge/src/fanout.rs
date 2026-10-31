@@ -3643,7 +3643,18 @@ impl Fanout {
         // that the client keeps its own look turned as the portal turns it, and its
         // velocity turned with it (`Relative.DELTA` with `ROTATE_DELTA`, and
         // `Relative.ROTATION`, as a portal's `TeleportTransition` has them).
+        // The End's portal faces the traveller west whatever they looked at, and keeps
+        // their pitch (`DELTA ∪ {X_ROT}`; `docs/groundwork/p-brief.md`, section 2.4).
         let (yaw, pitch, rotation) = match &travelling {
+            Some(Travelling {
+                way: Some(clustine_world::Way::EndPortal),
+                look: (_, pitch),
+                ..
+            }) => (
+                pose.yaw,
+                pose.pitch - pitch,
+                relative::X_ROT | relative::ROTATE_DELTA,
+            ),
             Some(travelling) => {
                 let (yaw, pitch) = travelling.look;
                 (
@@ -3703,9 +3714,15 @@ impl Fanout {
                 }),
             ]);
         }
+        // The post-transition's portal sound: a Nether portal's, and the End's into the
+        // End (`TeleportTransition.PLAY_PORTAL_SOUND`).
         let portal = travelling
             .and_then(|travelling| travelling.way)
-            .is_some_and(|way| matches!(way, clustine_world::Way::NetherPortal { .. }));
+            .is_some_and(|way| match way {
+                clustine_world::Way::NetherPortal { .. } => true,
+                clustine_world::Way::EndPortal => dimension == Dimension::End,
+                _ => false,
+            });
         if portal {
             packets.push(encoded(&LevelEvent {
                 event: level_event::PORTAL_TRAVEL,
