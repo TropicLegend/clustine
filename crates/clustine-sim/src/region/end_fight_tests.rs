@@ -279,11 +279,12 @@ fn another_end_region_shows_the_published_bar_and_reports_its_sighting() {
     assert!(other.dragon_fight.is_none(), "no fight of its own");
 }
 
-/// `updateCrystalCount`: a crystal in the top box of one of the world's spikes is
-/// counted at the hundredth tick, and the dragon reads it.
+/// `updateCrystalCount`: with a player near and the arena loaded, a crystal in the top
+/// box of one of the world's spikes is counted at the hundredth tick, and the dragon
+/// reads it.
 #[test]
 fn the_crystals_on_the_spikes_are_counted_every_hundred_ticks() {
-    let mut home = end_home();
+    let (mut home, _) = arena_with_a_player();
     let spike = clustine_features::features::end::end_spike::spikes_of_seed(0)[0];
     let position = [
         f64::from(spike.centre_x) + 0.5,
@@ -313,5 +314,88 @@ fn the_crystals_on_the_spikes_are_counted_every_hundred_ticks() {
     assert!(
         home.fight_view(EntityId(78)).is_none(),
         "not the fight's dragon"
+    );
+}
+
+/// The End's home with the whole arena loaded and a player over the island.
+fn arena_with_a_player() -> (Region, PlayerId) {
+    let mut home = world(Dimension::End, ChunkPos::new(0, 0), ARENA);
+    let (id, _) = add_player(&mut home, 1, [0.5, 100.0, 0.5], false);
+    (home, id)
+}
+
+const ARENA: i32 = clustine_world::dragon::ARENA_REACH;
+
+/// `scanState` and `createNewDragon`: once a player is near and the arena loaded, a fight
+/// never looked at places its exit portal inactive (bedrock, no portal) and makes its
+/// dragon at (0, 128, 0) in its holding pattern.
+#[test]
+fn a_new_fight_places_its_podium_inactive_and_makes_its_dragon_over_the_island() {
+    let (mut home, _) = arena_with_a_player();
+    let mut dragon = None;
+    for _ in 0..30 {
+        idle(&mut home);
+        dragon = home.dragon_fight.as_ref().and_then(|fight| fight.dragon);
+        if dragon.is_some() {
+            break;
+        }
+    }
+    let fight = home.dragon_fight.as_ref().expect("the fight");
+    assert!(!fight.needs_state_scanning && !fight.previously_killed && !fight.dragon_killed);
+    let origin = fight.exit_portal.expect("its exit portal placed");
+    let state = |pos: BlockPos| home.block(pos).expect("loaded");
+    assert_eq!(state(origin), blocks::BEDROCK, "the pillar at {origin:?}");
+    assert_eq!(state(origin.offset(0, 3, 0)), blocks::BEDROCK);
+    assert!(
+        state(origin.offset(1, 0, 0)).props().is_air(),
+        "no portal while inactive"
+    );
+    let dragon = dragon.expect("a dragon made");
+    let (_, made) = home.find_entity(dragon).expect("in the arena");
+    assert_eq!(i32::from(made.kind), entity_types::ENDER_DRAGON);
+}
+
+/// `setDragonKilled`: the portal opens, the first gateway of the shuffled twenty is
+/// placed with its level event, and the egg is put on the podium at the first kill.
+#[test]
+fn the_dragon_s_death_opens_the_portal_places_a_gateway_and_the_egg() {
+    let (mut home, _) = arena_with_a_player();
+    let mut dragon = None;
+    for _ in 0..30 {
+        idle(&mut home);
+        dragon = home.dragon_fight.as_ref().and_then(|fight| fight.dragon);
+        if dragon.is_some() {
+            break;
+        }
+    }
+    let dragon = dragon.expect("a dragon made");
+    let next = *home
+        .dragon_fight
+        .as_ref()
+        .and_then(|fight| fight.gateways.last())
+        .expect("twenty gateways");
+    let mut output = TickOutput::default();
+    home.fight_dragon_killed(dragon, &mut output);
+    let fight = home.dragon_fight.as_ref().expect("the fight");
+    assert!(fight.dragon_killed && fight.previously_killed);
+    assert_eq!(fight.gateways.len(), 19);
+    let origin = fight.exit_portal.expect("its exit portal");
+    let state = |pos: BlockPos| home.block(pos).expect("loaded");
+    assert_eq!(state(origin.offset(1, 0, 0)), blocks::END_PORTAL);
+    let angle = 2.0 * (-std::f64::consts::PI + 0.157_079_632_679_489_66 * f64::from(next));
+    let gateway = BlockPos::new(
+        (96.0 * libm::cos(angle)).floor() as i32,
+        75,
+        (96.0 * libm::sin(angle)).floor() as i32,
+    );
+    assert_eq!(state(gateway), blocks::END_GATEWAY);
+    assert!(output.events.iter().any(|event| matches!(
+        event,
+        crate::api::RegionEvent::LevelEvent { kind: 3000, position, .. } if *position == gateway
+    )));
+    assert_eq!(
+        state(origin.offset(0, 4, 0)),
+        blocks::DRAGON_EGG,
+        "the egg on top"
     );
 }

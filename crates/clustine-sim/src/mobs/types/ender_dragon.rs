@@ -275,13 +275,6 @@ fn put(mob: &mut Mob, own: &DragonState) {
 /// The dragon `mob` set to the phase `phase` as `setPhase` sets it (what a fight's
 /// making of its dragon does: `HOLDING_PATTERN`), with what its old phase's end asks of
 /// the region.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the fight's step makes its dragon in the holding pattern, the lead's"
-    )
-)]
 pub(crate) fn set_phase(mob: &mut Mob, phase: u8) -> Vec<Local> {
     let mut locals = Vec::new();
     change(mob, |own| {

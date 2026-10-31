@@ -24,12 +24,17 @@
 
 use std::collections::BTreeMap;
 
+use clustine_blocks::data::{is_block, same_block};
+use clustine_data::{blocks, entity_types};
+use clustine_noise::LegacyRandom;
+use clustine_world::Entity;
 use clustine_world::dragon::{ARENA_REACH, DragonFight};
 use clustine_world::{BlockPos, ChunkPos, Dimension, EntityData, EntityId, PlayerId};
 use uuid::Uuid;
 
 use super::Region;
-use crate::api::{BarChange, BarName, BarStyle, FightSeen, PlayerEvent, TickOutput};
+use super::updates::{UPDATE_ALL, UPDATE_LIMIT};
+use crate::api::{BarChange, BarName, BarStyle, FightSeen, PlayerEvent, RegionEvent, TickOutput};
 use crate::physics::aabb::Aabb;
 
 /// How far from (0, 128, 0) a player is on the fight's bar (`validPlayer`: 192 blocks).
@@ -39,6 +44,9 @@ const BAR_REACH: f64 = 192.0;
 /// (`EnderDragonFight.tick`).
 const PLAYERS_EVERY: u64 = 20;
 const CRYSTALS_EVERY: u64 = 100;
+
+/// How long the fight's dragon goes unseen before it is looked for or made again.
+const DRAGON_UNSEEN: u32 = 1200;
 
 /// What a dragon reads of its fight (`EnderDragon.getDragonFight()` and what its phases
 /// ask of it), none where the dragon has no fight: outside the End's home.
@@ -65,6 +73,8 @@ pub(crate) struct FightMemory {
     crystals_alive: u32,
     reported_in_arena: Option<bool>,
     reported_fight: Option<FightSeen>,
+    /// The ticks the fight's dragon was not found (`ticksSinceDragonSeen`).
+    unseen: u32,
 }
 
 /// The fight's bar's UUID, the world's own.
@@ -88,7 +98,13 @@ impl Region {
         }
         let home = self.is_home_of(Dimension::End);
         if home && self.dragon_fight.is_none() {
-            self.dragon_fight = Some(Box::new(DragonFight::default()));
+            // `init`: the twenty gateways' order, shuffled with the world's seed.
+            let mut fight = DragonFight::default();
+            let mut gateways: Vec<i32> = (0..20).collect();
+            let mut random = LegacyRandom::from_seed(self.config.game_seed as u64);
+            clustine_features::features::trees::common::shuffle(&mut gateways, &mut random);
+            fight.gateways = gateways;
+            self.dragon_fight = Some(Box::new(fight));
             self.journal.dragon_fight = true;
         }
         let on_bar: Vec<PlayerId> = (self.players.iter())
@@ -99,11 +115,13 @@ impl Region {
             .map(|(id, _)| *id)
             .collect();
         if home {
-            if !on_bar.is_empty() || self.published_end.arena_wanted {
+            let wanted = !on_bar.is_empty() || self.published_end.arena_wanted;
+            if wanted {
                 self.keep_arena();
             }
-            if self.tick.is_multiple_of(CRYSTALS_EVERY) {
-                self.fight_memory.crystals_alive = self.count_crystals();
+            // `tick`: nothing more while nobody is on the bar or the arena is loading.
+            if wanted && self.arena_loaded() {
+                self.fight_step(output);
             }
         }
         self.show_fight_bar(&on_bar, output);
@@ -202,6 +220,220 @@ impl Region {
         self.fight_memory.shown = now;
     }
 
+    /// `isArenaLoaded`: the row of the arena's chunks at z = 8 (the game's own quirk)
+    /// and the 3 × 3 about the origin, loaded.
+    fn arena_loaded(&self) -> bool {
+        let row = (-ARENA_REACH..=ARENA_REACH).map(|x| ChunkPos::new(x, ARENA_REACH));
+        let middle = (-1..=1).flat_map(|x| (-1..=1).map(move |z| ChunkPos::new(x, z)));
+        row.chain(middle)
+            .all(|chunk| self.chunks.contains_key(&chunk))
+    }
+
+    /// The fight's own step, once its arena is loaded (`EnderDragonFight.tick` 5 to 7):
+    /// the first scan, the crystals counted, and the dragon found or made.
+    fn fight_step(&mut self, output: &mut TickOutput) {
+        let Some(fight) = self.dragon_fight.as_ref() else {
+            return;
+        };
+        if fight.needs_state_scanning {
+            self.scan_state(output);
+        }
+        if self.tick.is_multiple_of(CRYSTALS_EVERY) {
+            self.fight_memory.crystals_alive = self.count_crystals();
+        }
+        let Some(fight) = self.dragon_fight.as_ref() else {
+            return;
+        };
+        if fight.dragon_killed {
+            return;
+        }
+        let alive = fight
+            .dragon
+            .is_some_and(|key| self.find_entity(key).is_some());
+        if alive {
+            self.fight_memory.unseen = 0;
+            return;
+        }
+        self.fight_memory.unseen += 1;
+        if fight.dragon.is_none() || self.fight_memory.unseen >= DRAGON_UNSEEN {
+            self.find_or_create_dragon(output);
+        }
+    }
+
+    /// `scanState`: a fight never looked at finds whether a dragon was killed before (an
+    /// exit portal is open) and its exit portal, made where there is none, inactive.
+    fn scan_state(&mut self, output: &mut TickOutput) {
+        let open = self.open_exit_portal();
+        let Some(fight) = self.dragon_fight.as_mut() else {
+            return;
+        };
+        fight.needs_state_scanning = false;
+        fight.previously_killed = open.is_some();
+        if let Some(open) = open {
+            fight.exit_portal = Some(open);
+        }
+        self.journal.dragon_fight = true;
+        if open.is_none() {
+            self.spawn_exit_portal(false, output);
+        }
+        if let Some(fight) = self.dragon_fight.as_mut() {
+            // With no dragon alive the game would take it killed; a fight that never
+            // killed one makes it.
+            fight.dragon_killed = fight.previously_killed && fight.dragon.is_none();
+        }
+    }
+
+    /// An open exit portal about the podium's column: the end portal block at its
+    /// middle's layer (the game looks for any end portal's block entity in the arena).
+    fn open_exit_portal(&self) -> Option<BlockPos> {
+        let rules = self.config.dimension.rules();
+        let top = rules.min_y + i32::try_from(rules.height).unwrap_or(i32::MAX);
+        for y in rules.min_y..top {
+            for (x, z) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let at = BlockPos::new(x, y, z);
+                if self
+                    .block(at)
+                    .is_some_and(|state| is_block(state, blocks::END_PORTAL))
+                {
+                    return Some(BlockPos::new(0, y, 0));
+                }
+            }
+        }
+        None
+    }
+
+    /// `spawnExitPortal(active)`: the podium at the fight's exit portal, found where the
+    /// fight has none (the top of the origin's column, below it, down through bedrock
+    /// to y 63 at the least, one above the floor at the least).
+    fn spawn_exit_portal(&mut self, active: bool, output: &mut TickOutput) {
+        let Some(fight) = self.dragon_fight.as_ref() else {
+            return;
+        };
+        let origin = match fight.exit_portal {
+            Some(origin) => origin,
+            None => {
+                let mut at = self.podium_top();
+                at.y -= 1;
+                while at.y > 63
+                    && self
+                        .block(at)
+                        .is_some_and(|state| is_block(state, blocks::BEDROCK))
+                {
+                    at.y -= 1;
+                }
+                at.y = at.y.max(self.config.lowest_y + 1);
+                at
+            }
+        };
+        for write in clustine_features::features::end::end_podium::podium_writes(origin, active) {
+            if write.drop_previous {
+                let here = self.block(write.pos);
+                if here.is_some_and(|state| same_block(state, write.state)) {
+                    continue;
+                }
+                self.destroy_block(write.pos, true, UPDATE_LIMIT, output);
+            }
+            self.set_for_travel(write.pos, write.state, UPDATE_ALL, output);
+        }
+        if let Some(fight) = self.dragon_fight.as_mut() {
+            fight.exit_portal = Some(origin);
+        }
+        self.journal.dragon_fight = true;
+    }
+
+    /// `findOrCreateDragon`: a dragon of the arena taken as the fight's, else a new one.
+    fn find_or_create_dragon(&mut self, output: &mut TickOutput) {
+        let found = (self.chunks.values())
+            .flat_map(|chunk| chunk.entities())
+            .find(|entity| i32::from(entity.kind) == entity_types::ENDER_DRAGON)
+            .map(|entity| entity.key);
+        let key = match found {
+            Some(key) => Some(key),
+            None => self.create_new_dragon(output),
+        };
+        if let Some(fight) = self.dragon_fight.as_mut() {
+            fight.dragon = key;
+        }
+        self.fight_memory.unseen = 0;
+        self.journal.dragon_fight = true;
+    }
+
+    /// `createNewDragon`: a dragon at (0, 128, 0) in its holding pattern, turned at
+    /// random, made as the game's `EntityType.create` makes one (no `finalizeSpawn`).
+    fn create_new_dragon(&mut self, output: &mut TickOutput) -> Option<EntityId> {
+        let kind = entity_types::ENDER_DRAGON as u16;
+        if !crate::mobs::types::is_built(kind) {
+            return None;
+        }
+        let chunk = ChunkPos::new(0, 0);
+        let key = self.take_entity_key(chunk)?;
+        let mut own = self.entity_stream(key).random;
+        let own_start = own.clone();
+        let (uuid, mut mob) = crate::mobs::making::construct(kind, &mut own, 0.0);
+        let _ = crate::mobs::types::ender_dragon::set_phase(
+            &mut mob,
+            crate::mobs::types::ender_dragon::phases::HOLDING_PATTERN,
+        );
+        // The yaw is the level's draw; the dragon's own stream stands for it, named.
+        let yaw = own.next_float() * 360.0;
+        mob.body.head.head_yaw = yaw;
+        mob.body.head.body_yaw = yaw;
+        self.entity_drew(key, own.draws_since(&own_start));
+        let entity = Entity {
+            portal: Default::default(),
+            key,
+            kind,
+            uuid,
+            position: [0.0, 128.0, 0.0],
+            motion: [0.0; 3],
+            yaw,
+            pitch: 0.0,
+            on_ground: false,
+            hops: 0,
+            lived: 0,
+            fresh_at: 0,
+            fall_distance: 0.0,
+            fire_ticks: 0,
+            riding: Default::default(),
+            data: mob.encode(),
+        };
+        self.add_fresh_entity(entity, output);
+        Some(key)
+    }
+
+    /// `spawnNewGateway`: the next of the twenty gateways about the island, with its
+    /// level event 3000, as `end_gateway_delayed` places it (no exit yet).
+    fn spawn_new_gateway(&mut self, output: &mut TickOutput) {
+        let Some(index) = self
+            .dragon_fight
+            .as_mut()
+            .and_then(|fight| fight.gateways.pop())
+        else {
+            return;
+        };
+        self.journal.dragon_fight = true;
+        let angle = 2.0 * (-std::f64::consts::PI + 0.157_079_632_679_489_66 * f64::from(index));
+        let at = BlockPos::new(
+            (96.0 * libm::cos(angle)).floor() as i32,
+            75,
+            (96.0 * libm::sin(angle)).floor() as i32,
+        );
+        output.events.push(RegionEvent::LevelEvent {
+            kind: 3000,
+            position: at,
+            data: 0,
+        });
+        for dy in -2..=2 {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let state =
+                        clustine_features::features::end::end_gateway::gateway_block(dx, dy, dz);
+                    self.set_for_travel(at.offset(dx, dy, dz), state, UPDATE_ALL, output);
+                }
+            }
+        }
+    }
+
     /// The fight's `DRAGON` ticket: the arena's chunks kept loaded for a while longer.
     fn keep_arena(&mut self) {
         let until = self.tick + 2 * PLAYERS_EVERY;
@@ -277,16 +509,33 @@ impl Region {
     /// `tickDeath` at 200) and is removed. The exit portal, the egg and the gateway come
     /// with the fight's next step.
     pub(crate) fn fight_dragon_killed(&mut self, key: EntityId, output: &mut TickOutput) {
-        let _ = output;
-        let Some(fight) = self.dragon_fight.as_mut() else {
+        let Some(fight) = self.dragon_fight.as_ref() else {
             return;
         };
         if fight.dragon != Some(key) {
             return;
         }
-        fight.dragon_killed = true;
-        fight.previously_killed = true;
+        let first = !fight.previously_killed;
         self.fight_memory.progress = Some(0.0);
+        self.spawn_exit_portal(true, output);
+        self.spawn_new_gateway(output);
+        if first {
+            // The egg on the podium's top (`MOTION_BLOCKING` at its location).
+            let y = (self.readable_chunk(ChunkPos::new(0, 0)))
+                .map(|chunk| chunk.min_y() + i32::from(chunk.heights().motion_blocking[0]));
+            if let Some(y) = y {
+                self.set_for_travel(
+                    BlockPos::new(0, y, 0),
+                    blocks::DRAGON_EGG,
+                    UPDATE_ALL,
+                    output,
+                );
+            }
+        }
+        if let Some(fight) = self.dragon_fight.as_mut() {
+            fight.dragon_killed = true;
+            fight.previously_killed = true;
+        }
         self.journal.dragon_fight = true;
     }
 
