@@ -65,8 +65,6 @@ pub struct WaitingState {
     /// Whether the stay waits for the player to ask for their respawn: in the credits,
     /// or dead (`docs/groundwork/p-plan.md`, section 19.7).
     pub until_asked: bool,
-    /// How many times a waiting respawn was let go to the holder of its target.
-    pub forwards: u8,
 }
 
 /// An entity a portal sent to this region that waits to be placed: its number, which

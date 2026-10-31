@@ -1296,6 +1296,7 @@ fn dig(position: BlockPos, sequence: i32) -> PlayerInput {
 /// along, with an entity of that region's.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

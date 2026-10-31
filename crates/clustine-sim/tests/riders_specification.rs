@@ -498,6 +498,7 @@ fn crossing() -> Crossing {
 /// Player `n`, walking, handed over at `at` for the first time.
 fn walker(n: u128, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),
@@ -1259,6 +1260,7 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
     assert!(sent.riding.passengers[0].pending.is_some());
 
     let transfer = PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

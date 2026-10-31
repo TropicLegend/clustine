@@ -371,6 +371,7 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),
@@ -407,6 +408,7 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

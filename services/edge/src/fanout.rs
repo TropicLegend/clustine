@@ -3879,14 +3879,12 @@ impl Fanout {
                 value: 0.0,
             }));
         }
+        // `PlayerList.respawn`'s order: the `Respawn`, the place (993), the default
+        // spawn (1001), the difficulty (1011), then the level's information.
         packets.extend([
             encoded(&Respawn {
                 spawn: spawn_info(&self.config, dimension),
                 data_to_keep: respawn.keep,
-            }),
-            encoded(&ChangeDifficulty {
-                difficulty: clustine_world::Difficulty::WORLD.id() as u8,
-                locked: false,
             }),
             // `ServerPlayer.teleport(DDDFF)`: absolute, and still.
             encoded(&SynchronizePlayerPosition {
@@ -3901,12 +3899,6 @@ impl Fanout {
                 pitch: pose.pitch,
                 relative_flags: 0,
             }),
-        ]);
-        if !self.send_to_player(player, packets).await {
-            return;
-        }
-        self.tell_time(player, region, true).await;
-        let mut packets = vec![
             encoded(&SetDefaultSpawnPosition {
                 dimension: OVERWORLD.to_owned(),
                 position: Position {
@@ -3917,11 +3909,19 @@ impl Fanout {
                 yaw: 0.0,
                 pitch: 0.0,
             }),
-            encoded(&GameEvent {
-                event: game_event::START_WAITING_FOR_LEVEL_CHUNKS,
-                value: 0.0,
+            encoded(&ChangeDifficulty {
+                difficulty: clustine_world::Difficulty::WORLD.id() as u8,
+                locked: false,
             }),
-        ];
+        ]);
+        if !self.send_to_player(player, packets).await {
+            return;
+        }
+        self.tell_time(player, region, true).await;
+        let mut packets = vec![encoded(&GameEvent {
+            event: game_event::START_WAITING_FOR_LEVEL_CHUNKS,
+            value: 0.0,
+        })];
         if let Some(anchor) = respawn.anchor_sound {
             // At the block's corner, to the player alone, of the blocks' source.
             self.sound_seeds = self.sound_seeds.wrapping_add(1);
@@ -4242,7 +4242,18 @@ impl Fanout {
                         direct: direct.map(|direct| self.wire.of(direct)),
                         position,
                     };
-                    self.show_to_watchers(entity, encoded(&packet)).await;
+                    let packet = encoded(&packet);
+                    self.show_to_watchers(entity, packet.clone()).await;
+                    // `broadcastDamageEvent` goes to the hurt player too, whose client
+                    // plays the hurt and shakes its camera from it.
+                    let own = self
+                        .players
+                        .iter()
+                        .find(|(_, view)| view.entity == Some(entity))
+                        .map(|(player, _)| *player);
+                    if let Some(player) = own {
+                        self.send_to_player(player, [packet]).await;
+                    }
                 }
             }
             // A player lying down or getting up, shown to those who see them and to
@@ -5247,10 +5258,12 @@ impl Fanout {
     }
 
     async fn show_entity_event(&mut self, entity: EntityId, event: u8) {
+        // `broadcastEntityEvent` tells the entity itself too, a player's death (event 3)
+        // among it.
         let watching: Vec<PlayerId> = self
             .players
             .iter()
-            .filter(|(_, view)| view.visible.contains_key(&entity))
+            .filter(|(_, view)| view.visible.contains_key(&entity) || view.entity == Some(entity))
             .map(|(player, _)| *player)
             .collect();
         if watching.is_empty() {
@@ -8165,6 +8178,7 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),
@@ -11164,6 +11178,7 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),
@@ -12498,8 +12513,9 @@ mod scenarios {
             ids::PLAYER_ABILITIES,
             ids::GAME_EVENT,
             ids::RESPAWN,
-            ids::CHANGE_DIFFICULTY,
             ids::PLAYER_POSITION,
+            ids::SET_DEFAULT_SPAWN_POSITION,
+            ids::CHANGE_DIFFICULTY,
         ];
         assert_eq!(after[..order.len()], order, "{after:?}");
         let [respawn] = &client.respawns[..] else {
@@ -12512,8 +12528,8 @@ mod scenarios {
         assert_eq!((teleport.yaw, teleport.relative_flags), (45.0, 0));
         let spawn = after
             .iter()
-            .position(|id| *id == ids::SET_DEFAULT_SPAWN_POSITION)
-            .expect("the level's information");
+            .rposition(|id| *id == ids::GAME_EVENT)
+            .expect("the level's information, ending with the wait for chunks");
         let health = after
             .iter()
             .position(|id| *id == ids::SET_HEALTH)

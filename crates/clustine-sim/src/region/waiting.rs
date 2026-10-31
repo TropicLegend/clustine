@@ -27,7 +27,6 @@ impl Region {
             answer: None,
             since: self.tick,
             until_asked: false,
-            forwards: 0,
         };
         self.waiting.insert(id, waiting);
         self.journal.waiting.insert(id);

@@ -252,6 +252,7 @@ mod tests {
 
     fn transfer() -> PlayerTransfer {
         PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),

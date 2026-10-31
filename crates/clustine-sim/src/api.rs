@@ -484,6 +484,11 @@ pub struct PlayerTransfer {
     pub dimension: Dimension,
     /// Where a portal sends them, until a region has placed them.
     pub travel: Option<Travel>,
+    /// How many times a waiting respawn was let go to the holder of its target since its
+    /// travel was made (`docs/groundwork/p-plan.md`, section 19.7): carried, so that two
+    /// regions that each believe the other holds it do not pass it back and forth for
+    /// good.
+    pub forwards: u8,
     pub seen_credits: bool,
     /// Their health and whether they are dead, which go with them (the plan, 19.5).
     pub health: f32,

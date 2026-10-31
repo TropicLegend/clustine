@@ -634,6 +634,7 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),

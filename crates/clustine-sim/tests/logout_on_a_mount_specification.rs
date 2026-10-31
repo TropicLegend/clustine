@@ -703,6 +703,7 @@ fn an_arrival_over_a_seated_stay_takes_no_unit_and_keeps_both_notes() {
 /// Player 1, walking, handed over in the stay `entity` at `at`.
 fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

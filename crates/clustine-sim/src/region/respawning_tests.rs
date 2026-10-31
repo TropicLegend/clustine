@@ -443,11 +443,12 @@ fn the_void_hurts_a_player_by_four_every_ten_ticks_and_the_fifth_hit_kills() {
     );
 }
 
-/// The body stays 20 ticks and is then removed (entity event 60); the stay waits to be
+/// The body's count of 20 begins in the death's tick, so it is removed 19 ticks after it
+/// (entity event 60); the stay waits to be
 /// asked, the respawned body made with it: full health, alive. Inputs are dropped
 /// meanwhile.
 #[test]
-fn a_dead_player_s_body_goes_after_twenty_ticks_and_the_stay_waits_to_be_asked() {
+fn a_dead_player_s_body_goes_nineteen_ticks_after_the_death_and_the_stay_waits_to_be_asked() {
     let (mut end, id, entity) = fallen_into_the_void();
     let mut ticks = 0;
     while died(&idle(&mut end), id).is_none() {
@@ -471,7 +472,7 @@ fn a_dead_player_s_body_goes_after_twenty_ticks_and_the_stay_waits_to_be_asked()
             break;
         }
     }
-    assert_eq!(gone, Some(20), "20 ticks after the death");
+    assert_eq!(gone, Some(19), "19 ticks after the death's tick");
     assert!(end.player(id).is_none());
     let waiting = end.waiting_state(id).expect("waits to be asked");
     assert!(waiting.until_asked);

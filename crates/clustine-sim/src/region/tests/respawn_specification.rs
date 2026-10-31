@@ -552,10 +552,6 @@ fn a_player_back_in_the_void_within_the_cooldown_waits_for_its_half_before_the_n
 /// `hasClientLoaded`, SGPL 6770–6790) the void takes nothing. The edge passes on no
 /// `PlayerLoaded`, so the timer alone ends it.
 #[test]
-#[ignore = "finding: 19.5 item 2 says the void hurts nobody within the 60 ticks after a \
-            respawn before the client has loaded (ServerPlayer.isInvulnerableTo, \
-            hasClientLoaded); the region hurts a player moved into the void in the tick \
-            after their respawn's placing"]
 fn a_player_moved_into_the_void_just_after_a_respawn_is_not_hurt_before_their_client_has_loaded() {
     let mut home = region(Land::whole(Dimension::Overworld), 0, nothing);
     let (id, entity) = dead_in(&mut home, 1, 3.5, 3.5);
@@ -661,10 +657,6 @@ fn a_death_in_the_void_tells_shows_drops_and_clears_in_its_tick_and_is_not_hurt_
 /// `deathTime` up and removes the body with event 60 when it reaches 20: in the
 /// nineteenth tick after the one of the death.
 #[test]
-#[ignore = "finding: LivingEntity.baseTick runs tickDeath in the tick of the death itself \
-            (n9 LivingEntity 49-50, 490-509), so deathTime reaches 20 and event 60 is \
-            broadcast 19 ticks after the death's tick; the region ends the body 20 ticks \
-            after it"]
 fn the_body_goes_with_event_sixty_in_the_nineteenth_tick_after_the_death() {
     let mut home = region(Land::whole(Dimension::Overworld), 0, nothing);
     let (_, entity) = dead_in(&mut home, 1, 3.5, 3.5);
@@ -792,9 +784,6 @@ fn a_player_in_the_credits_is_hidden_unticked_and_deaf_to_everything_but_the_ask
 /// (facts 5.6) keeps the experience: the credits' respawn tells the player the
 /// experience they kept (19.5 item 1: the respawn sends `SetExperience`).
 #[test]
-#[ignore = "finding: 19.5 item 1 and PlayerList.respawn (PL 1014-1023) send SetExperience at \
-            the respawn; the region tells no experience at the placing, so after the \
-            credits (keep 1) the client shows none until it changes"]
 fn the_credits_respawn_tells_the_experience_the_player_kept() {
     let mut end = the_end(Land::whole(Dimension::End), 0);
     let (id, entity) = standing(&mut end, 1, IN_THE_PORTAL);
@@ -1338,10 +1327,6 @@ fn out_of_the_end_to_a_bed_in_another_region_s_chunk_is_woken_there_keeping_ever
 /// believe the other holds its target counts its forwards, and at 16 is placed at the
 /// world spawn, its respawn kept and no event owed.
 #[test]
-#[ignore = "finding: the review of 19.7, item 4, says a waiting stay counts its own forwards \
-            and is placed at the world spawn at 16; the count is kept in the region's \
-            WaitingState, which each region starts at 0, so a stay passed between two \
-            regions that each believe the other holds its target is never placed"]
 fn a_stay_passed_back_and_forth_is_placed_at_the_world_spawn_after_sixteen_forwards() {
     let mut home = region(
         Land {
@@ -1444,10 +1429,6 @@ fn spawned_pose(outputs: &[TickOutput], id: PlayerId) -> Option<Pose> {
 /// body stays enters at their respawn at the next join: `Spawned` there, alive and
 /// whole, with no `Placed` (no `Respawn` for a client that is entering).
 #[test]
-#[ignore = "finding: 19.5 item 5 and the review of 19.7, item 9, say a join of a dead stay \
-            enters through the respawn's path, the body respawned (alive, full health); \
-            a stay left while its body stayed (dead, below the world) joins at the world \
-            spawn with Spawned but still dead"]
 fn a_player_who_leaves_while_dead_enters_alive_at_the_world_spawn_at_the_next_join() {
     let mut home = region(Land::whole(Dimension::Overworld), 0, nothing);
     let (id, entity) = standing(&mut home, 1, [8.5, -200.0, 8.5]);
@@ -1607,10 +1588,6 @@ fn an_entity_out_of_the_end_comes_out_on_the_top_of_the_world_spawn_s_column() {
 /// The same with leaves on the column: `MOTION_BLOCKING_NO_LEAVES` passes them over, so
 /// the entity comes out on the block under them.
 #[test]
-#[ignore = "finding: Entity.adjustSpawnLocation (d Entity 3552-3560) reads \
-            MOTION_BLOCKING_NO_LEAVES; the region puts an entity out of the End on the \
-            top of the world spawn's column by MOTION_BLOCKING, on leaves where the game \
-            puts it under them"]
 fn an_entity_out_of_the_end_is_not_put_on_the_leaves_over_the_world_spawn() {
     let (key, traveller) = item_out_of_the_end();
     let leaves = state("minecraft:oak_leaves[distance=1,persistent=true,waterlogged=false]");

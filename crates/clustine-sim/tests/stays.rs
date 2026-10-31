@@ -344,6 +344,7 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),
@@ -770,6 +771,7 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),
@@ -823,6 +825,7 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

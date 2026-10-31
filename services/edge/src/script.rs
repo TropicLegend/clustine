@@ -1165,6 +1165,7 @@ impl Script {
         let person = self.people.get_mut(&who).expect("the player has joined");
         let from = person.region;
         let transfer = PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),

@@ -112,9 +112,6 @@ async fn died_and_let_go_east(edge: &mut Harness, client: &mut Client) -> usize 
 /// then `SetDefaultSpawnPosition` (PL 1001), then `ChangeDifficulty` (PL 1011); the
 /// abilities (from `restoreFrom`) and the missing block's event before them all.
 #[tokio::test]
-#[ignore = "finding: PlayerList.respawn sends Respawn, then the position (PL 993), the \
-            default spawn (PL 1001) and the difficulty (PL 1011); the edge sends the \
-            difficulty right after Respawn, before the position and the spawn"]
 async fn the_placing_of_a_respawn_follows_player_list_respawn_s_order() {
     let (mut edge, mut client) = standing_in_the_west().await;
     let from = died_and_let_go_east(&mut edge, &mut client).await;
@@ -614,10 +611,6 @@ async fn a_resumed_link_replays_the_death_and_the_placing_in_order() {
 /// hurt and shakes its camera; `ServerLevel.broadcastDamageEvent` sends it with
 /// `sendToTrackingPlayersAndSelf` (d ServerLevel 2550–2557), to the hurt player too.
 #[tokio::test]
-#[ignore = "finding: ServerLevel.broadcastDamageEvent sends the DamageEvent to the hurt \
-            player too (sendToTrackingPlayersAndSelf, d ServerLevel 2557), which is how \
-            the client shows its own hurt; the edge shows a DamageEvent only to the \
-            entity's watchers, so a player hurt by the void sees and hears no hurt"]
 async fn a_player_is_shown_their_own_hurt() {
     let (mut edge, mut client) = standing_in_the_west().await;
     edge.tell(

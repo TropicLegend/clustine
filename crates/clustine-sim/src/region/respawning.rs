@@ -38,7 +38,17 @@ use crate::state::WaitingState;
 /// How many times a waiting respawn is let go to the holder of its target before it is
 /// placed at the world spawn, its respawn kept: a holder that changes faster than the
 /// stay can follow does not keep it moving for good.
-const FORWARDS_LIMIT: u8 = 16;
+pub(super) const FORWARDS_LIMIT: u8 = 16;
+
+/// Whether `travel` is a respawn's: after a death, after the credits, or the End
+/// portal's out of the End, which is always bound for another dimension.
+pub(super) fn is_respawn(travel: &Travel) -> bool {
+    match travel.way {
+        Way::Respawn | Way::Credits => true,
+        Way::EndPortal => travel.to != Dimension::End,
+        _ => false,
+    }
+}
 
 /// The `Respawn`'s keep of a respawn's way (`PlayerList.respawn`, 959–965; a portal's
 /// change of level keeps everything).
@@ -226,7 +236,7 @@ impl Region {
             return;
         };
         let respawn = waiting.transfer.respawn;
-        let forwards = waiting.forwards;
+        let forwards = waiting.transfer.forwards;
         let target = ChunkPos::new(travel.target.x >> 4, travel.target.z >> 4);
         // Only the holder of the target's chunk checks the block and spends a charge: a
         // copy is another region's chunk.
@@ -235,7 +245,7 @@ impl Region {
             && forwards < FORWARDS_LIMIT
         {
             if let Some(waiting) = self.waiting.get_mut(&id) {
-                waiting.forwards += 1;
+                waiting.transfer.forwards = waiting.transfer.forwards.saturating_add(1);
             }
             self.let_waiting_go(id, holder);
             return;
@@ -337,6 +347,10 @@ impl Region {
 /// Puts `transfer` at `travel`'s target, the block's bottom centre, with its travel:
 /// where the store keeps the stay until a region places it.
 fn at_target(transfer: &mut PlayerTransfer, travel: Travel) {
+    // A new target is followed from its first holder on.
+    if transfer.travel.map(|was| was.target) != Some(travel.target) {
+        transfer.forwards = 0;
+    }
     transfer.dimension = travel.to;
     transfer.pose.position.x = f64::from(travel.target.x) + 0.5;
     transfer.pose.position.y = f64::from(travel.target.y);
@@ -349,11 +363,7 @@ pub(super) fn waits_for_respawn(waiting: &WaitingState) -> bool {
     waiting
         .transfer
         .travel
-        .is_some_and(|travel| match travel.way {
-            Way::Respawn | Way::Credits => true,
-            Way::EndPortal => travel.to != Dimension::End,
-            _ => false,
-        })
+        .is_some_and(|travel| is_respawn(&travel))
 }
 
 #[cfg(test)]

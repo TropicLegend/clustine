@@ -1458,6 +1458,7 @@ fn arrive(id: PlayerId, transfer: &PlayerTransfer) -> EdgeToWorker {
 /// along.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        forwards: 0,
         health: 20.0,
         dead: false,
         dimension: Default::default(),

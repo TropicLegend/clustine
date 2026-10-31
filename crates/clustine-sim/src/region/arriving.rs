@@ -373,9 +373,16 @@ impl Region {
             // Out of the End, an entity comes out on the top of the world spawn's column
             // (the plan, section 19.2 P10b), with the velocity and look it had.
             let target = travel.target;
-            let y = self
-                .motion_blocking_height(target.x, target.z)
-                .unwrap_or(target.y);
+            // `Entity.adjustSpawnLocation`: `MOTION_BLOCKING_NO_LEAVES` (d Entity 3552–3560).
+            let y = (self.readable_chunk(ChunkPos::containing(
+                f64::from(target.x),
+                f64::from(target.z),
+            )))
+            .map(|chunk| {
+                let column = ((target.z & 15) << 4 | (target.x & 15)) as usize;
+                chunk.min_y() + i32::from(chunk.heights().motion_blocking_no_leaves[column])
+            })
+            .unwrap_or(target.y);
             let at = [
                 f64::from(target.x) + 0.5,
                 f64::from(y),
@@ -533,12 +540,15 @@ impl Region {
         for input in &waiting.kept {
             self.act(id, input, output);
         }
-        let Some(player) = self.players.remove(&id) else {
+        let Some(mut player) = self.players.remove(&id) else {
             return;
         };
         // A stay that never had an input applied carries its join's attempt: its edge
         // was never told an entity for it, so it was never in the world. A stay a
         // portal sent on lost its attempt at the firing (`travel.rs`).
+        if respawn.is_some() {
+            player.hurting.protected_until = self.tick + super::void::RESPAWN_PROTECTION;
+        }
         match transfer.attempt {
             Some(attempt) => self.enter(id, player, attempt, output),
             None => {
@@ -559,6 +569,11 @@ impl Region {
                             health: player.health,
                         },
                     ));
+                    // And their experience (`PlayerList.respawn` 1014–1023), which the
+                    // client's new player otherwise shows as none.
+                    output
+                        .player_events
+                        .push((id, crate::api::PlayerEvent::Experience(player.experience)));
                 }
                 output
                     .events

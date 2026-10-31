@@ -2007,7 +2007,15 @@ impl Region {
             Some(_) => self.end_waiting(id, output),
             None => {}
         }
-        if let Knowledge::Foreign(holder) = self.land.knowledge(chunk) {
+        // A respawn's stay sent on too often is kept here, and its wait turns it to the
+        // world spawn (`respawning.rs`).
+        let respawning = transfer
+            .travel
+            .is_some_and(|travel| respawning::is_respawn(&travel));
+        let given_up = respawning && transfer.forwards >= respawning::FORWARDS_LIMIT;
+        if let Knowledge::Foreign(holder) = self.land.knowledge(chunk)
+            && !given_up
+        {
             // Land lent away is told of when it is pinned back, and believed until then
             // (`docs/adr/0027-lending-at-a-line.md`, section 1).
             if self.land.is_pinned(chunk) && !self.is_lent_away(chunk) {
@@ -2020,9 +2028,13 @@ impl Region {
                 // The store has said that the chunk is another region's, so the player
                 // is not taken in and goes on to that region. Nothing says that the
                 // entity is gone: it is on its way still.
+                let mut transfer = transfer.clone();
+                if respawning {
+                    transfer.forwards = transfer.forwards.saturating_add(1);
+                }
                 let what = Misdirected::Arrival {
                     player: id,
-                    transfer: transfer.clone(),
+                    transfer,
                 };
                 self.send(edge, Durable::NotMine { what, holder }, output);
                 return;
@@ -2154,24 +2166,47 @@ impl Region {
             edge,
             attempt,
         } = entering;
+        // A stay let go while dead (on the death screen, or before the body went) joins
+        // through the respawn's path, alive (`docs/groundwork/p-plan.md`, sections 19.5
+        // item 5 and 19.7, the review's ninth point): its place is that of the respawn's
+        // travel, as a body made at its making is.
+        let place = answer.place.clone().map(|place| {
+            if !place.dead {
+                return place;
+            }
+            let travel = self.respawn_travel(place.respawn, clustine_world::Way::Respawn);
+            let mut respawned = place;
+            respawned.dead = false;
+            respawned.health = PLAYER_MAX_HEALTH;
+            respawned.effects.clear();
+            respawned.dimension = travel.to;
+            respawned.pose.position = Vec3::new(
+                f64::from(travel.target.x) + 0.5,
+                f64::from(travel.target.y),
+                f64::from(travel.target.z) + 0.5,
+            );
+            respawned.travel = Some(travel);
+            respawned
+        });
         // A place below the world counts as no place, whoever holds it: nothing but
         // joining again brings back a player who fell through the floor. They keep
         // what they held.
         let lowest = f64::from(self.config.lowest_y);
-        let kept = (answer.place.as_ref()).map(|place| (place, place.pose.position.y < lowest));
+        let kept = place
+            .as_ref()
+            .map(|place| (place, place.pose.position.y < lowest));
         let at_spawn = self.spawn_pose();
         // The ender chest is theirs wherever they are, below the world too, and so is
         // their experience.
-        let ender =
-            (answer.place.as_ref()).map_or_else(EnderChest::default, |place| place.ender.clone());
-        let experience = answer
-            .place
+        let ender = place
+            .as_ref()
+            .map_or_else(EnderChest::default, |place| place.ender.clone());
+        let experience = place
             .as_ref()
             .map(|place| place.experience)
             .unwrap_or_default();
         // Their effects and their time since rest too, counted on from now.
-        let (effects, time_since_rest, raid_omen_position) = answer
-            .place
+        let (effects, time_since_rest, raid_omen_position) = place
             .as_ref()
             .map(|place| {
                 (
@@ -2184,17 +2219,13 @@ impl Region {
         // What the game saves with them: whether they saw the credits, their portal
         // cooldown, their health and whether they are dead; a new player's health is
         // full.
-        let (seen_credits, portal_cooldown) = answer
-            .place
+        let (seen_credits, portal_cooldown) = place
             .as_ref()
             .map(|place| (place.seen_credits, place.portal_cooldown))
             .unwrap_or_default();
-        let (health, dead) = answer
-            .place
-            .as_ref()
-            .map_or((PLAYER_MAX_HEALTH, false), |place| {
-                (place.health, place.dead)
-            });
+        let (health, dead) = place.as_ref().map_or((PLAYER_MAX_HEALTH, false), |place| {
+            (place.health, place.dead)
+        });
         // The unit they left the world on goes back under them: taken out of their
         // record and sent to its root's chunk, their seat in it theirs again and kept
         // pending (`docs/groundwork/n7h-logout-on-a-mount.md`, section 5). They wait at
@@ -2230,6 +2261,7 @@ impl Region {
                     // arrival and their departure are in this tick's commit, and meet
                     // in its holder in either order, as a crossing's do (N5).
                     let transfer = PlayerTransfer {
+                        forwards: 0,
                         health,
                         dead,
                         sleeping: None,
@@ -4163,6 +4195,7 @@ impl Player {
         let effects = crate::mobs::body::effects::instances(&self.effects, tick + 1);
         let time_since_rest = self.time_since_rest(tick + 1);
         PlayerTransfer {
+            forwards: 0,
             health: self.health,
             dead: self.dead,
             entity_id: self.entity_id,
@@ -6557,6 +6590,7 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),
@@ -7149,6 +7183,7 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        forwards: 0,
                         health: 20.0,
                         dead: false,
                         dimension: Default::default(),
@@ -7480,6 +7515,7 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            forwards: 0,
             health: 20.0,
             dead: false,
             dimension: Default::default(),

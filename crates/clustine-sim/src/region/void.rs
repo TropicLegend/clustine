@@ -39,8 +39,14 @@ const VOID_BELOW: f64 = 64.0;
 const HURT_COOLDOWN: u8 = 20;
 const HALF_COOLDOWN: u8 = 10;
 
-/// How long a dead player's body stays (`LivingEntity.tickDeath`).
-const BODY_TICKS: u64 = 20;
+/// How long a dead player's body stays (`LivingEntity.tickDeath`): its count of 20 is
+/// begun in the death's own tick (`baseTick` runs `tickDeath` after the hurt), so the
+/// body goes 19 ticks after it.
+const BODY_TICKS: u64 = 19;
+
+/// How long after a respawn the void hurts nobody while their client loads
+/// (`ServerPlayer.isInvulnerableTo` with `hasClientLoaded`, its 60 ticks).
+pub(super) const RESPAWN_PROTECTION: u64 = 60;
 
 /// The game's death message for the void.
 const OUT_OF_WORLD_MESSAGE: &str = "death.attack.outOfWorld";
@@ -54,6 +60,8 @@ pub(crate) struct Hurting {
     last: f32,
     /// The tick the player died in, while their body stays.
     died_at: Option<u64>,
+    /// The tick until which a respawned player is not hurt, their client loading.
+    pub(super) protected_until: u64,
 }
 
 impl Region {
@@ -78,7 +86,7 @@ impl Region {
                 }
                 continue;
             }
-            if player.pose.position.y < bottom {
+            if player.pose.position.y < bottom && tick >= player.hurting.protected_until {
                 self.hurt_by_the_void(id, output);
             }
         }
