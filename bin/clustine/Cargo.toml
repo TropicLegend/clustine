@@ -30,6 +30,8 @@ clustine-botswarm.workspace = true
 clustine-format.workspace = true
 clustine-light.workspace = true
 clustine-protocol.workspace = true
+# `flock`, for the tests' clusters' turns, shared by every test process on the machine.
+libc = "0.2"
 serde_json.workspace = true
 tempfile.workspace = true
 uuid.workspace = true

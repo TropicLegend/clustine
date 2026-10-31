@@ -605,16 +605,16 @@ pub fn ask(what: String, mut command: Command) -> JoinHandle<Asked> {
     })
 }
 
-/// A test's leave to run its cluster; the others that wait get theirs when it is
-/// dropped.
+/// A test's leave to run its cluster: the slots it holds, each a file it has locked,
+/// which the others that wait take when it is dropped.
 #[allow(dead_code)] // Held, never looked at.
-pub struct Turn(tokio::sync::OwnedSemaphorePermit);
+pub struct Turn(Vec<std::fs::File>);
 
-/// How many test clusters run at the same time, and what hands out the turns.
-fn turns() -> &'static (std::sync::Arc<tokio::sync::Semaphore>, u32) {
-    static TURNS: std::sync::OnceLock<(std::sync::Arc<tokio::sync::Semaphore>, u32)> =
-        std::sync::OnceLock::new();
-    TURNS.get_or_init(|| {
+/// How many test clusters run at the same time on this machine, whichever test binaries
+/// and checkouts they belong to: the number of slots.
+fn slots() -> u32 {
+    static SLOTS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *SLOTS.get_or_init(|| {
         // A cluster is half a dozen processes that mostly wait, for leases above all,
         // so a test takes minutes and a fraction of a processor. One for every two
         // processors leaves room for the moments in which a cluster does work: with
@@ -622,35 +622,74 @@ fn turns() -> &'static (std::sync::Arc<tokio::sync::Semaphore>, u32) {
         // says nothing about the server. `CLUSTINE_TEST_CLUSTERS` sets another number.
         let processors = std::thread::available_parallelism().map_or(2, |count| count.get());
         let asked = std::env::var("CLUSTINE_TEST_CLUSTERS").ok();
-        let count = asked
+        asked
             .and_then(|count| count.parse().ok())
             .unwrap_or(processors / 2)
-            .clamp(1, 16) as u32;
-        (
-            std::sync::Arc::new(tokio::sync::Semaphore::new(count as usize)),
-            count,
-        )
+            .clamp(1, 16) as u32
     })
 }
 
-/// Waits until this test may run its cluster beside those that run already.
+/// The file of slot `index`, in a folder every test process on the machine shares, so
+/// that test binaries run side by side (`tools/run_tests.py`) start no more clusters
+/// at once than one binary would.
+fn slot(index: u32) -> std::fs::File {
+    let folder = std::path::Path::new("/tmp/clustine-test-clusters");
+    std::fs::create_dir_all(folder).expect("the slots' folder can be made");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(folder.join(format!("slot-{index}")))
+        .expect("a slot's file opens")
+}
+
+/// `flock` of `file`, exclusive, waiting for it where `wait`: whether it was taken. The
+/// lock goes with the file when it is dropped, and with the process when it ends.
+fn lock(file: &std::fs::File, wait: bool) -> bool {
+    use std::os::fd::AsRawFd;
+    let operation = if wait {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    // SAFETY: the descriptor is the open file's, which outlives the call.
+    unsafe { libc::flock(file.as_raw_fd(), operation) == 0 }
+}
+
+/// Waits until this test may run its cluster beside those that run already: until one
+/// of the slots is free, which it locks.
 #[allow(dead_code)] // Not every test binary uses it.
 pub async fn turn() -> Turn {
-    let (turns, _) = turns();
-    Turn(turns.clone().acquire_owned().await.expect("never closed"))
+    let count = slots();
+    loop {
+        for index in 0..count {
+            let file = slot(index);
+            if lock(&file, false) {
+                return Turn(vec![file]);
+            }
+        }
+        // Another process's slot is let go without a word to this one: look again.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Waits until this test may run its cluster with no other beside it, for a test that
-/// measures how long something takes. Those that asked before it finish first, and
-/// those that ask after it wait for it.
+/// measures how long something takes: it takes every slot, in their order, waiting for
+/// each. Named: those that ask after it may take a slot it waits for first, where the
+/// semaphore of one binary had them wait their turn behind it.
 #[allow(dead_code)] // Not every test binary uses it.
 pub async fn turn_alone() -> Turn {
-    let (turns, count) = turns();
-    Turn(
-        turns
-            .clone()
-            .acquire_many_owned(*count)
-            .await
-            .expect("never closed"),
-    )
+    let count = slots();
+    tokio::task::spawn_blocking(move || {
+        let files = (0..count)
+            .map(|index| {
+                let file = slot(index);
+                assert!(lock(&file, true), "a slot's file locks");
+                file
+            })
+            .collect();
+        Turn(files)
+    })
+    .await
+    .expect("the slots are taken")
 }

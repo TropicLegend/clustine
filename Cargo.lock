@@ -231,6 +231,7 @@ dependencies = [
  "clustine-world",
  "clustine-worldgen",
  "clustine-worldstore",
+ "libc",
  "serde_json",
  "tempfile",
  "tokio",
