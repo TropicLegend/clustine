@@ -627,8 +627,15 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
     );
     run_ticks(&mut runner, &mut link, 30);
     let after = std::fs::read(&blocks).expect("the blocks are there");
+    // A random tick may have changed a block meanwhile (the dirt the dig bared turns
+    // to grass, or grass under it dies), and then the blocks are saved again, rightly:
+    // only a file written again with the same blocks is a fault.
+    let blocks_of = |bytes: &[u8]| {
+        let (file, _) = ChunkFile::decode(bytes).expect("a chunk file");
+        file.chunk.sections().to_vec()
+    };
     assert!(
-        before == after,
+        before == after || blocks_of(&before) != blocks_of(&after),
         "the blocks file was written again for a change of entities only"
     );
     let file = EntitiesFile::decode(&std::fs::read(&entities).expect("just found it"))
