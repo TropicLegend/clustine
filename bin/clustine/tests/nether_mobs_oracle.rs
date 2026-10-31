@@ -111,15 +111,21 @@ fn recorded(bot: &Bot) -> &[(Instant, ClientboundPlay)] {
 /// The server's tick when a packet came at `at`: the game time of the latest time
 /// packet that came before it, and the ticks since that came by the client's clock.
 fn server_tick(packets: &[(Instant, ClientboundPlay)], at: Instant) -> Option<i64> {
-    packets
-        .iter()
-        .take_while(|(came, _)| *came <= at)
-        .filter_map(|(came, packet)| match packet {
-            ClientboundPlay::SetTime(time) => Some((*came, time.game_time)),
-            _ => None,
-        })
-        .last()
+    let times = packets.iter().filter_map(|(came, packet)| match packet {
+        ClientboundPlay::SetTime(time) => Some((*came, time.game_time)),
+        _ => None,
+    });
+    let before = times.clone().take_while(|(came, _)| *came <= at).last();
+    // Before the first time packet, as for a mob hatched just after a join: counted back
+    // from the first one after.
+    before
         .map(|(came, game_time)| game_time + ticks(came, at))
+        .or_else(|| {
+            times
+                .clone()
+                .find(|(came, _)| *came > at)
+                .map(|(came, game_time)| game_time - ticks(at, came))
+        })
 }
 
 /// The game time the server last told.
@@ -931,8 +937,9 @@ struct InLava {
     burning: bool,
     removed: bool,
     hurt: usize,
-    /// The health values it was sent after its spawn.
-    health: Vec<EntityDataValue>,
+    /// Whether any health it was sent differs from the first: a magma cube's is its
+    /// size squared, and its size is drawn, so the values themselves are not compared.
+    health_changed: bool,
 }
 
 #[derive(Debug)]
@@ -967,11 +974,8 @@ async fn fire_immune(address: &str) -> Result<FireImmune> {
         .into_iter()
         .map(|id| -> Result<InLava> {
             let shown = first(bot, id)?;
-            // The data paired with the spawn is not a change of health.
-            let health = values_at(bot, id, HEALTH_INDEX)
-                .into_iter()
-                .skip(usize::from(shown.value(HEALTH_INDEX).is_some()))
-                .collect();
+            let health = values_at(bot, id, HEALTH_INDEX);
+            let health_changed = health.windows(2).any(|pair| pair[0] != pair[1]);
             Ok(InLava {
                 kind: shown.name().to_owned(),
                 burning: shown_burning(bot, id),
@@ -982,7 +986,7 @@ async fn fire_immune(address: &str) -> Result<FireImmune> {
                         matches!(packet, ClientboundPlay::DamageEvent(damage) if damage.entity_id == id)
                     })
                     .count(),
-                health,
+                health_changed,
             })
         })
         .collect::<Result<Vec<_>>>()?;
