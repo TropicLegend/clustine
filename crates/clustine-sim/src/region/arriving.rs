@@ -505,6 +505,8 @@ impl Region {
                     dimension: self.config.dimension,
                     pose: player.pose,
                     flying: player.flying,
+                    // A respawn's placing says what it owes from P10c on.
+                    respawn: None,
                 };
                 output
                     .events

@@ -40,7 +40,7 @@ mod trading;
 
 pub use api::{
     CountsReport, FightSeen, GlobalLevelEvent, PoiSeen, PublishedCounts, PublishedVillage,
-    RaidSeen, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
+    RaidSeen, Respawned, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
 };
 pub use api::{
     Durable, EdgeEvent, Entered, FaceChange, FaceSeq, GatewayExitAnswer, GatewayExitQuery, Keys,

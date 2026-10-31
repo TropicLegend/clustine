@@ -42,8 +42,8 @@ use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
     AttributeShown, Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected,
-    PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction, Tracked,
-    WorldClock,
+    PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
+    Respawned, Tracked, WorldClock,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, Dimension, EntityData, EntityId, InChunk, LevelChunk, Light,
@@ -605,6 +605,11 @@ struct PlayerView {
     /// waits, its moves held back, until the destination says it placed the player
     /// (`docs/groundwork/p-plan.md`, section 4.2).
     travelling: Option<Travelling>,
+    /// A respawn the client is owed (`docs/groundwork/p-plan.md`, section 19.7): from a
+    /// death, the credits, or a departure out of the End by its portal, until the
+    /// placing that sends the `Respawn`. Meanwhile what the player's regions tell them
+    /// is held here, and told after the `Respawn`, which would otherwise drop it.
+    respawn_owed: Option<Vec<PlayerEvent>>,
     batch_size: usize,
 }
 
@@ -1724,6 +1729,7 @@ impl Fanout {
                     player,
                     PlayerView {
                         travelling: None,
+                        respawn_owed: None,
                         session,
                         name: profile.name.clone(),
                         outbound,
@@ -1902,6 +1908,7 @@ impl Fanout {
     /// Handles what the region `from` sent over its current link. Returns why the edge
     /// has to stop, if it has to.
     async fn handle_region(&mut self, from: RegionId, message: WorkerToEdge) -> Option<Stopped> {
+        let message = self.held_while_respawning(message)?;
         match message {
             WorkerToEdge::Elsewhere { chunk, ask, region } => {
                 let holder = self.living(region);
@@ -2286,9 +2293,10 @@ impl Fanout {
                 dimension,
                 pose,
                 flying,
+                respawn,
             } => {
                 if self.has_stay(player, entity) {
-                    self.placed(player, dimension, pose, flying).await;
+                    self.placed(player, dimension, pose, flying, respawn).await;
                 }
             }
             Durable::Died {
@@ -2298,10 +2306,12 @@ impl Fanout {
             } => {
                 if self.has_stay(player, entity) {
                     self.died(player, entity, &message).await;
+                    self.owe_respawn(player);
                 }
             }
             Durable::WonGame { player, entity } => {
                 if self.has_stay(player, entity) {
+                    self.owe_respawn(player);
                     let packet = encoded(&GameEvent {
                         event: game_event::WIN_GAME,
                         value: 0.0,
@@ -3521,7 +3531,21 @@ impl Fanout {
         // A transfer of another dimension than the client shows is a change of
         // dimension: what triggers it is the difference, so that a departure turned
         // back from a `NotMine` in the same dimension is none (R D10).
-        let changes_level = transfer.dimension != view.dimension;
+        // A respawn's departure (after a death or the credits, or out of the End by its
+        // portal) owes the client its `Respawn`, which goes with the placing, whatever
+        // the dimension (`docs/groundwork/p-plan.md`, section 19.7).
+        let respawn_way = transfer.travel.is_some_and(|travel| match travel.way {
+            clustine_world::Way::Respawn | clustine_world::Way::Credits => true,
+            clustine_world::Way::EndPortal => {
+                view.dimension == Dimension::End && transfer.dimension != Dimension::End
+            }
+            _ => false,
+        });
+        if respawn_way {
+            view.respawn_owed.get_or_insert_with(Vec::new);
+        }
+        let respawning = view.respawn_owed.is_some();
+        let changes_level = transfer.dimension != view.dimension || respawning;
         let level = transfer.dimension;
         let through_a_portal = transfer.travel.is_some();
         let again: Vec<_> = view
@@ -3582,7 +3606,7 @@ impl Fanout {
             };
             self.send_to_region(to, message).await;
         }
-        if changes_level {
+        if changes_level && !respawning {
             // Step 7: only now the client, after the region has been told. It drops its
             // level and its entities, keeping its own entity's data (`Respawn`, keep 3).
             // A portal sets the traveller's cooldown before the `Respawn` is made
@@ -3607,6 +3631,39 @@ impl Fanout {
         // Normally the view has followed the move already; this covers a player who was
         // let go without having been seen to move, such as one who joined right there.
         self.move_view(player, chunk).await;
+    }
+
+    /// Keeps what a region tells a player who is owed a respawn, to be told after it
+    /// (section 19.7), and passes everything else on. A join's entering and a kick are
+    /// never held.
+    fn held_while_respawning(&mut self, message: WorkerToEdge) -> Option<WorkerToEdge> {
+        let WorkerToEdge::ToPlayer { player, event } = message else {
+            return Some(message);
+        };
+        if matches!(
+            event,
+            PlayerEvent::Spawned { .. } | PlayerEvent::Kicked { .. }
+        ) {
+            return Some(WorkerToEdge::ToPlayer { player, event });
+        }
+        match self
+            .players
+            .get_mut(&player)
+            .and_then(|view| view.respawn_owed.as_mut())
+        {
+            Some(held) => {
+                held.push(event);
+                None
+            }
+            None => Some(WorkerToEdge::ToPlayer { player, event }),
+        }
+    }
+
+    /// From now on the player is owed a respawn (section 19.7).
+    fn owe_respawn(&mut self, player: PlayerId) {
+        if let Some(view) = self.players.get_mut(&player) {
+            view.respawn_owed.get_or_insert_with(Vec::new);
+        }
     }
 
     /// Shows the player whose stay is `entity` their death: the death message, the game's
@@ -3640,7 +3697,18 @@ impl Fanout {
     /// again; what they may do; the level's information, ending with the wait for its
     /// chunks; the portal's sound. Then its view and its chunks. The inventory is the
     /// destination's, asked of it whole.
-    async fn placed(&mut self, player: PlayerId, dimension: Dimension, pose: Pose, flying: bool) {
+    async fn placed(
+        &mut self,
+        player: PlayerId,
+        dimension: Dimension,
+        pose: Pose,
+        flying: bool,
+        respawn: Option<Respawned>,
+    ) {
+        if let Some(respawn) = respawn {
+            Box::pin(self.respawned(player, dimension, pose, flying, respawn)).await;
+            return;
+        }
         let Some(view) = self.players.get_mut(&player) else {
             return;
         };
@@ -3757,6 +3825,124 @@ impl Fanout {
         }
         // Its inventory as the destination has it: the answer to a resync is the
         // inventory whole (`PlayerEvent::NoMenu`).
+        self.player_input_unchecked(player, PlayerInput::MenuResync)
+            .await;
+        let center = ChunkPos::containing(pose.position.x, pose.position.z);
+        self.show_level(player, center).await;
+    }
+
+    /// The placing of a respawn (`docs/groundwork/p-plan.md`, section 19.7;
+    /// `PlayerList.respawn`): the client is sent its abilities, the missing block's
+    /// event where one is owed, `Respawn` into the level it is placed in with the keep,
+    /// and the difficulty; where it is, absolutely, still; the level's information
+    /// ending with the wait for its chunks; the anchor's sound where a charge was
+    /// spent; then what its regions told it meanwhile, its inventory, its view and its
+    /// chunks. A respawn placed by the region the player died in comes with no
+    /// hand-over, so the old level is let go here.
+    async fn respawned(
+        &mut self,
+        player: PlayerId,
+        dimension: Dimension,
+        pose: Pose,
+        flying: bool,
+        respawn: Respawned,
+    ) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        let region = view.region;
+        if view.travelling.take().is_none() {
+            self.leave_level(player, region).await;
+        }
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        view.dimension = dimension;
+        view.told_clocks = None;
+        let held = view.respawn_owed.take().unwrap_or_default();
+        view.teleports = view.teleports.wrapping_add(1).max(1);
+        let teleport_id = view.teleports;
+        view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
+        let flags = if flying {
+            CREATIVE_ABILITIES | abilities::FLYING
+        } else {
+            CREATIVE_ABILITIES
+        };
+        let mut packets = vec![encoded(&PlayerAbilities {
+            flags,
+            flying_speed: 0.05,
+            field_of_view_modifier: 0.1,
+        })];
+        if respawn.no_respawn_block {
+            packets.push(encoded(&GameEvent {
+                event: game_event::NO_RESPAWN_BLOCK_AVAILABLE,
+                value: 0.0,
+            }));
+        }
+        packets.extend([
+            encoded(&Respawn {
+                spawn: spawn_info(&self.config, dimension),
+                data_to_keep: respawn.keep,
+            }),
+            encoded(&ChangeDifficulty {
+                difficulty: clustine_world::Difficulty::WORLD.id() as u8,
+                locked: false,
+            }),
+            // `ServerPlayer.teleport(DDDFF)`: absolute, and still.
+            encoded(&SynchronizePlayerPosition {
+                teleport_id,
+                x: pose.position.x,
+                y: pose.position.y,
+                z: pose.position.z,
+                velocity_x: 0.0,
+                velocity_y: 0.0,
+                velocity_z: 0.0,
+                yaw: pose.yaw,
+                pitch: pose.pitch,
+                relative_flags: 0,
+            }),
+        ]);
+        if !self.send_to_player(player, packets).await {
+            return;
+        }
+        self.tell_time(player, region, true).await;
+        let mut packets = vec![
+            encoded(&SetDefaultSpawnPosition {
+                dimension: OVERWORLD.to_owned(),
+                position: Position {
+                    x: self.world_spawn.x,
+                    y: self.world_spawn.y,
+                    z: self.world_spawn.z,
+                },
+                yaw: 0.0,
+                pitch: 0.0,
+            }),
+            encoded(&GameEvent {
+                event: game_event::START_WAITING_FOR_LEVEL_CHUNKS,
+                value: 0.0,
+            }),
+        ];
+        if let Some(anchor) = respawn.anchor_sound {
+            // At the block's corner, to the player alone, of the blocks' source.
+            self.sound_seeds = self.sound_seeds.wrapping_add(1);
+            packets.push(encoded(&Sound {
+                sound: clustine_data::sounds::BLOCK_RESPAWN_ANCHOR_DEPLETE,
+                source: clustine_protocol::packets::play::SOUND_SOURCE_BLOCKS,
+                x: anchor.x * 8,
+                y: anchor.y * 8,
+                z: anchor.z * 8,
+                volume: 1.0,
+                pitch: 1.0,
+                seed: self.sound_seeds as i64,
+            }));
+        }
+        if !self.send_to_player(player, packets).await {
+            return;
+        }
+        for event in held {
+            let message = WorkerToEdge::ToPlayer { player, event };
+            Box::pin(self.handle_region(region, message)).await;
+        }
         self.player_input_unchecked(player, PlayerInput::MenuResync)
             .await;
         let center = ChunkPos::containing(pose.position.x, pose.position.z);
@@ -12211,6 +12397,190 @@ mod scenarios {
         edge.end().await;
     }
 
+    /// An edge with player 1 in the west as entity 5, their view served.
+    async fn standing_in_the_west() -> (Harness, Client) {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        for chunk in view(HOME) {
+            let ask = edge.ask(WEST, chunk);
+            edge.tell(WEST, snapshot(chunk, ask));
+        }
+        edge.quiet().await;
+        client.drain();
+        (edge, client)
+    }
+
+    /// The packets the client was sent from `from` on, by id.
+    fn ids_from(client: &Client, from: usize) -> Vec<i32> {
+        client.ids[from..].to_vec()
+    }
+
+    /// Section 19.7: a death owes the client its respawn. The departure the respawn
+    /// makes sends no `Respawn` at the hand-over, and what the region tells the player
+    /// meanwhile is held; the placing sends the abilities, the missing block's event,
+    /// `Respawn` with keep 0 and the difficulty, the place absolutely and still, the
+    /// level's information; and only then what was held.
+    #[tokio::test]
+    async fn a_respawn_after_a_death_is_sent_with_its_placing_and_what_was_told_meanwhile_after_it()
+    {
+        use clustine_protocol::packet_ids::play::clientbound as ids;
+        let (mut edge, mut client) = standing_in_the_west().await;
+        edge.say(
+            WEST,
+            Durable::Died {
+                player: player(1),
+                entity: EntityId(5),
+                message: "death.attack.outOfWorld".to_owned(),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.tell(
+            WEST,
+            WorkerToEdge::ToPlayer {
+                player: player(1),
+                event: PlayerEvent::Health { health: 20.0 },
+            },
+        );
+        let mut moved = transfer(EntityId(5), 0, EASTERN);
+        moved.travel = Some(clustine_world::Travel {
+            to: Dimension::Overworld,
+            target: block_of(EASTERN),
+            way: clustine_world::Way::Respawn,
+        });
+        edge.say(
+            WEST,
+            Durable::Departed {
+                player: player(1),
+                transfer: moved,
+                to: EAST,
+            },
+        );
+        edge.settle(WEST).await;
+        edge.quiet().await;
+        client.drain();
+        assert!(client.respawns.is_empty(), "no Respawn at the hand-over");
+        assert!(
+            !client.ids.contains(&ids::SET_HEALTH),
+            "what the region told is held"
+        );
+        let from = client.ids.len();
+        for chunk in view(EASTERN) {
+            let ask = edge.ask(EAST, chunk);
+            edge.tell(EAST, snapshot(chunk, ask));
+        }
+        let at = within(EASTERN);
+        edge.say(
+            EAST,
+            Durable::Placed {
+                player: player(1),
+                entity: EntityId(5),
+                dimension: Dimension::Overworld,
+                pose: Pose {
+                    position: at,
+                    yaw: 45.0,
+                    pitch: 0.0,
+                    on_ground: true,
+                },
+                flying: false,
+                respawn: Some(Respawned {
+                    keep: 0,
+                    no_respawn_block: true,
+                    anchor_sound: None,
+                }),
+            },
+        );
+        edge.settle(EAST).await;
+        edge.sync(&mut client).await;
+        let after = ids_from(&client, from);
+        let order = [
+            ids::PLAYER_ABILITIES,
+            ids::GAME_EVENT,
+            ids::RESPAWN,
+            ids::CHANGE_DIFFICULTY,
+            ids::PLAYER_POSITION,
+        ];
+        assert_eq!(after[..order.len()], order, "{after:?}");
+        let [respawn] = &client.respawns[..] else {
+            panic!("one Respawn: {:?}", client.respawns);
+        };
+        assert_eq!(respawn.data_to_keep, 0);
+        assert_eq!(respawn.spawn.dimension_name, "minecraft:overworld");
+        let teleport = client.teleports.last().expect("placed");
+        assert_eq!((teleport.x, teleport.y, teleport.z), (at.x, at.y, at.z));
+        assert_eq!((teleport.yaw, teleport.relative_flags), (45.0, 0));
+        let spawn = after
+            .iter()
+            .position(|id| *id == ids::SET_DEFAULT_SPAWN_POSITION)
+            .expect("the level's information");
+        let health = after
+            .iter()
+            .position(|id| *id == ids::SET_HEALTH)
+            .expect("the held health is told");
+        assert!(spawn < health, "{after:?}");
+        assert_eq!(
+            client.chunks.keys().copied().collect::<BTreeSet<_>>(),
+            view(EASTERN)
+        );
+        edge.end().await;
+    }
+
+    /// Section 19.7: the credits' respawn placed by the region the player is in, with
+    /// no hand-over: `Respawn` with keep 1 at the placing, and the view sent again,
+    /// which the `Respawn` made the client drop.
+    #[tokio::test]
+    async fn a_respawn_after_the_credits_placed_where_the_player_is_sends_their_view_again() {
+        let (mut edge, mut client) = standing_in_the_west().await;
+        edge.say(
+            WEST,
+            Durable::WonGame {
+                player: player(1),
+                entity: EntityId(5),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.quiet().await;
+        client.drain();
+        let sent = client.sent.len();
+        let at = within(HOME);
+        edge.say(
+            WEST,
+            Durable::Placed {
+                player: player(1),
+                entity: EntityId(5),
+                dimension: Dimension::Overworld,
+                pose: Pose::at(at),
+                flying: false,
+                respawn: Some(Respawned {
+                    keep: Respawn::KEEP_ATTRIBUTE_MODIFIERS,
+                    no_respawn_block: false,
+                    anchor_sound: None,
+                }),
+            },
+        );
+        edge.settle(WEST).await;
+        edge.quiet().await;
+        // The view is asked of the region again, and served anew.
+        for chunk in view(HOME) {
+            let ask = edge.ask(WEST, chunk);
+            edge.tell(WEST, snapshot(chunk, ask));
+        }
+        edge.sync(&mut client).await;
+        let [respawn] = &client.respawns[..] else {
+            panic!("one Respawn: {:?}", client.respawns);
+        };
+        assert_eq!(respawn.data_to_keep, Respawn::KEEP_ATTRIBUTE_MODIFIERS);
+        assert!(
+            client.sent.len() > sent,
+            "the view is sent again after the Respawn"
+        );
+        assert_eq!(
+            client.chunks.keys().copied().collect::<BTreeSet<_>>(),
+            view(HOME)
+        );
+        edge.end().await;
+    }
+
     /// Section 4.2, the second half: once the Nether's region says it placed the
     /// player, the client is sent where they are, as a teleport it must accept, their
     /// abilities, the level's information ending with the wait for its chunks, and
@@ -12237,6 +12607,7 @@ mod scenarios {
                 dimension: Dimension::Nether,
                 pose: Pose::at(placed_at),
                 flying: false,
+                respawn: None,
             },
         );
         edge.settle(NETHER).await;

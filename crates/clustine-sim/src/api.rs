@@ -132,6 +132,20 @@ pub struct Sleep {
     pub since: u64,
 }
 
+/// What the placing of a respawned player owes their client, sent with the `Respawn`
+/// the placing brings (`docs/groundwork/p-plan.md`, section 19.7): the `Respawn`'s
+/// `data_to_keep` (0 after a death, 1 after the credits, 3 out of the End by its
+/// portal), whether `NO_RESPAWN_BLOCK_AVAILABLE` is told first, and the block whose
+/// anchor's `respawn_anchor_deplete` the player hears where a charge was spent
+/// (`PlayerList.respawn` 1057–1107). Durable with the placing, so that a resumed link
+/// tells it in the same order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Respawned {
+    pub keep: u8,
+    pub no_respawn_block: bool,
+    pub anchor_sound: Option<BlockPos>,
+}
+
 /// A player's respawn point as a bed sets it (`ServerPlayer.RespawnConfig`, never forced):
 /// the bed's head, and the look they had.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1261,6 +1275,9 @@ pub enum Durable {
         dimension: Dimension,
         pose: Pose,
         flying: bool,
+        /// What a respawn's placing owes the client (`docs/groundwork/p-plan.md`,
+        /// section 19.7): none for a portal's or a gateway's.
+        respawn: Option<Respawned>,
     },
     /// The player died, with `message` the game's death message for them: their edge
     /// shows them the respawn screen (`PlayerCombatKill`), and the region keeps their
@@ -1658,6 +1675,7 @@ pub enum PlayerEvent {
         dimension: Dimension,
         pose: Pose,
         flying: bool,
+        respawn: Option<Respawned>,
     },
     /// The player's health changed (`ClientboundSetHealthPacket`, with the food and
     /// saturation a creative player keeps full).

@@ -521,7 +521,7 @@ pub enum RestoreError {
 /// names or kinds on the wire, so bytes of one shape can read as another).
 /// `the_bytes_of_a_state_and_of_a_delta_are_as_written_down` fails when a shape
 /// changes, and says so.
-pub const STATE_FORMAT: u8 = 27;
+pub const STATE_FORMAT: u8 = 28;
 
 /// What the store is handed for `value`, a `RegionState` or a `StateDelta`: a zero byte,
 /// [`STATE_FORMAT`], and the value as postcard writes it. The zero tells it from what
@@ -8600,17 +8600,20 @@ mod tests {
     /// the stays and the entities a portal sent that wait to be placed, two bytes more a
     /// state where there are none, and a delta says them and the dragon fight, three
     /// bytes more (section 16.7 of the same plan). Format 27 keeps each player's health
-    /// and whether they are dead, five bytes more a player (section 19.6).
+    /// and whether they are dead, five bytes more a player (section 19.6). Format 28 has
+    /// a placing in an outbox say what a respawn's placing owes the client, a byte more
+    /// such an entry; none is in an outbox here, so only the number differs (section
+    /// 19.7).
     #[test]
     fn the_bytes_of_a_state_and_of_a_delta_are_as_written_down() {
         let (state, delta) = a_state_and_a_delta();
         let hex =
             |bytes: Vec<u8>| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
-        assert_eq!(STATE_FORMAT, 27);
+        assert_eq!(STATE_FORMAT, 28);
         assert_eq!(
             hex(stored(&state)),
             concat!(
-                "001b02018080808010030110000000000000000000000000000000020204416c6578000000000000",
+                "001c02018080808010030110000000000000000000000000000000020204416c6578000000000000",
                 "2d400000000000004ec0000000000000e03f00000000000000000129000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000001b000000000000000000",
                 "00000000000000000000000000000000000002000700000000000000000000000000000000000000",
@@ -8631,7 +8634,7 @@ mod tests {
         assert_eq!(
             hex(stored(&delta)),
             concat!(
-                "001b0200000210000000000000000000000000000000010010000000000000000000000000000000",
+                "001c0200000210000000000000000000000000000000010010000000000000000000000000000000",
                 "02010204416c65780000000000002d400000000000004ec0000000000000e03f0000000000000000",
                 "01290000000000000000000000000000000000000000000000000000000000000000000000000000",
                 "000000001b0000000000000000000000000000000000000000000000000000000200070000000000",

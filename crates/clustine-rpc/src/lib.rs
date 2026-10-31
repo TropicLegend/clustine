@@ -15,7 +15,7 @@ pub mod wire;
 pub use clustine_sim::api::{Experience, ItemStack, Pose, Respawn, Sleep, WorldClock};
 pub use clustine_sim::{
     CountsReport, FightSeen, GlobalLevelEvent, PoiSeen, PublishedCounts, PublishedVillage,
-    RaidSeen, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
+    RaidSeen, Respawned, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
 };
 pub use clustine_sim::{
     FaceChange, FaceSeq, GatewayExitAnswer, GatewayExitQuery, Place, PlayerFace, PortalAnswer,
