@@ -913,6 +913,25 @@ fn the_end_s_outer_islands_are_decorated_as_the_games_own_server_decorates_them(
     judge(seed, area_about(highlands, 10));
 }
 
+/// An End city of seed 13579, which starts in chunk (144, 146) and reaches from chunk
+/// 137 to 144 along x and 145 to 146 along z (`clustine-structures`' `tests/starts.rs`):
+/// its towers, bridges and houses, and its chests' loot and seeds. Its sentry shulkers
+/// and the ship's item frame are entities, which the judge does not compare;
+/// `tests/end_cities.rs` and the placer's own tests check them.
+///
+/// ```text
+/// CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --release -p clustine-worldgen \
+///     --test game_features -- --ignored --nocapture the_end_s_cities
+/// ```
+#[test]
+#[ignore = "runs the official server; needs a JDK 25, the jar and the EULA accepted"]
+fn the_end_s_cities_are_placed_as_the_games_own_server_places_them() {
+    JUDGED.set(Some(clustine_world::Dimension::End));
+    // The chunks whose runs all lie within ten of (141, 146) reach from 136 to 144
+    // along x and 143 to 151 along z: the whole city.
+    judge(13579, area_about(ChunkPos::new(141, 146), 10));
+}
+
 /// Judges the features of `area` in the world of `seed`, in the dimension judged.
 fn judge(seed: i64, area: Area) {
     assert_eq!(

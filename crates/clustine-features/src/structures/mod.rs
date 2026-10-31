@@ -10,6 +10,9 @@
 mod buried_treasure;
 mod code_piece;
 mod desert_pyramid;
+mod end_city;
+#[cfg(test)]
+mod end_city_tests;
 mod fortress;
 mod igloo;
 mod jigsaw;
@@ -89,6 +92,7 @@ pub fn built(structure: usize) -> bool {
             | Kind::WoodlandMansion
             | Kind::Fortress
             | Kind::NetherFossil { .. }
+            | Kind::EndCity
     )
 }
 
@@ -117,6 +121,7 @@ pub(crate) fn place_piece(
             (TemplateMarkerHandling::WoodlandMansion, _) => {
                 woodland_mansion::place(placing, data);
             }
+            (TemplateMarkerHandling::EndCity, _) => end_city::place(placing, data),
             (_, TemplatePostProcess::RuinedPortal) => {
                 return ruined_portal::place(placing, data, state);
             }
