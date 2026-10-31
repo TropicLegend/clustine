@@ -203,6 +203,12 @@ impl Region {
     pub(super) fn report_village(&mut self, full: bool, output: &mut TickOutput) {
         let mut report = VillageReport {
             full,
+            // The global level events the tick's steps put in (`eye_of_ender.rs`).
+            global_events: output
+                .village
+                .take()
+                .map(|made| made.global_events)
+                .unwrap_or_default(),
             ..VillageReport::default()
         };
         if full {
@@ -227,7 +233,12 @@ impl Region {
             }
         }
         report.raids = self.report_raids(full);
-        if full || !report.pois.is_empty() || !report.let_go.is_empty() || report.raids.is_some() {
+        if full
+            || !report.pois.is_empty()
+            || !report.let_go.is_empty()
+            || report.raids.is_some()
+            || !report.global_events.is_empty()
+        {
             output.village = Some(report);
         }
     }

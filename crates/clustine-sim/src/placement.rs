@@ -11,6 +11,7 @@ mod anchor;
 mod bucket;
 mod context;
 mod data;
+pub(crate) mod ender_eye;
 mod geometry;
 mod replace;
 pub(crate) use replace::can_be_replaced_empty_handed;

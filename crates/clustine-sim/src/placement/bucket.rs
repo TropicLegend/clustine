@@ -287,6 +287,14 @@ pub(crate) fn source_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Opti
     Ok(ray(item_use, blocks, Fluids::Sources)?.map(|hit| hit.pos))
 }
 
+/// The block where a ray from the player's eyes along their view first meets a block's
+/// outline within reach, through every fluid, as `EnderEyeItem.use` aims
+/// (`Item.getPlayerPOVHitResult` with `ClipContext.Fluid.NONE`): `Ok(None)` when it
+/// meets nothing, `Err` when it reaches a block the caller cannot see first.
+pub(crate) fn block_hit(item_use: &ItemUse, blocks: &dyn Blocks) -> Result<Option<BlockPos>, ()> {
+    Ok(ray(item_use, blocks, Fluids::None)?.map(|hit| hit.pos))
+}
+
 /// The first block a ray from the player's eyes along their view meets within reach,
 /// by the blocks' outline shapes and the shapes of the fluids `fluids` names.
 /// `Ok(None)` when it meets nothing, `Err` when it reaches a block the caller cannot

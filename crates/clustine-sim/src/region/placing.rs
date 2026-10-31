@@ -24,6 +24,10 @@ impl Region {
         if click.held.is_none() {
             return false;
         }
+        // An eye set in an end portal frame (`EnderEyeItem.useOn`, `eye_of_ender.rs`).
+        if self.ender_eye_used_on(click, player, output) {
+            return true;
+        }
         // TNT lit by a flint and steel or a fire charge (`TntBlock.useItemOn`), then
         // fire either sets (`FlintAndSteelItem.useOn`, `FireChargeItem.useOn`).
         if self.light_tnt(click, player, output) || self.fire_item_used_on(click, player, output) {
@@ -87,6 +91,10 @@ impl Region {
     ) -> bool {
         if used.held.is_none() {
             return false;
+        }
+        // An eye of ender thrown (`EnderEyeItem.use`, `eye_of_ender.rs`).
+        if self.ender_eye_used(used, player, output) {
+            return true;
         }
         let spawned = output.events.len();
         let placed = self.place_boat(used, player, output)

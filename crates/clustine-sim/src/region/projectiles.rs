@@ -109,7 +109,8 @@ pub(crate) fn pickable_and_alive(entity: &Entity) -> (bool, bool) {
         | EntityData::Spit(_)
         | EntityData::Firework(_)
         | EntityData::Cloud(_)
-        | EntityData::Fangs(_) => (false, true),
+        | EntityData::Fangs(_)
+        | EntityData::EyeOfEnder(_) => (false, true),
         EntityData::Mob { .. } => {
             let alive = crate::mobs::Mob::decode(&entity.data)
                 .is_ok_and(|mob| mob.body.vitals.health > 0.0);

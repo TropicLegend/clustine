@@ -1158,6 +1158,15 @@ impl Tracker {
                     EntityDataValue::ItemStack(Some(stack)),
                 ));
             }
+            // `EyeOfEnder.DATA_ITEM_STACK`: the eye it shows, which `setItem` sets as it
+            // is made to a copy, never the default's object, so that it is always sent.
+            EntityData::EyeOfEnder(eye) if pairing => {
+                let stack = wire_stack(&eye.item);
+                values.push((
+                    entity_data::ITEM_STACK,
+                    EntityDataValue::ItemStack(Some(stack)),
+                ));
+            }
             // `Fireball.DATA_ITEM_STACK`: a fire charge by default, which is not sent.
             EntityData::Fireball(fireball)
                 if pairing && fireball.item.item != clustine_data::items::FIRE_CHARGE =>

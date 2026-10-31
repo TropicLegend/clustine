@@ -7363,6 +7363,14 @@ fn entity_data_packet(
                 EntityDataValue::ItemStack(Some(protocol_stack(&stack.clone()))),
             )],
         },
+        // `EyeOfEnder.DATA_ITEM_STACK`, always sent, as the tracker's pairing has it.
+        EntityData::EyeOfEnder(eye) => SetEntityData {
+            entity_id: id,
+            values: vec![(
+                entity_data::ITEM_STACK,
+                EntityDataValue::ItemStack(Some(protocol_stack(&eye.item))),
+            )],
+        },
         // `Fireball.DATA_ITEM_STACK`, sent where it is not the fire charge it starts
         // with.
         EntityData::Fireball(fireball) => SetEntityData {
@@ -23127,5 +23135,74 @@ mod scenarios {
         );
         // The owner whose id the edge looks up is the projectile's.
         assert_eq!(owner_of(&state), Some(EntityId(3)));
+    }
+
+    /// A thrown eye of ender is no projectile: its spawn carries its motion and no
+    /// data (`Entity.getAddEntityPacket`), whatever owner id is offered, and then the eye
+    /// it shows at index 8, which `setItem` set as a copy and the official server always
+    /// sends; a snapshot without pairing shows it alike.
+    #[test]
+    fn an_eye_of_ender_is_spawned_with_no_data_and_then_its_stack() {
+        let data = EntityData::EyeOfEnder(Box::new(clustine_world::EyeOfEnder {
+            item: clustine_world::ItemStack::new(clustine_data::items::ENDER_EYE, 1),
+            target: [clustine_world::Double(12.0); 3],
+            survives: true,
+        }));
+        let motion = [0.0125, 0.015, -0.025];
+        let kind = entity_types::EYE_OF_ENDER as u16;
+        let state = EntityState {
+            entity: EntityId(9),
+            kind: EntityKind::Other {
+                kind,
+                uuid: Uuid::from_u128(9),
+                motion,
+                hops: 0,
+                lived: 1,
+                data: data.clone(),
+                riding: Default::default(),
+            },
+            pose: Pose {
+                position: Vec3::new(3.5, -59.1, 3.5),
+                yaw: 0.0,
+                pitch: 0.0,
+                on_ground: false,
+            },
+        };
+        let seen = Seen {
+            kind,
+            position: [3.5, -59.1, 3.5],
+            motion,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        };
+        let pairing =
+            Tracker::new(seen, &data, 0, &mut |key| i32::try_from(key.0).unwrap()).pairing();
+        let shown = protocol::ItemStack::new(clustine_data::items::ENDER_EYE, 1);
+        for pairing in [Some(&pairing), None] {
+            let packets: Vec<ClientboundPlay> = spawn_packets(&state, 4, pairing, 7, &mut |key| {
+                i32::try_from(key.0).unwrap()
+            })
+            .iter()
+            .map(|packet| ClientboundPlay::decode(packet).expect("the edge sends packets"))
+            .collect();
+            let [
+                ClientboundPlay::SpawnEntity(spawn),
+                ClientboundPlay::SetEntityData(values),
+            ] = &packets[..]
+            else {
+                panic!("{packets:?}");
+            };
+            assert_eq!(spawn.kind, entity_types::EYE_OF_ENDER);
+            assert_eq!(spawn.data, 0);
+            for (sent, made) in spawn.velocity.iter().zip(motion) {
+                assert!((sent - made).abs() < 1.0e-3, "{:?}", spawn.velocity);
+            }
+            assert_eq!(
+                values.values,
+                [(8, EntityDataValue::ItemStack(Some(shown.clone())))]
+            );
+        }
+        assert_eq!(owner_of(&state), None);
     }
 }
