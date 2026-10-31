@@ -51,11 +51,13 @@ mod dried_ghasts;
 mod drops;
 mod eating;
 mod effect_deaths;
-mod end_entities;
+mod end_crystal;
+mod end_world;
 mod entities;
 mod entity_effects;
 mod experience;
 mod explosions;
+mod eye_of_ender;
 mod faces;
 mod falling;
 mod fangs;
@@ -114,6 +116,7 @@ mod riders;
 pub(crate) mod riding;
 mod sculk;
 mod shulker_boxes;
+mod shulker_bullet;
 mod sleep;
 mod sniffer_eggs;
 mod spawn_caps;
@@ -549,8 +552,8 @@ pub struct Region {
     /// The world's table of raids, what the region last reported of its own, its raids'
     /// draws in this tick and each player's bar (`raids.rs`); in memory only.
     raid_memory: raids::RaidMemory,
-    /// What the store published of the End (`end_entities.rs`).
-    published_end: end_entities::PublishedEnd,
+    /// What the store published of the End (`end_world.rs`).
+    published_end: end_world::PublishedEnd,
     reported_pois: BTreeMap<ChunkPos, Vec<crate::api::PoiSeen>>,
     /// Each mob's swing of an arm under way, as a player's (`swing_arm`): the tick it
     /// began in and its length; in memory only, and forgotten once over.
@@ -825,7 +828,7 @@ impl Region {
             margin: BTreeMap::new(),
             bell_rings: bells::Rings::new(),
             raid_memory: raids::RaidMemory::default(),
-            published_end: end_entities::PublishedEnd::default(),
+            published_end: end_world::PublishedEnd::default(),
             reported_pois: BTreeMap::new(),
             mob_swings: BTreeMap::new(),
             journal: Journal::default(),

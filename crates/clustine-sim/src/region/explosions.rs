@@ -692,7 +692,7 @@ impl Region {
             | EntityData::Cloud(_)
             | EntityData::Fangs(_)
             | EntityData::EyeOfEnder(_) => {}
-            // The End's own (`end_entities.rs`).
+            // The End's own (`end_crystal.rs`, `shulker_bullet.rs`).
             EntityData::EndCrystal(_) => self.end_crystal_blasted(record, explosion, output),
             EntityData::ShulkerBullet(_) => self.shulker_bullet_hurt(record, output),
             // A fireball's own (`fireballs.rs`).

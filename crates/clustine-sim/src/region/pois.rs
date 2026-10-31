@@ -192,7 +192,7 @@ impl Region {
             self.margin.insert(*position, seen.clone());
         }
         // The world's raids come whole with it (`raids.rs`), and the End's news
-        // (`end_entities.rs`).
+        // (`end_world.rs`).
         self.take_raid_table(&published.raids);
         self.take_published_end(published);
     }
