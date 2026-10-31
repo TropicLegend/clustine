@@ -286,7 +286,9 @@ wait_for_job() {
 # replaced starts its log anew.
 running_regions() {
   local pod count=0
-  for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2; do
+  # A fourth worker runs only in the world without pins; a pod that is not there has
+  # no log and counts for nothing.
+  for pod in clustine-worker-0 clustine-worker-1 clustine-worker-2 clustine-worker-3; do
     # Into a file first: a grep that stops reading at its first match would have
     # kubectl fail on a log that is long, and the pipe with it.
     k logs "$pod" >"${scratch}/running.log" 2>/dev/null || true
@@ -544,18 +546,23 @@ if grep -q -F -e 'a merge was not done within the lease' \
 fi
 
 step "Deploying a world without pins, whose regions follow their players"
-# The manifests as they are: one home region that holds what its players see, three
-# workers, and a coordinator that merges and splits by itself by the distances of the
+# The manifests as they are, but for a fourth worker: one home region that holds what
+# its players see, and a coordinator that merges and splits by itself by the distances of the
 # usual view distance. The namespace goes first, and the world of the parts above
 # with it.
 k delete namespace "$namespace" --ignore-not-found --wait --timeout=120s
 k apply --kustomize "${root}/deploy/kubernetes"
+# A world begins with the homes of the overworld, the Nether and the End, one for each
+# of the three workers. The bots' region, split off the overworld's home, would leave
+# its worker only one region ahead of the others, which is even enough; a fourth worker
+# with none makes the move to even regions out that is looked for below.
+k scale statefulset/clustine-worker --replicas=4
 wait_for_services
 
 step "Sending bots further from where players enter than regions reach"
 k delete job clustine-wanders --ignore-not-found --cascade=foreground --wait --timeout=60s
 k apply --filename "${root}/deploy/kubernetes/test/wanders.yaml"
-# They walk five hundred blocks, play for three minutes and are audited by a bot that
+# They walk over five hundred blocks, play for three minutes and are audited by a bot that
 # walks out to them.
 wait_for_job clustine-wanders 600
 

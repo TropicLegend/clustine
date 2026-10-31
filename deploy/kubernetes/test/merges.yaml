@@ -56,8 +56,10 @@ spec:
             - --bots=4
             # Long enough for the merges and the split that are asked for meanwhile,
             # with the release that evens regions out after a split; see
-            # deploy/kind/test.sh, which fails if the bots are done before it is.
-            - --seconds=90
+            # deploy/kind/test.sh, which fails if the bots are done before it is. The
+            # homes of the Nether and the End are moved between the workers too, and
+            # on GitHub's machines 90 seconds were not enough.
+            - --seconds=180
             # As for the other bots: the regions meet at block x = 64.
             - --west=40.5
             - --east=90.5

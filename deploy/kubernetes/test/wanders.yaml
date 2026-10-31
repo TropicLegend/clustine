@@ -61,11 +61,12 @@ spec:
             # Long enough to be split off, to be moved to another worker a rest later,
             # and to play in the part after that.
             - --seconds=180
-            # Chunk 31, which is more than the split distance of thirty chunks from
-            # where players enter the world. There is no boundary to count steps
-            # across: the world has no pins.
-            - --west=498.5
-            - --east=509.5
+            # Chunk 33, which is more than the split distance of 32 chunks from where
+            # players enter the world (twice the view distance of 8 and 16, since
+            # the rings of B4). There is no boundary to count steps across: the world
+            # has no pins.
+            - --west=530.5
+            - --east=541.5
             # How long an action may wait for its acknowledgement. Nobody dies here, so
             # nobody is to wait even for the lease of 5 seconds; this is only to end a
             # run that hangs.
