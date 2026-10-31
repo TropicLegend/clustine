@@ -18,6 +18,7 @@ pub mod end_island;
 pub mod end_platform;
 pub mod end_podium;
 pub mod end_spike;
+pub mod gateway_exit;
 pub mod void_start_platform;
 
 /// The End's kinds that are built. The podium (`end_podium`) is the dragon fight's,
