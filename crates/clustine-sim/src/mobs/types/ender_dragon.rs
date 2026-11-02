@@ -555,7 +555,9 @@ impl Step<'_, '_> {
     }
 
     /// `move(SELF, by)` of a body that moves through everything: its place, and the
-    /// move recorded for the effects of the blocks it went through.
+    /// move recorded for the effects of the blocks it went through. Like the game's
+    /// `move`, it does not ask for a sync: the dragon is sent on its tracker's every
+    /// third tick, as the game sends it.
     fn move_by(&mut self, by: Vec3) {
         let body = &mut self.tick.living.body;
         let from = body.position;
@@ -565,7 +567,6 @@ impl Step<'_, '_> {
             to: body.position,
             asked: Some(by),
         });
-        self.tick.out.needs_sync = true;
     }
 
     /// The parts placed about it, its wings' and head's hurts, and its walls (1002–1931).
@@ -860,7 +861,6 @@ impl Step<'_, '_> {
         }
         let up = [0.0, 0.100_000_001_490_116_12, 0.0];
         self.tick.living.body.position = physics::add(position, up);
-        self.tick.out.needs_sync = true;
         for part in &mut self.own.parts {
             *part = physics::add(*part, up);
         }
