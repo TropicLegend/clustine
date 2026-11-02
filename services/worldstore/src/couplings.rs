@@ -89,6 +89,10 @@ pub(crate) struct Couplings {
     coupled: BTreeMap<Pair, Coupled>,
     shakes: BTreeMap<Pair, Shake>,
     given_up: BTreeMap<RegionId, Earning>,
+    /// Which region has been told that which region given up was: the first of each
+    /// pair was told `Uncoupled { GivenUp }` naming the second. Kept in memory only, as
+    /// what a runner makes of it is: a store that starts again ends every runner.
+    told_given_up: BTreeSet<Pair>,
     /// Regions preparing for a merge or a split, or released for a move: none is
     /// coupled until it is through.
     reshaping: BTreeSet<RegionId>,
@@ -307,6 +311,8 @@ impl Couplings {
             *earning = Earning { since: now, from };
         }
         self.pace.remove(&region);
+        // Its runner starts afresh, knowing of nobody given up but itself.
+        self.told_given_up.retain(|(told, _)| *told != region);
     }
 
     /// `region`'s copies in `begins` are beside a chunk that would tick with them, and
@@ -356,6 +362,8 @@ impl Couplings {
         self.reshaping.remove(&region);
         self.beside.remove(&region);
         self.ticks.remove(&region);
+        self.told_given_up
+            .retain(|(told, given_up)| *told != region && *given_up != region);
         if self.given_up.remove(&region).is_some() {
             self.changed = true;
         }
@@ -565,6 +573,24 @@ impl Couplings {
                 coupled.unneeded_since = None;
                 continue;
             }
+            // A side given up cannot shake: the other is told so, once, so that its
+            // runner hands its copies of the one given up in and the chunks beside them
+            // tick, late, until the one given up has earned its coupling back. A region
+            // that comes to border one given up only later (a split's part, a third
+            // region, a runner opened again) would otherwise keep them still meanwhile.
+            for (told, given_up) in [(key.0, key.1), (key.1, key.0)] {
+                if self.given_up.contains_key(&given_up)
+                    && self.told_given_up.insert((told, given_up))
+                {
+                    said.to(
+                        told,
+                        StoreReply::Uncoupled {
+                            partner: given_up,
+                            why: Uncoupling::GivenUp { region: given_up },
+                        },
+                    );
+                }
+            }
             if self.shakes.contains_key(key) || !can(key.0, self) || !can(key.1, self) {
                 continue;
             }
@@ -676,11 +702,44 @@ impl Couplings {
                 }
             }
         }
+        // The handshakes of the regions given up, taken before any is called off, since
+        // two sides that both failed to answer share one.
+        let shaking: Vec<(RegionId, RegionId)> = (giving_up.iter().copied())
+            .flat_map(|region| {
+                (self.shakes.keys())
+                    .filter(move |(a, b)| *a == region || *b == region)
+                    .map(move |key| (region, other(*key, region)))
+            })
+            .collect();
         for region in giving_up {
+            // Its partners are told by `end_all`, the sides of its handshakes below.
+            for partner in self.partners(region) {
+                self.told_given_up.insert((partner, region));
+            }
             self.end_all(region, Uncoupling::GivenUp { region }, said);
             let from = self.tick(region);
             self.given_up.insert(region, Earning { since: now, from });
             self.changed = true;
+        }
+        // A region given up in a handshake, before it was coupled to anybody, is told so
+        // as one given up out of a coupling is (`end_all`), and so is the other side.
+        // Told only that the handshake is off, it would go on committing only what
+        // changed, so that the store never saw it keep pace and it stayed given up for
+        // good, and the chunks beside its copies never ticked: a region whose first
+        // ticks were slow, as a world's first are, kept its line still from then on.
+        // Where both sides failed, each is told twice, once of itself and once of the
+        // other, which is harmless.
+        for (region, partner) in shaking {
+            self.told_given_up.insert((partner, region));
+            let why = Uncoupling::GivenUp { region };
+            said.to(region, StoreReply::Uncoupled { partner, why });
+            said.to(
+                partner,
+                StoreReply::Uncoupled {
+                    partner: region,
+                    why,
+                },
+            );
         }
         let earned: Vec<RegionId> = self
             .given_up
@@ -693,6 +752,8 @@ impl Couplings {
             let earning = self.given_up.get_mut(&region).expect("given up");
             if tick.saturating_sub(earning.from) >= SLOW_PACE * SLOW_FOR.as_secs() {
                 self.given_up.remove(&region);
+                self.told_given_up
+                    .retain(|(_, given_up)| *given_up != region);
                 self.changed = true;
             } else {
                 *earning = Earning {
@@ -958,11 +1019,16 @@ mod tests {
         couplings.joins_at(A, B, 10);
         assert_eq!(turn(&mut couplings, ms(249), &[], &uses), []);
         let said = turn(&mut couplings, ms(250), &[], &uses);
+        // B is told it was given up, so that it commits every tick and its pace is
+        // seen, and A that B was.
+        let why = Uncoupling::GivenUp { region: B };
         assert_eq!(
             said,
             [
                 (A, StoreReply::HandshakeOff { partner: B }),
                 (B, StoreReply::HandshakeOff { partner: A }),
+                (B, StoreReply::Uncoupled { partner: A, why }),
+                (A, StoreReply::Uncoupled { partner: B, why }),
             ]
         );
         assert!(couplings.of_region(B).given_up);
@@ -974,6 +1040,58 @@ mod tests {
         assert!(!couplings.of_region(B).given_up);
         let said = turn(&mut couplings, ms(10_251), &[], &uses);
         assert!(said.contains(&(B, StoreReply::CoupleWith { partner: A })));
+    }
+
+    /// Two regions whose first ticks are slow both miss their handshake's patience:
+    /// each is told it was given up, though the first one's giving up calls their one
+    /// handshake off.
+    #[test]
+    fn both_sides_of_a_handshake_not_answered_are_told_they_were_given_up() {
+        let (mut couplings, mut uses) = (Couplings::default(), Uses::default());
+        needing(&mut couplings, &mut uses, A, B, 0);
+        turn(&mut couplings, ms(0), &[], &uses);
+        let said = turn(&mut couplings, ms(250), &[], &uses);
+        for (region, partner) in [(A, B), (B, A)] {
+            let why = Uncoupling::GivenUp { region };
+            assert!(
+                said.contains(&(region, StoreReply::Uncoupled { partner, why })),
+                "{region:?} told it was given up: {said:?}"
+            );
+        }
+        assert!(couplings.of_region(A).given_up);
+        assert!(couplings.of_region(B).given_up);
+    }
+
+    /// A region that comes to need coupling with one given up (a split's part, a third
+    /// region, one opened again) is told, once, that it was given up, so that its copies
+    /// of it go in, late, meanwhile; told again after it is opened again, and not once
+    /// the one given up has earned its coupling back.
+    #[test]
+    fn a_region_that_needs_coupling_with_one_given_up_is_told_once() {
+        let (mut couplings, mut uses) = (Couplings::default(), Uses::default());
+        needing(&mut couplings, &mut uses, A, B, 0);
+        turn(&mut couplings, ms(0), &[], &uses);
+        turn(&mut couplings, ms(250), &[], &uses);
+        assert!(couplings.of_region(A).given_up && couplings.of_region(B).given_up);
+        // C comes to copy a chunk B uses.
+        needing(&mut couplings, &mut uses, C, B, 1);
+        let why = Uncoupling::GivenUp { region: B };
+        let told = StoreReply::Uncoupled { partner: B, why };
+        let said = turn(&mut couplings, ms(260), &[], &uses);
+        assert_eq!(said, [(C, told.clone())]);
+        assert_eq!(turn(&mut couplings, ms(270), &[], &uses), []);
+        // C's runner starts again, knowing nothing of it, and is told again.
+        couplings.opened(C, ms(280));
+        couplings.beside(C, &[overworld(1, 0)], &[]);
+        assert_eq!(turn(&mut couplings, ms(290), &[], &uses), [(C, told)]);
+        // B earns its coupling back: nobody is told it is given up any more.
+        turn(&mut couplings, ms(5_250), &[(A, 150), (B, 150)], &uses);
+        assert!(!couplings.of_region(B).given_up);
+        assert!(
+            couplings.told_given_up.is_empty(),
+            "{:?}",
+            couplings.told_given_up
+        );
     }
 
     #[test]

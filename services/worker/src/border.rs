@@ -5,7 +5,8 @@
 //! store counts as in use and the region has not loaded.
 //!
 //! The store's stream comes in order. A copy is handed to the sim only once its base is
-//! there and who uses its chunk is nobody or a coupled region; an effect only once its
+//! there and who uses its chunk is nobody or a coupled region, or a region given up, or
+//! any while this region is given up (section 8); an effect only once its
 //! chunk is loaded, every copy in the 3x3 of its chunk is based and the stream's mark has
 //! reached it.
 
@@ -95,10 +96,23 @@ pub(crate) struct Border {
     /// The partners of handshakes under way, and the tick held for them.
     shakes: BTreeSet<RegionId>,
     held_tick: Option<u64>,
+    /// Whether the store gave this region up. Only `CoupleWith` ends it: where nobody
+    /// needs coupling with the region any more when it has earned its coupling back,
+    /// the store says nothing, and it stays set, letting every based copy in, which only
+    /// makes a line late (a known limit, section 8).
     given_up: bool,
     /// Regions whose coupling with this one ended by a giving up, a lost owner or a
-    /// reshape: copies of their chunks that the sim has stay handed in (section 8).
+    /// reshape, or that the store said were given up: copies of their chunks that the
+    /// sim has stay handed in (section 8).
     lenient: BTreeSet<RegionId>,
+    /// Regions the store said were given up, out of a coupling or a handshake with this
+    /// one or as a region this one needs coupling with: copies of their chunks go in
+    /// whether or not they were in before, until this region is asked to couple with
+    /// them or is coupled to them. The store does not say when one has earned its
+    /// coupling back where the two no longer need coupling, so one can stay here after
+    /// that; a copy of it based again later then goes in uncoupled, which only makes the
+    /// line late.
+    given_up_partners: BTreeSet<RegionId>,
     /// Chunks the store counts in use that the region has not loaded, each with the
     /// tick its timer began at.
     timers: BTreeMap<ChunkPos, u64>,
@@ -234,6 +248,7 @@ impl Border {
             StoreReply::CoupleWith { partner } => {
                 // Coupled again after a giving up, by the store's word.
                 self.given_up = false;
+                self.given_up_partners.remove(&partner);
                 self.shakes.insert(partner);
                 let held = *self.held_tick.get_or_insert(next);
                 asks.joins.push((partner, held));
@@ -242,6 +257,7 @@ impl Border {
                 self.offset = Some(offset);
                 self.partners.entry(partner).or_insert(0);
                 self.lenient.remove(&partner);
+                self.given_up_partners.remove(&partner);
                 self.end_shake(partner);
             }
             StoreReply::HandshakeOff { partner } => self.end_shake(partner),
@@ -262,9 +278,11 @@ impl Border {
                         self.given_up = true;
                         self.lenient.insert(partner);
                     }
-                    Uncoupling::GivenUp { .. }
-                    | Uncoupling::Reshaping { .. }
-                    | Uncoupling::OwnerLost { .. } => {
+                    Uncoupling::GivenUp { .. } => {
+                        self.lenient.insert(partner);
+                        self.given_up_partners.insert(partner);
+                    }
+                    Uncoupling::Reshaping { .. } | Uncoupling::OwnerLost { .. } => {
                         self.lenient.insert(partner);
                     }
                 }
@@ -356,8 +374,19 @@ impl Border {
     }
 
     /// Whether the copy of `chunk` may be in the sim: based, present, and its chunk used
-    /// by nobody or by a coupled region, or, once handed in, by a region whose coupling
-    /// ended by a giving up, a lost owner or a reshape, or while this region is given up.
+    /// by nobody, by a coupled region, or by a region the store said was given up; any
+    /// while this region is given up; and, once handed in, one used by a region whose
+    /// coupling ended by a lost owner or a reshape.
+    ///
+    /// A line where either side is given up ticks uncoupled, what crosses it late
+    /// (`docs/adr/0025-effects-between-regions.md`, sections 1 and 8), until the region
+    /// given up has earned its coupling back, which takes five seconds at the least. So
+    /// the copies not handed in yet go in too, not only those handed in before: a region
+    /// given up in its first handshake, as one whose first ticks are slow is, would
+    /// otherwise keep the chunks beside the line still on both sides meanwhile, where a
+    /// player who throws an item there sees it hang in the air. A lost owner or a
+    /// reshape ends soon and has no such need: what was in stays in, nothing more goes
+    /// in.
     fn handable(&self, copy: &Copy) -> bool {
         if !copy.base.as_ref().is_some_and(|base| base.chunk.is_some()) {
             return false;
@@ -365,8 +394,10 @@ impl Border {
         match copy.used {
             None | Some(CopyUse::Nobody) => true,
             Some(CopyUse::Coupled(user) | CopyUse::Uncoupled(user)) => {
-                self.partners.contains_key(&user)
-                    || (copy.handed && (self.given_up || self.lenient.contains(&user)))
+                self.given_up
+                    || self.partners.contains_key(&user)
+                    || self.given_up_partners.contains(&user)
+                    || (copy.handed && self.lenient.contains(&user))
             }
         }
     }
@@ -867,6 +898,104 @@ mod tests {
         let why = Uncoupling::Unneeded;
         take(&mut border, StoreReply::Uncoupled { partner: P, why });
         assert_eq!(inputs(&mut border).copies_withdrawn, [C]);
+    }
+
+    /// A region given up in its first handshake, before any copy was handed in, hands
+    /// in its copies of the region it was to couple with, so that the chunks beside
+    /// them tick, uncoupled, until it is coupled again; and commits every tick
+    /// meanwhile, so that the store sees it keep pace.
+    #[test]
+    fn a_region_given_up_before_its_first_coupling_hands_its_copies_in() {
+        let mut border = Border::default();
+        border.want(&[C]);
+        take(&mut border, StoreReply::CoupleWith { partner: P });
+        take(&mut border, base(1, 1, CopyUse::Uncoupled(P)));
+        assert!(inputs(&mut border).copy_bases.is_empty());
+        let (begins, _) = border.beside(&[ChunkPos::new(0, 0)], |chunk| chunk != C);
+        assert_eq!(begins, [C]);
+        take(&mut border, StoreReply::HandshakeOff { partner: P });
+        let why = Uncoupling::GivenUp {
+            region: RegionId(1),
+        };
+        take(&mut border, StoreReply::Uncoupled { partner: P, why });
+        assert!(border.may_tick(50));
+        assert!(border.commits_every_tick());
+        assert_eq!(inputs(&mut border).copy_bases.len(), 1);
+        // Coupled again, it keeps them; once that coupling ends for want of need, it
+        // withdraws them.
+        take(&mut border, StoreReply::CoupleWith { partner: P });
+        assert!(inputs(&mut border).copies_withdrawn.is_empty());
+        take(
+            &mut border,
+            StoreReply::Coupled {
+                partner: P,
+                offset: 0,
+            },
+        );
+        assert!(inputs(&mut border).copies_withdrawn.is_empty());
+        let why = Uncoupling::Unneeded;
+        take(&mut border, StoreReply::Uncoupled { partner: P, why });
+        assert_eq!(inputs(&mut border).copies_withdrawn, [C]);
+    }
+
+    /// The other side of that handshake, not given up itself, hands in its copies of
+    /// the region that was, so that its chunks beside the line tick, uncoupled, until
+    /// the two are coupled.
+    #[test]
+    fn copies_of_a_region_given_up_before_its_first_coupling_are_handed_in() {
+        let mut border = Border::default();
+        border.want(&[C]);
+        take(&mut border, StoreReply::CoupleWith { partner: P });
+        take(&mut border, base(1, 1, CopyUse::Uncoupled(P)));
+        assert!(inputs(&mut border).copy_bases.is_empty());
+        take(&mut border, StoreReply::HandshakeOff { partner: P });
+        let why = Uncoupling::GivenUp { region: P };
+        take(&mut border, StoreReply::Uncoupled { partner: P, why });
+        assert!(!border.commits_every_tick());
+        assert_eq!(inputs(&mut border).copy_bases.len(), 1);
+    }
+
+    /// A copy based again while its region is given up (a gap in its updates) goes back
+    /// in with its new base.
+    #[test]
+    fn a_copy_based_again_while_its_region_is_given_up_goes_back_in() {
+        let mut border = Border::default();
+        border.want(&[C]);
+        let why = Uncoupling::GivenUp {
+            region: RegionId(1),
+        };
+        take(&mut border, StoreReply::Uncoupled { partner: P, why });
+        take(&mut border, base(1, 1, CopyUse::Uncoupled(P)));
+        assert_eq!(inputs(&mut border).copy_bases.len(), 1);
+        let asks = take(&mut border, update(9, 5));
+        assert_eq!(asks.rebase, [C]);
+        assert_eq!(inputs(&mut border).copies_withdrawn, [C]);
+        take(&mut border, base(9, 9, CopyUse::Uncoupled(P)));
+        assert_eq!(inputs(&mut border).copy_bases.len(), 1);
+    }
+
+    /// A partner lost to its owner or to a reshape keeps in the copies of its chunks
+    /// that were in, and lets in none that were not: those end soon, and only a giving
+    /// up lets a line tick uncoupled.
+    #[test]
+    fn a_copy_never_handed_in_of_a_partner_lost_or_reshaping_stays_out() {
+        for why in [
+            Uncoupling::OwnerLost { region: P },
+            Uncoupling::Reshaping { region: P },
+        ] {
+            let mut border = Border::default();
+            border.want(&[C]);
+            take(
+                &mut border,
+                StoreReply::Coupled {
+                    partner: P,
+                    offset: 0,
+                },
+            );
+            take(&mut border, StoreReply::Uncoupled { partner: P, why });
+            take(&mut border, base(1, 1, CopyUse::Uncoupled(P)));
+            assert!(inputs(&mut border).copy_bases.is_empty(), "{why:?}");
+        }
     }
 
     #[test]

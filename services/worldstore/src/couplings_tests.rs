@@ -309,6 +309,17 @@ fn a_side_that_does_not_name_its_tick_within_patience_is_given_up() {
             matches!(reply, StoreReply::HandshakeOff { .. })
         });
         assert_eq!(told.last(), Some(&StoreReply::HandshakeOff { partner }));
+        // Then that the eastern one was given up, on both streams.
+        let told = until(handle, |reply| {
+            matches!(reply, StoreReply::Uncoupled { .. })
+        });
+        assert_eq!(
+            told.last(),
+            Some(&StoreReply::Uncoupled {
+                partner,
+                why: Uncoupling::GivenUp { region: EAST }
+            })
+        );
     }
     drop(east);
     let (_east, restored) = store.open_region(hello(EAST, 2)).unwrap();

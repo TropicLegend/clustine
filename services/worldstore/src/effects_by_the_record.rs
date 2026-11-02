@@ -1340,11 +1340,136 @@ fn a_side_that_does_not_join_within_patience_is_given_up_and_the_handshake_calle
             }
         )
     });
+    // Both are told, after the call-off, that the eastern one was given up: it, so
+    // that it commits every tick and earns its coupling back; the western one, so that
+    // its copies of the eastern one's chunks go in, late, meanwhile.
+    let given_up = StoreReply::Uncoupled {
+        partner: RegionId(1),
+        why: Uncoupling::GivenUp {
+            region: RegionId(1),
+        },
+    };
+    assert_eq!(
+        west.until("told who was given up", |r| matches!(
+            r,
+            StoreReply::Uncoupled { .. }
+        )),
+        given_up
+    );
+    assert_eq!(
+        east.until("told it was given up", |r| matches!(
+            r,
+            StoreReply::Uncoupled { .. }
+        )),
+        StoreReply::Uncoupled {
+            partner: RegionId(0),
+            why: Uncoupling::GivenUp {
+                region: RegionId(1),
+            },
+        }
+    );
     // The western one, which joined, is not coupled for it.
     assert!(!west.had(|r| matches!(r, StoreReply::Coupled { .. })));
     // The side that did not join is given up, as its next owner is told.
     let restored = Played::open(&store, 1, 2).1;
     assert!(restored.given_up, "the side that did not join is given up");
+}
+
+/// A region given up in its first handshake, before it was coupled to anybody, is told
+/// so; committing every tick from then on, as a runner given up does, it earns its
+/// coupling back and is coupled by the handshake.
+#[test]
+fn a_region_given_up_in_its_first_handshake_earns_its_coupling_back_and_is_coupled() {
+    let disk = Arc::new(MemoryDisk::default());
+    let (store, hands) = clocked_on(&disk, &division());
+    let (mut west, _) = Played::open(&store, 0, 1);
+    let (mut east, _) = Played::open(&store, 1, 1);
+    east.load(ORIGIN);
+    west.ask(StoreRequest::Copies {
+        wanted: vec![ORIGIN],
+        gone: Vec::new(),
+    });
+    west.until("a base", |r| matches!(r, StoreReply::CopyBase { .. }));
+    west.ask(StoreRequest::Beside {
+        begins: vec![ORIGIN],
+        ends: Vec::new(),
+    });
+    west.until("couple with", |r| {
+        matches!(r, StoreReply::CoupleWith { .. })
+    });
+    east.until("couple with", |r| {
+        matches!(r, StoreReply::CoupleWith { .. })
+    });
+    west.ask(StoreRequest::JoinsAt {
+        partner: RegionId(1),
+        tick: 1,
+    });
+    west.settled(&store);
+    hands.forward(300);
+    east.until("told it was given up", |r| {
+        matches!(
+            r,
+            StoreReply::Uncoupled {
+                why: Uncoupling::GivenUp {
+                    region: RegionId(1)
+                },
+                ..
+            }
+        )
+    });
+    // Both commit every tick, at pace, until the eastern one is asked again.
+    let heard = east.stream.len();
+    let from = hands.now();
+    let asked = loop {
+        assert!(
+            hands.now() < from + 7_000,
+            "the region given up never earned its coupling back"
+        );
+        let w = west.send_commit(&[], &[], &[]);
+        let e = east.send_commit(&[], &[], &[]);
+        west.wait_committed(w);
+        east.wait_committed(e);
+        hands.forward(50);
+        east.pump();
+        if east.stream[heard..]
+            .iter()
+            .any(|r| matches!(r, StoreReply::CoupleWith { .. }))
+        {
+            break hands.now();
+        }
+    };
+    assert!(
+        asked >= from + 5_000,
+        "earned back after {} ms",
+        asked - from
+    );
+    east.until("couple with, again", |r| {
+        matches!(
+            r,
+            StoreReply::CoupleWith {
+                partner: RegionId(0)
+            }
+        )
+    });
+    west.until("couple with, again", |r| {
+        matches!(
+            r,
+            StoreReply::CoupleWith {
+                partner: RegionId(1)
+            }
+        )
+    });
+    let (w, e) = (west.next, east.next);
+    west.ask(StoreRequest::JoinsAt {
+        partner: RegionId(1),
+        tick: w,
+    });
+    east.ask(StoreRequest::JoinsAt {
+        partner: RegionId(0),
+        tick: e,
+    });
+    coupled_offset(&mut west, 1);
+    coupled_offset(&mut east, 0);
 }
 
 /// Section 8, "Never stuck": "A region given up that still needs coupling commits every

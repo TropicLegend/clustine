@@ -282,10 +282,11 @@ Two regions **need coupling** while one has such a copy of a chunk the other use
 Each copy's base, and each later change of its chunk's use, says on the stream whether
 the chunk is used, and by a region coupled to this one. The runner hands a copy's base
 to the sim (`update_chunks`) only once its chunk is used by nobody or by a coupled
-region, and **withdraws** a copy whose chunk comes to be used by a region not coupled to
-this one (a claim of land nobody held; a return and another's claim) until the two are
-coupled. Until then the chunk beside it does not tick. So nothing crosses a ticking
-line uncoupled, except where a coupling is given up or ending (below). A region in
+region, or a giving up lets it in (below), and **withdraws** a copy whose chunk comes to
+be used by a region not coupled to this one (a claim of land nobody held; a return and
+another's claim) until the two are coupled. Until then the chunk beside it does not
+tick. So nothing crosses a ticking line uncoupled, except where a region is given up or
+a coupling is ending (below). A region in
 `Preparing`, whose couplings have ended, keeps its copies handed in until its stop;
 what crosses its lines then is late (section 1).
 
@@ -351,8 +352,9 @@ has needed it for `COUPLING_GRACE` (a second, so that a view's edge going back a
 does not make it flap). Effects filed after that record convert as uncoupled. The record withdraws, on both
 sides, the copies of chunks the former partner uses; no chunk beside them ticks then,
 since neither region needs the coupling. So couplings last while a border ticks, and do
-not gather into chains across the world. A coupling ended by a giving up or a lost
-owner leaves the copies handed in.
+not gather into chains across the world. A coupling ended by a lost owner or a reshape
+leaves the copies handed in, and lets in none that were not; one ended by a giving up
+lets them all in (below).
 
 **Never stuck.** A region waits only for its partners' previous border time, so the
 region furthest behind can always tick: no line or ring of coupled regions waits for
@@ -370,11 +372,26 @@ ends every coupling of that region, as a record, and marks it given up; the regi
 that waited for it tick on. Those coupled to them are not touched, so a stall ends one
 region's couplings, not a chain. A region given up that still needs coupling commits
 every tick, so that its pace can be seen, and is coupled again by the handshake once it
-has committed at 15 ticks a second or more for five seconds; until then what crosses
-its lines is late (section 1). Copies already handed in on either side of its lines
-stay handed in while it is given up, also where it comes to use a chunk another region
-copies: the giving up wins over the withdrawing of section 8's first paragraph. Effects
-already filed keep their conversion.
+has committed at 15 ticks a second or more for five seconds; until then its lines
+tick uncoupled and what crosses them is late (section 1). The store tells it
+`Uncoupled { GivenUp }`, whether it was given up out of a coupling or in a handshake,
+and tells the same of it to each partner of those couplings and handshakes and, once,
+to each region that comes to need coupling with it while it is given up (a split's
+part, a third region, a runner opened again). A runner given up hands in every based
+copy, and a runner told that another was given up hands in its copies of that region's
+chunks, whether or not they were in before, also where the region given up comes to
+use a chunk another copies: the giving up wins over the withdrawing of this section's
+first paragraph. The second lasts until the runner is asked to couple with the region
+given up, or is coupled to it. Effects already filed keep their conversion. With a
+patience of a quarter of a second a world whose first ticks are slow, as a pinned world
+starting is while its chunks load, has a region given up in its first handshakes, and
+spends at least five seconds with those lines uncoupled and late, as section 1 allows.
+
+A known limit: the store says nothing when a region given up has earned its coupling
+back where nobody needs coupling with it any more (`CoupleWith` says it where somebody
+does). Its runner then stays given up, and the runner told of it keeps letting in its
+copies of that region, until one of them is asked to couple; that only makes a line
+late, and saying it would take a message of its own.
 
 **Reshapes, moves and restores.** A region entering `Preparing` for a merge or a split,
 or released for a move, asks the store, in its lane, to end its couplings. The store
@@ -780,3 +797,16 @@ its copies (whether a bed or a bell is claimed, for the village). Section 4, **e
 a ticket of a point of interest given back where the chunk is another region's is an
 effect (`Effected::Release`, log effect kind 12), which its holder applies as the game's
 guarded release: only where a point of that type is there and not every ticket is free.
+
+## Found at a pinned line (2026-11-02)
+
+A region given up in a handshake, before it was coupled to anybody, was told only
+`HandshakeOff`: it did not know it was given up, so it committed only what changed, the
+store never saw it keep pace, and it stayed given up for good; its copies, never handed
+in, stayed out, and the chunks beside its lines never ticked. A world's first ticks are
+slow enough (half a second to a second while its chunks load) to miss the handshake's
+patience, and an item thrown at the line then hung in the air
+(`bin/clustine/tests/items.rs` failed about one run in eight under the pins). Even told,
+a region given up kept the line still for the five seconds or more of earning its
+coupling back, since only copies handed in before stayed in. Section 8 now says what
+the store tells and what a runner lets in while a region is given up ("Never stuck").
