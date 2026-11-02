@@ -209,7 +209,7 @@ mod tests {
         PlayerTransfer, Pose, RegionEvent, RemoteAction, RemoteStep,
     };
     use clustine_world::{
-        Biome, BlockPos, Chunk, ChunkPos, EdgeId, EntityId, PlayerId, RegionId, Vec3,
+        Biome, BlockPos, Chunk, ChunkPos, Dimension, EdgeId, EntityId, PlayerId, RegionId, Vec3,
     };
     use uuid::Uuid;
 
@@ -262,6 +262,7 @@ mod tests {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -408,6 +409,7 @@ mod tests {
             WorkerToEdge::ToPlayer {
                 player: player(),
                 event: PlayerEvent::Spawned {
+                    last_death: None,
                     riding: None,
                     attempt: 12,
                     entity_id: EntityId(5),
@@ -570,6 +572,7 @@ mod tests {
                     handled: Some(12),
                     flying: true,
                     attempt: Some(12),
+                    last_death: Some((Dimension::End, BlockPos::new(-3, -81, 7))),
                 },
             },
             WorkerToEdge::Presence {
@@ -584,6 +587,7 @@ mod tests {
                     handled: None,
                     flying: false,
                     attempt: None,
+                    last_death: None,
                 },
             },
             WorkerToEdge::Presence {

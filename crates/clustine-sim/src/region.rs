@@ -457,6 +457,8 @@ struct Player {
     sleeping: Option<crate::api::Sleep>,
     /// See [`PlayerState::respawn`].
     respawn: Option<crate::api::Respawn>,
+    /// See [`PlayerState::last_death`].
+    last_death: Option<(Dimension, BlockPos)>,
     /// The tick of their last level-up's sound (`lastLevelUpTime`), in memory only: a
     /// restore may let a level-up five levels on be heard once more.
     last_level_up: Option<u64>,
@@ -1502,6 +1504,7 @@ impl Region {
                     seen_credits: transfer.seen_credits,
                     portal_cooldown: transfer.portal.cooldown,
                     respawn: transfer.respawn,
+                    last_death: transfer.last_death,
                     pose: transfer.pose,
                     flying: transfer.flying,
                     inventory: transfer.inventory.clone(),
@@ -1866,6 +1869,7 @@ impl Region {
                 inventory: player.inventory.clone(),
                 selected_slot: player.selected_slot,
                 riding: player.riding.map(|riding| riding.vehicle),
+                last_death: player.last_death,
             },
         ));
         // A client begins with none (`ServerPlayer`'s first `set_experience`).
@@ -2080,6 +2084,7 @@ impl Region {
             sleeping: None,
             // The bed or anchor they wake at goes with them wherever they go.
             respawn: transfer.respawn,
+            last_death: transfer.last_death,
             entity_id: transfer.entity_id,
             name: transfer.name.clone(),
             pose: transfer.pose,
@@ -2276,6 +2281,7 @@ impl Region {
                         dead,
                         sleeping: None,
                         respawn: place.respawn,
+                        last_death: place.last_death,
                         entity_id,
                         name,
                         pose: place.pose,
@@ -2329,10 +2335,13 @@ impl Region {
         let riding = returning;
         // A bed or anchor set before they left is theirs still, below the world too.
         let respawn = kept.and_then(|(place, _)| place.respawn);
+        // So is where they last died.
+        let last_death = kept.and_then(|(place, _)| place.last_death);
         let player = Player {
             hurting: Default::default(),
             sleeping: None,
             respawn,
+            last_death,
             entity_id,
             name,
             pose,
@@ -4084,6 +4093,7 @@ impl Player {
             attack_reset: self.attack_reset,
             sleeping: self.sleeping,
             respawn: self.respawn,
+            last_death: self.last_death,
             using: self.using,
             cooldowns: self.cooldowns.clone(),
             effects: crate::mobs::body::effects::kept(&self.effects),
@@ -4135,6 +4145,7 @@ impl Player {
             dead: state.dead,
             sleeping: state.sleeping,
             respawn: state.respawn,
+            last_death: state.last_death,
             last_level_up: None,
             last_hurt_mob: None,
         }
@@ -4192,6 +4203,7 @@ impl Player {
             ender: self.ender.clone(),
             experience: self.experience,
             respawn: self.respawn,
+            last_death: self.last_death,
             effects: crate::mobs::body::effects::instances(&self.effects, tick + 1),
             time_since_rest: self.time_since_rest(tick + 1),
             raid_omen_position: self.raid_omen_position,
@@ -4229,6 +4241,7 @@ impl Player {
                 .map(|reset| u32::try_from((tick + 1).saturating_sub(reset)).unwrap_or(u32::MAX)),
             sleeping: self.sleeping,
             respawn: self.respawn,
+            last_death: self.last_death,
             using: self.using,
             effects,
             time_since_rest,
@@ -5192,6 +5205,7 @@ mod tests {
         assert!(told(&output).is_empty() && output.events.is_empty());
         let output = enter(&mut region);
         let spawned = |entity, number| PlayerEvent::Spawned {
+            last_death: None,
             riding: None,
             attempt: attempt(number),
             entity_id: EntityId(entity),
@@ -5315,6 +5329,7 @@ mod tests {
         );
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
+            last_death: None,
             riding: None,
             attempt: attempt(1),
             entity_id: EntityId(2),
@@ -6612,6 +6627,7 @@ mod tests {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -7205,6 +7221,7 @@ mod tests {
                         unit: None,
                         sleeping: None,
                         respawn: None,
+                        last_death: None,
                         experience: Default::default(),
                         // The selection changed the main hand in the tick.
                         attack_ticks: Some(0),
@@ -7516,6 +7533,7 @@ mod tests {
         assert!(told(&output).is_empty());
         let output = enter(&mut region);
         let spawned = PlayerEvent::Spawned {
+            last_death: None,
             riding: None,
             attempt: attempt(1),
             entity_id: EntityId(1),
@@ -7537,6 +7555,7 @@ mod tests {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,

@@ -982,6 +982,7 @@ fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         unit: None,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_ticks: None,
         using: None,

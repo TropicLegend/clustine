@@ -413,6 +413,7 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
         in_credits: false,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_reset: None,
         using: None,

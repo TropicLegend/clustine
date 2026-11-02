@@ -1175,6 +1175,7 @@ impl Script {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -1305,6 +1306,7 @@ impl Script {
                     handled: None,
                     flying: false,
                     attempt: None,
+                    last_death: None,
                 },
                 None if named.contains(who) => Presence::Absent,
                 None => continue,
@@ -1505,6 +1507,7 @@ impl Script {
         let spawned = WorkerToEdge::ToPlayer {
             player: who,
             event: PlayerEvent::Spawned {
+                last_death: None,
                 riding: None,
                 attempt: session.0,
                 entity_id: entity,

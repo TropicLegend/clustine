@@ -299,6 +299,9 @@ pub struct LoggedPlace {
     /// (`docs/groundwork/p-plan.md`, sections 19.5 and 19.6).
     pub health: f32,
     pub dead: bool,
+    /// Where they last died, the level and the block (`docs/groundwork/p-plan.md`,
+    /// section 19.9).
+    pub last_death: Option<(Dimension, [i32; 3])>,
 }
 
 impl PartialEq for LoggedPlace {
@@ -328,6 +331,7 @@ impl PartialEq for LoggedPlace {
             && self.portal_cooldown == other.portal_cooldown
             && self.health.to_bits() == other.health.to_bits()
             && self.dead == other.dead
+            && self.last_death == other.last_death
     }
 }
 
@@ -1310,6 +1314,16 @@ pub(crate) fn put_place(out: &mut Vec<u8>, place: &LoggedPlace) {
     crate::travel::put_optional_travel(out, place.travel.as_ref());
     out.extend_from_slice(&place.health.to_be_bytes());
     out.push(u8::from(place.dead));
+    match place.last_death {
+        None => out.push(0),
+        Some((dimension, pos)) => {
+            out.push(1);
+            crate::travel::put_dimension(out, dimension);
+            for coordinate in pos {
+                out.extend_from_slice(&coordinate.to_be_bytes());
+            }
+        }
+    }
 }
 
 /// Reads what [`put_place`] wrote.
@@ -1358,7 +1372,16 @@ pub(crate) fn take_place(input: &mut Input<'_>) -> Result<LoggedPlace, FormatErr
     let travel = crate::travel::take_optional_travel(input)?;
     let health = input.f32()?;
     let dead = take_bool(input, "a place's dead flag")?;
+    let last_death = match input.u8()? {
+        0 => None,
+        1 => Some((
+            crate::travel::take_dimension(input)?,
+            [input.i32()?, input.i32()?, input.i32()?],
+        )),
+        _ => return Err(FormatError::Corrupt("a place's last death flag")),
+    };
     Ok(LoggedPlace {
+        last_death,
         dimension,
         seen_credits,
         portal_cooldown,
@@ -3027,6 +3050,7 @@ mod tests {
             seen_credits: false,
             portal_cooldown: 0,
             respawn: None,
+            last_death: Some((Dimension::End, [-3, -81, 7])),
             experience: (5, 0.25, 87),
             position: [1.5, -2.0, 0.0],
             yaw: 90.0,
@@ -3342,6 +3366,11 @@ mod tests {
         // Full health, 20, and not dead.
         payload.extend_from_slice(&20.0_f32.to_be_bytes());
         payload.push(0);
+        // The last death, in the End (2), at -3, -81, 7.
+        payload.extend_from_slice(&[1, 2]);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFD]);
+        payload.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xAF]);
+        payload.extend_from_slice(&[0, 0, 0, 7]);
         assert_eq!(bytes[..4], (payload.len() as u32).to_be_bytes());
         assert_eq!(bytes[4..8], crc32fast::hash(&payload).to_be_bytes());
         assert_eq!(bytes[8..], payload);
@@ -3491,12 +3520,13 @@ mod tests {
     /// places kept effects, of 15, before chunks kept structures, of 16, before chunks
     /// kept claims, of 17, before they kept raids, of 18, before places named their
     /// dimension, of 19, before the records written forward named theirs, of 20,
-    /// before a place carried the player's health, and of 21, before a gateway's travel
-    /// carried its island, are refused as any record of another format is.
+    /// before a place carried the player's health, of 21, before a gateway's travel
+    /// carried its island, and of 22, before a place carried the last death, are refused
+    /// as any record of another format is.
     #[test]
-    fn records_of_formats_13_to_21_are_refused() {
-        assert_eq!(FORMAT_VERSION, 22);
-        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21] {
+    fn records_of_formats_13_to_22_are_refused() {
+        assert_eq!(FORMAT_VERSION, 23);
+        for earlier in [13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
             let mut payload = commit_with_stays().encode()[FRAME_HEADER_LENGTH..].to_vec();
             assert_eq!(payload[0], FORMAT_VERSION);
             payload[0] = earlier;
@@ -3688,6 +3718,7 @@ mod tests {
                         respawn: respawn
                             .map(|(pos, (yaw, pitch), dimension)| (pos, yaw, pitch, dimension)),
                         position,
+                        last_death: None,
                         yaw,
                         pitch,
                         on_ground,

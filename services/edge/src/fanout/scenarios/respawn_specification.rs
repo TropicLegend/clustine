@@ -21,8 +21,12 @@ fn died(entity: EntityId) -> Durable {
         player: player(1),
         entity,
         message: "death.attack.outOfWorld".to_owned(),
+        at: DIED_IN,
     }
 }
+
+/// Where player 1 dies in these tests: below the overworld, west of its origin.
+const DIED_IN: (Dimension, BlockPos) = (Dimension::Overworld, BlockPos::new(-7, -130, 9));
 
 /// Player 1's transfer as a region lets them go on `way` to `target` in `to`, standing
 /// in `chunk` of it.
@@ -185,6 +189,40 @@ async fn a_death_s_respawn_keeps_nothing_and_tells_the_missing_block_before_it()
     assert_eq!(
         client.chunks.keys().copied().collect::<BTreeSet<_>>(),
         view(EASTERN)
+    );
+    edge.end().await;
+}
+
+/// 19.9: the `Respawn` after a death says where the player died, as the game's
+/// `CommonPlayerSpawnInfo` does from `ServerPlayer.getLastDeathLocation`: the dimension
+/// and the block.
+#[tokio::test]
+async fn a_death_s_respawn_says_where_the_player_died() {
+    let (mut edge, mut client) = standing_in_the_west().await;
+    died_and_let_go_east(&mut edge, &mut client).await;
+    edge.say(
+        EAST,
+        placed_with(
+            Dimension::Overworld,
+            within(EASTERN),
+            respawned(0, true, None),
+        ),
+    );
+    edge.settle(EAST).await;
+    edge.sync(&mut client).await;
+    let [respawn] = &client.respawns[..] else {
+        panic!("one Respawn: {:?}", client.respawns);
+    };
+    assert_eq!(
+        respawn.spawn.death_location,
+        Some(clustine_protocol::packets::play::DeathLocation {
+            dimension: "minecraft:overworld".to_owned(),
+            position: clustine_protocol::codec::Position {
+                x: -7,
+                y: -130,
+                z: 9,
+            },
+        })
     );
     edge.end().await;
 }

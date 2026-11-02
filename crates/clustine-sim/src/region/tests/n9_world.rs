@@ -158,6 +158,7 @@ pub(super) fn entering_place(
         ender: Default::default(),
         experience: Default::default(),
         respawn: None,
+        last_death: None,
         effects,
         time_since_rest,
         raid_omen_position: None,

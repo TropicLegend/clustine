@@ -727,7 +727,7 @@ mod tests {
         use clustine_sim::api::{
             Inventory, ItemStack, OFF_HAND, Place, PlayerFace, Pose, StayNote,
         };
-        use clustine_world::{BlockPos, EntityId, EntityIds, PlayerId, Vec3};
+        use clustine_world::{BlockPos, Dimension, EntityId, EntityIds, PlayerId, Vec3};
 
         use crate::{Restored, StoreReply, StoreRequest, StoreWelcome};
 
@@ -746,6 +746,7 @@ mod tests {
             seen_credits: false,
             portal_cooldown: 0,
             respawn: None,
+            last_death: Some((Dimension::Nether, BlockPos::new(-12, 4, 30))),
             experience: Default::default(),
             pose: Pose {
                 position: Vec3::new(-1234.5, 71.25, 0.5),
@@ -769,6 +770,7 @@ mod tests {
             seen_credits: false,
             portal_cooldown: 0,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             pose: Pose::at(Vec3::new(8.5, -60.0, 8.5)),
             flying: false,

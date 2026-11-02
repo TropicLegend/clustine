@@ -218,6 +218,7 @@ fn place_at(at: [f64; 3]) -> Place {
         seen_credits: false,
         portal_cooldown: 0,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         pose: Pose {
             position: Vec3::new(at[0], at[1], at[2]),
@@ -713,6 +714,7 @@ fn walker(entity: EntityId, at: Vec3) -> PlayerTransfer {
         unit: None,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_ticks: None,
         using: None,

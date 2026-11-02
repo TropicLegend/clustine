@@ -1772,6 +1772,7 @@ fn the_resume_comes_first_and_in_order_in(mut world: World) {
     assert_eq!(
         *answer,
         Presence::Present {
+            last_death: None,
             riding: None,
             entity,
             pose: Pose {
@@ -5403,6 +5404,7 @@ fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
         in_credits: false,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_reset: None,
         using: None,

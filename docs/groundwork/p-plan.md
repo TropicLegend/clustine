@@ -1921,3 +1921,59 @@ and ten defects. What is built instead:
    any portal until step P9b); in the game it goes with its passengers.
 9. **The dimension:** `to` is the source's, the End; a gateway outside the End (placed by
    a player in creative) is asked nothing and takes nobody, as the game's returns none.
+
+### 19.9 The last death location (2026-11-02)
+
+The comparison of a death in the End's void with the official server
+(`bin/clustine/tests/end_oracle.rs`) found the one difference left in it: the game's
+`Respawn` after the death says where the player died (`CommonPlayerSpawnInfo.
+lastDeathLocation`, the level and the block), and Clustine's says nothing. The game sets
+it in `ServerPlayer.die` (`setLastDeathLocation(GlobalPos(level, blockPosition()))`),
+saves it with the player (`LastDeathLocation`), keeps it through every respawn
+(`restoreFrom`, "always", `p-respawn-facts.md` 5), and sends it in every
+`CommonPlayerSpawnInfo`: the login, a respawn, a change of level. A player sees it as
+the recovery compass, which is in the creative inventory: without it the compass spins.
+
+1. **Where it lives.** `last_death: Option<(Dimension, BlockPos)>` on the region's
+   `PlayerState`, the stored `Place` and the `PlayerTransfer`, handed on as `respawn`
+   is. The stored formats are raised (`STATE_FORMAT`, and the store's
+   `FORMAT_VERSION` if `Place` is in it), with no reading of the old: a world made
+   before is refused, as for the End's other steps. (Both: see the review, 5.)
+2. **Set** in `Region::die` (`void.rs`), before the outbox entry, to the level of the
+   region and the block containing the player's position (`blockPosition`, below the
+   world in the void: the game's own, y −80 in the comparison).
+3. **To the edge.** `Durable::Died` carries it, and `PlayerEvent::Spawned` (the join's
+   placing, which sends the login) carries the player's. The edge keeps it on the
+   player's view and puts it into every `SpawnInfo` it makes for that player: the
+   login (`tell_entered`), the respawn (`respawned`) and a change of level
+   (`hand_over`). A player keeps their edge through a session, so nothing else needs
+   to tell it.
+4. **Tests.** The region's: a death sets it and a transfer and a save keep it; the
+   edge's: the `Respawn` after a `Died` and the login after a `Spawned` with one carry
+   it; the comparison of the void then has no difference left.
+
+**The review of 19.9** (2026-11-02, by someone who did not write it), and what is built
+instead:
+
+1. **A second login.** `tell_entered` is reached from `Spawned` and from
+   `enter_by_arrival`, a join whose place another region holds: the value goes into
+   `Entering`, from `Spawned` and from the transfer's, and `tell_entered` puts it on the
+   view before the login is made.
+2. **The store's format.** `Place` is the store's `LoggedPlace`, with a codec written by
+   hand and a `PartialEq` written by hand, which no compiler checks: the field goes into
+   the struct, the codec, `eq`, both conversions (`worldstore/src/players.rs`) and the
+   tests' `on_disk`; `FORMAT_VERSION` 22 → 23.
+3. **The struct `die` changes** is the region's `Player`, not `PlayerState`: the field
+   goes on `Player` and through `to_state`, `from_state`, `place`, `into_transfer`,
+   `player_of`, `waiting_place`, the let-go note's place, and the join's transfer and
+   `Player`, taken from the place even below the world, as `respawn` is.
+4. **Rounding.** `blockPosition` floors each coordinate: a player at y −80.5 died in
+   block −81. A region test at a negative fraction says so.
+5. **`STATE_FORMAT`** 28 → 29 as well: the region's state holds players, waiting stays and
+   outboxes with `Died` in them (precedent 132ec46).
+6. **The edge takes `Died`'s value** only where it has the stay (`has_stay`), so a stale
+   stay's entry changes nothing.
+
+Found sound: a respawn another region places (the `Died` comes before the `Departed` in
+one outbox), the credits (no death; the earlier value kept, as `restoreFrom` keeps it),
+a change of level, merges, splits and restores.

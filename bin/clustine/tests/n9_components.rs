@@ -251,6 +251,7 @@ fn place() -> LoggedPlace {
         ender,
         experience: (0, 0.0, 0),
         respawn: None,
+        last_death: None,
         effects: vec![EffectInstance {
             effect: "minecraft:speed".to_owned(),
             amplifier: 1,

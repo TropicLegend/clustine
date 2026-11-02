@@ -462,6 +462,9 @@ pub(crate) fn logged_place(place: &Place) -> LoggedPlace {
                 respawn.dimension,
             )
         }),
+        last_death: place
+            .last_death
+            .map(|(dimension, block)| (dimension, [block.x, block.y, block.z])),
         dimension: place.dimension,
         travel: place.travel,
         seen_credits: place.seen_credits,
@@ -500,6 +503,9 @@ pub(crate) fn place(logged: &LoggedPlace) -> Place {
                 pitch,
                 dimension,
             }),
+        last_death: logged
+            .last_death
+            .map(|(dimension, [x, y, z])| (dimension, clustine_world::BlockPos::new(x, y, z))),
         dimension: logged.dimension,
         travel: logged.travel,
         seen_credits: logged.seen_credits,

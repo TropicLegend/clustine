@@ -19,7 +19,7 @@ After M3 the owner asked for two pieces of work as milestones of their own
 (2026-10-08): every service with several replicas, and terrain generation. Both have
 agreed plans, below.
 
-## Where the work stands (2026-10-31)
+## Where the work stands (2026-11-02)
 
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
@@ -587,9 +587,19 @@ the return gateway made by the exit's holder, and travellers sent through and ou
 tallest block. The tests from the specification of the respawn, the End's mobs and the
 fight, by someone who did not write them, found twelve differences, mended. Named, left for now: arrows hit the dragon's whole box rather than
 its parts; the respawn's spread over `respawn_radius` (the join has none either); the
-dragon's respawn by four crystals. Next: the gateways' tests from the specification,
-and comparisons with the official server (the End's features, the platform's arrival,
-the credits, the void's death, the dragon's first moves).
+dragon's respawn by four crystals. Compared with the official server (2026-11-02,
+`end_oracle.rs`, by someone who did not write the code): the change of dimension onto
+the platform, the platform's blocks, the fight's bar and the dragon's spawn, and the
+void's death and respawn. Six differences were found and mended: the time sent while a
+player travels, the death's entity event before the death screen, the dying player's
+name in the message (with its click and hover) and the message's order of fields, the
+portal's opening sound heard a tick late, and where the player last died, which the
+`Respawn` and a login now say (`p-plan.md`, 19.9). Named, left for now: a creative
+player's health comes back between the void's hits (survival's rule, which comes with
+survival), the health of 0 told after the death screen rather than before it, no
+advancements, and the respawn's spread. Next: the gateways' tests from the
+specification, and comparisons of the End's features, the credits and the dragon's
+first moves.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold

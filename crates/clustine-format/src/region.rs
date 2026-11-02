@@ -1192,6 +1192,7 @@ mod tests {
                         seen_credits: false,
                         portal_cooldown: 0,
                         respawn: None,
+                        last_death: None,
                         experience: (2, 0.5, 13),
                         position: [1.5, -2.0, 0.0],
                         yaw: 90.0,
@@ -1384,8 +1385,9 @@ mod tests {
         body.push(0);
         body.extend_from_slice(&[0; 4]);
         body.push(0);
-        // Full health, 20, and not dead.
+        // Full health, 20, and not dead; and no last death.
         body.extend_from_slice(&20.0_f32.to_be_bytes());
+        body.push(0);
         body.push(0);
         assert_eq!(bytes[..body.len()], body);
         assert_eq!(bytes[body.len()..], crc32fast::hash(&body).to_be_bytes());
@@ -1732,6 +1734,7 @@ mod tests {
                             )| {
                                 LoggedPlace { health: 20.0, dead: false, dimension: Default::default(), travel: None, seen_credits: false, portal_cooldown: 0,
                                     respawn: None,
+                                    last_death: None,
                                     experience: (0, 0.0, 0),
                                     position,
                                     yaw,

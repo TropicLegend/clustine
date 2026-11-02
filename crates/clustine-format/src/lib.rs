@@ -66,8 +66,9 @@ pub use region::{
 /// its dimension (section 3.3 of the same plan); 21 since a place carries the player's
 /// health and death and a travel may be a respawn, with what else the End's contracts
 /// change (section 19.6 of the same plan); 22 since a gateway's travel may carry the island
-/// its exit's holder makes (section 19.8 of the same plan).
-pub const FORMAT_VERSION: u8 = 22;
+/// its exit's holder makes (section 19.8 of the same plan); 23 since a place ends with
+/// where the player last died (section 19.9).
+pub const FORMAT_VERSION: u8 = 23;
 
 /// Why stored bytes could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

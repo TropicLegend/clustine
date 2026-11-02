@@ -522,7 +522,7 @@ fn on_ticks_moved_by(player: &PlayerState, by: i128) -> PlayerState {
 #[cfg(test)]
 mod tests {
     use clustine_data::blocks;
-    use clustine_world::{Biome, Vec3};
+    use clustine_world::{Biome, BlockPos, Dimension, Vec3};
 
     use super::*;
     use crate::api::{
@@ -594,6 +594,8 @@ mod tests {
             in_credits: false,
             sleeping: None,
             respawn: None,
+            last_death: (entity % 2 == 1)
+                .then(|| (Dimension::End, BlockPos::new(entity, -70 - entity, -entity))),
             experience: Default::default(),
             attack_reset: None,
             using: None,
@@ -644,6 +646,7 @@ mod tests {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: stay.last_death,
             experience: Default::default(),
             attack_ticks: None,
             using: None,

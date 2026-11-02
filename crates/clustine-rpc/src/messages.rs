@@ -309,6 +309,9 @@ pub enum Presence {
         /// What the player rides, seated or waiting for it
         /// (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6).
         riding: Option<EntityId>,
+        /// Where the player last died, which a login made from this answer shows as
+        /// the game does (`docs/groundwork/p-plan.md`, section 19.9).
+        last_death: Option<(Dimension, BlockPos)>,
     },
     Absent,
     /// The region holds a stay of the player as entering, for this edge, from the join

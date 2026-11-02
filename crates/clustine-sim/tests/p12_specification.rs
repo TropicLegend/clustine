@@ -408,6 +408,7 @@ impl Scene {
                     seen_credits: false,
                     portal_cooldown: 0,
                     respawn: None,
+                    last_death: None,
                     experience: Default::default(),
                     pose: Pose {
                         position: feet,

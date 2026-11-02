@@ -150,6 +150,10 @@ pub struct PlayerState {
     pub sleeping: Option<crate::api::Sleep>,
     /// Where a bed set their respawn point.
     pub respawn: Option<crate::api::Respawn>,
+    /// Where they last died, the level and the block (`Player.lastDeathLocation`;
+    /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
+    /// of level tells their client, and the recovery compass points to.
+    pub last_death: Option<(clustine_world::Dimension, clustine_world::BlockPos)>,
     /// The use of an item under way (`docs/groundwork/n9-plan.md`, section 5.5).
     pub using: Option<crate::api::Using>,
     /// The item groups' cooldowns, on the region's ticks; a merge moves them onto the

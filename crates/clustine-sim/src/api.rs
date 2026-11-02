@@ -97,6 +97,10 @@ pub struct Place {
     pub experience: Experience,
     /// Where they wake after a death, if a bed set it (`docs/groundwork/n7d-plan.md`).
     pub respawn: Option<Respawn>,
+    /// Where they last died, the level and the block (`Player.lastDeathLocation`;
+    /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
+    /// of level tells their client, and the recovery compass points to.
+    pub last_death: Option<(Dimension, BlockPos)>,
     /// Their effects, each level with the ticks it has left, in the order of the effects
     /// and of the levels they hide (`docs/groundwork/n9-plan.md`, section 5.4): an
     /// effect does not run down while they are away.
@@ -467,6 +471,10 @@ pub struct PlayerTransfer {
     pub attack_ticks: Option<u32>,
     pub sleeping: Option<Sleep>,
     pub respawn: Option<Respawn>,
+    /// Where they last died, the level and the block (`Player.lastDeathLocation`;
+    /// `docs/groundwork/p-plan.md`, section 19.9), which every login, respawn and change
+    /// of level tells their client, and the recovery compass points to.
+    pub last_death: Option<(Dimension, BlockPos)>,
     /// The use under way, which goes on in the next region (the client does not see a
     /// hand-over).
     pub using: Option<Using>,
@@ -1292,6 +1300,8 @@ pub enum Durable {
         player: PlayerId,
         entity: EntityId,
         message: String,
+        /// Where they died, the level and the block (section 19.9).
+        at: (Dimension, BlockPos),
     },
     /// The player went through the End's exit portal without having seen the credits:
     /// their edge sends `GameEvent(WIN_GAME, 0)`, and the client shows the credits and
@@ -1655,6 +1665,8 @@ pub enum PlayerEvent {
         /// What they ride, seated or waiting for it: a player put back on the unit they
         /// left the world on (`docs/groundwork/n7h-logout-on-a-mount.md`, section 6).
         riding: Option<EntityId>,
+        /// Where they last died, for the login (section 19.9).
+        last_death: Option<(Dimension, BlockPos)>,
     },
     /// Everything the player did with a sequence number up to `sequence` has been
     /// handled, whether it took effect or not. The client then stops showing its own

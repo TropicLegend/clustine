@@ -851,6 +851,7 @@ fn nothing_through_an_unknown_edge_is_taken_on() {
         unit: None,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_ticks: None,
         using: None,

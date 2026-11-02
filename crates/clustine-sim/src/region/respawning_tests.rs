@@ -509,6 +509,38 @@ fn the_ask_of_a_dead_player_ends_the_body_and_sends_them_on_at_once() {
     assert_eq!(transfer.health, 20.0);
 }
 
+/// Where a death was said, if `id` died in `output`.
+fn died_at(output: &TickOutput, id: PlayerId) -> Option<(Dimension, BlockPos)> {
+    output.durable.iter().find_map(|(_, _, entry)| match entry {
+        Durable::Died { player, at, .. } if *player == id => Some(*at),
+        _ => None,
+    })
+}
+
+/// `ServerPlayer.die` keeps the place of the death as the block the player was in,
+/// `BlockPos.containing`, which rounds each axis down, below zero too, with the
+/// dimension. It is said with the death, kept with the body, and goes with the player
+/// to the region that respawns them, for the `Respawn` to tell.
+#[test]
+fn a_player_who_dies_keeps_the_block_they_died_in_and_takes_it_to_the_respawn() {
+    let mut end = the_end();
+    let (id, entity) = add_player(&mut end, 1, [-2.5, -80.5, 3.25], false);
+    let mut at = None;
+    for _ in 0..60 {
+        at = died_at(&idle(&mut end), id);
+        if at.is_some() {
+            break;
+        }
+    }
+    let died_in = (Dimension::End, BlockPos::new(-3, -81, 3));
+    assert_eq!(at, Some(died_in));
+    let state = end.player_state(id).expect("their body stays");
+    assert_eq!(state.last_death, Some(died_in));
+    let output = end.tick(&input(id, entity, 1, PlayerInput::PerformRespawn));
+    let (transfer, _) = departed(&output, id).expect("sent on at the ask");
+    assert_eq!(transfer.last_death, Some(died_in));
+}
+
 /// A player who dies in the overworld's home is placed by it at the world spawn, with
 /// no departure: `Placed` owes the client a `Respawn` keeping nothing, and their full
 /// health is told.

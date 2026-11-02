@@ -158,6 +158,7 @@ pub(in crate::region) fn add_player(
         dead: false,
         sleeping: None,
         respawn: None,
+        last_death: None,
         experience: Default::default(),
         attack_reset: None,
         last_level_up: None,

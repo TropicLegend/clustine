@@ -19,7 +19,7 @@
 //! players (there is no chat); the cooldown is kept in memory and starts afresh in a
 //! region the player is handed to.
 
-use clustine_world::{PlayerId, Way};
+use clustine_world::{BlockPos, PlayerId, Way};
 
 use super::Region;
 use crate::api::{
@@ -162,6 +162,16 @@ impl Region {
         };
         player.dead = true;
         player.hurting.died_at = Some(self.tick);
+        // `setLastDeathLocation(GlobalPos(level, blockPosition()))`: each coordinate
+        // floored, so below the world's floor a fraction is the block under it.
+        let at = player.pose.position;
+        let block = BlockPos::new(
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
+        let died_in = (self.config.dimension, block);
+        player.last_death = Some(died_in);
         // `dropAllDeathLoot` where they died: below the world, where nothing stays.
         player.inventory = Inventory::default();
         player.experience = Experience::default();
@@ -176,6 +186,7 @@ impl Region {
             player: id,
             entity,
             message: OUT_OF_WORLD_MESSAGE.to_owned(),
+            at: died_in,
         };
         self.send(edge, died, output);
     }

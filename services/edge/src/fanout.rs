@@ -25,12 +25,12 @@ use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
     AcknowledgeBlockChange, AddTransientBlock, Animate, AttributeSnapshot, BlockEvent, BlockUpdate,
     ChangeDifficulty, ChunkBatchFinished, ChunkBatchStart, ClientboundMoveVehicle, ClockState,
-    Cooldown, DamageEvent, Disconnect, EntityDataValue, EntityEvent, GameEvent, LevelEvent, Login,
-    PlayerAbilities, PlayerCombatKill, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate,
-    PositionPath, RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate, SetCenterChunk,
-    SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink, SetEquipment,
-    SetExperience, SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers, SetPlayerInventory,
-    SetTime, Sound, SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition,
+    Cooldown, DamageEvent, DeathLocation, Disconnect, EntityDataValue, EntityEvent, GameEvent,
+    LevelEvent, Login, PlayerAbilities, PlayerCombatKill, PlayerInfoEntry, PlayerInfoRemove,
+    PlayerInfoUpdate, PositionPath, RemoveEntities, RemoveMobEffect, Respawn, SectionBlocksUpdate,
+    SetCenterChunk, SetContainerContent, SetDefaultSpawnPosition, SetEntityData, SetEntityLink,
+    SetEquipment, SetExperience, SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers,
+    SetPlayerInventory, SetTime, Sound, SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition,
     SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes,
     UpdateMobEffect, abilities, angle, entity_data, game_event, game_mode,
     inventory as protocol_inventory, level_event, player_info, pose, relative,
@@ -611,6 +611,10 @@ struct PlayerView {
     /// is held here, and told after the `Respawn`, which would otherwise drop it.
     respawn_owed: Option<Vec<PlayerEvent>>,
     batch_size: usize,
+    /// Where the player last died, which every `SpawnInfo` made for them says
+    /// (`docs/groundwork/p-plan.md`, section 19.9): from the stay that entered, and
+    /// from each death since.
+    last_death: Option<(Dimension, BlockPos)>,
 }
 
 /// A change of dimension under way: since when, and how the player goes, which the
@@ -1759,6 +1763,7 @@ impl Fanout {
                     PlayerView {
                         travelling: None,
                         respawn_owed: None,
+                        last_death: None,
                         session,
                         name: profile.name.clone(),
                         outbound,
@@ -1972,6 +1977,7 @@ impl Fanout {
                         inventory,
                         selected_slot,
                         riding,
+                        last_death,
                     },
             } => {
                 // Only the connection whose join this answers enters by it. An answer
@@ -1989,6 +1995,7 @@ impl Fanout {
                         flying,
                         inventory: inventory_packets(&inventory, selected_slot),
                         riding,
+                        last_death,
                     };
                     self.spawn_player(player, entering).await;
                 }
@@ -2336,8 +2343,12 @@ impl Fanout {
                 player,
                 entity,
                 message,
+                at,
             } => {
                 if self.has_stay(player, entity) {
+                    if let Some(view) = self.players.get_mut(&player) {
+                        view.last_death = Some(at);
+                    }
                     self.died(player, entity, &message).await;
                     self.owe_respawn(player);
                 }
@@ -2577,6 +2588,7 @@ impl Fanout {
             flying,
             attempt,
             riding,
+            last_death,
         } = answer
         else {
             if self
@@ -2611,6 +2623,7 @@ impl Fanout {
                     flying,
                     inventory: inventory_packets(&inventory, selected_slot),
                     riding,
+                    last_death,
                 };
                 self.spawn_player(player, entering).await;
             }
@@ -3661,7 +3674,8 @@ impl Fanout {
             // level and its entities, keeping its own entity's data (`Respawn`, keep 3).
             // A portal sets the traveller's cooldown before the `Respawn` is made
             // (`Entity.setPortalCooldown`, a player's `getDimensionChangingDelay` of 10).
-            let mut spawn = spawn_info(&self.config, level);
+            let last_death = self.players.get(&player).and_then(|view| view.last_death);
+            let mut spawn = spawn_info(&self.config, level, last_death);
             if through_a_portal {
                 spawn.portal_cooldown = PLAYER_PORTAL_COOLDOWN;
             }
@@ -3921,6 +3935,7 @@ impl Fanout {
         view.dimension = dimension;
         view.told_clocks = None;
         let held = view.respawn_owed.take().unwrap_or_default();
+        let last_death = view.last_death;
         view.teleports = view.teleports.wrapping_add(1).max(1);
         let teleport_id = view.teleports;
         view.awaiting_teleport.store(teleport_id, Ordering::Relaxed);
@@ -3944,7 +3959,7 @@ impl Fanout {
         // spawn (1001), the difficulty (1011), then the level's information.
         packets.extend([
             encoded(&Respawn {
-                spawn: spawn_info(&self.config, dimension),
+                spawn: spawn_info(&self.config, dimension, last_death),
                 data_to_keep: respawn.keep,
             }),
             // `ServerPlayer.teleport(DDDFF)`: absolute, and still.
@@ -5570,6 +5585,7 @@ impl Fanout {
             pose: transfer.pose,
             flying: transfer.flying,
             inventory: inventory_packets(&transfer.inventory, transfer.selected_slot),
+            last_death: transfer.last_death,
         };
         if let Some(view) = self.players.get_mut(&player) {
             view.region = to;
@@ -5629,6 +5645,7 @@ impl Fanout {
             pose,
             flying,
             inventory,
+            last_death,
             ..
         } = entering;
         // The level is the placing region's: a stay kept in another dimension than the
@@ -5641,6 +5658,7 @@ impl Fanout {
             return false;
         };
         view.dimension = dimension;
+        view.last_death = last_death;
         // Placing the player is the first teleport the client has to confirm.
         let teleport_id = 1;
         view.teleports = teleport_id;
@@ -5651,7 +5669,12 @@ impl Fanout {
             CREATIVE_ABILITIES
         };
         let entered = [
-            encoded(&login_packet(self.wire.of(entity), &self.config, dimension)),
+            encoded(&login_packet(
+                self.wire.of(entity),
+                &self.config,
+                dimension,
+                last_death,
+            )),
             // The world's difficulty, unlocked as a new dedicated server's is; a client's
             // change of it is not taken (`docs/groundwork/n7k-plan.md`, section 10).
             encoded(&ChangeDifficulty {
@@ -7826,6 +7849,8 @@ struct Entering {
     inventory: [Bytes; 2],
     /// What they ride, whose word is taken before their client is told anything.
     riding: Option<EntityId>,
+    /// Where they last died, for the login (`docs/groundwork/p-plan.md`, section 19.9).
+    last_death: Option<(Dimension, BlockPos)>,
 }
 
 /// The light a chunk is shown with where none could be made for it: the sky light
@@ -7875,7 +7900,12 @@ fn view_area(center: ChunkPos, view_distance: i32) -> BTreeSet<ChunkPos> {
 
 /// The login of a player who enters the world in `dimension`: every dimension the
 /// world has, and the one they are in.
-fn login_packet(entity_id: i32, config: &FanoutConfig, dimension: Dimension) -> Login {
+fn login_packet(
+    entity_id: i32,
+    config: &FanoutConfig,
+    dimension: Dimension,
+    last_death: Option<(Dimension, BlockPos)>,
+) -> Login {
     Login {
         entity_id,
         hardcore: false,
@@ -7889,7 +7919,7 @@ fn login_packet(entity_id: i32, config: &FanoutConfig, dimension: Dimension) -> 
         reduced_debug_info: false,
         enable_respawn_screen: true,
         limited_crafting: false,
-        spawn: spawn_info(config, dimension),
+        spawn: spawn_info(config, dimension, last_death),
         online_mode: false,
         enforces_secure_chat: false,
     }
@@ -7898,7 +7928,11 @@ fn login_packet(entity_id: i32, config: &FanoutConfig, dimension: Dimension) -> 
 /// What a client is told of the level of `dimension` it enters, at its login and at a
 /// change of dimension (`CommonPlayerSpawnInfo`; `docs/groundwork/p-brief.md`, section
 /// 3.1).
-fn spawn_info(config: &FanoutConfig, dimension: Dimension) -> SpawnInfo {
+fn spawn_info(
+    config: &FanoutConfig,
+    dimension: Dimension,
+    last_death: Option<(Dimension, BlockPos)>,
+) -> SpawnInfo {
     let dimension_type = synced_registry("minecraft:dimension_type")
         .and_then(|registry| registry.id_of(dimension.type_name()))
         .expect("the three dimensions are vanilla dimension types");
@@ -7914,7 +7948,14 @@ fn spawn_info(config: &FanoutConfig, dimension: Dimension) -> SpawnInfo {
         // flat world's Nether and End are those of seed 0
         // (`docs/groundwork/p-plan.md`, decision 9) and still said to be flat.
         is_flat: config.login.flat,
-        death_location: None,
+        death_location: last_death.map(|(level, block)| DeathLocation {
+            dimension: level.type_name().to_owned(),
+            position: Position {
+                x: block.x,
+                y: block.y,
+                z: block.z,
+            },
+        }),
         portal_cooldown: 0,
         sea_level: match dimension {
             Dimension::Overworld => config.login.sea_level,
@@ -8225,6 +8266,7 @@ mod tests {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                last_death: None,
                 riding: None,
                 attempt,
                 entity_id: entity,
@@ -8257,6 +8299,7 @@ mod tests {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -8291,6 +8334,7 @@ mod tests {
             handled: None,
             flying: false,
             attempt: None,
+            last_death: None,
         }
     }
 
@@ -8320,6 +8364,7 @@ mod tests {
             handled,
             flying,
             attempt: Some(attempt),
+            last_death: None,
         }
     }
 
@@ -10858,6 +10903,8 @@ mod scenarios {
         awaiting: Arc<AtomicI32>,
         /// Every change of level it was sent, in order.
         respawns: Vec<Respawn>,
+        /// Every login it was sent, in order.
+        logins: Vec<Login>,
     }
 
     /// One of what a client was told, in [`Client::heard`].
@@ -10909,6 +10956,7 @@ mod scenarios {
                 ledger,
                 awaiting,
                 respawns: Vec::new(),
+                logins: Vec::new(),
                 chunks: BTreeMap::new(),
                 sent: Vec::new(),
                 of_chunks: Vec::new(),
@@ -11073,6 +11121,7 @@ mod scenarios {
                 ClientboundPlay::Login(login) => {
                     self.named.push((Naming::Login, login.entity_id));
                     self.told.push(Told::Entered);
+                    self.logins.push(login);
                 }
                 ClientboundPlay::SyncEntityPosition(moved) => {
                     self.named.push((Naming::Position, moved.entity_id));
@@ -11236,6 +11285,7 @@ mod scenarios {
         WorkerToEdge::ToPlayer {
             player,
             event: PlayerEvent::Spawned {
+                last_death: None,
                 riding: None,
                 attempt,
                 entity_id: entity,
@@ -11260,6 +11310,7 @@ mod scenarios {
             unit: None,
             sleeping: None,
             respawn: None,
+            last_death: None,
             experience: Default::default(),
             attack_ticks: None,
             using: None,
@@ -11392,6 +11443,7 @@ mod scenarios {
         WorkerToEdge::Presence {
             player,
             answer: Presence::Present {
+                last_death: None,
                 riding: None,
                 entity,
                 pose: Pose::at(SPAWN),
@@ -12499,6 +12551,82 @@ mod scenarios {
         (edge, client)
     }
 
+    /// Where the tests of the last death have the player die: in the End, below it.
+    const LAST_DEATH: (Dimension, BlockPos) = (Dimension::End, BlockPos::new(-3, -81, 3));
+
+    /// The login's word of the last death, as the client reads it.
+    fn told_last_death(client: &Client) -> Option<clustine_protocol::packets::play::DeathLocation> {
+        let [login] = &client.logins[..] else {
+            panic!("one login: {:?}", client.logins);
+        };
+        login.spawn.death_location.clone()
+    }
+
+    /// The death of `LAST_DEATH` as the client is told it.
+    fn last_death_on_the_wire() -> clustine_protocol::packets::play::DeathLocation {
+        clustine_protocol::packets::play::DeathLocation {
+            dimension: "minecraft:the_end".to_owned(),
+            position: Position {
+                x: -3,
+                y: -81,
+                z: 3,
+            },
+        }
+    }
+
+    /// Section 19.9: a player who died before is put into the world by a login that
+    /// says where, as the game's `CommonPlayerSpawnInfo` does from
+    /// `ServerPlayer.getLastDeathLocation`.
+    #[tokio::test]
+    async fn a_login_says_where_the_player_last_died() {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        let mut spawned = edge.spawned(player(1), EntityId(5));
+        let WorkerToEdge::ToPlayer {
+            event: PlayerEvent::Spawned { last_death, .. },
+            ..
+        } = &mut spawned
+        else {
+            unreachable!("the word of a placing");
+        };
+        *last_death = Some(LAST_DEATH);
+        edge.tell(WEST, spawned);
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        assert_eq!(told_last_death(&client), Some(last_death_on_the_wire()));
+        edge.end().await;
+    }
+
+    /// The same for a join whose stay its region let go before the edge was told its
+    /// entity (`docs/adr/0020-one-stay-per-player.md`, section 4.3, path 3): the
+    /// login is made from the transfer.
+    #[tokio::test]
+    async fn a_login_by_an_arrival_says_where_the_player_last_died() {
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.join(player(1)).await;
+        let (_, join) = edge.next_numbered(WEST).await;
+        assert!(matches!(join, EdgeToWorker::PlayerJoin(_)), "{join:?}");
+        let mut moved = transfer(EntityId(5), 0, EASTERN);
+        moved.attempt = Some(edge.attempts[&player(1)]);
+        moved.last_death = Some(LAST_DEATH);
+        edge.say(
+            WEST,
+            Durable::Departed {
+                player: player(1),
+                transfer: moved,
+                to: EAST,
+            },
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut client).await;
+        assert_eq!(told_last_death(&client), Some(last_death_on_the_wire()));
+        edge.end().await;
+    }
+
     /// The packets the client was sent from `from` on, by id.
     fn ids_from(client: &Client, from: usize) -> Vec<i32> {
         client.ids[from..].to_vec()
@@ -12520,6 +12648,7 @@ mod scenarios {
                 player: player(1),
                 entity: EntityId(5),
                 message: "death.attack.outOfWorld".to_owned(),
+                at: (Dimension::Overworld, BlockPos::new(0, -130, 0)),
             },
         );
         edge.settle(WEST).await;
@@ -16678,6 +16807,7 @@ mod scenarios {
             let present = |player: &PlayerId, resident: &Resident| WorkerToEdge::Presence {
                 player: *player,
                 answer: Presence::Present {
+                    last_death: None,
                     riding: None,
                     entity: resident.entity,
                     pose: Pose::at(within(resident.chunk)),
@@ -17804,6 +17934,7 @@ mod scenarios {
         WorkerToEdge::Presence {
             player,
             answer: Presence::Present {
+                last_death: None,
                 riding: None,
                 entity,
                 pose: Pose::at(SPAWN),
