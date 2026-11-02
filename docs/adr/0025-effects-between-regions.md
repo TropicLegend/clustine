@@ -375,9 +375,10 @@ every tick, so that its pace can be seen, and is coupled again by the handshake 
 has committed at 15 ticks a second or more for five seconds; until then its lines
 tick uncoupled and what crosses them is late (section 1). The store tells it
 `Uncoupled { GivenUp }`, whether it was given up out of a coupling or in a handshake,
-and tells the same of it to each partner of those couplings and handshakes and, once,
-to each region that comes to need coupling with it while it is given up (a split's
-part, a third region, a runner opened again). A runner given up hands in every based
+and tells the same of it to each partner of those couplings and handshakes and, once
+for each giving up and each opening of that region's runner, to each region that comes
+to need coupling with it while it is given up (a split's part, a third region, a runner
+opened again). A runner given up hands in every based
 copy, and a runner told that another was given up hands in its copies of that region's
 chunks, whether or not they were in before, also where the region given up comes to
 use a chunk another copies: the giving up wins over the withdrawing of this section's
@@ -391,7 +392,13 @@ A known limit: the store says nothing when a region given up has earned its coup
 back where nobody needs coupling with it any more (`CoupleWith` says it where somebody
 does). Its runner then stays given up, and the runner told of it keeps letting in its
 copies of that region, until one of them is asked to couple; that only makes a line
-late, and saying it would take a message of its own.
+late, and saying it would take a message of its own. A second, found by the review of
+2026-11-02: a region given up commits every tick only while it copies something itself,
+so one that a neighbour needs but that needs nothing of the neighbour (a player on the
+neighbour's side of a pinned line, nobody near the line on its own) commits only what
+changes, never shows the store the rate it judges by, and stays given up: that line
+ticks uncoupled for good, late by a tick or a few. Telling the region given up that it
+is needed, and counting that in what makes it commit every tick, would end it.
 
 **Reshapes, moves and restores.** A region entering `Preparing` for a merge or a split,
 or released for a move, asks the store, in its lane, to end its couplings. The store
