@@ -395,8 +395,10 @@ struct ThroughTheGateway {
     exits: Vec<(i32, i32, i32)>,
     /// The cage about the first of them, by place relative to it.
     cage: BTreeMap<(i32, i32, i32), String>,
-    /// The blocks that are not air within 12 across of the exit, from 30 below it to 3
-    /// above, by place relative to it: the island and what is about it.
+    /// The blocks that are not air within 12 across of where the bot came out, from 40
+    /// below it to 30 above, by their places, but for the return gateway's cage: the
+    /// land the search read, and the island where it made one. By their places, so
+    /// that two exits apart still compare the land the same.
     island: BTreeMap<(i32, i32, i32), String>,
 }
 
@@ -427,7 +429,34 @@ async fn through_the_first_gateway(bot: &mut Bot) -> Result<ThroughTheGateway> {
     };
     for (_, packet) in &through.packets[..end] {
         let kind = kind(packet);
-        if !NOT_OF_THE_GATEWAY.contains(&kind.as_str()) {
+        // The bot's own breaking of the bedrock over the gateway may be answered after
+        // its step in, on the official server; it is the scene's, not the gateway's.
+        let (gx, gy, gz) = GATEWAY;
+        let over = |(x, y, z): (i32, i32, i32)| (x, z) == (gx, gz) && (y == gy + 1 || y == gy + 2);
+        if matches!(packet, ClientboundPlay::BlockUpdate(update)
+            if over((update.position.x, update.position.y, update.position.z)))
+        {
+            continue;
+        }
+        // The advancement a gateway gives ("Remote Getaway") and its message in the
+        // chat: advancements are not built in Clustine (`docs/roadmap.md`, named there).
+        if matches!(
+            kind.as_str(),
+            "SystemChat" | "minecraft:update_advancements"
+        ) {
+            continue;
+        }
+        if let ClientboundPlay::BlockUpdate(update) = packet {
+            // Which block changed says what sent it.
+            let at = &update.position;
+            seen.kinds.push(format!(
+                "BlockUpdate ({}, {}, {}) {}",
+                at.x,
+                at.y,
+                at.z,
+                block_name(update.state)
+            ));
+        } else if !NOT_OF_THE_GATEWAY.contains(&kind.as_str()) {
             seen.kinds.push(kind);
         }
         match packet {
@@ -463,16 +492,16 @@ async fn through_the_first_gateway(bot: &mut Bot) -> Result<ThroughTheGateway> {
             .into_iter()
             .map(|((x, y, z), name)| ((x - ex, y - ey, z - ez), name))
             .collect();
-        let island = shown_blocks(
-            bot,
-            (ex - 12, (ey - 30).max(0), ez - 12),
-            (ex + 12, ey + 3, ez + 12),
-        )?;
-        seen.island = island
-            .into_iter()
-            .map(|((x, y, z), name)| ((x - ex, y - ey, z - ez), name))
-            .collect();
     }
+    let cage = ["minecraft:end_gateway", "minecraft:bedrock"];
+    seen.island = shown_blocks(
+        bot,
+        (x - 12, (y - 40).max(0), z - 12),
+        (x + 12, (y + 30).min(255), z + 12),
+    )?
+    .into_iter()
+    .filter(|(_, name)| !cage.contains(&name.as_str()))
+    .collect();
     Ok(seen)
 }
 

@@ -193,7 +193,11 @@ impl Game<'_> {
 /// minZ) to (maxX, `getHighestSectionPosition() + 15`, maxZ) by `betweenClosed`, which
 /// takes the least and greatest of each axis and counts x fastest, then y, then z; end
 /// stone whose two blocks above have no full collision; the first whose
-/// `distToCenterSqr(0, 0, 0)` is strictly less than the best's.
+/// `distToCenterSqr(0, 0, 0)` is strictly less than the best's. The best is kept as the
+/// iterator's cursor, a `MutableBlockPos` with no `immutable()` (offsets 175-181), which
+/// rests on the range's last place when the iteration ends (`BlockPos$4.computeNext`):
+/// what is returned is that corner wherever such end stone is. The official server's
+/// gateway out of seed 0's End showed it (`gateways_oracle.rs`).
 fn game_spawn(at: ChunkPos, chunk: &Chunk) -> Option<BlockPos> {
     let (min_y, _) = bounds();
     let highest = Game::highest_filled(chunk).map_or(min_y, |section| min_y + section * 16);
@@ -223,7 +227,7 @@ fn game_spawn(at: ChunkPos, chunk: &Chunk) -> Option<BlockPos> {
             }
         }
     }
-    best.map(|(pos, _)| pos)
+    best.map(|_| BlockPos::new(at.x * 16 + 15, high, at.z * 16 + 15))
 }
 
 /// `findTallestBlock` (lines 474-551), read from the bytecode.
@@ -411,19 +415,19 @@ fn in_a_void_the_point_steps_on_sixteen_times_and_an_island_is_wanted_at_1280() 
 
 /// Lines 39-83: over land, the point steps back 16 at a time while the chunk there is
 /// not empty; at the first empty one it steps on again while empty, to the land's edge,
-/// and stands on its end stone there, nearest the origin.
+/// and its search for end stone there gives the chunk's far corner.
 #[test]
 fn over_land_the_point_steps_back_to_the_void_then_on_to_the_land_s_edge() {
     let world = land_along_x(60, 70);
     let from = BlockPos::new(96, 75, 0);
     let (found, _) = searched(from, &world);
     assert_eq!(found, game_exit(from, &world).0);
-    // Back from 1024 (chunk 64) to 944 (chunk 59, empty), on to 960 (chunk 60): its
-    // end stone nearest the origin is (960, 40, 0); the tallest block within 16 of it,
-    // bedrock allowed, the first found at y = 40 in the order dx then dz, is
-    // (960, 40, -16), as chunk 59 is empty.
+    // Back from 1024 (chunk 64) to 944 (chunk 59, empty), on to 960 (chunk 60): it has
+    // end stone to stand on, so the spawn is its far corner, (975, 47, 15); the tallest
+    // block within 16 of it, bedrock allowed, the first found at y = 40 in the order dx
+    // then dz, is (960, 40, -1), as chunk 59 is empty.
     assert_eq!(found.island, None);
-    assert_eq!(found.exit, BlockPos::new(960, 50, -16));
+    assert_eq!(found.exit, BlockPos::new(960, 50, -1));
 }
 
 /// Offsets 48-53: at most sixteen steps back; then, on land still, no step on.
@@ -433,9 +437,9 @@ fn over_wide_land_the_point_steps_back_no_more_than_sixteen_times() {
     let from = BlockPos::new(96, 75, 0);
     let (found, _) = searched(from, &world);
     assert_eq!(found, game_exit(from, &world).0);
-    // 1024 - 16 x 16 = 768, chunk 48, land; its spawn (768, 40, 0), and the first
-    // tallest in the order dx then dz (752, 40, -16).
-    assert_eq!(found.exit, BlockPos::new(752, 50, -16));
+    // 1024 - 16 x 16 = 768, chunk 48, land; its spawn its far corner (783, 47, 15),
+    // and the first tallest in the order dx then dz (767, 40, -1).
+    assert_eq!(found.exit, BlockPos::new(767, 50, -1));
 }
 
 /// Offsets 99-104: at most sixteen steps on: void out to 1280 and land beyond it is
@@ -531,44 +535,29 @@ fn over_scattered_land_the_search_finds_what_the_game_finds() {
 
 // `findValidSpawnInChunk`.
 
-/// Lines 569-662: the end stone nearest the origin by `distToCenterSqr`, with two
-/// blocks above it of no full collision; an equal distance keeps the first in
-/// `betweenClosed` order (x fastest, then y, then z).
+/// Lines 569-662: where the chunk has end stone with two blocks above it of no full
+/// collision, the spawn is the range's far corner, the iterator's cursor where it rests;
+/// where it has none, there is no spawn.
 #[test]
-fn the_spawn_is_the_end_stone_nearest_the_origin_and_the_first_of_equals() {
+fn the_spawn_is_the_chunk_s_far_corner_wherever_its_end_stone_to_stand_on_is() {
     let at = ChunkPos::new(0, 0);
     let mut chunk = empty();
-    // (5, 40, 1) and (1, 40, 5) are as near as each other; z = 1 comes first.
-    chunk.set(5, 40, 1, blocks::END_STONE);
-    chunk.set(1, 40, 5, blocks::END_STONE);
-    chunk.set(9, 41, 9, blocks::END_STONE);
-    assert_eq!(game_spawn(at, &chunk), Some(BlockPos::new(5, 40, 1)));
-    assert_eq!(
-        find_valid_spawn_in_chunk(at, &chunk),
-        Some(BlockPos::new(5, 40, 1))
-    );
-    // A nearer one with a full block two above it is refused; with a torch above, it
-    // stands.
+    // End stone with a full block two above it is refused.
     chunk.set(1, 35, 1, blocks::END_STONE);
     chunk.set(1, 37, 1, blocks::OBSIDIAN);
-    assert_eq!(
-        find_valid_spawn_in_chunk(at, &chunk),
-        game_spawn(at, &chunk)
-    );
-    assert_eq!(
-        find_valid_spawn_in_chunk(at, &chunk),
-        Some(BlockPos::new(5, 40, 1))
-    );
+    assert_eq!(game_spawn(at, &chunk), None);
+    assert_eq!(find_valid_spawn_in_chunk(at, &chunk), None);
+    // With torches above, it stands: the highest filled section is y 32 to 47.
     chunk.set(1, 37, 1, blocks::TORCH);
     chunk.set(1, 36, 1, blocks::TORCH);
-    assert_eq!(
-        find_valid_spawn_in_chunk(at, &chunk),
-        Some(BlockPos::new(1, 35, 1))
-    );
-    assert_eq!(
-        find_valid_spawn_in_chunk(at, &chunk),
-        game_spawn(at, &chunk)
-    );
+    let corner = Some(BlockPos::new(15, 47, 15));
+    assert_eq!(game_spawn(at, &chunk), corner);
+    assert_eq!(find_valid_spawn_in_chunk(at, &chunk), corner);
+    // More end stone, nearer or further, changes nothing.
+    chunk.set(5, 40, 1, blocks::END_STONE);
+    chunk.set(9, 41, 9, blocks::END_STONE);
+    assert_eq!(game_spawn(at, &chunk), corner);
+    assert_eq!(find_valid_spawn_in_chunk(at, &chunk), corner);
 }
 
 /// Offsets 5-49: the search runs from y = 30 to the top of the highest section with a
@@ -586,7 +575,7 @@ fn the_spawn_is_looked_for_from_thirty_to_the_top_of_the_highest_filled_section(
     chunk.set(4, 63, 4, blocks::END_STONE);
     assert_eq!(
         find_valid_spawn_in_chunk(at, &chunk),
-        Some(BlockPos::new(62 * 16 + 4, 63, 4))
+        Some(BlockPos::new(62 * 16 + 15, 63, 15))
     );
     assert_eq!(
         find_valid_spawn_in_chunk(at, &chunk),
@@ -596,14 +585,15 @@ fn the_spawn_is_looked_for_from_thirty_to_the_top_of_the_highest_filled_section(
 
 /// `betweenClosed` takes the least and greatest of each axis (`d-javap` BlockPos,
 /// 839-872): where the highest filled section is the lowest, its top, 15, is under 30,
-/// and the game looks from 15 up to 30, so end stone at y = 15 is found.
+/// and the game looks from 15 up to 30, so end stone at y = 15 is found, and the
+/// corner is at 30.
 #[test]
 fn where_only_the_lowest_section_has_blocks_the_spawn_is_looked_for_from_its_top_up_to_thirty() {
     let at = ChunkPos::new(-3, 7);
     let mut chunk = empty();
     chunk.set(2, 15, 2, blocks::END_STONE);
     chunk.set(9, 10, 9, blocks::END_STONE);
-    let expected = Some(BlockPos::new(-3 * 16 + 2, 15, 7 * 16 + 2));
+    let expected = Some(BlockPos::new(-3 * 16 + 15, 30, 7 * 16 + 15));
     assert_eq!(game_spawn(at, &chunk), expected);
     assert_eq!(find_valid_spawn_in_chunk(at, &chunk), expected);
     // In the section above it, under 30, nothing is looked at.

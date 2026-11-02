@@ -300,10 +300,16 @@ fn highest_filled_section(chunk: &Chunk) -> Option<usize> {
         .rposition(|section| section.non_air_count() != 0)
 }
 
-/// `findValidSpawnInChunk` (lines 569-662): the end stone in `chunk` with two blocks
-/// above it whose collision shapes are not full, from y 30 to the top of the chunk's
-/// highest filled section, nearest the origin by `distToCenterSqr(0, 0, 0)`; the first
-/// strictly nearest in `BlockPos.betweenClosed` order wins.
+/// `findValidSpawnInChunk` (lines 569-662): where `chunk` has, from y 30 to the top of
+/// its highest filled section, end stone with two blocks above it whose collision
+/// shapes are not full, the last place `BlockPos.betweenClosed` gave, its far corner
+/// (the greatest x, y and z of the range); none where it has no such end stone.
+///
+/// The game means the end stone nearest the origin, but keeps the iterator's cursor,
+/// a `MutableBlockPos` the iteration goes on moving (offsets 175-181, with no
+/// `immutable()`), and the cursor rests on the last place when the iteration ends
+/// (`BlockPos$4.computeNext`: `endOfData` leaves it as it is). The official server
+/// starts the tallest block's search from that corner, and so does this.
 pub fn find_valid_spawn_in_chunk(at: ChunkPos, chunk: &Chunk) -> Option<BlockPos> {
     // Offsets 23-32: `getHighestSectionPosition() + 16 - 1`, the section's lowest block
     // or, for an empty chunk, the chunk's lowest y (`ChunkAccess`, offsets 0-25).
@@ -316,35 +322,17 @@ pub fn find_valid_spawn_in_chunk(at: ChunkPos, chunk: &Chunk) -> Option<BlockPos
     // (`d-javap` BlockPos, 839-869), so a top below 30 searches from the top up to 30.
     let (low, high) = (LOWEST_SPAWN.min(top), LOWEST_SPAWN.max(top));
     let block = |x: usize, y: i32, z: usize| chunk.get(x, y, z).unwrap_or(blocks::AIR);
-    let mut best: Option<(BlockPos, f64)> = None;
-    // `betweenClosed` counts x fastest, then y, then z.
-    for z in 0..16_usize {
-        for y in low..=high {
-            for x in 0..16_usize {
-                if !same_block(block(x, y, z), blocks::END_STONE)
-                    || block(x, y + 1, z).props().collision_is_full_block()
-                    || block(x, y + 2, z).props().collision_is_full_block()
-                {
-                    continue;
-                }
-                let pos = BlockPos::new(at.x * 16 + x as i32, y, at.z * 16 + z as i32);
-                let distance = dist_to_center_sqr(pos);
-                // Offsets 166-176: taken where none was yet or `distance < best`.
-                if best.is_none_or(|(_, nearest)| distance < nearest) {
-                    best = Some((pos, distance));
-                }
-            }
-        }
-    }
-    best.map(|(pos, _)| pos)
-}
-
-/// `Vec3i.distToCenterSqr(0, 0, 0)` (`n7-javap`, offsets 0-57).
-fn dist_to_center_sqr(pos: BlockPos) -> f64 {
-    let x = f64::from(pos.x) + 0.5;
-    let y = f64::from(pos.y) + 0.5;
-    let z = f64::from(pos.z) + 0.5;
-    x * x + y * y + z * z
+    let found = (0..16_usize).any(|z| {
+        (low..=high).any(|y| {
+            (0..16_usize).any(|x| {
+                same_block(block(x, y, z), blocks::END_STONE)
+                    && !block(x, y + 1, z).props().collision_is_full_block()
+                    && !block(x, y + 2, z).props().collision_is_full_block()
+            })
+        })
+    });
+    // `betweenClosed` counts x fastest, then y, then z: its last place is the corner.
+    found.then(|| BlockPos::new(at.x * 16 + 15, high, at.z * 16 + 15))
 }
 
 /// `findTallestBlock` (lines 474-551) over `level`, whose blocks run from `min_y` to
@@ -579,8 +567,10 @@ mod tests {
         assert_eq!(exit.exit, BlockPos::new(1280 - radius, 85, -dz));
     }
 
+    /// Where the chunk has end stone to stand on, the spawn is the chunk's far corner at
+    /// the top of the range looked at, the iterator's cursor where it rests.
     #[test]
-    fn the_spawn_is_the_end_stone_nearest_the_middle_with_room_above() {
+    fn the_spawn_is_the_chunk_s_far_corner_where_it_has_end_stone_with_room_above() {
         let at = ChunkPos::new(0, 0);
         let mut chunk = empty();
         // Below y 30: not looked at, however near.
@@ -592,26 +582,19 @@ mod tests {
         chunk.set(1, 33, 0, blocks::STONE);
         assert_eq!(find_valid_spawn_in_chunk(at, &chunk), None);
         // A block above whose collision is not full leaves room: an end rod.
+        // The highest filled section is y 32 to 47, so the range ends at 47.
         chunk.set(5, 40, 5, blocks::END_ROD);
         chunk.set(5, 39, 5, blocks::END_STONE);
         assert_eq!(
             find_valid_spawn_in_chunk(at, &chunk),
-            Some(BlockPos::new(5, 39, 5))
+            Some(BlockPos::new(15, 47, 15))
         );
-        // Two equally near: (2, 35, 1) and (1, 35, 2). `betweenClosed` counts z
-        // slowest, so (2, 35, 1) comes first and the second, not strictly nearer, does
-        // not replace it.
+        // However many there are, and wherever.
         chunk.set(1, 35, 2, blocks::END_STONE);
-        chunk.set(2, 35, 1, blocks::END_STONE);
+        chunk.set(14, 44, 3, blocks::END_STONE);
         assert_eq!(
             find_valid_spawn_in_chunk(at, &chunk),
-            Some(BlockPos::new(2, 35, 1))
-        );
-        // A strictly nearer one later in the order does.
-        chunk.set(1, 34, 1, blocks::END_STONE);
-        assert_eq!(
-            find_valid_spawn_in_chunk(at, &chunk),
-            Some(BlockPos::new(1, 34, 1))
+            Some(BlockPos::new(15, 47, 15))
         );
     }
 
@@ -624,7 +607,7 @@ mod tests {
         chunk.set(4, 47, 4, blocks::END_STONE);
         assert_eq!(
             find_valid_spawn_in_chunk(at, &chunk),
-            Some(BlockPos::new(36, 47, -44))
+            Some(BlockPos::new(47, 47, -33))
         );
         // An empty chunk's top is its lowest y plus 15, below 30: the range is turned
         // round to 15 to 30 and holds nothing.

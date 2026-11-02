@@ -15,10 +15,10 @@
 //! cage into the stored chunks at the place of the first gateway the dragon's death
 //! makes ([`GATEWAY`]), with no exit, as the death leaves one; and the server starts
 //! again on the world, where the scene's bots come into the End by the open portal
-//! (`dimensions::a_world_with_a_gateway`). The builder leaves in the overworld because
-//! a player who leaves in the End cannot come back (the last test has the finding).
+//! (`dimensions::a_world_with_a_gateway`). The builder leaves in the overworld, so
+//! that every scene's bots come into the End by its portal.
 //!
-//! In the exit found for the world of seed 0's End, `(1028, 80, -7)`, no island is
+//! In the exit found for the world of seed 0's End, `(1028, 80, -1)`, no island is
 //! made: the tentative chunk has end stone to stand on, so the island's part of the
 //! search below is not exercised by these scenes.
 //!
@@ -282,16 +282,15 @@ fn tentative(view: &View, from: (i32, i32, i32)) -> Result<(f64, f64)> {
     Ok(point)
 }
 
-/// `findValidSpawnInChunk`: over the chunk from y 30 to the top of its highest section
-/// that is not empty, in `betweenClosed`'s order (x, then y, then z), the end stone with
-/// two blocks above it that are not full, nearest by `distToCenterSqr(0, 0, 0)`; the
-/// first of the nearest.
+/// `findValidSpawnInChunk`: where the chunk has, from y 30 to the top of its highest
+/// section that is not empty, end stone with two blocks above it that are not full, the
+/// range's far corner: the game keeps the nearest as `betweenClosed`'s cursor, which
+/// rests on the range's last place (x, then y, then z) when the iteration ends.
 fn valid_spawn(view: &View, chunk: (i32, i32)) -> Result<Option<(i32, i32, i32)>> {
     let Some(highest) = view.highest_filled_section(chunk)? else {
         return Ok(None);
     };
     let (cx, cz) = chunk;
-    let mut best: Option<((i32, i32, i32), f64)> = None;
     for z in cz * 16..cz * 16 + 16 {
         for y in 30..=highest + 15 {
             for x in cx * 16..cx * 16 + 16 {
@@ -302,16 +301,11 @@ fn valid_spawn(view: &View, chunk: (i32, i32)) -> Result<Option<(i32, i32, i32)>
                 {
                     continue;
                 }
-                let distance = (f64::from(x) + 0.5).powi(2)
-                    + (f64::from(y) + 0.5).powi(2)
-                    + (f64::from(z) + 0.5).powi(2);
-                if best.is_none_or(|(_, nearest)| distance < nearest) {
-                    best = Some((at, distance));
-                }
+                return Ok(Some((cx * 16 + 15, (highest + 15).max(30), cz * 16 + 15)));
             }
         }
     }
-    Ok(best.map(|(at, _)| at))
+    Ok(None)
 }
 
 /// `findTallestBlock`: over the square of `radius` about `at`, x outer and z inner,
