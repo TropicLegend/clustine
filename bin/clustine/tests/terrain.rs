@@ -83,6 +83,30 @@ fn as_ticked(made: BlockState, sent: i32) -> bool {
         || (made.props().is_air() && grown(sent))
         || (made.props().is_air() && fire(sent))
         || (leaves(made) && sent.props().is_air())
+        || (made.props().is_air() && cave_vines(sent))
+        || (cave_vines(made) && cave_vines(sent))
+        || ((made.props().is_air() || amethyst(made)) && amethyst(sent))
+}
+
+/// Cave vines, which grow down into air and whose head becomes a plant as they do
+/// (random ticks; CI let one through on 2026-11-01 and 02).
+fn cave_vines(state: BlockState) -> bool {
+    [blocks::CAVE_VINES, blocks::CAVE_VINES_PLANT]
+        .iter()
+        .any(|block| block.block_id() == state.block_id())
+}
+
+/// The buds of amethyst, which budding amethyst grows into air and which grow from
+/// small to a cluster (random ticks).
+fn amethyst(state: BlockState) -> bool {
+    [
+        blocks::SMALL_AMETHYST_BUD,
+        blocks::MEDIUM_AMETHYST_BUD,
+        blocks::LARGE_AMETHYST_BUD,
+        blocks::AMETHYST_CLUSTER,
+    ]
+    .iter()
+    .any(|block| block.block_id() == state.block_id())
 }
 
 /// Air, or a block that holds a fluid.
