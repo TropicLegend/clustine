@@ -720,17 +720,29 @@ const IN_THE_VOID: f64 = (END_FLOOR - 80) as f64;
 /// Besides those that come of showing a level: the clock, which both send now and
 /// then; the bar, which is taken away as the bot falls out of its reach at a time each
 /// server checks its own way (reported apart); and the death message in the chat,
-/// which Clustine has not (19.5 item 15).
-const NOT_OF_THE_FALL: &[&str] = &["SetTime", "BossEvent", "SystemChat"];
+/// which Clustine has not (19.5 item 15). And the advancements, which Clustine has not;
+/// and the healths, compared apart as the hurts (`hurts`): the official server's player
+/// heals between the void's hurts by their full food (`FoodData.tick`, creative too),
+/// which Clustine leaves to survival, so it is hurt once more before it dies, and it
+/// is told its health of nothing in the tick after its death, where Clustine tells it
+/// before (after the death the edge holds what the player is told until the respawn).
+const NOT_OF_THE_FALL: &[&str] = &[
+    "SetTime",
+    "BossEvent",
+    "SystemChat",
+    "minecraft:update_advancements",
+    "SetHealth",
+];
 
 /// What the bot was sent from stepping off the platform until its death screen, and
 /// after asking for its respawn.
 #[derive(Debug)]
 struct VoidDeath {
-    /// The kinds in order, up to and with the death (`PlayerCombatKill`).
+    /// The kinds in order, up to and with the death (`PlayerCombatKill`), each run of
+    /// one kind as one.
     kinds: Vec<String>,
-    /// The healths told, in order.
-    healths: Vec<f32>,
+    /// What each hurt the player lived through took, in order.
+    hurts: Vec<f32>,
     /// Whether the bar was taken away before the death.
     bar_removed: bool,
     message: String,
@@ -804,14 +816,10 @@ async fn void_death(address: &str) -> Result<VoidDeath> {
         .filter(|kind| {
             !NOT_OF_THE_CHANGE.contains(&kind.as_str()) && !NOT_OF_THE_FALL.contains(&kind.as_str())
         })
-        .collect();
-    let healths = fall
-        .iter()
-        .filter_map(|(_, packet)| match packet {
-            ClientboundPlay::SetHealth(health) => Some(health.health),
-            _ => None,
-        })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut kinds = kinds;
+    kinds.dedup();
+    let hurts = hurts(fall);
     let bar_removed = fall.iter().any(|(_, packet)| {
         matches!(packet, ClientboundPlay::BossEvent(event) if event.operation == BossOperation::Remove)
     });
@@ -846,13 +854,35 @@ async fn void_death(address: &str) -> Result<VoidDeath> {
     drop(connection);
     Ok(VoidDeath {
         kinds,
-        healths,
+        hurts,
         bar_removed,
         message,
         respawn,
         placed,
         health_after: seen.health.map(|health| health.health),
     })
+}
+
+/// What each hurt that left the player alive took: the health told after a
+/// `DamageEvent` from the health told before it.
+fn hurts(fall: &[(Instant, ClientboundPlay)]) -> Vec<f32> {
+    let mut health = 20.0;
+    let mut hurt = false;
+    let mut taken = Vec::new();
+    for (_, packet) in fall {
+        match packet {
+            ClientboundPlay::DamageEvent(_) => hurt = true,
+            ClientboundPlay::SetHealth(told) => {
+                if hurt && told.health > 0.0 {
+                    taken.push(health - told.health);
+                }
+                hurt = false;
+                health = told.health;
+            }
+            _ => {}
+        }
+    }
+    taken
 }
 
 /// Whether a respawn's place, relative to the world spawn's block, is on the spawn's
@@ -872,7 +902,11 @@ async fn a_death_in_the_end_s_void_and_its_respawn_are_sent_as_on_the_official_s
     let (theirs, ours) = both(theirs, ours);
     let mut differences = Differences::default();
     differences.differ("the kinds and their order", theirs.kinds == ours.kinds);
-    differences.differ("the healths told", theirs.healths == ours.healths);
+    let the_last = |hurts: &[f32]| hurts.len().min(4);
+    differences.differ(
+        "the first four hurts the player lived through",
+        theirs.hurts[..the_last(&theirs.hurts)] == ours.hurts[..the_last(&ours.hurts)],
+    );
     differences.differ(
         "the bar taken away before the death",
         theirs.bar_removed == ours.bar_removed,

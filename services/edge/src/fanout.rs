@@ -641,6 +641,39 @@ fn wrap_degrees(degrees: f32) -> f32 {
     }
 }
 
+/// A player's name as `Player.getDisplayName` makes it, with no team: its click suggests
+/// a message to them, its hover shows them, and a shift-click inserts their name.
+fn display_name(name: &str, player: PlayerId) -> Nbt {
+    let uuid = player.0.as_u128();
+    // `UUIDUtil.uuidToIntArray`: the most significant 32 bits first.
+    let words = (0..4)
+        .map(|at| (uuid >> (96 - 32 * at)) as u32 as i32)
+        .collect();
+    Nbt::Compound(vec![
+        (
+            "click_event".to_owned(),
+            Nbt::Compound(vec![
+                (
+                    "action".to_owned(),
+                    Nbt::String("suggest_command".to_owned()),
+                ),
+                ("command".to_owned(), Nbt::String(format!("/tell {name} "))),
+            ]),
+        ),
+        ("insertion".to_owned(), Nbt::String(name.to_owned())),
+        ("text".to_owned(), Nbt::String(name.to_owned())),
+        (
+            "hover_event".to_owned(),
+            Nbt::Compound(vec![
+                ("name".to_owned(), Nbt::String(name.to_owned())),
+                ("action".to_owned(), Nbt::String("show_entity".to_owned())),
+                ("id".to_owned(), Nbt::String("minecraft:player".to_owned())),
+                ("uuid".to_owned(), Nbt::IntArray(words)),
+            ]),
+        ),
+    ])
+}
+
 /// The ticks a player waits after a portal before another takes them
 /// (`Player.getDimensionChangingDelay`), which the `Respawn` of their travel tells.
 const PLAYER_PORTAL_COOLDOWN: i32 = 10;
@@ -1913,10 +1946,14 @@ impl Fanout {
             WorkerToEdge::NotMine { chunk, ask } => self.not_mine(from, chunk, ask).await,
             WorkerToEdge::Clock { clock, jumped, .. } => {
                 self.clocks.insert(from, clock);
+                // Not a client between its `Respawn` and its placing, which the game
+                // sends in one tick: its placing tells it the new level's time whole.
                 let players: Vec<PlayerId> = self
                     .players
                     .iter()
-                    .filter(|(_, view)| view.region == from && view.entity.is_some())
+                    .filter(|(_, view)| {
+                        view.region == from && view.entity.is_some() && view.travelling.is_none()
+                    })
                     .map(|(player, _)| *player)
                     .collect();
                 for player in players {
@@ -3687,20 +3724,27 @@ impl Fanout {
             return;
         };
         let name = view.name.clone();
+        let wire = self.wire.of(entity);
         let packet = encoded(&PlayerCombatKill {
-            player_id: self.wire.of(entity),
+            player_id: wire,
+            // In the order the official server writes them.
             message: Nbt::Compound(vec![
-                ("translate".to_owned(), Nbt::String(message.to_owned())),
                 (
                     "with".to_owned(),
-                    Nbt::List(vec![Nbt::Compound(vec![(
-                        "text".to_owned(),
-                        Nbt::String(name),
-                    )])]),
+                    Nbt::List(vec![display_name(&name, player)]),
                 ),
+                ("translate".to_owned(), Nbt::String(message.to_owned())),
             ]),
         });
-        self.send_to_player(player, [packet]).await;
+        // `ServerPlayer.die` sends the death, and then `broadcastEntityEvent` the death's
+        // event 3, which the player is shown after it: the region's event 3 comes before
+        // its outbox, so the edge shows it to the dying player here
+        // (`show_entity_event`).
+        let fell = encoded(&EntityEvent {
+            entity_id: wire,
+            event: 3,
+        });
+        self.send_to_player(player, [packet, fell]).await;
     }
 
     /// The second half of a change of dimension, or a travel within one (a gateway): the
@@ -5281,12 +5325,14 @@ impl Fanout {
     }
 
     async fn show_entity_event(&mut self, entity: EntityId, event: u8) {
-        // `broadcastEntityEvent` tells the entity itself too, a player's death (event 3)
-        // among it.
+        // `broadcastEntityEvent` tells the entity itself too; but a player's own death
+        // (event 3) they are shown after the death itself (`died`).
         let watching: Vec<PlayerId> = self
             .players
             .iter()
-            .filter(|(_, view)| view.visible.contains_key(&entity) || view.entity == Some(entity))
+            .filter(|(_, view)| {
+                view.visible.contains_key(&entity) || (view.entity == Some(entity) && event != 3)
+            })
             .map(|(player, _)| *player)
             .collect();
         if watching.is_empty() {
