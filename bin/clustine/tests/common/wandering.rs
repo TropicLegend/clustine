@@ -1262,6 +1262,10 @@ impl Wanders {
             first_lane,
             pulse: Some(PULSE),
             world: self.world(),
+            // To its lanes and, at the end, the auditor over everything the group
+            // built: at the default pace the auditor's walks took two minutes of
+            // every test, and the moves of the scenarios are walked at their own.
+            to_the_lane: 3.0,
             ..Ledger::default()
         }
     }

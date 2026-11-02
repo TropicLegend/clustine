@@ -646,11 +646,15 @@ fn a_chunk_whose_only_change_is_an_item_is_saved_without_writing_its_blocks_agai
     };
     assert_eq!(saved.key, key);
     // As of the tick it was saved at: it has aged from its throw to then, and its
-    // delay with it.
+    // delay with it, down to nothing on a machine slow enough to save it later.
     let EntityData::Item { pick_up_delay, .. } = &saved.data else {
         panic!("{saved:?} is not an item");
     };
-    assert_eq!(u32::from(*pick_up_delay) + saved.lived, 40, "{saved:?}");
+    assert_eq!(
+        u32::from(*pick_up_delay),
+        40u32.saturating_sub(saved.lived),
+        "{saved:?}"
+    );
     assert!(
         u64::from(saved.lived) <= file.tick - thrown_at + 1,
         "aged {} by tick {} of a throw at {thrown_at}",

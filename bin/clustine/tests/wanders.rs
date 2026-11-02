@@ -709,7 +709,8 @@ fn visitors(address: String, over: Arc<AtomicBool>) -> JoinHandle<Vec<Visit>> {
 
 /// W1 on whatever serves the world: `A` and `B` settle in the chunk players enter
 /// in, and then, in rounds, `B` is split off at chunk 21, walks on to chunk 40 and
-/// comes back to chunk 8, where it is merged into region 0 again. With `visited`,
+/// comes back to chunk 8, where it is merged into region 0 again, `default_rounds`
+/// times unless `CLUSTINE_WANDERS_ROUNDS` says otherwise. With `visited`,
 /// which is W4, somebody joins every three seconds all the while, builds beside
 /// where players enter and leaves.
 ///
@@ -720,7 +721,7 @@ fn visitors(address: String, over: Arc<AtomicBool>) -> JoinHandle<Vec<Visit>> {
 /// off before that takes what is left of the trail along, and its part does not "end
 /// at x = 25 or west of it" as step 1 says (the record's 22, with the distances and
 /// the reach of its time). With the wait every round begins as the first does.
-async fn apart_on_and_back(mut wanders: Wanders, visited: bool) {
+async fn apart_on_and_back(mut wanders: Wanders, visited: bool, default_rounds: u32) {
     wanders.a_settles().await;
     wanders.b_settles().await;
     wanders.region_0_is_alone("at the start").await;
@@ -741,7 +742,7 @@ async fn apart_on_and_back(mut wanders: Wanders, visited: bool) {
             goes: true,
         },
     ];
-    let rounds = rounds(3);
+    let rounds = rounds(default_rounds);
     for round in 1..=rounds {
         let part = wanders.b_is_split_off().await;
         wanders.b_walks_on(part).await;
@@ -820,30 +821,33 @@ async fn a_group_is_split_off_walks_on_and_is_merged_when_it_comes_back() {
         return;
     }
     let wanders = Wanders::cluster("apart, on and back", world(None)).await;
-    apart_on_and_back(wanders, false).await;
+    apart_on_and_back(wanders, false, 3).await;
 }
 
 /// W1 in the single process, without the move: only what the list and the bots show
-/// is asserted, and the end is the server stopped and started from its disk.
+/// is asserted, and the end is the server stopped and started from its disk. One
+/// round: what differs from the cluster shows in the first, and the cluster's test
+/// repeats the rounds.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_group_is_split_off_walks_on_and_is_merged_when_it_comes_back_in_one_process() {
     if a_repetition() {
         return;
     }
     let wanders = Wanders::server("apart, on and back, in one process", world(None)).await;
-    apart_on_and_back(wanders, false).await;
+    apart_on_and_back(wanders, false, 1).await;
 }
 
-/// W4. Joining in the middle: W1's rounds, and all the while somebody joins every
-/// three seconds, builds beside where players enter and leaves. Every one of them is
-/// placed, where players enter, within 5 s, and none is disconnected.
+/// W4. Joining in the middle: a round of W1 (whose own test repeats it), and all the
+/// while somebody joins every three seconds, builds beside where players enter and
+/// leaves. Every one of them is placed, where players enter, within 5 s, and none is
+/// disconnected.
 #[tokio::test(flavor = "multi_thread")]
 async fn players_join_at_the_spawn_point_while_a_group_is_split_off_and_merged() {
     if a_repetition() {
         return;
     }
     let wanders = Wanders::cluster("joining in the middle", world(None)).await;
-    apart_on_and_back(wanders, true).await;
+    apart_on_and_back(wanders, true, 1).await;
 }
 
 /// W2 on whatever serves the world. `A` stands in chunk 0. `B` walks between the
