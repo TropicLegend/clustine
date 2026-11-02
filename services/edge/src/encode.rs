@@ -30,19 +30,28 @@ pub(crate) fn wire_stack(stack: &ItemStack) -> clustine_protocol::item::ItemStac
 /// so without `components`), read from the pinned jar's code while W4's comparison of
 /// packets is not built; what the store keeps of a spawner is the game's saved form,
 /// which the judge of features compares.
-const SENT: [(&str, &[&str]); 1] = [(
-    "minecraft:mob_spawner",
-    &[
-        "Delay",
-        "MinSpawnDelay",
-        "MaxSpawnDelay",
-        "SpawnCount",
-        "MaxNearbyEntities",
-        "RequiredPlayerRange",
-        "SpawnRange",
-        "SpawnData",
-    ],
-)];
+/// A gateway is sent all it saves (`TheEndGatewayBlockEntity.getUpdateTag`:
+/// `saveCustomOnly`), its age above all: without it the client counts the gateway's
+/// age from nought and draws a new gateway's beam each time the chunk comes.
+const SENT: [(&str, &[&str]); 2] = [
+    (
+        "minecraft:mob_spawner",
+        &[
+            "Delay",
+            "MinSpawnDelay",
+            "MaxSpawnDelay",
+            "SpawnCount",
+            "MaxNearbyEntities",
+            "RequiredPlayerRange",
+            "SpawnRange",
+            "SpawnData",
+        ],
+    ),
+    (
+        "minecraft:end_gateway",
+        &["Age", "exit_portal", "ExactTeleport"],
+    ),
+];
 
 /// What a client is sent of a block entity's data: the keys `SENT` names for its
 /// type, or nothing.
@@ -390,6 +399,29 @@ mod tests {
         };
         let keys: Vec<&str> = sent.iter().map(|(key, _)| key.as_str()).collect();
         assert_eq!(keys, ["Delay", "SpawnData", "SpawnRange"]);
+    }
+
+    /// A gateway is sent all it saves, its age and its exit, as the game's update tag
+    /// is its `saveCustomOnly`.
+    #[test]
+    fn a_gateway_is_sent_its_age_and_its_exit() {
+        use clustine_protocol::codec::Writer;
+
+        let mut chunk = flat_chunk();
+        chunk.set(4, -58, 6, clustine_data::blocks::END_GATEWAY);
+        let at = clustine_world::InChunk::new(4, -58, 6);
+        let saved = Nbt::Compound(vec![
+            ("Age".into(), Nbt::Long(5_000)),
+            ("exit_portal".into(), Nbt::IntArray(vec![1028, 80, -7])),
+            ("ExactTeleport".into(), Nbt::Byte(1)),
+        ]);
+        let mut writer = Writer::new();
+        writer.put_nbt(&saved);
+        chunk
+            .set_block_entity_data(at, writer.into_bytes())
+            .unwrap();
+        let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
+        assert_eq!(packet.block_entities[0].data, Some(saved));
     }
 
     /// A block entity goes out with its place and its type and without its data,

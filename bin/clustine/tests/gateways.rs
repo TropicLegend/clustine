@@ -904,7 +904,6 @@ async fn a_bot_that_leaves_in_the_end_and_joins_again_is_sent_the_end_s_chunks()
 /// carries the first gateway as its exit; and the first gateway, sent to a second bot
 /// that comes after the first went through, carries the exit it was given.
 #[tokio::test]
-#[ignore = "finding: a gateway's block entity is sent in its chunk without data (BlockEntity { kind: 22, data: None }), where the game sends its update tag (saveCustomOnly: Age, exit_portal, ExactTeleport); the client then counts the gateway's age from nought and shows the beam of a new gateway each time the chunk comes"]
 async fn a_gateway_s_block_entity_is_sent_with_its_exit() {
     let world = a_world_with_a_gateway().await;
     let mut first = arrive_in(&world, "Surveyor", &mut []).await;
