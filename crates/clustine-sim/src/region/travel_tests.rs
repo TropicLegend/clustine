@@ -301,6 +301,46 @@ fn where_the_index_names_no_portal_one_is_made_and_the_player_is_placed_in_it() 
     );
 }
 
+/// A player waiting at the Nether's home for a target whose chunks another region turns
+/// out to hold is sent on to that region with their travel, which reads the portal or
+/// the land there, rather than placed or given a portal over chunks the home cannot
+/// read.
+#[test]
+fn a_player_waiting_for_a_target_another_region_holds_goes_on_to_that_region() {
+    let holder = RegionId(9);
+    let mut region = nether(|_| None);
+    let target = at(400, NETHER_FLOOR + 1, 0);
+    let (id, transfer) = travelling(target);
+    let taken = arrive(&mut region, id, transfer);
+    let centre = target.chunk();
+    let foreign: Vec<(ChunkPos, RegionId)> = (-1..=1)
+        .flat_map(|dx| (-1..=1).map(move |dz| ChunkPos::new(centre.x + dx, centre.z + dz)))
+        .map(|chunk| (chunk, holder))
+        .collect();
+    let answers = (taken.portal_queries.iter())
+        .map(|query| PortalAnswer {
+            id: query.id,
+            portals: Vec::new(),
+        })
+        .collect();
+    // In the tick the index answers, the home's tickets claim the chunks about the
+    // target, and the store's word that they are another region's comes with it.
+    let output = tick_with(
+        &mut region,
+        TickInputs {
+            foreign,
+            portal_answers: answers,
+            ..TickInputs::default()
+        },
+    );
+    assert_eq!(placed(&output, id), None);
+    let (transfer, to) = departed(&output, id).expect("let go to the target's holder");
+    assert_eq!(to, holder);
+    assert_eq!(transfer.travel.map(|travel| travel.target), Some(target));
+    assert_eq!(transfer.forwards, 1);
+    assert!(region.waiting_state(id).is_none());
+}
+
 #[test]
 fn two_travellers_placed_in_one_tick_share_the_portal_the_first_made() {
     let mut region = nether(|_| None);
