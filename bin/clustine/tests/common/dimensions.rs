@@ -676,3 +676,335 @@ pub fn states_by_place(
     }
     by_place
 }
+
+// ---------------------------------------------------------------------------------
+// The End (`docs/groundwork/p-plan.md`, sections 19.3 and 19.5; `p-brief.md`, 2.4 and
+// 4.3).
+// ---------------------------------------------------------------------------------
+
+/// The End's name in the game's registries.
+pub const THE_END: &str = "minecraft:the_end";
+
+/// The block a player who comes into the End by its portal stands in: the platform's
+/// middle, one above its floor of obsidian (`ServerLevel.END_SPAWN_POINT` (100, 50, 0)
+/// less one for a player, `p-brief.md` 2.4).
+pub const END_PLATFORM: (i32, i32, i32) = (100, 49, 0);
+
+/// Where such a player is placed: the bottom centre of [`END_PLATFORM`], turned west
+/// (`Direction.WEST.toYRot()`).
+pub const END_ARRIVAL: (f64, f64, f64) = (100.5, 49.0, 0.5);
+pub const END_ARRIVAL_YAW: f32 = 90.0;
+
+/// The End's lowest y, below which less 64 the void hurts (`Entity.checkBelowWorld`).
+pub const END_FLOOR: i32 = 0;
+
+/// The ring of twelve end portal frames a bot builds on the grass beside where it
+/// joined, around a 3 × 3 whose lowest corner is `x`, `z`, at one above the grass's
+/// top. Its frames face inwards, as the ring the eyes open must
+/// (`EndPortalFrameBlock.getOrCreatePortalShape`); a frame placed by a player faces
+/// them (`getHorizontalDirection().getOpposite()`), so the bot, hovering over the
+/// middle, looks out at each frame's place as it places it.
+#[derive(Debug, Clone, Copy)]
+pub struct Ring {
+    pub x: i32,
+    pub z: i32,
+}
+
+impl Ring {
+    /// The ring for a bot standing where `bot` stands: its inside from three to five
+    /// blocks east and from one north to one south, so that the bot is not in it.
+    pub fn beside(bot: &Bot) -> Ring {
+        let (x, _, z) = feet(bot);
+        Ring { x: x + 3, z: z - 1 }
+    }
+
+    /// The middle of the inside, at the frames' height: where the portal's opening is
+    /// heard (`EnderEyeItem.useOn`, `globalLevelEvent(1038)`).
+    pub fn centre(self) -> (i32, i32, i32) {
+        (self.x + 1, GRASS + 1, self.z + 1)
+    }
+
+    /// Where the bot hovers while it builds: over the middle, two blocks above the
+    /// frames, so that its box does not reach the portal when it opens.
+    fn hover(self) -> (f64, f64, f64) {
+        let (x, y, z) = self.centre();
+        (f64::from(x) + 0.5, f64::from(y + 2), f64::from(z) + 0.5)
+    }
+
+    /// Each frame's place, the facing it must have, and the yaw of a look out at it from
+    /// the middle: north row first, then east, south and west.
+    fn frames(self) -> Vec<((i32, i32, i32), &'static str, f32)> {
+        let y = GRASS + 1;
+        let mut frames = Vec::new();
+        for i in 0..3 {
+            frames.push(((self.x + i, y, self.z - 1), "south", 180.0));
+        }
+        for i in 0..3 {
+            frames.push(((self.x + 3, y, self.z + i), "west", -90.0));
+        }
+        for i in (0..3).rev() {
+            frames.push(((self.x + i, y, self.z + 3), "north", 0.0));
+        }
+        for i in (0..3).rev() {
+            frames.push(((self.x - 1, y, self.z + i), "east", 90.0));
+        }
+        frames
+    }
+
+    /// Whether the bot is shown the inside as nine blocks of the End's portal.
+    pub fn is_open(self, bot: &Bot) -> bool {
+        (0..3).all(|i| {
+            (0..3).all(|j| {
+                is(
+                    bot.block_at(self.x + i, GRASS + 1, self.z + j)
+                        .ok()
+                        .flatten(),
+                    blocks::END_PORTAL,
+                )
+            })
+        })
+    }
+}
+
+/// The value of the property `name` of `state`, if it has one.
+pub fn property(state: Option<i32>, name: &str) -> Option<&'static str> {
+    let state = BlockState(u16::try_from(state?).ok()?);
+    state.block_id()?;
+    state
+        .properties()
+        .find(|(property, _)| *property == name)
+        .map(|(_, value)| value)
+}
+
+/// What a bot was sent on its way into the End, and where it began.
+#[derive(Debug)]
+pub struct EndTravel {
+    /// Every packet but the chunks and their light, in order, with when it came, from
+    /// just before the last eye was used until the bot stood placed in the End among
+    /// its chunks.
+    pub packets: Vec<(Instant, ClientboundPlay)>,
+    /// Where the server placed the bot when it joined, which is where it respawns.
+    pub entered: (f64, f64, f64),
+    /// The ring it built and opened.
+    pub ring: Ring,
+}
+
+/// Places the end portal frame of the ring at `at`, looking along `yaw`, against the
+/// grass below it, and makes sure it faces `facing`.
+async fn place_frame(
+    bot: &mut Bot,
+    others: &mut [Bot],
+    at: (i32, i32, i32),
+    facing: &str,
+    yaw: f32,
+) -> Result<()> {
+    turn(bot, (yaw, 45.0)).await?;
+    take(bot, items::END_PORTAL_FRAME).await?;
+    let sequence = bot.use_item_on(at.0, at.1 - 1, at.2, face::TOP).await?;
+    let what = format!("an end portal frame placed at {at:?}");
+    wait(bot, others, PATIENCE, &what, |bot| {
+        bot.acknowledged_sequence >= sequence
+            && is(
+                bot.block_at(at.0, at.1, at.2).ok().flatten(),
+                blocks::END_PORTAL_FRAME,
+            )
+    })
+    .await?;
+    let state = bot.block_at(at.0, at.1, at.2)?;
+    ensure!(
+        property(state, "facing") == Some(facing) && property(state, "eye") == Some("false"),
+        "the frame at {at:?}, placed looking along yaw {yaw}, is {}; it should face {facing} \
+         without its eye",
+        state.map_or_else(|| "unknown".to_owned(), describe)
+    );
+    Ok(())
+}
+
+/// Uses an eye of ender on the frame at `at`, and waits until it is shown with its eye.
+async fn fill_frame(bot: &mut Bot, others: &mut [Bot], at: (i32, i32, i32)) -> Result<()> {
+    take(bot, items::ENDER_EYE).await?;
+    let sequence = bot.use_item_on(at.0, at.1, at.2, face::TOP).await?;
+    let what = format!("the frame at {at:?} filled with its eye");
+    wait(bot, others, PATIENCE, &what, |bot| {
+        bot.acknowledged_sequence >= sequence
+            && property(bot.block_at(at.0, at.1, at.2).ok().flatten(), "eye") == Some("true")
+    })
+    .await
+}
+
+/// Joins as `name`, places a ring of end portal frames beside where it joined and
+/// fills each with an eye of ender, hovering over its middle; waits until the bot is
+/// shown the portal the last eye opens. The packets are kept, in [`Bot::packets`], from
+/// just before the last eye. Returns the bot, where it joined and the ring.
+pub async fn open_an_end_portal(
+    address: &str,
+    name: &str,
+    others: &mut [Bot],
+) -> Result<(Bot, (f64, f64, f64), Ring)> {
+    let mut bot = join(address, name, others).await?;
+    let entered = bot.location;
+    let ring = Ring::beside(&bot);
+    let hover = ring.hover();
+    let from = bot.location;
+    bot.fly_to((from.0, hover.1, from.2), (0.0, 45.0), 1.0)
+        .await?;
+    drain(others).await?;
+    bot.fly_to(hover, (0.0, 45.0), 1.0).await?;
+    drain(others).await?;
+    let frames = ring.frames();
+    for (at, facing, yaw) in &frames {
+        place_frame(&mut bot, others, *at, facing, *yaw).await?;
+    }
+    let (last, eleven) = frames.split_last().expect("twelve frames");
+    for (at, _, _) in eleven {
+        fill_frame(&mut bot, others, *at).await?;
+    }
+    ensure!(
+        !ring.is_open(&bot),
+        "the portal opened before its twelfth eye, at {ring:?}"
+    );
+    // From here every packet is kept: the portal's opening, the change of level.
+    bot.packets = Some(Vec::new());
+    fill_frame(&mut bot, others, last.0).await?;
+    wait(
+        &mut bot,
+        others,
+        PATIENCE,
+        "the End's portal opened",
+        |bot| ring.is_open(bot),
+    )
+    .await?;
+    Ok((bot, entered, ring))
+}
+
+/// Joins as `name`, opens an End portal beside where it joined
+/// ([`open_an_end_portal`]) and drops into it as soon as it is shown open; waits until
+/// it is placed in the End among its chunks. The packets are kept from just before the
+/// last eye; once they are taken, the bot goes on keeping what comes after in
+/// [`Bot::packets`], for the scenes that read the End.
+pub async fn to_the_end(address: &str, name: &str, others: &mut [Bot]) -> Result<(Bot, EndTravel)> {
+    let (mut bot, entered, ring) = open_an_end_portal(address, name, others).await?;
+    let hover = ring.hover();
+    // In at once: standing on the portal block's bottom, its box reaches the portal's
+    // shape (from 6 to 12 sixteenths up), which a flight's step there would take the
+    // change of level for a put-back.
+    let (x, _, z) = hover;
+    bot.stand_at(x, f64::from(GRASS + 1), z).await?;
+    wait(
+        &mut bot,
+        others,
+        PATIENCE,
+        "the Respawn into the End",
+        |bot| bot.info.login.spawn.dimension_name == THE_END,
+    )
+    .await?;
+    wait(
+        &mut bot,
+        others,
+        PATIENCE,
+        "the placing in the End",
+        |bot| bot.position.is_some() && around_is_held(bot),
+    )
+    .await?;
+    let packets = bot.packets.take().unwrap_or_default();
+    bot.record_packets();
+    Ok((
+        bot,
+        EndTravel {
+            packets,
+            entered,
+            ring,
+        },
+    ))
+}
+
+/// Whether every block of the column `x`, `z` from `low` to `high` is air as the bot
+/// is shown it; not where it holds no chunk there.
+pub fn column_is_clear(bot: &Bot, x: i32, z: i32, low: i32, high: i32) -> bool {
+    (low..=high).all(|y| is_air(bot.block_at(x, y, z).ok().flatten()))
+}
+
+/// What the bot is shown of the column `x`, `z` from `low` to `high` that is not air,
+/// for a person to read.
+pub fn column_report(bot: &Bot, x: i32, z: i32, low: i32, high: i32) -> String {
+    let found: Vec<String> = (low..=high)
+        .filter_map(|y| match bot.block_at(x, y, z).ok().flatten() {
+            None => Some(format!("{y}: not held")),
+            Some(state) if !is_air(Some(state)) => Some(format!("{y}: {}", describe(state))),
+            Some(_) => None,
+        })
+        .collect();
+    format!("({x}, {z}) from {low} to {high}: {found:?}")
+}
+
+/// The height above every block of the End's island and its pillars, where the bot
+/// flies across the island.
+pub const END_CRUISE: i32 = 140;
+
+/// From the platform, walks off its east side, away from the island's middle, to the
+/// first column east of it with nothing in it from `low` to `high`, along the
+/// platform's height; returns the column's x. The platform lies under the island's
+/// rim, which hangs over it, and beside the island's underside.
+async fn east_off_the_platform(
+    bot: &mut Bot,
+    others: &mut [Bot],
+    low: i32,
+    high: i32,
+) -> Result<i32> {
+    let (_, y, z) = feet(bot);
+    let (px, _, _) = END_PLATFORM;
+    // The platform's east edge is x 102; the bot holds a chunk or more beyond it.
+    let column = (px + 3..px + 3 + 16)
+        .find(|x| column_is_clear(bot, *x, z, low, high))
+        .with_context(|| {
+            format!(
+                "no clear column east of the platform: {}",
+                column_report(bot, px + 3, z, low, high)
+            )
+        })?;
+    // Along the platform's height every block on the way must let the bot through.
+    for x in px + 3..=column {
+        ensure!(
+            column_is_clear(bot, x, z, y, y + 1),
+            "something in the way off the platform: {}",
+            column_report(bot, x, z, y, y + 1)
+        );
+    }
+    let (_, here_y, here_z) = bot.location;
+    bot.fly_to((f64::from(column) + 0.5, here_y, here_z), (-90.0, 0.0), 0.5)
+        .await?;
+    drain(others).await?;
+    Ok(column)
+}
+
+/// From the platform, goes east off it, rises to [`END_CRUISE`] and flies over the
+/// island to `to`, so that the dragon made at (0, 128, 0) comes within the bot's view
+/// whatever its view distance.
+pub async fn fly_over_the_island(bot: &mut Bot, others: &mut [Bot], to: (f64, f64)) -> Result<()> {
+    let (_, y, _) = feet(bot);
+    east_off_the_platform(bot, others, y, END_CRUISE + 1).await?;
+    let (x, _, z) = bot.location;
+    let cruise = f64::from(END_CRUISE);
+    bot.fly_to((x, cruise, z), (END_ARRIVAL_YAW, 0.0), 1.0)
+        .await?;
+    drain(others).await?;
+    bot.fly_to((to.0, cruise, to.1), (END_ARRIVAL_YAW, 0.0), 1.0)
+        .await?;
+    drain(others).await
+}
+
+/// From the platform, goes east off it to the first column with nothing in it from
+/// the platform's height down to the End's floor, and down that column to `bottom`,
+/// below the void's line. Returns the column.
+pub async fn off_the_platform(
+    bot: &mut Bot,
+    others: &mut [Bot],
+    bottom: f64,
+) -> Result<(i32, i32)> {
+    let (_, y, z) = feet(bot);
+    let column = east_off_the_platform(bot, others, END_FLOOR, y + 2).await?;
+    let (x, _, here_z) = bot.location;
+    bot.fly_to((x, bottom, here_z), (-90.0, 0.0), 4.0).await?;
+    drain(others).await?;
+    Ok((column, z))
+}
