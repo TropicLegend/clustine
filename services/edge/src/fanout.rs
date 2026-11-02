@@ -5493,7 +5493,13 @@ impl Fanout {
         }
         let position = entering.pose.position;
         let (entity, riding) = (entering.entity, entering.riding);
-        if !self.tell_entered(player, entering).await {
+        // The level is the placing region's: a stay kept in another dimension than the
+        // overworld is placed by a region of it (`docs/groundwork/p-plan.md`, section 4.2).
+        let Some(region) = self.players.get(&player).map(|view| view.region) else {
+            return;
+        };
+        let dimension = self.dimension_of(region);
+        if !self.tell_entered(player, dimension, entering).await {
             return;
         }
         // A player put back on their unit rides it from the first: the word is taken
@@ -5587,8 +5593,13 @@ impl Fanout {
             inventory: inventory_packets(&transfer.inventory, transfer.selected_slot),
             last_death: transfer.last_death,
         };
+        // The view's level is the stay's before the view is shifted, which keys every
+        // chunk it asks for by it: a join placed in the End by its home has the
+        // overworld's until here, and no link to the End need be up yet to say so.
+        let dimension = transfer.dimension;
         if let Some(view) = self.players.get_mut(&player) {
             view.region = to;
+            view.dimension = dimension;
         }
         if !self.note_entered(player, entity).await {
             return;
@@ -5598,7 +5609,7 @@ impl Fanout {
         let view_packets = self.shift_view(player, center).await;
         self.send_to_region(to, EdgeToWorker::PlayerArrive { player, transfer })
             .await;
-        if !self.tell_entered(player, entering).await {
+        if !self.tell_entered(player, dimension, entering).await {
             return;
         }
         // One put back on the unit they left on rides it from the first, as
@@ -5639,7 +5650,12 @@ impl Fanout {
     /// state: the login, what they may do and whether they fly, where they are and
     /// how they look, their inventory, and the player list. False if the player was
     /// removed on the way.
-    async fn tell_entered(&mut self, player: PlayerId, entering: Entering) -> bool {
+    async fn tell_entered(
+        &mut self,
+        player: PlayerId,
+        dimension: Dimension,
+        entering: Entering,
+    ) -> bool {
         let Entering {
             entity,
             pose,
@@ -5648,12 +5664,6 @@ impl Fanout {
             last_death,
             ..
         } = entering;
-        // The level is the placing region's: a stay kept in another dimension than the
-        // overworld is placed by a region of it (`docs/groundwork/p-plan.md`, section 4.2).
-        let Some(region) = self.players.get(&player).map(|view| view.region) else {
-            return false;
-        };
-        let dimension = self.dimension_of(region);
         let Some(view) = self.players.get_mut(&player) else {
             return false;
         };

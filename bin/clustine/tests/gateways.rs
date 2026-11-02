@@ -869,12 +869,11 @@ async fn a_second_bot_through_the_first_gateway_comes_out_where_the_first_did() 
     world.server.stop().await;
 }
 
-/// Found while these scenes were written: a player who leaves while in the End and
-/// joins again is placed on the platform where they left and sent no chunks, so the
-/// client stays on its loading screen, and the edge panics. The game sends a player who
-/// joins in the End the End's chunks as it sends any level's.
+/// A player who leaves while in the End and joins again is sent the End's chunks, as
+/// the game sends any level's. Found while these scenes were written: the edge asked for
+/// the chunks of the overworld's level until the End's home placed the player, so the
+/// client stayed on its loading screen and the edge panicked.
 #[tokio::test]
-#[ignore = "finding: a player who leaves in the End and joins again is sent no chunks and stays on the loading screen, and the edge panics (fanout.rs): with another player on, at once (\"the waiters of LevelChunk { dimension: Overworld, .. }\", line 1303), and the connection is closed; alone, at the server's stop (\"viewed chunks are in the replica\", line 7192)"]
 async fn a_bot_that_leaves_in_the_end_and_joins_again_is_sent_the_end_s_chunks() {
     let (server, address) = common::start().await;
     let (mut bot, _) = to_the_end(&address, "Returnee", &mut [])
