@@ -43,15 +43,17 @@
 //! creative mode, which takes no pearl's damage.
 //!
 //! **Found** while these scenes were written (the scenes are kept, ignored, with what
-//! they found):
-//! - A pearl thrown into the return gateway goes in (the bot sees the return gateway's
-//!   beam and the pearl removed), but its thrower is never carried back beside the
-//!   first gateway when no player is near the first gateway; with a second bot on the
-//!   End's platform all the while, the same trip carries the thrower back as the game
-//!   does. In the game the pearl's travel loads the chunk where it comes out
+//! they found, until it is mended):
+//! - Mended: a pearl thrown into the return gateway went in (the bot saw the return
+//!   gateway's beam and the pearl removed), but its thrower was never carried back
+//!   beside the first gateway when no player was near the first gateway; with a second
+//!   bot on the End's platform all the while, the same trip carried the thrower back as
+//!   the game does. In the game the pearl's travel loads the chunks where it comes out
 //!   (`TeleportTransition.PLACE_PORTAL_TICKET`, EndGatewayBlock.txt 65) and the pearl
 //!   keeps the chunks about it loaded (`registerAndUpdateEnderPearlTicket`,
 //!   ThrownEnderpearl.txt 352-451), so it lands and carries its owner wherever it is.
+//!   A region now places the game's portal ticket for everything it places out of a
+//!   portal or a gateway (`clustine-sim`'s `arriving.rs`).
 //! - A pearl whose thrower leaves while it flies is not kept with them: a bot on the
 //!   platform sees the player taken off the list, then, 11 ticks later, the gateway's
 //!   beam as the pearl goes in, then the pearl removed; and when the thrower joins again
@@ -1074,7 +1076,6 @@ async fn beside_the_return_gateway(bot: &mut Bot, others: &mut [Bot], exit: At) 
 /// thrower is put there, beside the first gateway; the return gateway's beam is seen,
 /// and there is no `Respawn`.
 #[tokio::test]
-#[ignore = "finding: the pearl goes into the return gateway (its beam is seen) but its thrower is never carried back where nobody is by the first gateway; with a player there it is"]
 async fn a_pearl_thrown_into_the_return_gateway_brings_its_thrower_back_beside_the_first() {
     let world = dimensions::a_world_with_a_gateway().await;
     let mut bot = arrive_in(&world, "Boomerang", &mut []).await;

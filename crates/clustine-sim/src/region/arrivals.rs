@@ -174,8 +174,9 @@ impl Region {
                 continue;
             }
             output.arrivals_taken.push(arrival.id);
+            // Put off, never brought forward: a portal's ticket there may run longer.
             if let Some(until) = self.arrival_tickets.get_mut(&chunk) {
-                *until = self.tick + ARRIVAL_TICKET_FOR;
+                *until = (*until).max(self.tick + ARRIVAL_TICKET_FOR);
             }
             let key = arrival.entity.key;
             if self.entity_chunks.contains_key(&key) {
@@ -228,8 +229,10 @@ impl Region {
             if self.is_lending(*position) {
                 continue;
             }
-            self.arrival_tickets
-                .insert(*position, self.tick + ARRIVAL_TICKET_FOR);
+            // Put off, never brought forward: a portal's ticket there may run longer.
+            let until = self.tick + ARRIVAL_TICKET_FOR;
+            let ticket = self.arrival_tickets.entry(*position).or_insert(until);
+            *ticket = (*ticket).max(until);
         }
     }
 

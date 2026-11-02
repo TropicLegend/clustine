@@ -54,8 +54,18 @@ pub(super) const LOADING_LIMIT: u64 = 200;
 const MADE_PORTAL_KEPT: u64 = 400;
 
 /// How long the chunks about a placed traveller stay loaded: the game's `PORTAL`
-/// ticket, 300 ticks (`Entity.placePortalTicket`).
+/// ticket's timeout, 300 ticks (`TicketType.PORTAL`, which `Entity.placePortalTicket`
+/// adds, d-javap Entity.txt 9208–9226).
 const PORTAL_TICKET_FOR: u64 = 300;
+
+/// How far about the chunk a traveller comes out in the region loads chunks for it.
+/// The game's portal ticket has a radius of 3 (`addTicketWithRadius(PORTAL, chunk, 3)`,
+/// level 33 − 3 = 30), which ticks the entities of the 3 × 3 chunks about it (level 31
+/// and under). A chunk here ticks, its entities and its blocks alike, only where its
+/// eight neighbours are loaded (`ticks.rs`' `update_ticking`), so the 5 × 5 about it
+/// are loaded for the 3 × 3 to tick. Named: the game's ring of block ticking beyond
+/// those, and its ring loaded beyond that, are not.
+const PORTAL_TICKET_REACH: i32 = 2;
 
 /// A player's size standing, which the game places them by.
 const PLAYER_SIZE: (f32, f32) = (0.6, 1.8);
@@ -374,6 +384,49 @@ impl Region {
         (velocity, yaw): ([f64; 3], f32),
         output: &mut TickOutput,
     ) -> ([f64; 3], [f64; 3], f32) {
+        let placed = self.exit_pose(travel, candidate, size, player, (velocity, yaw), output);
+        // The game's portal ticket, which every travel placed here makes, at the block
+        // the traveller is put in (`TeleportTransition.PLACE_PORTAL_TICKET`, its
+        // `placePortalTicket` taking `BlockPos.containing(entity.position())`; d-javap
+        // EndGatewayBlock.txt 239 and 260, EndPortalBlock.txt 186, NetherPortalBlock.txt
+        // 318), so that what comes out ticks on with nobody near: a pearl out of a
+        // gateway lands and carries its owner. Only a player's respawn out of the End
+        // makes none (`DO_NOTHING`), and is not placed here. Named: out of a Nether
+        // portal the game finds, its ticket is at that portal's block
+        // (`lambda$getExitPortal$1`), here at the traveller's, beside it.
+        self.place_portal_ticket(placed.0);
+        placed
+    }
+
+    /// The game's portal ticket about `position`: the chunks within
+    /// [`PORTAL_TICKET_REACH`] of its chunk loaded, and claimed where nobody holds them,
+    /// for [`PORTAL_TICKET_FOR`] ticks, as an arrival's are (`arrivals.rs`); none of a
+    /// chunk being lent.
+    fn place_portal_ticket(&mut self, position: [f64; 3]) {
+        let centre = ChunkPos::containing(position[0], position[2]);
+        let until = self.tick + PORTAL_TICKET_FOR;
+        for dz in -PORTAL_TICKET_REACH..=PORTAL_TICKET_REACH {
+            for dx in -PORTAL_TICKET_REACH..=PORTAL_TICKET_REACH {
+                let chunk = ChunkPos::new(centre.x + dx, centre.z + dz);
+                if self.is_lending(chunk) {
+                    continue;
+                }
+                let ticket = self.arrival_tickets.entry(chunk).or_insert(until);
+                *ticket = (*ticket).max(until);
+            }
+        }
+    }
+
+    /// Where a traveller comes out, as [`Region::exit_place`] says, before its ticket.
+    fn exit_pose(
+        &mut self,
+        travel: &Travel,
+        candidate: Option<BlockPos>,
+        size: (f32, f32),
+        player: bool,
+        (velocity, yaw): ([f64; 3], f32),
+        output: &mut TickOutput,
+    ) -> ([f64; 3], [f64; 3], f32) {
         if travel.way == Way::EndPortal && travel.to == Dimension::End {
             return self.end_arrival(travel.target, player, velocity, output);
         }
@@ -431,19 +484,6 @@ impl Region {
         };
         let read = |at: BlockPos| self.block(at);
         let position = portal_forcer::free_position(position, size, &read, DEFAULT_BORDER);
-        // The game's portal ticket, about where the traveller comes out.
-        let at = BlockPos::new(
-            position[0].floor() as i32,
-            position[1].floor() as i32,
-            position[2].floor() as i32,
-        );
-        for chunk in chunks_about(at) {
-            if !self.is_lending(chunk) {
-                let until = self.tick + PORTAL_TICKET_FOR;
-                let ticket = self.arrival_tickets.entry(chunk).or_insert(until);
-                *ticket = (*ticket).max(until);
-            }
-        }
         (position, velocity, yaw)
     }
 

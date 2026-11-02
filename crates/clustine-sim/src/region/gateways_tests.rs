@@ -5,10 +5,10 @@
 //! gateway cooling as it takes them, and sent on the next tick; where one comes out; and
 //! the island and the return gateway made once.
 
-use clustine_data::blocks;
+use clustine_data::{blocks, entity_types, items};
 use clustine_world::{
-    Biome, BlockPos, Chunk, ChunkPos, Dimension, EdgeId, EntityIds, PlayerId, RegionId, Travel,
-    Vec3, Way,
+    Biome, BlockPos, Chunk, ChunkPos, Dimension, EdgeId, EffectId, Entity, EntityData, EntityId,
+    EntityIds, ItemStack, LevelChunk, PlayerId, RegionId, Travel, Traveller, Vec3, Way,
 };
 
 use super::super::tnt::tests::{add_player, at, idle};
@@ -16,7 +16,7 @@ use super::super::{Holdings, Region, RegionConfig};
 use super::{GatewayData, gateway_data, read_gateway};
 use crate::api::{
     Durable, EdgeEvent, GatewayExit, GatewayExitAnswer, Inventory, QueryId, RegionEvent,
-    TickInputs, TickOutput, Ticket,
+    TickInputs, TickOutput, Ticket, WorldPlayer,
 };
 use crate::state::RegionState;
 
@@ -412,6 +412,130 @@ fn a_gateway_s_player_waiting_for_an_exit_another_region_holds_goes_on_to_that_r
     );
     assert_eq!(transfer.forwards, 1);
     assert!(end.waiting_state(id).is_none());
+}
+
+/// The first gateway of the End as the fight places it, at (96, 75, 0), which a return
+/// gateway on the outer islands leads back to.
+const FIRST_GATEWAY: BlockPos = BlockPos::new(96, 75, 0);
+
+/// An End chunk as the store hands one in: end stone up to y 60.
+fn end_island_chunk() -> Chunk {
+    let mut chunk = Chunk::empty(Dimension::End.rules(), Biome(0));
+    for z in 0..16 {
+        for x in 0..16 {
+            for y in 50..=60 {
+                chunk.set(x, y, z, blocks::END_STONE);
+            }
+        }
+    }
+    chunk
+}
+
+/// An ender pearl as a gateway sends one on: owned by the player whose entity is
+/// `owner`, its motion cleared.
+fn a_pearl(owner: EntityId) -> Entity {
+    Entity {
+        portal: Default::default(),
+        key: EntityId(9_000),
+        kind: u16::try_from(entity_types::ENDER_PEARL).expect("an entity type"),
+        uuid: uuid::Uuid::from_u128(9_000),
+        position: [1100.5, 70.0, 0.5],
+        motion: [0.0; 3],
+        yaw: 0.0,
+        pitch: 0.0,
+        on_ground: false,
+        hops: 0,
+        lived: 40,
+        fresh_at: 0,
+        fall_distance: 0.0,
+        fire_ticks: 0,
+        riding: Default::default(),
+        data: EntityData::Thrown {
+            stack: ItemStack::new(items::ENDER_PEARL, 1),
+            owner: Some(owner),
+            left_owner: true,
+            has_been_shot: true,
+        },
+    }
+}
+
+/// `TeleportTransition.PLACE_PORTAL_TICKET` (d-javap EndGatewayBlock.txt 65 and 103,
+/// `Entity.placePortalTicket`): what comes out of a gateway places the game's portal
+/// ticket about where it comes out, which keeps the chunks there loaded and their
+/// entities ticking for 300 ticks with nobody near. A pearl that comes out of the
+/// return gateway's exit, by the first gateway where no player is, so falls, lands and
+/// carries its owner, a player far away on the outer islands, back beside it.
+#[test]
+fn a_pearl_out_of_a_gateway_where_nobody_is_lands_and_carries_its_far_owner() {
+    let mut end = world(Dimension::End, ChunkPos::new(0, 0), 1);
+    let owner = EntityId(500);
+    let player = PlayerId(uuid::Uuid::from_u128(77));
+    end.tick(&TickInputs {
+        world_players: Some(vec![WorldPlayer {
+            player,
+            entity: owner,
+            dimension: Dimension::End,
+            position: [1100.5, 61.0, 0.5],
+            game_mode: 1,
+            sleeping: None,
+        }]),
+        ..TickInputs::default()
+    });
+    let return_gateway = BlockPos::new(1100, 70, 0);
+    let traveller = Traveller {
+        travel: Travel {
+            to: Dimension::End,
+            target: FIRST_GATEWAY,
+            way: Way::Gateway {
+                from: return_gateway,
+                exact: false,
+                island: None,
+            },
+        },
+        chunk: LevelChunk::new(Dimension::End, FIRST_GATEWAY.chunk()),
+        entities: vec![a_pearl(owner)],
+    };
+    let mut inputs = TickInputs {
+        travellers: vec![(
+            EffectId {
+                sequence: 1,
+                index: 0,
+            },
+            traveller,
+        )],
+        ..TickInputs::default()
+    };
+    // The store: what the region claims nobody holds, and what it asks for is end stone.
+    let mut landed = None;
+    for _ in 0..300 {
+        let output = end.tick(&inputs);
+        landed = output.effects.iter().find_map(|effect| match &effect.what {
+            clustine_world::Effected::OnPlayer {
+                player: to,
+                entity,
+                by: clustine_world::EntityUse::PearlLanded { at, .. },
+            } if *to == player && *entity == owner => Some(at.map(|value| value.0)),
+            _ => None,
+        });
+        if landed.is_some() {
+            break;
+        }
+        inputs = TickInputs {
+            granted: output.claims.clone(),
+            chunks_loaded: (output.chunk_requests.iter())
+                .map(|position| (*position, end_island_chunk()))
+                .collect(),
+            ..TickInputs::default()
+        };
+    }
+    let at = landed.expect("the pearl lands and its owner is carried to it");
+    // On the island's top by the first gateway, where the pearl was as its last tick
+    // began.
+    assert!(
+        (at[0] - 96.5).abs() < 6.0 && (at[2] - 0.5).abs() < 6.0,
+        "{at:?}"
+    );
+    assert!(at[1] >= 61.0 && at[1] < 62.0, "{at:?}");
 }
 
 /// What became of a waiting player in a tick.
