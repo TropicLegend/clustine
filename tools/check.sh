@@ -58,7 +58,13 @@ report build $?
 # a time. The exit code is cargo's either way, and the tests that failed are named.
 cargo test --workspace --locked --no-fail-fast >"${logs}/tests.log" 2>&1 &
 tests=$!
-CLUSTINE_TEST_PINS=0,4 cargo test -p clustine --locked --no-fail-fast >"${logs}/pinned.log" 2>&1 &
+# The pinned run takes a third of the processors for its tests at a time: given all of
+# them, its servers and the first run's clusters together overloaded the machine, and
+# tests of crossing and of items failed on timeouts they passed alone (2026-11-02).
+# It took 19 minutes of the first run's 70, so it has time to spare.
+threads=$(( $(nproc) / 3 ))
+CLUSTINE_TEST_PINS=0,4 RUST_TEST_THREADS=$(( threads > 0 ? threads : 1 )) \
+  cargo test -p clustine --locked --no-fail-fast >"${logs}/pinned.log" 2>&1 &
 pinned=$!
 wait "$tests"
 report tests $?
