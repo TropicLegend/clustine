@@ -882,7 +882,9 @@ fn area_about(centre: ChunkPos, radius: i32) -> Area {
 fn the_end_s_arena_is_decorated_as_the_games_own_server_decorates_it() {
     JUDGED.set(Some(clustine_world::Dimension::End));
     judge(judged_seed(), area_about(ChunkPos::new(0, 0), 7));
-    judge(judged_seed(), area_about(ChunkPos::new(6, 0), 4));
+    // Seven each way, as above, so that the three by three about the platform's chunk
+    // have all their runs in the area: with four, no chunk had.
+    judge(judged_seed(), area_about(ChunkPos::new(6, 0), 7));
 }
 
 /// The End's outer islands about the first chunk of the highlands out from the

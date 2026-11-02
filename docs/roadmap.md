@@ -608,8 +608,11 @@ anew each time; a second traveller through a gateway came out on the return gate
 cage where another region held the exit; and the exit was searched from the nearest end
 stone, where the game, which keeps `betweenClosed`'s moving cursor, searches from the
 chunk's far corner. Named, left for now: the gateway's advancement, and which packet the
-dragon's first update after it is shown brings. Next: comparisons of the End's
-features, the credits and the dragon's death.
+dragon's first update after it is shown brings. The End's land was then judged against
+the game's own server, feature by feature (`services/worldgen/tests/game_features.rs`,
+seed 13579): the arena's spikes and the platform's chunks, 81 chunks of the outer
+islands about the first highlands, and 81 chunks of an End city, every one equal. Next:
+the credits and the dragon's death compared with the official server.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
