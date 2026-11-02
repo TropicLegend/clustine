@@ -128,6 +128,7 @@ mod sniffer_eggs;
 mod spawn_caps;
 mod spawn_eggs;
 pub(crate) mod spawn_util;
+mod spawners;
 mod spit;
 mod splits;
 mod stack_nbt;
@@ -4495,6 +4496,7 @@ mod tests {
     mod sculk;
     mod sleep;
     mod social_villagers;
+    mod spawners;
     mod stands;
     mod striders;
     mod swings;

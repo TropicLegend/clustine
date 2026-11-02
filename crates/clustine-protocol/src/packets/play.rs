@@ -2211,6 +2211,43 @@ impl Decode for Sound {
     }
 }
 
+/// A block entity's data as its clients are sent it when it changes
+/// (`ClientboundBlockEntityDataPacket`): the block's position, the type of block entity
+/// by its id in the registry, and its update tag (`getUpdateTag`) as nameless NBT, a
+/// lone end tag for none. A monster spawner's next spawn, which its client spins in its
+/// cage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockEntityData {
+    pub position: Position,
+    pub kind: i32,
+    pub data: Option<Nbt>,
+}
+
+impl Packet for BlockEntityData {
+    const ID: i32 = clientbound::BLOCK_ENTITY_DATA;
+}
+
+impl Encode for BlockEntityData {
+    fn encode(&self, w: &mut Writer) {
+        w.put_position(self.position);
+        w.put_var_int(self.kind);
+        match &self.data {
+            Some(data) => w.put_nbt(data),
+            None => w.put_u8(0),
+        }
+    }
+}
+
+impl Decode for BlockEntityData {
+    fn decode(r: &mut Reader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            position: r.position()?,
+            kind: r.var_int()?,
+            data: r.nbt()?,
+        })
+    }
+}
+
 /// Something clients show at a place (`ClientboundLevelEventPacket`): a sound, bits,
 /// smoke. `data` says more, as the event needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -4434,6 +4471,7 @@ packet_set! {
         SectionBlocksUpdate,
         LevelEvent,
         BlockEvent,
+        BlockEntityData,
         Sound,
         SetContainerContent,
         OpenScreen,
@@ -4899,6 +4937,19 @@ mod tests {
             },
             Set::decode,
             Set::BlockEvent,
+        );
+        assert_round_trip(
+            BlockEntityData {
+                position: Position {
+                    x: 20,
+                    y: -60,
+                    z: -3,
+                },
+                kind: 9,
+                data: Some(Nbt::Compound(vec![("Delay".to_owned(), Nbt::Short(20))])),
+            },
+            Set::decode,
+            Set::BlockEntityData,
         );
         assert_round_trip(
             Sound {

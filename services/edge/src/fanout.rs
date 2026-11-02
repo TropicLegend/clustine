@@ -4171,8 +4171,16 @@ impl Fanout {
                     self.show_changes(changed).await;
                 }
             }
-            RegionEvent::BlockEntityChanged { position, data, .. } => {
-                self.change_block_entity(self.dimension_of(from), position, data);
+            RegionEvent::BlockEntityChanged {
+                position,
+                data,
+                seen,
+            } => {
+                let dimension = self.dimension_of(from);
+                self.change_block_entity(dimension, position, data);
+                if seen {
+                    self.show_block_entity(dimension, position).await;
+                }
             }
             RegionEvent::BlockEvent {
                 position,
@@ -6559,6 +6567,36 @@ impl Fanout {
         // Data the chunk refuses was refused to the region's own chunk too.
         if Arc::make_mut(chunk).set_block_entity_data(at, data).is_ok() {
             entry.packet = None;
+        }
+    }
+
+    /// Sends the players who have the chunk of `position` the block entity there as it
+    /// is now, where its type is one whose changes are sent (`encode::UPDATED`): the
+    /// game's `sendBlockUpdated` of a spawner whose next spawn was set.
+    async fn show_block_entity(&mut self, dimension: Dimension, position: BlockPos) {
+        let chunk = LevelChunk::new(dimension, position.chunk());
+        let (x, z) = position.in_chunk();
+        let packet = self
+            .replica
+            .get(&chunk)
+            .and_then(|entry| entry.chunk.as_ref())
+            .and_then(|kept| {
+                kept.block_entities()
+                    .get(&InChunk::new(x, position.y, z))
+                    .and_then(|entity| crate::encode::block_entity_update(position, entity))
+            });
+        let Some(packet) = packet else {
+            return;
+        };
+        let packet = encoded(&packet);
+        let viewers: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, view)| view.holds(chunk))
+            .map(|(player, _)| *player)
+            .collect();
+        for player in viewers {
+            self.send_to_player(player, [packet.clone()]).await;
         }
     }
 

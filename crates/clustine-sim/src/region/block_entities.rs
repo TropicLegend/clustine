@@ -60,6 +60,8 @@ pub(crate) enum Typed {
     /// `TheEndGatewayBlockEntity`'s age and cooldown, in memory; its exit is in the data
     /// (`gateways.rs`, P10e).
     Gateway(super::gateways::GatewayClock),
+    /// `SpawnerBlockEntity`, whose whole state is its data (`spawners.rs`).
+    Spawner,
 }
 
 /// `PistonMovingBlockEntity`'s state: the block it moves, which way and whether out or
@@ -107,6 +109,9 @@ impl Typed {
         if is_class(state, BlockClass::DaylightDetectorBlock) {
             return Some(Typed::Detector);
         }
+        if is_class(state, BlockClass::SpawnerBlock) {
+            return Some(Typed::Spawner);
+        }
         if is_class(state, BlockClass::EndGatewayBlock) {
             let age = super::gateways::read_gateway(data).age;
             return Some(Typed::Gateway(super::gateways::GatewayClock {
@@ -126,7 +131,8 @@ impl Typed {
             | Typed::Hopper(_)
             | Typed::Sensor(_)
             | Typed::Detector
-            | Typed::Gateway(_) => true,
+            | Typed::Gateway(_)
+            | Typed::Spawner => true,
             Typed::Comparator(_) => false,
         }
     }
@@ -682,6 +688,9 @@ impl Region {
                 Some(Typed::Gateway(_)) if is_class(state, BlockClass::EndGatewayBlock) => {
                     self.gateway_tick(pos, output);
                 }
+                Some(Typed::Spawner) if is_class(state, BlockClass::SpawnerBlock) => {
+                    self.spawner_tick(pos, state, output);
+                }
                 _ => {}
             }
         }
@@ -726,7 +735,8 @@ impl Region {
             | Typed::Hopper(_)
             | Typed::Sensor(_)
             | Typed::Detector
-            | Typed::Gateway(_) => None,
+            | Typed::Gateway(_)
+            | Typed::Spawner => None,
         }
     }
 
@@ -744,7 +754,8 @@ impl Region {
                 | Typed::Hopper(_)
                 | Typed::Sensor(_)
                 | Typed::Detector
-                | Typed::Gateway(_) => 0,
+                | Typed::Gateway(_)
+                | Typed::Spawner => 0,
             };
         }
         if self.chunks.contains_key(&pos.chunk()) {

@@ -1322,6 +1322,9 @@ pub(crate) enum SpawnReason {
     /// A mob of an event (`EVENT`): a raid's raider, the siege's zombie, the wandering
     /// trader and its llamas (`docs/groundwork/n10-plan.md`, section 4).
     Event,
+    /// A monster spawner's mob (`SPAWNER`, `BaseSpawner.serverTick`;
+    /// `region/spawners.rs`).
+    Spawner,
 }
 
 /// `AgeableMob.AgeableMobGroupData`: how many of the group were made so far

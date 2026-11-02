@@ -155,8 +155,39 @@ pub(crate) fn check_spawn_rules(
     pos: BlockPos,
     draws: &mut dyn Draws,
 ) -> bool {
+    check_spawn_rules_as(kind, world, Reason::Natural, pos, draws)
+}
+
+/// Why a type's rule is asked, as far as the rules read it: `EntitySpawnReason`'s
+/// `isSpawner` (n7 EntitySpawnReason 66–77) is what tells them apart. A trial spawner's
+/// reason, which also ignores the light (`ignoresLightRequirements`, 79–88), is not
+/// built (trial spawners are inert).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reason {
+    /// Natural spawning and every reason that is no spawner's.
+    Natural,
+    /// A monster spawner's (`SPAWNER`, `region/spawners.rs`).
+    Spawner,
+}
+
+/// [`check_spawn_rules`] for the reason `reason`. A spawner's reason passes
+/// `Mob.checkMobSpawnRules` whatever is below (n7 Mob 1982–2001), and so every rule
+/// built on it; the surface monsters', the stray's, the drowned's, the guardian's, the
+/// slime's, the silverfish's, the endermite's and the skeleton horse's rules each ask it
+/// besides (n7 Monster 166–185, n7k Stray 11–65, n7k Drowned 296–390, n7 Guardian
+/// 796–829, n9 Slime 96–103, n9 Silverfish 196–240, n9 Endermite 256–290, n7
+/// SkeletonHorse 48–70). The monsters' darkness is asked for a spawner too: only a trial
+/// spawner's reason ignores it (n7 Monster 134–154).
+pub(crate) fn check_spawn_rules_as(
+    kind: u16,
+    world: &dyn SpawnWorld,
+    reason: Reason,
+    pos: BlockPos,
+    draws: &mut dyn Draws,
+) -> bool {
     use entity_types::*;
     let id = i32::from(kind);
+    let spawner = reason == Reason::Spawner;
     if Difficulty::WORLD == Difficulty::Peaceful && !allowed_in_peaceful(kind) {
         return false;
     }
@@ -166,9 +197,9 @@ pub(crate) fn check_spawn_rules(
         // #2, #3
         COD | PUFFERFISH | SALMON | DOLPHIN | SQUID => surface_water_animal(world, pos),
         // #4
-        DROWNED => drowned(world, pos, draws),
+        DROWNED => drowned(world, pos, draws, spawner),
         // #5
-        GUARDIAN | ELDER_GUARDIAN => guardian(world, pos, draws),
+        GUARDIAN | ELDER_GUARDIAN => guardian(world, pos, draws, spawner),
         // #6
         TROPICAL_FISH => tropical_fish(world, pos),
         // #7, #11, #16, #19, #22, #25, #30, #37, #39: their own block tag and the light.
@@ -182,21 +213,23 @@ pub(crate) fn check_spawn_rules(
         WOLF => on_and_bright(world, pos, "minecraft:wolves_spawnable_on"),
         FOX => on_and_bright(world, pos, "minecraft:foxes_spawnable_on"),
         // #8
-        BAT => bat(world, pos, draws),
+        BAT => bat(world, pos, draws, spawner),
         // #9: `checkAnyLightMonsterSpawnRules`.
-        BLAZE | BREEZE | ZOGLIN => check_mob_spawn_rules(kind, world, pos),
+        BLAZE | BREEZE | ZOGLIN => mob_spawn_rules(kind, world, pos, spawner),
         // #10
         BOGGED | CAVE_SPIDER | CREEPER | ENDERMAN | GIANT | SKELETON | SPIDER | WITCH | WITHER
         | WITHER_SKELETON | CREAKING | ZOMBIE | ZOMBIE_HORSE | ZOMBIE_VILLAGER | RAVAGER
-        | EVOKER | ILLUSIONER | VEX | VINDICATOR | WARDEN => monster(kind, world, pos, draws),
+        | EVOKER | ILLUSIONER | VEX | VINDICATOR | WARDEN => {
+            monster(kind, world, pos, draws, spawner)
+        }
         // #12
-        CAMEL_HUSK | HUSK | PARCHED => surface_monster(kind, world, pos, draws),
+        CAMEL_HUSK | HUSK | PARCHED => surface_monster(kind, world, pos, draws, spawner),
         // #13
         CHICKEN | COW | DONKEY | HAPPY_GHAST | HORSE | LLAMA | MULE | PIG | SHEEP | CAT | PANDA
         | TRADER_LLAMA => animal(world, pos),
         // #15
         ENDER_DRAGON | IRON_GOLEM | SNOW_GOLEM | VILLAGER | WANDERING_TRADER | PHANTOM
-        | SHULKER => check_mob_spawn_rules(kind, world, pos),
+        | SHULKER => mob_spawn_rules(kind, world, pos, spawner),
         // #18
         GLOW_SQUID => glow_squid(world, pos),
         // #21: `checkSulfurCubeSpawnRules` is `true` (n9 SulfurCube).
@@ -206,17 +239,17 @@ pub(crate) fn check_spawn_rules(
         // #24
         OCELOT => ocelot(draws),
         // #28
-        PILLAGER => patrolling_monster(kind, world, pos),
+        PILLAGER => patrolling_monster(kind, world, pos, spawner),
         // #29
         POLAR_BEAR => polar_bear(world, pos),
         // #33
-        SLIME => slime(kind, world, pos, draws),
+        SLIME => slime(kind, world, pos, draws, spawner),
         // #34
-        STRAY => stray(kind, world, pos, draws),
+        STRAY => stray(kind, world, pos, draws, spawner),
         // #36
         TURTLE => turtle(world, pos),
         // The Nether's, each its family's (`docs/groundwork/p-plan.md`, section 18.2).
-        GHAST => crate::mobs::types::ghast::check_spawn_rules(world, pos, draws),
+        GHAST => crate::mobs::types::ghast::check_spawn_rules(world, pos, draws, spawner),
         MAGMA_CUBE => crate::mobs::types::magma_cube::check_spawn_rules(world, pos, draws),
         HOGLIN => crate::mobs::types::hoglin::check_spawn_rules(world, pos, draws),
         PIGLIN => crate::mobs::types::piglin::check_spawn_rules(world, pos, draws),
@@ -224,8 +257,13 @@ pub(crate) fn check_spawn_rules(
         ZOMBIFIED_PIGLIN => {
             crate::mobs::types::zombified_piglin::check_spawn_rules(world, pos, draws)
         }
-        // The End's, and those no list names (named above).
-        ENDERMITE | SILVERFISH | SKELETON_HORSE => false,
+        // `checkAnyLightMonsterSpawnRules`, and then a spawner's reason passes; for any
+        // other the nearest player within 5 blocks refuses, which no list asks (named
+        // above).
+        ENDERMITE | SILVERFISH => spawner,
+        // `checkSkeletonHorseSpawnRules`: a spawner's reason asks only that it is bright
+        // enough; any other an animal's rule, which no list asks (named above).
+        SKELETON_HORSE => spawner && bright(world, pos),
         // A type with no registration (`SpawnPlacements.DATA_BY_TYPE` has none).
         _ => true,
     }
@@ -240,9 +278,21 @@ fn allowed_in_peaceful(kind: u16) -> bool {
 /// `Mob.checkMobSpawnRules` at a natural reason: the block below is valid to spawn on
 /// for the type (`isValidSpawn`).
 pub(crate) fn check_mob_spawn_rules(kind: u16, world: &dyn SpawnWorld, pos: BlockPos) -> bool {
-    world
-        .block(pos.offset(0, -1, 0))
-        .is_some_and(|below| spawning::is_valid_spawn(u32::from(below.0), kind))
+    mob_spawn_rules(kind, world, pos, false)
+}
+
+/// `Mob.checkMobSpawnRules` (n7 Mob 1982–2001): a spawner's reason passes, any other
+/// where the block below is valid to spawn on for the type (`isValidSpawn`).
+pub(crate) fn mob_spawn_rules(
+    kind: u16,
+    world: &dyn SpawnWorld,
+    pos: BlockPos,
+    spawner: bool,
+) -> bool {
+    spawner
+        || world
+            .block(pos.offset(0, -1, 0))
+            .is_some_and(|below| spawning::is_valid_spawn(u32::from(below.0), kind))
 }
 
 /// `getRawBrightness(pos, 0)`: the greater of the sky's light and the blocks',
@@ -303,24 +353,39 @@ fn sample_spawn_light((low, high): (i32, i32), draws: &mut dyn Draws) -> i32 {
 }
 
 /// `Monster.checkMonsterSpawnRules`: dark enough, then `checkMobSpawnRules`.
-fn monster(kind: u16, world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
-    is_dark_enough(world, pos, draws).unwrap_or(false) && check_mob_spawn_rules(kind, world, pos)
+fn monster(
+    kind: u16,
+    world: &dyn SpawnWorld,
+    pos: BlockPos,
+    draws: &mut dyn Draws,
+    spawner: bool,
+) -> bool {
+    is_dark_enough(world, pos, draws).unwrap_or(false) && mob_spawn_rules(kind, world, pos, spawner)
 }
 
-/// `Monster.checkSurfaceMonstersSpawnRules`: a monster's, then the sky seen.
+/// `Monster.checkSurfaceMonstersSpawnRules`: a monster's, then the sky seen, which a
+/// spawner's reason does not ask.
 fn surface_monster(
     kind: u16,
     world: &dyn SpawnWorld,
     pos: BlockPos,
     draws: &mut dyn Draws,
+    spawner: bool,
 ) -> bool {
-    monster(kind, world, pos, draws) && can_see_sky(world, pos).unwrap_or(false)
+    monster(kind, world, pos, draws, spawner)
+        && (spawner || can_see_sky(world, pos).unwrap_or(false))
 }
 
 /// `Stray.checkStraySpawnRules` (n7k Stray 11–42): up through any powder snow above the
 /// position; a monster's rule at the position; then the sky seen from the topmost
 /// powder snow (or the position itself where none is above it).
-fn stray(kind: u16, world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
+fn stray(
+    kind: u16,
+    world: &dyn SpawnWorld,
+    pos: BlockPos,
+    draws: &mut dyn Draws,
+    spawner: bool,
+) -> bool {
     let mut above = pos;
     loop {
         above = above.offset(0, 1, 0);
@@ -331,17 +396,20 @@ fn stray(kind: u16, world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws
             break;
         }
     }
-    monster(kind, world, pos, draws) && can_see_sky(world, above.offset(0, -1, 0)).unwrap_or(false)
+    monster(kind, world, pos, draws, spawner)
+        && (spawner || can_see_sky(world, above.offset(0, -1, 0)).unwrap_or(false))
 }
 
 /// `Drowned.checkDrownedSpawnRules` (n7k Drowned 296–390): water below, or no draw at
 /// all; a monster's darkness (its draws) and water at the position; then in
 /// `#more_frequent_drowned_spawns` `nextInt(15) == 0`, elsewhere `nextInt(40) == 0` and
-/// deeper than five below the sea, either drawn whatever the light said.
-fn drowned(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
-    if !world
-        .block(pos.offset(0, -1, 0))
-        .is_some_and(has_water_fluid)
+/// deeper than five below the sea, either drawn whatever the light said. A spawner's
+/// reason asks no water, and passes once it is dark enough, with no draw after it.
+fn drowned(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws, spawner: bool) -> bool {
+    if !spawner
+        && !world
+            .block(pos.offset(0, -1, 0))
+            .is_some_and(has_water_fluid)
     {
         return false;
     }
@@ -349,7 +417,10 @@ fn drowned(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool
     let Some(dark) = is_dark_enough(world, pos, draws) else {
         return false;
     };
-    let ok = dark && world.block(pos).is_some_and(has_water_fluid);
+    let ok = dark && (spawner || world.block(pos).is_some_and(has_water_fluid));
+    if ok && spawner {
+        return true;
+    }
     if biome.is_some_and(|biome| biome_in_tag(biome, "minecraft:more_frequent_drowned_spawns")) {
         return draws.next_int(15) == 0 && ok;
     }
@@ -358,13 +429,13 @@ fn drowned(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool
 
 /// `Guardian.checkGuardianSpawnRules` (n7 Guardian 796–829): `nextInt(20) == 0` (drawn
 /// first, always) or the sky not seen from below the water; then water at the position
-/// and below it.
-fn guardian(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
+/// (which a spawner's reason does not ask) and below it.
+fn guardian(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws, spawner: bool) -> bool {
     let lucky = draws.next_int(20) == 0;
     if !lucky && can_see_sky_from_below_water(world, pos).unwrap_or(true) {
         return false;
     }
-    world.block(pos).is_some_and(has_water_fluid)
+    (spawner || world.block(pos).is_some_and(has_water_fluid))
         && world
             .block(pos.offset(0, -1, 0))
             .is_some_and(has_water_fluid)
@@ -494,7 +565,7 @@ fn glow_squid(world: &dyn SpawnWorld, pos: BlockPos) -> bool {
 /// `Bat.checkBatSpawnRules` (n7 Bat 537–578): below the surface; one time in two
 /// (`nextBoolean()`); the darkened light at most `nextInt(4)` (no Halloween: Clustine's
 /// calendar has none, P7k 10); on `#bats_spawnable_on`; `checkMobSpawnRules`.
-fn bat(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
+fn bat(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws, spawner: bool) -> bool {
     let Some(surface) = world.surface(pos.x, pos.z) else {
         return false;
     };
@@ -511,16 +582,16 @@ fn bat(world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
         return false;
     }
     below_in_tag(world, pos, "minecraft:bats_spawnable_on")
-        && check_mob_spawn_rules(entity_types::BAT as u16, world, pos)
+        && mob_spawn_rules(entity_types::BAT as u16, world, pos, spawner)
 }
 
 /// `PatrollingMonster.checkPatrollingMonsterSpawnRules` (n9 PatrollingMonster 151–167):
 /// the blocks' light above 8 refuses; else any light's (`checkMobSpawnRules`).
-fn patrolling_monster(kind: u16, world: &dyn SpawnWorld, pos: BlockPos) -> bool {
+fn patrolling_monster(kind: u16, world: &dyn SpawnWorld, pos: BlockPos, spawner: bool) -> bool {
     let Some(light) = world.light(pos) else {
         return false;
     };
-    light.block <= 8 && check_mob_spawn_rules(kind, world, pos)
+    light.block <= 8 && mob_spawn_rules(kind, world, pos, spawner)
 }
 
 /// `WorldgenRandom.seedSlimeChunk(x, z, seed, salt)` (n9 WorldgenRandom 180–210): a
@@ -557,8 +628,18 @@ pub(crate) fn surface_slime_spawn_chance(day: u64) -> f32 {
 /// darkened light at most `nextInt(8)` (drawn only after the float passed), and then
 /// `checkMobSpawnRules` decides; a float or a light that fails falls through to the
 /// slime chunk. There `nextInt(10)` is drawn always, and 0 of it in a slime chunk below
-/// 40 passes `checkMobSpawnRules`.
-fn slime(kind: u16, world: &dyn SpawnWorld, pos: BlockPos, draws: &mut dyn Draws) -> bool {
+/// 40 passes `checkMobSpawnRules`. A spawner's reason passes before all of it, with no
+/// draw (n9 Slime 96–103).
+fn slime(
+    kind: u16,
+    world: &dyn SpawnWorld,
+    pos: BlockPos,
+    draws: &mut dyn Draws,
+    spawner: bool,
+) -> bool {
+    if spawner {
+        return mob_spawn_rules(kind, world, pos, spawner);
+    }
     let surface = world
         .biome(pos)
         .is_some_and(|biome| biome_in_tag(biome, "minecraft:allows_surface_slime_spawns"));

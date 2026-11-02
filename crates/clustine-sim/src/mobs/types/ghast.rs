@@ -500,10 +500,11 @@ pub(crate) fn check_spawn_rules(
     world: &dyn SpawnWorld,
     pos: BlockPos,
     draws: &mut dyn Draws,
+    spawner: bool,
 ) -> bool {
     Difficulty::WORLD != Difficulty::Peaceful
         && draws.next_int(20) == 0
-        && crate::spawning::rules::check_mob_spawn_rules(GHAST, world, pos)
+        && crate::spawning::rules::mob_spawn_rules(GHAST, world, pos, spawner)
 }
 
 #[cfg(test)]

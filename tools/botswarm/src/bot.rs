@@ -372,6 +372,9 @@ pub struct Bot {
     pub menus_closed: Vec<i32>,
     /// Every explosion the server showed, in order.
     pub explosions: Vec<clustine_protocol::packets::play::Explode>,
+    /// Every block entity's data the server sent on its own (not with a chunk), in
+    /// order: a spawner's next spawn.
+    pub block_entity_updates: Vec<clustine_protocol::packets::play::BlockEntityData>,
     /// Every particle the server showed (`level_particles`: a sculk sensor's vibration),
     /// in order.
     pub particles: Vec<clustine_protocol::packets::play::LevelParticles>,
@@ -620,6 +623,7 @@ impl Bot {
             cursor: None,
             menus_closed: Vec::new(),
             explosions: Vec::new(),
+            block_entity_updates: Vec::new(),
             particles: Vec::new(),
             swings: Vec::new(),
             times: Vec::new(),
@@ -1964,6 +1968,7 @@ impl Bot {
             // No menu of N6 has data slots but the crafter's.
             ClientboundPlay::ContainerSetData(_) => {}
             ClientboundPlay::Explode(packet) => self.explosions.push(packet),
+            ClientboundPlay::BlockEntityData(packet) => self.block_entity_updates.push(packet),
             ClientboundPlay::LevelParticles(packet) => self.particles.push(packet),
             ClientboundPlay::SwingAnimation(packet) => self.swings.push(packet),
             ClientboundPlay::SetTime(packet) => self.times.push(packet),

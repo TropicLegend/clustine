@@ -14,8 +14,7 @@
 //!
 //! An egg used on a mob of its own type makes a baby of it (`region/animals.rs`).
 //!
-//! Named differences: a spawner set by an egg spawns nothing until N9; a trial spawner
-//! is not set; an egg in a dispenser is not used (`dispensers/behaviours.rs`); a renamed
+//! Named differences: a trial spawner is not set (trial spawners are inert); an egg in a dispenser is not used (`dispensers/behaviours.rs`); a renamed
 //! egg names nothing; a creative player keeps the egg, and every player is one.
 
 use clustine_blocks::data::is_class;
@@ -337,7 +336,8 @@ impl Region {
 
     /// `SpawnEggItem.useOn` on a spawner: `BaseSpawner.setEntityId(type)`, the type
     /// named in its next spawn's entity, the rest of its data as it was; clients told
-    /// of the block entity; sculk hears the block change.
+    /// of the block entity; sculk hears the block change. A spawner with no data yet
+    /// (one just placed) is a new one, which saves all it has (`spawners.rs`).
     fn set_spawner_entity(
         &mut self,
         pos: BlockPos,
@@ -351,8 +351,15 @@ impl Region {
         let Some(name) = clustine_data::ENTITY_TYPES.get(usize::from(kind)) else {
             return false;
         };
-        let Some(changed) = with_spawn_entity(&data, name) else {
-            return false;
+        let changed = if data.is_empty() {
+            super::spawners::Spawner::read(&data)
+                .with_type(name)
+                .write()
+        } else {
+            let Some(changed) = with_spawn_entity(&data, name) else {
+                return false;
+            };
+            changed
         };
         if !self.set_block_entity_data(pos, changed, output) {
             return false;

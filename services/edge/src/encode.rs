@@ -7,7 +7,7 @@ use clustine_protocol::chunk::{
 use clustine_protocol::codec::Reader;
 use clustine_protocol::nbt::Nbt;
 use clustine_protocol::packets::play::{
-    BlockEntity, Heightmap, LevelChunkWithLight, LightData, heightmap,
+    BlockEntity, BlockEntityData, Heightmap, LevelChunkWithLight, LightData, heightmap,
 };
 use clustine_world::{
     Chunk, ChunkPos, ItemStack, LIGHT_ARRAY_LENGTH, Light, Section, SectionLight, sky_light,
@@ -52,6 +52,36 @@ const SENT: [(&str, &[&str]); 2] = [
         &["Age", "exit_portal", "ExactTeleport"],
     ),
 ];
+
+/// The types of block entity whose clients are sent their data again when it changes
+/// and the region says it is seen, as the game's `sendBlockUpdated` has the chunk holder
+/// send the block entity's update packet: a spawner's, whose next spawn an egg or its
+/// potentials set (`SpawnEggItem.useOn`; `SpawnerBlockEntity`'s `setNextSpawnData`), so
+/// that its client spins the new mob. Whether the game sends any other's on a change
+/// is not read: they are sent with their chunks alone, as before.
+const UPDATED: [&str; 1] = ["minecraft:mob_spawner"];
+
+/// The packet that tells clients of the block entity `entity` at `position` after a
+/// change (`ClientboundBlockEntityDataPacket.create`): its type and what `SENT` sends of
+/// it; none for a type not in `UPDATED`.
+pub(crate) fn block_entity_update(
+    position: clustine_world::BlockPos,
+    entity: &clustine_world::BlockEntity,
+) -> Option<BlockEntityData> {
+    let name = BLOCK_ENTITY_TYPES.get(usize::from(entity.kind))?;
+    if !UPDATED.contains(name) {
+        return None;
+    }
+    Some(BlockEntityData {
+        position: clustine_protocol::codec::Position {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+        },
+        kind: entity.kind.into(),
+        data: sent(entity),
+    })
+}
 
 /// What a client is sent of a block entity's data: the keys `SENT` names for its
 /// type, or nothing.
@@ -422,6 +452,42 @@ mod tests {
             .unwrap();
         let packet = chunk_packet(ChunkPos::new(0, 0), &chunk, chunk.light());
         assert_eq!(packet.block_entities[0].data, Some(saved));
+    }
+
+    /// A spawner whose data changed is sent again with what its chunk sends of it; a
+    /// gateway's change is not sent on its own.
+    #[test]
+    fn a_spawner_s_change_is_sent_again_and_a_gateway_s_is_not() {
+        use clustine_protocol::codec::Writer;
+
+        let mut chunk = flat_chunk();
+        chunk.set(2, -59, 3, clustine_data::blocks::SPAWNER);
+        chunk.set(4, -58, 6, clustine_data::blocks::END_GATEWAY);
+        let spawner = clustine_world::InChunk::new(2, -59, 3);
+        let saved = Nbt::Compound(vec![
+            ("Delay".into(), Nbt::Short(20)),
+            ("SpawnPotentials".into(), Nbt::List(Vec::new())),
+        ]);
+        let mut writer = Writer::new();
+        writer.put_nbt(&saved);
+        chunk
+            .set_block_entity_data(spawner, writer.into_bytes())
+            .unwrap();
+        let at = clustine_world::BlockPos::new(2, -59, 3);
+        let entity = &chunk.block_entities()[&spawner];
+        let update = block_entity_update(at, entity).expect("a spawner's change is sent");
+        assert_eq!(update.kind, i32::from(entity.kind));
+        assert_eq!(
+            (update.position.x, update.position.y, update.position.z),
+            (2, -59, 3)
+        );
+        assert_eq!(
+            update.data,
+            Some(Nbt::Compound(vec![("Delay".into(), Nbt::Short(20))]))
+        );
+        let gateway = &chunk.block_entities()[&clustine_world::InChunk::new(4, -58, 6)];
+        let at = clustine_world::BlockPos::new(4, -58, 6);
+        assert_eq!(block_entity_update(at, gateway), None);
     }
 
     /// A block entity goes out with its place and its type and without its data,

@@ -347,7 +347,7 @@ impl Region {
 
     /// `noCollision(box)`: no block's shape in it, and no entity that is solid to
     /// anything (a boat).
-    fn no_collision(&self, bounds: &Aabb) -> bool {
+    pub(super) fn no_collision(&self, bounds: &Aabb) -> bool {
         let view = super::items::View {
             region: self,
             home: ChunkPos::containing(bounds.min[0], bounds.min[2]),
@@ -401,7 +401,7 @@ impl Region {
     /// `isUnobstructed(mob)`: no entity that blocks building (a living one, a boat, a
     /// minecart, a falling block, primed TNT, an armour stand that is no marker) and no
     /// player but a spectator overlaps the box.
-    fn unobstructed(&self, bounds: &Aabb) -> bool {
+    pub(super) fn unobstructed(&self, bounds: &Aabb) -> bool {
         let low = ChunkPos::containing(bounds.min[0] - 2.0, bounds.min[2] - 2.0);
         let high = ChunkPos::containing(bounds.max[0] + 2.0, bounds.max[2] + 2.0);
         for x in low.x..=high.x {
@@ -441,6 +441,28 @@ impl Region {
         level: &mut Random,
         output: &mut TickOutput,
     ) -> Option<EntityId> {
+        self.make_spawned_mob(
+            kind,
+            (position, yaw),
+            (SpawnReason::Natural, true),
+            group,
+            level,
+            output,
+        )
+    }
+
+    /// [`Region::make_natural_mob`] for the reason `reason`, its `finalizeSpawn` only
+    /// where `finalize` says (a spawner's mob with data of its own has none, as
+    /// `BaseSpawner.serverTick` skips it, n7 BaseSpawner 554–616).
+    pub(super) fn make_spawned_mob(
+        &mut self,
+        kind: u16,
+        (position, yaw): ([f64; 3], f32),
+        (reason, finalize): (SpawnReason, bool),
+        group: &mut Option<SpawnGroup>,
+        level: &mut Random,
+        output: &mut TickOutput,
+    ) -> Option<EntityId> {
         let block = crate::physics::containing(position);
         let chunk = block.chunk();
         let key = self.take_entity_key(chunk)?;
@@ -465,24 +487,26 @@ impl Region {
             made: Vec::new(),
             rides: None,
         };
-        crate::mobs::making::finalize(
-            kind,
-            &mut types::Spawning {
-                mob: &mut mob,
-                level,
-                own: &mut own,
-                biome,
-                at: block,
-                day,
-                game_time,
-                reason: SpawnReason::Natural,
-                group,
-                structure,
-                moon_brightness: crate::mobs::making::moon_brightness(day),
-                difficulty: (effective, special_multiplier(effective)),
-                companions: Some(&mut companions as &mut dyn types::Companions),
-            },
-        );
+        if finalize {
+            crate::mobs::making::finalize(
+                kind,
+                &mut types::Spawning {
+                    mob: &mut mob,
+                    level,
+                    own: &mut own,
+                    biome,
+                    at: block,
+                    day,
+                    game_time,
+                    reason,
+                    group,
+                    structure,
+                    moon_brightness: crate::mobs::making::moon_brightness(day),
+                    difficulty: (effective, special_multiplier(effective)),
+                    companions: Some(&mut companions as &mut dyn types::Companions),
+                },
+            );
+        }
         let rides = companions.rides;
         let made = companions.made;
         self.entity_drew(key, own.draws_since(&own_start));
@@ -692,7 +716,7 @@ fn special_multiplier(effective: f32) -> f32 {
 /// `EntityType.getSpawnAABB(x, y, z)`: the type's box at its feet, scaled by its
 /// `spawnDimensionsScale` (the slime's and the magma cube's 4, the sulfur cube's 2,
 /// n7 EntityTypes 3764, 5554, 6151; every other's 1), its half width a float.
-fn spawn_box(kind: u16, position: [f64; 3]) -> Aabb {
+pub(super) fn spawn_box(kind: u16, position: [f64; 3]) -> Aabb {
     use entity_types::*;
     let info = EntityTypeInfo::of(i32::from(kind));
     let scale: f32 = match i32::from(kind) {
@@ -710,7 +734,7 @@ fn spawn_box(kind: u16, position: [f64; 3]) -> Aabb {
 
 /// `blocksBuilding` of an entity of the region's chunks: every living one, boats,
 /// minecarts, falling blocks, primed TNT and an armour stand that is no marker.
-fn blocks_building(entity: &Entity) -> bool {
+pub(super) fn blocks_building(entity: &Entity) -> bool {
     use clustine_world::EntityData;
     matches!(
         entity.data,

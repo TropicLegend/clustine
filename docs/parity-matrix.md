@@ -26,9 +26,9 @@ What is missing, by what a player would notice first:
 2. **Commands and chat**: players cannot chat or use commands.
 3. **What other players see of a player**: poses (sneaking, swimming, gliding), skin
    layers, the main hand; the player list's latency.
-4. **Things that are inert**: monster spawners and trial spawners, signs' text,
-   jukeboxes, cauldrons, sculk shriekers and catalysts, crafters, structures' chests
-   (their loot is not rolled), bubble columns forming.
+4. **Things that are inert**: trial spawners, signs' text, jukeboxes, cauldrons, sculk
+   shriekers and catalysts, crafters, structures' chests (their loot is not rolled),
+   bubble columns forming.
 5. **Weather**: it never rains, snows or thunders.
 6. **Mobs not built**: the breeze, the creaking, the warden, the wither, the
    illusioner, the giant and the sulfur cube.
@@ -175,7 +175,7 @@ not placed. A flat world reads it for its Nether and its End.
 | Entity physics and collision | partial | The game's collider and `Entity.move`: items, falling blocks, vehicles, mobs, projectiles (verified for items, sand and carts). Named: entities tick where a chunk's 3×3 is loaded, not its 5×5; a player's own move is not collided (T0) |
 | Mob types | partial | 83 of the game's mobs built with their AI. Not built: the breeze, the creaking, the warden, the wither, the illusioner, the giant, the sulfur cube; their spawn eggs make nothing. Other entities not built: lightning, the fishing bobber, wind charges, the wither skull, display and interaction entities, markers |
 | Mob AI and pathfinding | verified | The game's goals, controls, sensing and brains; paths equal node for node to the jar's path finder on 521 layouts; scenes compared with the official server (`mobs_oracle.rs`, `monsters_oracle.rs`, `effects_oracle.rs`, `villagers_oracle.rs`, `nether_mobs_oracle.rs`). Since every player is creative, no mob targets a player |
-| Natural spawning and despawning | partial | Every dimension's rules, caps counted across regions, phantoms, patrols, cats, the siege, the wandering trader, zombified piglins from portals. A day of overworld spawning verified (`spawning_oracle.rs`). Named: draws the game's in distribution, not in value; never thundering; the sulfur cube's spawns in sulfur caves end the whole position. Not built: monster spawners and trial spawners |
+| Natural spawning and despawning | partial | Every dimension's rules, caps counted across regions, phantoms, patrols, cats, the siege, the wandering trader, zombified piglins from portals. A day of overworld spawning verified (`spawning_oracle.rs`). Monster spawners (`region/spawners.rs`): the delay counted down while a player is within range (a player of another region by their face or the world's table), the tries with the spawner's reason in the rules, the nearby cap, `finalizeSpawn`, the smoke, the poof and the block event, the potentials and custom rules, the state durable in the block entity's data; the clients shown the new mob an egg or the potentials set (`spawners.rs`, its comparison with the official server written and not yet run). Named: draws the game's in distribution, not in value; never thundering; the sulfur cube's spawns in sulfur caves end the whole position; a spawner's entity data beyond its `id` and `Pos` and its equipment are not read, entities that are no built mob not spawned, nearby mobs counted by type, a spawn across a line refused. Not built: trial spawners |
 | Combat, damage, effects | partial | A player's hit with strength, crits, sweep and knockback; mobs' attacks, projectiles and effects on mobs and players (verified, `effects_oracle.rs`, `projectiles_oracle.rs`). Players take no damage but the void's (creative); no beacons or conduits |
 | Projectiles | verified | Arrows, tridents, crossbows, rockets, potions, snowballs, eggs, pearls (also through gateways), fireballs, llama spit, shulker bullets (`projectiles_oracle.rs`). Named: arrows hit the dragon's whole box, not its parts |
 | Vehicles and riding | partial | Minecarts of every kind, boats and rafts, horses, camels, striders, the nautilus, the happy ghast, pigs. Carts and pigs verified (`minecarts_oracle.rs`, `mobs_oracle.rs`); boats and horses not compared. Named: getting on across a line takes four to six ticks |
@@ -202,7 +202,7 @@ not placed. A flat world reads it for its Nether and its End.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mob farms (spawn rules, caps) | partial | The game's rules, light, slime chunks, local and global caps across regions (verified on a flat world, `spawning_oracle.rs`). Farms that use spawners, thunder or sulfur cubes do not work |
+| Mob farms (spawn rules, caps) | partial | The game's rules, light, slime chunks, local and global caps across regions (verified on a flat world, `spawning_oracle.rs`). Monster spawners spawn (`region/spawners.rs`). Farms that use trial spawners, thunder or sulfur cubes do not work |
 | Iron, raid and villager-based farms | partial | Golems summoned by gossip and panic, raids, breeding (N10; the bar and countdown verified). Golem summoning not compared |
 | Chunk loading, portals | partial | The viewer ring, arrival tickets, the game's portal ticket (300 ticks), the End's arena kept loaded, travel through every portal (verified). Missing: the ender pearl's ticket while it flies, forced loading; pearls kept with an owner who leaves |
 | Random ticks and growth | verified | At the game's rate in the chunks a region ticks, and growth by light compared in distribution (`growth_oracle.rs`). Named: draws from the world's own stream; kelp and vine heads stay heads; frosted ice never ages |

@@ -149,6 +149,7 @@ impl Region {
         self.instrument_event(at, state, kind, data, output)
             .or_else(|| self.piston_event(at, state, kind, data, output))
             .or_else(|| self.container_event(at, state, kind, data))
+            .or_else(|| self.spawner_event(at, state, kind))
             .unwrap_or(false)
     }
 

@@ -643,14 +643,15 @@ impl crate::spawning::rules::SpawnWorld for Netherrack {
 #[test]
 fn a_ghast_spawns_on_a_valid_block_one_draw_in_twenty() {
     let on = BlockPos::new(0, 64, 0);
-    assert!(check_spawn_rules(&Netherrack, on, &mut Fixed(0)));
-    assert!(!check_spawn_rules(&Netherrack, on, &mut Fixed(1)));
-    assert!(!check_spawn_rules(&Netherrack, on, &mut Fixed(19)));
+    assert!(check_spawn_rules(&Netherrack, on, &mut Fixed(0), false));
+    assert!(!check_spawn_rules(&Netherrack, on, &mut Fixed(1), false));
+    assert!(!check_spawn_rules(&Netherrack, on, &mut Fixed(19), false));
     // And on nothing it can spawn on.
     assert!(!check_spawn_rules(
         &Netherrack,
         BlockPos::new(0, 70, 0),
-        &mut Fixed(0)
+        &mut Fixed(0),
+        false
     ));
 }
 
