@@ -256,6 +256,50 @@ fn a_hit_on_its_head_takes_the_whole_and_on_a_wing_a_quarter_and_one() {
     assert_eq!(mob_of(&region, key).body.vitals.health, 197.75);
 }
 
+/// A hit by a falling player is critical against a living target only
+/// (`canCriticalAttack`'s `instanceof LivingEntity`): a dragon's part is not one, so
+/// the head takes the hand's 1, not a critical 1.5, and no critical sound is made.
+#[test]
+fn a_falling_player_s_hit_on_its_head_is_not_critical() {
+    let mut region = world(SEED, nothing);
+    let key = EntityId(700);
+    let mut record = dragon(key, [10.5, -55.0, 2.5], 0.0, |own| {
+        own.parts[usize::from(parts::HEAD)] = [4.5, -59.0, 2.5];
+    });
+    let mut mob = Mob::decode(&record.data).expect("a mob");
+    mob.body.flags.no_ai = true;
+    record.data = mob.encode();
+    lay(&mut region, &record);
+    let (id, entity) = add_player(&mut region, 1, [2.5, -60.0, 2.5], false);
+    // Up a block and half of it back down, off the ground: falling.
+    for (number, y) in [(1, -59.0), (2, -59.5)] {
+        region.tick(&TickInputs {
+            inputs: vec![(
+                EdgeId(1),
+                id,
+                entity,
+                number,
+                PlayerInput::Move {
+                    position: Some(clustine_world::Vec3::new(2.5, y, 2.5)),
+                    rotation: None,
+                    on_ground: false,
+                },
+            )],
+            ..TickInputs::default()
+        });
+    }
+    for _ in 0..20 {
+        idle(&mut region);
+    }
+    let output = attack(&mut region, (id, entity), 3, key, Some(parts::HEAD));
+    assert_eq!(mob_of(&region, key).body.vitals.health, 199.0);
+    let crit_sound = output.events.iter().any(|event| {
+        matches!(event, RegionEvent::Sound { sound, .. }
+            if *sound == clustine_data::sounds::ENTITY_PLAYER_ATTACK_CRIT)
+    });
+    assert!(!crit_sound, "no critical sound: {:?}", output.events);
+}
+
 // Its healing.
 
 /// A crystal 10 blocks off: one tick in ten it is chosen as the nearest, and from then

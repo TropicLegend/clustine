@@ -165,7 +165,15 @@ impl Region {
         if attack.sprint_knock {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_KNOCKBACK, attack.feet, output);
         }
-        let took = self.hurt_mob_at(target, part, &attack.source, attack.amount, output);
+        // `canCriticalAttack` asks the target to be a `LivingEntity`: a dragon's part,
+        // which a hit names, is not, so a hit on it is never critical.
+        let crit = attack.crit && part.is_none();
+        let amount = if attack.crit && !crit {
+            attack.amount - attack.base * 0.5
+        } else {
+            attack.amount
+        };
+        let took = self.hurt_mob_at(target, part, &attack.source, amount, output);
         if !took {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_NODAMAGE, attack.feet, output);
             return;
@@ -184,7 +192,7 @@ impl Region {
         if attack.sweep {
             self.sweep(&attack, target, output);
         }
-        if attack.crit {
+        if crit {
             self.attack_sound(sounds::ENTITY_PLAYER_ATTACK_CRIT, attack.feet, output);
             if let Some(attacker) = attacker {
                 output.events.push(RegionEvent::Animated {
