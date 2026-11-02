@@ -1008,3 +1008,379 @@ pub async fn off_the_platform(
     drain(others).await?;
     Ok((column, z))
 }
+
+// ---------------------------------------------------------------------------------
+// The End's gateways (`gateways.rs`, `gateways_oracle.rs`).
+// ---------------------------------------------------------------------------------
+
+/// Where the scenes of the gateways have one: the place of the first of the twenty
+/// gateways the dragon's death makes (`EnderDragonFight`: 96 × the cosine and sine of
+/// the first angle, at y 75), west of the platform and above it. Its direction from the
+/// middle is due east, so its exit is looked for along z 0 from x 1024
+/// (`findExitPortalXZPosTentative`).
+pub const GATEWAY: (i32, i32, i32) = (96, 75, 0);
+
+/// The block a gateway's feature puts at `(dx, dy, dz)` from its middle
+/// (`EndGatewayFeature.place`, `p-brief.md` 2.6): the gateway in the middle, air round
+/// it on its layer, a plus of bedrock one above and one below, and bedrock on the
+/// middle two above and two below with air round it.
+pub fn gateway_cage(dx: i32, dy: i32, dz: i32) -> BlockState {
+    if (dx, dy, dz) == (0, 0, 0) {
+        blocks::END_GATEWAY
+    } else if dy == 0 {
+        blocks::AIR
+    } else if dy.abs() == 2 {
+        if (dx, dz) == (0, 0) {
+            blocks::BEDROCK
+        } else {
+            blocks::AIR
+        }
+    } else if dx == 0 || dz == 0 {
+        blocks::BEDROCK
+    } else {
+        blocks::AIR
+    }
+}
+
+/// Joins as `name` and drops into the End's portal `ring` another bot opened, as
+/// [`to_the_end`] does; waits until it is placed in the End among its chunks.
+pub async fn through_the_open_portal(
+    address: &str,
+    name: &str,
+    ring: Ring,
+    others: &mut [Bot],
+) -> Result<Bot> {
+    let mut bot = join(address, name, others).await?;
+    let hover = ring.hover();
+    let from = bot.location;
+    bot.fly_to((from.0, hover.1, from.2), (0.0, 45.0), 1.0)
+        .await?;
+    drain(others).await?;
+    bot.fly_to(hover, (0.0, 45.0), 1.0).await?;
+    drain(others).await?;
+    bot.stand_at(hover.0, f64::from(GRASS + 1), hover.2).await?;
+    wait(
+        &mut bot,
+        others,
+        PATIENCE,
+        "the Respawn into the End",
+        |bot| bot.info.login.spawn.dimension_name == THE_END,
+    )
+    .await?;
+    wait(
+        &mut bot,
+        others,
+        PATIENCE,
+        "the placing in the End",
+        |bot| bot.position.is_some() && around_is_held(bot),
+    )
+    .await?;
+    Ok(bot)
+}
+
+/// Breaks the block at `at`, as a creative player breaks anything, bedrock too, and
+/// waits until the bot is shown air there.
+pub async fn break_block(bot: &mut Bot, others: &mut [Bot], at: (i32, i32, i32)) -> Result<()> {
+    empty_hand(bot).await?;
+    let sequence = bot.dig(at.0, at.1, at.2).await?;
+    let what = format!("the block at {at:?} broken");
+    wait(bot, others, PATIENCE, &what, |bot| {
+        bot.acknowledged_sequence >= sequence
+            && is_air(bot.block_at(at.0, at.1, at.2).ok().flatten())
+    })
+    .await
+}
+
+/// From where the bot is, its column clear up to `cruise`, flies up to `cruise`, across
+/// to over the gateway at `gateway`, its column clear from `cruise` down to three above
+/// it, and down to two above its cage; breaks the cage's two blocks of bedrock over the
+/// gateway, and steps down into it.
+///
+/// A player cannot walk into a gateway in its cage: on its own layer the cage is open
+/// on every side, but a player is taller than a block, and the bedrock above and below
+/// the gateway and on the plus round them leaves no room. A player in creative breaks
+/// bedrock, and from above, with the two blocks over the gateway gone, the player's box
+/// comes into the gateway's block and touches no other. Only the stepping in is sent:
+/// the bot does not wait for what the gateway does.
+pub async fn down_into_the_gateway(
+    bot: &mut Bot,
+    others: &mut [Bot],
+    gateway: (i32, i32, i32),
+    cruise: f64,
+) -> Result<()> {
+    let (x, y, z) = gateway;
+    let top = cruise as i32 + 2;
+    let (fx, fy, fz) = feet(bot);
+    ensure!(
+        column_is_clear(bot, fx, fz, fy, top),
+        "the column over the bot is not clear: {}",
+        column_report(bot, fx, fz, fy, top)
+    );
+    ensure!(
+        column_is_clear(bot, x, z, y + 3, top),
+        "the column over the gateway is not clear: {}",
+        column_report(bot, x, z, y + 3, top)
+    );
+    let (cx, cz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
+    let look = bot.look;
+    let (here_x, _, here_z) = bot.location;
+    bot.fly_to((here_x, cruise, here_z), look, 1.0).await?;
+    drain(others).await?;
+    bot.fly_to((cx, cruise, cz), look, 1.0).await?;
+    drain(others).await?;
+    // Feet a block above the cage's top: the box reaches neither the bedrock nor the
+    // gateway, and both blocks to break are within reach.
+    bot.fly_to((cx, f64::from(y + 3), cz), look, 0.5).await?;
+    drain(others).await?;
+    let gateway_state = bot.block_at(x, y, z)?;
+    ensure!(
+        is(gateway_state, blocks::END_GATEWAY),
+        "the gateway at {gateway:?} is {}",
+        gateway_state.map_or_else(|| "not held".to_owned(), describe)
+    );
+    // The cage's bedrock over the gateway, which another bot may have broken before.
+    for dy in [2, 1] {
+        let state = bot.block_at(x, y + dy, z)?;
+        if is_air(state) {
+            continue;
+        }
+        ensure!(
+            is(state, blocks::BEDROCK),
+            "{dy} above the gateway at {gateway:?} is {}",
+            state.map_or_else(|| "not held".to_owned(), describe)
+        );
+        break_block(bot, others, (x, y + dy, z)).await?;
+    }
+    // Down to where the box is just above the gateway, then in with one step: a
+    // flight would go on after the gateway's teleport, back towards here.
+    bot.fly_to((cx, f64::from(y) + 1.05, cz), look, 0.5).await?;
+    drain(others).await?;
+    bot.stand_at(cx, f64::from(y) + 0.25, cz).await?;
+    Ok(())
+}
+
+/// Takes a bot standing on the End's platform back to the overworld the one way there
+/// is without the dragon's death: off the platform into the void, where it dies; then,
+/// as the bots have no way to ask for a respawn, on its raw connection the client's
+/// command (`PERFORM_RESPAWN`), answering keep-alives, until the server has sent the
+/// `Respawn` into the overworld and placed it there. The connection is then closed: the
+/// player has left in the overworld.
+pub async fn back_through_the_void(mut bot: Bot, others: &mut [Bot]) -> Result<()> {
+    use clustine_protocol::packets::play::{
+        ClientCommand, ClientboundKeepAlive, ServerboundKeepAlive, client_command,
+    };
+    off_the_platform(&mut bot, others, f64::from(END_FLOOR - 80)).await?;
+    wait(&mut bot, others, PATIENCE, "the void's death", |bot| {
+        !bot.deaths.is_empty()
+    })
+    .await?;
+    let mut connection = bot.into_connection();
+    connection
+        .write(&ClientCommand {
+            action: client_command::PERFORM_RESPAWN,
+        })
+        .await?;
+    let deadline = Instant::now() + PATIENCE;
+    let mut respawned = false;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let frame = tokio::time::timeout(left, connection.read_frame())
+            .await
+            .context("the respawn did not come in time")??;
+        match ClientboundPlay::decode(&frame)? {
+            ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) => {
+                connection.write(&ServerboundKeepAlive { id }).await?;
+            }
+            ClientboundPlay::Respawn(respawn) => {
+                ensure!(
+                    respawn.spawn.dimension_name == OVERWORLD,
+                    "the respawn is into {}",
+                    respawn.spawn.dimension_name
+                );
+                respawned = true;
+            }
+            ClientboundPlay::SynchronizePlayerPosition(_) if respawned => break,
+            _ => {}
+        }
+        drain(others).await?;
+    }
+    connection.close().await
+}
+
+/// A server on a world on disk whose End has a gateway at [`GATEWAY`], with the open
+/// End portal a bot made in the overworld.
+pub struct GatewayWorld {
+    pub server: clustine::Server,
+    pub address: String,
+    pub ring: Ring,
+    _directory: tempfile::TempDir,
+}
+
+/// Has a bot open an End portal and come into the End, which makes and stores the
+/// chunks about the platform, and go back to the overworld through the void; stops the
+/// server, writes the gateway into the world ([`write_a_gateway`]) and starts the server
+/// again on it.
+///
+/// The bot leaves in the overworld, not in the End: a player who leaves in the End and
+/// joins again is sent no chunks (`gateways.rs` has the finding).
+pub async fn a_world_with_a_gateway() -> GatewayWorld {
+    let directory = tempfile::tempdir().expect("a directory for the world");
+    let config = clustine::Config {
+        world: Some(directory.path().join("world")),
+        ..crate::common::config()
+    };
+    let (server, address) = crate::common::start_with(config.clone()).await;
+    let (bot, travel) = to_the_end(&address, "Builder", &mut [])
+        .await
+        .unwrap_or_else(|error| panic!("the builder did not come into the End: {error:#}"));
+    back_through_the_void(bot, &mut [])
+        .await
+        .unwrap_or_else(|error| panic!("the builder did not come back: {error:#}"));
+    server.stop().await;
+    let world = directory.path().join("world");
+    write_a_gateway(&world).unwrap_or_else(|error| panic!("the gateway: {error:#}"));
+    let (server, address) = crate::common::start_with(config).await;
+    GatewayWorld {
+        server,
+        address,
+        ring: travel.ring,
+        _directory: directory,
+    }
+}
+
+/// Waits until the bot is shown the gateway at [`GATEWAY`].
+pub async fn gateway_shown(bot: &mut Bot, others: &mut [Bot]) -> Result<()> {
+    let (x, y, z) = GATEWAY;
+    let shown = |bot: &Bot| is(bot.block_at(x, y, z).ok().flatten(), blocks::END_GATEWAY);
+    wait(bot, others, PATIENCE, "the gateway", shown).await
+}
+
+/// Joins the world as `name` and goes into the End by the open portal, and waits until
+/// the bot is shown the gateway.
+pub async fn arrive(world: &GatewayWorld, name: &str, others: &mut [Bot]) -> Result<Bot> {
+    let mut bot = through_the_open_portal(&world.address, name, world.ring, others).await?;
+    gateway_shown(&mut bot, others).await?;
+    Ok(bot)
+}
+
+/// What a bot was sent from the moment it stepped into a gateway until it stood placed
+/// among its chunks where the gateway sent it.
+pub struct Through {
+    /// Every packet but the chunks and their light, in order.
+    pub packets: Vec<(Instant, ClientboundPlay)>,
+    /// The teleport that placed it.
+    pub placing: clustine_protocol::packets::play::SynchronizePlayerPosition,
+}
+
+/// Goes from where the bot is into the gateway at `gateway` (from `cruise`, over it),
+/// looking along `look` all the while, and waits until it is placed more than 16 blocks
+/// away among the chunks of its view.
+pub async fn through_the_gateway(
+    bot: &mut Bot,
+    others: &mut [Bot],
+    gateway: (i32, i32, i32),
+    cruise: f64,
+    look: (f32, f32),
+) -> Result<Through> {
+    bot.look = look;
+    down_into_the_gateway(bot, others, gateway, cruise).await?;
+    // Kept from the step into the gateway on: the beam and the placing come after it.
+    bot.packets = Some(Vec::new());
+    let stepped = teleports(bot);
+    let far = |bot: &Bot| {
+        let (x, _, z) = bot.location;
+        let (gx, _, gz) = gateway;
+        teleports(bot) != stepped
+            && ((x - f64::from(gx)).powi(2) + (z - f64::from(gz)).powi(2)).sqrt() > 16.0
+    };
+    wait(bot, others, PATIENCE, "the gateway's teleport", far).await?;
+    // Every chunk of its view: what is read about the exit reaches 16 blocks and more.
+    let (x, _, z) = feet(bot);
+    let area = crate::common::view_area((x >> 4, z >> 4), crate::common::VIEW_DISTANCE);
+    let held =
+        |bot: &Bot| around_is_held(bot) && area.iter().all(|chunk| bot.chunks.contains_key(chunk));
+    wait(bot, others, PATIENCE, "the chunks where it came out", held).await?;
+    let packets = bot.packets.take().unwrap_or_default();
+    bot.record_packets();
+    let placing = bot.position.clone().context("placed")?;
+    Ok(Through { packets, placing })
+}
+
+/// The file of the End's chunk `(x, z)` in the stopped world in `world`, as the store
+/// names it.
+pub fn end_chunk_file(world: &std::path::Path, x: i32, z: i32) -> std::path::PathBuf {
+    world
+        .join("chunks")
+        .join("the_end")
+        .join(format!("{}.{}", x >> 5, z >> 5))
+        .join(format!("{x}.{z}.chunk"))
+}
+
+/// Puts a gateway in its cage at [`GATEWAY`] into the stopped world in `world`, with no
+/// exit, as the dragon's death leaves one (`end_gateway_delayed`): into the stored End
+/// chunk that holds it, which a bot must have had made by standing near it. Its block
+/// entity is left without data, which the game reads as a gateway of age 0 with no exit
+/// (`TheEndGatewayBlockEntity.loadAdditional`). Clustine has no commands, and a gateway
+/// comes only of the dragon's death, so the scenes write it into the world before the
+/// server starts on it.
+///
+/// The light of that chunk and of the eight about it is taken out, so that the light
+/// the gateway gives is made afresh with the chunks when they are next loaded.
+pub fn write_a_gateway(world: &std::path::Path) -> Result<()> {
+    use clustine_format::ChunkFile;
+    let (gx, gy, gz) = GATEWAY;
+    // The cage's blocks by the chunk they are in.
+    type Cells = Vec<((i32, i32, i32), BlockState)>;
+    let mut cage: BTreeMap<(i32, i32), Cells> = BTreeMap::new();
+    for ox in -1..=1 {
+        for oy in -2..=2 {
+            for oz in -1..=1 {
+                let (x, y, z) = (gx + ox, gy + oy, gz + oz);
+                cage.entry((x >> 4, z >> 4))
+                    .or_default()
+                    .push(((x, y, z), gateway_cage(ox, oy, oz)));
+            }
+        }
+    }
+    // The chunks the cage is in, which [`GATEWAY`]'s place spreads over four, and those
+    // about them, whose light the gateway's reaches.
+    let low = (
+        cage.keys().map(|c| c.0).min(),
+        cage.keys().map(|c| c.1).min(),
+    );
+    let high = (
+        cage.keys().map(|c| c.0).max(),
+        cage.keys().map(|c| c.1).max(),
+    );
+    let (Some(low_x), Some(low_z), Some(high_x), Some(high_z)) = (low.0, low.1, high.0, high.1)
+    else {
+        unreachable!("a cage has blocks");
+    };
+    for chunk_x in low_x - 1..=high_x + 1 {
+        for chunk_z in low_z - 1..=high_z + 1 {
+            let path = end_chunk_file(world, chunk_x, chunk_z);
+            let cells = cage.get(&(chunk_x, chunk_z));
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) if cells.is_none() => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("reading a chunk of the gateway's cage, {}", path.display())
+                    });
+                }
+            };
+            let (mut file, _) = ChunkFile::decode(&bytes)
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .with_context(|| format!("decoding {}", path.display()))?;
+            file.chunk.take_light();
+            for &((x, y, z), state) in cells.into_iter().flatten() {
+                file.chunk
+                    .set((x & 15) as usize, y, (z & 15) as usize, state)
+                    .context("the cage is within the End's height")?;
+            }
+            std::fs::write(&path, file.encode())
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
