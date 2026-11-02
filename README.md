@@ -113,7 +113,7 @@ the world keeps from when it is made. Structures built of the game's own templat
 cities, fossils, desert wells and others) are Mojang's and not in Clustine: they are
 read from the game's server jar, the one `cargo datagen` keeps under `target/` or
 another named with `--minecraft-jar`, and without one they are left out (a flat
-world's Nether and End leave them out for now). Chunks are made on a pool of threads as
+world reads it too, for its Nether and its End). Chunks are made on a pool of threads as
 they are first asked for and kept, so a second visit reads them from the disk. A world
 is made one way for good, so give it a directory of its own; one that holds a flat
 world, a world of another seed, or one made by an earlier build of Clustine's land, is

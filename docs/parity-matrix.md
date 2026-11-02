@@ -155,8 +155,7 @@ Nether and End are seed 0's, or with `--seed` the game's three. Structures built
 templates (villages, bastions, ruined portals, shipwrecks, igloos, ocean ruins,
 mansions, buried treasure, Nether fossils, End cities, fossils, desert wells) need the
 game's jar (`--minecraft-jar`, or the one `cargo datagen` keeps); without it they are
-not placed, and a flat world never places them in its Nether and End (named; to be
-mended).
+not placed. A flat world reads it for its Nether and its End.
 
 | Feature | Status | Notes |
 |---|---|---|

@@ -89,13 +89,14 @@ struct Made {
     /// given the same seed; nothing checks that they agree.
     #[arg(long, allow_negative_numbers = true, value_name = "NUMBER")]
     seed: Option<i64>,
-    /// The game's server jar to read the blocks of structure templates from: fossils,
-    /// desert wells and the sulfur springs are built of them, and they are Mojang's,
-    /// so they are not in Clustine. The server jar or the bundler the game is
-    /// distributed as. Without it, the jar `cargo datagen` keeps under `target/` is
-    /// read where there is one; with none, nothing built of a template is placed, and
-    /// a world made so stays so.
-    #[arg(long, value_name = "PATH", requires = "seed")]
+    /// The game's server jar to read the blocks of structure templates from: villages,
+    /// bastions, ruined portals, End cities, fossils and the rest are built of them,
+    /// and they are Mojang's, so they are not in Clustine. The server jar or the bundler
+    /// the game is distributed as. Without it, the jar `cargo datagen` keeps under
+    /// `target/` is read where there is one; with none, nothing built of a template is
+    /// placed, and a world made so stays so. A flat world reads it for its Nether and
+    /// its End.
+    #[arg(long, value_name = "PATH")]
     minecraft_jar: Option<PathBuf>,
 }
 
@@ -105,9 +106,6 @@ const DATAGEN_JAR: &str = "target/datagen/26.3/server.jar";
 impl Made {
     /// The land this says.
     fn land(&self) -> anyhow::Result<Land> {
-        let Some(seed) = self.seed else {
-            return Ok(Land::flat());
-        };
         let jar = match &self.minecraft_jar {
             Some(jar) => Some(jar.clone()),
             None => Some(PathBuf::from(DATAGEN_JAR)).filter(|jar| jar.exists()),
@@ -128,7 +126,10 @@ impl Made {
                 None
             }
         };
-        Ok(Land::of_seed_with(seed, templates))
+        Ok(match self.seed {
+            Some(seed) => Land::of_seed_with(seed, templates),
+            None => Land::flat_with(templates),
+        })
     }
 }
 

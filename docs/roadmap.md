@@ -49,9 +49,7 @@ damage, breaking times and drops, crafting, smelting, the menus of the blocks th
 items, most enchantments' effects); chat and commands; other players' sneaking,
 swimming and gliding poses; weather; monster spawners, mobs on pressure plates, signs'
 text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
-warden and the wither. In a flat world (`cargo run` without `--seed`) the Nether and the
-End have no structures built of templates (bastions, ruined portals, End cities): to be
-mended.
+warden and the wither.
 
 **Built since M3:**
 
@@ -636,8 +634,8 @@ pearl thrown into a gateway carries its thrower through and back, tested end to 
 stranded where nobody was, as nothing placed the game's portal ticket, mended. Next:
 what phase P left named (pearls kept with an owner who leaves, the dragon's respawn by
 four crystals, arrows on the dragon's parts, entities through a portal into another
-region's chunks), the gaps a survey of the repository found on 2026-11-02 (a flat
-world's Nether and End without templates, CI red since 2026-10-31 on tests of timing),
+region's chunks), the gaps a survey of the repository found on 2026-11-02 (CI red
+since 2026-10-31 on tests of timing),
 then the plan of what follows the Nether and the End, survival with the rest of parity
 by the matrix's tiers, written and agreed with the owner before it is built.
 
@@ -652,8 +650,8 @@ the egg sits on top; throw an ender pearl into the gateway that appears (or brea
 bedrock and drop in) to reach the outer islands, and back through the gateway there; step into the portal for the
 credits, then out to your bed or the world spawn. Jump off the island to see the void's death and the respawn screen. A city
 far out has shulkers that peek and shoot at other mobs, and a ship with an elytra; it
-needs the game's jar for its templates, which a world with `--seed` reads where
-`cargo datagen` keeps it, and a flat world does not yet.
+needs the game's jar for its templates, which a world reads where `cargo datagen`
+keeps it (or `--minecraft-jar`).
 
 **What to try with a real client** (the Nether, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), build a Nether

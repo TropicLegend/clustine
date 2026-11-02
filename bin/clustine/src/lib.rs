@@ -103,11 +103,17 @@ impl Land {
     /// End are those of seed 0, as the game's flat world has them
     /// (`docs/groundwork/p-plan.md`, decision 9).
     pub fn flat() -> Self {
+        Self::flat_with(None)
+    }
+
+    /// [`Self::flat`] with the blocks of the structure templates for its Nether and its
+    /// End: bastions, ruined portals, Nether fossils and End cities are built of them.
+    pub fn flat_with(templates: Option<Arc<TemplateLibrary>>) -> Self {
         Self {
             generators: Generators::new(
                 generator(),
-                featured_land(0, Dimension::Nether, None),
-                featured_land(0, Dimension::End, None),
+                featured_land(0, Dimension::Nether, templates.clone()),
+                featured_land(0, Dimension::End, templates),
             ),
             login: login_of(None),
         }
