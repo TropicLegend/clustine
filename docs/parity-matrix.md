@@ -36,8 +36,9 @@ What is missing, by what a player would notice first:
 7. **Online mode**: offline login only, no encryption.
 
 The order of the work after phase P is in the roadmap's first section: what phase P
-left named, then a plan for survival with the rest of this matrix, to be agreed with
-the owner before it is built.
+left named, then survival with the rest of this matrix. Survival is planned in
+[v-plan.md](groundwork/v-plan.md) (drafted and reviewed once on 2026-11-02, steps V1 to V13, to be read again
+and agreed with the owner before it is built).
 
 ## Status values
 
@@ -113,7 +114,7 @@ Against the game's own classes and data:
 | Player list | partial | Names, creative mode; a player on another edge is listed while their entity is shown. Missing: latency, display names, header and footer, skins (online mode) |
 | Keep-alive and timeouts | implemented | Every 15 seconds in play; an unanswered one disconnects ("Timed out"), a wrong id is a protocol error (`join.rs`) |
 | Chat and commands | not started | The server sends system messages (sleep, anchors, the death message, verified in `end_oracle.rs`); a player's chat and commands are dropped, no command tree is sent, no command exists |
-| Game modes | partial | Creative only, for everyone; no change of game mode |
+| Game modes | partial | Creative only, for everyone; no change of game mode. Planned: each player's own mode, the server's default by `--gamemode` (`groundwork/v-plan.md`, V1) |
 | Health, food, experience | partial | Health and experience told; food and saturation stay full. Health compared in the void's death (`end_oracle.rs`). Named: a creative player's health comes back between the void's hits, and a health of 0 is told after the death screen |
 | Death and respawn | verified | Only the void kills (creative); the respawn at a bed, an anchor or the world spawn, with the last death's place (`end_oracle.rs`, `dragon_death_oracle.rs`). Named: no spread over `respawn_radius` |
 | Change of dimension | verified | Nether portal, End portal, gateways, credits (`dimensions_oracle.rs`, `end_oracle.rs`, `gateways_oracle.rs`, `dragon_death_oracle.rs`). Named: not sent are the permission level, the command tree, a console line, the world border, the tick rate and post effects |
