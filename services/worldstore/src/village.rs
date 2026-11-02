@@ -86,8 +86,9 @@ pub(crate) struct Village {
     /// Whether each region of the End, by its owner's session, has a player within the
     /// fight's reach.
     in_arena: BTreeMap<RegionId, (u64, bool)>,
-    /// The latest global level events, each with its number, oldest first.
-    global_events: Vec<(u64, GlobalLevelEvent)>,
+    /// The latest global level events, each with its number and the region and session
+    /// that made it, oldest first.
+    global_events: Vec<(u64, (RegionId, u64), GlobalLevelEvent)>,
     last_global: u64,
 }
 
@@ -132,7 +133,8 @@ impl Village {
         }
         for event in report.global_events {
             self.last_global += 1;
-            self.global_events.push((self.last_global, event));
+            self.global_events
+                .push((self.last_global, (region, session), event));
         }
         let excess = self.global_events.len().saturating_sub(GLOBAL_EVENTS_KEPT);
         self.global_events.drain(..excess);
@@ -234,13 +236,16 @@ impl Village {
             .published
             .get(&region)
             .filter(|published| published.session == session);
-        // A session is told the global events made from its first publication on.
+        // A session is told the global events made from its first publication on, but
+        // for its own: a region tells its players an event in the tick it makes it, as
+        // the game does, so that a player who goes through the portal it opened has
+        // heard it before they leave.
         let since = earlier.map_or(self.last_global, |earlier| earlier.last_global);
         let global_events: Vec<(u64, GlobalLevelEvent)> = self
             .global_events
             .iter()
-            .filter(|(number, _)| *number > since)
-            .copied()
+            .filter(|(number, from, _)| *number > since && *from != (region, session))
+            .map(|(number, _, event)| (*number, *event))
             .collect();
         let publication = match earlier {
             None => PublishedVillage {
@@ -413,9 +418,10 @@ mod tests {
 
     /// The plan, section 19.5 item 8 and 19.6: a global level event is published to
     /// every region, of every dimension, numbered, once to each owner, from that owner's
-    /// first publication on.
+    /// first publication on; but not to the region that made it, which told its own
+    /// players in that tick.
     #[test]
-    fn a_global_level_event_is_published_once_to_every_region_with_its_number() {
+    fn a_global_level_event_is_published_once_to_every_other_region_with_its_number() {
         let (mut village, owners) = the_end_and_the_overworld();
         for region in [WEST, EAST, RegionId(2)] {
             village.publication(region, 1, nothing_copied, &owners);
@@ -435,7 +441,12 @@ mod tests {
                 ..VillageReport::default()
             },
         );
-        for region in [WEST, EAST, RegionId(2)] {
+        assert_eq!(
+            village.publication(RegionId(2), 1, nothing_copied, &owners),
+            None,
+            "the region that made it"
+        );
+        for region in [WEST, EAST] {
             let published = village
                 .publication(region, 1, nothing_copied, &owners)
                 .expect("the event is news");

@@ -12,7 +12,7 @@ use clustine_world::{BlockPos, Entity, EntityData, EntityId, EntityUse, Float};
 use uuid::Uuid;
 
 use super::Region;
-use crate::api::{GlobalLevelEvent, TickOutput, VillageReport};
+use crate::api::{GlobalLevelEvent, TickOutput};
 use crate::mobs::body::held_effects;
 use crate::mobs::body::hurt::{self, Causer, DamageSource, DamageType};
 use crate::mobs::types::ender_dragon::{self, DRAGON, DragonLocal, parts};
@@ -95,11 +95,7 @@ impl Region {
                     position: pos,
                     data: 0,
                 };
-                output
-                    .village
-                    .get_or_insert_with(VillageReport::default)
-                    .global_events
-                    .push(told);
+                self.make_global_event(told, output);
             }
             DragonLocal::Award { at, amount } => {
                 self.award_with_direction(at, [0.0; 3], amount, output);

@@ -6,7 +6,9 @@
 use clustine_world::BlockPos;
 
 use super::Region;
-use crate::api::{FightSeen, GlobalLevelEvent, PlayerEvent, PublishedVillage, TickOutput};
+use crate::api::{
+    FightSeen, GlobalLevelEvent, PlayerEvent, PublishedVillage, TickOutput, VillageReport,
+};
 use crate::physics::containing;
 
 /// What the store published of the End and of the world that the End's steps read
@@ -44,20 +46,38 @@ impl Region {
         events.sort_by_key(|(number, _)| *number);
         events.dedup_by_key(|(number, _)| *number);
         for (_, event) in events {
-            for (id, player) in &self.players {
-                let position = heard_at(event, self.config.dimension == event.dimension, {
-                    let at = player.pose.position;
-                    [at.x, at.y, at.z]
-                });
-                output.player_events.push((
-                    *id,
-                    PlayerEvent::GlobalLevelEvent {
-                        event: event.event,
-                        position,
-                        data: event.data,
-                    },
-                ));
-            }
+            self.tell_players(event, output);
+        }
+    }
+
+    /// `ServerLevel.globalLevelEvent` of an event this region makes: its own players are
+    /// told in this tick, as the game tells every player at once, and the report takes
+    /// it to the store, which publishes it to every other region. Told only through the
+    /// store, it came a second or two late, and a player who stepped at once into the
+    /// End portal it opened was in no region when it came and never heard it.
+    pub(super) fn make_global_event(&mut self, event: GlobalLevelEvent, output: &mut TickOutput) {
+        self.tell_players(event, output);
+        output
+            .village
+            .get_or_insert_with(VillageReport::default)
+            .global_events
+            .push(event);
+    }
+
+    fn tell_players(&self, event: GlobalLevelEvent, output: &mut TickOutput) {
+        for (id, player) in &self.players {
+            let position = heard_at(event, self.config.dimension == event.dimension, {
+                let at = player.pose.position;
+                [at.x, at.y, at.z]
+            });
+            output.player_events.push((
+                *id,
+                PlayerEvent::GlobalLevelEvent {
+                    event: event.event,
+                    position,
+                    data: event.data,
+                },
+            ));
         }
     }
 }

@@ -11,10 +11,10 @@
 //! back (`ServerPlayerGameMode.useItemOn` 350–377), and every player is creative. Then
 //! the 5 × 5 ring is looked for from the frame; where it is whole, each of the inner 3 ×
 //! 3 is destroyed with its drops and made `end_portal` with flags 2, and the global level
-//! event 1038 at its centre goes into the region's report (`VillageReport::
-//! global_events`): the store publishes it to every region, and each region tells its
-//! own players, this one among them, from what is published (19.5 item 8, 19.6), which
-//! is the step that tells the published events, not this one.
+//! event 1038 at its centre is told to the region's players in this tick and goes into
+//! the region's report (`VillageReport::global_events`): the store publishes it to
+//! every other region, and each tells its own players from what is published (19.5
+//! item 8, 19.6; `end_world.rs`).
 //!
 //! **In the air**, aimed at a frame, the use passes. Otherwise the nearest of the
 //! world's strongholds is looked for as `ChunkGenerator.findNearestMapStructure` looks
@@ -61,7 +61,7 @@ use super::Region;
 use super::entities::insecure_uuid;
 use super::updates::{UPDATE_CLIENTS, UPDATE_LIMIT};
 use super::vibrations::{Context, Source, Vibration};
-use crate::api::{GlobalLevelEvent, Hand, PlayerEvent, RegionEvent, TickOutput, VillageReport};
+use crate::api::{GlobalLevelEvent, Hand, PlayerEvent, RegionEvent, TickOutput};
 use crate::physics::Vec3;
 use crate::physics::aabb::Aabb;
 use crate::physics::item::SOUND_SOURCE_NEUTRAL;
@@ -216,11 +216,7 @@ impl Region {
             position: centre,
             data: 0,
         };
-        output
-            .village
-            .get_or_insert_with(VillageReport::default)
-            .global_events
-            .push(opened);
+        self.make_global_event(opened, output);
         true
     }
 
