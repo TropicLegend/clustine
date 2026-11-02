@@ -29,9 +29,9 @@ use clustine_protocol::delta::VecDeltaCodec;
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids::play::clientbound;
 use clustine_protocol::packets::play::{
-    ClientTickEnd, ClientboundKeepAlive, ClientboundPlay, EntityDataValue, PlayerAction,
-    ServerboundKeepAlive, SetCreativeModeSlot, SetHeldItem, SetPlayerPosition, SpawnEntity,
-    TakeItemEntity, VecDelta, face, inventory, movement_flags, player_action,
+    ClientTickEnd, ClientboundPlay, EntityDataValue, PlayerAction, SetCreativeModeSlot,
+    SetHeldItem, SetPlayerPosition, SpawnEntity, TakeItemEntity, VecDelta, face, inventory,
+    movement_flags, player_action,
 };
 use tokio::time::{Instant, timeout};
 use uuid::Uuid;
@@ -158,7 +158,7 @@ struct ShownItem {
 }
 
 /// A player's connection after it has joined, from which it throws and reads what it
-/// is shown, answering keep-alives and following the items it is shown meanwhile.
+/// is shown, following the items it is shown meanwhile.
 struct Player {
     connection: Connection,
     /// Where its feet are.
@@ -303,8 +303,7 @@ impl Player {
         }
     }
 
-    /// The next frame that is not a keep-alive, which is answered, after following
-    /// what it says of items.
+    /// The next frame that is not a keep-alive, after following what it says of items.
     async fn next_frame(&mut self, deadline: Instant) -> Result<Vec<u8>> {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -312,12 +311,8 @@ impl Player {
                 .await
                 .context("nothing came in time")??;
             let id = Reader::new(&frame).var_int()?;
+            // The connection has answered it already.
             if id == clientbound::KEEP_ALIVE {
-                if let ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) =
-                    ClientboundPlay::decode(&frame)?
-                {
-                    self.connection.write(&ServerboundKeepAlive { id }).await?;
-                }
                 continue;
             }
             self.follow(&frame)?;

@@ -24,9 +24,7 @@ use clustine_data::{entity_types, items};
 use clustine_protocol::codec::{Position, Reader};
 use clustine_protocol::item::ItemStack;
 use clustine_protocol::packet_ids::play::{clientbound, serverbound};
-use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, PlayerAction, ServerboundKeepAlive, SpawnEntity, player_action,
-};
+use clustine_protocol::packets::play::{PlayerAction, SpawnEntity, player_action};
 use clustine_protocol::packets::{Packet, play::ClientboundPlay};
 use tokio::time::{Instant, timeout};
 
@@ -81,9 +79,8 @@ fn values_of(reader: &mut Reader<'_>) -> Result<Values> {
     }
 }
 
-/// Reads what `watching` is sent until an item appears and its data follows, answering
-/// keep-alives meanwhile, and says what it was shown. `feet` is where the thrower
-/// stands.
+/// Reads what `watching` is sent until an item appears and its data follows, and says
+/// what it was shown. `feet` is where the thrower stands.
 async fn watch(watching: &mut Connection, feet: (f64, f64, f64)) -> Result<Shown> {
     let deadline = Instant::now() + PATIENCE;
     let mut spawned: Option<SpawnEntity> = None;
@@ -96,13 +93,9 @@ async fn watch(watching: &mut Connection, feet: (f64, f64, f64)) -> Result<Shown
         let mut reader = Reader::new(&frame);
         let id = reader.var_int()?;
         match id {
-            clientbound::KEEP_ALIVE => {
-                if let ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) =
-                    ClientboundPlay::decode(&frame)?
-                {
-                    watching.write(&ServerboundKeepAlive { id }).await?;
-                }
-            }
+            // The connection has answered it, and it is nothing between the item and
+            // its data.
+            clientbound::KEEP_ALIVE => {}
             clientbound::ADD_ENTITY => {
                 let ClientboundPlay::SpawnEntity(spawn) = ClientboundPlay::decode(&frame)? else {
                     bail!("an add_entity that is none");

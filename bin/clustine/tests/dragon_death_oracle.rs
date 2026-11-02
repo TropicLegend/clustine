@@ -86,8 +86,8 @@ use clustine_coordinator::Policy;
 use clustine_data::{GAME_VERSION, blocks, entity_types, items};
 use clustine_protocol::packet_ids::play::clientbound;
 use clustine_protocol::packets::play::{
-    BossOperation, ClientCommand, ClientboundKeepAlive, ClientboundPlay, EntityDataValue, Respawn,
-    ServerboundKeepAlive, SynchronizePlayerPosition, client_command, game_event,
+    BossOperation, ClientCommand, ClientboundPlay, EntityDataValue, Respawn,
+    SynchronizePlayerPosition, client_command, game_event,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -1414,8 +1414,7 @@ struct AfterTheAsk {
 
 /// Reads what the server sends `connection` until a `Respawn` has come and a place
 /// after it, and then a health, or two of the clock's packets without one (the game
-/// tells the health in the first tick of the new player, `ServerPlayer.doTick`),
-/// answering keep-alives.
+/// tells the health in the first tick of the new player, `ServerPlayer.doTick`).
 async fn read_the_respawn(connection: &mut Connection) -> Result<AfterTheAsk> {
     let deadline = Instant::now() + PATIENCE;
     let mut seen = AfterTheAsk::default();
@@ -1430,9 +1429,6 @@ async fn read_the_respawn(connection: &mut Connection) -> Result<AfterTheAsk> {
             seen.kinds.push(kind(&packet));
         }
         match packet {
-            ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) => {
-                connection.write(&ServerboundKeepAlive { id }).await?;
-            }
             ClientboundPlay::Respawn(respawn) => {
                 ensure!(seen.respawn.is_none(), "a second Respawn: {respawn:?}");
                 seen.respawn = Some(respawn);

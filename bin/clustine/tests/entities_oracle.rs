@@ -35,9 +35,7 @@ use clustine_botswarm::{Bot, Connection, Oracle};
 use clustine_data::{entity_types, items};
 use clustine_protocol::codec::Position;
 use clustine_protocol::packet_ids::play::clientbound;
-use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, ClientboundPlay, PlayerAction, ServerboundKeepAlive, face, player_action,
-};
+use clustine_protocol::packets::play::{ClientboundPlay, PlayerAction, face, player_action};
 use tokio::time::{Instant, timeout};
 
 use common::start;
@@ -84,9 +82,8 @@ enum Sent {
 /// Each packet with the tick it came in, counted from the entity's spawn.
 type Timeline = Vec<(i64, Sent)>;
 
-/// Reads what `watching` is sent for [`RECORDED`] from now, answering keep-alives, and
-/// makes the timeline of the first entity of type `kind` to appear and of the blocks
-/// within four of `around`.
+/// Reads what `watching` is sent for [`RECORDED`] from now and makes the timeline of the
+/// first entity of type `kind` to appear and of the blocks within four of `around`.
 async fn record(watching: &mut Connection, kind: i32, around: (i32, i32, i32)) -> Result<Timeline> {
     let deadline = Instant::now() + RECORDED;
     let near = |at: (i32, i32, i32)| {
@@ -107,10 +104,8 @@ async fn record(watching: &mut Connection, kind: i32, around: (i32, i32, i32)) -
         let frame = frame?;
         let now = Instant::now();
         let sent = match ClientboundPlay::decode(&frame) {
-            Ok(ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id })) => {
-                watching.write(&ServerboundKeepAlive { id }).await?;
-                continue;
-            }
+            // The connection has answered it; it is no part of what was shown.
+            Ok(ClientboundPlay::ClientboundKeepAlive(_)) => continue,
             Ok(ClientboundPlay::SpawnEntity(spawn)) if spawn.kind == kind && entity.is_none() => {
                 entity = Some(spawn.entity_id);
                 spawned_at = Some(now);

@@ -24,11 +24,11 @@ use clustine_protocol::packets::login::{
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundMoveVehicle, ClientboundPlay,
     ConfirmTeleportation, EntityDataValue, Interact, LevelChunkWithLight, LightUpdate, Login,
-    PaddleBoat, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundKeepAlive,
-    ServerboundMoveVehicle, ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem,
-    SetCreativeModeSlot, SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition,
-    SetPlayerPositionAndRotation, SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta,
-    face, inventory, movement_flags, player_action, player_input, relative,
+    PaddleBoat, PlayerAbilities, PlayerAction, PlayerLoaded, ServerboundMoveVehicle,
+    ServerboundPlayerAbilities, ServerboundPlayerInput, ServerboundUseItem, SetCreativeModeSlot,
+    SetDefaultSpawnPosition, SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation,
+    SynchronizePlayerPosition, TakeItemEntity, UseItemOn, VecDelta, face, inventory,
+    movement_flags, player_action, player_input, relative,
 };
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
@@ -559,6 +559,9 @@ impl Bot {
             }
             _ => bail!("the play state did not start with a login packet"),
         };
+        // From here the server asks for keep-alives, and a test may leave the bot unread
+        // for longer than the server waits for an answer.
+        connection.answer_keep_alives();
         ensure!(
             profile.name == name,
             "joined as {} instead of {name}",
@@ -709,7 +712,8 @@ impl Bot {
     }
 
     /// Gives up the bot's behaviour and returns the raw connection, for tests that need
-    /// a client that misbehaves.
+    /// a client that misbehaves. The connection goes on answering keep-alives itself, so
+    /// its new owner must not answer them.
     pub fn into_connection(self) -> Connection {
         self.connection
     }
@@ -1700,10 +1704,8 @@ impl Bot {
             self.difficulty = Some(told);
         }
         match packet {
-            ClientboundPlay::ClientboundKeepAlive(packet) => {
-                self.connection
-                    .write(&ServerboundKeepAlive { id: packet.id })
-                    .await?;
+            // The connection has answered it already, as it reached the bot.
+            ClientboundPlay::ClientboundKeepAlive(_) => {
                 self.stats.keep_alives_answered += 1;
             }
             ClientboundPlay::SynchronizePlayerPosition(packet) => {

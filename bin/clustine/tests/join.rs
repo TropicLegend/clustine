@@ -280,6 +280,7 @@ async fn silent_client_is_timed_out() {
         .await
         .unwrap()
         .into_connection();
+    connection.stop_answering_keep_alives().await;
     let reason = loop {
         let frame = connection.read_frame().await.unwrap();
         if let ClientboundPlay::Disconnect(disconnect) = ClientboundPlay::decode(&frame).unwrap() {

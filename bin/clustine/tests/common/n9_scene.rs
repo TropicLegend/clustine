@@ -8,7 +8,8 @@
 //! which Clustine's codec does not read. So a [`Scene`] joins as a bot does, waits for
 //! the chunks about it, and then reads the connection itself: it keeps every frame with
 //! the time it came, decodes what it can, reads entity data leniently up to the first
-//! value it cannot, and answers keep-alives, teleports and chunk batches.
+//! value it cannot, and answers teleports and chunk batches (the connection answers
+//! keep-alives itself).
 //!
 //! Times are a client's: a packet's arrival, and ticks counted as twentieths of a second
 //! between two arrivals ([`ticks`]), which is what a client can tell and what the other
@@ -27,9 +28,9 @@ use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientTickEnd, ClientboundPlay, ConfirmTeleportation, ContainerClick,
     EntityDataValue, HashedStack, LevelEvent, PlayerAction, ServerboundContainerClose,
-    ServerboundKeepAlive, ServerboundPlayerAbilities, ServerboundUseItem, SetCreativeModeSlot,
-    SetHeldItem, SetPlayerPosition, SetPlayerPositionAndRotation, SetPlayerRotation, SpawnEntity,
-    UseItemOn, VecDelta, entity_data_serializer, face, movement_flags, player_action, relative,
+    ServerboundPlayerAbilities, ServerboundUseItem, SetCreativeModeSlot, SetHeldItem,
+    SetPlayerPosition, SetPlayerPositionAndRotation, SetPlayerRotation, SpawnEntity, UseItemOn,
+    VecDelta, entity_data_serializer, face, movement_flags, player_action, relative,
 };
 use tokio::time::{Instant, timeout_at};
 
@@ -164,11 +165,6 @@ impl Scene {
         let id = Reader::new(&frame).var_int()?;
         let packet = ClientboundPlay::decode(&frame).ok();
         match &packet {
-            Some(ClientboundPlay::ClientboundKeepAlive(alive)) => {
-                self.connection
-                    .write(&ServerboundKeepAlive { id: alive.id })
-                    .await?;
-            }
             Some(ClientboundPlay::SynchronizePlayerPosition(teleport)) => {
                 let flags = teleport.relative_flags;
                 let pick = |flag: i32, own: f64, given: f64| {

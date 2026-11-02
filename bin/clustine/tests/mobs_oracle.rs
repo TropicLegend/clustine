@@ -27,9 +27,7 @@ use anyhow::{Context, Result};
 use clustine_botswarm::{Bot, Connection, Oracle};
 use clustine_data::{entity_types, items, sounds};
 use clustine_protocol::item::ItemStack;
-use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, ClientboundPlay, EntityDataValue, ServerboundKeepAlive, SetTime, face,
-};
+use clustine_protocol::packets::play::{ClientboundPlay, EntityDataValue, SetTime, face};
 use tokio::time::{Instant, timeout};
 
 use common::start;
@@ -67,9 +65,9 @@ enum Shown {
 /// id (0 for a sound) and what.
 type Seen = Vec<(u128, i32, Shown)>;
 
-/// Reads what `watching` is sent for `how_long`, answering keep-alives, and keeps what
-/// names a cow or an orb, and the sounds; `ours` are the cows and orbs seen so far, and
-/// `builder` is the builder's wire id.
+/// Reads what `watching` is sent for `how_long` and keeps what names a cow or an orb,
+/// and the sounds; `ours` are the cows and orbs seen so far, and `builder` is the
+/// builder's wire id.
 async fn record(
     watching: &mut Connection,
     ours: &mut Vec<i32>,
@@ -91,10 +89,8 @@ async fn record(
         let frame = frame?;
         let ms = began.elapsed().as_millis();
         let (id, shown) = match ClientboundPlay::decode(&frame) {
-            Ok(ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id })) => {
-                watching.write(&ServerboundKeepAlive { id }).await?;
-                continue;
-            }
+            // The connection has answered it; it is no part of what was shown.
+            Ok(ClientboundPlay::ClientboundKeepAlive(_)) => continue,
             Ok(ClientboundPlay::SpawnEntity(spawn))
                 if spawn.kind == entity_types::COW
                     || spawn.kind == entity_types::EXPERIENCE_ORB =>
@@ -461,8 +457,8 @@ struct Rode {
     off_at: (f64, f64, f64),
 }
 
-/// Reads what `watching` is sent for `how_long`, answering keep-alives, and keeps the
-/// `set_passengers` of `pig` and its data's index 18.
+/// Reads what `watching` is sent for `how_long` and keeps the `set_passengers` of `pig`
+/// and its data's index 18.
 async fn watch_pig(
     watching: &mut Connection,
     pig: i32,
@@ -480,9 +476,6 @@ async fn watch_pig(
             return Ok(());
         };
         match ClientboundPlay::decode(&frame?) {
-            Ok(ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id })) => {
-                watching.write(&ServerboundKeepAlive { id }).await?;
-            }
             Ok(ClientboundPlay::SetPassengers(packet)) if packet.vehicle_id == pig => {
                 rode.seated.push(packet.passengers);
             }

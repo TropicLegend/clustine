@@ -33,7 +33,6 @@ use clustine_protocol::packet_ids::play::serverbound;
 use clustine_protocol::packets::Packet;
 use clustine_protocol::packets::play::{
     ChunkBatchReceived, ClientboundPlay, ConfirmTeleportation, EntityDataValue,
-    ServerboundKeepAlive,
 };
 use clustine_world::components::{
     BannerLayer, Component, EffectInstance, FireworkExplosion, FireworkShape, Fireworks, Kind,
@@ -712,10 +711,6 @@ impl Looker {
 
     async fn answer(&mut self, packet: &ClientboundPlay) {
         match packet {
-            ClientboundPlay::ClientboundKeepAlive(alive) => {
-                let answer = ServerboundKeepAlive { id: alive.id };
-                self.connection.write(&answer).await.expect("answered");
-            }
             ClientboundPlay::SynchronizePlayerPosition(teleport) => {
                 let answer = ConfirmTeleportation {
                     teleport_id: teleport.teleport_id,

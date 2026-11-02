@@ -8,7 +8,7 @@
 //!
 //! The bots have no way to ask for a respawn, so once the bot is dead the test takes its
 //! raw connection, sends the client's command (`PERFORM_RESPAWN`) and reads what comes,
-//! answering keep-alives as a client does, as `respawn.rs` does.
+//! as `respawn.rs` does; the connection answers keep-alives itself.
 
 mod common;
 #[path = "common/dimensions.rs"]
@@ -19,8 +19,8 @@ use anyhow::{Context, Result};
 use clustine_botswarm::{Bot, Connection};
 use clustine_data::{blocks, entity_types};
 use clustine_protocol::packets::play::{
-    BossOperation, ClientCommand, ClientboundKeepAlive, ClientboundPlay, Respawn,
-    ServerboundKeepAlive, SetHealth, SynchronizePlayerPosition, client_command,
+    BossOperation, ClientCommand, ClientboundPlay, Respawn, SetHealth, SynchronizePlayerPosition,
+    client_command,
 };
 use tokio::time::{Instant, timeout};
 
@@ -292,7 +292,7 @@ struct AfterTheAsk {
 }
 
 /// Reads what the server sends `connection` until a `Respawn` has come and, after it, a
-/// place and a health of more than nothing, answering keep-alives.
+/// place and a health of more than nothing.
 async fn read_the_respawn(connection: &mut Connection) -> Result<AfterTheAsk> {
     let deadline = Instant::now() + PATIENCE;
     let mut seen = AfterTheAsk::default();
@@ -302,9 +302,6 @@ async fn read_the_respawn(connection: &mut Connection) -> Result<AfterTheAsk> {
             .await
             .context("the respawn did not come in time")??;
         match ClientboundPlay::decode(&frame)? {
-            ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) => {
-                connection.write(&ServerboundKeepAlive { id }).await?;
-            }
             ClientboundPlay::Respawn(respawn) => {
                 assert!(seen.respawn.is_none(), "a second Respawn: {respawn:?}");
                 seen.respawn = Some(respawn);

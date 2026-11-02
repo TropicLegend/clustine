@@ -44,9 +44,7 @@ use clustine_protocol::packets::configuration::{
 };
 use clustine_protocol::packets::handshake::Intent;
 use clustine_protocol::packets::login::{ClientboundLogin, LoginAcknowledged, LoginStart};
-use clustine_protocol::packets::play::{
-    ClientboundPlay, ServerboundKeepAlive, SynchronizePlayerPosition,
-};
+use clustine_protocol::packets::play::{ClientboundPlay, SynchronizePlayerPosition};
 use clustine_protocol::text::Text;
 use clustine_region::RegionId;
 use clustine_rpc::RegionList;
@@ -476,7 +474,8 @@ enum Outcome {
     Closed(String),
 }
 
-/// A connection in the play state that was sent where it is and does nothing.
+/// A connection in the play state that was sent where it is and does nothing but
+/// answer keep-alives.
 struct Raw {
     connection: Connection,
     entity: i32,
@@ -495,15 +494,8 @@ impl Raw {
                 Ok(frame) => frame,
                 Err(error) => return Ending::Closed(format!("{error:#}")),
             };
-            match ClientboundPlay::decode(&frame).unwrap() {
-                ClientboundPlay::Disconnect(_) => {
-                    return Ending::Disconnected(Reason::from_frame(&frame).unwrap());
-                }
-                ClientboundPlay::ClientboundKeepAlive(packet) => {
-                    let answer = ServerboundKeepAlive { id: packet.id };
-                    let _ = self.connection.write(&answer).await;
-                }
-                _ => {}
+            if let ClientboundPlay::Disconnect(_) = ClientboundPlay::decode(&frame).unwrap() {
+                return Ending::Disconnected(Reason::from_frame(&frame).unwrap());
             }
         }
     }
@@ -519,7 +511,12 @@ impl Entering {
                 Err(error) => return Outcome::Closed(format!("{error:#}")),
             };
             match ClientboundPlay::decode(&frame).unwrap() {
-                ClientboundPlay::Login(login) => entity = Some(login.entity_id),
+                ClientboundPlay::Login(login) => {
+                    entity = Some(login.entity_id);
+                    // In play the player is kept alive as a bot is, whether or not the
+                    // test is reading it at the time.
+                    self.connection.answer_keep_alives();
+                }
                 ClientboundPlay::Disconnect(_) => {
                     return Outcome::PutOut(Reason::from_frame(&frame).unwrap());
                 }

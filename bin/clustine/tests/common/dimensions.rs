@@ -1162,13 +1162,11 @@ pub async fn down_into_the_gateway(
 /// Takes a bot standing on the End's platform back to the overworld the one way there
 /// is without the dragon's death: off the platform into the void, where it dies; then,
 /// as the bots have no way to ask for a respawn, on its raw connection the client's
-/// command (`PERFORM_RESPAWN`), answering keep-alives, until the server has sent the
+/// command (`PERFORM_RESPAWN`), until the server has sent the
 /// `Respawn` into the overworld and placed it there. The connection is then closed: the
 /// player has left in the overworld.
 pub async fn back_through_the_void(mut bot: Bot, others: &mut [Bot]) -> Result<()> {
-    use clustine_protocol::packets::play::{
-        ClientCommand, ClientboundKeepAlive, ServerboundKeepAlive, client_command,
-    };
+    use clustine_protocol::packets::play::{ClientCommand, client_command};
     off_the_platform(&mut bot, others, f64::from(END_FLOOR - 80)).await?;
     wait(&mut bot, others, PATIENCE, "the void's death", |bot| {
         !bot.deaths.is_empty()
@@ -1188,9 +1186,6 @@ pub async fn back_through_the_void(mut bot: Bot, others: &mut [Bot]) -> Result<(
             .await
             .context("the respawn did not come in time")??;
         match ClientboundPlay::decode(&frame)? {
-            ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id }) => {
-                connection.write(&ServerboundKeepAlive { id }).await?;
-            }
             ClientboundPlay::Respawn(respawn) => {
                 ensure!(
                     respawn.spawn.dimension_name == OVERWORLD,

@@ -41,8 +41,7 @@ use clustine_botswarm::{Bot, Connection, Oracle};
 use clustine_data::{BLOCKS, BlockState, entity_types, items};
 use clustine_protocol::packet_ids::play::clientbound;
 use clustine_protocol::packets::play::{
-    ClientboundKeepAlive, ClientboundPlay, EntityDataValue, PositionPath, ServerboundKeepAlive,
-    VecDelta, face, player_input,
+    ClientboundPlay, EntityDataValue, PositionPath, VecDelta, face, player_input,
 };
 use tokio::time::{Instant, timeout_at};
 
@@ -151,9 +150,8 @@ enum Start {
     Seated,
 }
 
-/// Reads what `watching` is sent, answering keep-alives, and makes the timeline of the
-/// first minecart to appear, from `start` for `window`. It gives up if `start` has not
-/// come within [`PATIENCE`].
+/// Reads what `watching` is sent and makes the timeline of the first minecart to appear,
+/// from `start` for `window`. It gives up if `start` has not come within [`PATIENCE`].
 async fn record(watching: &mut Connection, start: Start, window: Duration) -> Result<Timeline> {
     let mut deadline = Instant::now() + PATIENCE;
     let mut cart = None;
@@ -166,10 +164,8 @@ async fn record(watching: &mut Connection, start: Start, window: Duration) -> Re
         let frame = frame?;
         let now = Instant::now();
         let sent = match ClientboundPlay::decode(&frame) {
-            Ok(ClientboundPlay::ClientboundKeepAlive(ClientboundKeepAlive { id })) => {
-                watching.write(&ServerboundKeepAlive { id }).await?;
-                continue;
-            }
+            // The connection has answered it; it is no part of what was shown.
+            Ok(ClientboundPlay::ClientboundKeepAlive(_)) => continue,
             Ok(ClientboundPlay::SpawnEntity(spawn))
                 if spawn.kind == entity_types::MINECART && cart.is_none() =>
             {
