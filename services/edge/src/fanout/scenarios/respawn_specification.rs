@@ -50,6 +50,7 @@ fn placed_with(region_dimension: Dimension, at: Vec3, respawn: Respawned) -> Dur
         },
         flying: false,
         respawn: Some(respawn),
+        gateway: false,
     }
 }
 
@@ -345,6 +346,7 @@ async fn in_the_end() -> (Harness, Client) {
             pose: Pose::at(within(IN_THE_END)),
             flying: false,
             respawn: None,
+            gateway: false,
         },
     );
     edge.settle(THE_END).await;

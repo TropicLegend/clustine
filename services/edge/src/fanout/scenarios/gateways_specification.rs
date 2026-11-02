@@ -63,6 +63,7 @@ fn placed_at(at: Vec3, look: (f32, f32)) -> Durable {
         },
         flying: false,
         respawn: None,
+        gateway: true,
     }
 }
 
@@ -192,7 +193,6 @@ async fn a_gateway_s_traveller_is_placed_keeping_their_velocity_with_their_look_
 /// placed with `DELTA ∪ ROTATION` (the client keeps its velocity and look) as through
 /// any gateway: the look the region kept is no turn at all.
 #[tokio::test]
-#[ignore = "finding: 19.8 places a gateway's player with DELTA ∪ ROTATION (the game's transition keeps the client's look, yaw and pitch 0 relative); placed by the region they are in (an End of one region) with no hand-over, the edge has no travel to go by and sends the look absolutely (relative flags DELTA only), so the client's look snaps to the one the region last had"]
 async fn a_gateway_s_traveller_placed_by_the_region_they_are_in_keeps_their_look() {
     let (mut edge, mut client) = standing_in_the_west().await;
     let teleports = client.teleports.len();

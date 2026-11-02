@@ -701,7 +701,6 @@ async fn a_bot_that_goes_into_a_gateway_comes_out_on_the_outer_islands_where_the
 /// a gateway is placed with `DELTA ∪ ROTATION`, its velocity and its turn nought, so that
 /// the client keeps the velocity and the look it had.
 #[tokio::test]
-#[ignore = "finding: a gateway's player is placed with the relative flags DELTA_X, DELTA_Y and DELTA_Z only (224) and the look sent absolutely, where the game sends DELTA ∪ ROTATION (504) and a turn of nought; the same in a world pinned at 0 and 4 (see services/edge/src/fanout/scenarios/gateways_specification.rs)"]
 async fn a_bot_through_a_gateway_keeps_its_velocity_and_look() {
     let world = a_world_with_a_gateway().await;
     let mut bot = arrive_in(&world, "Keeper", &mut []).await;

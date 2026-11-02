@@ -535,6 +535,10 @@ impl Region {
         };
         self.journal.waiting.insert(id);
         let mut transfer = waiting.transfer;
+        let gateway = transfer
+            .travel
+            .as_ref()
+            .is_some_and(|travel| matches!(travel.way, Way::Gateway { .. }));
         transfer.travel = None;
         transfer.pose.position.x = position[0];
         transfer.pose.position.y = position[1];
@@ -571,6 +575,7 @@ impl Region {
                     pose: player.pose,
                     flying: player.flying,
                     respawn,
+                    gateway,
                 };
                 // `PlayerList.respawn` tells the respawned player their health, after
                 // the `Respawn` (the edge holds it until then).

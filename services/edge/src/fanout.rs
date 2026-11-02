@@ -2334,9 +2334,11 @@ impl Fanout {
                 pose,
                 flying,
                 respawn,
+                gateway,
             } => {
                 if self.has_stay(player, entity) {
-                    self.placed(player, dimension, pose, flying, respawn).await;
+                    self.placed(player, dimension, pose, flying, respawn, gateway)
+                        .await;
                 }
             }
             Durable::Died {
@@ -3775,6 +3777,7 @@ impl Fanout {
         pose: Pose,
         flying: bool,
         respawn: Option<Respawned>,
+        gateway: bool,
     ) {
         if let Some(respawn) = respawn {
             Box::pin(self.respawned(player, dimension, pose, flying, respawn)).await;
@@ -3823,6 +3826,10 @@ impl Fanout {
                     relative::ROTATION | relative::ROTATE_DELTA,
                 )
             }
+            // A gateway's traveller placed by the region they are in, with no hand-over
+            // to tell their look by: the gateway keeps the client's own, a turn of
+            // nought (`EndGatewayBlock.getPortalDestination`).
+            None if gateway => (0.0, 0.0, relative::ROTATION | relative::ROTATE_DELTA),
             None => (pose.yaw, pose.pitch, 0),
         };
         let placing = [
@@ -12715,6 +12722,7 @@ mod scenarios {
                     no_respawn_block: true,
                     anchor_sound: None,
                 }),
+                gateway: false,
             },
         );
         edge.settle(EAST).await;
@@ -12784,6 +12792,7 @@ mod scenarios {
                     no_respawn_block: false,
                     anchor_sound: None,
                 }),
+                gateway: false,
             },
         );
         edge.settle(WEST).await;
@@ -12836,6 +12845,7 @@ mod scenarios {
                 pose: Pose::at(placed_at),
                 flying: false,
                 respawn: None,
+                gateway: false,
             },
         );
         edge.settle(NETHER).await;

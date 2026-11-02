@@ -287,16 +287,21 @@ fn a_player_through_an_exact_gateway_comes_out_at_its_exit() {
                 player,
                 pose,
                 respawn,
+                gateway,
                 ..
-            } if *player == id => Some((*pose, *respawn)),
+            } if *player == id => Some((*pose, *respawn, *gateway)),
             _ => None,
         });
         if placed.is_some() {
             break;
         }
     }
-    let (pose, respawn) = placed.expect("placed");
+    let (pose, respawn, gateway) = placed.expect("placed");
     assert_eq!(respawn, None);
+    assert!(
+        gateway,
+        "the placing says a gateway made it, for the client's look"
+    );
     assert_eq!(
         [pose.position.x, pose.position.y, pose.position.z],
         [20.5, 60.0, 20.5]

@@ -1291,6 +1291,11 @@ pub enum Durable {
         /// What a respawn's placing owes the client (`docs/groundwork/p-plan.md`,
         /// section 19.7): none for a portal's or a gateway's.
         respawn: Option<Respawned>,
+        /// Placed by a gateway, which keeps the client's look and velocity
+        /// (`EndGatewayBlock.getPortalDestination`: `DELTA ∪ ROTATION`, turned by
+        /// nought). The edge cannot tell otherwise where the region the player is in
+        /// placed them, with no hand-over to say how they left.
+        gateway: bool,
     },
     /// The player died, with `message` the game's death message for them: their edge
     /// shows them the respawn screen (`PlayerCombatKill`), and the region keeps their
