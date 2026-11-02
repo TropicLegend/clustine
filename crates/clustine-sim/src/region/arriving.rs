@@ -505,6 +505,24 @@ impl Region {
         let Some(waiting) = self.waiting.get(&id) else {
             return;
         };
+        // A gateway's traveller comes out on the tallest block about the exit, which
+        // only the holder of the exit's chunk reads; placed here, it would stand on
+        // nothing read, above the return gateway. The End's home that took it in when
+        // it knew no holder (its own gateway, or an arrival before the store's word)
+        // sends it on to the holder once it knows one, as it sends on what it is sent
+        // (the plan, section 19.8), and a waiting respawn goes to its target's holder.
+        let target = travel.target.chunk();
+        if matches!(travel.way, Way::Gateway { .. })
+            && travel.to == self.config.dimension
+            && let Some(holder) = self.land.knowledge(target).holder()
+            && waiting.transfer.forwards < super::respawning::FORWARDS_LIMIT
+        {
+            if let Some(waiting) = self.waiting.get_mut(&id) {
+                waiting.transfer.forwards = waiting.transfer.forwards.saturating_add(1);
+            }
+            self.let_waiting_go(id, holder);
+            return;
+        }
         let pose = waiting.transfer.pose;
         let (position, _, yaw) = self.exit_place(
             travel,

@@ -36,8 +36,9 @@ use crate::api::{
 use crate::state::WaitingState;
 
 /// How many times a waiting respawn is let go to the holder of its target before it is
-/// placed at the world spawn, its respawn kept: a holder that changes faster than the
-/// stay can follow does not keep it moving for good.
+/// placed at the world spawn, its respawn kept, and a gateway's traveller before it is
+/// placed where it waits (`arriving.rs`): a holder that changes faster than the stay can
+/// follow does not keep it moving for good.
 pub(super) const FORWARDS_LIMIT: u8 = 16;
 
 /// Whether `travel` is a respawn's: after a death, after the credits, or the End

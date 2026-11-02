@@ -842,7 +842,6 @@ async fn a_second_bot_through_the_first_gateway_finds_the_same_exit() {
 /// `findExitPosition`, as for the first: the second bot through the gateway is placed
 /// on the tallest block within 5 of two above the exit, where the first was placed.
 #[tokio::test]
-#[ignore = "finding: in a world whose regions follow the players (no pins), the second bot through the gateway is placed at (1028.5, 83, -6.5), on the return gateway's cage: the fall-back of findTallestBlock (two above the exit, one up), as if no block about the exit were read; the first bot, and the second in a world pinned at 0 and 4, are placed at (1028.5, 71, -5.5), on the tallest block within 5"]
 async fn a_second_bot_through_the_first_gateway_comes_out_where_the_first_did() {
     let world = a_world_with_a_gateway().await;
     let two = two_through_the_first_gateway(&world).await;

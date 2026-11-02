@@ -344,6 +344,99 @@ fn the_exit_s_holder_makes_the_island_and_the_return_gateway_once() {
     assert!(again.events.is_empty(), "{changes} then {:?}", again.events);
 }
 
+/// 19.8, "Where the traveller comes out": a player through a gateway is placed by the
+/// holder of the exit's chunk, which reads the tallest block about it. The End's home
+/// that took in a player through its own gateway, knowing no holder of the exit's chunk
+/// then, and learns that another region holds it, lets the player go to that region with
+/// their travel, rather than placing them over chunks it cannot read (where they would
+/// stand two above the exit, on the return gateway's cage).
+#[test]
+fn a_gateway_s_player_waiting_for_an_exit_another_region_holds_goes_on_to_that_region() {
+    let far = BlockPos::new(200, 60, 0);
+    let holder = RegionId(7);
+    let feet = [
+        f64::from(GATEWAY.x) + 0.5,
+        f64::from(GATEWAY.y),
+        f64::from(GATEWAY.z) + 0.5,
+    ];
+    let mut end = end_with_a_gateway();
+    let data = GatewayData {
+        age: 0,
+        exit: Some(far),
+        exact: false,
+    };
+    let mut output = TickOutput::default();
+    assert!(end.set_block_entity_data_as(GATEWAY, gateway_data(data), false, &mut output));
+    let (id, _) = add_player(&mut end, 1, feet, false);
+    let mut fired = false;
+    for _ in 0..4 {
+        idle(&mut end);
+        if end.waiting_state(id).is_some() {
+            fired = true;
+            break;
+        }
+    }
+    assert!(fired, "the player went into the gateway and waits here");
+    // Nothing is known of the exit's chunks yet: the player waits for them.
+    let output = idle(&mut end);
+    assert_eq!(placed_or_departed(&output, id), None);
+    assert!(end.waiting_state(id).is_some());
+    let centre = far.chunk();
+    let foreign: Vec<(ChunkPos, RegionId)> = (-1..=1)
+        .flat_map(|dx| (-1..=1).map(move |dz| ChunkPos::new(centre.x + dx, centre.z + dz)))
+        .map(|chunk| (chunk, holder))
+        .collect();
+    let output = end.tick(&TickInputs {
+        foreign,
+        ..TickInputs::default()
+    });
+    let Some(Outcome::Departed(transfer, to)) = placed_or_departed(&output, id) else {
+        panic!(
+            "let go to the exit's holder: {:?}",
+            placed_or_departed(&output, id)
+        );
+    };
+    assert_eq!(to, holder);
+    assert_eq!(
+        transfer.travel,
+        Some(Travel {
+            to: Dimension::End,
+            target: far,
+            way: Way::Gateway {
+                from: GATEWAY,
+                exact: false,
+                island: None,
+            },
+        }),
+        "with their travel, for the holder to place them"
+    );
+    assert_eq!(transfer.forwards, 1);
+    assert!(end.waiting_state(id).is_none());
+}
+
+/// What became of a waiting player in a tick.
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    Placed([f64; 3]),
+    Departed(Box<crate::api::PlayerTransfer>, RegionId),
+}
+
+fn placed_or_departed(output: &TickOutput, id: PlayerId) -> Option<Outcome> {
+    output.durable.iter().find_map(|(_, _, entry)| match entry {
+        Durable::Placed { player, pose, .. } if *player == id => Some(Outcome::Placed([
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+        ])),
+        Durable::Departed {
+            player,
+            transfer,
+            to,
+        } if *player == id => Some(Outcome::Departed(Box::new(transfer.clone()), *to)),
+        _ => None,
+    })
+}
+
 #[allow(unused)]
 fn _unused(_: PlayerId, _: Vec3) -> BlockPos {
     at(0, 0, 0)
