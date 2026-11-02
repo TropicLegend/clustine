@@ -538,6 +538,18 @@ impl Region {
         }
         let first = !fight.previously_killed;
         self.fight_memory.progress = Some(0.0);
+        // `setVisible(false)` at once, before the podium and before the dragon's
+        // removal: the bar is taken from everyone this region shows it to.
+        let bar = bar_id(self.config.game_seed);
+        for id in std::mem::take(&mut self.fight_memory.shown).into_keys() {
+            output.player_events.push((
+                id,
+                PlayerEvent::BossBar {
+                    id: bar,
+                    change: BarChange::Remove,
+                },
+            ));
+        }
         self.spawn_exit_portal(true, output);
         self.spawn_new_gateway(output);
         if first {

@@ -458,6 +458,15 @@ impl Region {
         if let Some(target) = mob.body.combat.target {
             self.target_at_line(living.body.position, target);
         }
+        // A dragon's fight learns of its death before the dragon is removed, as
+        // `tickDeath` calls `setDragonKilled` before `remove`: the exit portal's
+        // podium is broken and set again, and its bar taken away, before the clients
+        // are told the dragon is gone.
+        let (killed, locals): (Vec<_>, Vec<_>) = locals.into_iter().partition(|local| {
+            matches!(local, tick::Local::Dragon(dragon)
+                if matches!(**dragon, types::ender_dragon::DragonLocal::FightKilled))
+        });
+        self.apply_locals(key, killed, output);
         self.mob_ticked(&entity, living.body.position, out, position, output);
         if removed.is_none() {
             let shown = Shown { yaw, pitch, flags };

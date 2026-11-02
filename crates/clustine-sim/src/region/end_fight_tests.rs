@@ -218,7 +218,8 @@ fn the_fight_s_dragon_s_health_moves_the_bar() {
     assert_eq!(changes, [(bar, BarChange::Progress(0.5))]);
 }
 
-/// The fight's dragon dead: the bar is hidden, taken from its players.
+/// The fight's dragon dead: the bar is hidden, taken from its players at once, in the
+/// tick of the death (`setDragonKilled`'s `setVisible(false)`), and not again.
 #[test]
 fn the_bar_is_taken_away_when_the_fight_s_dragon_is_killed() {
     let mut home = end_home();
@@ -229,9 +230,12 @@ fn the_bar_is_taken_away_when_the_fight_s_dragon_is_killed() {
     if let Some(fight) = home.dragon_fight.as_mut() {
         fight.dragon = Some(dragon);
     }
-    home.fight_dragon_killed(dragon, &mut TickOutput::default());
-    let (_, changes) = until_told(&mut home, id);
-    assert_eq!(changes, [(bar, BarChange::Remove)]);
+    let mut output = TickOutput::default();
+    home.fight_dragon_killed(dragon, &mut output);
+    assert_eq!(bar_changes(&output, id), [(bar, BarChange::Remove)]);
+    for _ in 0..25 {
+        assert_eq!(bar_changes(&idle(&mut home), id), []);
+    }
     let fight = home.dragon_fight.as_ref().expect("the fight");
     assert!(fight.dragon_killed && fight.previously_killed);
 }
