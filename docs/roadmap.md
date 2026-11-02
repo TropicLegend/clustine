@@ -47,7 +47,7 @@ they were shown. A player who leaves comes back where they left.
 brought up to date on 2026-11-02, has the whole list): survival mode (health, hunger,
 damage, breaking times and drops, crafting, smelting, the menus of the blocks that work
 items, most enchantments' effects); chat and commands; other players' sneaking,
-swimming and gliding poses; weather; monster spawners, mobs on pressure plates, signs'
+swimming and gliding poses; weather; monster spawners, signs'
 text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
 warden and the wither.
 
