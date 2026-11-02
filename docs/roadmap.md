@@ -597,9 +597,19 @@ portal's opening sound heard a tick late, and where the player last died, which 
 `Respawn` and a login now say (`p-plan.md`, 19.9). Named, left for now: a creative
 player's health comes back between the void's hits (survival's rule, which comes with
 survival), the health of 0 told after the death screen rather than before it, no
-advancements, and the respawn's spread. Next: the gateways' tests from the
-specification, and comparisons of the End's features, the credits and the dragon's
-first moves.
+advancements, and the respawn's spread. The gateways were then tested end to end
+(`gateways.rs`) and compared with the official server (`gateways_oracle.rs`), and the
+dragon's first thirty seconds with it (`dragon_oracle.rs`), each by someone who did not
+write the code. Six differences were found and mended: the dragon was sent every tick
+rather than every third; a player who left in the End and joined again was sent no
+chunks and the edge failed; a gateway in an End of one region turned the client's look
+to the region's; a gateway's chunk came without its age and exit, so its beam showed
+anew each time; a second traveller through a gateway came out on the return gateway's
+cage where another region held the exit; and the exit was searched from the nearest end
+stone, where the game, which keeps `betweenClosed`'s moving cursor, searches from the
+chunk's far corner. Named, left for now: the gateway's advancement, and which packet the
+dragon's first update after it is shown brings. Next: comparisons of the End's
+features, the credits and the dragon's death.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
