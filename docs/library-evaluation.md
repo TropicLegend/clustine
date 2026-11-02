@@ -10,10 +10,11 @@ Which existing Rust libraries Clustine can reuse for concerns outside the simula
   needs nightly Rust; the cost is that new packets are only really checked against
   the official server. World generation depends on neither SteelMC nor Pumpkin: it
   is ported from SteelMC's 26.3 branch, with notices, into Clustine's own crates
-  (`clustine-noise`, `clustine-terrain`, `clustine-structures`, `clustine-light`,
-  fed by `clustine-worldgen-data`), and judged against the game's own classes. None
-  of the infrastructure crates below is used yet: services talk over
-  `clustine-rpc` (postcard over TCP) and the coordinator is a single process.
+  (`clustine-noise`, `clustine-terrain`, `clustine-features`, `clustine-structures`,
+  `clustine-light`, fed by `clustine-worldgen-data`), and judged against the game's
+  own classes. Of the infrastructure crates below only `zstd` is used (2026-11-02):
+  services talk over `clustine-rpc` (postcard over TCP) and the coordinator is a
+  single process.
 
 Researched on 2026-10-07 from the crates.io API, the GitHub API and repository files.
 Versions and licences change; re-check before adding a dependency. Licence statements
@@ -141,8 +142,9 @@ as an independent check.
 | `hecs` | MIT OR Apache-2.0 | 0.11.2 | |
 | `flecs_ecs` | MIT | 0.2.2 | Releases lag the repository |
 
-Several of these need a newer compiler than the workspace's current minimum of 1.85; the
-minimum is raised when the first of them is added.
+Several of these need a newer compiler than the workspace's minimum (1.88 in
+`Cargo.toml`, 1.89 in practice since `uuid` needs it); the minimum is raised when the
+first of them is added.
 
 ## Not verified
 

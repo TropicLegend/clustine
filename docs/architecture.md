@@ -13,21 +13,27 @@ does not have on disk, another worker can carry on with it from there, and the e
 keeps its players meanwhile and resumes with whoever runs the region then; see
 [ADR-0008](adr/0008-durable-regions-and-resuming.md). The world store also keeps each
 player's place, so that a player who leaves comes back where they were, in whichever
-region that is now ([ADR-0020](adr/0020-one-stay-per-player.md)). The edge makes the
-light of chunks whose blocks changed, on threads of its own
-([ADR-0023](adr/0023-light-at-the-edge.md)). World generation is a flat world, or with
-`--seed` that seed's bare land as the game makes it before anything grows on it; it
-runs in the world store's process on the scheduler of `services/worldgen`, on a pool of
-threads, and the store keeps each chunk once made
-([ADR-0021](adr/0021-generation-is-a-function.md)). `playerdata` and the operator are
-empty crates so far.
+region that is now ([ADR-0020](adr/0020-one-stay-per-player.md)). The world store keeps
+the player's whole state with their place (inventory, ender chest, experience, effects,
+health, respawn point). The edge makes the light of chunks whose blocks changed for its
+clients ([ADR-0023](adr/0023-light-at-the-edge.md)), and each region lights its own
+chunks in its tick for what the simulation reads
+([ADR-0029](adr/0029-light-in-the-simulation.md)). World generation is a flat world, or
+with `--seed` the game's land for that seed with its features and structures'
+buildings, in each of the three dimensions; it runs in the world store's process on the
+scheduler of `services/worldgen`, on a pool of threads, and the store keeps each chunk
+once made ([ADR-0021](adr/0021-generation-is-a-function.md)). A region holds chunks of
+one dimension; each dimension has a home region, made with the world, and the store
+keeps an index of portals. Entities live in their chunks and cross between regions with
+them ([ADR-0028](adr/0028-entities.md)). `playerdata` and the operator are empty
+crates so far.
 
 Where the implementation is simpler than the design below:
 
 | Design | So far |
 |---|---|
-| Regions of nearby active chunks that merge, split and migrate | A region is the chunks its players see. Regions whose players come within 24 chunks of each other are merged, a group that is 32 chunks from everybody else is split off (at a view distance of 8), and regions are moved between workers to even their numbers out; see [ADR-0010](adr/0010-regions-that-follow-players.md), [ADR-0016](adr/0016-when-to-merge-and-split.md) and [ADR-0017](adr/0017-the-end-of-the-stripes.md). Load is no reason to split or to move yet |
-| Boundaries only run through inactive gaps | So it is unless regions are pinned side by side (`--pin`), or for the seconds a merge waits. Where a boundary does run past players, what they do to blocks on its other side is passed on to the region that has them and takes effect a tick or two later |
+| Regions of nearby active chunks that merge, split and migrate | A region is the chunks its players see, with a ring about them that ticks ([ADR-0024](adr/0024-block-behaviour-in-a-region.md)), and copies of the chunks across its lines ([ADR-0025](adr/0025-effects-between-regions.md)). Regions whose players come within 24 chunks of each other are merged, a group that is 32 chunks from everybody else is split off (at a view distance of 8), and regions are moved between workers to even their numbers out; see [ADR-0010](adr/0010-regions-that-follow-players.md), [ADR-0016](adr/0016-when-to-merge-and-split.md) and [ADR-0017](adr/0017-the-end-of-the-stripes.md). Load is no reason to split or to move yet |
+| Boundaries only run through inactive gaps | So it is unless regions are pinned side by side (`--pin`), or for the seconds a merge waits. Where a boundary does run past players, what a tick does on its other side is an effect that the world store keeps and hands to the region that uses the chunk, and regions whose border ticks run in lockstep, so that water crosses on the ticks it would in one region and an update arrives a tick late ([ADR-0025](adr/0025-effects-between-regions.md)). A circuit built at a pinned line is lent the chunks across it; where regions follow players, two whose line a circuit works at merge at once ([ADR-0027](adr/0027-lending-at-a-line.md)) |
 | Coordinator replicated with Raft, leases fenced everywhere | One coordinator with its state in memory; only the world store acts on epochs; see [ADR-0007](adr/0007-coordinator-scope.md) |
 | Losing a worker is recovered from by migration | Another worker is given the region once the dead one's lease of 5 seconds is over and restores it from the world store; the region's players stand still meanwhile and stay connected. A region is moved on purpose the same way, with the old owner letting go first, so that nobody waits for the lease (`clustine move`, and every worker that is told to stop) |
 | An edge can be lost without its players noticing | An edge that dies takes its players with it |
@@ -67,11 +73,11 @@ flowchart LR
 | Service | Responsibility | State |
 |---|---|---|
 | **edge** | Terminates client connections (authentication, encryption, compression). Translates inbound packets into semantic inputs for the worker owning the player's region. Fans region deltas out to players: interest management and packet encoding. | Live connections and a replica of the chunks its players can see |
-| **coordinator** | Region ownership map and leases, merge/split/migrate decisions, load balancing, global world state (time, weather, game rules, player list). | Replicated with embedded Raft, three replicas |
-| **worker** | Ticks the regions it owns, each on its own tick loop in a thread pool. The only place simulation happens. | Authoritative in-memory region state |
+| **coordinator** | Region ownership map and leases, merge/split/migrate decisions, load balancing, global world state (time, weather, game rules, player list). So far the world's clock, the mob caps and the wandering trader's chance are the world store's, which publishes them to the regions. | Replicated with embedded Raft, three replicas |
+| **worker** | Ticks the regions it owns, each on a thread of its own. The only place simulation happens. | Authoritative in-memory region state |
 | **worldstore** | Serves and persists chunks, snapshots and write-ahead logs. | Durable |
 | **worldgen** | Generates chunks that do not exist yet. | Stateless |
-| **playerdata** | Profiles, inventories, statistics, advancements; one lease per player. | Durable |
+| **playerdata** | Profiles, inventories, statistics, advancements; one lease per player. Not built: a player's place and state are the world store's so far ([ADR-0020](adr/0020-one-stay-per-player.md)). | Durable |
 | **operator** | Reconciles `ClustineCluster` and `ClustineWorld` resources: scaling, drain, upgrades. | Kubernetes API |
 
 Edge combines the gateway and fan-out roles. They may be split into two services if
@@ -98,9 +104,10 @@ migration.
 - **Migration.** Pause at a tick boundary, ship a snapshot and the log tail, bump the
   epoch, resume on the new owner. Graceful drain, rolling updates and crash recovery all
   use this mechanism.
-- **Entity transfer.** An entity or player moving between regions on different workers is
-  handed over in two phases so it is never duplicated or lost. The edge reroutes the
-  player's connection without a reconnect.
+- **Entity transfer.** An entity moving between regions is kept in its chunk and in every
+  commit, and crosses as an arrival through the world store, so it is never duplicated
+  or lost; a player is handed over and the edge reroutes their connection without a
+  reconnect ([ADR-0028](adr/0028-entities.md), [ADR-0020](adr/0020-one-stay-per-player.md)).
 - **Tick rate.** Each region has its own tick clock. An overloaded region slows down alone
   instead of lagging the cluster.
 
@@ -109,8 +116,9 @@ migration.
 A region tick should be a pure function of the previous region state and that tick's
 inputs (player packets, global state, messages from other regions, a per-region seeded
 random stream). This allows replay debugging, migration by "snapshot plus log tail", hot
-standbys and differential testing against the vanilla server. It is a design goal from the
-first milestone; whether it becomes a hard guarantee is decided once dynamic regions exist.
+standbys and differential testing against the vanilla server. It is a rule:
+`crates/clustine-sim` uses no hash maps, no clock and no I/O, which its `clippy.toml`
+enforces in part.
 
 ### Limits
 
@@ -128,13 +136,14 @@ What is implemented so far is specified in [world-format.md](world-format.md); t
 section describes where the format is going.
 
 - **Chunks.** The unit of storage is a chunk: one file with its sections in palettes,
-  its block entities, its light and what generation left for later, compressed with
-  zstd and checksummed. Sections are not stored by their hash: in real terrain no two
+  its block entities, its light, its structures' starts and what generation left for
+  later, and a second file beside it with its entities, each compressed with zstd and
+  checksummed, kept by dimension. Sections are not stored by their hash: in real terrain no two
   are equal, and a file for each would take six times the disk and run a volume out of
   inodes (`docs/adr/0022-what-a-chunk-carries.md`, section 3).
 - **Snapshots and branches** of a world are not designed yet. They will have to copy
   or link chunk files, since there are no manifests to copy in their place.
-- **Write-ahead log.** Each region appends its changes to a log, which is periodically
+- **Write-ahead log.** Every region's changes go to one log, which is periodically
   compacted into chunks. This gives crash recovery, point-in-time restore and a block
   audit log.
 - **Backends.** Storage sits behind a trait: local filesystem first, then object storage
@@ -153,14 +162,17 @@ section describes where the format is going.
   official server jar's data generator by `tools/datagen` and committed as Rust tables
   ([ADR-0004](adr/0004-game-data.md)), and since
   [ADR-0019](adr/0019-data-made-from-mojangs-jar.md) also what the game's code says of
-  blocks (light, shapes, fluids, placement classes) and the world generation's data
-  (noise routers, surface rules, carvers, structures), emitted as Rust. The jar and its
+  blocks (light, shapes, fluids, placement classes), of entities (sizes, physics, loot)
+  and the world generation's data (noise routers, surface rules, carvers, structures),
+  emitted as Rust. The jar and its
   data pack are never redistributed.
 - Tests marked `#[ignore]` whose names contain `official_server` run the same bots
-  against Mojang's server and compare what both send (joining, chunks, light, placing
-  and using blocks). Terrain is judged by Java programs that call the game's own
-  classes without a server (`crates/clustine-terrain/tests/java`) and compare every
-  block.
+  against Mojang's server and compare what both send, from joining and placing blocks
+  to redstone, entities, villagers, the Nether's portals and the End's dragon
+  (`tools/oracles.sh` runs them; the [parity matrix](parity-matrix.md) lists them).
+  Terrain, features and structures are judged by Java programs that call the game's own
+  classes, or run its server, and compare every block
+  (`crates/clustine-terrain/tests/java`, `services/worldgen/tests/game_features.rs`).
 - Progress is tracked in the [parity matrix](parity-matrix.md).
 
 ## Plugins

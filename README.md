@@ -4,18 +4,22 @@ A from-scratch Minecraft: Java Edition server that simulates **one world across 
 instances**. Adding instances adds compute and memory to the same world rather than
 creating more separate servers.
 
-> **Status: pre-alpha.** Players walk around a creative world, see each other and
-> build: a flat world, or with `--seed` the game's overworld for that seed, block for
-> block, trees and plants and ores included (no structures' buildings yet). Blocks are
-> placed and used
-> by vanilla's rules: doors open, stairs face the player, fences join their
-> neighbours, buckets pour (nothing flows yet). The world is simulated in regions that
-> follow the players, split when a group goes off on its own and merged when it comes
-> back, and shared out among several worker processes; a worker or the world store
-> can die without anyone being disconnected or losing anything they were shown. A
-> player who leaves comes back where they left, also in another region. There is one
-> coordinator. See the [roadmap](docs/roadmap.md), whose first section says where the
-> work stands.
+> **Status: pre-alpha.** Players play a creative world with its overworld, Nether and
+> End, flat or with `--seed` the game's own land for that seed, block for block. Blocks
+> are placed, used and updated by vanilla's rules: water and lava flow, sand falls,
+> plants grow by their light, redstone runs with the game's order of updates. Animals,
+> monsters and villagers live with the game's AI and spawn by its rules; villagers trade
+> and raids come; minecarts, boats and mounts ride; containers open with the game's
+> menus. The Nether's portals and the End's dragon fight, gateways and credits are
+> built. Most of this is compared with Mojang's own server ([parity
+> matrix](docs/parity-matrix.md)). Not yet: survival mode (health, hunger, breaking
+> times and drops, crafting, smelting), chat and commands, weather, and online mode.
+> The world is simulated in regions that follow the players, split when a group goes
+> off on its own and merged when it comes back, and shared out among several worker
+> processes, with no seam where regions meet; a worker or the world store can die
+> without anyone being disconnected or losing anything they were shown. A player who
+> leaves comes back where they left. There is one coordinator. See the
+> [roadmap](docs/roadmap.md), whose first section says where the work stands.
 
 ## Goals
 
@@ -48,16 +52,17 @@ creating more separate servers.
 
 | Path | Contents |
 |---|---|
-| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, regions and who runs them, RPC; light (`clustine-light`); the rules of blocks the simulation and generation share (`clustine-blocks`); terrain generation (`clustine-noise`, `clustine-terrain`, `clustine-structures`, and `clustine-worldgen-data`, emitted from the game's data) |
+| `crates/` | Shared libraries: protocol, game data, world model, world format, simulation, regions and who runs them, RPC; light (`clustine-light`); the rules of blocks the simulation and generation share (`clustine-blocks`); world generation (`clustine-noise`, `clustine-terrain`, `clustine-features` for the game's features and structures' pieces, `clustine-structures`, and `clustine-worldgen-data`, emitted from the game's data) |
 | `services/` | One crate per service: edge, coordinator, worker, worldstore, worldgen (the generator and its scheduler); `playerdata` and `operator` are empty so far |
 | `bin/clustine` | Single-binary mode running every service in one process |
-| `tools/` | Development tools: the `botswarm` load-test harness, the `datagen` table generator, and `check.sh`, which runs every check CI runs |
+| `tools/` | Development tools: the `botswarm` load-test harness, the `datagen` table generator, `check.sh`, which runs every check CI runs, and `oracles.sh`, which runs the comparisons with the official server |
 | `deploy/` | Kubernetes manifests and the test that runs a cluster in kind |
 | `docs/` | Architecture, roadmap, parity matrix and decision records |
 
 ## Building
 
-Requires Rust 1.88 or newer.
+Requires Rust 1.89 or newer (a dependency, `uuid`, needs it; the workspace itself says
+1.88).
 
 ```bash
 cargo build --workspace
@@ -70,18 +75,18 @@ cargo test --workspace
 ### Running
 
 The server listens on `127.0.0.1:25565` by default and runs in offline mode: names are
-not authenticated, so keep it on localhost. Players are put into a flat creative world
-(or the land of a seed, below), walk and fly around it, see each other, break blocks,
-place them as vanilla does, open doors and gates and use buckets. Someone who leaves
-and comes back is where they were, flying or not, with the same hotbar.
+not authenticated, so keep it on localhost. Every player is in creative mode. A player's
+place is kept when they leave: where they were, in which dimension, flying or not, their
+whole inventory and ender chest, experience, effects, health and their respawn point.
 The world is kept in the directory `world` (see `--world`). Changes are logged as they
-happen, so they survive the server being killed.
+happen, so they survive the server being killed. Every world has its Nether and its
+End; a flat world's are those of seed 0, as the game's flat world has them.
 
 ```bash
 cargo run -p clustine
 ```
 
-The world begins as one region. A group of players that goes far from everybody else
+The world begins with a home region for each dimension. A group of players that goes far from everybody else
 (32 chunks at the usual view distance) is split off into a region of its own, which is
 simulated on a thread of its own, and merged again when it comes back within 24
 chunks. Each is a pause for those it concerns, and the log says when it happens: in an
@@ -98,21 +103,21 @@ x = 64:
 cargo run -p clustine -- --pin 4 --reshape by-hand
 ```
 
-With a seed the world is not flat but the game's overworld for that seed: its
-mountains, coasts, oceans, rivers, caves and ravines, with the game's biomes, trees,
-grass and flowers, ores, lakes, springs, geodes, dripstone and the rest of what the
-game's features place, block for block what the game makes before it builds
-structures; the ground is already levelled where a village will stand. Players enter
-where the game would put a new world's spawn for that seed, which the world keeps from
-when it is made. There are no structures' buildings yet, and water and lava do not
-flow. Fossils, desert wells and the sulfur caves' springs are built of the game's own
-structure templates, which are Mojang's and not in Clustine: they are read from the
-game's server jar, the one `cargo datagen` keeps under `target/` or another named with
-`--minecraft-jar`, and without one they are left out. Chunks are made on a pool of
-threads as they are first asked for and kept, so a second visit reads them from the
-disk. A world is made one way for good, so give it a directory of its own; one that
-holds a flat world, a world of another seed, or one made by an earlier build of
-Clustine's land, is refused.
+With a seed the world is not flat but the game's own for that seed, in its three
+dimensions: the overworld's mountains, coasts, oceans, rivers, caves and ravines with
+its biomes, everything the game's features place and its structures' buildings; the
+Nether's land with its fortresses and bastions; the End's island, outer islands and
+cities. Players enter where the game would put a new world's spawn for that seed, which
+the world keeps from when it is made. Structures built of the game's own templates
+(villages, bastions, ruined portals, shipwrecks, igloos, ocean ruins, mansions, End
+cities, fossils, desert wells and others) are Mojang's and not in Clustine: they are
+read from the game's server jar, the one `cargo datagen` keeps under `target/` or
+another named with `--minecraft-jar`, and without one they are left out (a flat
+world's Nether and End leave them out for now). Chunks are made on a pool of threads as
+they are first asked for and kept, so a second visit reads them from the disk. A world
+is made one way for good, so give it a directory of its own; one that holds a flat
+world, a world of another seed, or one made by an earlier build of Clustine's land, is
+refused.
 
 ```bash
 cargo run --release -p clustine -- --seed 13579 --world world-13579
@@ -148,7 +153,8 @@ cargo run -p clustine -- edge
 Players connect to the edge on `127.0.0.1:25565` once a worker runs the region players
 enter the world in, which takes a moment: a coordinator gives nothing away for the
 first five seconds (its lease, `--lease-seconds`). With `coordinator --reshape by-hand` and `worldstore --pin 4` the
-world is two pinned regions, one for each worker, and nothing merges or splits unless
+overworld is two pinned regions, one for each worker (the Nether and the End have a
+region each), and nothing merges or splits unless
 it is asked for (`clustine merge`, `clustine split`, `clustine move`). For a world with
 a seed, give the same `--seed` to the world store (which makes the chunks and puts
 the spawn where the game would, keeping it with the world) and every edge (which tells
@@ -177,8 +183,11 @@ cargo run -p clustine-botswarm -- --vanilla --accept-eula idle
 ```
 
 ```bash
-CLUSTINE_ACCEPT_MINECRAFT_EULA=true cargo test --workspace -- --ignored official_server
+CLUSTINE_ACCEPT_MINECRAFT_EULA=true tools/oracles.sh
 ```
+
+`tools/oracles.sh` runs the comparisons one test target at a time, each under a limit of
+its own, and says which failed; the [parity matrix](docs/parity-matrix.md) lists them.
 
 ### Game data
 

@@ -9,8 +9,7 @@
 //! handed: the stacks a click throws out of the window are returned for the region to
 //! drop, in the order the game throws them.
 //!
-//! Clustine's stacks have no components, so the game's `isSameItemSameComponents` is
-//! the item alone, and every N6 container keeps the default 99 a slot as its most
+//! Every N6 container keeps the default 99 a slot as its most
 //! (`Container.getMaxStackSize`), so a slot holds a full stack of its item at most.
 
 use clustine_blocks::data::is_class;

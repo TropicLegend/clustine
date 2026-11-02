@@ -20,6 +20,7 @@
   orders, which are phases F and S of the plan; until then the scheduler runs the
   `--seed` preview's bare stages.
 - Date: 2026-10-10
+- **Since** (2026-11-02): the features' runs are built in all three dimensions (F0 to F7) with the structures' buildings (S0 to S3), each judged against the game's own server (`services/worldgen/tests/game_features.rs`).
 
 Where a figure or a statement is a **guess** it says so. Statements about the code
 are of the tree at `b67a1d0`. `S263:` is SteelMC's 26.3 branch at `885c4b3`; "the

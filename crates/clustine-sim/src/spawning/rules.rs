@@ -13,10 +13,9 @@
 //!
 //! Named differences: the overworld is never thundering in Clustine, so the monsters'
 //! darkness is never read with the thunder's reach of 10; the world is never peaceful
-//! (`Difficulty::WORLD` is easy), so peaceful's refusals are written and never taken;
-//! the types of the Nether's lists (D9 5.7's #9, #14, #17, #20, #26, #27, #31, #32,
-//! #35 and #38 but the any-light monsters) are refused here, since no overworld list or
-//! structure names them.
+//! (`Difficulty::WORLD` is easy), so peaceful's refusals are written and never taken.
+//! The Nether's types have their rules here since P12; the endermite, the silverfish and
+//! the skeleton horse, which no list spawns naturally, are refused.
 
 use clustine_blocks::data::{fluid_in_tag, has_lava, in_tag, is_block};
 use clustine_data::spawning::{self, Placement};

@@ -8,6 +8,11 @@
   the crate, not served). Each step's row in section 3 says how it stands, and the
   roadmap ("Where the work after M3 stands") has what was measured. How the plan
   came about is in "How this plan came about", before the review's list at the end.
+- **Since** (2026-11-02): phase S is built (S3 on 2026-10-26), and the Nether and the
+  End are served with their features and structures, judged against the game's own
+  server (phase P of the roadmap, `docs/groundwork/p-plan.md`, which took phase D's
+  place: every world has its three dimensions rather than one chosen when it is made).
+  Not built: W4 and F8. The rows below say how they stood before.
 
 **Steps G0 to G3 have been done** (2026-10-10), and both trials went well; what
 they found is in "What the first trials found", before section 0, and the text below

@@ -80,10 +80,10 @@ struct Players {
 #[derive(Args)]
 struct Made {
     /// The seed of the world, as a number (what the game's /seed command shows).
-    /// With one the world is the game's overworld for that seed: its mountains,
-    /// coasts, oceans, rivers, caves and ravines, with their biomes, trees, plants,
-    /// ores, lakes and the rest of what grows, and no structures' buildings yet.
-    /// Without one the world is flat. A world
+    /// With one the world is the game's for that seed in its three dimensions: its
+    /// land, caves, features and structures' buildings (those built of the game's
+    /// templates need its jar, `--minecraft-jar`). Without one the overworld is flat,
+    /// and the Nether and the End are those of seed 0. A world
     /// is made one way for good: a directory that holds a world of another seed, or
     /// a flat one, is refused. In a cluster the world store and every edge have to be
     /// given the same seed; nothing checks that they agree.
@@ -122,7 +122,8 @@ impl Made {
             None => {
                 warn!(
                     "no jar of the game's server was named (--minecraft-jar) or found at {DATAGEN_JAR}: \
-                     fossils, desert wells and sulfur springs are not placed in this world"
+                     structures built of its templates (villages, bastions, ruined portals, End cities, \
+                     fossils and others) are not placed in this world"
                 );
                 None
             }

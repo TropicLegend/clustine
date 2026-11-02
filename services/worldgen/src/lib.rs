@@ -1,8 +1,8 @@
 //! World generation service: stateless chunk generation.
 //!
-//! Two generators: the flat world, which a server has unless it is given a seed, and
-//! [`TerrainGenerator`], a preview of the game's bare land for a seed (see
-//! [`terrain`]).
+//! The flat world, which a server has unless it is given a seed, and the game's land
+//! for a seed: [`TerrainGenerator`]'s terrain (see [`terrain`]) with the features and
+//! the structures' buildings placed over it ([`features`]), in each dimension.
 
 pub mod features;
 pub mod preview;

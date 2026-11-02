@@ -113,12 +113,13 @@ impl Land {
         }
     }
 
-    /// The overworld of this seed as the game makes it before structures are built:
-    /// its terrain and its features, made in ADR-0021's order of runs on the
-    /// generation scheduler's pool, off the store's thread for chunks, nearest a
+    /// The three dimensions of this seed as the game makes them: their terrain, their
+    /// features and their structures' buildings, made in ADR-0021's order of runs on
+    /// the generation scheduler's pool, off the store's thread for chunks, nearest a
     /// joining player first. Without the blocks of the structure templates, which
     /// come from the operator's jar ([`Self::of_seed_with`]), nothing built of a
-    /// template is placed: fossils, desert wells, the sulfur springs.
+    /// template is placed: villages, bastions, ruined portals, End cities, fossils,
+    /// desert wells, the sulfur springs and the rest.
     ///
     /// This reads the features' data and seeds the world's noises, which takes some
     /// tens of milliseconds.

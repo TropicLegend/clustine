@@ -19,12 +19,9 @@
 //!   whose content is no fluid, is dropped, no sulfur cube swallows or is lit, a glass
 //!   bottle or shears release no bees from a hive, a carved pumpkin or a wither skeleton
 //!   skull makes no golem or wither (it goes on a head or stays);
-//! - bone meal grows nothing, as Clustine has no growth by it: it stays with the click
-//!   of a failure, as the game's does where nothing can grow (brief 4.12's
-//!   recommendation);
-//! - stacks have no components (decision 3): a flint and steel and shears never wear
-//!   out, a glass bottle filled from water gives a potion with no contents, and every
-//!   potion dispensed is taken for water (a water bottle makes mud);
+//! - a flint and steel and shears never wear out, a glass bottle filled from water gives
+//!   a potion with no contents, and every potion dispensed is taken for water (a water
+//!   bottle makes mud), as written before stacks had components (decision 3);
 //! - a command block minecart, which Clustine does not have, is dropped;
 //! - a water bottle's five splashes over the dispenser are drawn and not sent, as the
 //!   repo sends no particles;

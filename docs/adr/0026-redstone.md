@@ -9,6 +9,7 @@
   review accepted it after five small changes, which are made. **Accepted** on
   2026-10-17. Where the plan and this record differ, this record holds.
 - Date: 2026-10-17
+- **Built** (phase R, R2 to R8, by 2026-10-17): eleven circuits send what the official server sends (`redstone_oracle.rs`); the roadmap has the account.
 
 ## Context
 

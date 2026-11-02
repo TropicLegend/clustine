@@ -24,28 +24,34 @@ agreed plans, below.
 This section is the current state; the sections after it are the history of how it
 came about, with what was measured on the way.
 
-**What a player has.** A creative world, flat or with `--seed` the game's overworld
-for that seed: its biomes, the shape of its land, its surface, caves and ravines,
-everything the game's features place (trees, grass, flowers, ores, lakes, springs,
-geodes, dripstone, sculk) and its structures' buildings, block for block what the game
-makes, the land settled as the game settles it before it is first shown. Light as the
-game's, also after blocks change. Placing and using blocks by vanilla's rules. Blocks
-that behave (phase B, [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): what a
-block rests on or hangs from going takes it along, fences and walls join as their
-neighbours change, sand and gravel fall (landing at once), water and lava flow as the
-game's and make obsidian, cobblestone, stone and basalt where they meet, blocks are
-waterlogged and concrete powder hardens; leaves of a felled tree decay, sugar cane,
-cactus, kelp and vines grow, copper weathers, amethyst and dripstone grow, farmland
-dries, fire burns and spreads and lava sets it, coral dies out of water. Where two
-regions meet the border is no seam (phase E): water, lava and sand cross it at their
-own pace, updates a tick late, and the chunks along it tick. A player who leaves
-comes back where they left. The world runs in regions that follow their players
-across several workers; a worker or the world store can die without anyone being
-disconnected or losing what they were shown.
+**What a player has.** A creative world with its three dimensions: flat, or with
+`--seed` the game's overworld, Nether and End for that seed, block for block what the
+game generates (land, caves, features, structures' buildings), settled as the game
+settles it before it is first shown; a flat world's Nether and End are seed 0's. Light
+as the game's. Blocks placed, used and updated by vanilla's rules: what rests on a
+block goes with it, sand falls, water and lava flow and meet, plants grow by their light,
+leaves decay, copper weathers, fire spreads. Redstone with the game's order of updates.
+Containers with the game's menus, the whole inventory and the ender chest. Animals and
+monsters with the game's AI, spawning by its rules, breeding, combat, loot and
+experience; villagers with their work, trading, gossip, golems and raids; minecarts,
+boats and the mounts; projectiles, TNT and explosions. Nether portals and the Nether's
+own rules and mobs; the End's portal, the dragon fight, the exit portal and the credits,
+the gateways (with an ender pearl too), cities with their shulkers and the elytra, the
+void and the respawn. Most of it is compared with the official server or judged by the
+game's own classes ([the parity matrix](parity-matrix.md)). The world runs in regions
+that follow their players across several workers, with no seam where they meet; a
+worker or the world store can die without anyone being disconnected or losing what
+they were shown. A player who leaves comes back where they left.
 
-**What a player will miss within minutes**, all of it planned: sculk
-sensors, crafters, plates pressed by mobs; commands; survival
-mode and crafting.
+**What a player will miss within minutes** (the [parity matrix](parity-matrix.md),
+brought up to date on 2026-11-02, has the whole list): survival mode (health, hunger,
+damage, breaking times and drops, crafting, smelting, the menus of the blocks that work
+items, most enchantments' effects); chat and commands; other players' sneaking,
+swimming and gliding poses; weather; monster spawners, mobs on pressure plates, signs'
+text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
+warden and the wither. In a flat world (`cargo run` without `--seed`) the Nether and the
+End have no structures built of templates (bastions, ruined portals, End cities): to be
+mended.
 
 **Built since M3:**
 
@@ -64,8 +70,8 @@ mode and crafting.
   [plan](groundwork/t8-plan.md)); the overworld's features (F0 to F6,
   [plan](groundwork/f-plan.md)); the structures' buildings (S0 to S2,
   [plan](groundwork/s-plan.md)), each judged against the game's own server. Not built:
-  W4 (serving a world the official server made), the Nether's and the End's features
-  (F7, with D), F8 and S3.
+  W4 (serving a world the official server made) and F8 (finished chunks against the
+  official server's saved ones); F7 and S3 came with phase P and on 2026-10-26.
 - *Block behaviour* (phase B, [plan](groundwork/b-plan.md),
   [ADR-0024](adr/0024-block-behaviour-in-a-region.md)): B1 to B8, on `main` since
   2026-10-16. The updates of a change (B3), scheduled ticks
@@ -502,7 +508,8 @@ of a click in a chunk the finishing region neither holds nor copies is not shown
 (the client's correction at the acknowledgement shows it); a chunk's animals have
 ticked before they are shown, where the comparison's official server is frozen, and a
 few groups stand elsewhere where the land under them differs (podzol for grass), which
-is the features' order and not the spawning; the structures' entities wait for S3.
+is the features' order and not the spawning; the structures' entities wait for S3
+(which came on 2026-10-26: the comparison is to be run again).
 
 **A second run, with each comparison under a limit** (2026-10-29). A run of every
 comparison waited 22 hours on one scene and the next nearly six on another, each a
@@ -513,7 +520,8 @@ after 20 returns. It found **a flat world that spawned no mob in a whole day**: 
 published the counts a region waits for with the world's clock, which moves with
 commits, and a world in which nothing lives commits nothing; it now publishes behind a
 region's whole report too, with two tests from the rule by someone else. Run again, each failure alone:
-every comparison passes but the structures' entities, which wait for S3. A day of
+every comparison passes but the structures' entities, which wait for S3 (since come;
+to be run again). A day of
 spawning first gave Clustine about two thirds of the official server's monsters: the
 comparison watched each server for 1,200 seconds, and Clustine's debug build ticks a full
 cap at about 16.5 a second, so its night was cut short. It now watches a day of each
@@ -622,11 +630,16 @@ the dragon could be critical, which the game's never is. Named, left for now: th
 `DYING`, shown of no dying mob; the bar's removal comes after the dragon's within their
 tick; the official server tells air over the exit portal's block a player steps into,
 which the client has already, of a cause not found. A player who comes through a portal
-into chunks another region holds is now sent on to that region to be placed. Next:
-what phase P left named (an ender pearl through a gateway, the dragon's respawn by four
-crystals, arrows on the dragon's parts), then the plan of what follows the Nether and
-the End, survival with the rest of parity by the matrix's tiers, written and agreed
-with the owner before it is built.
+into chunks another region holds is now sent on to that region to be placed. An ender
+pearl thrown into a gateway carries its thrower through and back, tested end to end
+(`gateway_pearls.rs`, by someone who did not write the gateways); it found the pearl
+stranded where nobody was, as nothing placed the game's portal ticket, mended. Next:
+what phase P left named (pearls kept with an owner who leaves, the dragon's respawn by
+four crystals, arrows on the dragon's parts, entities through a portal into another
+region's chunks), the gaps a survey of the repository found on 2026-11-02 (a flat
+world's Nether and End without templates, CI red since 2026-10-31 on tests of timing),
+then the plan of what follows the Nether and the End, survival with the rest of parity
+by the matrix's tiers, written and agreed with the owner before it is built.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
@@ -635,10 +648,12 @@ On the platform the dragon's bar should show; the dragon circles the island, lan
 podium and breathes; crystals on the pillars heal it and explode when hit. Every player is
 creative, so the dragon does not attack, but it can be fought: hit its head or wings, or
 blow up its crystals. When it dies the portal in the podium opens, a gateway appears and
-the egg sits on top; fly into the gateway that appears (an ender pearl through it is not
-built yet) to reach the outer islands, and back through the gateway there; step into the portal for the
+the egg sits on top; throw an ender pearl into the gateway that appears (or break its
+bedrock and drop in) to reach the outer islands, and back through the gateway there; step into the portal for the
 credits, then out to your bed or the world spawn. Jump off the island to see the void's death and the respawn screen. A city
-far out has shulkers that peek and shoot at other mobs, and a ship with an elytra.
+far out has shulkers that peek and shoot at other mobs, and a ship with an elytra; it
+needs the game's jar for its templates, which a world with `--seed` reads where
+`cargo datagen` keeps it, and a flat world does not yet.
 
 **What to try with a real client** (the Nether, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), build a Nether
@@ -651,7 +666,7 @@ on the lava sea, cold and purple off it, ridden with a saddle and a warped fungu
 stick; magma cubes and zombified piglins near portals; a bed exploding when used and a
 respawn anchor charged with glowstone setting the spawn. A piglin or hoglin led through
 a portal into the overworld shakes and turns into a zombified piglin or a zoglin after
-fifteen seconds. Not built yet: the End, and survival.
+fifteen seconds. Not built yet: survival.
 
 **N10's cost, measured** (2026-10-29, `bin/clustine/tests/n10_measured.rs`, release, two
 workers on two regions pinned at block x = 64, a village of 30 villagers, a bell and 30
@@ -894,7 +909,7 @@ has no commands, so everything is made from the creative inventory:
 What to say if it is not so: which step, what was seen, and the log of the world
 store, the coordinator and the workers.
 
-S3 beside them. The judge of features, over 204 areas of two seeds with
+The judge of features, over 204 areas of two seeds with
 structures on (2026-10-16), finds only the named exceptions: kelp beside a structure's
 edge now schedules its water as the game's does, and the two icebergs that differ are
 HotSpot's `Math.sin` and `Math.cos` (the parity matrix, T2).
@@ -2534,6 +2549,9 @@ one, and is not built for now. With twenty players joining far apart at once, so
 waits a quarter of a second at worst.
 
 ### Known limits after M3
+
+Written after M3; many have been lifted since. What holds now is in the
+[parity matrix](parity-matrix.md) and the first section above.
 
 - One coordinator, nothing on disk; while it is down nothing is taken over, moved, merged
   or split. Regions and players carry on.

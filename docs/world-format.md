@@ -1,6 +1,6 @@
 # World format
 
-How Clustine stores a world on disk. This describes **format version 20**
+How Clustine stores a world on disk. This describes **format version 23**
 (`FORMAT_VERSION` in `crates/clustine-format/src/lib.rs`) as implemented in
 `crates/clustine-format` (encodings) and `services/worldstore` (files); see
 `docs/adr/0008-durable-regions-and-resuming.md` for what the store promises of commits
@@ -15,13 +15,13 @@ finds an earlier `format` in a world's `meta` stops before it reads, changes or 
 anything else in the directory, and says:
 
 ```text
-This world was made by an earlier Clustine (world format 19; this server writes
-format 20). Worlds are not carried over before the first release: move <directory>
+This world was made by an earlier Clustine (world format 22; this server writes
+format 23). Worlds are not carried over before the first release: move <directory>
 away or name another, and a new world is made.
 ```
 
 A world of a later format is refused too, as any other setting of `meta` that differs
-("the world was made with format `21`, but this server uses `20`").
+("the world was made with format `24`, but this server uses `23`").
 
 The version is raised whenever what is written changes meaning; a tag that no world
 made before it can hold (a new kind of entity data, of effect or of a use of an entity)
@@ -43,6 +43,9 @@ needs no raise, as an older record never has it. The raises since 2:
 | 18 | A chunk keeps raids, and a commit may carry them; a place holds where the raid omen began after the time since rest; the log has the trader's chance (kind 21), and the table keeps it after the clock |
 | 19 | A place names its dimension, its travel, the credits seen and its portal cooldown, and a respawn its dimension; an entity keeps its portal state; a commit may carry travellers, and the log writes them forward (`docs/groundwork/p-plan.md`, section 15.6) |
 | 20 | Each region of the table names its dimension; each dimension's chunks are under a directory of their own, and `meta` names the three dimensions' generators (section 3.3 of the same plan) |
+| 21 | A place holds the player's health and whether they are dead; a travel may be a respawn, with what else the End's contracts change (section 19.6 of the same plan) |
+| 22 | A gateway's travel may carry the island its exit's holder makes (section 19.8) |
+| 23 | A place ends with where the player last died (section 19.9) |
 
 ## Principles
 
@@ -150,7 +153,7 @@ A chunk's blocks file, of kind 5 (`crates/clustine-format/src/chunk.rs`):
 
 | Field | Type |
 |---|---|
-| Format version | u8, 16 |
+| Format version | u8, `FORMAT_VERSION` (23) |
 | Kind | u8, 5 |
 | Chunk x, z | i32, i32 |
 | Y of the lowest block | i32 |
@@ -293,7 +296,7 @@ no such file.
 
 | Field | Type |
 |---|---|
-| Format version | u8, 16 |
+| Format version | u8, `FORMAT_VERSION` (23) |
 | Kind | u8, 7 |
 | Chunk x, z | i32, i32 |
 | Tick as of which it was saved | u64 |
@@ -492,6 +495,8 @@ begins with the format version (u8) and the kind of record (u8):
 | 17 | Arrivals dropped | numbers |
 | 18 | Arrivals carried forward | filed arrivals |
 | 21 | The trader's chance | firing u64, chance i32 |
+| 22 | Commit with travellers | the fields of kind 20, whose raids may be none, travellers |
+| 23 | Travellers carried forward | count u32, then per traveller its id and the traveller |
 
 where `changes` is a count (u32) followed, per change, by i32 x, i32 y, i32 z and a u16
 block state; `chunks` is a count (u32) followed, per chunk, by i32 x and i32 z; and a
@@ -616,10 +621,22 @@ A place is where a player is and what they hold:
 | Inventory | 41 times, in the order of the game's `Inventory` (0 to 8 the hotbar, 9 to 35 the rest, 36 to 39 armour from the feet up, 40 the off hand): u8 0 for an empty slot, or u8 1 and a stack |
 | Ender chest | 27 times, as the inventory's slots |
 | Experience: level, progress to the next (0 to 1), points gathered in all | i32, f32, i32 |
-| Respawn point set by a bed | u8 0, or u8 1, the bed's head i32 x, y, z, then yaw f32 and pitch f32 |
+| Respawn point set by a bed or an anchor | u8 0, or u8 1, the block i32 x, y, z, then yaw f32, pitch f32 and its dimension u8 (0 the overworld, 1 the Nether, 2 the End) |
 | Effects: count, then each as an effect instance of a stack's `potion_contents` | u32 |
 | Ticks since the player last slept | u32 |
 | Where their raid omen began | u8 0, or u8 1 and i32 x, y, z |
+| Their dimension | u8 |
+| Whether they have seen the credits | u8, 0 or 1 |
+| Their portal cooldown | u32 |
+| A travel they are on | u8 0, or u8 1 and the travel |
+| Health | f32 |
+| Whether they are dead | u8, 0 or 1 |
+| Where they last died | u8 0, or u8 1, a dimension u8 and i32 x, y, z |
+
+A travel and a traveller are written as `crates/clustine-format/src/travel.rs` writes
+them: the dimension it goes to, its target block, and the way (a Nether portal with its
+axis and the place in it, the End's portal, a gateway with its source, whether its exit
+is exact and the island to make, a respawn, the credits).
 
 The store takes the notes of a commit when it takes the commit, and keeps of each
 player what they make of the player's record ("The players").
@@ -791,7 +808,8 @@ place can go.
 | `from`: the first log segment whose records change this table | u64 |
 | The next region id | u32 |
 | The home chunk | i32 x, i32 z |
-| The home region | u32 |
+| The home region (the overworld's) | u32 |
+| The Nether's and the End's home regions | u32, u32 |
 | The division the table was made from: count, then areas | u32, areas |
 | Regions, in ascending order of their ids: count, then per region | u32 |
 | … id | u32 |
@@ -801,6 +819,7 @@ place can go.
 | Absorbed regions, oldest first: count, then per pair absorbed, into | u32, (u32, u32)… |
 | The world's clock: its game time and the ticks of the overworld's clock | u64, u64 |
 | The wandering trader spawner's chance: a flag (0 none yet, 1 one), and with 1 the firing that left it and the chance | u8, (u64, i32) |
+| The index of portals: count, then per portal its dimension and block | u32, (u8, i32, i32, i32)… |
 | CRC-32 of everything before | u32 |
 
 An area is a u8 of flags (bit 0: it has a western end, bit 1: an eastern end; the others

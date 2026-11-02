@@ -51,9 +51,10 @@ of chaos and of moves divide their worlds themselves and run only in the third l
 runs all four, and names failed tests on the run's summary page (readable without
 signing in through the check run's annotations). `tools/check.sh` runs the four, the two
 test runs at the same time, and `cargo datagen --check` where the jar is in
-`target/datagen/`, and says which failed; that takes about an hour and a
-quarter on six processors, half of it the end-to-end tests of a world without pins
-(`bin/clustine/tests/wanders.rs`), and CI takes an hour and three quarters.
+`target/datagen/`, and says which failed; on the owner's machine (twelve processors,
+2026-11-02) the first run takes about 70 minutes and the pinned run, held to a third of
+the processors so that the two do not overload the machine together, about 20 beside
+it. CI runs its test jobs side by side in about an hour and a half.
 The tests that start clusters of processes run several at a time
 (`CLUSTINE_TEST_CLUSTERS`, by default one for every two processors).
 

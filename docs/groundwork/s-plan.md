@@ -99,7 +99,8 @@ Sizes are of the reference ports (SteelMC-26.3 / Pumpkin), as a guide.
 | S3 | The switch: the generator's **identity** changes (`terrain;features 5;structures 1;...`), so that older seeded worlds are refused with the message of F6 (a raised version alone is accepted by the store, which refuses only an older generator), the spawn judge, the first-view and flight measurements again, docs | me | The full sweep with no structure counted; the spawn judge 10 of 10; measurements within the speed answers of the terrain plan (question 9) |
 
 The Nether's fortress, bastion and fossil and the End's city wait for phase D and
-are counted until then (their layouts are built).
+are counted until then (their layouts are built). (Since: S3 came on 2026-10-26, and
+the Nether's and the End's structures with phase P; see the roadmap.)
 
 Subagents work on files of their own (one placer module each under
 `crates/clustine-features/src/structures/`: the placers need the features' `Level`,

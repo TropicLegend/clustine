@@ -425,6 +425,12 @@ What the codec and the edge took on after milestone M1, each with its note above
   those of the flat world.
 - 2026-10-14 (W6): Use Item and Player Input ("Blocks"); the cursor of Use Item On is
   read and passed on with the click.
+- Since 2026-10-14 the codec has grown with phases N and P far beyond these notes:
+  entities and their data, the inventory, containers and the merchant window, boss
+  bars, block events, swings, respawns and the change of dimension, among some hundred
+  play packets. Those are not noted here: `crates/clustine-protocol/src/packets/play.rs`
+  and the comparisons with the official server (`bin/clustine/tests/*_oracle.rs`, which
+  the [parity matrix](parity-matrix.md) lists) are the reference.
 
 ## Changes since 1.21.x that affect the above
 

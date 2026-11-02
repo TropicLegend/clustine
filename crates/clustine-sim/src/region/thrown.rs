@@ -45,7 +45,6 @@
 //!   chunks, or for a pearl a player of another region by their face or the world's
 //!   players; one it does not have is none, as the game's `getOwner()` is null for an
 //!   owner its level does not have loaded.
-//! - No blaze exists yet: every snowball hurts by nothing.
 //! - Only mobs are the living entities a splash or a cloud reaches: an armour stand is
 //!   never affected by potions anyway. Water put out on a burning entity of a copy is
 //!   not (`EntityUse::Effects` carries no fire); axolotls are not rehydrated (none dries

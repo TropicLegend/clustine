@@ -19,6 +19,7 @@
   `crates/clustine-worldgen-data`, the world store's start, the command line and the
   `generator` line of a world's `meta`.
 - Date: 2026-10-10
+- **Since** (2026-11-02): the templates' blocks are read from the operator's jar, named with `--minecraft-jar` or the one `cargo datagen` keeps under `target/`; there is no `--structures`.
 
 Where a figure or a statement is a guess it says **guess**. Nothing here is legal
 advice; the parts on licences are a reading and are marked so.

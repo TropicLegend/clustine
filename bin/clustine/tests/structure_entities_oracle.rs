@@ -18,11 +18,9 @@
 //! its structure's own kinds (a villager, an elder guardian...) is a check of the
 //! place, not of Clustine.
 //!
-//! **Not yet a comparison Clustine can pass**: a server's world places no structure's
-//! blocks and so makes none of their entities until phase S's switch (S3,
-//! `docs/groundwork/s-plan.md`) gives `FeatureStages` the starts
-//! (`FeatureSettings::with_structures`, which only the judge calls today). Until then
-//! each structure's entities print as "Clustine shows none there".
+//! It waited for phase S's switch (S3, `docs/groundwork/s-plan.md`), which gives a
+//! server's `FeatureStages` the starts so that it places structures' blocks and their
+//! entities; S3 came on 2026-10-26, and this comparison is to be run again.
 //!
 //! The official server is frozen before the bot joins, so the villagers and the rest
 //! are shown where the templates put them; Clustine's are not, and are paired within

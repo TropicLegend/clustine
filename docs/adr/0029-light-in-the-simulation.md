@@ -21,6 +21,7 @@
 - Marks as in the plan: the game's classes are those of the 26.3 jar, dumped with
   `javap` into `/home/claude/reference/n8-javap/` (cited "n8" with the class and its
   lines) and earlier dumps ("n7"); **guess** where a figure is not yet measured.
+- **Built** (N8, on `main` by 2026-10-27): the roadmap's first section has the account of what was built and what is named; "Built so far" at the end of this record was written before the last steps and lags.
 
 ## Context
 
