@@ -892,6 +892,24 @@ impl Merges {
         .await
     }
 
+    /// `merge`, asked again where the coordinator called it off because the region's
+    /// owner did not let it go within the lease: with the short lease of a quick test, a
+    /// machine under a full check's load can hold a worker past it, which is not what a
+    /// test that merges only to set its scene is about. Three times at the most.
+    async fn merge_given_time(&mut self, survivor: Region, absorbed: Region) -> (Asked, Instant) {
+        for _ in 0..3 {
+            let (asked, at) = self.merge(survivor, absorbed).await;
+            if !asked.was_told_no_because("was not released within the lease") {
+                return (asked, at);
+            }
+            self.note(format!(
+                "region {absorbed} was not released within the lease; asked again"
+            ));
+            self.whole().await;
+        }
+        self.merge(survivor, absorbed).await
+    }
+
     /// `clustine split`, and what comes of it and when it was started.
     async fn split(&mut self, region: Region, chunks: &[(i32, i32)]) -> (Asked, Instant) {
         let what = format!("region {region} to be split at the chunks {chunks:?}");
@@ -2527,7 +2545,7 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
     };
     let lease = Duration::from_secs(3);
     let mut merges = Merges::start("store killed in a split", quick).await;
-    let (asked, _) = merges.merge(0, 1).await;
+    let (asked, _) = merges.merge_given_time(0, 1).await;
     merges.has_absorbed(&asked, 0, 1);
     merges.division = Division::stripes(&[]);
     merges.whole().await;
@@ -2569,7 +2587,7 @@ async fn the_part_of_a_split_is_run_when_the_store_was_killed_as_it_made_the_spl
             // The worker had the store's answer before the store died.
             (Some(part), _) => {
                 merges.settled().await;
-                let (asked, _) = merges.merge(0, part).await;
+                let (asked, _) = merges.merge_given_time(0, part).await;
                 merges.has_absorbed(&asked, 0, part);
                 merges.whole().await;
             }
