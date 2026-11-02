@@ -611,8 +611,22 @@ chunk's far corner. Named, left for now: the gateway's advancement, and which pa
 dragon's first update after it is shown brings. The End's land was then judged against
 the game's own server, feature by feature (`services/worldgen/tests/game_features.rs`,
 seed 13579): the arena's spikes and the platform's chunks, 81 chunks of the outer
-islands about the first highlands, and 81 chunks of an End city, every one equal. Next:
-the credits and the dragon's death compared with the official server.
+islands about the first highlands, and 81 chunks of an End city, every one equal. The
+dragon's death and the credits were compared with the official server
+(`dragon_death_oracle.rs`, a creative bot breaking the crystals and killing the dragon
+by its head as it perches, by someone who did not write the fight): the death's
+packets, the podium, egg and first gateway it leaves, and the credits and the respawn
+after them are equal. Mended: the podium was set again after the dragon's removal
+rather than before it, the bar was taken away a gathering later, and a hit on a part of
+the dragon could be critical, which the game's never is. Named, left for now: the pose
+`DYING`, shown of no dying mob; the bar's removal comes after the dragon's within their
+tick; the official server tells air over the exit portal's block a player steps into,
+which the client has already, of a cause not found. A player who comes through a portal
+into chunks another region holds is now sent on to that region to be placed. Next:
+what phase P left named (an ender pearl through a gateway, the dragon's respawn by four
+crystals, arrows on the dragon's parts), then the plan of what follows the Nether and
+the End, survival with the rest of parity by the matrix's tiers, written and agreed
+with the owner before it is built.
 
 **What to try with a real client** (the End, since 2026-10-31): start a new world
 (`cargo run --release -p clustine`; a world made before is refused), find a stronghold
