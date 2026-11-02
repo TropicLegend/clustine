@@ -317,6 +317,7 @@ fn join_facing_east(west: &mut Side, east: &mut Side) -> EntityId {
         sides[0].loaded(HOME) && sides[1].loaded(OVER)
     });
     west.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: player(1),
         name: "Thrower".to_owned(),
         attempt: 7001,
@@ -592,6 +593,7 @@ fn followed(pins: Pins) -> Vec<(u64, RegionId, Entity)> {
         step(&mut west, &mut east);
     }
     west.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: player(1),
         name: "Thrower".to_owned(),
         attempt: 7001,
@@ -1137,6 +1139,7 @@ fn an_arrival_filed_for_a_region_that_is_absorbed_is_taken_once_by_the_survivor(
         sides[0].loaded(HOME)
     });
     west.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: player(1),
         name: "Thrower".to_owned(),
         attempt: 7001,

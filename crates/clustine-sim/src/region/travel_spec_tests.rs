@@ -1335,6 +1335,7 @@ fn a_later_join_ends_a_waiting_stay_and_tells_its_edge() {
             player_changes: vec![PlayerChange::Join(
                 EDGE,
                 PlayerJoin {
+                    appearance: Default::default(),
                     player: id,
                     name: "player1".to_owned(),
                     attempt: 9,

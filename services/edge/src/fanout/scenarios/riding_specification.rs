@@ -47,6 +47,7 @@ fn own(number: u128, entity: EntityId) -> EntityState {
     EntityState {
         entity,
         kind: EntityKind::Player {
+            data: Default::default(),
             player: player(number),
             name: format!("Player{number}"),
         },
@@ -281,6 +282,8 @@ async fn riding_by_the_line() -> (Harness, Client, Client) {
 /// the east holds in `EASTERN` by then.
 fn riding_transfer() -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,

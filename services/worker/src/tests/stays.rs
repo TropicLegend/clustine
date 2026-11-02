@@ -291,6 +291,7 @@ fn applied(
 /// A join of `player` on the connection `attempt`.
 fn join_as(player: PlayerId, attempt: u64) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player,
         name: format!("player-{}", player.0.as_u128()),
         attempt,
@@ -521,6 +522,7 @@ fn a_join_is_held_as_entering_and_named_to_the_store_and_the_player_enters_on_it
     // named it; nobody has been told anything.
     let entity = EntityId(1);
     let entering = EnteringState {
+        appearance: Default::default(),
         entity_id: entity,
         name: "player-1".to_owned(),
         edge: E,
@@ -759,6 +761,8 @@ fn a_player_whose_place_another_region_holds_is_let_go_to_it_without_being_place
     }
     let second = EntityId(2);
     let transfer = PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,

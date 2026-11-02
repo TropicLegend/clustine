@@ -36,9 +36,20 @@ use crate::shown::DataShown;
 
 /// The living entity's flags (`DATA_LIVING_ENTITY_FLAGS`), data index 8: using, and with
 /// the off hand.
-const LIVING_FLAGS: u8 = 8;
+pub(super) const LIVING_FLAGS: u8 = 8;
 const USING: u8 = 1;
 const OFF_HAND: u8 = 2;
+
+/// The living flags of a player whose use is `using`.
+pub(super) fn living_flags(using: Option<crate::api::Using>) -> u8 {
+    using.map_or(0, |using| {
+        USING
+            | match using.hand {
+                Hand::Main => 0,
+                Hand::Off => OFF_HAND,
+            }
+    })
+}
 
 /// `Item.getUseDuration` of the bow, the trident and the shield: an hour.
 const HELD_FOR_AN_HOUR: i32 = 72_000;
@@ -264,17 +275,10 @@ impl Region {
         let Some(player) = self.players.get(&id) else {
             return;
         };
-        let flags = player.using.map_or(0, |using| {
-            USING
-                | match using.hand {
-                    Hand::Main => 0,
-                    Hand::Off => OFF_HAND,
-                }
-        });
         output.events.push(RegionEvent::PlayerData {
             entity: player.entity_id,
             chunk: player.chunk(),
-            values: vec![(LIVING_FLAGS, DataShown::Byte(flags))],
+            values: vec![(LIVING_FLAGS, DataShown::Byte(living_flags(player.using)))],
         });
     }
 

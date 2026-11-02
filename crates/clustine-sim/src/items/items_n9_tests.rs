@@ -644,6 +644,7 @@ impl World {
         join.change(PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player,
                 name: "Player1".to_owned(),
                 attempt: 7001,

@@ -43,6 +43,7 @@ async fn watching() -> (Harness, Client) {
         EntityState {
             entity: EntityId(5),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(1),
                 name: "Player1".to_owned(),
             },
@@ -51,6 +52,7 @@ async fn watching() -> (Harness, Client) {
         EntityState {
             entity: EntityId(6),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(2),
                 name: "Player2".to_owned(),
             },
@@ -551,6 +553,7 @@ async fn an_item_shown_in_a_chunk_s_snapshot_is_sent_its_periodic_moves_though_n
         EntityState {
             entity: EntityId(5),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(1),
                 name: "Player1".to_owned(),
             },
@@ -601,6 +604,7 @@ async fn a_client_shown_a_lying_item_is_told_it_lies_on_the_ground_after_a_quiet
         EntityState {
             entity: EntityId(5),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(1),
                 name: "Player1".to_owned(),
             },

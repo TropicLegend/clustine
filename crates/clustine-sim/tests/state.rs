@@ -89,6 +89,7 @@ fn join(edge: EdgeId, number: u128) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
+            appearance: Default::default(),
             player: player(number),
             name: format!("Player{number}"),
             attempt: attempt(number),
@@ -841,6 +842,8 @@ fn applied_is_noted_for_edges_the_region_knows() {
 fn nothing_through_an_unknown_edge_is_taken_on() {
     let mut region = populated();
     let transfer = PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -1047,6 +1050,7 @@ impl Scenario {
                 0..=3 => PlayerChange::Join(
                     edge,
                     PlayerJoin {
+                        appearance: Default::default(),
                         player: id,
                         name: format!("{id:?}"),
                         // No two joins of a run are of one tick and one player.

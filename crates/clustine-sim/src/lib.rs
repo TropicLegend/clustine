@@ -39,15 +39,15 @@ pub mod time;
 mod trading;
 
 pub use api::{
-    CountsReport, FightSeen, GlobalLevelEvent, PoiSeen, PublishedCounts, PublishedVillage,
-    RaidSeen, Respawned, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
-};
-pub use api::{
-    Durable, EdgeEvent, Entered, FaceChange, FaceSeq, GatewayExit, GatewayExitAnswer,
+    Appearance, Durable, EdgeEvent, Entered, FaceChange, FaceSeq, GatewayExit, GatewayExitAnswer,
     GatewayExitQuery, Keys, LendAnswer, LendAsked, Misdirected, Place, PlayerChange, PlayerEvent,
     PlayerFace, PlayerJoin, PlayerTransfer, PortalAnswer, PortalQuery, QueryId, RemoteAction,
     RemoteStep, StayNote, TickInputs, TickOutput, Ticket, Unit, VehicleMove, WorldClock,
     WorldPlayer,
+};
+pub use api::{
+    CountsReport, FightSeen, GlobalLevelEvent, PoiSeen, PublishedCounts, PublishedVillage,
+    RaidSeen, Respawned, SPAWN_CATEGORIES, SpawnCounts, VillageReport,
 };
 /// What the edge needs to show a cloud's radius and a potion's colour (part S12b).
 pub use region::clouds::{arrow_colour, potion_colour, radius_at as cloud_radius_at};
@@ -58,6 +58,6 @@ pub use region::{
 };
 pub use state::{
     Drag, DragKind, EdgeDelta, EdgeState, EnteringState, Menu, MenuOf, PLAYER_MAX_HEALTH,
-    PlayerRiding, PlayerState, RegionState, StateDelta, VehicleCheck, WaitingState,
-    WaitingTraveller,
+    PlayerPose, PlayerRiding, PlayerState, Posture, RegionState, StateDelta, VehicleCheck,
+    WaitingState, WaitingTraveller,
 };

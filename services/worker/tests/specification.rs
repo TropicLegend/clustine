@@ -696,6 +696,7 @@ fn attempt(id: PlayerId) -> u64 {
 
 fn join(id: PlayerId) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: id,
         name: format!("player-{}", id.0.as_u128()),
         attempt: attempt(id),
@@ -5396,6 +5397,8 @@ fn restore_error(world: &mut World) -> clustine_worker::RestoreError {
 /// A player of `edge` as a region keeps them.
 fn someone(entity: EntityId, edge: EdgeId) -> clustine_sim::PlayerState {
     clustine_sim::PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),

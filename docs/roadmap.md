@@ -46,9 +46,7 @@ they were shown. A player who leaves comes back where they left.
 **What a player will miss within minutes** (the [parity matrix](parity-matrix.md),
 brought up to date on 2026-11-02, has the whole list): survival mode (health, hunger,
 damage, breaking times and drops, crafting, smelting, the menus of the blocks that work
-items, most enchantments' effects); chat and commands; other players' sneaking,
-swimming and gliding poses; weather; signs'
-text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
+items, most enchantments' effects); chat and commands; weather; signs' text, jukeboxes, cauldrons, structures' chests' loot; the breeze, the creaking, the
 warden and the wither.
 
 **Built since M3:**

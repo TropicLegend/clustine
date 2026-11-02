@@ -27,15 +27,11 @@ use crate::mobs::body::effects::{self, Added, Counted, Effect, Effects, Layer};
 use crate::shown::DataShown;
 
 /// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID`.
-const EFFECT_PARTICLES: u8 = 10;
-const EFFECT_AMBIENCE: u8 = 11;
+pub(super) const EFFECT_PARTICLES: u8 = 10;
+pub(super) const EFFECT_AMBIENCE: u8 = 11;
 
-/// The shared flags' data index, and the bits the effects decide.
-const SHARED_FLAGS: u8 = 0;
-const CROUCHING: u8 = 1 << 1;
-const SPRINTING: u8 = 1 << 3;
-const INVISIBLE: u8 = 1 << 5;
-const GLOWING: u8 = 1 << 6;
+/// The shared flags' data index (`Entity.DATA_SHARED_FLAGS_ID`).
+pub(super) const SHARED_FLAGS: u8 = 0;
 
 /// `AttributeModifier.Operation`'s ids.
 const ADD_VALUE: u8 = 0;
@@ -483,29 +479,15 @@ impl Region {
     }
 
     /// The player `id`'s shared flags as the others are shown them, whole
-    /// (`docs/groundwork/n9-plan.md`, section 18, decision 6): crouching and sprinting by
-    /// their keys, invisible and glowing by their effects.
+    /// (`docs/groundwork/n9-plan.md`, section 18, decision 6; [`super::Player::shared_flags`]).
     pub(crate) fn show_shared_flags(&self, id: PlayerId, output: &mut TickOutput) {
         let Some(player) = self.players.get(&id) else {
             return;
         };
-        let mut flags = 0;
-        if player.keys.sneak && !player.flying {
-            flags |= CROUCHING;
-        }
-        if player.keys.sprint {
-            flags |= SPRINTING;
-        }
-        if player.effects.has(Effect::INVISIBILITY) {
-            flags |= INVISIBLE;
-        }
-        if player.effects.has(Effect::GLOWING) {
-            flags |= GLOWING;
-        }
         output.events.push(RegionEvent::PlayerData {
             entity: player.entity_id,
             chunk: player.chunk(),
-            values: vec![(SHARED_FLAGS, DataShown::Byte(flags))],
+            values: vec![(SHARED_FLAGS, DataShown::Byte(player.shared_flags()))],
         });
     }
 }

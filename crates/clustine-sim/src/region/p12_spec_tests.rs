@@ -168,6 +168,7 @@ impl Scene {
             player_changes: vec![PlayerChange::Join(
                 EDGE,
                 PlayerJoin {
+                    appearance: Default::default(),
                     player: player(1),
                     name: "Player1".to_owned(),
                     attempt: 7001,

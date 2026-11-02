@@ -234,6 +234,7 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: format!("player-{}", id.0.as_u128()),
             attempt: attempt(id),
@@ -371,6 +372,8 @@ fn place_against(against: BlockPos, target: BlockPos, placer: Vec3) -> RemoteSte
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -409,6 +412,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -446,6 +451,8 @@ fn transfer_of(state: &PlayerState) -> PlayerTransfer {
 /// A player as a region has them right after taking in `transfer` through `edge`.
 fn taken_in(transfer: &PlayerTransfer, edge: EdgeId) -> PlayerState {
     PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -2426,6 +2433,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -2705,6 +2714,7 @@ fn made_up_state(random: &mut Random, entity_ids: EntityIds) -> RegionState {
     for n in 1..=6 {
         if random.once_in(5) {
             let entering = EnteringState {
+                appearance: Default::default(),
                 entity_id: EntityId(ids().first.0 + 20 + random.below(12)),
                 name: format!("entering-{n}"),
                 edge: random.pick(&known),
@@ -5449,6 +5459,7 @@ impl Cluster {
             made: Vec::new(),
         };
         let join = PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: format!("player-{}", id.0.as_u128()),
             attempt: stay.attempt,

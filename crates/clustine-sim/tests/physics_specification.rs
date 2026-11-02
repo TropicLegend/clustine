@@ -184,6 +184,7 @@ fn joined(region: &mut Region) {
         player_changes: vec![PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(1),
                 name: "Watcher".to_owned(),
                 attempt: 7001,

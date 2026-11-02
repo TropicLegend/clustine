@@ -357,6 +357,7 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: format!("player-{}", id.0.as_u128()),
             attempt: attempt(id),
@@ -972,6 +973,8 @@ fn a_leave_and_a_rejoin_through_the_same_edge_in_one_tick_enter_the_player_anew(
 
 fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,

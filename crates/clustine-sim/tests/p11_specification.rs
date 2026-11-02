@@ -408,6 +408,7 @@ impl Scene {
             player_changes: vec![PlayerChange::Join(
                 EDGE,
                 PlayerJoin {
+                    appearance: Default::default(),
                     player: player(n),
                     name: format!("Player{n}"),
                     attempt: 7000 + n as u64,

@@ -14,6 +14,9 @@ pub mod homes;
 // Nor does every one compare entities with the official server's.
 #[allow(dead_code)]
 pub mod shown;
+// Nor does every one play the scene of a player's poses.
+#[allow(dead_code)]
+pub mod poses;
 
 use std::time::Duration;
 

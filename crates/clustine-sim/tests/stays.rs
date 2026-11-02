@@ -280,6 +280,7 @@ fn started(edge: EdgeId, start: u64) -> EdgeEvent {
 
 fn join(edge: EdgeId, n: u128, attempt: u64) -> PlayerChange {
     let join = PlayerJoin {
+        appearance: Default::default(),
         player: player(n),
         name: name(n),
         attempt,
@@ -347,6 +348,8 @@ fn walk_to(position: Vec3) -> PlayerInput {
 /// A player as another region lets them go, standing at `position` with [`kept`].
 fn transfer(entity: EntityId, hops: u32, attempt: Option<u64>, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -699,6 +702,7 @@ fn a_join_is_held_as_entering_and_named_to_the_store_and_nobody_is_told() {
     assert_eq!(stays(&output), [entering_note(1, entity(1))]);
 
     let held = EnteringState {
+        appearance: Default::default(),
         entity_id: entity(1),
         name: name(1),
         edge: E,
@@ -777,6 +781,8 @@ fn an_entering_stay_whose_place_nobody_holds_is_placed_there_as_the_player_left(
     };
     let output = tick(&mut region, &anothers);
     let let_go = PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -832,6 +838,8 @@ fn an_entering_stay_whose_place_another_region_holds_is_let_go_there_without_bei
     assert!(output.player_events.is_empty() && output.events.is_empty());
     assert!(output.claims.is_empty());
     let let_go = PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -1140,6 +1148,8 @@ fn the_first_tick_after_a_merge_and_after_a_split_names_every_stay() {
     other.tick = 9;
     other.edges = region.state().edges;
     let theirs = PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -1608,6 +1618,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
     let region = entering();
     let mut state = region.state();
     let earlier = PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -1711,6 +1723,8 @@ fn an_entering_stay_is_placed_over_a_present_one_which_goes_first() {
 #[test]
 fn a_merge_keeps_of_two_copies_of_a_stay_the_one_with_more_hops() {
     let copy = |hops: u32, edge: EdgeId, position: Vec3| PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -1783,6 +1797,7 @@ fn a_merge_keeps_the_survivors_entering_stays_but_those_of_an_edge_it_is_reset_f
     other.edges = ours.edges.clone();
     other.edges.get_mut(&F).expect("it knows F").start = START + 1;
     let stray = EnteringState {
+        appearance: Default::default(),
         entity_id: TRAVELLER,
         name: name(3),
         edge: E,
@@ -1880,6 +1895,8 @@ fn every_ended_of_a_tick_is_numbered_below_every_departed_of_it() {
     tick(&mut region, &changes(stays));
     let mut state = region.state();
     let earlier = PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),
@@ -2293,6 +2310,7 @@ impl Edges {
             made: 0,
         };
         let join = PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: name(n),
             attempt: view.attempt,

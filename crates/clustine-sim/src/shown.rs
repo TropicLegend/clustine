@@ -77,6 +77,8 @@ pub enum Serialiser {
     SnifferState,
     CopperGolemState,
     WeatheringCopperState,
+    /// A player's main hand (`HUMANOID_ARM`): left 0, right 1.
+    HumanoidArm,
 }
 
 /// The registry an entry of [`DataShown::Holder`] is of.

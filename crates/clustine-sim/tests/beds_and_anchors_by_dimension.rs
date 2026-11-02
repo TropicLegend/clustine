@@ -140,6 +140,7 @@ fn join_in(scene: &mut Scene, dimension: Dimension, n: u128, feet: Vec3) {
         player_changes: vec![PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(n),
                 name: format!("Player{n}"),
                 attempt: 7000 + n as u64,

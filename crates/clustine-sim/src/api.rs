@@ -431,6 +431,9 @@ pub struct PlayerJoin {
     /// earlier connection of the same player. See
     /// `docs/adr/0020-one-stay-per-player.md`, sections 4.1 and 4.3.
     pub attempt: u64,
+    /// How the player's client asked to be drawn as it joined (its `ClientInformation`
+    /// of the configuration), which the others are shown from the first.
+    pub appearance: Appearance,
 }
 
 /// A player as one region hands them to another: everything a region knows about them.
@@ -508,6 +511,10 @@ pub struct PlayerTransfer {
     /// (the plan, sections 5.1 and 15.5); none on every other hand-over, where the unit
     /// crosses as entities do.
     pub unit: Option<Unit>,
+    /// How the player's client asked to be drawn, and what the region decided of their
+    /// pose, which go on with them as the game's entity data would.
+    pub appearance: Appearance,
+    pub posture: crate::state::Posture,
 }
 
 /// The number of spawning categories counted: `MobCategory` but `MISC`, in its order.
@@ -830,6 +837,11 @@ pub enum EntityKind {
     Player {
         player: PlayerId,
         name: String,
+        /// The values of the player's entity data that are not the defaults, as the
+        /// others are shown them when they come to see the player
+        /// (`ServerEntity.sendPairingData`): the shared flags, the pose, the living
+        /// flags, the effect particles, the bed, the skin's parts and the main hand.
+        data: Vec<(u8, crate::shown::DataShown)>,
     },
     /// An entity other than a player (`docs/adr/0028-entities.md`): its type, an index
     /// into `clustine_data::ENTITY_TYPES`, its UUID, its motion, its changes of holder
@@ -999,12 +1011,21 @@ pub enum PlayerInput {
     /// The player let go of the use key (`RELEASE_USE_ITEM`): a bow is loosed, a
     /// trident thrown, a meal broken off (`docs/groundwork/n9-plan.md`, section 5.5).
     ReleaseUse,
+    /// What the player's client said of how the others are to draw them changed (the
+    /// options' `ClientInformation`, in play), which the game keeps in their entity's
+    /// data (`ServerPlayer.updateOptions` 56–85). Added at the end, so that what is
+    /// stored of inputs reads as it did.
+    Appearance(Appearance),
+    /// The player began to glide (`player_command`'s `START_FALL_FLYING`): the region
+    /// lets them where they can (`Player.tryToStartFallFlying`), which the others see
+    /// as their pose.
+    StartFallFlying,
 }
 
 impl PlayerInput {
     /// Whether the input needs no place in the world: what a player does to their
-    /// inventory and their flying, which the edge passes on while their client is
-    /// between dimensions and a waiting stay keeps for its placing
+    /// inventory, their flying and their appearance, which the edge passes on while
+    /// their client is between dimensions and a waiting stay keeps for its placing
     /// (`docs/groundwork/p-plan.md`, sections 16.7 and 16.8).
     pub fn has_no_place(&self) -> bool {
         matches!(
@@ -1013,6 +1034,7 @@ impl PlayerInput {
                 | Self::SetInventorySlot { .. }
                 | Self::SwapHands
                 | Self::SetFlying { .. }
+                | Self::Appearance(_)
         )
     }
 }
@@ -1071,6 +1093,19 @@ impl MenuKind {
     pub fn slots(self) -> usize {
         self.container_slots() + 36
     }
+}
+
+/// How a player's client asks the others to draw them (`ClientInformation`'s skin parts
+/// and main hand), which the game keeps in the player's entity data
+/// (`ServerPlayer.updateOptions` 56–85, `Avatar.defineSynchedData` 5–27).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Appearance {
+    /// `DATA_PLAYER_MODE_CUSTOMISATION`: the outer layers of the skin shown, a bit each
+    /// (`PlayerModelPart`); none is the game's default.
+    pub skin_parts: u8,
+    /// `DATA_PLAYER_MAIN_HAND`: whether the main hand is the left. The right is the
+    /// game's default (`Avatar.DEFAULT_MAIN_HAND`).
+    pub left_handed: bool,
 }
 
 /// The keys a player holds (`player_input`'s flags, and `player_command`'s sprinting).

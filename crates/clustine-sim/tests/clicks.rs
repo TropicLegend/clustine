@@ -273,6 +273,7 @@ fn join(n: u128) -> PlayerChange {
     PlayerChange::Join(
         E,
         PlayerJoin {
+            appearance: Default::default(),
             player: player(n),
             name: format!("player-{n}"),
             attempt: 7000 + n as u64,

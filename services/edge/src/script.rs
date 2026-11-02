@@ -1165,6 +1165,8 @@ impl Script {
         let person = self.people.get_mut(&who).expect("the player has joined");
         let from = person.region;
         let transfer = PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -1480,6 +1482,7 @@ impl Script {
         let (outbound, packets) = mpsc::channel(room);
         let queue = outbound.downgrade();
         let join = Command::Join {
+            appearance: Default::default(),
             session,
             profile: Profile {
                 uuid: who.0,

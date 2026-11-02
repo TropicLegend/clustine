@@ -10,6 +10,7 @@ fn own(number: u128, entity: EntityId, at: Vec3) -> EntityState {
     EntityState {
         entity,
         kind: EntityKind::Player {
+            data: Default::default(),
             player: player(number),
             name: format!("Player{number}"),
         },

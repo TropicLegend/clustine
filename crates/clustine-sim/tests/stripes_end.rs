@@ -195,6 +195,7 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: format!("player-{}", id.0.as_u128()),
             attempt: attempt(id),
@@ -405,6 +406,8 @@ fn someone(entity: EntityId, edge: EdgeId, chunk: ChunkPos) -> PlayerState {
     let mut bar = hotbar();
     bar[(n % 8 + 1) as usize] = Some(ItemStack::new(items::STONE, n % 60 + 1));
     PlayerState {
+        appearance: Default::default(),
+        posture: Default::default(),
         health: 20.0,
         dead: false,
         portal: Default::default(),

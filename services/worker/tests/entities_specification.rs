@@ -291,6 +291,7 @@ fn with_a_player(runner: &mut RegionRunner, edge: EdgeId) -> (Link, EntityId) {
     });
     let joined = player(1);
     link.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: joined,
         name: "Thrower".to_owned(),
         attempt: 7001,
@@ -504,6 +505,7 @@ fn a_thrown_item_is_committed_and_is_there_once_after_a_crash_with_its_counters_
     let (mut joined, entity) = {
         let joined = player(1);
         link.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+            appearance: Default::default(),
             player: joined,
             name: "Thrower".to_owned(),
             attempt: 7002,
@@ -824,6 +826,7 @@ fn an_item_goes_with_its_chunk_through_a_split_and_a_merge_and_is_there_once_aft
     for (number, name) in [(1, "Thrower"), (2, "Stayer")] {
         let id = player(number);
         link.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: name.to_owned(),
             attempt: 7000 + number as u64,

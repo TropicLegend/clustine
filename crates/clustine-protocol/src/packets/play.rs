@@ -3812,6 +3812,9 @@ pub mod entity_data_serializer {
     pub const ARMADILLO_STATE: i32 = 36;
     pub const COPPER_GOLEM_STATE: i32 = 37;
     pub const WEATHERING_COPPER_STATE: i32 = 38;
+    /// The forty-third registered, before `DYE_COLOR` (n7 EntityDataSerializers 718): a
+    /// player's main hand, `HumanoidArm`'s id as a VarInt.
+    pub const HUMANOID_ARM: i32 = 42;
     pub const DYE_COLOR: i32 = 43;
 }
 
@@ -3833,7 +3836,10 @@ const MAX_PARTICLES: usize = 64;
 /// (`docs/groundwork/n7d-brief.md`, section 2.3).
 pub mod pose {
     pub const STANDING: i32 = 0;
+    pub const FALL_FLYING: i32 = 1;
     pub const SLEEPING: i32 = 2;
+    pub const SWIMMING: i32 = 3;
+    pub const SPIN_ATTACK: i32 = 4;
     pub const CROUCHING: i32 = 5;
 }
 
@@ -3877,6 +3883,10 @@ pub mod entity_data {
     /// `ArmorStand.DATA_HEAD_POSE`, the first of the six rotations of its parts (head,
     /// body, left arm, right arm, left leg, right leg), one index each.
     pub const ARMOR_STAND_POSES: u8 = 16;
+    /// `Avatar.DATA_PLAYER_MAIN_HAND`, a player's main hand (`HUMANOID_ARM`).
+    pub const PLAYER_MAIN_HAND: u8 = 15;
+    /// `Avatar.DATA_PLAYER_MODE_CUSTOMISATION`, the outer layers of a player's skin shown.
+    pub const PLAYER_SKIN_PARTS: u8 = 16;
 }
 
 /// The byte that ends a list of entity data values.
@@ -4122,7 +4132,8 @@ impl Decode for SetEntityData {
                 | entity_data_serializer::SNIFFER_STATE
                 | entity_data_serializer::ARMADILLO_STATE
                 | entity_data_serializer::COPPER_GOLEM_STATE
-                | entity_data_serializer::WEATHERING_COPPER_STATE) => EntityDataValue::Registered {
+                | entity_data_serializer::WEATHERING_COPPER_STATE
+                | entity_data_serializer::HUMANOID_ARM) => EntityDataValue::Registered {
                     serializer,
                     id: r.var_int()?,
                 },

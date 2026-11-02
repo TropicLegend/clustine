@@ -170,6 +170,7 @@ impl Scene {
                     PlayerChange::Join(
                         EDGE,
                         PlayerJoin {
+                            appearance: Default::default(),
                             player: player(n),
                             name: format!("Rider{n}"),
                             attempt: 7000 + n as u64,
@@ -838,6 +839,7 @@ fn a_rider_who_joins_again_leaves_no_seat_behind() {
         player_changes: vec![PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(1),
                 name: "Rider1".to_owned(),
                 attempt: 7100,

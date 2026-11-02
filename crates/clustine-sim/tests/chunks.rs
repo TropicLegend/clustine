@@ -206,6 +206,7 @@ fn join(edge: EdgeId, id: PlayerId) -> PlayerChange {
     PlayerChange::Join(
         edge,
         PlayerJoin {
+            appearance: Default::default(),
             player: id,
             name: format!("player-{}", id.0.as_u128()),
             attempt: attempt(id),
@@ -303,6 +304,8 @@ fn own(id: PlayerId, entity: EntityId, sequence: i32, step: RemoteStep) -> Remot
 /// A player as another region lets them go, standing at `position`.
 fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -341,6 +344,8 @@ fn transfer(entity: EntityId, last_input: u64, position: Vec3) -> PlayerTransfer
 /// (ADR-0020, section 6).
 fn transfer_of(state: &PlayerState) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,

@@ -380,6 +380,10 @@ pub struct Bot {
     pub particles: Vec<clustine_protocol::packets::play::LevelParticles>,
     /// Every arm the server showed swinging (`swing_animation`), in order.
     pub swings: Vec<clustine_protocol::packets::play::SwingAnimation>,
+    /// Every value of another player's entity data the server sent
+    /// (`set_entity_data` of a player's entity shown): the entity's id and the packet's
+    /// values, in order.
+    pub player_data: Vec<(i32, Vec<(u8, EntityDataValue)>)>,
     /// Every time the server told (`set_time`), in order.
     pub times: Vec<clustine_protocol::packets::play::SetTime>,
     /// Every hurt the server showed an entity take, in order.
@@ -626,6 +630,7 @@ impl Bot {
             block_entity_updates: Vec::new(),
             particles: Vec::new(),
             swings: Vec::new(),
+            player_data: Vec::new(),
             times: Vec::new(),
             damage_events: Vec::new(),
             attribute_updates: Vec::new(),
@@ -1234,6 +1239,20 @@ impl Bot {
         Ok(())
     }
 
+    /// Puts one `item` on the chest (the inventory screen's slot 6), the way a
+    /// creative-mode client does when its player takes it there from the creative
+    /// inventory: an elytra to glide with.
+    pub async fn wear_on_chest(&mut self, item: i32) -> Result<()> {
+        self.connection
+            .write(&SetCreativeModeSlot {
+                slot: 6,
+                stack: Some(ItemStack::new(item, 1)),
+            })
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
     /// Puts `stack` into a hotbar slot, from 0 to 8, the way a creative-mode client does
     /// when its player takes a stack of it from the creative inventory.
     pub async fn put_in_hotbar(&mut self, slot: i16, stack: ItemStack) -> Result<()> {
@@ -1319,6 +1338,46 @@ impl Bot {
             })
             .await?;
         Ok(self.sequence)
+    }
+
+    /// Says in play what a client's options screen says of the player's skin: the outer
+    /// layers shown (`skin_parts`, a bit each) and the main hand (0 left, 1 right), the
+    /// rest as the bot said it as it joined. A client sends all its options whenever one
+    /// changes.
+    pub async fn set_appearance(&mut self, skin_parts: u8, main_hand: i32) -> Result<()> {
+        self.connection
+            .write(
+                &clustine_protocol::packets::play::ServerboundClientInformation {
+                    information: ClientInformation {
+                        locale: "en_us".to_owned(),
+                        view_distance: self.behaviour.view_distance as i8,
+                        chat_mode: 0,
+                        chat_colors: true,
+                        displayed_skin_parts: skin_parts,
+                        main_hand,
+                        text_filtering: false,
+                        allow_server_listing: true,
+                        particle_status: 0,
+                    },
+                },
+            )
+            .await?;
+        self.has_sent();
+        Ok(())
+    }
+
+    /// Asks to begin gliding (`player_command`'s `START_FALL_FLYING`), as a client does
+    /// when its player jumps in the air with an elytra on.
+    pub async fn start_gliding(&mut self) -> Result<()> {
+        self.connection
+            .write(&clustine_protocol::packets::play::PlayerCommand {
+                entity_id: self.info.login.entity_id,
+                action: clustine_protocol::packets::play::player_command::START_FALL_FLYING,
+                data: 0,
+            })
+            .await?;
+        self.has_sent();
+        Ok(())
     }
 
     /// Holds down or lets go of the sneak key, and no other.
@@ -2097,6 +2156,10 @@ impl Bot {
             }
             ClientboundPlay::SetEntityData(packet) => {
                 if let Some(entity) = self.entities.get_mut(&packet.entity_id) {
+                    if entity.kind == entity_types::PLAYER {
+                        self.player_data
+                            .push((packet.entity_id, packet.values.clone()));
+                    }
                     for (index, value) in packet.values {
                         if let (6, EntityDataValue::Pose(pose)) = (index, value) {
                             entity.pose = Some(pose);

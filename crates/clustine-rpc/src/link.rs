@@ -252,6 +252,8 @@ mod tests {
 
     fn transfer() -> PlayerTransfer {
         PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -313,6 +315,7 @@ mod tests {
             },
             EdgeToWorker::Confirm { number: 41 },
             EdgeToWorker::PlayerJoin(PlayerJoin {
+                appearance: Default::default(),
                 player: player(),
                 name: "Notch".to_owned(),
                 attempt: 12,
@@ -452,6 +455,7 @@ mod tests {
                 entities: vec![EntityState {
                     entity: EntityId(5),
                     kind: EntityKind::Player {
+                        data: Default::default(),
                         player: player(),
                         name: "Notch".to_owned(),
                     },

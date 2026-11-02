@@ -19,7 +19,9 @@ use clustine_protocol::packets::play::{
     PlayerAction, ServerboundPlay, ServerboundUseItem, UseItemOn, client_command, face,
     movement_flags, player_action, player_command, player_input,
 };
-use clustine_sim::api::{Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove};
+use clustine_sim::api::{
+    Appearance, Face, HOTBAR_SLOTS, Inventory, Keys, PlayerInput, VehicleMove,
+};
 use clustine_world::{BlockPos, PlayerId, Vec3};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
@@ -48,11 +50,15 @@ pub(crate) async fn serve(
     let player = PlayerId(profile.uuid);
     let (outbound, mut packets) = mpsc::channel(OUTBOUND_CAPACITY);
     let awaiting_teleport = Arc::new(AtomicI32::new(NO_TELEPORT));
+    let appearance = client_information
+        .as_ref()
+        .map_or_else(Appearance::default, appearance_of);
     let join = Command::Join {
         session,
         profile,
         requested_view_distance: client_information
             .map(|information| i32::from(information.view_distance)),
+        appearance,
         outbound,
         awaiting_teleport: Arc::clone(&awaiting_teleport),
     };
@@ -65,7 +71,7 @@ pub(crate) async fn serve(
         player,
         awaiting_teleport,
     };
-    let result = pump(connection, shared, &client, &mut packets).await;
+    let result = pump(connection, shared, &client, &mut packets, appearance).await;
     // Whatever ended the connection, the fan-out task has to forget the player.
     let leave = Command::Leave { session, player };
     let _ = shared.fanout.send(leave).await;
@@ -86,6 +92,7 @@ async fn pump(
     shared: &Shared,
     client: &Client,
     packets: &mut mpsc::Receiver<Bytes>,
+    mut appearance: Appearance,
 ) -> Result<(), ConnectionError> {
     let interval = shared.config.keep_alive_interval;
     let mut keep_alive = interval_at(Instant::now() + interval, interval);
@@ -130,8 +137,13 @@ async fn pump(
                         }
                     }
                     ServerboundPlay::ServerboundClientInformation(packet) => {
-                        // Of the settings only the render distance matters to the
-                        // server, and a player changes it in play as often as not.
+                        // Of the settings the server reads the render distance, which a
+                        // player changes in play as often as not, and what the others
+                        // are shown of the player (`ServerPlayer.updateOptions`), which
+                        // the region is told of where it changed: the client sends all
+                        // of them whenever one changes. Named: a change made before the
+                        // region has placed the player is passed over with every other
+                        // input of then, and the others see what the configuration said.
                         let command = Command::ViewDistance {
                             session: client.session,
                             player: client.player,
@@ -139,6 +151,11 @@ async fn pump(
                         };
                         if shared.fanout.send(command).await.is_err() {
                             return Err(ConnectionError::ShuttingDown);
+                        }
+                        let now = appearance_of(&packet.information);
+                        if now != appearance {
+                            appearance = now;
+                            send_input(shared, client, PlayerInput::Appearance(now)).await?;
                         }
                     }
                     ServerboundPlay::ConfirmTeleportation(confirmation) => {
@@ -205,6 +222,10 @@ async fn pump(
                         }
                         if packet.action == player_command::STOP_SLEEPING {
                             send_input(shared, client, PlayerInput::LeaveBed).await?;
+                        }
+                        // A start of gliding, which the region allows or not.
+                        if packet.action == player_command::START_FALL_FLYING {
+                            send_input(shared, client, PlayerInput::StartFallFlying).await?;
                         }
                         // A horse's jump, which its rider's region begins.
                         if packet.action == player_command::START_RIDING_JUMP {
@@ -437,6 +458,15 @@ fn confirmed_look(confirmation: &ConfirmTeleportation) -> Result<(f32, f32), Con
         ));
     }
     Ok((confirmation.yaw, confirmation.pitch))
+}
+
+/// What the others are to be shown of the player by the client's `information`: its
+/// skin's parts, and whether its main hand is the left (`HumanoidArm`'s id 0).
+fn appearance_of(information: &ClientInformation) -> Appearance {
+    Appearance {
+        skin_parts: information.displayed_skin_parts,
+        left_handed: information.main_hand == 0,
+    }
 }
 
 /// Handles something the player did with their hands. `sneaking` is whether the sneak
@@ -829,6 +859,35 @@ mod tests {
         let malformed = set(10_000);
         assert_eq!(malformed.item, items::POTION);
         assert!(malformed.components.is_empty(), "{malformed:?}");
+    }
+
+    #[test]
+    fn the_appearance_is_the_skin_s_parts_and_whether_the_main_hand_is_the_left() {
+        let information = |skin, hand| ClientInformation {
+            locale: "en_us".to_owned(),
+            view_distance: 8,
+            chat_mode: 0,
+            chat_colors: true,
+            displayed_skin_parts: skin,
+            main_hand: hand,
+            text_filtering: false,
+            allow_server_listing: true,
+            particle_status: 0,
+        };
+        assert_eq!(
+            appearance_of(&information(0x7F, 1)),
+            Appearance {
+                skin_parts: 0x7F,
+                left_handed: false
+            }
+        );
+        assert_eq!(
+            appearance_of(&information(0x15, 0)),
+            Appearance {
+                skin_parts: 0x15,
+                left_handed: true
+            }
+        );
     }
 
     #[test]

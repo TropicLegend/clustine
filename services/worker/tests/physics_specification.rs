@@ -253,6 +253,7 @@ fn with_a_player(runner: &mut RegionRunner, edge: EdgeId) -> (Link, EntityId) {
         link.snapshot(HOME)
     });
     link.numbered(EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: player(1),
         name: "Thrower".to_owned(),
         attempt: 7001,

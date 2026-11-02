@@ -586,6 +586,8 @@ mod tests {
         let mut hotbar = [const { None }; HOTBAR_SLOTS];
         hotbar[entity as usize % HOTBAR_SLOTS] = Some(ItemStack::new(1, entity));
         PlayerState {
+            appearance: Default::default(),
+            posture: Default::default(),
             health: 20.0,
             dead: false,
             portal: Default::default(),
@@ -636,6 +638,8 @@ mod tests {
     /// The stay as a region hands it to another.
     fn transfer_of(stay: PlayerState) -> PlayerTransfer {
         PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -823,6 +827,7 @@ mod tests {
         let join = PlayerChange::Join(
             E,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(8),
                 name: "Late".to_owned(),
                 attempt: 41,
@@ -1708,6 +1713,7 @@ mod tests {
         let join = PlayerChange::Join(
             E,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(8),
                 name: "Late".to_owned(),
                 attempt: 41,

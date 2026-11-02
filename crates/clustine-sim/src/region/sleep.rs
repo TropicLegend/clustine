@@ -296,6 +296,9 @@ impl Region {
         let previous_chunk = player.chunk();
         player.pose.position = lying;
         player.sleeping = Some(Sleep { head, since });
+        // `LivingEntity.startSleeping` sets the pose, which the sleep's event shows
+        // with the bed (`poses.rs`).
+        player.posture.pose = crate::state::PlayerPose::Sleeping;
         // `ServerPlayer.startSleeping`: the time since rest starts again.
         player.rested = self.tick;
         let (entity, pose) = (player.entity_id, player.pose);
@@ -384,6 +387,9 @@ impl Region {
             player.pose.pitch = 0.0;
         }
         player.sleeping = None;
+        // `LivingEntity.stopSleeping` stands them up, which the waking's event shows;
+        // their next tick poses them as they are (`poses.rs`).
+        player.posture.pose = crate::state::PlayerPose::Standing;
         // Not counted while asleep: the count goes on from the waking.
         player.rested = self.tick;
         let pose = player.pose;

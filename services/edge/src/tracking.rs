@@ -540,6 +540,7 @@ fn enumeration_serializer(serialiser: Serialiser) -> i32 {
         Serialiser::SnifferState => serializers::SNIFFER_STATE,
         Serialiser::CopperGolemState => serializers::COPPER_GOLEM_STATE,
         Serialiser::WeatheringCopperState => serializers::WEATHERING_COPPER_STATE,
+        Serialiser::HumanoidArm => serializers::HUMANOID_ARM,
     }
 }
 

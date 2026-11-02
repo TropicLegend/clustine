@@ -99,6 +99,7 @@ mod player_effects;
 pub(crate) mod pois;
 mod portal_spawns;
 mod portals;
+mod poses;
 mod pressed;
 mod projectile_hits;
 mod projectiles;
@@ -488,6 +489,12 @@ struct Player {
     dead: bool,
     /// Their hurt cooldown and the tick they died in, in memory only (`void.rs`).
     hurting: void::Hurting,
+    /// See [`PlayerState::appearance`] and [`PlayerState::posture`].
+    appearance: crate::api::Appearance,
+    posture: crate::state::Posture,
+    /// What their last fluid update found of their eyes and how long they have glided
+    /// (`poses.rs`), in memory only: a restore or a hand-over begins them again.
+    eyes: poses::Eyes,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1403,6 +1410,9 @@ impl Region {
         // The end of each riding player's tick: the checks of a driver's next moves
         // count from where their boat is now (`boats.rs`).
         self.tick_drivers(&mut output);
+        // The end of each player's tick for their swimming, gliding and pose
+        // (`Player.tick`'s `updatePlayerPose` last; `poses.rs`).
+        self.players_pose_tick(&mut output);
         // The end of each player's tick for their menu, after every move and before the
         // block events are kept, so that a menu closed at a hand-over keeps its lid's
         // events with their chunk (`docs/groundwork/n6-plan.md`, section 8 item 7).
@@ -1852,6 +1862,7 @@ impl Region {
             name: join.name.clone(),
             edge,
             attempt: join.attempt,
+            appearance: join.appearance,
         };
         self.entering.insert(join.player, entering);
         self.journal.entering.insert(join.player);
@@ -2128,6 +2139,9 @@ impl Region {
             in_credits: false,
             health: transfer.health,
             dead: transfer.dead,
+            appearance: transfer.appearance,
+            posture: transfer.posture,
+            eyes: Default::default(),
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2181,6 +2195,7 @@ impl Region {
             name,
             edge,
             attempt,
+            appearance,
         } = entering;
         // A stay let go while dead (on the death screen, or before the body went) joins
         // through the respawn's path, alive (`docs/groundwork/p-plan.md`, sections 19.5
@@ -2313,6 +2328,8 @@ impl Region {
                             cooldown: portal_cooldown,
                         },
                         unit: None,
+                        appearance,
+                        posture: Default::default(),
                     };
                     match elsewhere {
                         Some(to) => unplaced.push((edge, id, transfer, to)),
@@ -2383,6 +2400,11 @@ impl Region {
             in_credits: false,
             health,
             dead,
+            appearance,
+            // A player enters standing: the game's entity begins so, and its first tick
+            // poses it (`poses.rs`).
+            posture: Default::default(),
+            eyes: Default::default(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -2864,6 +2886,11 @@ impl Region {
                 self.swing_arm(id, false, swing, false, output);
                 self.reset_attack_strength(id);
             }
+            // How the others are to draw them, and a start of gliding (`poses.rs`).
+            PlayerInput::Appearance(appearance) => {
+                self.set_appearance(id, *appearance, output);
+            }
+            PlayerInput::StartFallFlying => self.start_fall_flying(id, output),
             // Kept for the shift dismount, which the player's ride tick reads, and a
             // minecart's rider.
             PlayerInput::Keys(keys) => {
@@ -4104,6 +4131,8 @@ impl Player {
             travel: self.travel,
             seen_credits: self.seen_credits,
             in_credits: self.in_credits,
+            appearance: self.appearance,
+            posture: self.posture,
         }
     }
 
@@ -4149,6 +4178,9 @@ impl Player {
             last_death: state.last_death,
             last_level_up: None,
             last_hurt_mob: None,
+            appearance: state.appearance,
+            posture: state.posture,
+            eyes: Default::default(),
         }
     }
 
@@ -4252,6 +4284,8 @@ impl Player {
             seen_credits: self.seen_credits,
             portal: self.portal,
             unit: None,
+            appearance: self.appearance,
+            posture: self.posture,
             cooldowns: self
                 .cooldowns
                 .into_iter()
@@ -4300,6 +4334,7 @@ impl Player {
             kind: EntityKind::Player {
                 player: id,
                 name: self.name.clone(),
+                data: self.data_shown(),
             },
             pose: self.pose,
         }
@@ -4478,6 +4513,7 @@ mod tests {
     mod pois;
     #[path = "../portals_specification.rs"]
     mod portals_specification;
+    mod poses;
     mod post_processing_and_seams;
     mod pressed;
     mod pushed;
@@ -5063,6 +5099,7 @@ mod tests {
         PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(number),
                 name: format!("Player{number}"),
                 attempt: attempt(number),
@@ -5155,6 +5192,7 @@ mod tests {
         EntityState {
             entity: EntityId(entity as u64),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(number),
                 name: format!("Player{number}"),
             },
@@ -6620,6 +6658,8 @@ mod tests {
         hotbar[0] = None;
         hotbar[6] = Some(GLASS);
         PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -7214,6 +7254,8 @@ mod tests {
                 departed(
                     1,
                     PlayerTransfer {
+                        appearance: Default::default(),
+                        posture: Default::default(),
                         forwards: 0,
                         health: 20.0,
                         dead: false,
@@ -7548,6 +7590,8 @@ mod tests {
         // No input of theirs was applied, so the stay still carries the attempt of
         // its join. It has been handed on once.
         let transfer = PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -8572,6 +8616,7 @@ mod tests {
         let again = PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(1),
                 name: "Player1".to_owned(),
                 attempt: 99,

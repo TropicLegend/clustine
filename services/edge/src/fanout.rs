@@ -41,9 +41,9 @@ use clustine_region::RegionId;
 use clustine_rpc::link;
 use clustine_rpc::{EdgeMessage, EdgeToWorker, Presence, Welcome, WorkerToEdge};
 use clustine_sim::api::{
-    AttributeShown, Durable, EntityKind, EntityState, Inventory, ItemStack, Misdirected,
-    PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent, RemoteAction,
-    Respawned, Tracked, WorldClock,
+    Appearance, AttributeShown, Durable, EntityKind, EntityState, Inventory, ItemStack,
+    Misdirected, PlayerEvent, PlayerInput, PlayerJoin, PlayerTransfer, Pose, RegionEvent,
+    RemoteAction, Respawned, Tracked, WorldClock,
 };
 use clustine_world::{
     BlockPos, Chunk, ChunkPos, Dimension, EntityData, EntityId, InChunk, LevelChunk, Light,
@@ -116,6 +116,9 @@ pub(crate) enum Command {
         profile: Profile,
         /// The view distance the client asked for, if it said.
         requested_view_distance: Option<i32>,
+        /// How the client asked the others to draw its player, as it said in the
+        /// configuration (the game's defaults where it said nothing).
+        appearance: Appearance,
         outbound: mpsc::Sender<Bytes>,
         /// Shared with the connection; see [`NO_TELEPORT`].
         awaiting_teleport: Arc<AtomicI32>,
@@ -1744,6 +1747,7 @@ impl Fanout {
                 session,
                 profile,
                 requested_view_distance,
+                appearance,
                 outbound,
                 awaiting_teleport,
             } => {
@@ -1800,6 +1804,7 @@ impl Fanout {
                     player,
                     name: profile.name,
                     attempt: session.0,
+                    appearance,
                 };
                 self.send_to_region(self.spawn_region, EdgeToWorker::PlayerJoin(join))
                     .await;
@@ -4672,13 +4677,26 @@ impl Fanout {
         for earlier in self.note_stay(player, entity) {
             self.remove_entity(earlier).await;
         }
+        // The values of the player's data that are not the defaults, which the region
+        // reports with them wherever they are reported from: what a client that comes to
+        // see them is shown (`sendPairingData`), whatever the edge was told before.
+        let mut living = LivingShown::default();
+        if let EntityKind::Player { data, .. } = &state.kind {
+            for (index, value) in data.clone() {
+                if let Some(value) =
+                    crate::tracking::data_value(value, &mut |key| self.wire.of(key))
+                {
+                    living.data.insert(index, value);
+                }
+            }
+        }
         let shown = Shown {
             state,
             from,
             dimension: self.dimension_of(from),
             tracker: None,
             handed_on: None,
-            living: LivingShown::default(),
+            living,
         };
         let moved = self
             .entities
@@ -5288,6 +5306,19 @@ impl Fanout {
         });
         if let Some(shown) = self.entities.get_mut(&entity) {
             shown.living.sleeping = head;
+            // The pose and the bed are of the player's data, which a report of the
+            // player carries too: kept as the sleep sets them, the standing pose and no
+            // bed as the defaults they are.
+            let data = &mut shown.living.data;
+            data.remove(&entity_data::SLEEPING_POSITION);
+            match head {
+                Some(_) => {
+                    data.insert(entity_data::POSE, EntityDataValue::Pose(pose::SLEEPING));
+                }
+                None => {
+                    data.remove(&entity_data::POSE);
+                }
+            }
         }
         let packet = encoded(&sleeping_data(self.wire.of(entity), head));
         self.show_to_watchers(entity, packet.clone()).await;
@@ -5320,7 +5351,13 @@ impl Fanout {
             .collect();
         if let Some(shown) = self.entities.get_mut(&entity) {
             for (index, value) in &values {
-                shown.living.data.insert(*index, value.clone());
+                // A pose, a skin or a hand back at the default is no longer sent to
+                // whoever comes to see the player (`getNonDefaultValues`).
+                if is_default_of_player(*index, value) {
+                    shown.living.data.remove(index);
+                } else {
+                    shown.living.data.insert(*index, value.clone());
+                }
             }
         }
         let packet = encoded(&SetEntityData {
@@ -7370,7 +7407,7 @@ impl PlayerView {
         match (in_view, shown) {
             (true, false) => {
                 let mut packets = Vec::new();
-                let EntityKind::Player { player, name } = &state.kind else {
+                let EntityKind::Player { player, name, .. } = &state.kind else {
                     self.visible.insert(state.entity, None);
                     // The owner's id, given now if it has none, so that an owner shown
                     // after its projectile is the one it names (`n9-plan.md`, section
@@ -7486,6 +7523,18 @@ fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
 /// with the motion and angles sent last, its head at 0 and, for a falling block, its
 /// block as the spawn's data; and then the values of its data that are not the
 /// defaults, if any (the game's `ServerEntity.sendPairingData`).
+/// Whether `value` is the default of a player's data at `index` that the edge keeps
+/// apart from the others: the standing pose, no skin's parts, the right hand
+/// (`Entity.defineSynchedData`, `Avatar.defineSynchedData` 5–27).
+fn is_default_of_player(index: u8, value: &EntityDataValue) -> bool {
+    match (index, value) {
+        (entity_data::POSE, EntityDataValue::Pose(ordinal)) => *ordinal == pose::STANDING,
+        (entity_data::PLAYER_SKIN_PARTS, EntityDataValue::Byte(parts)) => *parts == 0,
+        (entity_data::PLAYER_MAIN_HAND, EntityDataValue::Registered { id, .. }) => *id == 1,
+        _ => false,
+    }
+}
+
 /// The pose and sleeping position of a player lying in the bed whose head is `head`, or
 /// standing again (`None`).
 fn sleeping_data(id: i32, head: Option<Position>) -> SetEntityData {
@@ -7519,14 +7568,20 @@ fn living_packets(living: &LivingShown, id: i32) -> Vec<Bytes> {
     if let Some(head) = living.sleeping {
         packets.push(encoded(&sleeping_data(id, Some(head))));
     }
-    if !living.data.is_empty() {
+    // A sleeper's pose and bed went with the sleep's data, above.
+    let values: Vec<(u8, EntityDataValue)> = living
+        .data
+        .iter()
+        .filter(|(index, _)| {
+            living.sleeping.is_none()
+                || ![entity_data::POSE, entity_data::SLEEPING_POSITION].contains(index)
+        })
+        .map(|(index, value)| (*index, value.clone()))
+        .collect();
+    if !values.is_empty() {
         packets.push(encoded(&SetEntityData {
             entity_id: id,
-            values: living
-                .data
-                .iter()
-                .map(|(index, value)| (*index, value.clone()))
-                .collect(),
+            values,
         }));
     }
     if !living.equipment.is_empty() {
@@ -8238,6 +8293,7 @@ mod tests {
             self.attempts.insert(player, self.sessions);
             let (outbound, packets) = mpsc::channel(4096);
             let join = Command::Join {
+                appearance: Default::default(),
                 session: SessionId(self.sessions),
                 profile: Profile {
                     uuid: player.0,
@@ -8344,6 +8400,8 @@ mod tests {
     /// The player as the western region lets them go, standing in the eastern one.
     fn transfer(entity: EntityId, last_input: u64) -> PlayerTransfer {
         PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -10549,6 +10607,7 @@ mod scenarios {
             let (outbound, packets) = mpsc::channel(4096);
             let awaiting = Arc::new(AtomicI32::new(NO_TELEPORT));
             let join = Command::Join {
+                appearance: Default::default(),
                 session,
                 profile: Profile {
                     uuid: player.0,
@@ -11355,6 +11414,8 @@ mod scenarios {
     /// A player as a region lets them go, standing in `chunk`.
     fn transfer(entity: EntityId, last_input: u64, chunk: ChunkPos) -> PlayerTransfer {
         PlayerTransfer {
+            appearance: Default::default(),
+            posture: Default::default(),
             forwards: 0,
             health: 20.0,
             dead: false,
@@ -11604,6 +11665,7 @@ mod scenarios {
         EntityState {
             entity,
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(entity.0 as u128 + 1000),
                 name: format!("Stranger{}", entity.0),
             },
@@ -14209,6 +14271,7 @@ mod scenarios {
         let own = |number: u128, entity| EntityState {
             entity,
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(number),
                 name: format!("Player{number}"),
             },
@@ -14304,6 +14367,7 @@ mod scenarios {
         let arrived = EntityState {
             entity: EntityId(5),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(1),
                 name: "Player".to_owned(),
             },
@@ -14365,6 +14429,7 @@ mod scenarios {
     fn far_stranger(entity: EntityId, chunk: ChunkPos) -> EntityState {
         EntityState {
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(u128::from(entity.0) + 1000),
                 name: format!("Stranger{}", entity.0 % 1000),
             },
@@ -14596,6 +14661,7 @@ mod scenarios {
         let state = EntityState {
             entity: other,
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(9),
                 name: "Player9".to_owned(),
             },
@@ -14635,6 +14701,131 @@ mod scenarios {
         edge.sync(&mut newcomer).await;
         assert!(newcomer.entities.contains(&other.0));
         assert!(held(&newcomer.living), "{:?}", newcomer.living);
+        edge.end().await;
+    }
+
+    /// What another player's data has that is not the defaults (the pose, the skin's
+    /// parts, the main hand) is shown with them to whoever comes to see them, as their
+    /// region reports it with them and as it changes since: a pose back at standing is
+    /// not, and a sleeper's pose goes with their bed, once.
+    #[tokio::test]
+    async fn another_player_s_pose_skin_and_hand_are_shown_to_whoever_comes_to_see_them() {
+        use clustine_sim::shown::{DataShown, Serialiser};
+        let mut edge = Harness::start().await;
+        let mut watcher = edge.joined(player(1), far_key(1)).await;
+        edge.quiet().await;
+        edge.tell(WEST, snapshot(HOME, edge.ask(WEST, HOME)));
+        edge.settle(WEST).await;
+        let other = far_key(50);
+        let state = EntityState {
+            entity: other,
+            kind: EntityKind::Player {
+                player: player(9),
+                name: "Player9".to_owned(),
+                data: vec![(16, DataShown::Byte(0x7F))],
+            },
+            pose: Pose::at(SPAWN),
+        };
+        let left = EntityDataValue::Registered {
+            serializer: 42,
+            id: 0,
+        };
+        edge.tell(
+            WEST,
+            ticked(vec![
+                RegionEvent::EntitySpawned(state),
+                RegionEvent::PlayerData {
+                    entity: other,
+                    chunk: HOME,
+                    values: vec![
+                        (6, DataShown::Pose(pose::CROUCHING)),
+                        (15, DataShown::Serialised(Serialiser::HumanoidArm, 0)),
+                    ],
+                },
+            ]),
+        );
+        edge.settle(WEST).await;
+        edge.sync(&mut watcher).await;
+        let data_of = |client: &Client| -> Vec<Vec<(u8, EntityDataValue)>> {
+            let ids: Vec<i32> = client
+                .naming(other.0)
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect();
+            client
+                .entity_data
+                .iter()
+                .filter(|data| ids.contains(&data.entity_id))
+                .map(|data| data.values.clone())
+                .collect()
+        };
+        let skin = (16, EntityDataValue::Byte(0x7F));
+        assert_eq!(
+            data_of(&watcher),
+            [
+                vec![skin.clone()],
+                vec![
+                    (6, EntityDataValue::Pose(pose::CROUCHING)),
+                    (15, left.clone())
+                ],
+            ]
+        );
+        let mut newcomer = edge.joined(player(2), far_key(2)).await;
+        edge.quiet().await;
+        edge.sync(&mut newcomer).await;
+        assert_eq!(
+            data_of(&newcomer),
+            [vec![
+                (6, EntityDataValue::Pose(pose::CROUCHING)),
+                (15, left.clone()),
+                skin.clone(),
+            ]]
+        );
+
+        // Standing again: no pose for the next to come.
+        edge.tell(
+            WEST,
+            ticked(vec![RegionEvent::PlayerData {
+                entity: other,
+                chunk: HOME,
+                values: vec![(6, DataShown::Pose(pose::STANDING))],
+            }]),
+        );
+        edge.settle(WEST).await;
+        let mut second = edge.joined(player(3), far_key(3)).await;
+        edge.quiet().await;
+        edge.sync(&mut second).await;
+        assert_eq!(data_of(&second), [vec![(15, left.clone()), skin.clone()]]);
+
+        // Asleep: the pose with the bed, and not again with the rest.
+        let head = BlockPos::new(1, -60, 1);
+        edge.tell(
+            WEST,
+            ticked(vec![RegionEvent::Sleeping {
+                entity: other,
+                chunk: HOME,
+                head: Some(head),
+            }]),
+        );
+        edge.settle(WEST).await;
+        let mut third = edge.joined(player(4), far_key(4)).await;
+        edge.quiet().await;
+        edge.sync(&mut third).await;
+        let bed = Position {
+            x: head.x,
+            y: head.y,
+            z: head.z,
+        };
+        assert_eq!(
+            data_of(&third),
+            [
+                vec![
+                    (6, EntityDataValue::Pose(pose::SLEEPING)),
+                    (14, EntityDataValue::OptionalBlockPos(Some(bed))),
+                ],
+                vec![(15, left), skin],
+            ]
+        );
         edge.end().await;
     }
 
@@ -15377,6 +15568,7 @@ mod scenarios {
                             .map(|(player, resident)| EntityState {
                                 entity: resident.entity,
                                 kind: EntityKind::Player {
+                                    data: Default::default(),
                                     player: *player,
                                     name: "Player".to_owned(),
                                 },
@@ -15529,6 +15721,7 @@ mod scenarios {
                     ticked.events.push(RegionEvent::EntitySpawned(EntityState {
                         entity,
                         kind: EntityKind::Player {
+                            data: Default::default(),
                             player: join.player,
                             name: join.name,
                         },
@@ -15606,6 +15799,7 @@ mod scenarios {
                             ticked.events.push(RegionEvent::EntitySpawned(EntityState {
                                 entity: transfer.entity_id,
                                 kind: EntityKind::Player {
+                                    data: Default::default(),
                                     player,
                                     name: transfer.name,
                                 },
@@ -21214,6 +21408,7 @@ mod scenarios {
         EntityState {
             entity: EntityId(entity),
             kind: EntityKind::Player {
+                data: Default::default(),
                 player: player(who),
                 name: "Player".to_owned(),
             },
@@ -21532,6 +21727,7 @@ mod scenarios {
             let (outbound, packets) = mpsc::channel(room);
             let awaiting = Arc::new(AtomicI32::new(NO_TELEPORT));
             let join = Command::Join {
+                appearance: Default::default(),
                 session,
                 profile: Profile {
                     uuid: player.0,

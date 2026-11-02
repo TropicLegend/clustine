@@ -32,6 +32,7 @@ async fn at_home() -> (Harness, Client) {
     let there = vec![EntityState {
         entity: WATCHER,
         kind: EntityKind::Player {
+            data: Default::default(),
             player: player(1),
             name: "Player1".to_owned(),
         },

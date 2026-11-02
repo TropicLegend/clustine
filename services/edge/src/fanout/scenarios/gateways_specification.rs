@@ -221,6 +221,7 @@ async fn the_beam_s_block_event_is_sent_to_a_player_near_the_gateway() {
     let own = EntityState {
         entity: EntityId(5),
         kind: EntityKind::Player {
+            data: Default::default(),
             player: player(1),
             name: "Player1".to_owned(),
         },

@@ -91,6 +91,51 @@ pub struct EnteringState {
     ///
     /// [`PlayerJoin::attempt`]: crate::PlayerJoin::attempt
     pub attempt: u64,
+    /// [`PlayerJoin::appearance`] of the join.
+    ///
+    /// [`PlayerJoin::appearance`]: crate::PlayerJoin::appearance
+    pub appearance: crate::api::Appearance,
+}
+
+/// The poses a player's entity takes (`Pose`, by its ordinal in the game's enumeration,
+/// which the entity data's `POSE` carries).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlayerPose {
+    #[default]
+    Standing,
+    FallFlying,
+    Sleeping,
+    Swimming,
+    /// A Riptide trident's spin (`isAutoSpinAttack`), which nothing begins yet: Riptide
+    /// is not built.
+    SpinAttack,
+    Crouching,
+}
+
+impl PlayerPose {
+    /// The pose's ordinal in the game's `Pose`.
+    pub fn ordinal(self) -> i32 {
+        match self {
+            Self::Standing => 0,
+            Self::FallFlying => 1,
+            Self::Sleeping => 2,
+            Self::Swimming => 3,
+            Self::SpinAttack => 4,
+            Self::Crouching => 5,
+        }
+    }
+}
+
+/// What the region decides of how a player's entity is posed, which the game keeps in
+/// the entity's data and the others are shown: the pose (`Player.updatePlayerPose`) and
+/// the shared flags of swimming (bit 4, `Entity.updateSwimming`) and gliding (bit 7,
+/// `Player.tryToStartFallFlying`, `LivingEntity.updateFallFlying`). It goes wherever the
+/// player goes, so that a crossing changes nothing of what is shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Posture {
+    pub pose: PlayerPose,
+    pub swimming: bool,
+    pub fall_flying: bool,
 }
 
 /// A player's most health (`Player`'s `MAX_HEALTH` of 20).
@@ -182,6 +227,9 @@ pub struct PlayerState {
     /// Whether they are dead and shown the respawn screen, their stay kept until they
     /// ask to respawn.
     pub dead: bool,
+    /// How their client asked to be drawn, and their pose as the region decided it.
+    pub appearance: crate::api::Appearance,
+    pub posture: Posture,
 }
 
 /// A level of an effect as a region's state keeps it: the effect by name, its amplifier,

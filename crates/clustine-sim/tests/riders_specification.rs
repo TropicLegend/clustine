@@ -227,6 +227,7 @@ fn joined(region: &mut Region) -> EntityId {
         player_changes: vec![PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(1),
                 name: "Rider".to_owned(),
                 attempt: 7001,
@@ -498,6 +499,8 @@ fn crossing() -> Crossing {
 /// Player `n`, walking, handed over at `at` for the first time.
 fn walker(n: u128, at: Vec3) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -1261,6 +1264,8 @@ fn a_unit_sent_on_while_a_seat_is_kept_forwards_the_player_who_comes_after_it() 
     assert!(sent.riding.passengers[0].pending.is_some());
 
     let transfer = PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
@@ -1779,6 +1784,7 @@ fn a_player_who_left_alone_on_a_boat_is_put_back_on_it_when_they_join_again() {
         player_changes: vec![PlayerChange::Join(
             EDGE,
             PlayerJoin {
+                appearance: Default::default(),
                 player: player(1),
                 name: "Rider".to_owned(),
                 attempt: 7002,

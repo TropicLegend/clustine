@@ -1256,6 +1256,7 @@ fn attempt(id: PlayerId) -> u64 {
 
 fn join(id: PlayerId) -> EdgeToWorker {
     EdgeToWorker::PlayerJoin(PlayerJoin {
+        appearance: Default::default(),
         player: id,
         name: format!("player-{}", id.0.as_u128()),
         attempt: attempt(id),
@@ -1296,6 +1297,8 @@ fn dig(position: BlockPos, sequence: i32) -> PlayerInput {
 /// along, with an entity of that region's.
 fn transfer(entity: EntityId, x: f64) -> PlayerTransfer {
     PlayerTransfer {
+        appearance: Default::default(),
+        posture: Default::default(),
         forwards: 0,
         health: 20.0,
         dead: false,
