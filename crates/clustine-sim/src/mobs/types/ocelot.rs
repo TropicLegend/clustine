@@ -331,6 +331,12 @@ fn trusting_particle_draws(used: &mut Used<'_>) {
 const AVOID_SLOT: u16 = 7;
 
 impl MobType for Ocelot {
+    /// `Ocelot.isSteppingCarefully`: while it crouches (bytecode 0-19), as its
+    /// `customServerAiStep` left it in this tick, before its travel.
+    fn steps_carefully(&self, mob: &Mob) -> bool {
+        state_of(mob).1.crouching
+    }
+
     /// `Ocelot.finalizeSpawn`: a group every later one of which is a kitten
     /// (`AgeableMobGroupData(1.0f)`) where it has none.
     fn finalize_spawn(&self, spawn: &mut super::Spawning<'_>) {

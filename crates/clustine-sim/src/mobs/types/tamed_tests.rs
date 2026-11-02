@@ -400,3 +400,29 @@ fn a_pet_heals_on_its_food_by_its_nutrition_and_never_past_its_most() {
     assert_eq!(mob.body.vitals.health, 40.0);
     assert!(!tamable::hurt(&mob, kind));
 }
+
+/// A cat or an ocelot steps carefully while it crouches (`Cat.isSteppingCarefully`,
+/// `Ocelot.isSteppingCarefully`), so the redstone ore it stands on does not light; no
+/// other mob steps carefully, and of them only the bat ignores plates and tripwire.
+#[test]
+fn a_crouching_feline_steps_carefully_and_only_a_bat_ignores_block_triggers() {
+    let cat = of(entity_types::CAT as u16);
+    let crouching = |crouching| CatState {
+        crouching,
+        ..CatState::default()
+    };
+    assert!(cat.steps_carefully(&mob_with(&crouching(true))));
+    assert!(!cat.steps_carefully(&mob_with(&crouching(false))));
+    let ocelot = of(entity_types::OCELOT as u16);
+    let crouching = |crouching| OcelotState {
+        crouching,
+        ..OcelotState::default()
+    };
+    assert!(ocelot.steps_carefully(&mob_with(&crouching(true))));
+    assert!(!ocelot.steps_carefully(&mob_with(&crouching(false))));
+    assert!(!of(entity_types::WOLF as u16).steps_carefully(&Mob::fresh()));
+    assert!(of(entity_types::BAT as u16).ignores_block_triggers());
+    for kind in [entity_types::PIG, entity_types::ZOMBIE, entity_types::CAT] {
+        assert!(!of(kind as u16).ignores_block_triggers());
+    }
+}

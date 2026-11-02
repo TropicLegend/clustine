@@ -886,6 +886,7 @@ impl Region {
             key: boat.key,
             bounds: boat.body.bounds(),
             living: false,
+            ignores: false,
         };
         for (state, pos, block, fluid) in met {
             if block {

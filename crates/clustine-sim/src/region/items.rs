@@ -378,6 +378,7 @@ impl Region {
             key,
             bounds: item.body.bounds(),
             living: false,
+            ignores: false,
         };
         self.entity_touched(pos, &toucher, output);
     }

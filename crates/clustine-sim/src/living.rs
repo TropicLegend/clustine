@@ -220,6 +220,12 @@ pub(crate) struct Living {
     pub(crate) sounds: Vec<Sound>,
     /// Redstone ore it stood on, to light, and sculk sensors, to hear it.
     pub(crate) ore: Vec<BlockPos>,
+    /// `isSteppingCarefully()` as its tick has it: the ore it stands on does not light
+    /// (a crouching cat or ocelot; no other body steps carefully).
+    pub(crate) careful: bool,
+    /// `isIgnoringBlockTriggers()`: the plates and tripwire its walk meets do not count
+    /// it (a bat).
+    pub(crate) ignores_block_triggers: bool,
     /// Where its fall ended in this tick, if one did, for the landing's vibration.
     pub(crate) landed_on: Option<BlockPos>,
     /// The plates, tripwire and detector rails its walk met, in the order met, whose
@@ -295,6 +301,8 @@ impl Living {
             on_fire_flag: false,
             sounds: Vec::new(),
             ore: Vec::new(),
+            careful: false,
+            ignores_block_triggers: false,
             landed_on: None,
             inside: Vec::new(),
             input: [0.0; 3],

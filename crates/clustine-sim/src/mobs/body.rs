@@ -902,6 +902,11 @@ pub(crate) fn travel(tick: &mut MobTick<'_>) {
         tick.mob_type.before_travel(tick);
         tick.living.travel(tick.world);
     }
+    // What its effects of blocks ask of it as its type answers now: whether it steps
+    // carefully (a feline's crouch, which its `customServerAiStep` set before this) and
+    // whether it ignores plates and tripwire.
+    tick.living.careful = tick.mob_type.steps_carefully(&tick.mob);
+    tick.living.ignores_block_triggers = tick.mob_type.ignores_block_triggers();
     tick.living.after_travel(tick.world, &mut *tick.draws);
     sound_steps(tick);
     frost(tick);

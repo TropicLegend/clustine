@@ -8,8 +8,10 @@
 //! What it flies to (`targetPosition`) is kept with it, where the game keeps it only in
 //! memory, so that a bat crossing a line or a merge flies on as it was.
 //!
-//! Named differences: it is never silent (no mob is); it treads on plates and tripwire
-//! as other mobs do, where the game's bat ignores them (`isIgnoringBlockTriggers`).
+//! It ignores block triggers (`Bat.isIgnoringBlockTriggers`): plates and tripwire do
+//! not count it.
+//!
+//! Named difference: it is never silent (no mob is).
 
 use clustine_data::sounds;
 use clustine_world::{BlockPos, TypeState};
@@ -90,6 +92,11 @@ fn signum(value: f64) -> f64 {
 
 impl MobType for Bat {
     fn register_goals(&self, _: &mut Setup) {}
+
+    /// `Bat.isIgnoringBlockTriggers`: true (bytecode 0-1).
+    fn ignores_block_triggers(&self) -> bool {
+        true
+    }
 
     /// The constructor: a new bat rests.
     fn construct(&self, mob: &mut Mob, _: &mut Random) {

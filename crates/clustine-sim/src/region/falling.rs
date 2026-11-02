@@ -357,6 +357,7 @@ impl Region {
             key,
             bounds: body.bounds(),
             living: false,
+            ignores: false,
         };
         for pos in met {
             self.entity_touched(pos, &toucher, output);

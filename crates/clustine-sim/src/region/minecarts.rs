@@ -957,6 +957,7 @@ impl Region {
             key: cart.key,
             bounds: cart.body.bounds(),
             living: false,
+            ignores: false,
         };
         for (state, pos, block, fluid) in met {
             if block {

@@ -728,6 +728,12 @@ fn cat_tick(tick: &mut MobTick<'_>) {
 }
 
 impl MobType for Cat {
+    /// `Cat.isSteppingCarefully`: while it crouches (bytecode 0-19), as its
+    /// `customServerAiStep` left it in this tick, before its travel.
+    fn steps_carefully(&self, mob: &Mob) -> bool {
+        state_of(mob).1.crouching
+    }
+
     fn register_goals(&self, setup: &mut Setup) {
         cow::animal_maluses(setup);
         setup.add_goal(1, FloatGoal);

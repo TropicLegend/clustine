@@ -26,10 +26,9 @@ What is missing, by what a player would notice first:
 2. **Commands and chat**: players cannot chat or use commands.
 3. **What other players see of a player**: poses (sneaking, swimming, gliding), skin
    layers, the main hand; the player list's latency.
-4. **Things that are inert**: monster spawners and trial spawners, mobs on pressure
-   plates and tripwire, signs' text, jukeboxes, cauldrons, sculk shriekers and
-   catalysts, crafters, structures' chests (their loot is not rolled), bubble columns
-   forming.
+4. **Things that are inert**: monster spawners and trial spawners, signs' text,
+   jukeboxes, cauldrons, sculk shriekers and catalysts, crafters, structures' chests
+   (their loot is not rolled), bubble columns forming.
 5. **Weather**: it never rains, snows or thunders.
 6. **Mobs not built**: the breeze, the creaking, the warden, the wither, the
    illusioner, the giant and the sulfur cube.
@@ -146,7 +145,7 @@ Against the game's own classes and data:
 | Signs, banners | partial | Placed in the game's states (verified). No text or editor; banners placed without their patterns; no loom |
 | Bees and beehives, composters, campfires, lecterns | partial | Bees, honey, farmers' composting, campfires lit and burning, lecterns as job sites. A player's use of a hive, a composter or a lectern does nothing; campfires do not cook |
 | Jukeboxes, cauldrons, sculk shriekers and catalysts, crafters | not started | |
-| Pressure plates and tripwire | partial | Pressed by players, items, carts, boats, falling blocks, TNT and armour stands. Not by mobs; mobs light no redstone ore. Not compared |
+| Pressure plates and tripwire | implemented | Pressed by players, items, carts, boats, falling blocks, TNT, armour stands and mobs (a bat and a marker stand ignore them; stone plates count only living things); mobs light redstone ore, a crouching cat or ocelot does not (`mobs_press.rs`, `mobs_on_plates.rs`). A mob on a plate compared with the official server in `mobs_on_plates.rs` (ignored; not yet run). Named: a mob's or an item's walk into an unpressed plate of another region's land does not press it until it is in that region |
 
 ## T2 — World generation
 
@@ -196,13 +195,14 @@ not placed. A flat world reads it for its Nether and its End.
 | Dispensers, droppers, hoppers | partial | The game's dispenser behaviours (a dispenser's shots verified, `projectiles_oracle.rs`) and hoppers moving items. Missing: dispensed spawn eggs, brushes, sheep sheared from a dispenser, fire and wind charges (dropped as items); hoppers and droppers treat furnaces, brewing stands, composters, crafters, chiseled bookshelves, decorated pots, jukeboxes and shelves as shut |
 | Rails | implemented | Powered, activator and detector rails |
 | Update order and scheduled tick order | verified | The game's order of updates, ticks and block events; a circuit across a pinned line runs as in one region (L6) |
-| Plates and tripwire pressed by mobs, crafters | not started | |
+| Plates and tripwire pressed by mobs | implemented | See "Pressure plates and tripwire" in T1 |
+| Crafters | not started | |
 
 ## T5 — Farms and edge cases
 
 | Feature | Status | Notes |
 |---|---|---|
-| Mob farms (spawn rules, caps) | partial | The game's rules, light, slime chunks, local and global caps across regions (verified on a flat world, `spawning_oracle.rs`). Farms that use spawners, thunder, sulfur cubes or mobs on plates do not work |
+| Mob farms (spawn rules, caps) | partial | The game's rules, light, slime chunks, local and global caps across regions (verified on a flat world, `spawning_oracle.rs`). Farms that use spawners, thunder or sulfur cubes do not work |
 | Iron, raid and villager-based farms | partial | Golems summoned by gossip and panic, raids, breeding (N10; the bar and countdown verified). Golem summoning not compared |
 | Chunk loading, portals | partial | The viewer ring, arrival tickets, the game's portal ticket (300 ticks), the End's arena kept loaded, travel through every portal (verified). Missing: the ender pearl's ticket while it flies, forced loading; pearls kept with an owner who leaves |
 | Random ticks and growth | verified | At the game's rate in the chunks a region ticks, and growth by light compared in distribution (`growth_oracle.rs`). Named: draws from the world's own stream; kelp and vine heads stay heads; frosted ice never ages |

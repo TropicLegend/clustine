@@ -823,6 +823,7 @@ impl Region {
             key: flight.key,
             bounds: own_box,
             living: false,
+            ignores: false,
         };
         let mut effects = Vec::new();
         for (state, pos, step, block, fluid) in met {

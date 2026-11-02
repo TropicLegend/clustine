@@ -546,8 +546,12 @@ impl Region {
         living: &mut Living,
         output: &mut TickOutput,
     ) {
-        // Its landing, then what it stood on (`vibrations.rs`).
-        let source = super::vibrations::Source::of(key);
+        // Its landing, then what it stood on (`vibrations.rs`), of a body that steps
+        // carefully or not.
+        let source = super::vibrations::Source {
+            careful: living.careful,
+            ..super::vibrations::Source::of(key)
+        };
         if let Some(on) = living.landed_on.take() {
             let supporting = living.body.supporting;
             self.entity_hit_ground(source, living.body.position, on, supporting);
@@ -556,11 +560,12 @@ impl Region {
             self.stood_on(ore, source, living.body.position, output);
         }
         // The plates, tripwire and detector rails its walk met, which count it where
-        // it is, a living entity (`pressed.rs`).
+        // it is, a living entity, unless it ignores them (`pressed.rs`).
         let toucher = super::pressed::Toucher {
             key,
             bounds: living.body.bounds(),
             living: true,
+            ignores: living.ignores_block_triggers,
         };
         for pos in std::mem::take(&mut living.inside) {
             self.entity_touched(pos, &toucher, output);

@@ -12,10 +12,11 @@
 //! a plate in one tick would press, and this does not. A player with the shift key down
 //! steps carefully (`isSteppingCarefully`), and lights no redstone ore by standing on it;
 //! a sculk sensor hears them all the same (`vibrations.rs`). Every other entity's walk
-//! (an item's, a cart's, a boat's, a falling block's, primed TNT's, an armour stand's)
-//! hands back the
-//! plates, tripwire and detector rails it met, and the region runs their `entityInside`
-//! for it in its own tick, in the order of the entities ([`Region::entity_touched`]).
+//! (an item's, a cart's, a boat's, a falling block's, primed TNT's, an armour stand's, a
+//! mob's) hands back the plates, tripwire and detector rails it met, and the region runs
+//! their `entityInside` for it in its own tick, in the order of the entities
+//! ([`Region::entity_touched`]). A mob's walk also hands back the redstone ore it stood
+//! on, which lights unless it steps carefully (a crouching cat or ocelot).
 //!
 //! The count of what presses a plate, and of what keeps tripwire down, is every entity
 //! of the region's own chunks whose box meets the block's box, and every player of the
@@ -26,13 +27,20 @@
 //! record may not say yet. The scheduled looks again count every entity where the last
 //! tick left it. As the region's entities tick in the order of their keys and not of
 //! the game's list, which of two entities has moved when the other counts is not always
-//! the game's. A marker armour stand presses nothing; stone and polished blackstone
-//! plates count only living entities (players and armour stands); none of Clustine's
-//! players is a spectator.
+//! the game's. A marker armour stand and a bat ignore block triggers and press nothing;
+//! stone and polished blackstone plates count only living entities (players, armour
+//! stands and mobs); none of Clustine's players is a spectator.
 //!
 //! At a line (`docs/groundwork/n6-plan.md`, section 6 item 6 and section 7 item 12):
-//! the entities of copies and the players of other regions are not counted yet, which
-//! step N6g brings ([`Region::pressing`] is where).
+//! the recounts count the entities of the region's copies and the boxes other regions
+//! send of their players ([`Region::pressing`]), so a mob or an item across the line
+//! keeps a pressed plate down. Named difference: the walk of an entity other than a
+//! player that meets a plate or tripwire of another region's land does nothing there
+//! ([`Region::entity_touched`] runs only on the region's own blocks), so an unpressed
+//! plate held across the line is pressed by a mob or an item only once its walk brings
+//! it into the plate's region; a mob that stands on a plate stands with its middle in
+//! the plate's block, so this shows only for a mob straddling the line at the plate's
+//! edge.
 //!
 //! - A plate is pressed while an entity's box overlaps its lower quarter, set with
 //!   `UPDATE_CLIENTS` and telling the blocks around it and below it, and looks again
@@ -46,13 +54,15 @@
 //!   it for air.
 //! - Big dripleaf tilts under a player standing on it, by its own ticks, and power
 //!   beside it holds it flat.
-//! - Redstone ore lights when a player clicks it or stands on it; its random tick puts
-//!   it out (`random_ticks/minerals.rs`). A left click lights it only in survival,
+//! - Redstone ore lights when a player clicks it or when a player or another entity
+//!   stands on it (`RedStoneOreBlock.stepOn`, bytecode 0-11, unless
+//!   `isSteppingCarefully`; it has no `entityInside`); its random tick puts it out
+//!   (`random_ticks/minerals.rs`). A left click lights it only in survival,
 //!   which no Clustine player is in (`instruments.rs` says why).
 
 use clustine_blocks::data::{facing, flag, is_class, relative, same_block, set, set_flag, tick_id};
 use clustine_blocks::signal::{self, MAX_SIGNAL};
-use clustine_data::{BlockClass, BlockState, Face, blocks, entity_types, sounds};
+use clustine_data::{BlockClass, BlockState, Face, blocks, sounds};
 use clustine_world::{BlockPos, EntityData, EntityId, Ticked, Vec3};
 
 use super::Region;
@@ -63,12 +73,15 @@ use crate::physics::aabb::Aabb;
 
 /// An entity other than a player whose walk met a block the region runs the
 /// `entityInside` of for it: its key, its box where its walk has it (its record may
-/// still say where its tick began), and whether it is living, which a stone plate asks.
+/// still say where its tick began), whether it is living, which a stone plate asks, and
+/// whether it ignores block triggers (`isIgnoringBlockTriggers`: a bat), which no plate
+/// or tripwire counts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Toucher {
     pub(crate) key: EntityId,
     pub(crate) bounds: Aabb,
     pub(crate) living: bool,
+    pub(crate) ignores: bool,
 }
 
 /// `BasePressurePlateBlock.TOUCH_AABB`: the part of a plate's block an entity presses
@@ -229,11 +242,13 @@ impl Region {
 
     /// `entityInside` of the block at `pos` for `toucher`, an entity other than a player
     /// whose walk met it, in its tick: an unpowered plate counts what is on it
-    /// (`BasePressurePlateBlock.entityInside`), unpowered tripwire with no look due is
-    /// pressed by the entity itself (`TripWireBlock.entityInside`, which hands it
-    /// `List.of(entity)`; no entity that walks ignores triggers), and an unpowered
-    /// detector rail looks for carts (`DetectorRailBlock.entityInside`), which tells its
-    /// comparators even where it finds none.
+    /// (`BasePressurePlateBlock.entityInside`, bytecode 8-28, whatever the entity), unpowered
+    /// tripwire with no look due is pressed by the entity itself unless it ignores
+    /// triggers (`TripWireBlock.entityInside`, bytecode 8-47, which hands
+    /// `checkPressed` `List.of(entity)`, and `checkPressed`, which finds nothing pressing
+    /// in a list of a bat and so changes nothing), and an unpowered detector rail looks
+    /// for carts (`DetectorRailBlock.entityInside`), which tells its comparators even
+    /// where it finds none.
     pub(crate) fn entity_touched(
         &mut self,
         pos: BlockPos,
@@ -252,7 +267,10 @@ impl Region {
             }
         } else if is_class(state, BlockClass::TripWireBlock) {
             let tripwire = Ticked::Block(tick_id(state));
-            if !flag(state, "powered") && !self.has_scheduled_tick(pos, tripwire) {
+            if !flag(state, "powered")
+                && !self.has_scheduled_tick(pos, tripwire)
+                && !toucher.ignores
+            {
                 self.tripwire_pressed(pos, true, output);
             }
         } else if is_class(state, BlockClass::DetectorRailBlock) && !flag(state, "powered") {
@@ -374,8 +392,8 @@ impl Region {
     /// How many entities that do not ignore triggers (`NO_SPECTATORS` and
     /// `!isIgnoringBlockTriggers`) have boxes that meet `area`, a box of a block: the
     /// region's players, then the entities of its own chunks, of the class
-    /// `LivingEntity` only where `living_only` (players and armour stands until N7's
-    /// mobs). `toucher`, in whose tick this counts, is counted where its walk has it.
+    /// `LivingEntity` only where `living_only` (players, armour stands and mobs).
+    /// `toucher`, in whose tick this counts, is counted where its walk has it.
     ///
     /// With them count the entities of the region's copies, so that one across a line
     /// keeps a plate pressed, and the boxes of other regions' players sent across it for
@@ -399,18 +417,20 @@ impl Region {
             .into_iter()
             .filter(|(key, _)| toucher.is_none_or(|toucher| toucher.key != *key))
             .filter_map(|(key, chunk)| self.entity_record(key, chunk))
-            .filter(|record| !ignores_triggers(&record.data))
-            .filter(|record| !living_only || i32::from(record.kind) == entity_types::ARMOR_STAND)
+            .filter(|record| !ignores_triggers(record))
+            .filter(|record| !living_only || is_living(&record.data))
             .count();
         let touching = toucher.is_some_and(|toucher| {
-            toucher.bounds.intersects(bounds) && (!living_only || toucher.living)
+            !toucher.ignores
+                && toucher.bounds.intersects(bounds)
+                && (!living_only || toucher.living)
         });
         let copied = self
             .copies
             .values()
             .flat_map(|copy| copy.entities().iter())
-            .filter(|record| !ignores_triggers(&record.data))
-            .filter(|record| !living_only || i32::from(record.kind) == entity_types::ARMOR_STAND)
+            .filter(|record| !ignores_triggers(record))
+            .filter(|record| !living_only || is_living(&record.data))
             .filter(|record| self.entity_box(record).intersects(bounds))
             .count();
         let foreign = self
@@ -854,9 +874,23 @@ fn overlaps(a: &[f64; 6], b: &[f64; 6]) -> bool {
     a[0] < b[3] && a[3] > b[0] && a[1] < b[4] && a[4] > b[1] && a[2] < b[5] && a[5] > b[2]
 }
 
-/// `Entity.isIgnoringBlockTriggers`: true only for an armour stand that is a marker.
-fn ignores_triggers(data: &EntityData) -> bool {
-    matches!(data, EntityData::ArmorStand { flags, .. } if flags & super::stands::MARKER != 0)
+/// `Entity.isIgnoringBlockTriggers` of the entity `record`: true for an armour stand
+/// that is a marker (`ArmorStand.isIgnoringBlockTriggers`) and for a mob whose type
+/// says so, the bat (`crate::mobs::types::MobType::ignores_block_triggers`).
+fn ignores_triggers(record: &clustine_world::Entity) -> bool {
+    match &record.data {
+        EntityData::ArmorStand { flags, .. } => flags & super::stands::MARKER != 0,
+        EntityData::Mob { .. } => crate::mobs::types::of(record.kind).ignores_block_triggers(),
+        _ => false,
+    }
+}
+
+/// Whether the entity of `data` is a `LivingEntity`, which a stone or polished
+/// blackstone plate counts (`PressurePlateBlock.getSignalStrength`, bytecode 14-67,
+/// which counts `LivingEntity.class` for the `MOBS` sensitivity): an armour stand or a
+/// mob of any type. Players are counted apart.
+fn is_living(data: &EntityData) -> bool {
+    matches!(data, EntityData::ArmorStand { .. } | EntityData::Mob { .. })
 }
 
 /// Whether the plate `state` is pressed only by living entities: the stone and the

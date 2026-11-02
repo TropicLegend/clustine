@@ -483,6 +483,24 @@ pub(crate) trait MobType: Sync {
         false
     }
 
+    /// `Entity.isIgnoringBlockTriggers()`: plates and tripwire do not count it
+    /// (`BasePressurePlateBlock.getEntityCount`, `TripWireBlock.checkPressed`). `Entity`
+    /// answers false (bytecode 0-1), and of the mobs only the bat overrides it, with
+    /// true (`Bat.isIgnoringBlockTriggers`, bytecode 0-1).
+    fn ignores_block_triggers(&self) -> bool {
+        false
+    }
+
+    /// `Entity.isSteppingCarefully()`: redstone ore stood on does not light
+    /// (`RedStoneOreBlock.stepOn`, bytecode 2), and sneaking hides some of its
+    /// vibrations. `Entity` answers `isShiftKeyDown()` (bytecode 0-4), which no mob's
+    /// key is; a cat and an ocelot answer also whether they crouch
+    /// (`Cat.isSteppingCarefully` and `Ocelot.isSteppingCarefully`, bytecode 0-19).
+    fn steps_carefully(&self, mob: &Mob) -> bool {
+        let _ = mob;
+        false
+    }
+
     /// `isFlyingVehicle()`: whether its driver is never kicked for floating, and its
     /// move gathers no fall (an adult happy ghast). Never but where the type says.
     fn flying_vehicle(&self, mob: &Mob) -> bool {

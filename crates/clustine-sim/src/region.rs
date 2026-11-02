@@ -4446,6 +4446,7 @@ mod tests {
     mod minecarts;
     mod mob_bodies;
     mod mobs;
+    mod mobs_press;
     mod mount_riding;
     mod n10_pois_specification;
     mod n10_raids_specification;
