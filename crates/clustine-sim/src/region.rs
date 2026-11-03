@@ -157,6 +157,7 @@ mod void;
 mod waiting;
 mod water_creatures;
 mod wind_bursts;
+mod worn;
 
 pub use clustine_light::engine::Kept as KeptLight;
 pub use light::{LightChecks, LightSettings};
@@ -502,6 +503,9 @@ struct Player {
     /// What their last fluid update found of their eyes and how long they have glided
     /// (`poses.rs`), in memory only: a restore or a hand-over begins them again.
     eyes: poses::Eyes,
+    /// What their equipment adds to their attributes at the last look (`worn.rs`), in
+    /// memory only.
+    worn: worn::Worn,
 }
 
 /// What changed of an edge's outbox within the tick, beyond what the edge's state after
@@ -1340,6 +1344,7 @@ impl Region {
         // `Player.tick`'s look at the main hand, after the inputs; then its cooldowns
         // and `LivingEntity.tick`'s use of an item (`using.rs`).
         self.watch_main_hands(&main_hands);
+        self.watch_worn(&mut output);
         self.tick_player_effects(&mut output);
         self.tick_cooldowns(&mut output);
         self.tick_uses(&mut output);
@@ -2162,6 +2167,7 @@ impl Region {
             appearance: transfer.appearance,
             posture: transfer.posture,
             eyes: Default::default(),
+            worn: Default::default(),
             cooldowns: transfer
                 .cooldowns
                 .iter()
@@ -2448,6 +2454,7 @@ impl Region {
             // poses it (`poses.rs`).
             posture: Default::default(),
             eyes: Default::default(),
+            worn: Default::default(),
         };
         self.enter(id, player, attempt, output);
     }
@@ -4233,6 +4240,7 @@ impl Player {
             appearance: state.appearance,
             posture: state.posture,
             eyes: Default::default(),
+            worn: Default::default(),
         }
     }
 

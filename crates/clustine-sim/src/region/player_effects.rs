@@ -18,13 +18,14 @@
 //!
 //! Named differences: an effect's particles (data 10 and 11) are part S12's to report
 //! with the edge's writing of them; the attributes are those of the player's entity as
-//! the game makes it, its defaults and the effects' modifiers, since nothing else changes
-//! a player's.
+//! the game makes it, its defaults, the effects' modifiers and the equipment's
+//! (`worn.rs`).
 
 use clustine_data::{ATTRIBUTES, DEFAULT_ATTRIBUTES, attributes as ids, entity_types};
 use clustine_world::PlayerId;
 
-use super::Region;
+use super::worn::{self, Worn, WornModifier};
+use super::{Player, Region};
 use crate::api::{AttributeShown, PlayerEvent, RegionEvent, TickOutput};
 use crate::mobs::body::effects::{self, Added, Counted, Effect, Effects, Layer};
 use crate::shown::DataShown;
@@ -154,9 +155,10 @@ fn touched(effect: Effect) -> impl Iterator<Item = i32> {
         .map(|(_, attribute, ..)| *attribute)
 }
 
-/// The attribute `attribute` of a player with `effects`, as their client is sent it.
-fn attribute_of(effects: &Effects, attribute: i32) -> AttributeShown {
-    let modifiers = MODIFIERS
+/// The attribute `attribute` of a player with `effects` and the equipment's modifiers
+/// `worn` (`worn.rs`), as their client is sent it.
+fn attribute_of(effects: &Effects, worn: &[WornModifier], attribute: i32) -> AttributeShown {
+    let mut modifiers: Vec<(String, f64, u8)> = MODIFIERS
         .iter()
         .filter(|(_, of, ..)| *of == attribute)
         .filter_map(|(effect, _, id, amount, operation)| {
@@ -168,10 +170,23 @@ fn attribute_of(effects: &Effects, attribute: i32) -> AttributeShown {
             Some(((*id).to_owned(), amount * amplifier, *operation))
         })
         .collect();
+    modifiers.extend(
+        worn.iter()
+            .filter(|modifier| i32::from(modifier.attribute) == attribute)
+            .map(|modifier| (modifier.id.clone(), modifier.amount, modifier.operation)),
+    );
     AttributeShown {
         attribute: u16::try_from(attribute).expect("attribute ids fit 16 bits"),
         base: base(attribute),
         modifiers,
+    }
+}
+
+impl Player {
+    /// Their attribute `attribute` as their client is sent it: their base, their
+    /// effects' modifiers and their equipment's at the last look.
+    pub(super) fn attribute_shown(&self, attribute: i32) -> AttributeShown {
+        attribute_of(&self.effects, &self.worn.0, attribute)
     }
 }
 
@@ -403,7 +418,7 @@ impl Region {
         };
         output.player_events.push((id, event));
         let attributes: Vec<AttributeShown> = touched(effect)
-            .map(|attribute| attribute_of(&player.effects, attribute))
+            .map(|attribute| player.attribute_shown(attribute))
             .collect();
         if !attributes.is_empty() {
             output
@@ -449,12 +464,15 @@ impl Region {
     }
 
     /// Everything a client entering the world is told of the player's effects: each of
-    /// them, and the attributes they touch.
-    pub(crate) fn tell_effects(&self, id: PlayerId, output: &mut TickOutput) {
-        let Some(player) = self.players.get(&id) else {
+    /// them, and the attributes they and the player's equipment touch (`worn.rs`), the
+    /// equipment looked at afresh.
+    pub(crate) fn tell_effects(&mut self, id: PlayerId, output: &mut TickOutput) {
+        let tick = self.tick;
+        let Some(player) = self.players.get_mut(&id) else {
             return;
         };
-        for instance in effects::instances(&player.effects, self.tick) {
+        player.worn = Worn(worn::worn_modifiers(&player.equipment()));
+        for instance in effects::instances(&player.effects, tick) {
             output.player_events.push((
                 id,
                 PlayerEvent::EffectAdded {
@@ -468,13 +486,21 @@ impl Region {
             .active
             .iter()
             .flat_map(|active| touched(active.effect))
+            .chain(
+                player
+                    .worn
+                    .0
+                    .iter()
+                    .filter(|modifier| worn::syncable(modifier.attribute))
+                    .map(|modifier| i32::from(modifier.attribute)),
+            )
             .collect();
         attributes.sort_unstable();
         attributes.dedup();
         if !attributes.is_empty() {
             let attributes = attributes
                 .into_iter()
-                .map(|attribute| attribute_of(&player.effects, attribute))
+                .map(|attribute| player.attribute_shown(attribute))
                 .collect();
             output
                 .player_events

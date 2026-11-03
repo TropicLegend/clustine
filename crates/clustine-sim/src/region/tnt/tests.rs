@@ -157,6 +157,7 @@ pub(in crate::region) fn add_player(
     let player = Player {
         appearance: Default::default(),
         eyes: Default::default(),
+        worn: Default::default(),
         posture: Default::default(),
         hurting: Default::default(),
         health: 20.0,

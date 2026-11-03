@@ -522,23 +522,34 @@ impl Region {
     /// `bounds` (`hurtEntities`' hit players): away from the centre by how near they are
     /// and how much of them is seen, none for a player who flies. A creative player is
     /// invulnerable, and pushed unless they fly; the push reaches them only in the
-    /// packet, as the client moves the player.
+    /// packet, as the client moves the player. Their `explosion_knockback_resistance`
+    /// (Blast Protection's, `worn.rs`) takes its part off the push (`hurtEntities`
+    /// @361-407).
     pub(super) fn player_pushes(
         &self,
         centre: [f64; 3],
         reach: f64,
         bounds: &Aabb,
     ) -> Vec<(EntityId, [f64; 3])> {
-        let players: Vec<(EntityId, [f64; 3], bool)> = self
+        let players: Vec<(EntityId, [f64; 3], bool, f64)> = self
             .players
-            .values()
-            .map(|player| {
+            .iter()
+            .map(|(id, player)| {
                 let at = player.pose.position;
-                (player.entity_id, [at.x, at.y, at.z], player.flying)
+                let resistance = self.player_attribute(
+                    *id,
+                    clustine_data::attributes::EXPLOSION_KNOCKBACK_RESISTANCE,
+                );
+                (
+                    player.entity_id,
+                    [at.x, at.y, at.z],
+                    player.flying,
+                    resistance,
+                )
             })
             .collect();
         let mut knockback = Vec::new();
-        for (entity, feet, flying) in players {
+        for (entity, feet, flying, resistance) in players {
             let shape = Aabb::of_entity(feet, PLAYER_WIDTH, PLAYER_HEIGHT);
             if !shape.intersects(*bounds) {
                 continue;
@@ -559,7 +570,8 @@ impl Region {
             };
             let seen = self.seen_percent(centre, shape, context);
             if !flying {
-                let push = physics::scale(towards, (1.0 - d) * f64::from(seen));
+                let push =
+                    physics::scale(towards, (1.0 - d) * f64::from(seen) * (1.0 - resistance));
                 knockback.push((entity, push));
             }
         }
