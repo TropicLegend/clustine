@@ -555,6 +555,19 @@ impl Region {
     /// and nothing made, where its chunk ticks and is full ([`MAX_CHUNK_ENTITIES`]), or
     /// the region has no key left (ADR-0028, section 1).
     pub(crate) fn throw(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
+        self.drop_item(thrown, true, output)
+    }
+
+    /// What a craft drops (`ResultSlot.onTake`'s remainders, the rest of a shift-click on
+    /// a result): `player.drop(stack, false, PREDICTED)`, which is a throw as above but
+    /// with no thrower kept (`retainOwnership` false, `createItemStackToDrop`) and no
+    /// swing (`LivingEntity.drop` @16-31 swings only where the client did not predict it).
+    pub(crate) fn drop_crafted(&mut self, thrown: Thrown, output: &mut TickOutput) -> bool {
+        self.drop_item(thrown, false, output)
+    }
+
+    /// [`Self::throw`], with the thrower kept and the arm swung only if `owned`.
+    fn drop_item(&mut self, thrown: Thrown, owned: bool, output: &mut TickOutput) -> bool {
         let Thrown {
             player,
             stack,
@@ -617,7 +630,7 @@ impl Region {
             data: EntityData::Item {
                 stack,
                 pick_up_delay: THROWN_PICK_UP_DELAY,
-                thrower: Some(player.0),
+                thrower: owned.then_some(player.0),
                 health: 5,
                 age_offset: 0,
             },
@@ -627,7 +640,9 @@ impl Region {
             riding: Default::default(),
         };
         // `LivingEntity.drop` swings the main hand with `SwingAnimation.DEFAULT`.
-        self.swing_arm(player, false, clustine_data::Swing::DEFAULT, false, output);
+        if owned {
+            self.swing_arm(player, false, clustine_data::Swing::DEFAULT, false, output);
+        }
         if here {
             self.entity_drew(key, 4);
             self.add_fresh_entity(entity, output);

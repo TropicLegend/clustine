@@ -183,6 +183,58 @@ fn a_click_with_a_stale_state_id_has_the_window_sent_whole() {
     ));
 }
 
+/// `handleContainerClick` @180-193 compares a click's state id with the menu's when
+/// the click runs, after everything sent before it: a second click sent with the state
+/// id the first had, while the answer to the first corrected a slot (and so moved the
+/// state id on), is stale by the time it runs, and the window is sent whole.
+#[test]
+fn a_click_held_behind_one_whose_answer_moved_the_state_id_on_is_answered_whole() {
+    let mut menus = Menus::default();
+    opened(&mut menus, 7);
+    menus.click(click_at(1, 1, 5, vec![(5, hashed(1, 64))], None), 8);
+    menus.click(click_at(1, 1, 6, vec![(6, None)], None), 9);
+    let first = read(&menus.changed(7, 8, &[(5, stack(2, 3))], None));
+    assert!(
+        matches!(
+            &first[..],
+            [ClientboundPlay::ContainerSetSlot(ContainerSetSlot {
+                state_id: 2,
+                ..
+            })]
+        ),
+        "{first:?}"
+    );
+    let second = read(&menus.changed(7, 9, &[(6, None)], None));
+    assert!(
+        matches!(
+            &second[..],
+            [ClientboundPlay::SetContainerContent(SetContainerContent {
+                state_id: 3,
+                ..
+            })]
+        ),
+        "{second:?}"
+    );
+}
+
+/// And where the first click's answer agrees with what the client guessed, nothing is
+/// sent, the state id stays, and the second click is answered as any other.
+#[test]
+fn a_click_held_behind_one_answered_with_nothing_is_not_stale() {
+    let mut menus = Menus::default();
+    opened(&mut menus, 7);
+    menus.click(click_at(1, 1, 0, vec![(0, None)], hashed(1, 64)), 8);
+    menus.click(click_at(1, 1, 5, vec![(5, hashed(1, 64))], None), 9);
+    assert_eq!(
+        read(&menus.changed(7, 8, &[(0, None)], Some(stack(1, 64)))),
+        []
+    );
+    assert_eq!(
+        read(&menus.changed(7, 9, &[(5, stack(1, 64))], Some(None))),
+        []
+    );
+}
+
 #[test]
 fn a_click_waits_for_the_answer_that_covers_it() {
     let mut menus = Menus::default();

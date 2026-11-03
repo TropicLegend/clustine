@@ -4639,6 +4639,7 @@ mod tests {
     mod composting_n10;
     mod containers;
     mod conversions;
+    mod crafting_table;
     mod daylight_detector;
     mod digging;
     mod digging_spec;

@@ -14274,6 +14274,59 @@ mod scenarios {
         );
     }
 
+    /// `PlayerList.placeNewPlayer` @407-424 (V3c): the recipes the client needs are sent
+    /// after the abilities and before the player's place, once.
+    #[tokio::test]
+    async fn a_joining_client_is_sent_the_recipes_after_its_abilities_and_before_its_place() {
+        use clustine_protocol::packet_ids::play::clientbound as ids;
+        let regions = [WEST, EAST, NORTH, NETHER];
+        let mut edge = Harness::start_with(&regions, Duration::from_secs(1_000_000)).await;
+        let mut client = edge.joined(player(1), EntityId(5)).await;
+        edge.quiet().await;
+        edge.sync(&mut client).await;
+        let at = |id: i32| client.ids.iter().position(|sent| *sent == id);
+        let recipes = at(ids::UPDATE_RECIPES).expect("the recipes are sent");
+        assert!(at(ids::PLAYER_ABILITIES).is_some_and(|abilities| abilities < recipes));
+        assert!(at(ids::PLAYER_POSITION).is_some_and(|place| recipes < place));
+        let sent = client
+            .ids
+            .iter()
+            .filter(|id| **id == ids::UPDATE_RECIPES)
+            .count();
+        assert_eq!(sent, 1);
+        edge.end().await;
+    }
+
+    /// The recipe packet reads back as the game writes it: the property sets the
+    /// client's furnaces and smithing table ask for, and the stonecutter's recipes.
+    #[test]
+    fn the_recipes_packet_has_the_property_sets_and_the_stonecutters_recipes() {
+        let Ok(ClientboundPlay::UpdateRecipes(recipes)) =
+            ClientboundPlay::decode(&update_recipes_packet())
+        else {
+            panic!("the recipes packet");
+        };
+        let keys: Vec<&str> = recipes
+            .property_sets
+            .iter()
+            .map(|set| set.key.as_str())
+            .collect();
+        for key in [
+            "minecraft:furnace_input",
+            "minecraft:smithing_base",
+            "minecraft:smithing_template",
+        ] {
+            assert!(keys.contains(&key), "{keys:?}");
+        }
+        let furnace = recipes
+            .property_sets
+            .iter()
+            .find(|set| set.key == "minecraft:furnace_input")
+            .expect("named above");
+        assert!(furnace.items.contains(&clustine_data::items::IRON_ORE));
+        assert!(!recipes.stonecutter.is_empty());
+    }
+
     /// Scenario 17. A region that was passed an action and believes another to hold
     /// the chunk names it, and the action goes there.
     #[tokio::test]

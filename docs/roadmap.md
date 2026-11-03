@@ -659,9 +659,14 @@ drops it. V3 (crafting) has its first part: the player's own inventory screen, w
 put armour on (with its sound, Curse of Binding kept on) and use the 2×2 grid, which is
 kept across a hand-over, in the stored place and while a chest is open, and given back
 when the screen closes or the player changes level; the edge keeps window 0 beside the
-menu shown and sends only what its client does not show. The grid crafts nothing yet:
-the recipes (1266 of the crafting kinds, matched as the game matches them) are generated,
-and the result slot, the crafting table and the recipe packets are next (V3c).
+menu shown and sends only what its client does not show. The grids craft (V3c): the
+recipes (1266 of the crafting kinds, matched as the game matches them) are generated, the
+2×2 grid and the crafting table's 3×3 show their result and take it by every way the game
+has (a click, a shift-click that crafts while there is room, a number key, Q, a creative
+middle click), leaving the remainders (buckets, bottles) in the grid; the table's grid
+goes back to the inventory when it closes, is broken, or the player crosses a line or
+changes level; the client is sent the recipes' property sets and the stonecutter's list
+at a join. The recipe book stays empty (V9).
 
 **What to try with a real client** (the inventory screen, since 2026-11-03): in
 survival (`gamemode <you> survival`, `give <you> iron_helmet`, `give <you> oak_log 10`),
@@ -669,7 +674,11 @@ open the inventory with E: move stacks between the hotbar and the main inventory
 clicks, shift-clicks and drags, put the helmet on by a shift-click (its sound plays; a
 second player sees it), put logs in the 2×2 grid, close the screen (they come back to the
 inventory), and put some in the grid again and walk across x = 64 with the screen open
-(`--pin 4 --reshape by-hand`): nothing should flicker or go back.
+(`--pin 4 --reshape by-hand`): nothing should flicker or go back. Crafting (since
+2026-11-03): put a log in the 2×2 grid and take the planks (a click, then a shift-click
+that crafts all the logs), make sticks and a crafting table, place it, open it, and make
+a wooden pickaxe (three planks over two sticks); close it with something left in the grid
+(it comes back), and break it while it is open (the same).
 
 **What to try with a real client** (survival digging, since 2026-11-03): start the
 server (`cargo run --release -p clustine -- --pin 4 --reshape by-hand` puts a fixed

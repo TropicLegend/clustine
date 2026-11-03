@@ -821,6 +821,14 @@ impl Region {
                 };
                 self.throw(thrown, output);
             }
+            for stack in clicked.dropped {
+                let dropped = super::entities::Thrown {
+                    player: id,
+                    stack,
+                    crouching: false,
+                };
+                self.drop_crafted(dropped, output);
+            }
         }
         self.report_changes(id, true, output);
     }
