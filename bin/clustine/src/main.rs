@@ -425,6 +425,37 @@ enum Service {
         #[arg(long)]
         to: Option<String>,
     },
+    /// Sets a player's game mode, as the game's `/gamemode` does: the coordinator passes
+    /// the order to every edge, and the one that holds the player gives it to them.
+    Gamemode {
+        /// Host and port of the coordinator.
+        #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
+        coordinator: String,
+
+        /// The player's name, in any case.
+        player: String,
+
+        /// `survival` or `creative`.
+        mode: String,
+    },
+    /// Gives a player items, as the game's `/give` does: what does not fit in their
+    /// inventory is dropped at their feet. The coordinator passes the order to every
+    /// edge, and the one that holds the player gives it to them.
+    Give {
+        /// Host and port of the coordinator.
+        #[arg(long, default_value_t = format!("127.0.0.1:{COORDINATOR_PORT}"))]
+        coordinator: String,
+
+        /// The player's name, in any case.
+        player: String,
+
+        /// The item's name, such as `oak_log` or `minecraft:oak_log`.
+        item: String,
+
+        /// How many, at most a hundred stacks.
+        #[arg(default_value_t = 1)]
+        count: i32,
+    },
     /// Asks the coordinator to have one region absorb another, which is no more
     /// afterwards. The players of both are in the one that is left.
     Merge {
@@ -608,6 +639,20 @@ async fn main() -> Result<()> {
             })
             .await
         }
+        Some(Service::Gamemode {
+            coordinator,
+            player,
+            mode,
+        }) => cluster::give(&coordinator, &["gamemode", &player, &mode]).await,
+        Some(Service::Give {
+            coordinator,
+            player,
+            item,
+            count,
+        }) => {
+            let count = count.to_string();
+            cluster::give(&coordinator, &["give", &player, &item, &count]).await
+        }
         Some(Service::Merge {
             coordinator,
             survivor,
@@ -702,16 +747,63 @@ async fn run_standalone(args: Standalone, pins: Vec<i32>, follow: Option<Policy>
         None => info!(address = %server.address(), "listening"),
     }
 
-    tokio::select! {
-        _ = stop_signal() => {}
-        _ = server.stopped() => {
-            server.stop().await;
-            bail!("the server stopped unexpectedly");
+    let mut console = console();
+    loop {
+        tokio::select! {
+            _ = stop_signal() => break,
+            _ = server.stopped() => {
+                server.stop().await;
+                bail!("the server stopped unexpectedly");
+            }
+            Some(line) = console.recv() => {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                if words.is_empty() {
+                    continue;
+                }
+                match cluster::order_from_words(&words) {
+                    Ok((player, order)) => match server.order(&player, order).await {
+                        Ok(_) => info!(%player, "passed on an operator's order"),
+                        Err(error) => warn!(%error, "the order could not be passed on"),
+                    },
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
         }
     }
     info!("shutting down");
     server.stop().await;
     Ok(())
+}
+
+/// The lines of the single binary's standard input, an operator's orders
+/// (`gamemode <player> <mode>`, `give <player> <item> [count]`), read on a thread of
+/// their own that nothing waits for: a blocking read cannot be cancelled, and the
+/// runtime's end must not wait for a line. The input's end or a failed read ends the
+/// reading and nothing else. A process in the background of a terminal that reads it
+/// is stopped (`SIGTTIN`); with the signal caught, its read fails instead.
+fn console() -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    let (lines, console) = tokio::sync::mpsc::unbounded_channel();
+    #[cfg(unix)]
+    {
+        // `SIGTTIN` is 21 on Linux and the BSDs. Tokio keeps the handler for the rest of
+        // the process once it is installed, whatever becomes of the stream.
+        let caught = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::from_raw(21));
+        if let Err(error) = caught {
+            warn!(%error, "standard input is not read: SIGTTIN cannot be caught");
+            return console;
+        }
+    }
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else {
+                return;
+            };
+            if lines.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    console
 }
 
 #[cfg(test)]

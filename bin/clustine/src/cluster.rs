@@ -25,7 +25,10 @@ pub(crate) mod edge;
 pub(crate) mod worker;
 mod worldstore;
 
-pub use commands::{MergeArgs, MoveArgs, SplitArgs, merge_regions, move_region, split_region};
+pub use commands::{
+    MergeArgs, MoveArgs, SplitArgs, give, merge_regions, move_region, order_from_words,
+    split_region,
+};
 pub use coordinator::{CoordinatorArgs, coordinator};
 pub use edge::{EdgeArgs, edge};
 pub use worker::{WorkerArgs, worker};

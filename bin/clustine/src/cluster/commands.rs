@@ -1,12 +1,14 @@
 //! `clustine move`, `clustine merge` and `clustine split`: what somebody asks the
-//! coordinator for by hand.
+//! coordinator for by hand; and `clustine gamemode` and `clustine give`, an operator's
+//! orders for a player.
 
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use clustine_coordinator::{Asker, MoveAnswer, Mover};
+use clustine_coordinator::{Asker, MoveAnswer, Mover, give_order};
 use clustine_region::RegionId;
-use clustine_world::ChunkPos;
+use clustine_rpc::Order;
+use clustine_world::{ChunkPos, GameMode};
 
 /// Settings of `clustine move`.
 #[derive(Debug, Clone)]
@@ -145,4 +147,62 @@ pub async fn split_region(args: SplitArgs) -> Result<()> {
         }
         Err(reason) => bail!("the coordinator reports no split of region {region}: {reason}"),
     }
+}
+
+/// An operator's order as it is written after `clustine` or on the single binary's
+/// standard input: `gamemode <player> <survival|creative>` or `give <player> <item>
+/// [count]`, with the item named with or without `minecraft:`. Refused as the game's
+/// commands refuse them: an unknown mode or item, air, a count below 1, or more than a
+/// hundred of the item's stacks (`commands.give.failed.toomanyitems`).
+pub fn order_from_words(words: &[&str]) -> Result<(String, Order)> {
+    match words {
+        ["gamemode", player, mode] => {
+            let Some(mode) = GameMode::named(mode) else {
+                bail!("there is no game mode called {mode}");
+            };
+            if !matches!(mode, GameMode::Survival | GameMode::Creative) {
+                bail!("only survival and creative are built");
+            }
+            Ok(((*player).to_owned(), Order::GameMode(mode)))
+        }
+        ["give", player, item] => give_words(player, item, "1"),
+        ["give", player, item, count] => give_words(player, item, count),
+        _ => bail!(
+            "an order is `gamemode <player> <survival|creative>` or `give <player> <item> [count]`"
+        ),
+    }
+}
+
+fn give_words(player: &str, item: &str, count: &str) -> Result<(String, Order)> {
+    let name = if item.contains(':') {
+        item.to_owned()
+    } else {
+        format!("minecraft:{item}")
+    };
+    let Some(id) = clustine_data::item_id_by_name(&name).filter(|&id| id != 0) else {
+        bail!("there is no item called {item}");
+    };
+    let count: i32 = count
+        .parse()
+        .with_context(|| format!("{count} is not a count"))?;
+    let largest = i32::from(clustine_data::ItemComponents::of(id).max_stack_size).max(1);
+    if count < 1 {
+        bail!("a count has to be at least 1");
+    }
+    if count > largest * 100 {
+        bail!("can't give more than {} of {name}", largest * 100);
+    }
+    Ok((player.to_owned(), Order::Give { item: id, count }))
+}
+
+/// Gives an operator's order through the coordinator at `coordinator`, which passes it
+/// to every edge (`clustine gamemode`, `clustine give`), and says to how many. Whether
+/// the player was there to take it is not known.
+pub async fn give(coordinator: &str, words: &[&str]) -> Result<()> {
+    let (player, order) = order_from_words(words)?;
+    let edges = give_order(coordinator, &player, order)
+        .await
+        .with_context(|| format!("reaching the coordinator at {coordinator}"))?;
+    println!("passed the order for {player} to {edges} edge(s)");
+    Ok(())
 }

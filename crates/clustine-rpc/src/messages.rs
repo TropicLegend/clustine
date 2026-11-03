@@ -1302,6 +1302,13 @@ pub enum ToCoordinator {
         as_epoch: u64,
         outcome: Result<RegionId, Off>,
     },
+    /// Whoever operates the cluster gives `order` to the player called `player`.
+    /// Answered with [`FromCoordinator::OrderSent`]; the coordinator passes it to every
+    /// edge as [`FromCoordinator::Order`].
+    Order {
+        player: String,
+        order: clustine_sim::api::Order,
+    },
 }
 
 /// Why a merge or a split came to nothing.
@@ -1395,6 +1402,16 @@ pub enum FromCoordinator {
     /// To whoever asked for a merge or a split: what came of it. `region` is the
     /// region that absorbed the other or the one that was split off.
     Asked(Result<RegionId, String>),
+    /// To an edge that watches the routing: an operator's order for the player called
+    /// `player` (the game's `getPlayerByName`, regardless of case), which the edge that
+    /// holds them passes into their inputs.
+    Order {
+        player: String,
+        order: clustine_sim::api::Order,
+    },
+    /// To whoever gave an order: how many edges it was passed to. Whether one held the
+    /// player is not known here.
+    OrderSent { edges: u32 },
 }
 
 /// The files of a chunk a save writes: its blocks (with everything a chunk keeps but its

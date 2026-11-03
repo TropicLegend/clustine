@@ -299,6 +299,8 @@ pub struct Server {
     /// Where the worker says what the store refused it; see [`Server::take_over`].
     refusals: mpsc::UnboundedSender<Refusal>,
     stop: mpsc::UnboundedSender<Stop>,
+    /// The coordinator of this process, which takes an operator's orders.
+    reach: Reach,
 }
 
 impl Server {
@@ -456,10 +458,11 @@ impl Server {
             serialise: config.serialise_link,
         };
         // Either ends only if the edge is gone, which nothing here brings about.
+        let linked = reach.clone();
         let edge = tokio::spawn(async move {
             tokio::select! {
                 _ = edge.run() => {}
-                () = keep_linked(&reach, linking, home, tables, table, relinks) => {}
+                () = keep_linked(&linked, linking, home, tables, table, relinks) => {}
             }
         });
         Ok(Self {
@@ -472,7 +475,17 @@ impl Server {
             serving,
             refusals,
             stop,
+            reach,
         })
+    }
+
+    /// Gives the player called `player` an operator's `order`, as `clustine gamemode`
+    /// and `clustine give` do through a cluster's coordinator: the number of edges it was
+    /// passed to.
+    pub async fn order(&self, player: &str, order: clustine_sim::api::Order) -> Result<u32> {
+        clustine_coordinator::give_order(self.reach.clone(), player, order)
+            .await
+            .context("the coordinator of this process did not take the order")
     }
 
     /// The world store's list of regions.

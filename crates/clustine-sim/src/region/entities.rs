@@ -494,7 +494,7 @@ impl Region {
 
     /// `count` floats from the stream of the entity `key` now, on from what it has
     /// drawn in the tick already ([`Region::entity_stream`]).
-    fn draw_floats<const N: usize>(&mut self, key: EntityId) -> [f32; N] {
+    pub(super) fn draw_floats<const N: usize>(&mut self, key: EntityId) -> [f32; N] {
         let mut random = self.entity_stream(key).random;
         self.entity_drew(key, N as u64);
         std::array::from_fn(|_| random.next_float())

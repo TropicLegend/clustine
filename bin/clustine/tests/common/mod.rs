@@ -160,6 +160,8 @@ pub async fn spawn_server(
         .args(more)
         .env("CLUSTINE_LIGHT_ORACLE", light_oracle().to_string())
         .env("CLUSTINE_SPAWN_MOBS", "0")
+        // Its console reads nothing of the terminal the tests run in.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -197,6 +199,8 @@ pub async fn spawn_server_with_log(
         .env("NO_COLOR", "1")
         .env("CLUSTINE_LIGHT_ORACLE", light_oracle().to_string())
         .env("CLUSTINE_SPAWN_MOBS", "0")
+        // Its console reads nothing of the terminal the tests run in.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(written)
         .kill_on_drop(true)

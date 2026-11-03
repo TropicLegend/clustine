@@ -457,6 +457,7 @@ mod tests {
                 entities: vec![EntityState {
                     entity: EntityId(5),
                     kind: EntityKind::Player {
+                        game_mode: 1,
                         data: Default::default(),
                         player: player(),
                         name: "Notch".to_owned(),

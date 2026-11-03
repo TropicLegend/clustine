@@ -32,8 +32,8 @@ use clustine_protocol::packets::play::{
     SetEquipment, SetExperience, SetHeadRotation, SetHealth, SetHeldSlot, SetPassengers,
     SetPlayerInventory, SetTime, Sound, SpawnEntity, SpawnInfo, SwingAnimation, SyncEntityPosition,
     SynchronizePlayerPosition, SystemChat, TakeItemEntity, UnloadChunk, UpdateAttributes,
-    UpdateMobEffect, abilities, angle, entity_data, game_event, game_mode,
-    inventory as protocol_inventory, level_event, player_info, pose, relative,
+    UpdateMobEffect, abilities, angle, entity_data, game_event, inventory as protocol_inventory,
+    level_event, player_info, pose, relative,
 };
 use clustine_protocol::packets::{self, Packet};
 use clustine_protocol::text::Text;
@@ -616,9 +616,10 @@ struct PlayerView {
     /// Entities the client has been shown, with the player each of them is, or none for
     /// an entity other than a player.
     visible: BTreeMap<EntityId, Option<PlayerId>>,
-    /// Players the client has in its player list. A client only shows the entity of a
-    /// player it has in that list.
-    listed: BTreeSet<PlayerId>,
+    /// Players the client has in its player list, each with the id of the game mode it
+    /// was last told of them. A client only shows the entity of a player it has in that
+    /// list.
+    listed: BTreeMap<PlayerId, u8>,
     /// Whether a batch has been sent that the client has not confirmed.
     batch_outstanding: bool,
     /// The change of dimension under way: the client has been sent `Respawn`, and
@@ -1303,6 +1304,7 @@ impl Fanout {
                     match relink {
                         Relink::Link(link) => self.take_link(link).await,
                         Relink::Absorbed(pairs) => self.take_pairs(pairs).await,
+                        Relink::Order { player, order } => self.take_order(&player, order).await,
                     }
                 },
                 // The task holds the other end's sender in `lighting`, so this never
@@ -1840,7 +1842,7 @@ impl Fanout {
                         sent: BTreeSet::new(),
                         replace: BTreeSet::new(),
                         visible: BTreeMap::new(),
-                        listed: BTreeSet::new(),
+                        listed: BTreeMap::new(),
                         batch_outstanding: false,
                         batch_size: INITIAL_BATCH_SIZE,
                     },
@@ -2167,6 +2169,10 @@ impl Fanout {
                     | PlayerEvent::EffectRemoved { .. }
                     | PlayerEvent::Attributes(_)),
             } => self.own_effects(player, event).await,
+            WorkerToEdge::ToPlayer {
+                player,
+                event: PlayerEvent::GameModeChanged { mode, flying },
+            } => self.game_mode_changed(player, mode, flying).await,
             WorkerToEdge::ToPlayer {
                 player,
                 event: PlayerEvent::UseCompleted,
@@ -3506,6 +3512,70 @@ impl Fanout {
         self.send_to_player(player, [packet]).await;
     }
 
+    /// An operator changed the game mode of the edge's `player`: kept for what the edge
+    /// refuses of their client, and told as `ServerPlayer.setGameMode` tells it (n5
+    /// `ServerPlayerGameMode.changeGameModeForPlayer` @57-84, `setGameMode` @37-84): the
+    /// abilities, the list's update to everyone who lists them, the game event, and the
+    /// abilities again.
+    async fn game_mode_changed(
+        &mut self,
+        player: PlayerId,
+        mode: clustine_world::PlayerMode,
+        flying: bool,
+    ) {
+        let Some(view) = self.players.get_mut(&player) else {
+            return;
+        };
+        view.mode = mode;
+        let abilities = encoded(&PlayerAbilities {
+            flags: ability_flags(mode.current, flying),
+            flying_speed: 0.05,
+            field_of_view_modifier: 0.1,
+        });
+        self.send_to_player(player, [abilities.clone()]).await;
+        self.tell_listers(player, mode.current.id()).await;
+        let event = encoded(&GameEvent {
+            event: game_event::CHANGE_GAME_MODE,
+            value: f32::from(mode.current.id()),
+        });
+        self.send_to_player(player, [event, abilities]).await;
+    }
+
+    /// Another edge's `player`, whose entity is `entity`, is now in the game mode of id
+    /// `mode`: what this edge shows of the entity says it, and those of its players who
+    /// list them are told. The edge's own players' changes come as their own event.
+    async fn other_game_mode(&mut self, entity: EntityId, player: PlayerId, mode: u8) {
+        if self.players.contains_key(&player) {
+            return;
+        }
+        if let Some(shown) = self.entities.get_mut(&entity)
+            && let EntityKind::Player { game_mode, .. } = &mut shown.state.kind
+        {
+            *game_mode = mode;
+        }
+        self.tell_listers(player, mode).await;
+    }
+
+    /// Tells each of the edge's players who lists `player` with another mode than the
+    /// one of id `mode` (`UPDATE_GAME_MODE`).
+    async fn tell_listers(&mut self, player: PlayerId, mode: u8) {
+        let listers: Vec<PlayerId> = self
+            .players
+            .iter_mut()
+            .filter_map(|(other, view)| {
+                let told = view.listed.get_mut(&player)?;
+                (*told != mode).then(|| {
+                    *told = mode;
+                    *other
+                })
+            })
+            .collect();
+        let packet = encoded(&game_mode_update(player, mode));
+        for other in listers {
+            self.send_to_player(other, [packet.clone()]).await;
+        }
+    }
+
     async fn held_slot(&mut self, player: PlayerId, slot: u8) {
         let entered = self
             .players
@@ -4198,6 +4268,12 @@ impl Fanout {
         // What the region says is of its dimension.
         let dimension = self.dimension_of(from);
         match event {
+            RegionEvent::PlayerGameMode {
+                entity,
+                player,
+                mode,
+                ..
+            } => self.other_game_mode(entity, player, mode).await,
             RegionEvent::EntitySpawned(state) => self.upsert_entity(from, state, true).await,
             // An entity that came into a chunk the edge watches from one it was shown at
             // another tick, or not at all: shown as from a snapshot. One the edge shows
@@ -4544,6 +4620,24 @@ impl Fanout {
             return;
         };
         self.player_input_unchecked(player, input).await;
+    }
+
+    /// An operator's order for the player called `name` (the game's `getPlayerByName`,
+    /// regardless of case): passed into their inputs if this edge holds them, past the
+    /// refusals of what a client may send (no client sent it).
+    async fn take_order(&mut self, name: &str, order: clustine_sim::api::Order) {
+        let found = self
+            .players
+            .iter()
+            .find(|(_, view)| view.name.eq_ignore_ascii_case(name))
+            .map(|(id, _)| *id);
+        let Some(player) = found else {
+            debug!(%name, "an operator's order for a player this edge does not hold");
+            return;
+        };
+        info!(%name, ?order, "passing on an operator's order");
+        self.player_input_unchecked(player, PlayerInput::Order(order))
+            .await;
     }
 
     /// Passes `input` on to the player's region as theirs, numbered and kept as every
@@ -5844,15 +5938,15 @@ impl Fanout {
             .players
             .iter()
             .filter(|(_, view)| view.entity.is_some())
-            .map(|(id, view)| (*id, view.name.clone()))
+            .map(|(id, view)| (*id, view.name.clone(), view.mode.current.id()))
             .collect();
         let newcomer = in_world
             .iter()
-            .find(|(id, _)| *id == player)
+            .find(|(id, ..)| *id == player)
             .cloned()
             .expect("the player was just placed");
-        for (other, _) in &in_world {
-            let additions: &[(PlayerId, String)] = if *other == player {
+        for (other, ..) in &in_world {
+            let additions: &[(PlayerId, String, u8)] = if *other == player {
                 &in_world
             } else {
                 std::slice::from_ref(&newcomer)
@@ -5863,7 +5957,7 @@ impl Fanout {
             // Someone may already have been told, with the newcomer's entity.
             let unlisted: Vec<_> = additions
                 .iter()
-                .filter(|(id, _)| view.listed.insert(*id))
+                .filter(|(id, _, mode)| view.listed.insert(*id, *mode).is_none())
                 .cloned()
                 .collect();
             if !unlisted.is_empty() {
@@ -7330,7 +7424,7 @@ impl Fanout {
             .players
             .iter_mut()
             .filter(|(_, view)| !view.visible.values().any(|shown| *shown == Some(player)))
-            .filter_map(|(other, view)| view.listed.remove(&player).then_some(*other))
+            .filter_map(|(other, view)| view.listed.remove(&player).map(|_| *other))
             .collect();
         for other in listing {
             let packet = encoded(&PlayerInfoRemove {
@@ -7481,7 +7575,13 @@ impl PlayerView {
         match (in_view, shown) {
             (true, false) => {
                 let mut packets = Vec::new();
-                let EntityKind::Player { player, name, .. } = &state.kind else {
+                let EntityKind::Player {
+                    player,
+                    name,
+                    game_mode,
+                    ..
+                } = &state.kind
+                else {
                     self.visible.insert(state.entity, None);
                     // The owner's id, given now if it has none, so that an owner shown
                     // after its projectile is the one it names (`n9-plan.md`, section
@@ -7513,9 +7613,17 @@ impl PlayerView {
                     }));
                 }
                 self.visible.insert(state.entity, Some(*player));
-                if self.listed.insert(*player) {
-                    let addition = [(*player, name.clone())];
-                    packets.push(encoded(&player_list_additions(&addition)));
+                match self.listed.insert(*player, *game_mode) {
+                    None => {
+                        let addition = [(*player, name.clone(), *game_mode)];
+                        packets.push(encoded(&player_list_additions(&addition)));
+                    }
+                    // Listed before with another mode, which changed while the client
+                    // did not see them.
+                    Some(told) if told != *game_mode => {
+                        packets.push(encoded(&game_mode_update(*player, *game_mode)));
+                    }
+                    Some(_) => {}
                 }
                 let id = wire.of(state.entity);
                 packets.extend(spawn_packets(state, id, None, 0, &mut |key| wire.of(key)));
@@ -7573,22 +7681,35 @@ fn protocol_stack(stack: &ItemStack) -> protocol::ItemStack {
     crate::encode::wire_stack(stack)
 }
 
-/// Adds players to a client's player list.
-fn player_list_additions(players: &[(PlayerId, String)]) -> PlayerInfoUpdate {
+/// Adds players to a client's player list, each with the id of their game mode.
+fn player_list_additions(players: &[(PlayerId, String, u8)]) -> PlayerInfoUpdate {
     PlayerInfoUpdate {
         actions: player_info::ADD_PLAYER
             | player_info::UPDATE_GAME_MODE
             | player_info::UPDATE_LISTED,
         entries: players
             .iter()
-            .map(|(player, name)| PlayerInfoEntry {
+            .map(|(player, name, mode)| PlayerInfoEntry {
                 uuid: player.0,
                 profile: Some((name.clone(), Vec::new())),
-                game_mode: Some(game_mode::CREATIVE),
+                game_mode: Some(i32::from(*mode)),
                 listed: Some(true),
                 ..PlayerInfoEntry::default()
             })
             .collect(),
+    }
+}
+
+/// The player list's word that `player` is in the game mode of id `mode`
+/// (`UPDATE_GAME_MODE`).
+fn game_mode_update(player: PlayerId, mode: u8) -> PlayerInfoUpdate {
+    PlayerInfoUpdate {
+        actions: player_info::UPDATE_GAME_MODE,
+        entries: vec![PlayerInfoEntry {
+            uuid: player.0,
+            game_mode: Some(i32::from(mode)),
+            ..PlayerInfoEntry::default()
+        }],
     }
 }
 
@@ -11824,6 +11945,7 @@ mod scenarios {
         EntityState {
             entity,
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(entity.0 as u128 + 1000),
                 name: format!("Stranger{}", entity.0),
@@ -14430,6 +14552,7 @@ mod scenarios {
         let own = |number: u128, entity| EntityState {
             entity,
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(number),
                 name: format!("Player{number}"),
@@ -14526,6 +14649,7 @@ mod scenarios {
         let arrived = EntityState {
             entity: EntityId(5),
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(1),
                 name: "Player".to_owned(),
@@ -14588,6 +14712,7 @@ mod scenarios {
     fn far_stranger(entity: EntityId, chunk: ChunkPos) -> EntityState {
         EntityState {
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(u128::from(entity.0) + 1000),
                 name: format!("Stranger{}", entity.0 % 1000),
@@ -14820,6 +14945,7 @@ mod scenarios {
         let state = EntityState {
             entity: other,
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(9),
                 name: "Player9".to_owned(),
@@ -14879,6 +15005,7 @@ mod scenarios {
         let state = EntityState {
             entity: other,
             kind: EntityKind::Player {
+                game_mode: 1,
                 player: player(9),
                 name: "Player9".to_owned(),
                 data: vec![(16, DataShown::Byte(0x7F))],
@@ -15727,6 +15854,7 @@ mod scenarios {
                             .map(|(player, resident)| EntityState {
                                 entity: resident.entity,
                                 kind: EntityKind::Player {
+                                    game_mode: 1,
                                     data: Default::default(),
                                     player: *player,
                                     name: "Player".to_owned(),
@@ -15880,6 +16008,7 @@ mod scenarios {
                     ticked.events.push(RegionEvent::EntitySpawned(EntityState {
                         entity,
                         kind: EntityKind::Player {
+                            game_mode: 1,
                             data: Default::default(),
                             player: join.player,
                             name: join.name,
@@ -15958,6 +16087,7 @@ mod scenarios {
                             ticked.events.push(RegionEvent::EntitySpawned(EntityState {
                                 entity: transfer.entity_id,
                                 kind: EntityKind::Player {
+                                    game_mode: 1,
                                     data: Default::default(),
                                     player,
                                     name: transfer.name,
@@ -21569,6 +21699,7 @@ mod scenarios {
         EntityState {
             entity: EntityId(entity),
             kind: EntityKind::Player {
+                game_mode: 1,
                 data: Default::default(),
                 player: player(who),
                 name: "Player".to_owned(),

@@ -682,7 +682,10 @@ attributes):
   entering player to the default, as `calculateGameModeForNewPlayer` does.
 - A change of mode (by `--force-gamemode` at a join, or the operator's tool of question
   2, whose `gamemode` and `give` reach the player's region as **a new kind of region
-  input**, an operator's order, not a `PlayerInput`, since no client sent it) is the
+  input**, an operator's order, not a `PlayerInput`, since no client sent it; built
+  instead as `PlayerInput::Order`, which the edge that holds the player passes into
+  their input stream, so that it follows them through hand-overs, deaths and changes of
+  level as their inputs do: the review of 2026-11-03) is the
   region's: it sets the mode and the previous one, lands a flyer as
   `changeGameModeForPlayer` does, and tells the edge, which sends the `GameEvent`, the
   abilities twice and the player list's update **to every player of every edge** (the

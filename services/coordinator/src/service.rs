@@ -672,6 +672,27 @@ impl Service {
                 self.asks.push((id, Ask::Split { region, chunks }));
                 self.read_the_list();
             }
+            (Role::Undecided, ToCoordinator::Order { player, order }) => {
+                info!(connection = id, %player, ?order, "an operator's order");
+                let watchers: Vec<u64> = self
+                    .connections
+                    .iter()
+                    .filter(|(_, connection)| connection.role == Role::Watcher)
+                    .map(|(id, _)| *id)
+                    .collect();
+                let edges = u32::try_from(watchers.len()).unwrap_or(u32::MAX);
+                for watcher in watchers {
+                    self.tell(
+                        watcher,
+                        FromCoordinator::Order {
+                            player: player.clone(),
+                            order: order.clone(),
+                        },
+                    );
+                }
+                self.tell(id, FromCoordinator::OrderSent { edges });
+                self.close(id);
+            }
             (role, message) => {
                 let said = match message {
                     ToCoordinator::RegisterWorker { .. } => "a registration",
@@ -686,6 +707,7 @@ impl Service {
                     ToCoordinator::Split { .. } => "a request to split a region",
                     ToCoordinator::AbsorbEnded { .. } => "what came of a merge",
                     ToCoordinator::SplitEnded { .. } => "what came of a split",
+                    ToCoordinator::Order { .. } => "an operator's order",
                 };
                 warn!(
                     connection = id,

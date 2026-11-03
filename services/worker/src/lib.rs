@@ -3905,6 +3905,7 @@ impl RegionRunner {
                 | PlayerInput::MoveVehicle(_)
                 | PlayerInput::PaddleBoat { .. }
                 | PlayerInput::PickItemFromEntity { .. }
+                | PlayerInput::Order(_)
                 | PlayerInput::ReleaseUse => return false,
                 // A click and a close are about the chunks of the menu's container: held
                 // while one is on its way, so that a click after a merge waits for the

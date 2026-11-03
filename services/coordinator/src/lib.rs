@@ -19,7 +19,7 @@ mod state;
 
 pub use client::{
     Asker, ClientError, HEARTBEAT_INTERVAL, LocalCoordinator, MoveAnswer, Mover, Orders, Reach,
-    RoutingWatch, WorkerClient, WorkerEvent,
+    RoutingWatch, Watched, WorkerClient, WorkerEvent, give_order,
 };
 pub use policy::{Home, Policy, Sighted, Wanted, Why, decide, named};
 #[doc(hidden)]

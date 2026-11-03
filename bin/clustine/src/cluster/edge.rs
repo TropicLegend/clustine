@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clustine_coordinator::{ClientError, Reach, RoutingWatch};
+use clustine_coordinator::{ClientError, Reach, RoutingWatch, Watched};
 use clustine_edge::{Edge, EdgeConfig, EdgeIdentity, RegionLink, Relinks, Routing, Stopped};
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{self, EdgeEnd};
@@ -97,6 +97,7 @@ pub(crate) async fn whole_world(
         let watching = async {
             let mut watch = RoutingWatch::connect(coordinator).await?;
             loop {
+                // An operator's order before the edge has begun has nobody to go to.
                 let table = watch.next().await?;
                 if let Some((home, spawn)) = whole(&table) {
                     return Ok::<_, ClientError>((watch, table, home, spawn));
@@ -343,6 +344,16 @@ pub(crate) async fn keep_linked(
                 None => return,
             },
             next = next_table(&mut watch), if watch.is_some() => {
+                let next = match next {
+                    Some(Watched::Order { player, order }) => {
+                        if !relinks.order(player, order).await {
+                            return;
+                        }
+                        continue;
+                    }
+                    Some(Watched::Routing(table)) => Some(table),
+                    None => None,
+                };
                 // Which regions were absorbed is passed on from every table, also from
                 // one this edge otherwise keeps away from: the edge has to know that a
                 // region it still has something of is no more.
@@ -426,8 +437,8 @@ async fn found_coordinator(
 }
 
 /// The next routing table, or `None` if the connection to the coordinator is lost.
-async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<RoutingTable> {
-    watch.as_mut()?.next().await.ok()
+async fn next_table(watch: &mut Option<RoutingWatch>) -> Option<Watched> {
+    watch.as_mut()?.watched().await.ok()
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use clustine_region::{RegionId, RoutingTable};
 use clustine_rpc::link::{self, End};
-use clustine_rpc::{Assignment, FromCoordinator, Off, PlayersOf, ToCoordinator, Vouch, tcp};
+use clustine_rpc::{Assignment, FromCoordinator, Off, Order, PlayersOf, ToCoordinator, Vouch, tcp};
 use clustine_world::ChunkPos;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
@@ -477,13 +477,27 @@ impl RoutingWatch {
         Ok(Self { link })
     }
 
-    /// The current routing table on the first call, afterwards each new one as it comes.
-    /// An error means the connection is lost.
+    /// The current routing table on the first call, afterwards each new one as it comes;
+    /// an operator's order on the way is passed over. An error means the connection is
+    /// lost.
     ///
     /// Nothing is lost if the returned future is dropped before it is done.
     pub async fn next(&mut self) -> Result<RoutingTable, ClientError> {
+        loop {
+            if let Watched::Routing(table) = self.watched().await? {
+                return Ok(table);
+            }
+        }
+    }
+
+    /// As [`RoutingWatch::next`], with an operator's orders among the tables.
+    ///
+    /// Nothing is lost if the returned future is dropped before it is done.
+    pub async fn watched(&mut self) -> Result<Watched, ClientError> {
         match self.link.recv().await {
-            Some(FromCoordinator::Routing(table)) => Ok(table),
+            Some(FromCoordinator::Routing(table)) => Ok(Watched::Routing(table)),
+            Some(FromCoordinator::Order { player, order }) => Ok(Watched::Order { player, order }),
+            Some(FromCoordinator::OrderSent { .. }) => Err(unexpected("word of an order sent")),
             Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
                 Err(unexpected("orders to an edge"))
             }
@@ -500,6 +514,37 @@ impl RoutingWatch {
             ) => Err(unexpected("word of a merge or a split")),
             None => Err(ClientError::Lost),
         }
+    }
+}
+
+/// What an edge that watches the routing hears.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Watched {
+    /// The routing table as it is now.
+    Routing(RoutingTable),
+    /// An operator's order for the player called `player`, for whichever edge holds them.
+    Order { player: String, order: Order },
+}
+
+/// Gives the player called `player` the operator's `order` through the coordinator at
+/// `coordinator`, which passes it to every edge: the number of edges it was passed to.
+/// Whether one of them held the player is not known.
+pub async fn give_order(
+    coordinator: impl Into<Reach>,
+    player: &str,
+    order: Order,
+) -> Result<u32, ClientError> {
+    let mut link = connect(&coordinator.into()).await?;
+    link.send(ToCoordinator::Order {
+        player: player.to_owned(),
+        order,
+    })
+    .await
+    .map_err(|_| ClientError::Lost)?;
+    match link.recv().await {
+        Some(FromCoordinator::OrderSent { edges }) => Ok(edges),
+        Some(_) => Err(unexpected("something other than word of the order")),
+        None => Err(ClientError::Lost),
     }
 }
 
@@ -583,6 +628,9 @@ impl Asker {
             ) => Err(unexpected(
                 "orders to somebody who asked for a merge or a split",
             )),
+            Some(FromCoordinator::Order { .. } | FromCoordinator::OrderSent { .. }) => {
+                Err(unexpected("word of an operator's order"))
+            }
             Some(FromCoordinator::Routing(_)) => Err(unexpected(
                 "a routing table to somebody who asked for a merge or a split",
             )),
@@ -641,6 +689,9 @@ impl Mover {
             Some(FromCoordinator::Assigned { .. } | FromCoordinator::Release { .. }) => {
                 Err(unexpected("orders to somebody who asked for a move"))
             }
+            Some(FromCoordinator::Order { .. } | FromCoordinator::OrderSent { .. }) => {
+                Err(unexpected("word of an operator's order"))
+            }
             Some(FromCoordinator::Routing(_)) => Err(unexpected(
                 "a routing table to somebody who asked for a move",
             )),
@@ -688,6 +739,9 @@ fn event_from(message: Option<FromCoordinator>) -> Result<WorkerEvent, ClientErr
         }
         Some(FromCoordinator::Release { region, epoch }) => {
             Ok(WorkerEvent::Release { region, epoch })
+        }
+        Some(FromCoordinator::Order { .. } | FromCoordinator::OrderSent { .. }) => {
+            Err(unexpected("word of an operator's order"))
         }
         Some(FromCoordinator::Routing(_)) => Err(unexpected("a routing table to a worker")),
         Some(

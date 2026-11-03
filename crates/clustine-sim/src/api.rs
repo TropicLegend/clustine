@@ -847,6 +847,8 @@ pub enum EntityKind {
         /// (`ServerEntity.sendPairingData`): the shared flags, the pose, the living
         /// flags, the effect particles, the bed, the skin's parts and the main hand.
         data: Vec<(u8, crate::shown::DataShown)>,
+        /// Their game mode's id, for the player list of those who come to see them.
+        game_mode: u8,
     },
     /// An entity other than a player (`docs/adr/0028-entities.md`): its type, an index
     /// into `clustine_data::ENTITY_TYPES`, its UUID, its motion, its changes of holder
@@ -880,6 +882,19 @@ impl EntityState {
     pub fn chunk(&self) -> ChunkPos {
         ChunkPos::containing(self.pose.position.x, self.pose.position.z)
     }
+}
+
+/// An operator's order for a player (`clustine gamemode`, `clustine give`, or the single
+/// binary's standard input): what the game's `/gamemode` and `/give` do to their target.
+/// It reaches the player's region in their input stream, so that it follows them through
+/// hand-overs and waits with their inputs (`docs/groundwork/v-plan.md`, section 4.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Order {
+    /// `ServerPlayer.setGameMode`.
+    GameMode(clustine_world::GameMode),
+    /// `GiveCommand.giveItem` of `count` of `item` (by id), which the operator's tool
+    /// has checked: an item that is not air, and a count from 1 to 100 stacks.
+    Give { item: i32, count: i32 },
 }
 
 /// Something a player did.
@@ -1034,6 +1049,11 @@ pub enum PlayerInput {
     /// `docs/groundwork/v-plan.md`, section 4.1). Added at the end, so that what is
     /// stored of inputs reads as it did.
     Loaded,
+    /// An operator's order for the player, which the edge passes in for them (no client
+    /// sent it): it is not acknowledged, and it has no place, so that it waits through a
+    /// change of level, a death and the credits as the player's mode does. Added at the
+    /// end, so that what is stored of inputs reads as it did.
+    Order(Order),
 }
 
 impl PlayerInput {
@@ -1049,6 +1069,7 @@ impl PlayerInput {
                 | Self::SwapHands
                 | Self::SetFlying { .. }
                 | Self::Appearance(_)
+                | Self::Order(_)
         )
     }
 }
@@ -1870,6 +1891,13 @@ pub enum PlayerEvent {
     /// Attributes of their own entity that their effects changed
     /// (`ClientboundUpdateAttributesPacket`): their client moves by them.
     Attributes(Vec<AttributeShown>),
+    /// An operator changed their game mode (`ServerPlayer.setGameMode`): the mode now,
+    /// and whether they still fly. Their client is told the abilities, the game event
+    /// and the list's update; so is everyone this edge has told of them.
+    GameModeChanged {
+        mode: clustine_world::PlayerMode,
+        flying: bool,
+    },
 }
 
 /// What an explosion shows (the particles and the sound `ServerLevel.explode` is given),
@@ -2165,6 +2193,15 @@ pub enum RegionEvent {
         chunk: ChunkPos,
         values: Vec<(u8, crate::shown::DataShown)>,
     },
+    /// An operator changed the game mode of `player`, whose entity is in `chunk`, to the
+    /// mode of id `mode`: the edges that list them tell their players
+    /// (`PlayerInfoUpdate`'s `UPDATE_GAME_MODE`).
+    PlayerGameMode {
+        entity: EntityId,
+        chunk: ChunkPos,
+        player: PlayerId,
+        mode: u8,
+    },
 }
 
 /// One attribute of an entity as clients are sent it: its id in the game's registry,
@@ -2232,6 +2269,7 @@ impl RegionEvent {
             | Self::EquipmentChanged { chunk, .. }
             | Self::Animated { chunk, .. }
             | Self::PlayerData { chunk, .. }
+            | Self::PlayerGameMode { chunk, .. }
             | Self::Sleeping { chunk, .. } => [*chunk; 2],
             Self::BlockChanged { position, .. }
             | Self::BlockEntityChanged { position, .. }

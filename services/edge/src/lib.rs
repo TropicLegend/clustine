@@ -207,6 +207,11 @@ pub enum Relink {
     /// The regions the routing table says were absorbed, each with the region it went
     /// into.
     Absorbed(Vec<(RegionId, RegionId)>),
+    /// An operator's order for the player called `player`, if this edge holds them.
+    Order {
+        player: String,
+        order: clustine_sim::api::Order,
+    },
 }
 
 /// Gives a running edge new links to regions, and hears from it which links have ended.
@@ -230,6 +235,15 @@ impl Relinks {
     /// false if the edge is gone.
     pub async fn absorbed(&self, pairs: Vec<(RegionId, RegionId)>) -> bool {
         self.sender.send(Relink::Absorbed(pairs)).await.is_ok()
+    }
+
+    /// Hands the edge an operator's order for the player called `player`, which it
+    /// passes into their inputs if it holds them. Returns false if the edge is gone.
+    pub async fn order(&self, player: String, order: clustine_sim::api::Order) -> bool {
+        self.sender
+            .send(Relink::Order { player, order })
+            .await
+            .is_ok()
     }
 
     /// Waits until a link of the edge has ended, and returns the region it went to and

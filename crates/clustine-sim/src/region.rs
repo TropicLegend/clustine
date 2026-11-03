@@ -94,6 +94,7 @@ mod mob_attacks;
 mod mob_bodies;
 mod mobs;
 mod mounts;
+mod orders;
 mod picks;
 mod pistons;
 mod placing;
@@ -2675,6 +2676,12 @@ impl Region {
     /// Does what a player's input says, counted applied already: an input of the tick,
     /// or one a waiting stay kept for its placing (`waiting.rs`).
     fn act(&mut self, id: PlayerId, input: &PlayerInput, output: &mut TickOutput) {
+        // An operator's order holds for a dead player too: their mode outlives the body
+        // (`restoreFrom`), as the order does a change of level (`orders.rs`).
+        if let PlayerInput::Order(order) = input {
+            self.obey(id, order, output);
+            return;
+        }
         // A dead player asks for their respawn and does nothing else (`void.rs`).
         if self.dead_input(id, input, output) {
             return;
@@ -2721,6 +2728,8 @@ impl Region {
             return;
         }
         match input {
+            // Carried out before anything of the player's own (`act`).
+            PlayerInput::Order(_) => {}
             PlayerInput::Move {
                 position,
                 rotation,
@@ -4398,6 +4407,7 @@ impl Player {
                 player: id,
                 name: self.name.clone(),
                 data: self.data_shown(),
+                game_mode: self.mode.current.id(),
             },
             pose: self.pose,
         }
@@ -5283,6 +5293,7 @@ mod tests {
                 data: Default::default(),
                 player: player(number),
                 name: format!("Player{number}"),
+                game_mode: 1,
             },
             pose: Pose::at(position),
         }

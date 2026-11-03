@@ -242,6 +242,8 @@ impl Server {
             .args(["--reshape", "by-hand", "--max-players", "1000"])
             .env("NO_COLOR", "1")
             .env("CLUSTINE_LIGHT_AS_CHANGED", as_changed.to_string())
+            // Its console reads nothing of the terminal the tests run in.
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(written)
             .kill_on_drop(true);

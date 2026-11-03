@@ -960,6 +960,7 @@ impl Witness {
                         | RegionEvent::EquipmentChanged { .. }
                         | RegionEvent::Animated { .. }
                         | RegionEvent::PlayerData { .. }
+                        | RegionEvent::PlayerGameMode { .. }
                         | RegionEvent::Sleeping { .. }
                         | RegionEvent::BlockEventsBegin => {}
                         RegionEvent::EntityGone { entity, .. } => {
@@ -1001,6 +1002,7 @@ impl Witness {
                 | PlayerEvent::EffectAdded { .. }
                 | PlayerEvent::EffectRemoved { .. }
                 | PlayerEvent::Attributes(_)
+                | PlayerEvent::GameModeChanged { .. }
                 | PlayerEvent::MerchantOffers { .. }
                 | PlayerEvent::BossBar { .. } => {}
             },
